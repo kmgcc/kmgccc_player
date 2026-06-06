@@ -366,7 +366,7 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
                                     let converted = try await TTMLConverter.shared.convertToTTMLWithTranslation(
                                         origLyrics: origLyrics,
                                         transLyrics: transLyrics,
-                                        stripMetadata: false
+                                        stripMetadata: true
                                     )
                                     guard let normalized = LyricsFormatSupport.normalizedTTMLText(converted) else {
                                         throw TTMLConversionError.conversionFailed("LDDC 转换结果 TTML 结构无效")
@@ -375,7 +375,7 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
                                 } else {
                                     let converted = try await TTMLConverter.shared.convertToTTML(
                                         rawLyrics: origLyrics,
-                                        stripMetadata: false
+                                        stripMetadata: true
                                     )
                                     guard let normalized = LyricsFormatSupport.normalizedTTMLText(converted) else {
                                         throw TTMLConversionError.conversionFailed("LDDC 转换结果 TTML 结构无效")
