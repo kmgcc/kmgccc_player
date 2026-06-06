@@ -922,16 +922,10 @@ final class LibraryCompletionService {
     }
 
     private func trackHasLyrics(_ track: Track) -> Bool {
-        if track.ttmlLyricText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            return true
-        }
-        if track.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+        if LyricsFormatSupport.normalizedTTMLText(track.ttmlLyricText) != nil {
             return true
         }
         if track.ttmlLyricsFileName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            return true
-        }
-        if track.lyricsFileName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
             return true
         }
         return false

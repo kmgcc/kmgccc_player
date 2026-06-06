@@ -529,18 +529,11 @@ final class PlaybackCoordinator {
         if cachedLyricsTrackID == track.id, cachedLyricsSignature == signature {
             return cachedLyricsText
         }
-        let plain = track.lyricsText
-        let ttml = track.ttmlLyricText
-        let candidates = [plain, ttml]
-        for candidate in candidates {
-            guard let candidate else { continue }
-            let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                cachedLyricsTrackID = track.id
-                cachedLyricsSignature = signature
-                cachedLyricsText = candidate
-                return candidate
-            }
+        if let ttml = LyricsFormatSupport.normalizedTTMLText(track.ttmlLyricText) {
+            cachedLyricsTrackID = track.id
+            cachedLyricsSignature = signature
+            cachedLyricsText = ttml
+            return ttml
         }
         cachedLyricsTrackID = track.id
         cachedLyricsSignature = signature
@@ -574,59 +567,51 @@ final class PlaybackCoordinator {
 
     private func scheduleSidecarHydrationIfNeeded(for track: Track) {
         let needsArtwork = track.artworkData?.isEmpty != false && track.resolvedArtworkURL() != nil
-        let needsPlainLyrics = track.lyricsText?.isEmpty != false && track.resolvedLyricsURL() != nil
         let needsTTMLLyrics = track.ttmlLyricText?.isEmpty != false
             && (track.resolvedTTMLURL() != nil || track.resolvedLyricsURL() != nil)
-        guard needsArtwork || needsPlainLyrics || needsTTMLLyrics else { return }
+        guard needsArtwork || needsTTMLLyrics else { return }
         guard sidecarHydratingTrackID != track.id else { return }
 
         let trackID = track.id
         let artworkURL = needsArtwork ? track.resolvedArtworkURL() : nil
-        let lyricsURL = needsPlainLyrics ? track.resolvedLyricsURL() : nil
         let ttmlURL = needsTTMLLyrics ? track.resolvedTTMLURL() : nil
         let ttmlFallbackURL = needsTTMLLyrics ? track.resolvedLyricsURL() : nil
 
         sidecarHydrationTask?.cancel()
         sidecarHydratingTrackID = trackID
         sidecarHydrationTask = Task(priority: .utility) { @MainActor [weak self, weak track] in
-            let token = FirstUseHitchDiagnostics.begin(
-                "PlaybackCoordinator.sidecarHydration",
-                detail: "track=\(trackID.uuidString.prefix(8)) artwork=\(artworkURL != nil) lyrics=\(lyricsURL != nil) ttml=\(ttmlURL != nil || ttmlFallbackURL != nil)"
-            )
+                let token = FirstUseHitchDiagnostics.begin(
+                    "PlaybackCoordinator.sidecarHydration",
+                    detail: "track=\(trackID.uuidString.prefix(8)) artwork=\(artworkURL != nil) ttml=\(ttmlURL != nil || ttmlFallbackURL != nil)"
+                )
 
             async let artworkTask: Data? = Task.detached(priority: .utility) { @Sendable in
                 guard let artworkURL else { return nil }
                 return try? Data(contentsOf: artworkURL)
             }.value
 
-            async let lyricsTask: String? = Task.detached(priority: .utility) { @Sendable in
-                guard let lyricsURL else { return nil }
-                return try? String(contentsOf: lyricsURL, encoding: .utf8)
-            }.value
-
             async let ttmlTask: String? = Task.detached(priority: .utility) { @Sendable in
                 if let ttmlURL,
                    let text = try? String(contentsOf: ttmlURL, encoding: .utf8),
-                   !text.isEmpty {
-                    return text
+                   let ttml = LyricsFormatSupport.normalizedTTMLText(text) {
+                    return ttml
                 }
                 if let ttmlFallbackURL,
                    ttmlFallbackURL.lastPathComponent.lowercased().hasSuffix(".ttml"),
                    let text = try? String(contentsOf: ttmlFallbackURL, encoding: .utf8),
-                   !text.isEmpty {
-                    return text
+                   let ttml = LyricsFormatSupport.normalizedTTMLText(text) {
+                    return ttml
                 }
                 return nil
             }.value
 
             let artwork = await artworkTask
-            let lyrics = await lyricsTask
             let ttml = await ttmlTask
 
             defer {
                 FirstUseHitchDiagnostics.end(
                     token,
-                    detail: "artworkBytes=\(artwork?.count ?? 0) lyricsChars=\(lyrics?.count ?? 0) ttmlChars=\(ttml?.count ?? 0)"
+                    detail: "artworkBytes=\(artwork?.count ?? 0) ttmlChars=\(ttml?.count ?? 0)"
                 )
                 if self?.sidecarHydratingTrackID == trackID {
                     self?.sidecarHydratingTrackID = nil
@@ -636,9 +621,6 @@ final class PlaybackCoordinator {
             guard !Task.isCancelled, let self, let track, track.id == trackID else { return }
             if let artwork, track.artworkData?.isEmpty != false {
                 track.artworkData = artwork
-            }
-            if let lyrics, track.lyricsText?.isEmpty != false {
-                track.lyricsText = lyrics
             }
             if let ttml, track.ttmlLyricText?.isEmpty != false {
                 track.ttmlLyricText = ttml

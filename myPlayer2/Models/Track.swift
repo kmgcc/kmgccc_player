@@ -394,33 +394,26 @@ enum TrackLyricsDraft {
             return Storage(ttmlText: nil, plainText: nil)
         }
 
-        if looksLikeTTML(trimmed) {
+        if LyricsFormatSupport.validateTTML(trimmed).isValid {
             return Storage(ttmlText: trimmed, plainText: nil)
         }
 
-        return Storage(ttmlText: nil, plainText: trimmed)
+        return Storage(ttmlText: nil, plainText: nil)
     }
 
     static func differs(from track: Track, editorText: String) -> Bool {
         let draft = storage(from: editorText)
-        return draft.ttmlText != track.loadTTMLLyricsIfNeeded() || draft.plainText != track.loadLyricsIfNeeded()
+        let currentTTML = LyricsFormatSupport.normalizedTTMLText(track.loadTTMLLyricsIfNeeded())
+        return draft.ttmlText != currentTTML
     }
 
     static func assign(editorText: String, to track: Track) {
         let draft = storage(from: editorText)
         track.ttmlLyricText = draft.ttmlText
-        track.lyricsText = draft.plainText
-        if draft.ttmlText != nil {
-            track.lyricsFileName = nil
-        } else if draft.plainText != nil {
-            track.ttmlLyricsFileName = nil
-        } else {
-            track.lyricsFileName = nil
+        track.lyricsText = nil
+        track.lyricsFileName = nil
+        if draft.ttmlText == nil {
             track.ttmlLyricsFileName = nil
         }
-    }
-
-    private static func looksLikeTTML(_ text: String) -> Bool {
-        text.lowercased().contains("<tt")
     }
 }

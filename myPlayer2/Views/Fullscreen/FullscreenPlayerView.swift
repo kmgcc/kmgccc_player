@@ -2586,7 +2586,7 @@ struct FullscreenPlayerView: View {
                 isPlaying: playerVM.isPlaying
             )
         case .appleMusic, .systemNowPlaying:
-            let lyricsText = presentation.lyricsText
+            let lyricsText = LyricsFormatSupport.normalizedTTMLText(presentation.lyricsText)
             payload = FullscreenPlaybackPayload(
                 trackID: presentation.displayTrackID,
                 ttml: lyricsText == nil ? nil : (lyricsText ?? ""),
@@ -2616,32 +2616,18 @@ struct FullscreenPlayerView: View {
             return fileText
         }
 
-        let plain = track.lyricsText ?? track.loadLyricsIfNeeded()
-        let userText = plain?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !userText.isEmpty {
-            return plain!
-        }
-
-        let ttml = track.ttmlLyricText ?? track.loadTTMLLyricsIfNeeded()
-        let ttmlText = ttml?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !ttmlText.isEmpty {
-            return ttml!
+        if let ttml = LyricsFormatSupport.normalizedTTMLText(track.ttmlLyricText ?? track.loadTTMLLyricsIfNeeded()) {
+            return ttml
         }
 
         return ""
     }
 
     private func resolvedFullscreenLyricsTextFromDisk(for track: Track) -> String? {
-        if let lyricsURL = track.resolvedLyricsURL(),
-           let text = try? String(contentsOf: lyricsURL, encoding: .utf8),
-           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return text
-        }
-
         if let ttmlURL = track.resolvedTTMLURL(),
            let text = try? String(contentsOf: ttmlURL, encoding: .utf8),
-           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return text
+           let ttml = LyricsFormatSupport.normalizedTTMLText(text) {
+            return ttml
         }
 
         return nil

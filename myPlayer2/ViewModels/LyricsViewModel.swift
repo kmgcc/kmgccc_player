@@ -33,6 +33,7 @@ final class LyricsViewModel {
     private var lastAppliedTrackId: UUID?
     private var lastAppliedExternalLyricsIdentity: String?
     private var lastAppliedExternalLyricsSignature: String?
+    private var legacyLyricsMigrationTasks: [UUID: Task<Void, Never>] = [:]
 
     /// Whether lyrics are available.
     var hasLyrics: Bool {
@@ -82,7 +83,7 @@ final class LyricsViewModel {
         currentTrack = track
         lastAppliedTrackId = track?.id
 
-        let lyricsText = getContentForTrack(track)
+        let lyricsText = getContentForTrack(track, currentTime: currentTime, isPlaying: isPlaying)
         let snapshotTTML = track == nil ? "" : lyricsText
         LyricsSurfaceManager.shared.updatePlaybackSnapshot(
             trackID: track?.id,
@@ -169,7 +170,7 @@ final class LyricsViewModel {
         rebindSeekCallback()
         currentTrack = presentation.localTrack
         let identity = presentation.lyricsIdentity ?? "external.empty"
-        let lyricsText = presentation.lyricsText ?? ""
+        let lyricsText = LyricsFormatSupport.normalizedTTMLText(presentation.lyricsText) ?? ""
         let lyricsSignature = "\(identity):\(lyricsText.count):\(lyricsText.hashValue)"
         let trackID = presentation.localTrack?.id
 
@@ -218,20 +219,62 @@ final class LyricsViewModel {
         return lastAppliedTrackId != track?.id
     }
 
-    private func getContentForTrack(_ track: Track?) -> String {
+    private func getContentForTrack(_ track: Track?, currentTime: TimeInterval = 0, isPlaying: Bool = false) -> String {
         guard let track = track else { return "" }
 
-        // Priority 1: User imported text/file
-        if let t1 = nonEmptyLyricsText(track.loadLyricsIfNeeded()) {
+        if let t1 = LyricsFormatSupport.normalizedTTMLText(track.loadTTMLLyricsIfNeeded()) {
             return t1
         }
 
-        // Priority 2: Embedded/pasted TTML
-        if let t2 = nonEmptyLyricsText(track.loadTTMLLyricsIfNeeded()) {
-            return t2
+        if let legacy = nonEmptyLyricsText(track.lyricsText ?? track.loadLyricsIfNeeded()) {
+            if let ttml = LyricsFormatSupport.normalizedTTMLText(legacy) {
+                track.ttmlLyricText = ttml
+                track.lyricsText = nil
+                track.lyricsFileName = nil
+                return ttml
+            }
+            if LyricsFormatSupport.looksLikeLRC(legacy) {
+                scheduleLegacyLyricsMigration(
+                    for: track,
+                    legacyText: legacy,
+                    currentTime: currentTime,
+                    isPlaying: isPlaying
+                )
+            }
         }
 
         return ""
+    }
+
+    private func scheduleLegacyLyricsMigration(
+        for track: Track,
+        legacyText: String,
+        currentTime: TimeInterval,
+        isPlaying: Bool
+    ) {
+        guard legacyLyricsMigrationTasks[track.id] == nil else { return }
+        let trackID = track.id
+        legacyLyricsMigrationTasks[trackID] = Task { @MainActor [weak self, weak track] in
+            defer {
+                self?.legacyLyricsMigrationTasks[trackID] = nil
+            }
+            do {
+                let converted = try await TTMLConverter.shared.convertToTTML(rawLyrics: legacyText, stripMetadata: true)
+                guard let ttml = LyricsFormatSupport.normalizedTTMLText(converted) else {
+                    Log.warning("[LyricsVM] Legacy LRC conversion produced invalid TTML", category: .lyrics)
+                    return
+                }
+                guard let self, let track, track.id == trackID else { return }
+                track.ttmlLyricText = ttml
+                track.lyricsText = nil
+                track.lyricsFileName = nil
+                if self.currentTrack?.id == trackID {
+                    self.applyTrack(track, currentTime: currentTime, isPlaying: isPlaying)
+                }
+            } catch {
+                Log.warning("[LyricsVM] Legacy LRC conversion failed: \(error.localizedDescription)", category: .lyrics)
+            }
+        }
     }
 
     private func nonEmptyLyricsText(_ text: String?) -> String? {

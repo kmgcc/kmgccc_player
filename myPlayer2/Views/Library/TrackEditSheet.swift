@@ -364,7 +364,6 @@ struct TrackEditSheet: View {
             isPresented: $showingLyricsPicker,
             allowedContentTypes: [
                 UTType(filenameExtension: "ttml") ?? .xml,
-                .plainText,
             ],
             allowsMultipleSelection: false
         ) { result in
@@ -418,7 +417,9 @@ struct TrackEditSheet: View {
         metadataSource = track.metadataSource ?? ""
         metadataFetchedAt = track.metadataFetchedAt
         metadataConfidence = track.metadataConfidence
-        lyricsText = track.ttmlLyricText ?? track.lyricsText ?? ""
+        lyricsText = LyricsFormatSupport.normalizedTTMLText(track.ttmlLyricText)
+            ?? LyricsFormatSupport.normalizedTTMLText(track.loadTTMLLyricsIfNeeded())
+            ?? ""
         artworkData = track.artworkData
         lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
         loadDeferredMediaData()
@@ -427,7 +428,7 @@ struct TrackEditSheet: View {
     private func loadDeferredMediaData() {
         let artworkURL = track.artworkData == nil ? track.resolvedArtworkURL() : nil
         let ttmlURL = track.ttmlLyricText == nil ? track.resolvedTTMLURL() : nil
-        let legacyLyricsURL = track.lyricsText == nil ? track.resolvedLyricsURL() : nil
+        let legacyLyricsURL: URL? = nil
 
         guard artworkURL != nil || ttmlURL != nil || legacyLyricsURL != nil else { return }
 
@@ -446,11 +447,6 @@ struct TrackEditSheet: View {
                    !text.isEmpty {
                     return text
                 }
-                if let legacyLyricsURL,
-                   let text = try? String(contentsOf: legacyLyricsURL, encoding: .utf8),
-                   !text.isEmpty {
-                    return text
-                }
                 return nil
             }.value
 
@@ -461,13 +457,11 @@ struct TrackEditSheet: View {
                 artworkData = loadedArtwork
                 track.artworkData = loadedArtwork
             }
-            if let loadedLyrics, lyricsText.isEmpty {
-                lyricsText = loadedLyrics
-                if loadedLyrics.lowercased().contains("<tt") {
-                    track.ttmlLyricText = loadedLyrics
-                } else {
-                    track.lyricsText = loadedLyrics
-                }
+            if let loadedLyrics,
+               lyricsText.isEmpty,
+               let ttml = LyricsFormatSupport.normalizedTTMLText(loadedLyrics) {
+                lyricsText = ttml
+                track.ttmlLyricText = ttml
             }
             FirstUseHitchDiagnostics.end(
                 token,
@@ -716,9 +710,11 @@ struct TrackEditSheet: View {
                 }
                 return try? String(contentsOf: url, encoding: .utf8)
             }.value
-            if let text {
-                lyricsText = text
-                print("[TrackEditSheet] Imported lyrics: \(text.prefix(50))...")
+            if let text, let ttml = LyricsFormatSupport.normalizedTTMLText(text) {
+                lyricsText = ttml
+                print("[TrackEditSheet] Imported TTML lyrics: \(ttml.prefix(50))...")
+            } else if text != nil {
+                print("[TrackEditSheet] Rejected non-TTML lyrics import")
             }
         }
     }

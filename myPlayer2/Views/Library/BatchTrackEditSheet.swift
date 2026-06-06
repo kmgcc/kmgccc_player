@@ -179,7 +179,6 @@ struct BatchTrackEditSheet: View {
             isPresented: $showingLyricsPicker,
             allowedContentTypes: [
                 UTType(filenameExtension: "ttml") ?? .xml,
-                .plainText,
             ],
             allowsMultipleSelection: false
         ) { result in
@@ -736,7 +735,7 @@ struct BatchTrackEditSheet: View {
         metadataSource = track.metadataSource ?? ""
         metadataFetchedAt = track.metadataFetchedAt
         metadataConfidence = track.metadataConfidence
-        lyricsText = track.loadTTMLLyricsIfNeeded() ?? track.loadLyricsIfNeeded() ?? ""
+        lyricsText = LyricsFormatSupport.normalizedTTMLText(track.loadTTMLLyricsIfNeeded()) ?? ""
         artworkData = track.loadArtworkDataIfNeeded()
         lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
         statusMessage = nil
@@ -804,6 +803,13 @@ struct BatchTrackEditSheet: View {
     ) -> Bool {
         guard let track = currentTrack else { return false }
         guard !isSavingCurrent else { return false }
+
+        if let message = LyricsFormatSupport.validateManualTTML(lyricsText) {
+            if showFailureMessage {
+                statusMessage = message
+            }
+            return false
+        }
 
         let changeSet = draftChangeSet(for: track)
         if !changeSet.hasChanges {
@@ -962,7 +968,12 @@ struct BatchTrackEditSheet: View {
         }
 
         do {
-            lyricsText = try String(contentsOf: url, encoding: .utf8)
+            let text = try String(contentsOf: url, encoding: .utf8)
+            guard let ttml = LyricsFormatSupport.normalizedTTMLText(text) else {
+                statusMessage = "仅支持有效 TTML 歌词文件"
+                return
+            }
+            lyricsText = ttml
             _ = saveCurrentTrack(
                 showFailureMessage: true,
                 markProcessedIfUnchanged: false,

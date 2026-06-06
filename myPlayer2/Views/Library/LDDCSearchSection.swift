@@ -1040,20 +1040,31 @@ struct LDDCSearchSection: View {
 
             // Check if this is an AMLLDB result (already TTML format)
             if candidate.source == "AMLLDB" {
-                ttml = origLyrics
+                guard let normalized = LyricsFormatSupport.normalizedTTMLText(origLyrics) else {
+                    throw TTMLConversionError.conversionFailed("AMLLDB TTML 结构无效")
+                }
+                ttml = normalized
                 Self.logger.info("[LyricsApply] AMLLDB TTML applied directly")
             } else if includeTranslation, let trans = transLyrics, !trans.isEmpty {
-                ttml = try await TTMLConverter.shared.convertToTTMLWithTranslation(
+                let converted = try await TTMLConverter.shared.convertToTTMLWithTranslation(
                     origLyrics: origLyrics,
                     transLyrics: trans,
                     stripMetadata: stripExtraInfo
                 )
+                guard let normalized = LyricsFormatSupport.normalizedTTMLText(converted) else {
+                    throw TTMLConversionError.conversionFailed("LDDC 转换结果 TTML 结构无效")
+                }
+                ttml = normalized
                 Self.logger.info("[LyricsApply] LDDC converted to TTML with translation")
             } else {
-                ttml = try await TTMLConverter.shared.convertToTTML(
+                let converted = try await TTMLConverter.shared.convertToTTML(
                     rawLyrics: origLyrics,
                     stripMetadata: stripExtraInfo
                 )
+                guard let normalized = LyricsFormatSupport.normalizedTTMLText(converted) else {
+                    throw TTMLConversionError.conversionFailed("LDDC 转换结果 TTML 结构无效")
+                }
+                ttml = normalized
                 Self.logger.info("[LyricsApply] LDDC converted to TTML")
             }
 

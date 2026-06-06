@@ -19,6 +19,10 @@ nonisolated final class ExternalPlaybackSpectrumSimulator: @unchecked Sendable {
     private struct Constants {
         static let updateHz: Double = 30
         static let defaultLedCount = 11
+        /// Once paused, the geometric decay (×0.88/tick) reaches this near-silent
+        /// floor after ~1s; at that point we freeze the last frame and suspend
+        /// the 30Hz timer until playback resumes (idle-CPU gating).
+        static let idleSuspendDecayThreshold: Float = 0.02
     }
 
     // MARK: - Frame data (recorded from real app spectrum chain)
@@ -69,7 +73,14 @@ nonisolated final class ExternalPlaybackSpectrumSimulator: @unchecked Sendable {
     func start() {
         queue.async { [weak self] in
             guard let self else { return }
-            guard !self.isRunning else { return }
+            guard !self.isRunning else {
+                // Already leased; re-arm only if a prior pause idle-suspended the
+                // timer and we are playing again. Paused-and-suspended stays frozen.
+                if self.timer == nil, self.isPlaying {
+                    self.startTimer()
+                }
+                return
+            }
             self.isRunning = true
             self.startTimer()
         }
@@ -96,6 +107,16 @@ nonisolated final class ExternalPlaybackSpectrumSimulator: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self else { return }
             self.isPlaying = playing
+            guard self.isRunning else { return }
+            if playing {
+                // Resume immediately: reset decay and re-arm if idle-suspended.
+                self.pauseDecay = 1.0
+                if self.timer == nil {
+                    self.startTimer()
+                }
+            }
+            // On pause the timer keeps running; tick() decays the meter to
+            // silence and then idle-suspends itself.
         }
     }
 
@@ -135,6 +156,13 @@ nonisolated final class ExternalPlaybackSpectrumSimulator: @unchecked Sendable {
         _lastAudioMetrics = audio
         _lastLedMetrics = led
         lock.unlock()
+
+        // Idle-CPU: once paused and the decay has reached near-silence, freeze
+        // the last frame and stop the 30Hz timer. setPlaying(true) re-arms it.
+        if !isPlaying, pauseDecay <= Constants.idleSuspendDecayThreshold {
+            timer?.cancel()
+            timer = nil
+        }
     }
 
     // MARK: - Frame sampling with linear interpolation

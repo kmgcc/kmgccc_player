@@ -41,7 +41,9 @@ struct ExternalPlaybackInfoEditorView: View {
         self.initialAlbum = presentation.externalEffectiveAlbum ?? presentation.externalRawAlbum ?? presentation.album ?? ""
         // Prefer manually-locked lyrics if available; otherwise fall back to current presentation lyrics.
         let manualLyrics = stableKey.flatMap { ExternalPlaybackMetadataStore.shared.manualLyrics(for: $0) }
-        self.initialLyricsText = manualLyrics ?? presentation.lyricsText ?? ""
+        self.initialLyricsText = LyricsFormatSupport.normalizedTTMLText(manualLyrics)
+            ?? LyricsFormatSupport.normalizedTTMLText(presentation.lyricsText)
+            ?? ""
         self.initialArtworkData = presentation.artworkData
 
         _title = State(initialValue: initialTitle)

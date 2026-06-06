@@ -3203,15 +3203,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
     private func preferredLyricsText(for track: Track?) -> String? {
         guard let track else { return nil }
-        let candidates = [track.lyricsText, track.ttmlLyricText]
-        for candidate in candidates {
-            guard let candidate else { continue }
-            let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                return candidate
-            }
-        }
-        return nil
+        return LyricsFormatSupport.normalizedTTMLText(track.loadTTMLLyricsIfNeeded())
     }
 
     private func externalLyricsStatusMessage(for lyricsText: String?) -> String? {

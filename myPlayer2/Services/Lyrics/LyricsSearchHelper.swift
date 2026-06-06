@@ -279,8 +279,12 @@ struct LyricsSearchHelper {
                 } catch {
                     throw error
                 }
-                Self.logger.info("[LyricsSearchHelper] AMLLDB TTML fetched: \(rawLyricFile), \(ttml.count) bytes")
-                return ttml
+                guard let normalized = LyricsFormatSupport.normalizedTTMLText(ttml) else {
+                    Self.logger.warning("[LyricsSearchHelper] AMLLDB TTML invalid: \(rawLyricFile)")
+                    return nil
+                }
+                Self.logger.info("[LyricsSearchHelper] AMLLDB TTML fetched: \(rawLyricFile), \(normalized.count) bytes")
+                return normalized
             }
 
             // LDDC candidates need conversion
@@ -308,7 +312,12 @@ struct LyricsSearchHelper {
                     } catch {
                         throw error
                     }
-                    Self.logger.info("[LyricsSearchHelper] LDDC converted with translation: \(ttml.count) bytes")
+                    guard let normalized = LyricsFormatSupport.normalizedTTMLText(ttml) else {
+                        Self.logger.warning("[LyricsSearchHelper] LDDC conversion with translation produced invalid TTML")
+                        return nil
+                    }
+                    Self.logger.info("[LyricsSearchHelper] LDDC converted with translation: \(normalized.count) bytes")
+                    return normalized
                 } else {
                     do {
                         ttml = try await TTMLConverter.shared.convertToTTML(
@@ -318,9 +327,13 @@ struct LyricsSearchHelper {
                     } catch {
                         throw error
                     }
-                    Self.logger.info("[LyricsSearchHelper] LDDC converted (no translation): \(ttml.count) bytes")
+                    guard let normalized = LyricsFormatSupport.normalizedTTMLText(ttml) else {
+                        Self.logger.warning("[LyricsSearchHelper] LDDC conversion produced invalid TTML")
+                        return nil
+                    }
+                    Self.logger.info("[LyricsSearchHelper] LDDC converted (no translation): \(normalized.count) bytes")
+                    return normalized
                 }
-                return ttml
             } else {
                 let lyrics: String
                 do {
@@ -341,8 +354,12 @@ struct LyricsSearchHelper {
                 } catch {
                     throw error
                 }
-                Self.logger.info("[LyricsSearchHelper] LDDC converted: \(ttml.count) bytes")
-                return ttml
+                guard let normalized = LyricsFormatSupport.normalizedTTMLText(ttml) else {
+                    Self.logger.warning("[LyricsSearchHelper] LDDC conversion produced invalid TTML")
+                    return nil
+                }
+                Self.logger.info("[LyricsSearchHelper] LDDC converted: \(normalized.count) bytes")
+                return normalized
             }
         } catch {
             Self.logger.error("[LyricsSearchHelper] Lyrics fetch failed: \(error.localizedDescription)")

@@ -73,6 +73,7 @@ struct TrackInfoEditorCore: View {
     @State private var isDetailedMetadataExpanded = false
     @State private var isMetadataLookupInFlight = false
     @State private var metadataLookupMessage: String?
+    @State private var lyricsValidationMessage: String?
     @State private var coverFetchTask: Task<Void, Never>?
     @State private var metadataFetchTask: Task<Void, Never>?
     @State private var artworkPreviewTask: Task<Void, Never>?
@@ -82,6 +83,10 @@ struct TrackInfoEditorCore: View {
 
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
     private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
+
+    private var lyricsValidationError: String? {
+        LyricsFormatSupport.validateManualTTML(lyricsText)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -645,6 +650,13 @@ struct TrackInfoEditorCore: View {
                 .font(.caption)
                 .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
 
+            if let message = lyricsValidationMessage ?? lyricsValidationError {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             if allowsLyricsOffset {
                 lyricsOffsetSection
             }
@@ -658,7 +670,6 @@ struct TrackInfoEditorCore: View {
             isPresented: $showingLyricsPicker,
             allowedContentTypes: [
                 UTType(filenameExtension: "ttml") ?? .xml,
-                .plainText,
             ],
             allowsMultipleSelection: false
         ) { result in
@@ -733,13 +744,17 @@ struct TrackInfoEditorCore: View {
             Spacer()
 
             Button(saveTitle) {
+                if let message = lyricsValidationError {
+                    lyricsValidationMessage = message
+                    return
+                }
                 onSave()
                 dismiss()
             }
             .buttonStyle(.borderedProminent)
             .clipShape(Capsule())
             .keyboardShortcut(.return)
-            .disabled(!canSave)
+            .disabled(!canSave || lyricsValidationError != nil)
         }
         .padding()
     }
@@ -807,8 +822,11 @@ struct TrackInfoEditorCore: View {
                 }
                 return try? String(contentsOf: url, encoding: .utf8)
             }.value
-            if let text {
-                lyricsText = text
+            if let text, let ttml = LyricsFormatSupport.normalizedTTMLText(text) {
+                lyricsValidationMessage = nil
+                lyricsText = ttml
+            } else if text != nil {
+                lyricsValidationMessage = "仅支持有效 TTML 歌词文件。"
             }
         }
     }
