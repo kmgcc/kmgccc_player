@@ -72,6 +72,11 @@ final class AppSessionHost: ObservableObject {
     }
 
     private func setupDependencies() {
+        // TEMPORARY (2.1.1): one-time correction flipping the anonymous-usage
+        // consent default from OFF to ON. Must run before Telemetry/Diagnostics
+        // read consent below. Remove with the next version.
+        TelemetryDefaultMigration2_1_1.runIfNeeded()
+
         let libraryService = LocalLibraryService.shared
         libraryService.ensureLibraryFolders()
 

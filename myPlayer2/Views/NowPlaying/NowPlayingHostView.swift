@@ -72,11 +72,13 @@ struct NowPlayingHostView: View {
             }
         }
         .onAppear {
+            TelemetryService.shared.setWindowNowPlayingVisible(true)
             if isLedEnabledForCurrentSkin() {
                 ledMeterProvider.getOrCreate().start()
             }
         }
         .onDisappear {
+            TelemetryService.shared.setWindowNowPlayingVisible(false)
             ledMeterProvider.releaseNowPlayingResources()
             artworkSnapshot = nil
             Task {
