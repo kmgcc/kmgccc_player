@@ -582,6 +582,13 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("lookaheadMs") var lookaheadMs: Double = 200
 
+    /// Debug-only: when true, forces the no-delay direct output chain
+    /// regardless of `audioLookaheadEnabled`. Not surfaced in any formal UI;
+    /// used to isolate whether the delay node contributes to a playback hitch.
+    /// Default false — normal behavior is unchanged.
+    @ObservationIgnored
+    @AppStorage("audioDebugBypassDelayNode") var audioDebugBypassDelayNode: Bool = false
+
     // MARK: - Now Playing Background Settings
 
     /// Enable BKArt animated background layer in Now Playing.
