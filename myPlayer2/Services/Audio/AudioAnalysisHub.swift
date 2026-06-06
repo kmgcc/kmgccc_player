@@ -66,6 +66,15 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     // Config
     nonisolated(unsafe) var targetHz: Int = 30
 
+    // Idle-CPU gating: the FFT `process()` timer only runs while playback is
+    // active (plus a short linger so meters can settle to silence). The mixer
+    // tap stays installed across pause so resume is instant. All three fields
+    // are mutated only under `stateLock`.
+    private nonisolated(unsafe) var isPlaying = false
+    private nonisolated(unsafe) var pauseLingerActive = false
+    private nonisolated(unsafe) var pauseLingerGeneration: UInt64 = 0
+    private static let pauseLingerSeconds: TimeInterval = 0.45
+
     public static let shared = AudioAnalysisHub()
 
     private init() {
@@ -88,25 +97,24 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     func start() {
         stateLock.lock()
         activeClients += 1
-        if isInstalled {
-            stateLock.unlock()
-            return
-        }
-        guard let mixer = mixerNode else {
-            activeClients = max(0, activeClients - 1)
-            stateLock.unlock()
-            print("⚠️ AudioAnalysisHub: No mixer attached")
-            return
-        }
+        if !isInstalled {
+            guard let mixer = mixerNode else {
+                activeClients = max(0, activeClients - 1)
+                stateLock.unlock()
+                print("⚠️ AudioAnalysisHub: No mixer attached")
+                return
+            }
 
-        let format = mixer.outputFormat(forBus: 0)
-        let bufferSize: AVAudioFrameCount = AVAudioFrameCount(fftSize)
+            let format = mixer.outputFormat(forBus: 0)
+            let bufferSize: AVAudioFrameCount = AVAudioFrameCount(fftSize)
 
-        installTapLocked(on: mixer, format: format, bufferSize: bufferSize)
-        isInstalled = true
+            installTapLocked(on: mixer, format: format, bufferSize: bufferSize)
+            isInstalled = true
+        }
         stateLock.unlock()
 
-        startTimer()
+        // Only spins the FFT timer if playback is active (see `setPlaying`).
+        updateTimerState()
     }
 
     func stop() {
@@ -125,7 +133,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         isInstalled = false
         stateLock.unlock()
 
-        stopTimer()
+        updateTimerState()
         purgeInactiveState(preservingMixerAttachment: true)
     }
 
@@ -140,6 +148,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         isInstalled = false
         stateLock.unlock()
         resetBuffer()
+        updateTimerState()
     }
 
     func restoreAfterEngineConfigurationChange() {
@@ -164,7 +173,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         isInstalled = true
         stateLock.unlock()
 
-        startTimer()
+        updateTimerState()
     }
 
     func reinstallTapIfActive() {
@@ -190,7 +199,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         isInstalled = true
         stateLock.unlock()
 
-        startTimer()
+        updateTimerState()
     }
 
     // MARK: - Consumer API
@@ -239,6 +248,63 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
             ptr.initialize(repeating: 0)
         }
         ringLock.unlock()
+    }
+
+    // MARK: - Playback-state gating
+
+    /// Drives whether the FFT `process()` timer runs. When playback pauses, the
+    /// timer keeps running for a short linger (so meters fade to silence), then
+    /// suspends — no FFT on silent buffers while paused. Resume restarts it
+    /// immediately. The mixer tap stays installed throughout, so there is no
+    /// re-arm latency. Safe to call repeatedly and from any thread.
+    func setPlaying(_ playing: Bool) {
+        stateLock.lock()
+        if playing {
+            if isPlaying && !pauseLingerActive {
+                stateLock.unlock()
+                return
+            }
+            isPlaying = true
+            pauseLingerActive = false
+            pauseLingerGeneration &+= 1
+            stateLock.unlock()
+            updateTimerState()
+        } else {
+            if !isPlaying {
+                stateLock.unlock()
+                return
+            }
+            isPlaying = false
+            pauseLingerActive = true
+            pauseLingerGeneration &+= 1
+            let generation = pauseLingerGeneration
+            stateLock.unlock()
+            updateTimerState()  // keep running through the linger window
+            processingQueue.asyncAfter(deadline: .now() + Self.pauseLingerSeconds) { [weak self] in
+                guard let self else { return }
+                self.stateLock.lock()
+                guard generation == self.pauseLingerGeneration, self.isPlaying == false else {
+                    self.stateLock.unlock()
+                    return
+                }
+                self.pauseLingerActive = false
+                self.stateLock.unlock()
+                self.updateTimerState()
+            }
+        }
+    }
+
+    /// Starts/stops the process timer to match the desired run state. Acquires
+    /// `stateLock`; never call while already holding it.
+    private func updateTimerState() {
+        stateLock.lock()
+        let shouldRun = isInstalled && activeClients > 0 && (isPlaying || pauseLingerActive)
+        if shouldRun {
+            if timer == nil { startTimer() }
+        } else if timer != nil {
+            stopTimer()
+        }
+        stateLock.unlock()
     }
 
     private func startTimer() {

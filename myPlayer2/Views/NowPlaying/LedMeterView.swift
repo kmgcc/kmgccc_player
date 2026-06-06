@@ -90,7 +90,11 @@ struct LedMeterView: View {
         let horizontalPadding: CGFloat = 14
         let verticalPadding: CGFloat = 10
 
-        TimelineView(.animation(minimumInterval: 0.05, paused: false)) { timeline in
+        // Idle-CPU: only drive the 20Hz breath animation while playing. When
+        // paused the breath value is constant (see `breathStep`) and `ledValues`
+        // are frozen, so pausing the timeline avoids a 20Hz Canvas relayout +
+        // glass-pill recomposite with no visible change.
+        TimelineView(.animation(minimumInterval: 0.05, paused: !isPlaying)) { timeline in
             let breath = breathStep(at: timeline.date)
 
             HStack(spacing: spacing) {

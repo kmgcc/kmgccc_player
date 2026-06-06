@@ -1128,6 +1128,11 @@
 
         let activeTrackProfileSession = null;
         let firstVisibleLineProbeRequestId = 0;
+        // Idle-CPU: render-loop keep-alive window (see animate()/wakeRenderer()).
+        // Declared early so wakeRenderer() — called from bridge methods and the
+        // ResizeObserver wrapper — never hits a TDZ during boot.
+        const RAF_IDLE_SETTLE_MS = 1500;
+        let rafKeepAliveUntil = 0;
         const NativeResizeObserver = window.ResizeObserver;
         if (
             typeof NativeResizeObserver === "function"
@@ -1143,6 +1148,8 @@
                                 : 0;
                         }
                         callback(entries, observer);
+                        // Idle-CPU: a relayout on resize must re-arm the render loop.
+                        rendererRuntime.wakeRenderer?.();
                     });
                 }
             };
@@ -5509,6 +5516,8 @@
         window.LyricsRenderer = {
             setLyrics: (ttml) => {
                 const setLyricsStart = performance.now();
+                // Idle-CPU: new lyrics must render even if paused/idle.
+                wakeRenderer();
                 if (activeTrackProfileSession) {
                     activeTrackProfileSession.setLyricsCount += 1;
                 }
@@ -5615,6 +5624,8 @@
 	                originalSetCurrentTime(timeInMs, needsForce || timeDelta > 500);
                     externalTimeMs = timeInMs;
                     externalTimeAnchorPerfMs = performance.now();
+                    // Idle-CPU: a seek/reposition while paused must re-arm the loop.
+                    wakeRenderer();
                     if (timeDelta > 500 || needsForce) {
                         logActiveHighlightState(
                             `setCurrentTime:${timeInMs}:delta=${Math.round(timeDelta)}:force=${needsForce || timeDelta > 500}`,
@@ -5623,9 +5634,11 @@
                     }
 	            },
 
-                revealExistingLyrics: (options = {}) => (
-                    triggerExistingLinePositionSpringReveal(options)
-                ),
+                revealExistingLyrics: (options = {}) => {
+                    // Idle-CPU: the spring reveal needs frames to animate.
+                    wakeRenderer();
+                    return triggerExistingLinePositionSpringReveal(options);
+                },
 	            
 	            setPlaying: (isPlaying) => {
                     externalIsPlaying = !!isPlaying;
@@ -5639,10 +5652,15 @@
                         lyricPlayer.pause();
                     }
                     logActiveHighlightState(`setPlaying:${externalIsPlaying}`, { important: true });
+                    // Idle-CPU: resume keeps the loop running; pause gives it a
+                    // short settle window (then it idles).
+                    wakeRenderer();
 	            },
 
 	            setConfig: (config) => {
 		                try {
+                            // Idle-CPU: config changes (blur/spring/scale/…) must render even if idle.
+                            wakeRenderer();
                             const hasOwn = (key) => Object.prototype.hasOwnProperty.call(config, key);
 		                    let needsLyricsReload = false;
 		                    if (typeof config.leadInMs === "number" && !Number.isNaN(config.leadInMs)) {
@@ -6135,10 +6153,20 @@
         };
 
         // Animation Loop
+        //
+        // Idle-CPU: while playing we render every frame. When paused we keep
+        // rendering only for a short settle window (RAF_IDLE_SETTLE_MS) so any
+        // in-flight spring / scroll / emphasis animation can finish, then we
+        // stop requesting frames entirely — no unconditional rAF in the lyrics
+        // WebContent process while paused and static. Any external update
+        // (play, seek, lyric change, config, resize) calls wakeRenderer() to
+        // extend the window and restart the loop if it had idled.
         let lastTime = performance.now();
+        rafKeepAliveUntil = lastTime + RAF_IDLE_SETTLE_MS;
+
         function animate(time) {
+            rendererRuntime.animationFrameRequestId = 0;
             if (rendererRuntime.destroyed) {
-                rendererRuntime.animationFrameRequestId = 0;
                 return;
             }
             const delta = time - lastTime;
@@ -6154,8 +6182,29 @@
                 }
             }
             lyricPlayer.update(delta);
-            rendererRuntime.animationFrameRequestId = requestAnimationFrame(animate);
+            // Keep rendering while playing, or until the paused settle window
+            // elapses; otherwise idle until wakeRenderer() re-arms the loop.
+            if (externalIsPlaying || time < rafKeepAliveUntil) {
+                rendererRuntime.animationFrameRequestId = requestAnimationFrame(animate);
+            }
         }
+
+        // Re-arm the render loop after (or just before) an external change.
+        // Extends the keep-alive window and restarts the loop only if it had
+        // idled — the `animationFrameRequestId` guard prevents duplicate loops.
+        function wakeRenderer() {
+            if (rendererRuntime.destroyed) {
+                return;
+            }
+            rafKeepAliveUntil = performance.now() + RAF_IDLE_SETTLE_MS;
+            if (!rendererRuntime.animationFrameRequestId) {
+                // Reset the delta clock so the first frame after idle isn't huge.
+                lastTime = performance.now();
+                rendererRuntime.animationFrameRequestId = requestAnimationFrame(animate);
+            }
+        }
+        rendererRuntime.wakeRenderer = wakeRenderer;
+
         rendererRuntime.animationFrameRequestId = requestAnimationFrame(animate);
 
         // Notify bridge that renderer is ready (after LyricsRenderer defined)

@@ -31,14 +31,12 @@ final class NowPlayingService {
         self.player = player
         registerRemoteCommandsIfNeeded()
         updateNowPlaying(force: true)
-        startProgressTimer()
     }
 
     func register(coordinator: PlaybackCoordinator) {
         self.coordinator = coordinator
         registerRemoteCommandsIfNeeded()
         updateNowPlaying(force: true)
-        startProgressTimer()
     }
 
     func updateNowPlaying(force: Bool = false) {
@@ -53,9 +51,13 @@ final class NowPlayingService {
         if let coordinator {
             if coordinator.presentation.source == .systemNowPlaying {
                 clearNowPlayingInfoForSystemMode()
+                manageProgressTimer(isPlaying: false)
                 return
             }
             updateNowPlaying(from: coordinator.presentation)
+            manageProgressTimer(
+                isPlaying: coordinator.presentation.isPlaying && coordinator.presentation.hasTrack
+            )
             return
         }
 
@@ -64,6 +66,7 @@ final class NowPlayingService {
             if #available(macOS 12.0, *) {
                 MPNowPlayingInfoCenter.default().playbackState = .stopped
             }
+            manageProgressTimer(isPlaying: false)
             return
         }
 
@@ -88,6 +91,7 @@ final class NowPlayingService {
         if #available(macOS 12.0, *) {
             MPNowPlayingInfoCenter.default().playbackState = player.isPlaying ? .playing : .paused
         }
+        manageProgressTimer(isPlaying: player.isPlaying)
     }
 
     private func updateNowPlaying(from presentation: NowPlayingPresentation) {
@@ -252,6 +256,18 @@ final class NowPlayingService {
     }
 
     // MARK: - Progress Updates
+
+    /// Idle-CPU: the progress timer only needs to run while playing (to advance
+    /// elapsed time in Now Playing Info). When paused/stopped the caller has
+    /// already pushed the final state, so we just stop the timer; commands
+    /// restart it on resume/seek/track-change via `updateNowPlaying(force:)`.
+    private func manageProgressTimer(isPlaying: Bool) {
+        if isPlaying {
+            if progressTimer == nil { startProgressTimer() }
+        } else {
+            stopProgressTimer()
+        }
+    }
 
     private func startProgressTimer() {
         stopProgressTimer()
