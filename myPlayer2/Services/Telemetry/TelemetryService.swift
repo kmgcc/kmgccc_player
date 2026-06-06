@@ -114,6 +114,7 @@ final class TelemetryService: NSObject {
     private let uploader = TelemetryUploader()
     private var accumulator: SessionMetricsAccumulator?
     private weak var playbackCoordinator: PlaybackCoordinator?
+    private var isWindowNowPlayingVisible = false
     private var checkpointTimer: Timer?
     private var uploadTask: Task<Void, Never>?
 
@@ -283,6 +284,12 @@ final class TelemetryService: NSObject {
         checkpoint()
     }
 
+    func setWindowNowPlayingVisible(_ isVisible: Bool) {
+        guard isWindowNowPlayingVisible != isVisible else { return }
+        isWindowNowPlayingVisible = isVisible
+        updateSkinState()
+    }
+
     private func startCheckpointTimer() {
         checkpointTimer?.invalidate()
         let timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
@@ -447,10 +454,14 @@ final class TelemetryService: NSObject {
         SkinRegistry.fullscreenSkin(for: AppSettings.shared.fullscreen.skinID).id
     }
 
-    private func currentSkinUsageContext() -> TelemetrySkinUsageContext {
+    private func currentSkinUsageContext() -> TelemetrySkinUsageContext? {
         // Embedded fullscreen uses the fullscreen player UI and fullscreen skin,
-        // so it is intentionally counted as fullscreen skin usage.
-        FullscreenWindowManager.shared.usesFullscreenPlayerUI ? .fullscreen : .window
+        // so it is intentionally counted as fullscreen skin usage. Window skin
+        // time is counted only while the window Now Playing host is mounted.
+        if FullscreenWindowManager.shared.usesFullscreenPlayerUI {
+            return .fullscreen
+        }
+        return isWindowNowPlayingVisible ? .window : nil
     }
 }
 
@@ -502,7 +513,7 @@ private struct SessionMetricsAccumulator {
     private var timelineLimitReached = false
     private var windowSkinID: String
     private var fullscreenSkinID: String
-    private var skinContext: TelemetrySkinUsageContext
+    private var skinContext: TelemetrySkinUsageContext?
     private var skinUsageDurations: [String: TimeInterval] = [:]
 
     init(
@@ -513,7 +524,7 @@ private struct SessionMetricsAccumulator {
         isPlaying: Bool,
         windowSkinID: String,
         fullscreenSkinID: String,
-        skinContext: TelemetrySkinUsageContext
+        skinContext: TelemetrySkinUsageContext?
     ) {
         self.sessionID = sessionID
         self.startedAt = startedAt
@@ -566,7 +577,7 @@ private struct SessionMetricsAccumulator {
     mutating func updateSkins(
         windowSkinID: String,
         fullscreenSkinID: String,
-        context: TelemetrySkinUsageContext
+        context: TelemetrySkinUsageContext?
     ) {
         let now = Date()
         settle(now: now)
@@ -624,7 +635,9 @@ private struct SessionMetricsAccumulator {
             externalModeDuration += delta
             if isPlaying { playbackExternalDuration += delta }
         }
-        skinUsageDurations[skinUsageKey(context: skinContext, skinID: currentSkinIDForContext()), default: 0] += delta
+        if let skinContext {
+            skinUsageDurations[skinUsageKey(context: skinContext, skinID: currentSkinIDForContext(skinContext)), default: 0] += delta
+        }
         lastCheckpointAt = now
     }
 
@@ -728,8 +741,8 @@ private struct SessionMetricsAccumulator {
         )
     }
 
-    private func currentSkinIDForContext() -> String {
-        switch skinContext {
+    private func currentSkinIDForContext(_ context: TelemetrySkinUsageContext) -> String {
+        switch context {
         case .window:
             return windowSkinID
         case .fullscreen:
@@ -800,7 +813,7 @@ private struct TelemetrySessionCheckpoint: Codable {
     let timelineLimitReached: Bool
     let windowSkinID: String
     let fullscreenSkinID: String
-    let skinContext: TelemetrySkinUsageContext
+    let skinContext: TelemetrySkinUsageContext?
     let skinUsageDurations: [String: TimeInterval]
 
     func recoveredSummary() -> TelemetrySessionSummary {
