@@ -112,7 +112,9 @@ final class LEDMeterService: AudioLevelMeterProtocol {
     }
 
     func updatePlaybackState(isPlaying: Bool) {
-        // Local meter ignores external playback state
+        // Idle-CPU: suspend the shared FFT while paused. The hub keeps its mixer
+        // tap installed, so the meter resumes instantly when playback continues.
+        hub.setPlaying(isPlaying)
     }
 
     func updateConfig(_ newConfig: LEDMeterConfig) {

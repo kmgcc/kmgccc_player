@@ -23,6 +23,8 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         static let stopGracePeriod: TimeInterval = 0.35
         static let publishEpsilon: Float = 0.015
         static let forcePublishInterval: TimeInterval = 0.25
+        /// After this long paused, the idle pose has fully settled; stop ticking.
+        static let idleSuspendSeconds: TimeInterval = 0.8
         static let defaultFFTSize = 1024
         static let defaultSampleRate: Float = 44_100
     }
@@ -44,6 +46,9 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
 
     private var isPlaying: Bool = false
     private var pauseStartTime: TimeInterval?
+    /// True while the tick loop is frozen because playback is paused and the
+    /// idle pose has settled. Cleared (and the timer restarted) on resume.
+    private var isIdleSuspended = false
 
     private var liveWave: [Float] = Array(repeating: 0, count: Constants.bandCount)
     private var outputWave: [Float] = Array(repeating: 0, count: Constants.bandCount)
@@ -91,6 +96,9 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     }
 
     func updatePlaybackState(isPlaying: Bool) {
+        // Gate the shared FFT hub so it stops doing FFTs on silent buffers while
+        // paused. Idempotent; safe to call from any thread.
+        hub.setPlaying(isPlaying)
         processingQueue.async { [weak self] in
             guard let self else { return }
             guard self.isPlaying != isPlaying else { return }
@@ -98,6 +106,11 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
             self.isPlaying = isPlaying
             if isPlaying {
                 self.pauseStartTime = nil
+                // Resume the idle-suspended tick loop so the spectrum returns.
+                if self.isIdleSuspended, self.isRunning {
+                    self.isIdleSuspended = false
+                    self.startTimerLocked()
+                }
             } else if self.pauseStartTime == nil {
                 self.pauseStartTime = Date().timeIntervalSinceReferenceDate
             }
@@ -145,7 +158,8 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         let now = Date().timeIntervalSinceReferenceDate
         isRunning = true
         isPlaying = false
-        pauseStartTime = nil
+        pauseStartTime = now        // allow idle-suspend even if started paused
+        isIdleSuspended = false
         processor.reset()
         liveWave = Array(repeating: 0, count: Constants.bandCount)
         outputWave = Array(repeating: 0, count: Constants.bandCount)
@@ -244,6 +258,16 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         let now = Date().timeIntervalSinceReferenceDate
         let dt = Float(max(0.001, min(0.1, now - lastTickTime)))
         lastTickTime = now
+
+        // Idle-CPU: once paused and the idle pose has settled, stop ticking
+        // (freeze the last published frame) until playback resumes. External
+        // mode keeps its own cadence via the simulator, so it is exempt here.
+        if !isPlaying, !isExternalMode, let ps = pauseStartTime,
+           now - ps >= Constants.idleSuspendSeconds {
+            isIdleSuspended = true
+            stopTimerLocked()
+            return
+        }
 
         if isExternalMode {
             liveWave = ExternalPlaybackSpectrumSimulator.shared.lastWave

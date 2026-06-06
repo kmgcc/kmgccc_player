@@ -20,6 +20,7 @@ final class PlaybackCoordinator {
     private let settings: AppSettings
     private let meterProvider: AudioLevelMeterProtocol?
     private var presentationTimer: Timer?
+    private var currentPresentationInterval: TimeInterval = 0
     private var cachedLyricsTrackID: UUID?
     private var cachedLyricsSignature: String?
     private var cachedLyricsText: String?
@@ -323,16 +324,21 @@ final class PlaybackCoordinator {
                 ?? NowPlayingPresentation.emptySystemNowPlaying
         }
 
+        let isPlaying = newPresentation.isPlaying
         if activeSource.isExternal {
-            let isPlaying = newPresentation.isPlaying
             ExternalPlaybackSpectrumSimulator.shared.setPlaying(isPlaying)
-            if lastSyncedPlayingState != isPlaying {
-                lastSyncedPlayingState = isPlaying
-                meterProvider?.updatePlaybackState(isPlaying: isPlaying)
-            }
+        }
+        // Propagate play/pause to the meter + FFT chain for ALL sources (local
+        // included, which previously never notified the meter) so the shared
+        // analysis hub can suspend the FFT while paused, and re-cadence the
+        // presentation timer (4Hz playing / 1Hz paused).
+        if lastSyncedPlayingState != isPlaying {
+            lastSyncedPlayingState = isPlaying
+            meterProvider?.updatePlaybackState(isPlaying: isPlaying)
+            adjustPresentationTimerCadence(isPlaying: isPlaying)
         }
 
-        notifyTelemetryIfNeeded(source: activeSource, isPlaying: newPresentation.isPlaying)
+        notifyTelemetryIfNeeded(source: activeSource, isPlaying: isPlaying)
 
         guard !newPresentation.isEffectivelyEqual(to: presentation) else { return }
         presentation = newPresentation
@@ -441,17 +447,34 @@ final class PlaybackCoordinator {
         }
     }
 
+    private static let presentationIntervalPlaying: TimeInterval = 0.25
+    private static let presentationIntervalPaused: TimeInterval = 1.0
+
     private func startPresentationTimer() {
+        startPresentationTimer(interval: Self.presentationIntervalPaused)
+    }
+
+    private func startPresentationTimer(interval: TimeInterval) {
         presentationTimer?.invalidate()
-        presentationTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) {
+        currentPresentationInterval = interval
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) {
             [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.refreshPresentation()
             }
         }
-        if let presentationTimer {
-            RunLoop.main.add(presentationTimer, forMode: .common)
-        }
+        RunLoop.main.add(timer, forMode: .common)
+        presentationTimer = timer
+    }
+
+    /// Idle-CPU: refresh at 4Hz while playing (so elapsed time advances), and
+    /// drop to 1Hz when paused. Commands already call `refreshPresentation()`
+    /// directly for immediate updates (seek/track/source/play/pause); the 1Hz
+    /// paused tick only exists to catch async metadata such as late artwork.
+    private func adjustPresentationTimerCadence(isPlaying: Bool) {
+        let target = isPlaying ? Self.presentationIntervalPlaying : Self.presentationIntervalPaused
+        guard target != currentPresentationInterval else { return }
+        startPresentationTimer(interval: target)
     }
 
     private func makeLocalPresentation() -> NowPlayingPresentation {
