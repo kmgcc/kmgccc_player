@@ -28,6 +28,7 @@ struct NowPlayingPresentation {
     var isArtworkLoading: Bool
     var duration: Double
     var currentTime: Double
+    var audioOutputDelay: Double = 0
     var isPlaying: Bool
     var volume: Double
     var lyricsText: String?
@@ -163,6 +164,10 @@ struct NowPlayingPresentation {
         guard duration > 0 else { return 0 }
         return min(max(currentTime / duration, 0), 1)
     }
+
+    var lyricsCurrentTime: Double {
+        max(0, currentTime - max(0, audioOutputDelay))
+    }
 }
 
 extension NowPlayingPresentation {
@@ -178,6 +183,7 @@ extension NowPlayingPresentation {
         isArtworkLoading == other.isArtworkLoading &&
         duration == other.duration &&
         currentTime == other.currentTime &&
+        audioOutputDelay == other.audioOutputDelay &&
         isPlaying == other.isPlaying &&
         volume == other.volume &&
         lyricsIdentity == other.lyricsIdentity &&

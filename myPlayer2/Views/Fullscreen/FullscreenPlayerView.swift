@@ -2235,7 +2235,7 @@ struct FullscreenPlayerView: View {
 
     private func revealFullscreenExistingLyrics(reason: String) {
         let targetStore = fullscreenStore
-        let currentTime = playbackCoordinator.presentation.currentTime
+        let currentTime = playbackCoordinator.presentation.lyricsCurrentTime
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
             targetStore.revealExistingLyrics(reason: reason, currentTime: currentTime)
         }
@@ -2374,11 +2374,12 @@ struct FullscreenPlayerView: View {
 
     private func handleCurrentTimeChange(_ oldTime: Double, _ newTime: Double) {
         guard playbackCoordinator.presentation.source == .local else { return }
-        LyricsSurfaceManager.shared.updatePlaybackTime(newTime)
+        let lyricsTime = playerVM.lyricsCurrentTime
+        LyricsSurfaceManager.shared.updatePlaybackTime(lyricsTime)
         guard allowsDirectEmbeddedSurfaceUpdates else { return }
-        fullscreenStore.setCurrentTime(newTime)
+        fullscreenStore.setCurrentTime(lyricsTime)
         if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
-            coverBlurHighlightStore.setCurrentTime(newTime)
+            coverBlurHighlightStore.setCurrentTime(lyricsTime)
         }
 
         if oldTime > 1.0, newTime < 0.2 {
@@ -2404,11 +2405,12 @@ struct FullscreenPlayerView: View {
 
     private func handlePresentationCurrentTimeChange(_ oldTime: Double, _ newTime: Double) {
         guard playbackCoordinator.presentation.source.isExternal else { return }
-        LyricsSurfaceManager.shared.updatePlaybackTime(newTime)
+        let lyricsTime = playbackCoordinator.presentation.lyricsCurrentTime
+        LyricsSurfaceManager.shared.updatePlaybackTime(lyricsTime)
         guard allowsDirectEmbeddedSurfaceUpdates else { return }
-        fullscreenStore.setCurrentTime(newTime)
+        fullscreenStore.setCurrentTime(lyricsTime)
         if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
-            coverBlurHighlightStore.setCurrentTime(newTime)
+            coverBlurHighlightStore.setCurrentTime(lyricsTime)
         }
 
         if oldTime > 1.0, newTime < 0.2 {
@@ -2582,7 +2584,7 @@ struct FullscreenPlayerView: View {
             payload = FullscreenPlaybackPayload(
                 trackID: track?.id,
                 ttml: track == nil ? nil : lyricsText,
-                currentTime: playerVM.currentTime,
+                currentTime: playerVM.lyricsCurrentTime,
                 isPlaying: playerVM.isPlaying
             )
         case .appleMusic, .systemNowPlaying:
@@ -2590,7 +2592,7 @@ struct FullscreenPlayerView: View {
             payload = FullscreenPlaybackPayload(
                 trackID: presentation.displayTrackID,
                 ttml: lyricsText == nil ? nil : (lyricsText ?? ""),
-                currentTime: presentation.currentTime,
+                currentTime: presentation.lyricsCurrentTime,
                 isPlaying: presentation.isPlaying
             )
         }

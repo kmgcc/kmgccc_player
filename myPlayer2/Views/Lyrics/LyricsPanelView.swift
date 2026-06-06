@@ -228,7 +228,7 @@ struct LyricsPanelView: View {
         case .local:
             lyricsVM.ensureAMLLLoaded(
                 track: presentation.localTrack,
-                currentTime: presentation.currentTime,
+                currentTime: presentation.lyricsCurrentTime,
                 isPlaying: presentation.isPlaying,
                 reason: reason,
                 forceWebReload: forceWebReload,
@@ -328,14 +328,14 @@ private struct LyricsRealtimeSyncObserver: View {
     var body: some View {
         Color.clear
             .onChange(of: playbackCoordinator.presentation.currentTime) { oldTime, newTime in
-                lyricsVM.syncTime(newTime)
+                lyricsVM.syncTime(playbackCoordinator.presentation.lyricsCurrentTime)
                 if oldTime > 1.0, newTime < 0.2 {
                     onPlaybackRestart()
                 }
             }
             .onChange(of: playbackCoordinator.presentation.isPlaying) { _, newValue in
                 if !newValue {
-                    lyricsVM.syncTime(playbackCoordinator.presentation.currentTime)
+                    lyricsVM.syncTime(playbackCoordinator.presentation.lyricsCurrentTime)
                 }
                 lyricsVM.setPlaying(newValue)
             }

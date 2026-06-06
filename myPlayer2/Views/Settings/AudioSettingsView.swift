@@ -21,7 +21,7 @@ struct AudioSettingsView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     SettingsSwitchRow(title: "音频延迟补偿", isOn: $lookaheadEnabled)
 
-                    Text("开启后会略微延迟真实声音，用来改善 LED、频谱和歌词等可视化与听感的同步。关闭后音频输出更直接、延迟更低，适合追求最低延迟或排查卡顿。\n\n更改会在下一首歌曲或重新播放时生效。")
+                    Text("开启后声音输出将延迟以改善LED、频谱等音频可视化效果的同步。")
                         .settingsDescriptionStyle()
                 }
             }
