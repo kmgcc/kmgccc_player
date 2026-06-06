@@ -576,7 +576,7 @@ struct TrackEditSheet: View {
         guard playerVM.currentTrack?.id == track.id else { return }
         lyricsVM.ensureAMLLLoaded(
             track: track,
-            currentTime: playerVM.currentTime,
+            currentTime: playerVM.lyricsCurrentTime,
             isPlaying: playerVM.isPlaying,
             reason: reason,
             forceLyricsReload: true

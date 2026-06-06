@@ -42,6 +42,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// This defers ~15-30ms of AVAudioEngine construction from app launch to first use.
     @ObservationIgnored
     private lazy var engine: AVAudioEngine = {
+        engineAccessed = true
         let e = AVAudioEngine()
         setupEngine(e)
         return e
@@ -54,9 +55,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private var engineAccessed = false
 
     private let playerNode = AVAudioPlayerNode()
-    /// Optional output-chain delay used for visualization sync. Always attached,
-    /// but only inserted into the signal path while `activeLookaheadEnabled` is
-    /// true (user opt-in). See `rebuildOutputChain`.
+    /// Dedicated pre-output mixer. Analysis taps attach here so LED/spectrum
+    /// sampling sees raw player audio before any audible output delay.
+    private let playbackMixer = AVAudioMixerNode()
+    /// Optional output-chain delay used for visualization sync. It is inserted
+    /// only between `playbackMixer` and `engine.mainMixerNode`, never before the
+    /// analysis tap and never as a substitute for delaying `playerNode.play()`.
     private let delayNode = AVAudioUnitDelay()
     private var audioFile: AVAudioFile?
 
@@ -72,6 +76,16 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// in-flight track keeps a stable pipeline. All delay handling (progress
     /// compensation, drain, buffer resets) keys off this realized flag.
     private var activeLookaheadEnabled = false
+    private enum AudioGraphState: String {
+        case unconfigured
+        case configuring
+        case ready
+        case failed
+    }
+    private var graphState: AudioGraphState = .unconfigured
+    private var graphGeneration: UInt64 = 0
+    private var scheduledGraphGeneration: UInt64?
+    private var currentGraphOperation = "idle"
     /// Drain bookkeeping: when lookahead is active, ~lookahead seconds of audio
     /// still sit in the delay buffer after the player finishes scheduling, so
     /// completion is deferred and progress is advanced from these anchors.
@@ -81,6 +95,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private var lastProgressAudibleTime: Double = 0
     private var lastKnownShuffleEnabled = AppSettings.shared.shuffleEnabled
     private var lastKnownRepeatMode = AppSettings.shared.repeatMode
+    private static let fixedAudioOutputDelaySeconds: Double = 0.18
+
+    var audioOutputDelay: Double {
+        lookaheadSeconds
+    }
 
     // MARK: - Off-Main Preparation
 
@@ -115,11 +134,17 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     // MARK: - Level Meter Integration
 
-    /// The main mixer node (exposed for level meter tap)
+    /// Pre-delay mixer exposed for level meter / spectrum taps.
     /// Accessing this property triggers lazy engine initialization.
-    var mainMixerNode: AVAudioMixerNode {
+    var analysisMixerNode: AVAudioMixerNode {
         engineAccessed = true
-        return engine.mainMixerNode
+        _ = engine
+        return playbackMixer
+    }
+
+    /// Kept for older call sites; use `analysisMixerNode` for visualization taps.
+    var mainMixerNode: AVAudioMixerNode {
+        analysisMixerNode
     }
 
     // MARK: - Initialization
@@ -147,14 +172,21 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// Called once when engine is first accessed via lazy initialization.
     private func setupEngine(_ engine: AVAudioEngine) {
         engine.attach(playerNode)
+        engine.attach(playbackMixer)
         engine.attach(delayNode)
 
-        let mainMixer = engine.mainMixerNode
-        engine.connect(playerNode, to: mainMixer, format: nil)
-        // Realize the output chain from the current user preference. The mixer
-        // tap (FFT/LED) is installed separately on mainMixerNode and is not
-        // affected by output-chain (re)wiring.
-        rebuildOutputChain(engine, lookahead: desiredLookaheadEnabled)
+        // Build the full graph atomically. Pass the local `engine` — we are
+        // INSIDE the lazy `self.engine` initializer
+        // here, so touching `self.engine` would re-enter init and spawn a second
+        // AVAudioEngine (nodes then mismatch their owningEngine → crash). The
+        // analysis tap (FFT/LED) is installed separately on playbackMixer and
+        // is intentionally before delayNode.
+        rebuildPlaybackGraph(
+            engine,
+            format: nil,
+            lookahead: desiredLookaheadEnabled,
+            operation: "setupEngine"
+        )
 
         playerNode.volume = Float(volume)
         engine.prepare()
@@ -229,9 +261,27 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             let frameCount = AVAudioFrameCount(totalFrames - targetFrame)
             startingFramePosition = targetFrame
 
-            engine.disconnectNodeOutput(playerNode)
-            engine.connect(playerNode, to: engine.mainMixerNode, format: file.processingFormat)
+            rebuildPlaybackGraph(
+                engine,
+                format: file.processingFormat,
+                lookahead: activeLookaheadEnabled,
+                operation: "deviceChangeResume"
+            )
+            do {
+                if !engine.isRunning {
+                    try engine.start()
+                }
+            } catch {
+                graphState = .failed
+                Log.error("Failed to restart engine for device-change resume: \(error)", category: .audio)
+                isPlaying = false
+                return
+            }
             scheduleSegment(file, startingFrame: targetFrame, frameCount: frameCount)
+            guard graphReadyForPlay(scheduledGeneration: scheduledGraphGeneration, operation: "deviceChangeResume.play") else {
+                failPlaybackRequest(reason: "graph not ready after device-change resume")
+                return
+            }
             playerNode.play()
             isPlaying = true
             startProgressTimer()
@@ -244,48 +294,60 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private func reconnectAudioGraph() {
-        let mainMixer = engine.mainMixerNode
-
-        engine.disconnectNodeOutput(playerNode)
-
-        if let file = audioFile {
-            engine.connect(playerNode, to: mainMixer, format: file.processingFormat)
-        } else {
-            engine.connect(playerNode, to: mainMixer, format: nil)
-        }
         // Preserve whatever chain the current track is using; a device change
         // mid-track must not silently switch the lookahead state.
-        rebuildOutputChain(engine, lookahead: activeLookaheadEnabled)
+        rebuildPlaybackGraph(
+            engine,
+            format: audioFile?.processingFormat,
+            lookahead: activeLookaheadEnabled,
+            operation: "reconnectAudioGraph"
+        )
     }
 
     // MARK: - Lookahead (Audio Delay)
 
-    /// Wires `mainMixer → output` (no delay) or `mainMixer → delay → output`,
-    /// fully tearing down any prior mixer/delay output connections first so no
-    /// duplicate or dangling edges remain. Updates `activeLookaheadEnabled` to
-    /// the realized state.
+    /// Rebuilds the owned playback graph with one of two stable topologies:
+    /// off: `playerNode -> playbackMixer -> engine.mainMixerNode`
+    /// on:  `playerNode -> playbackMixer -> delayNode -> engine.mainMixerNode`
     ///
-    /// AVAudioEngine asserts (`!IsRunning()`) if you disconnect a node that
-    /// feeds the output while the engine is running, so this stops the engine
-    /// first when needed. **Every caller is responsible for restarting the
-    /// engine afterward** (all current callers do, before scheduling/playing).
-    private func rebuildOutputChain(_ engine: AVAudioEngine, lookahead: Bool) {
+    /// The analysis tap attaches to `playbackMixer`, so it always samples
+    /// pre-delay audio. We never disconnect `engine.mainMixerNode` from the
+    /// hardware output; AVAudioEngine owns that final connection.
+    private func rebuildPlaybackGraph(
+        _ engine: AVAudioEngine,
+        format: AVAudioFormat?,
+        lookahead: Bool,
+        operation: String
+    ) {
+        graphState = .configuring
+        currentGraphOperation = operation
         if engine.isRunning {
             engine.stop()
         }
         let mainMixer = engine.mainMixerNode
-        engine.disconnectNodeOutput(mainMixer)
+        engine.disconnectNodeOutput(playerNode)
+        engine.disconnectNodeOutput(playbackMixer)
         engine.disconnectNodeOutput(delayNode)
 
+        engine.connect(playerNode, to: playbackMixer, format: format)
         if lookahead {
-            engine.connect(mainMixer, to: delayNode, format: nil)
-            engine.connect(delayNode, to: engine.outputNode, format: nil)
+            engine.connect(playbackMixer, to: delayNode, format: nil)
+            engine.connect(delayNode, to: mainMixer, format: nil)
             activeLookaheadEnabled = true
             configureDelay()
         } else {
-            engine.connect(mainMixer, to: engine.outputNode, format: nil)
+            engine.connect(playbackMixer, to: mainMixer, format: nil)
             activeLookaheadEnabled = false
+            delayNode.reset()
         }
+        graphGeneration &+= 1
+        scheduledGraphGeneration = nil
+        graphState = .ready
+        currentGraphOperation = "idle"
+        Log.info(
+            "[PlaybackPipeline] graph ready generation=\(graphGeneration) operation=\(operation) topology=\(activeLookaheadEnabled ? "player->playbackMixer->delay->mainMixer" : "player->playbackMixer->mainMixer") delaySeconds=\(String(format: "%.3f", lookaheadSeconds)) engineRunning=\(engine.isRunning)",
+            category: .audio
+        )
     }
 
     /// The lookahead state the user *wants* realized, gated by the debug
@@ -297,11 +359,38 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     /// Realized lookahead in seconds (0 when the feature is off in the live
-    /// graph). Reads the persisted `lookaheadMs` only when active.
+    /// graph). The current product target is a fixed 180ms output delay.
     private var lookaheadSeconds: Double {
         guard activeLookaheadEnabled else { return 0 }
-        let ms = max(0, min(200, AppSettings.shared.lookaheadMs))
-        return ms / 1000.0
+        return Self.fixedAudioOutputDelaySeconds
+    }
+
+    private func graphReadyForPlay(scheduledGeneration: UInt64?, operation: String) -> Bool {
+        let scheduledText = scheduledGeneration.map(String.init) ?? "nil"
+        let ready = graphState == .ready
+            && scheduledGeneration == graphGeneration
+            && engine.isRunning
+
+        if !ready {
+            Log.error(
+                "[PlaybackPipeline] graph not ready operation=\(operation) graphState=\(graphState.rawValue) graphGeneration=\(graphGeneration) scheduledGeneration=\(scheduledText) engineRunning=\(engine.isRunning) currentGraphOperation=\(currentGraphOperation)",
+                category: .audio
+            )
+        }
+        return ready
+    }
+
+    private func failPlaybackRequest(reason: String) {
+        Log.error(
+            "[PlaybackPipeline] playback request failed reason=\(reason) graphState=\(graphState.rawValue) graphGeneration=\(graphGeneration) scheduledGeneration=\(scheduledGraphGeneration.map(String.init) ?? "nil") engineRunning=\(isEngineInitialized ? engine.isRunning : false) currentGraphOperation=\(currentGraphOperation)",
+            category: .audio
+        )
+        cancelPendingCompletion()
+        invalidateScheduleToken()
+        playerNode.stop()
+        stopProgressTimer()
+        resetDelayBufferIfActive()
+        isPlaying = false
     }
 
     /// Applies `lookaheadMs` to the delay node. No-op unless lookahead is the
@@ -322,17 +411,70 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         delayNode.reset()
     }
 
-    /// If the user toggled the feature since the current chain was built, rebuild
-    /// the output chain to match. Intended to be called at track start while the
-    /// player is stopped — this is what makes the toggle "next-playback".
-    private func applyLookaheadPreferenceForNewPlayback() {
+    private func applyLookaheadPreferenceChangeIfNeeded(reason: String) {
         let desired = desiredLookaheadEnabled
         guard desired != activeLookaheadEnabled else { return }
+
         Log.info(
-            "[PlaybackPipeline] audio lookahead chain rebuild desired=\(desired)",
+            "[PlaybackPipeline] audio lookahead preference change reason=\(reason) desired=\(desired) wasPlaying=\(isPlaying) currentTime=\(String(format: "%.3f", currentTime))",
             category: .audio
         )
-        rebuildOutputChain(engine, lookahead: desired)
+
+        let wasPlaying = isPlaying
+        let resumeTime = currentTime
+        cancelPendingCompletion()
+        invalidateScheduleToken()
+        playerNode.stop()
+        resetDelayBufferIfActive()
+        stopProgressTimer()
+        isPlaying = false
+
+        rebuildPlaybackGraph(
+            engine,
+            format: audioFile?.processingFormat,
+            lookahead: desired,
+            operation: "lookaheadPreferenceChange.\(reason)"
+        )
+
+        do {
+            if !engine.isRunning {
+                try engine.start()
+            }
+        } catch {
+            graphState = .failed
+            Log.error("[PlaybackPipeline] engine start failed after lookahead preference change: \(error)", category: .audio)
+            return
+        }
+
+        guard let file = audioFile else {
+            return
+        }
+
+        let targetFrame = AVAudioFramePosition(resumeTime * sampleRate)
+        let totalFrames = file.length
+        guard targetFrame >= 0, targetFrame < totalFrames else {
+            Log.warning("[PlaybackPipeline] cannot reschedule after lookahead change: invalid frame=\(targetFrame) total=\(totalFrames)", category: .audio)
+            return
+        }
+
+        startingFramePosition = targetFrame
+        currentTime = max(0, min(resumeTime, duration))
+        let frameCount = AVAudioFrameCount(totalFrames - targetFrame)
+        scheduleSegment(file, startingFrame: targetFrame, frameCount: frameCount)
+
+        guard wasPlaying else {
+            return
+        }
+        guard graphReadyForPlay(
+            scheduledGeneration: scheduledGraphGeneration,
+            operation: "lookaheadPreferenceChange.play"
+        ) else {
+            failPlaybackRequest(reason: "graph not ready after lookahead preference change")
+            return
+        }
+        playerNode.play()
+        isPlaying = true
+        startProgressTimer()
     }
 
     private func cancelPendingCompletion() {
@@ -345,6 +487,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private func invalidateScheduleToken() {
         activeScheduleToken = UUID()
+        scheduledGraphGeneration = nil
     }
 
     /// Invalidate any in-flight file preparation: bump the generation so a
@@ -363,8 +506,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private func scheduleFile(_ file: AVAudioFile) {
         let token = UUID()
         activeScheduleToken = token
+        scheduledGraphGeneration = graphGeneration
         Log.info(
-            "[AudioDiagnostics] scheduleFile frames=\(file.length) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+            "[AudioDiagnostics] scheduleFile frames=\(file.length) graphGeneration=\(graphGeneration) graphState=\(graphState.rawValue) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
             category: .audio
         )
         playerNode.scheduleFile(file, at: nil) { [weak self] in
@@ -381,8 +525,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     ) {
         let token = UUID()
         activeScheduleToken = token
+        scheduledGraphGeneration = graphGeneration
         Log.info(
-            "[AudioDiagnostics] scheduleSegment startFrame=\(startingFrame) frameCount=\(frameCount) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+            "[AudioDiagnostics] scheduleSegment startFrame=\(startingFrame) frameCount=\(frameCount) graphGeneration=\(graphGeneration) graphState=\(graphState.rawValue) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
             category: .audio
         )
         playerNode.scheduleSegment(
@@ -527,12 +672,19 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             track.fileBookmarkData = refreshed
         }
 
-        // Realize any pending lookahead toggle now, while the player is stopped
-        // (stopPlayback ran in playInternal). This is the "next-playback" point.
-        applyLookaheadPreferenceForNewPlayback()
-
-        engine.disconnectNodeOutput(playerNode)
-        engine.connect(playerNode, to: engine.mainMixerNode, format: resource.file.processingFormat)
+        let desiredLookahead = desiredLookaheadEnabled
+        if desiredLookahead != activeLookaheadEnabled {
+            Log.info(
+                "[PlaybackPipeline] audio lookahead chain rebuild desired=\(desiredLookahead)",
+                category: .audio
+            )
+        }
+        rebuildPlaybackGraph(
+            engine,
+            format: resource.file.processingFormat,
+            lookahead: desiredLookahead,
+            operation: "finishStart"
+        )
 
         do {
             if !engine.isRunning {
@@ -540,6 +692,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             }
         } catch {
             Log.error("[PlaybackPipeline] engine start failed: \(error)", category: .audio)
+            graphState = .failed
             stopAccessingCurrentFile()
             audioFile = nil
             isPlaying = false
@@ -549,6 +702,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         configureDelay()
         resetDelayBufferIfActive()
         scheduleFile(resource.file)
+        guard graphReadyForPlay(scheduledGeneration: scheduledGraphGeneration, operation: "finishStart.play") else {
+            failPlaybackRequest(reason: "graph not ready before finishStart play")
+            return
+        }
         playerNode.play()
         isPlaying = true
         startProgressTimer()
@@ -618,8 +775,13 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             "[AudioDiagnostics] resume currentTime=\(String(format: "%.3f", currentTime)) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
             category: .audio
         )
+        applyLookaheadPreferenceChangeIfNeeded(reason: "resume")
         configureDelay()
         resetDelayBufferIfActive()
+        guard graphReadyForPlay(scheduledGeneration: scheduledGraphGeneration, operation: "resume.play") else {
+            failPlaybackRequest(reason: "graph not ready before resume")
+            return
+        }
         playerNode.play()
         isPlaying = true
         startProgressTimer()
@@ -687,16 +849,17 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let frameCount = AVAudioFrameCount(totalFrames - targetFrame)
 
         startingFramePosition = targetFrame
-        // We schedule from frame(`seconds`); audio is heard `lookaheadSeconds`
-        // later, so the initial displayed (audible) position is offset back by
-        // the same amount that `updateProgress` subtracts — no double
-        // compensation. With lookahead off this is exactly `seconds`.
-        currentTime = max(0, min(seconds - lookaheadSeconds, duration))
+        currentTime = max(0, min(seconds, duration))
         smartController.recordSeek(to: currentTime)
 
         scheduleSegment(audioFile, startingFrame: targetFrame, frameCount: frameCount)
 
         if wasPlaying {
+            guard graphReadyForPlay(scheduledGeneration: scheduledGraphGeneration, operation: "seek.play") else {
+                smartController.endSeek()
+                failPlaybackRequest(reason: "graph not ready before seek resume")
+                return
+            }
             playerNode.play()
             isPlaying = true
             startProgressTimer()
@@ -774,6 +937,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private func updateProgress() {
+        applyLookaheadPreferenceChangeIfNeeded(reason: "progressTick")
+
         let nowUptime = ProcessInfo.processInfo.systemUptime
         let previousUptime = lastProgressUpdateUptime
         let previousAudibleTime = lastProgressAudibleTime
@@ -805,10 +970,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let currentFrame = startingFramePosition + playerTime.sampleTime
         let newTime = Double(currentFrame) / sampleRate
 
-        // Show the position the user actually hears. `lookaheadSeconds` is 0 when
-        // the feature is off, so this reduces to the raw player time.
-        let audibleTime = newTime - lookaheadSeconds
-        currentTime = max(0, min(audibleTime, duration))
+        currentTime = max(0, min(newTime, duration))
         lastProgressAudibleTime = currentTime
 
         if let previousUptime {
@@ -849,7 +1011,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private func beginDrain(lookaheadSeconds: Double, token: UUID) {
         cancelPendingCompletion()
         drainStartUptime = ProcessInfo.processInfo.systemUptime
-        drainStartTime = max(0, duration - lookaheadSeconds)
+        drainStartTime = duration
         currentTime = drainStartTime
 
         Task { @MainActor [weak self] in

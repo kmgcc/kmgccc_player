@@ -24,6 +24,10 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
     /// Current playback position in seconds.
     var currentTime: Double { get }
 
+    /// Realized audio output delay in seconds. This is non-zero only when the
+    /// playback graph delays audible output; internal analysis remains pre-delay.
+    var audioOutputDelay: Double { get }
+
     /// Total duration of current track in seconds.
     var duration: Double { get }
 

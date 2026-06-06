@@ -500,6 +500,7 @@ final class PlaybackCoordinator {
             isArtworkLoading: isArtworkLoading,
             duration: playerVM.duration,
             currentTime: playerVM.currentTime,
+            audioOutputDelay: playerVM.audioOutputDelay,
             isPlaying: playerVM.isPlaying,
             volume: playerVM.volume,
             lyricsText: lyricsText,

@@ -97,7 +97,7 @@ final class AppSessionHost: ObservableObject {
                 targetHz: AppSettings.shared.ledTargetHz
             ),
             mixerProvider: { [weak playbackService] in
-                playbackService?.mainMixerNode ?? AVAudioEngine().mainMixerNode
+                playbackService?.analysisMixerNode ?? AVAudioEngine().mainMixerNode
             }
         )
 
@@ -355,7 +355,7 @@ final class AppSessionHost: ObservableObject {
 
         guard DebugLaunchScenario.current == nil else { return }
         guard let memory = PlaybackMemoryStore.loadValid() else { return }
-        guard let repository, let playbackCoordinator else { return }
+        guard let repository else { return }
 
         await repository.reloadFromLibrary()
 
@@ -366,13 +366,12 @@ final class AppSessionHost: ObservableObject {
             return
         }
 
-        playbackCoordinator.playTracks(restoredQueue, startingAt: startIndex)
-
-        let seekTime = PlaybackMemoryStore.restorableTime(from: memory)
-        if seekTime > 0 {
-            playbackCoordinator.seek(to: seekTime)
-        }
-        playbackCoordinator.pause()
+        let restoredTrack = restoredQueue[startIndex]
+        Log.info(
+            "[PlaybackMemory] launch auto-play restore bypassed track=\(restoredTrack.id.uuidString) title=\(restoredTrack.title) savedTime=\(String(format: "%.1f", PlaybackMemoryStore.restorableTime(from: memory)))",
+            category: .playback
+        )
+        PlaybackMemoryStore.clear()
     }
 
     private func runDebugLaunchScenarioIfNeeded(

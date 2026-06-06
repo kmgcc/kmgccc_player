@@ -20,6 +20,7 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
     private(set) var isPlaying: Bool = false
     var volume: Double = 0.8
     private(set) var currentTime: Double = 0
+    var audioOutputDelay: Double { 0 }
     private(set) var duration: Double = 0
     private(set) var currentTrack: Track?
 

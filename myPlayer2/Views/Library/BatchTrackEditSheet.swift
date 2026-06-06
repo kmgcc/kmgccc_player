@@ -138,7 +138,7 @@ struct BatchTrackEditSheet: View {
             coverCoordinator?.cancelSearch()
             lyricsVM.ensureAMLLLoaded(
                 track: playerVM.currentTrack,
-                currentTime: playerVM.currentTime,
+                currentTime: playerVM.lyricsCurrentTime,
                 isPlaying: playerVM.isPlaying,
                 reason: "batch editor dismissed",
                 forceLyricsReload: true
@@ -991,7 +991,7 @@ struct BatchTrackEditSheet: View {
     private func syncAMLLPreview(reason: String, forceLyricsReload: Bool) {
         previewLyricsVM?.ensureAMLLLoaded(
             track: currentTrack,
-            currentTime: playerVM.currentTime,
+            currentTime: playerVM.lyricsCurrentTime,
             isPlaying: playerVM.isPlaying,
             reason: reason,
             forceLyricsReload: forceLyricsReload
@@ -1002,7 +1002,7 @@ struct BatchTrackEditSheet: View {
         guard playerVM.currentTrack?.id == track.id else { return }
         lyricsVM.ensureAMLLLoaded(
             track: track,
-            currentTime: playerVM.currentTime,
+            currentTime: playerVM.lyricsCurrentTime,
             isPlaying: playerVM.isPlaying,
             reason: reason,
             forceLyricsReload: true
@@ -1093,7 +1093,7 @@ private struct BatchPreviewPlaybackObserver: View {
     var body: some View {
         Color.clear
             .onChange(of: playerVM.currentTime) { _, newTime in
-                previewLyricsVM.syncTime(newTime)
+                previewLyricsVM.syncTime(playerVM.lyricsCurrentTime)
             }
             .onChange(of: playerVM.isPlaying) { _, newValue in
                 previewLyricsVM.setPlaying(newValue)
@@ -1102,7 +1102,7 @@ private struct BatchPreviewPlaybackObserver: View {
                 guard oldValue != newValue, let editedTrack, newValue == editedTrack.id else { return }
                 previewLyricsVM.ensureAMLLLoaded(
                     track: editedTrack,
-                    currentTime: playerVM.currentTime,
+                    currentTime: playerVM.lyricsCurrentTime,
                     isPlaying: playerVM.isPlaying,
                     reason: "播放轨道更新",
                     forceLyricsReload: false

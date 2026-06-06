@@ -569,18 +569,19 @@ public final class AppSettings {
 
     // MARK: - Playback Settings
 
-    /// When enabled, real audio output is delayed by `lookaheadMs` so the
+    /// When enabled, real audio output is delayed by the fixed 180ms playback
+    /// graph delay so the
     /// inherent latency of the LED / spectrum / lyrics visual pipeline lines up
     /// with what the user hears. Default OFF — never delay audio without the
     /// user opting in. When OFF the output chain is physically delay-free.
     @ObservationIgnored
     @AppStorage("audioLookaheadEnabled") var audioLookaheadEnabled: Bool = false
 
-    /// Lookahead delay in milliseconds (0-200). Only takes effect while
-    /// `audioLookaheadEnabled` is true. The stored value is preserved across
-    /// launches even when the feature is off.
+    /// Legacy lookahead delay preference. The current playback graph uses a
+    /// fixed 180ms target; this stored value is preserved for compatibility and
+    /// future UI work.
     @ObservationIgnored
-    @AppStorage("lookaheadMs") var lookaheadMs: Double = 200
+    @AppStorage("lookaheadMs") var lookaheadMs: Double = 180
 
     /// Debug-only: when true, forces the no-delay direct output chain
     /// regardless of `audioLookaheadEnabled`. Not surfaced in any formal UI;

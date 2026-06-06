@@ -38,6 +38,14 @@ final class PlayerViewModel {
         playbackService.currentTime
     }
 
+    var audioOutputDelay: Double {
+        playbackService.audioOutputDelay
+    }
+
+    var lyricsCurrentTime: Double {
+        max(0, currentTime - audioOutputDelay)
+    }
+
     var duration: Double {
         playbackService.duration
     }
