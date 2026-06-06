@@ -82,6 +82,20 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private var lastKnownShuffleEnabled = AppSettings.shared.shuffleEnabled
     private var lastKnownRepeatMode = AppSettings.shared.repeatMode
 
+    // MARK: - Off-Main Preparation
+
+    /// Off-main file preparation (bookmark resolve + AVAudioFile open). See
+    /// `AudioFilePreparationActor`.
+    private let prepActor = AudioFilePreparationActor()
+    /// Monotonic id for the current play request. Bumped ONLY by
+    /// `invalidatePreparation()` (called from `stopPlayback`). A prepared
+    /// resource is consumed only if its captured generation still matches —
+    /// this discards stale results from a track the user already switched away
+    /// from. See `invalidatePreparation()` for why there is a single bump site.
+    private var playGeneration: UInt64 = 0
+    /// The in-flight preparation task, cancelled when a newer request starts.
+    private var prepTask: Task<Void, Never>?
+
     // MARK: - Smart Shuffle Integration
 
     private let smartController = SmartPlaybackController()
@@ -93,6 +107,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     // MARK: - Current File Access
 
     private var currentFileURL: URL?
+    /// Whether `currentFileURL` holds an active security-scoped access that must
+    /// be released on stop/replace. Mirrors
+    /// `PreparedAudioResource.didStartSecurityScopedAccess` for the
+    /// currently-loaded file. False for library-relative paths.
+    private var currentFileSecurityScoped = false
 
     // MARK: - Level Meter Integration
 
@@ -135,7 +154,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         // Realize the output chain from the current user preference. The mixer
         // tap (FFT/LED) is installed separately on mainMixerNode and is not
         // affected by output-chain (re)wiring.
-        rebuildOutputChain(engine, lookahead: AppSettings.shared.audioLookaheadEnabled)
+        rebuildOutputChain(engine, lookahead: desiredLookaheadEnabled)
 
         playerNode.volume = Float(volume)
         engine.prepare()
@@ -244,9 +263,16 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// Wires `mainMixer → output` (no delay) or `mainMixer → delay → output`,
     /// fully tearing down any prior mixer/delay output connections first so no
     /// duplicate or dangling edges remain. Updates `activeLookaheadEnabled` to
-    /// the realized state. Caller is responsible for the player being stopped
-    /// (or this being initial setup) so no audio glitches mid-buffer.
+    /// the realized state.
+    ///
+    /// AVAudioEngine asserts (`!IsRunning()`) if you disconnect a node that
+    /// feeds the output while the engine is running, so this stops the engine
+    /// first when needed. **Every caller is responsible for restarting the
+    /// engine afterward** (all current callers do, before scheduling/playing).
     private func rebuildOutputChain(_ engine: AVAudioEngine, lookahead: Bool) {
+        if engine.isRunning {
+            engine.stop()
+        }
         let mainMixer = engine.mainMixerNode
         engine.disconnectNodeOutput(mainMixer)
         engine.disconnectNodeOutput(delayNode)
@@ -260,6 +286,14 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             engine.connect(mainMixer, to: engine.outputNode, format: nil)
             activeLookaheadEnabled = false
         }
+    }
+
+    /// The lookahead state the user *wants* realized, gated by the debug
+    /// bypass. When `audioDebugBypassDelayNode` is true this is always false,
+    /// forcing the no-delay direct chain. Default behavior (bypass off) is
+    /// unchanged.
+    private var desiredLookaheadEnabled: Bool {
+        AppSettings.shared.audioLookaheadEnabled && !AppSettings.shared.audioDebugBypassDelayNode
     }
 
     /// Realized lookahead in seconds (0 when the feature is off in the live
@@ -292,7 +326,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// the output chain to match. Intended to be called at track start while the
     /// player is stopped — this is what makes the toggle "next-playback".
     private func applyLookaheadPreferenceForNewPlayback() {
-        let desired = AppSettings.shared.audioLookaheadEnabled
+        let desired = desiredLookaheadEnabled
         guard desired != activeLookaheadEnabled else { return }
         Log.info(
             "[PlaybackPipeline] audio lookahead chain rebuild desired=\(desired)",
@@ -311,6 +345,19 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private func invalidateScheduleToken() {
         activeScheduleToken = UUID()
+    }
+
+    /// Invalidate any in-flight file preparation: bump the generation so a
+    /// returning `PreparedAudioResource` fails the guard in
+    /// `finishStartIfCurrent`, and cancel the background task. This is the
+    /// SINGLE generation-bump site. `stopPlayback` calls it, and every
+    /// `playInternal` runs `stopPlayback` first — so a new play request
+    /// naturally observes a freshly-bumped generation to adopt as its own. Do
+    /// NOT add a second bump in `playInternal`; the single site is intentional.
+    private func invalidatePreparation() {
+        playGeneration &+= 1
+        prepTask?.cancel()
+        prepTask = nil
     }
 
     private func scheduleFile(_ file: AVAudioFile) {
@@ -375,63 +422,177 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             "[PlaybackPipeline] load item requested track=\(track.id.uuidString) title=\(track.title)",
             category: .audio
         )
+
+        // Stop current audio immediately (matches "switch track = stop now").
+        // stopPlayback runs invalidatePreparation() — bumping playGeneration and
+        // cancelling any in-flight prepare — and clears currentTrack/audioFile +
+        // releases the old file's security scope.
         stopPlayback(clearQueue: false)
 
-        let result = track.resolveFileURL()
-        track.availability = result.newAvailability
+        // Adopt the generation stopPlayback just bumped. There is NO second bump
+        // here on purpose (see invalidatePreparation()): this request owns the
+        // current generation, so its own prepared resource passes the guard,
+        // while any earlier in-flight prepare holds an older (cancelled) one.
+        let generation = playGeneration
 
-        guard let fileURL = result.url else {
-            print("❌ Cannot play track: file not accessible - \(track.title)")
+        // Presentation updates immediately; audio follows after the off-main
+        // prepare. duration is a placeholder reconciled in finishStart.
+        currentTrack = track
+        duration = track.duration
+        currentTime = 0
+        startingFramePosition = 0
+
+        // Cheap MainActor snapshot of the @Model fields the actor needs. Only
+        // this Sendable value crosses into the actor — never the Track itself.
+        let request = AudioPrepRequest(
+            trackID: track.id,
+            libraryRelativePath: track.libraryRelativePath,
+            fileBookmarkData: track.fileBookmarkData,
+            titleForLog: track.title
+        )
+
+        // Task {} (not detached) inherits this @MainActor context: the await
+        // suspends and the actor runs the heavy work off-main, then resumes on
+        // main. The closure captures only Sendable values (request, generation)
+        // and self — never `track`, so there is no Swift 6 non-Sendable capture.
+        // The Track is re-acquired from currentTrack on resume.
+        prepTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let resource = try await self.prepActor.prepare(request)
+                self.finishStartIfCurrent(resource, generation: generation)
+            } catch {
+                self.handlePrepareFailureIfCurrent(
+                    error,
+                    trackID: request.trackID,
+                    generation: generation
+                )
+            }
+        }
+    }
+
+    /// MainActor: consume a prepared resource only if it is still the current
+    /// generation AND the current track still matches; otherwise discard it and
+    /// release its security scope.
+    private func finishStartIfCurrent(_ resource: PreparedAudioResource, generation: UInt64) {
+        guard generation == playGeneration else {
+            // Superseded by a newer play request — release and drop.
+            releaseSecurityScope(for: resource)
+            Log.info(
+                "[PlaybackPipeline] prepared resource discarded gen=\(generation) current=\(playGeneration) track=\(resource.trackID.uuidString)",
+                category: .audio
+            )
             return
         }
+        guard let track = currentTrack, track.id == resource.trackID else {
+            // currentTrack moved without a generation bump (e.g. cleared): drop.
+            releaseSecurityScope(for: resource)
+            Log.info(
+                "[PlaybackPipeline] prepared resource dropped; currentTrack mismatch track=\(resource.trackID.uuidString)",
+                category: .audio
+            )
+            return
+        }
+        finishStart(resource, track: track)
+    }
 
-        currentFileURL = fileURL
+    /// Release a prepared resource's security scope, but only if it actually
+    /// started one (library-relative paths never do).
+    private func releaseSecurityScope(for resource: PreparedAudioResource) {
+        if resource.didStartSecurityScopedAccess {
+            resource.resolvedURL.stopAccessingSecurityScopedResource()
+        }
+    }
 
-        if let refreshedData = result.refreshedBookmarkData {
-            track.fileBookmarkData = refreshedData
+    /// MainActor: lightweight engine scheduling for an already-prepared file.
+    /// No file open / bookmark resolve happens here — only engine ops, which
+    /// must run on main (AVAudioEngine is not Sendable).
+    private func finishStart(_ resource: PreparedAudioResource, track: Track) {
+        let scheduleToken = FirstUseHitchDiagnostics.begin(
+            "AudioEngine.schedule",
+            detail: "track=\(resource.trackID.uuidString.prefix(8))"
+        )
+        defer { FirstUseHitchDiagnostics.end(scheduleToken) }
+
+        currentFileURL = resource.resolvedURL
+        currentFileSecurityScoped = resource.didStartSecurityScopedAccess
+        audioFile = resource.file
+        sampleRate = resource.sampleRate
+        duration = resource.duration
+        currentTime = 0
+        startingFramePosition = 0
+
+        track.availability = resource.newAvailability
+        if let refreshed = resource.refreshedBookmarkData {
+            track.fileBookmarkData = refreshed
         }
 
+        // Realize any pending lookahead toggle now, while the player is stopped
+        // (stopPlayback ran in playInternal). This is the "next-playback" point.
+        applyLookaheadPreferenceForNewPlayback()
+
+        engine.disconnectNodeOutput(playerNode)
+        engine.connect(playerNode, to: engine.mainMixerNode, format: resource.file.processingFormat)
+
         do {
-            audioFile = try AVAudioFile(forReading: fileURL)
-
-            guard let audioFile = audioFile else { return }
-
-            sampleRate = audioFile.processingFormat.sampleRate
-            let fileDuration = Double(audioFile.length) / sampleRate
-
-            currentTrack = track
-            duration = fileDuration
-            currentTime = 0
-            startingFramePosition = 0
-
-            // Realize any pending lookahead toggle now, while the player is
-            // stopped (stopPlayback above). This is the "next-playback" point.
-            applyLookaheadPreferenceForNewPlayback()
-
-            engine.disconnectNodeOutput(playerNode)
-            engine.connect(playerNode, to: engine.mainMixerNode, format: audioFile.processingFormat)
-
             if !engine.isRunning {
                 try engine.start()
             }
-
-            configureDelay()
-            resetDelayBufferIfActive()
-            scheduleFile(audioFile)
-            playerNode.play()
-            isPlaying = true
-            startProgressTimer()
-
-            Log.info(
-                "[PlaybackPipeline] item loaded track=\(track.id.uuidString) duration=\(String(format: "%.1f", fileDuration))s engineRunning=\(engine.isRunning)",
-                category: .audio
-            )
-            print("▶️ Playing: \(track.title) (duration: \(String(format: "%.1f", fileDuration))s)")
-
         } catch {
-            print("❌ Failed to load audio file: \(error)")
+            Log.error("[PlaybackPipeline] engine start failed: \(error)", category: .audio)
             stopAccessingCurrentFile()
+            audioFile = nil
+            isPlaying = false
+            return
         }
+
+        configureDelay()
+        resetDelayBufferIfActive()
+        scheduleFile(resource.file)
+        playerNode.play()
+        isPlaying = true
+        startProgressTimer()
+
+        Log.info(
+            "[PlaybackPipeline] item loaded track=\(resource.trackID.uuidString) duration=\(String(format: "%.1f", resource.duration))s engineRunning=\(engine.isRunning)",
+            category: .audio
+        )
+    }
+
+    /// MainActor: failure handling for a prepare that belongs to the current
+    /// generation. Preserves the original behavior — mark availability, log,
+    /// stop on this track (no auto-skip). Cancelled / superseded prepares are
+    /// dropped silently.
+    private func handlePrepareFailureIfCurrent(
+        _ error: Error,
+        trackID: UUID,
+        generation: UInt64
+    ) {
+        guard generation == playGeneration else { return }
+        if error is CancellationError { return }
+        if case AudioFilePreparationActor.PrepError.cancelled = error { return }
+
+        // Re-acquire the current track (never captured in the Task).
+        guard let track = currentTrack, track.id == trackID else { return }
+
+        switch error {
+        case AudioFilePreparationActor.PrepError.missingFile,
+             AudioFilePreparationActor.PrepError.bookmarkUnresolved:
+            // Resolution failed: mark missing (matches old resolveFileURL path).
+            track.availability = .missing
+        case AudioFilePreparationActor.PrepError.openFailed:
+            // Resolved but failed to open: keep availability (matches old catch).
+            break
+        default:
+            break
+        }
+
+        Log.error(
+            "[PlaybackPipeline] prepare failed track=\(track.id.uuidString) title=\(track.title) error=\(error)",
+            category: .audio
+        )
+        stopAccessingCurrentFile()
+        isPlaying = false
     }
 
     func pause() {
@@ -475,6 +636,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             "[PlaybackPipeline] stopPlayback clearQueue=\(clearQueue) currentTrack=\(currentTrack?.id.uuidString ?? "nil") operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
             category: .audio
         )
+        invalidatePreparation()
         cancelPendingCompletion()
         invalidateScheduleToken()
         playerNode.stop()
@@ -730,8 +892,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private func stopAccessingCurrentFile() {
         if let url = currentFileURL {
-            url.stopAccessingSecurityScopedResource()
+            if currentFileSecurityScoped {
+                url.stopAccessingSecurityScopedResource()
+            }
             currentFileURL = nil
+            currentFileSecurityScoped = false
         }
     }
 
