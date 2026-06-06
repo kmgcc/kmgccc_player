@@ -97,7 +97,7 @@ struct DataManagementSettingsView: View {
                     SettingsSwitchRow(
                         title: "帮助改进 kmgccc_player",
                         isOn: telemetryEnabledBinding,
-                        detail: "开启后会发送匿名使用统计和错误诊断，帮助定位问题和改进稳定性。错误诊断可能包含 App 版本、系统版本、错误类型、发生模块和经过脱敏的上下文；不会上传歌曲名、歌词内容、本地文件路径、账号信息或第三方服务 Token。关闭后仅保留匿名安装计数。"
+                        detail: "开启后会发送匿名使用统计，帮助了解安装、会话、播放来源和皮肤使用情况。不会上传歌曲名、歌词内容、本地文件路径、搜索关键词、账号信息或第三方服务 Token。关闭后仅保留匿名安装计数。"
                     )
                 }
             }

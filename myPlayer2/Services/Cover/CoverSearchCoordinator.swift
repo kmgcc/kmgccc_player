@@ -83,11 +83,6 @@ final class CoverSearchCoordinator {
                         return [preferredCandidate]
                     } catch {
                         print("[CoverSearchCoordinator] NetEase preferred candidate failed: \(error)")
-                        Self.recordCoverLookupFailure(
-                            provider: .netease,
-                            operation: "download",
-                            error: error
-                        )
                         return []
                     }
                 }
@@ -105,11 +100,6 @@ final class CoverSearchCoordinator {
                         }
                     } catch {
                         print("[CoverSearchCoordinator] NetEase candidates failed: \(error)")
-                        Self.recordCoverLookupFailure(
-                            provider: .netease,
-                            operation: "search",
-                            error: error
-                        )
                         return []
                     }
                 }
@@ -133,11 +123,6 @@ final class CoverSearchCoordinator {
                         return [candidate]
                     } catch {
                         print("[CoverSearchCoordinator] Sacad failed: \(error)")
-                        Self.recordCoverLookupFailure(
-                            provider: .unknown,
-                            operation: "download",
-                            error: error
-                        )
                         return []
                     }
                 }
@@ -157,11 +142,6 @@ final class CoverSearchCoordinator {
                         }
                     } catch {
                         print("[CoverSearchCoordinator] QQMusic candidates failed: \(error)")
-                        Self.recordCoverLookupFailure(
-                            provider: .qqmusic,
-                            operation: "search",
-                            error: error
-                        )
                         return []
                     }
                 }
@@ -182,7 +162,6 @@ final class CoverSearchCoordinator {
             guard !Task.isCancelled else { return }
             if candidates.isEmpty {
                 error = NSLocalizedString("cover.no_results", comment: "No cover found")
-                Self.recordCoverNoResults()
             }
         }
     }
@@ -246,70 +225,4 @@ final class CoverSearchCoordinator {
         selectedForPreview = merged.first
     }
 
-    nonisolated private static func recordCoverLookupFailure(
-        provider: DiagnosticsProvider,
-        operation: String,
-        error: Error
-    ) {
-        let errorCode = DiagnosticsErrorMapper.code(for: error)
-        var context: DiagnosticsContext = [
-            "artwork_source": .string("provider"),
-            "provider": .string(provider.rawValue),
-            "operation": .string(operation),
-            "result_count_bucket": .string("0"),
-            "retry_count": .int(0),
-            "cache_hit": .bool(false),
-            "fallback_used": .bool(false),
-            "error_code": .string(errorCode)
-        ]
-        if let httpStatus = diagnosticsHTTPStatus(from: error) {
-            context["http_status"] = .int(httpStatus)
-            context["provider_rate_limited"] = .bool(httpStatus == 429)
-        }
-        let isDecodeFailure = errorCode.contains("decode") || errorCode.contains("invalid_image")
-        if isDecodeFailure {
-            context["decode_error_code"] = .string(errorCode)
-        } else {
-            context["network_error_code"] = .string(errorCode)
-        }
-        DiagnosticsService.recordAsync(
-            level: .warning,
-            subsystem: .artwork,
-            category: isDecodeFailure ? .decode : .providerFailure,
-            stage: isDecodeFailure ? .artworkDecode : (operation == "download" ? .artworkDownload : .artworkSearch),
-            provider: provider,
-            messageCode: errorCode,
-            context: context
-        )
-    }
-
-    nonisolated private static func recordCoverNoResults() {
-        DiagnosticsService.recordAsync(
-            level: .warning,
-            subsystem: .artwork,
-            category: .noResults,
-            stage: .artworkSearch,
-            provider: .unknown,
-            messageCode: "cover_search_no_results",
-            context: [
-                "artwork_source": .string("provider"),
-                "operation": .string("search"),
-                "result_count_bucket": .string("0"),
-                "retry_count": .int(0),
-                "cache_hit": .bool(false),
-                "fallback_used": .bool(false)
-            ]
-        )
-    }
-
-    nonisolated private static func diagnosticsHTTPStatus(from error: Error) -> Int? {
-        let nsError = error as NSError
-        guard (100...599).contains(nsError.code) else { return nil }
-        switch nsError.domain {
-        case "NetEaseCoverService", NSURLErrorDomain:
-            return nsError.code
-        default:
-            return nil
-        }
-    }
 }

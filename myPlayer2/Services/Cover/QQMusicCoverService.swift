@@ -252,7 +252,6 @@ actor QQMusicCoverService {
             } catch {
                 firstError = error
                 Log.warning("[QQMusicCover] track search failed: \(error)", category: .import)
-                Self.recordArtworkDownloadFailure(error: error, operation: "search", httpStatus: nil)
             }
         }
 
@@ -275,7 +274,6 @@ actor QQMusicCoverService {
             } catch {
                 firstError = firstError ?? error
                 Log.warning("[QQMusicCover] album search failed: \(error)", category: .import)
-                Self.recordArtworkDownloadFailure(error: error, operation: "search", httpStatus: nil)
             }
         }
 
@@ -311,7 +309,6 @@ actor QQMusicCoverService {
 
     private func imageData(for imageURLString: String) async throws -> Data {
         guard let sanitizedURLString = sanitizeImageURL(imageURLString) else {
-            Self.recordArtworkDownloadFailure(error: QQMusicCoverError.badURL, operation: "download", httpStatus: nil)
             throw QQMusicCoverError.badURL
         }
 
@@ -324,7 +321,6 @@ actor QQMusicCoverService {
         }
 
         guard let imageURL = URL(string: sanitizedURLString) else {
-            Self.recordArtworkDownloadFailure(error: QQMusicCoverError.badURL, operation: "download", httpStatus: nil)
             throw QQMusicCoverError.badURL
         }
 
@@ -332,24 +328,14 @@ actor QQMusicCoverService {
         do {
             (data, response) = try await session.data(from: imageURL)
         } catch {
-            Self.recordArtworkDownloadFailure(error: error, operation: "download", httpStatus: nil)
             throw error
         }
-        let httpStatus = (response as? HTTPURLResponse)?.statusCode
         do {
             try Self.validateHTTP(response)
         } catch {
-            Self.recordArtworkDownloadFailure(error: error, operation: "download", httpStatus: httpStatus)
             throw error
         }
         guard ArtworkDataNormalizer.isDecodableImage(data) else {
-            Self.recordArtworkDownloadFailure(
-                error: QQMusicCoverError.imageDownloadFailed,
-                operation: "decode",
-                httpStatus: httpStatus,
-                imageFormat: DiagnosticsSafeContext.imageFormat(from: data),
-                imageSizeBucket: DiagnosticsSafeContext.imageSizeBucket(from: data)
-            )
             throw QQMusicCoverError.imageDownloadFailed
         }
 
@@ -365,62 +351,8 @@ actor QQMusicCoverService {
         return data
     }
 
-    private nonisolated static func recordArtworkDownloadFailure(
-        error: Error,
-        operation: String,
-        httpStatus: Int?,
-        imageFormat: String = "unknown",
-        imageSizeBucket: String = "unknown"
-    ) {
-        let errorCode = DiagnosticsErrorMapper.code(for: error)
-        let isDecodeFailure = operation == "decode" || errorCode.contains("image")
-        var context: DiagnosticsContext = [
-            "artwork_source": .string("provider"),
-            "operation": .string(operation),
-            "result_count_bucket": .string("0"),
-            "retry_count": .int(0),
-            "cache_hit": .bool(false),
-            "fallback_used": .bool(false),
-            "error_code": .string(errorCode)
-        ]
-        if let httpStatus {
-            context["http_status"] = .int(httpStatus)
-            context["provider_rate_limited"] = .bool(httpStatus == 429)
-        }
-        if isDecodeFailure {
-            context["decode_error_code"] = .string(errorCode)
-            context["image_format"] = .string(imageFormat)
-            context["image_size_bucket"] = .string(imageSizeBucket)
-        } else {
-            context["network_error_code"] = .string(errorCode)
-        }
-        DiagnosticsService.recordAsync(
-            level: .warning,
-            subsystem: .artwork,
-            category: isDecodeFailure ? .decode : .providerFailure,
-            stage: isDecodeFailure ? .artworkDecode : (operation == "search" ? .artworkSearch : .artworkDownload),
-            provider: .qqmusic,
-            messageCode: "qqmusic_\(errorCode)",
-            context: context
-        )
-    }
-
     private nonisolated static func recordArtworkCacheFailure(error: Error) {
-        DiagnosticsService.recordAsync(
-            level: .warning,
-            subsystem: .artwork,
-            category: .fileIO,
-            stage: .artworkCache,
-            provider: .qqmusic,
-            messageCode: "qqmusic_artwork_cache_failed",
-            context: [
-                "artwork_source": .string("provider"),
-                "operation": .string("cache"),
-                "cache_hit": .bool(false),
-                "fallback_used": .bool(false),
-                "error_code": .string(DiagnosticsErrorMapper.code(for: error))
-            ]
-        )
+        Log.warning("[QQMusicCoverService] failed to write artwork cache: \(error.localizedDescription)", category: .import)
     }
 
     private nonisolated func sanitizeImageURL(_ rawValue: String) -> String? {

@@ -171,7 +171,6 @@ final class TelemetryService: NSObject {
             enqueueInstallSeenIfNeeded()
             startSessionIfNeeded()
             flushQueue()
-            DiagnosticsService.shared.handleTelemetryConsentChanged(true)
         } else {
             Log.info("[Telemetry] anonymous telemetry disabled", category: .telemetry)
             uploadTask?.cancel()
@@ -183,7 +182,6 @@ final class TelemetryService: NSObject {
             recoveryStore.clear()
             enqueueInstallSeenIfNeeded()
             flushInstallSeenQueue()
-            DiagnosticsService.shared.handleTelemetryConsentChanged(false)
         }
     }
 

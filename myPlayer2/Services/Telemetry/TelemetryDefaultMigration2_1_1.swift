@@ -22,14 +22,14 @@
 import Foundation
 
 enum TelemetryDefaultMigration2_1_1 {
-    /// Shared with `TelemetryService` / `DiagnosticsService` / the Settings toggle.
+    /// Shared with `TelemetryService` / the Settings toggle.
     private static let consentKey = "telemetry.anonymousUsageEnabled"
     /// Dedicated flag so the correction runs at most once, even if the user later opts out.
     private static let didRunKey = "telemetry.defaultOnMigration.2_1_1.didRun"
     private static let targetVersion = AppVersion(major: 2, minor: 1, patch: 1)
 
     /// Runs the one-time consent default correction if applicable. Must be called
-    /// before `TelemetryService`/`DiagnosticsService` read consent at launch.
+    /// before `TelemetryService` reads consent at launch.
     static func runIfNeeded(defaults: UserDefaults = .standard) {
         guard AppVersion.current == targetVersion else { return }
         guard !defaults.bool(forKey: didRunKey) else { return }
