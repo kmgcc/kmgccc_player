@@ -60,6 +60,7 @@ actor LRCConverterService {
         "Lyrics:", "Music:", "Arrangement:", "Producer:",
         "Recording:", "Mixing:", "Mastering:",
         "版权", "未经许可", "不得翻唱", "不得使用",
+        "文曲大模型", "歌词翻译由", "翻译由",
         "TME", "QQ音乐", "网易云音乐", "酷狗", "酷我", "LDDC", "lddc", "tool:",
         "TME享有本翻译作品的著作权"
     ]
@@ -79,7 +80,8 @@ actor LRCConverterService {
         "Dario", "吉他", "出品", "制作", "发行", "OP", "SP", "词", "曲",
         "作词", "作曲", "编曲", "录音", "混音", "母带", "监制", "制作人",
         "和声", "统筹", "企划", "封面", "Lyrics", "Music", "Arrangement",
-        "Producer", "Recording", "Mixing", "Mastering", "Studio", "Label", "Records"
+        "Producer", "Recording", "Mixing", "Mastering", "Studio", "Label", "Records",
+        "Lyrics by", "Composed by"
     ]
 
     private let strictInfoSymbols: [String] = ["@", "Studio", "Records", "Label", "Copyright", "©"]
@@ -267,6 +269,7 @@ actor LRCConverterService {
     private func isStrictSongInfoLine(_ trimmedText: String, allowShortSymbolOnly: Bool = true) -> Bool {
         if trimmedText.hasPrefix("*") { return true }
         if allowShortSymbolOnly && isShortSymbolOnlyLine(trimmedText) { return true }
+        if matchesCompactedInfoFieldLine(trimmedText) { return true }
 
         for keyword in strictSongInfoKeywords {
             if trimmedText.localizedCaseInsensitiveContains(keyword) { return true }
@@ -325,12 +328,58 @@ actor LRCConverterService {
 
         return false
     }
+
+    private func matchesCompactedInfoFieldLine(_ trimmedText: String) -> Bool {
+        let compacted = trimmedText
+            .filter { !$0.isWhitespace }
+            .replacingOccurrences(of: "：", with: ":")
+            .lowercased()
+
+        let prefixes = [
+            "lyricsby:",
+            "composedby:",
+            "musicby:",
+            "arrangementby:",
+            "producedby:",
+            "recordingby:",
+            "mixedby:",
+            "masteredby:"
+        ]
+        if prefixes.contains(where: { compacted.hasPrefix($0) }) {
+            return true
+        }
+
+        return false
+    }
+
+    private func isLikelyIntroTitleCreditLine(_ lineData: LyricLine, lineIndex: Int) -> Bool {
+        guard lineIndex < 3, lineData.segments.count >= 3 else { return false }
+        let combined = lineData.segments.map(\.text).joined(separator: " ")
+        guard combined.contains("-") || combined.contains("—") || combined.contains("–") else {
+            return false
+        }
+
+        let lyricWords = ["can", "we", "the", "let", "all", "of", "my", "your", "and", "is", "are", "i", "you"]
+        let lowercased = combined.lowercased()
+        if lyricWords.contains(where: { lowercased.split(separator: " ").contains(Substring($0)) }) {
+            return false
+        }
+
+        return lineData.segments.allSatisfy { segment in
+            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !text.isEmpty && text.allSatisfy { $0.isLetter || $0.isNumber || $0.isPunctuation || $0.isSymbol }
+        }
+    }
     
     private func filterSongInfoLines(_ lyricsData: [LyricLine]) -> [LyricLine] {
         lyricsData.enumerated().compactMap { index, lineData in
             let combinedText = lineData.segments.map(\.text).joined()
             if index < 10,
-               isShortSymbolOnlyLine(combinedText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+               isStrictSongInfoLine(combinedText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return nil
+            }
+
+            if isLikelyIntroTitleCreditLine(lineData, lineIndex: index) {
                 return nil
             }
 

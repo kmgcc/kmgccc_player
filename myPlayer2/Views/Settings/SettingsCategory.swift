@@ -12,6 +12,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
     case appearance
     case nowPlaying
     case fullscreen
+    case audio
     case externalPlayback
     case data
     case about
@@ -23,6 +24,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .appearance: return "外观"
         case .nowPlaying: return "settings.section.now_playing"
         case .fullscreen: return "全屏播放"
+        case .audio: return "音频"
         case .externalPlayback: return "外部播放"
         case .data: return "数据"
         case .about: return "settings.section.about"
@@ -34,6 +36,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
         case .appearance: return "paintpalette"
         case .nowPlaying: return "sparkles"
         case .fullscreen: return "arrow.up.left.and.arrow.down.right"
+        case .audio: return "waveform"
         case .externalPlayback: return "music.note.tv"
         case .data: return "arrow.counterclockwise.circle"
         case .about: return "info.circle"
