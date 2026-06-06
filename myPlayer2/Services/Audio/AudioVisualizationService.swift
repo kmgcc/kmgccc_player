@@ -422,7 +422,9 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         static let knee: Float = 0.68 // Knee point for transition to compression
         static let hard: Float = 0.33  // Compression strength for high-level signals
         static let cubicPower: Float = 3.0
-        static let attack: Float = 0.47
+        // Faster rise so bars track transients with less lag; release unchanged
+        // to preserve the existing smooth fall / anti-flicker feel.
+        static let attack: Float = 0.6
         static let release: Float = 0.35
         // 4. Per-band Small Gates
         static let bandGates: [Float] = [
