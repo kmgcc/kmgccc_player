@@ -95,6 +95,8 @@ struct SettingsView: View {
                     NowPlayingSettingsContainerView()
                 case .fullscreen:
                     FullscreenSettingsContainerView()
+                case .audio:
+                    AudioSettingsView()
                 case .externalPlayback:
                     ExternalPlaybackSettingsView()
                 case .data:
