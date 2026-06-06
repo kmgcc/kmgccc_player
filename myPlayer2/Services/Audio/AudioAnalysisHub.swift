@@ -17,9 +17,16 @@ nonisolated public struct AudioAnalysisData: Sendable {
     public let magnitudes: [Float]  // Frequency domain (0...Nyquist)
     public let sampleRate: Float
     public let fftSize: Int
-    // Optional: Pre-calculated metrics if cheap (RMS, Peak)
+    // Pre-calculated metrics over the full FFT window (~46ms). Cheap; kept for
+    // spectrum / dB consumers that want a stable averaged level.
     public let rms: Float
     public let peak: Float
+    // Low-latency time-domain envelope over only the most recent `fastWindow`
+    // samples (~12ms). LED / volume / bass-pulse consumers read these so a
+    // transient lights up without waiting for the full 2048-sample average.
+    public let fastRMS: Float
+    public let fastPeak: Float
+    public let fastWindow: Int
 }
 
 nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
@@ -30,6 +37,18 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     )
 
     private let fftSize: Int = 2048
+    // Tap delivery granularity. Smaller than the FFT window so fresh samples
+    // reach the ring buffer ~2x faster (≈23ms vs ≈46ms), which directly lowers
+    // the latency floor of every downstream visual. The 2048-point FFT still
+    // reads the most recent 2048 samples out of the ring, so spectral
+    // resolution is unchanged. The tap callback only memcpys into the ring, so
+    // firing it more often is negligible CPU.
+    private let tapBufferSize: AVAudioFrameCount = 1024
+    // Window (in samples) for the low-latency time-domain envelope (fastRMS /
+    // fastPeak). 512 @ 44.1kHz ≈ 11.6ms — short enough that a kick/snare
+    // transient drives the LED meter almost immediately instead of being
+    // diluted across the 46ms FFT window.
+    private let fastEnvelopeWindow: Int = 512
     private nonisolated(unsafe) var window: [Float]
     private nonisolated(unsafe) var fftSetup: FFTSetup?
     private nonisolated(unsafe) var log2n: vDSP_Length = 0
@@ -106,7 +125,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
             }
 
             let format = mixer.outputFormat(forBus: 0)
-            let bufferSize: AVAudioFrameCount = AVAudioFrameCount(fftSize)
+            let bufferSize: AVAudioFrameCount = tapBufferSize
 
             installTapLocked(on: mixer, format: format, bufferSize: bufferSize)
             isInstalled = true
@@ -168,7 +187,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         }
 
         let format = mixer.outputFormat(forBus: 0)
-        let bufferSize: AVAudioFrameCount = AVAudioFrameCount(fftSize)
+        let bufferSize: AVAudioFrameCount = tapBufferSize
         installTapLocked(on: mixer, format: format, bufferSize: bufferSize)
         isInstalled = true
         stateLock.unlock()
@@ -194,7 +213,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         }
 
         let format = mixer.outputFormat(forBus: 0)
-        let bufferSize: AVAudioFrameCount = AVAudioFrameCount(fftSize)
+        let bufferSize: AVAudioFrameCount = tapBufferSize
         installTapLocked(on: mixer, format: format, bufferSize: bufferSize)
         isInstalled = true
         stateLock.unlock()
@@ -377,11 +396,26 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         }
         ringLock.unlock()  // Release lock ASAP
 
-        // 2. Pre-calculate metrics (Time Domain)
+        // 2. Pre-calculate metrics (Time Domain).
+        // Done BEFORE windowing so the envelope reflects the raw signal level.
         var rms: Float = 0
         vDSP_rmsqv(fftInput, 1, &rms, vDSP_Length(fftSize))
         var peak: Float = 0
         vDSP_maxmgv(fftInput, 1, &peak, vDSP_Length(fftSize))
+
+        // 2b. Low-latency envelope over only the most recent samples. fftInput is
+        // ordered oldest→newest (fftInput[fftSize-1] is the freshest sample), so
+        // the tail slice is the newest ~12ms. Two vDSP passes over 512 floats is
+        // a few microseconds — effectively free.
+        let fastWindow = min(fastEnvelopeWindow, fftSize)
+        var fastRMS: Float = rms
+        var fastPeak: Float = peak
+        fftInput.withUnsafeBufferPointer { ptr in
+            guard let base = ptr.baseAddress else { return }
+            let tail = base + (fftSize - fastWindow)
+            vDSP_rmsqv(tail, 1, &fastRMS, vDSP_Length(fastWindow))
+            vDSP_maxmgv(tail, 1, &fastPeak, vDSP_Length(fastWindow))
+        }
 
         // 3. Windowing
         vDSP_vmul(fftInput, 1, window, 1, &fftInput, 1, vDSP_Length(fftSize))
@@ -412,7 +446,10 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
             sampleRate: sampleRate,
             fftSize: fftSize,
             rms: rms,
-            peak: peak
+            peak: peak,
+            fastRMS: fastRMS,
+            fastPeak: fastPeak,
+            fastWindow: fastWindow
         )
 
         consumerLock.lock()

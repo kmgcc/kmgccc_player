@@ -135,8 +135,10 @@ nonisolated final class LEDMeterProcessor: @unchecked Sendable {
     private let bandCount: Int = 8
     private let dbFloor: Float = -60
     private let dbCeil: Float = -6.0
-    private let baseAttack: Double = 0.015
-    private let baseRelease: Double = 0.08
+    // Asymmetric envelope: near-instant rise so transients (kick/snare) light
+    // the meter immediately, slow release for visual inertia / anti-flicker.
+    private let baseAttack: Double = 0.008
+    private let baseRelease: Double = 0.14
 
     private var config: LEDMeterConfig
 
@@ -239,15 +241,41 @@ nonisolated final class LEDMeterProcessor: @unchecked Sendable {
             }
         }
 
-        return analyze(magnitudes: fftMagnitudes, rms: rms, peak: peak)
+        // Legacy ring-buffer path: no separate short window, so the level
+        // envelope falls back to the full-window RMS/peak.
+        return analyze(
+            magnitudes: fftMagnitudes,
+            rms: rms,
+            peak: peak,
+            levelRMS: rms,
+            levelPeak: peak
+        )
     }
 
     func process(data: AudioAnalysisData) -> (led: LEDMeterMetrics, audio: AudioMetrics) {
         sampleRate = data.sampleRate
-        return analyze(magnitudes: data.magnitudes, rms: data.rms, peak: data.peak)
+        return analyze(
+            magnitudes: data.magnitudes,
+            rms: data.rms,
+            peak: data.peak,
+            levelRMS: data.fastRMS,
+            levelPeak: data.fastPeak
+        )
     }
 
-    private func analyze(magnitudes: [Float], rms: Float, peak: Float) -> (
+    /// `levelRMS` / `levelPeak` drive the LED level/volume envelope. They are the
+    /// hub's low-latency short-window envelope (≈12ms) so the meter tracks
+    /// transients without the lag of the full 46ms FFT window. `rms` / `peak`
+    /// (full window) still feed the published `AudioMetrics` dB fields, leaving
+    /// mesh / dB consumers unchanged. The legacy ring-buffer path passes the
+    /// full-window values for both (no separate fast window available there).
+    private func analyze(
+        magnitudes: [Float],
+        rms: Float,
+        peak: Float,
+        levelRMS: Float,
+        levelPeak: Float
+    ) -> (
         led: LEDMeterMetrics, audio: AudioMetrics
     ) {
         let currentConfig = withConfig()
@@ -263,8 +291,9 @@ nonisolated final class LEDMeterProcessor: @unchecked Sendable {
         let bin3000 = min(max(1, Int(ceil(3000.0 / binHz))), nyquistBins)
 
         // ── Perceptual volume mapping (time-domain mixed signal) ──
-        // Use RMS-heavy mix with peak contribution for robust level detection.
-        let mixed = 0.75 * rms + 0.25 * peak
+        // Use the low-latency short-window envelope so transients drive the LED
+        // level immediately. RMS-heavy with a peak contribution for robustness.
+        let mixed = 0.75 * levelRMS + 0.25 * levelPeak
 
         // Convert to dB
         let mixedDb = 20.0 * log10f(max(mixed, 1e-7))
@@ -324,14 +353,19 @@ nonisolated final class LEDMeterProcessor: @unchecked Sendable {
         let now = Date().timeIntervalSinceReferenceDate
         let ledMetrics = LEDMeterMetrics(timestamp: now, level: env, leds: leds)
 
-        // AudioMetrics (bands for skins)
+        // AudioMetrics (bands for skins). Asymmetric smoothing: fast attack so a
+        // kick punches through to bassEnergy / mesh bass-impact promptly, slower
+        // release for inertia.
         let bands = computeBands(power: fftMagnitudes, bandCount: bandCount)
-        let smoothing: Float = 0.25
+        let bandAttack: Float = 0.6
+        let bandRelease: Float = 0.2
         if smoothedBands.count != bands.count {
             smoothedBands = [Float](repeating: 0, count: bands.count)
         }
         for idx in bands.indices {
-            smoothedBands[idx] += (bands[idx] - smoothedBands[idx]) * smoothing
+            let target = bands[idx]
+            let coeff = target > smoothedBands[idx] ? bandAttack : bandRelease
+            smoothedBands[idx] += (target - smoothedBands[idx]) * coeff
         }
 
         let bassEnergy: Float
