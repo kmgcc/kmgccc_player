@@ -260,10 +260,11 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     func setPlaying(_ playing: Bool) {
         stateLock.lock()
         if playing {
-            if isPlaying && !pauseLingerActive {
-                stateLock.unlock()
-                return
-            }
+            // Always re-evaluate the timer on a play signal, even when already
+            // marked playing. `updateTimerState()` is idempotent — it starts the
+            // timer only if it should run and isn't already — so a redundant
+            // `setPlaying(true)` self-heals a chain whose timer was left stopped
+            // by a teardown / engine-reconfig / resume race.
             isPlaying = true
             pauseLingerActive = false
             pauseLingerGeneration &+= 1

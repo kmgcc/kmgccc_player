@@ -49,6 +49,13 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     /// True while the tick loop is frozen because playback is paused and the
     /// idle pose has settled. Cleared (and the timer restarted) on resume.
     private var isIdleSuspended = false
+    /// Last play-state delivered by any consumer. Persists across start/stop so
+    /// a fresh `startLocked()` (triggered by ref-count churn while audio is
+    /// actually playing) restores the real state instead of assuming paused.
+    /// Without this, a consumer re-appearing mid-playback would reset
+    /// `isPlaying = false`, idle-suspend after ~0.8s, and freeze every spectrum
+    /// surface (incl. the LED skin capsules) at the dim idle pose.
+    private var lastObservedPlaying: Bool = false
 
     private var liveWave: [Float] = Array(repeating: 0, count: Constants.bandCount)
     private var outputWave: [Float] = Array(repeating: 0, count: Constants.bandCount)
@@ -101,18 +108,27 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         hub.setPlaying(isPlaying)
         processingQueue.async { [weak self] in
             guard let self else { return }
-            guard self.isPlaying != isPlaying else { return }
+            // Always record the latest known state so a later `startLocked()`
+            // (ref-count churn) restores it instead of assuming paused.
+            self.lastObservedPlaying = isPlaying
 
-            self.isPlaying = isPlaying
             if isPlaying {
+                // Force-wake: clear paused / idle-suspended state and make sure
+                // the tick is running whenever playback is active. Idempotent and
+                // NOT blocked by a stale `isPlaying`/suspended flag, so a resume
+                // that arrives after a teardown race still revives the spectrum.
+                self.isPlaying = true
                 self.pauseStartTime = nil
-                // Resume the idle-suspended tick loop so the spectrum returns.
-                if self.isIdleSuspended, self.isRunning {
+                if self.isRunning, self.isIdleSuspended || self.timer == nil {
                     self.isIdleSuspended = false
                     self.startTimerLocked()
                 }
-            } else if self.pauseStartTime == nil {
-                self.pauseStartTime = Date().timeIntervalSinceReferenceDate
+            } else {
+                guard self.isPlaying else { return }
+                self.isPlaying = false
+                if self.pauseStartTime == nil {
+                    self.pauseStartTime = Date().timeIntervalSinceReferenceDate
+                }
             }
         }
     }
@@ -157,9 +173,19 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         pendingStopWorkItem = nil
         let now = Date().timeIntervalSinceReferenceDate
         isRunning = true
-        isPlaying = false
-        pauseStartTime = now        // allow idle-suspend even if started paused
+        // Restore the last known play-state rather than assuming paused. Only arm
+        // the idle-suspend countdown when we actually believe playback is paused;
+        // otherwise a restart during active playback (consumer churn) would freeze
+        // the spectrum at the idle pose even though audio is playing.
+        isPlaying = lastObservedPlaying
+        pauseStartTime = lastObservedPlaying ? nil : now
         isIdleSuspended = false
+        if LogConfig.perfDebugEnabled {
+            Log.debug(
+                "[AudioViz] startLocked restored playing=\(lastObservedPlaying)",
+                category: .audio
+            )
+        }
         processor.reset()
         liveWave = Array(repeating: 0, count: Constants.bandCount)
         outputWave = Array(repeating: 0, count: Constants.bandCount)

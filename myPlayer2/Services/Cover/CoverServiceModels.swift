@@ -72,9 +72,11 @@ nonisolated func withCoverLookupTimeout<T: Sendable>(
     _ seconds: TimeInterval,
     operation: @escaping @Sendable () async throws -> T
 ) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
+    try Task.checkCancellation()
+    return try await withThrowingTaskGroup(of: T.self) { group in
         group.addTask {
-            try await operation()
+            try Task.checkCancellation()
+            return try await operation()
         }
         group.addTask {
             let timeoutNanoseconds = UInt64(seconds * 1_000_000_000)
@@ -84,6 +86,7 @@ nonisolated func withCoverLookupTimeout<T: Sendable>(
 
         let result = try await group.next()!
         group.cancelAll()
+        try Task.checkCancellation()
         return result
     }
 }

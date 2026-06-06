@@ -84,6 +84,17 @@ struct LyricsSearchHelper {
         amlldbLimit: Int = 20,
         lddcLimitPerSource: Int = 5
     ) async -> SearchResult {
+        guard !Task.isCancelled else {
+            return SearchResult(
+                candidates: [],
+                amlldbCount: 0,
+                lddcCount: 0,
+                topCandidate: nil,
+                queryTitle: title,
+                queryArtist: artist,
+                queryAlbum: album
+            )
+        }
         Self.logger.debug("[LyricsSearchHelper] Starting full search - title: '\(title)', artist: '\(artist ?? "nil")', album: '\(album ?? "nil")'")
 
         // Run AMLLDB and LDDC searches in parallel
@@ -106,6 +117,17 @@ struct LyricsSearchHelper {
 
         let amlldbResults = await amlldbTask
         let lddcResults = await lddcTask
+        guard !Task.isCancelled else {
+            return SearchResult(
+                candidates: [],
+                amlldbCount: amlldbResults.count,
+                lddcCount: lddcResults.count,
+                topCandidate: nil,
+                queryTitle: title,
+                queryArtist: artist,
+                queryAlbum: album
+            )
+        }
 
         Self.logger.debug("[LyricsSearchHelper] Raw results: AMLLDB=\(amlldbResults.count), LDDC=\(lddcResults.count)")
 
@@ -163,6 +185,7 @@ struct LyricsSearchHelper {
         duration: Double?,
         limit: Int
     ) async -> [LDDCCandidate] {
+        guard !Task.isCancelled else { return [] }
         let amlldbService = AMLLDBService.shared
 
         // Ensure index is ready (non-blocking if already ready)
@@ -182,6 +205,7 @@ struct LyricsSearchHelper {
             duration: duration,
             limit: limit
         )
+        guard !Task.isCancelled else { return [] }
 
         Self.logger.debug("[LyricsSearchHelper] AMLLDB returned \(results.count) results")
 
@@ -199,6 +223,7 @@ struct LyricsSearchHelper {
         translation: Bool,
         limitPerSource: Int
     ) async -> [LDDCCandidate] {
+        guard !Task.isCancelled else { return [] }
         guard !sources.isEmpty else {
             Self.logger.debug("[LyricsSearchHelper] No LDDC sources selected, skipping LDDC search")
             return []
@@ -217,6 +242,7 @@ struct LyricsSearchHelper {
                 translation: translation,
                 limitPerSource: limitPerSource
             )
+            guard !Task.isCancelled else { return [] }
 
             Self.logger.debug("[LyricsSearchHelper] LDDC returned \(response.results.count) results")
 
@@ -267,6 +293,7 @@ struct LyricsSearchHelper {
         translation: Bool = true,
         stripMetadata: Bool = true
     ) async -> String? {
+        guard !Task.isCancelled else { return nil }
         Self.logger.info("[LyricsSearchHelper] Fetching lyrics for candidate: '\(candidate.title)' source=\(candidate.source)")
 
         do {
@@ -279,6 +306,7 @@ struct LyricsSearchHelper {
                 } catch {
                     throw error
                 }
+                guard !Task.isCancelled else { return nil }
                 guard let normalized = LyricsFormatSupport.normalizedTTMLText(ttml) else {
                     Self.logger.warning("[LyricsSearchHelper] AMLLDB TTML invalid: \(rawLyricFile)")
                     return nil
@@ -300,6 +328,7 @@ struct LyricsSearchHelper {
                 } catch {
                     throw error
                 }
+                guard !Task.isCancelled else { return nil }
 
                 let ttml: String
                 if let trans = transLyrics, !trans.isEmpty {
@@ -345,6 +374,7 @@ struct LyricsSearchHelper {
                 } catch {
                     throw error
                 }
+                guard !Task.isCancelled else { return nil }
                 let ttml: String
                 do {
                     ttml = try await TTMLConverter.shared.convertToTTML(
@@ -419,6 +449,15 @@ struct LyricsSearchHelper {
         minimumTopCandidateScore: Double?
     ) async -> AutomaticFetchResult {
         Self.logger.info("[LyricsSearchHelper] searchAndFetchBestLyrics called for: '\(title)' by '\(artist ?? "unknown")'")
+        guard !Task.isCancelled else {
+            return AutomaticFetchResult(
+                status: .allCandidatesFailed,
+                ttml: nil,
+                topCandidate: nil,
+                fetchedCandidate: nil,
+                threshold: minimumTopCandidateScore
+            )
+        }
 
         let searchResult = await performFullSearch(
             title: title,
@@ -456,6 +495,15 @@ struct LyricsSearchHelper {
         }
 
         for (index, candidate) in candidates.enumerated() {
+            guard !Task.isCancelled else {
+                return AutomaticFetchResult(
+                    status: .allCandidatesFailed,
+                    ttml: nil,
+                    topCandidate: topCandidate,
+                    fetchedCandidate: nil,
+                    threshold: minimumTopCandidateScore
+                )
+            }
             Self.logger.info("[LyricsSearchHelper] Trying candidate #\(index + 1)/\(candidates.count): '\(candidate.title)' source=\(candidate.source)")
             let ttml = await fetchLyricsContent(candidate: candidate)
             if let ttml, !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
