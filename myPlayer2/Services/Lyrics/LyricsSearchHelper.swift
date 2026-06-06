@@ -265,7 +265,7 @@ struct LyricsSearchHelper {
         candidate: LDDCCandidate,
         mode: LDDCMode = .verbatim,
         translation: Bool = true,
-        stripMetadata: Bool = false
+        stripMetadata: Bool = true
     ) async -> String? {
         Self.logger.info("[LyricsSearchHelper] Fetching lyrics for candidate: '\(candidate.title)' source=\(candidate.source)")
 

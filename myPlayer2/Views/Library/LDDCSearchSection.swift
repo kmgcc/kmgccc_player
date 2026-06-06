@@ -67,7 +67,7 @@ struct LDDCSearchSection: View {
     
     @State private var isApplying = false
     @State private var applyError: String?
-    @State private var stripExtraInfo = false
+    @AppStorage("lddc.stripExtraInfo") private var stripExtraInfo = true
 
     // Track current selection task to handle quick clicks
     @State private var currentSelectionTask: Task<Void, Never>?
@@ -706,7 +706,6 @@ struct LDDCSearchSection: View {
         searchError = nil
         previewError = nil
         applyError = nil
-        stripExtraInfo = false
         amlldbResults = []
         lddcResults = []
         searchResults = []
