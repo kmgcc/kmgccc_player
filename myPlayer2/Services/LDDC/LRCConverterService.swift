@@ -125,6 +125,10 @@ actor LRCConverterService {
         guard !processedLyricsData.isEmpty else {
             throw LRCConversionError.noValidLyricsData
         }
+
+        guard !isInstrumentalPlaceholderLyrics(processedLyricsData) else {
+            throw LRCConversionError.noValidLyricsData
+        }
         
         let lyricType = detectLyricType(processedLyricsData)
         
@@ -180,6 +184,10 @@ actor LRCConverterService {
         }
         
         guard !lyricsData.isEmpty else {
+            throw LRCConversionError.noValidLyricsData
+        }
+
+        guard !isInstrumentalPlaceholderLyrics(lyricsData) else {
             throw LRCConversionError.noValidLyricsData
         }
         
@@ -387,6 +395,34 @@ actor LRCConverterService {
                 isSongInfoLine($0.text, lineIndex: index, allowShortSymbolOnly: false)
             }
             return hasSongInfo ? nil : lineData
+        }
+    }
+
+    private func isInstrumentalPlaceholderLyrics(_ lyricsData: [LyricLine]) -> Bool {
+        let normalizedLines = lyricsData
+            .map { lineData in
+                normalizeInstrumentalPlaceholderText(lineData.segments.map(\.text).joined())
+            }
+            .filter { !$0.isEmpty }
+
+        guard (1...2).contains(normalizedLines.count) else { return false }
+
+        let combinedText = normalizedLines.joined()
+        return isInstrumentalPlaceholderText(combinedText)
+            || normalizedLines.allSatisfy(isInstrumentalPlaceholderText)
+    }
+
+    private func isInstrumentalPlaceholderText(_ normalizedText: String) -> Bool {
+        normalizedText == "纯音乐请欣赏"
+            || normalizedText == "纯音乐敬请欣赏"
+    }
+
+    private func normalizeInstrumentalPlaceholderText(_ text: String) -> String {
+        text.precomposedStringWithCompatibilityMapping.unicodeScalars.reduce(into: "") { result, scalar in
+            let character = Character(scalar)
+            if character.isLetter || character.isNumber {
+                result.unicodeScalars.append(scalar)
+            }
         }
     }
     
