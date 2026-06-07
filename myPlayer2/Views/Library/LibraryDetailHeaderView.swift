@@ -28,6 +28,11 @@ extension EnvironmentValues {
     }
 }
 
+private func clearCurrentTextInputFocus() {
+    let candidateWindow = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first
+    candidateWindow?.makeFirstResponder(nil)
+}
+
 private struct HeaderArtworkBoundsReporter: View {
     let onChange: (CGRect) -> Void
 

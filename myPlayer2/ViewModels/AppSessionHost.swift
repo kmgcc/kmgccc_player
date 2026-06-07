@@ -320,7 +320,7 @@ final class AppSessionHost: ObservableObject {
                 FirstUseHitchDiagnostics.end(token)
             }
 
-            try? await Task.sleep(for: .milliseconds(isPlaying ? 3_000 : 1_800))
+            try? await Task.sleep(for: .milliseconds(1_100))
             guard !Task.isCancelled else { return }
 
             await self.prewarmLyricsSurfaceWhenPlaybackQuiet(
@@ -703,9 +703,10 @@ private final class MainThreadStallMonitor {
             let isPlaying = state?.isPlaying ?? false
             let trackPrefix = state?.trackIDPrefix ?? "n/a"
             let surface = state?.activeSurface ?? "n/a"
+            let contextMenu = ContextMenuDiagnostics.currentStateDescription()
 
             Log.warning(
-                "[MainThreadStall] delayMs=\(String(format: "%.1f", delayMs)) severity=\(severity) thread=main operationStack=[\(stack)] recentEvents=[\(recent)] isPlaying=\(isPlaying) trackID=\(trackPrefix) surface=\(surface)",
+                "[MainThreadStall] delayMs=\(String(format: "%.1f", delayMs)) severity=\(severity) thread=main operationStack=[\(stack)] recentEvents=[\(recent)] isPlaying=\(isPlaying) trackID=\(trackPrefix) surface=\(surface) contextMenu=[\(contextMenu)]",
                 category: .perf
             )
         }

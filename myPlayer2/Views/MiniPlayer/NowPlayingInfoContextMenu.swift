@@ -17,14 +17,57 @@ struct TrackActionMenuContent: View {
     var onRemoveFromCurrentPlaylist: ((Track) -> Void)?
     var showsPlay: Bool = true
     var showsNavigation: Bool = true
+    var diagnosticSurface: String = "TrackContextMenu"
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
 
+    init(
+        track: Track,
+        canSelectMultiple: Bool = false,
+        selectedPlaylistID: UUID? = nil,
+        onSelectMultiple: (() -> Void)? = nil,
+        onPlay: @escaping () -> Void,
+        onEditTrack: @escaping (Track) -> Void,
+        onRemoveFromCurrentPlaylist: ((Track) -> Void)? = nil,
+        showsPlay: Bool = true,
+        showsNavigation: Bool = true,
+        diagnosticSurface: String = "TrackContextMenu"
+    ) {
+        let token = FirstUseHitchDiagnostics.begin(
+            "TrackActionMenuContent.init",
+            detail: "surface=\(diagnosticSurface), track=\(FirstUseHitchDiagnostics.trackIDPrefix(track.id))"
+        )
+        FirstUseHitchDiagnostics.end(token)
+
+        self.track = track
+        self.canSelectMultiple = canSelectMultiple
+        self.selectedPlaylistID = selectedPlaylistID
+        self.onSelectMultiple = onSelectMultiple
+        self.onPlay = onPlay
+        self.onEditTrack = onEditTrack
+        self.onRemoveFromCurrentPlaylist = onRemoveFromCurrentPlaylist
+        self.showsPlay = showsPlay
+        self.showsNavigation = showsNavigation
+        self.diagnosticSurface = diagnosticSurface
+    }
+
     var body: some View {
+        FirstUseHitchDiagnostics.measure(
+            "TrackActionMenuContent.body",
+            detail: "surface=\(diagnosticSurface), track=\(trackIDPrefix), playlists=\(libraryVM.playlists.count)"
+        ) {
+            menuBody
+        }
+    }
+
+    @ViewBuilder
+    private var menuBody: some View {
         if canSelectMultiple, let onSelectMultiple {
             Button {
-                onSelectMultiple()
+                invokeAction("selectMultiple") {
+                    onSelectMultiple()
+                }
             } label: {
                 Label("多选歌曲…", systemImage: "checkmark.circle")
             }
@@ -34,7 +77,9 @@ struct TrackActionMenuContent: View {
 
         if showsPlay {
             Button {
-                onPlay()
+                invokeAction("play") {
+                    onPlay()
+                }
             } label: {
                 Label("播放", systemImage: "play")
             }
@@ -43,28 +88,7 @@ struct TrackActionMenuContent: View {
         }
 
         Menu {
-            ForEach(libraryVM.playlists) { playlist in
-                if selectedPlaylistID != playlist.id {
-                    Button {
-                        Task {
-                            await libraryVM.addTracksToPlaylist([track], playlist: playlist)
-                        }
-                    } label: {
-                        Label(playlist.name, systemImage: "music.note.list")
-                    }
-                }
-            }
-
-            Divider()
-
-            Button {
-                Task {
-                    let playlist = await libraryVM.createNewPlaylist()
-                    await libraryVM.addTracksToPlaylist([track], playlist: playlist)
-                }
-            } label: {
-                Label("新建播放列表", systemImage: "plus")
-            }
+            playlistSubmenuContent
         } label: {
             Label("添加到播放列表...", systemImage: "plus.circle")
         }
@@ -72,7 +96,9 @@ struct TrackActionMenuContent: View {
 
         if let onRemoveFromCurrentPlaylist {
             Button {
-                onRemoveFromCurrentPlaylist(track)
+                invokeAction("removeFromCurrentPlaylist") {
+                    onRemoveFromCurrentPlaylist(track)
+                }
             } label: {
                 Label("从当前播放列表移除", systemImage: "minus.circle")
             }
@@ -81,14 +107,18 @@ struct TrackActionMenuContent: View {
         Divider()
 
         Button {
-            onEditTrack(track)
+            invokeAction("editTrack") {
+                onEditTrack(track)
+            }
         } label: {
             Label("编辑歌曲信息", systemImage: "info.circle")
         }
 
         if showsNavigation && shouldShowArtistNavigation {
             Button {
-                libraryVM.navigateToArtist(for: track, uiState: uiState)
+                invokeAction("navigateArtist") {
+                    libraryVM.navigateToArtist(for: track, uiState: uiState)
+                }
             } label: {
                 Label("查看艺人", systemImage: "person.crop.circle")
             }
@@ -96,7 +126,9 @@ struct TrackActionMenuContent: View {
 
         if showsNavigation && shouldShowAlbumNavigation {
             Button {
-                libraryVM.navigateToAlbum(for: track, uiState: uiState)
+                invokeAction("navigateAlbum") {
+                    libraryVM.navigateToAlbum(for: track, uiState: uiState)
+                }
             } label: {
                 Label("查看专辑", systemImage: "rectangle.stack")
             }
@@ -105,12 +137,83 @@ struct TrackActionMenuContent: View {
         Divider()
 
         Button(role: .destructive) {
+            let token = ContextMenuDiagnostics.beginActionInvoke(
+                surface: diagnosticSurface,
+                detail: "action=deleteTrack, track=\(trackIDPrefix)"
+            )
             Task {
                 await libraryVM.deleteTrack(track)
+                ContextMenuDiagnostics.end(token)
             }
         } label: {
             Label("从资料库删除", systemImage: "trash")
         }
+    }
+
+    @ViewBuilder
+    private var playlistSubmenuContent: some View {
+        let detail = "track=\(trackIDPrefix), playlists=\(libraryVM.playlists.count)"
+        let submenuToken = ContextMenuDiagnostics.beginSubmenuBuild(
+            surface: diagnosticSurface,
+            detail: detail
+        )
+        let playlistToken = FirstUseHitchDiagnostics.begin(
+            "PlaylistActionSubmenu.build",
+            detail: "surface=\(diagnosticSurface), \(detail)"
+        )
+        let hoverToken = FirstUseHitchDiagnostics.begin(
+            "PlaylistActionSubmenu.hoverOpen",
+            detail: "surface=\(diagnosticSurface), \(detail)"
+        )
+        let _ = FirstUseHitchDiagnostics.end(hoverToken)
+        let _ = FirstUseHitchDiagnostics.end(playlistToken)
+        let _ = ContextMenuDiagnostics.end(submenuToken)
+
+        ForEach(libraryVM.playlists) { playlist in
+            if selectedPlaylistID != playlist.id {
+                Button {
+                    let token = ContextMenuDiagnostics.beginActionInvoke(
+                        surface: diagnosticSurface,
+                        detail: "action=addToPlaylist, track=\(trackIDPrefix), playlist=\(FirstUseHitchDiagnostics.trackIDPrefix(playlist.id))"
+                    )
+                    Task {
+                        await libraryVM.addTracksToPlaylist([track], playlist: playlist)
+                        ContextMenuDiagnostics.end(token)
+                    }
+                } label: {
+                    Label(playlist.name, systemImage: "music.note.list")
+                }
+            }
+        }
+
+        Divider()
+
+        Button {
+            let token = ContextMenuDiagnostics.beginActionInvoke(
+                surface: diagnosticSurface,
+                detail: "action=createPlaylistAndAdd, track=\(trackIDPrefix)"
+            )
+            Task {
+                let playlist = await libraryVM.createNewPlaylist()
+                await libraryVM.addTracksToPlaylist([track], playlist: playlist)
+                ContextMenuDiagnostics.end(token)
+            }
+        } label: {
+            Label("新建播放列表", systemImage: "plus")
+        }
+    }
+
+    private var trackIDPrefix: String {
+        FirstUseHitchDiagnostics.trackIDPrefix(track.id)
+    }
+
+    private func invokeAction(_ actionName: String, _ action: () -> Void) {
+        let token = ContextMenuDiagnostics.beginActionInvoke(
+            surface: diagnosticSurface,
+            detail: "action=\(actionName), track=\(trackIDPrefix)"
+        )
+        action()
+        ContextMenuDiagnostics.end(token)
     }
 
     private var shouldShowArtistNavigation: Bool {

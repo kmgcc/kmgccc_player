@@ -7,7 +7,6 @@
 //
 
 import SwiftUI
-import UniformTypeIdentifiers
 
 private struct TrackEditDeferredMediaSnapshot: Sendable {
     let trackID: UUID
@@ -80,21 +79,12 @@ private enum TrackEditDeferredMediaLoader {
     }
 }
 
-/// Sheet for editing track metadata.
 struct TrackEditSheet: View {
-
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.openURL) private var openURL
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(LyricsViewModel.self) private var lyricsVM
-    @Environment(CoverDownloadService.self) private var coverDownloadService
-    @Environment(NetEaseCoverService.self) private var netEaseCoverService
-    @EnvironmentObject private var themeStore: ThemeStore
 
     let track: Track
-
-    // MARK: - Editable State
 
     @State private var title: String = ""
     @State private var artist: String = ""
@@ -112,19 +102,10 @@ struct TrackEditSheet: View {
     @State private var artworkData: Data?
     @State private var lyricsTimeOffsetMs: Double = 0
 
-    // MARK: - UI State
-
-    @State private var showingArtworkPicker = false
-    @State private var showingLyricsPicker = false
-    @State private var coverFetchTask: Task<Void, Never>?
     @State private var deferredMediaTask: Task<Void, Never>?
     @State private var deferredMediaLoadGeneration: UInt64 = 0
     @State private var originalArtworkData: Data?
     @State private var originalLyricsStorage = TrackLyricsDraft.Storage(ttmlText: nil, plainText: nil)
-
-    // MARK: - Cover Search Coordinator
-
-    @State private var coverCoordinator: CoverSearchCoordinator?
 
     private struct TrackEditChangeSet {
         let hasChanges: Bool
@@ -132,8 +113,30 @@ struct TrackEditSheet: View {
         let affectsLiveLyrics: Bool
     }
 
-    private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
-    private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
+    init(track: Track) {
+        self.track = track
+
+        let initialLyricsText = Self.initialLyricsText(for: track)
+        let initialArtworkData = track.artworkData
+
+        _title = State(initialValue: track.title)
+        _artist = State(initialValue: track.artist)
+        _album = State(initialValue: track.album)
+        _trackDescription = State(initialValue: track.userDescription)
+        _genreTagsText = State(initialValue: track.genreTags.joined(separator: ", "))
+        _language = State(initialValue: track.language)
+        _labelOrCompany = State(initialValue: track.labelOrCompany)
+        _releaseDateText = State(initialValue: Self.formatDateForEditing(track.releaseDate))
+        _qqMusicSongMid = State(initialValue: track.qqMusicSongMid ?? "")
+        _metadataSource = State(initialValue: track.metadataSource ?? "")
+        _metadataFetchedAt = State(initialValue: track.metadataFetchedAt)
+        _metadataConfidence = State(initialValue: track.metadataConfidence)
+        _lyricsText = State(initialValue: initialLyricsText)
+        _artworkData = State(initialValue: initialArtworkData)
+        _lyricsTimeOffsetMs = State(initialValue: track.lyricsTimeOffsetMs)
+        _originalArtworkData = State(initialValue: initialArtworkData)
+        _originalLyricsStorage = State(initialValue: TrackLyricsDraft.storage(from: initialLyricsText))
+    }
 
     var body: some View {
         TrackInfoEditorCore(
@@ -177,343 +180,17 @@ struct TrackEditSheet: View {
             lyricsTimeOffsetMs: $lyricsTimeOffsetMs
         )
         .onAppear {
-            let token = FirstUseHitchDiagnostics.begin(
-                "TrackEditSheet.onAppear",
-                detail: "track=\(track.id.uuidString)"
-            )
-            loadTrackData()
-            FirstUseHitchDiagnostics.end(token)
+            loadDeferredMediaData()
         }
         .onDisappear {
-            coverFetchTask?.cancel()
-            coverFetchTask = nil
             deferredMediaTask?.cancel()
             deferredMediaTask = nil
-            coverCoordinator?.cancelSearch()
         }
-    }
-
-    // MARK: - Header
-
-    private var headerView: some View {
-        HStack {
-            Text("edit.track.title")
-                .font(.title2)
-                .fontWeight(.bold)
-
-            Spacer()
-
-            GlassIconButton(
-                systemImage: "xmark",
-                size: GlassStyleTokens.headerControlHeight,
-                iconSize: GlassStyleTokens.headerStandardIconSize,
-                isPrimary: false,
-                help: "关闭",
-                surfaceVariant: .defaultToolbar
-            ) {
-                dismiss()
-            }
-        }
-        .padding()
-    }
-
-    // MARK: - Artwork Section
-
-    private var artworkSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("edit.track.artwork", systemImage: "photo")
-                .font(.headline)
-
-            HStack(spacing: 16) {
-                // Artwork preview
-                Group {
-                    if let data = artworkData, let nsImage = NSImage(data: data) {
-                        Image(nsImage: nsImage)
-                            .resizable()
-                            .aspectRatio(contentMode: .fill)
-                    } else {
-                        Image(systemName: "music.note")
-                            .font(.largeTitle)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(width: 100, height: 100)
-                .background(.ultraThinMaterial)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Button(LocalizedStringKey("edit.track.choose_image")) {
-                        showingArtworkPicker = true
-                    }
-                    .buttonStyle(.bordered)
-                    .clipShape(Capsule())
-
-                    Button(LocalizedStringKey("查找封面")) {
-                        fetchCover()
-                    }
-                    .buttonStyle(.bordered)
-                    .clipShape(Capsule())
-                    .disabled(coverCoordinator?.isLoading == true)
-
-                    if coverCoordinator?.isLoading == true {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-
-                    if artworkData != nil {
-                        Button(LocalizedStringKey("edit.track.remove_artwork")) {
-                            artworkData = nil
-                            coverCoordinator?.clear()
-                        }
-                        .buttonStyle(.bordered)
-                        .tint(.red)
-                        .clipShape(Capsule())
-                    }
-
-                    if let error = coverCoordinator?.error {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                // Candidate strip (shown when candidates available)
-                if let coordinator = coverCoordinator, coordinator.hasCandidates {
-                    CoverCandidateStripView(
-                        candidates: coordinator.candidates,
-                        selectedCandidate: coordinator.selectedForPreview,
-                        onSelect: { candidate in
-                            coordinator.selectForPreview(candidate)
-                            artworkData = candidate.imageData
-                        }
-                    )
-                }
-            }
-        }
-        .fileImporter(
-            isPresented: $showingArtworkPicker,
-            allowedContentTypes: [.image],
-            allowsMultipleSelection: false
-        ) { result in
-            handleArtworkImport(result)
-        }
-    }
-
-    // MARK: - Metadata Section
-
-    private var metadataSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Label("edit.track.metadata", systemImage: "info.circle")
-                .font(.headline)
-
-            VStack(alignment: .leading, spacing: 12) {
-                // Title
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("edit.track.track_title")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    TextField(
-                        "edit.track.track_title", text: $title
-                    )
-                    .textFieldStyle(.roundedBorder)
-                }
-
-                // Artist
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("edit.track.artist")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    TextField(
-                        "edit.track.artist_name", text: $artist
-                    )
-                    .textFieldStyle(.roundedBorder)
-                }
-
-                // Album
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("edit.track.album")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    TextField("edit.track.album_name", text: $album)
-                        .textFieldStyle(.roundedBorder)
-                }
-
-                // Duration (read-only)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("edit.track.duration")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Text(formatDuration(track.duration))
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    // MARK: - Lyrics Section
-
-    private var lyricsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label(
-                    "edit.track.lyrics", systemImage: "text.quote"
-                )
-                .font(.headline)
-
-                Spacer()
-
-                Button {
-                    openURL(amllDbURL)
-                } label: {
-                    Label("AMLL DB", systemImage: "arrow.up.right.square")
-                }
-                .buttonStyle(.bordered)
-                .clipShape(Capsule())
-                .font(.caption)
-
-                Button {
-                    openURL(ttmlToolURL)
-                } label: {
-                    Label("TTML Tool", systemImage: "hammer.fill")
-                }
-                .buttonStyle(.bordered)
-                .clipShape(Capsule())
-                .font(.caption)
-
-                Button(LocalizedStringKey("edit.track.import_lyrics")) {
-                    showingLyricsPicker = true
-                }
-                .buttonStyle(.bordered)
-                .clipShape(Capsule())
-                .font(.caption)
-            }
-
-            Text(
-                "AMLL DB 歌词库中的 TTML 专为 AMLL 组件设计，支持对唱歌词、背景歌词等高级特性，来自网络的转换歌词仅为歌词缺失情况下的备选。您也可以使用 AMLL TTML Tool 自己制作歌词使用或贡献到 AMLL DB。"
-            )
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-
-            TextEditor(text: $lyricsText)
-                .font(.system(.body, design: .monospaced))
-                .frame(height: 120)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
-                }
-
-            Text("edit.track.paste_desc")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text("edit.track.offset")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(String(format: "%+.2f s", lyricsTimeOffsetMs / 1000.0))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                    Button(LocalizedStringKey("edit.track.reset")) {
-                        lyricsTimeOffsetMs = 0
-                    }
-                    .buttonStyle(.bordered)
-                    .clipShape(Capsule())
-                    .font(.caption)
-                }
-
-                Slider(value: $lyricsTimeOffsetMs, in: -5000...5000, step: 100)
-
-                Text(NSLocalizedString("edit.track.offset_desc", comment: ""))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-
-            Divider()
-                .padding(.vertical, 8)
-
-            // LDDC Lyrics Search
-            LDDCSearchSection(track: track) { ttml in
-                lyricsText = ttml
-            }
-        }
-        .fileImporter(
-            isPresented: $showingLyricsPicker,
-            allowedContentTypes: [
-                UTType(filenameExtension: "ttml") ?? .xml,
-            ],
-            allowsMultipleSelection: false
-        ) { result in
-            handleLyricsImport(result)
-        }
-    }
-
-    // MARK: - Footer
-
-    private var footerView: some View {
-        HStack {
-            Button(LocalizedStringKey("edit.track.cancel")) {
-                dismiss()
-            }
-            .buttonStyle(.bordered)
-            .clipShape(Capsule())
-            .keyboardShortcut(.escape)
-
-            Spacer()
-
-            Button(LocalizedStringKey("edit.track.save")) {
-                saveChanges()
-                dismiss()
-            }
-            .buttonStyle(.borderedProminent)
-            .clipShape(Capsule())
-            .keyboardShortcut(.return)
-            .disabled(!trackEditChangeSet.hasChanges)
-        }
-        .padding()
-    }
-
-    // MARK: - Data Handling
-
-    private func loadTrackData() {
-        let token = FirstUseHitchDiagnostics.begin(
-            "TrackEditSheet.loadTrackData",
-            detail: "track=\(track.id.uuidString)"
-        )
-        defer { FirstUseHitchDiagnostics.end(token) }
-
-        title = track.title
-        artist = track.artist
-        album = track.album
-        trackDescription = track.userDescription
-        genreTagsText = track.genreTags.joined(separator: ", ")
-        language = track.language
-        labelOrCompany = track.labelOrCompany
-        releaseDateText = formatDateForEditing(track.releaseDate)
-        qqMusicSongMid = track.qqMusicSongMid ?? ""
-        metadataSource = track.metadataSource ?? ""
-        metadataFetchedAt = track.metadataFetchedAt
-        metadataConfidence = track.metadataConfidence
-        lyricsText = LyricsFormatSupport.normalizedTTMLText(track.ttmlLyricText)
-            ?? LyricsFormatSupport.normalizedTTMLText(track.lyricsText)
-            ?? ""
-        artworkData = track.artworkData
-        lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
-        originalArtworkData = artworkData
-        originalLyricsStorage = TrackLyricsDraft.storage(from: lyricsText)
-        loadDeferredMediaData()
     }
 
     private func loadDeferredMediaData() {
         guard track.artworkData == nil || track.ttmlLyricText == nil else { return }
 
-        let token = FirstUseHitchDiagnostics.begin(
-            "TrackEditSheet.loadDeferredMediaData",
-            detail: "artwork=\(track.artworkData == nil), ttml=\(track.ttmlLyricText == nil)"
-        )
         deferredMediaTask?.cancel()
         deferredMediaLoadGeneration &+= 1
         let generation = deferredMediaLoadGeneration
@@ -524,10 +201,7 @@ struct TrackEditSheet: View {
                 TrackEditDeferredMediaLoader.load(from: snapshot)
             }.value
 
-            guard !Task.isCancelled, deferredMediaLoadGeneration == generation else {
-                FirstUseHitchDiagnostics.end(token, detail: "cancelled")
-                return
-            }
+            guard !Task.isCancelled, deferredMediaLoadGeneration == generation else { return }
 
             if let loadedArtwork = result.artworkData {
                 originalArtworkData = loadedArtwork
@@ -548,16 +222,26 @@ struct TrackEditSheet: View {
                     track.ttmlLyricText = loadedLyrics
                 }
             }
-
-            FirstUseHitchDiagnostics.end(
-                token,
-                detail: "artworkBytes=\(result.artworkData?.count ?? 0), lyricsChars=\(result.lyricsTTML?.count ?? 0)"
-            )
         }
     }
 
     private var albumDescriptionFallback: String? {
         libraryVM.albumEntries.first(where: { $0.canonicalKey == track.albumGroupKey })?.description
+    }
+
+    private static func initialLyricsText(for track: Track) -> String {
+        LyricsFormatSupport.normalizedTTMLText(track.ttmlLyricText)
+            ?? LyricsFormatSupport.normalizedTTMLText(track.lyricsText)
+            ?? ""
+    }
+
+    private static func formatDateForEditing(_ date: Date?) -> String {
+        guard let date else { return "" }
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
 
     private var trackEditChangeSet: TrackEditChangeSet {
@@ -618,10 +302,7 @@ struct TrackEditSheet: View {
 
     private func saveChanges(preferredReason: String? = nil) {
         let changeSet = trackEditChangeSet
-        guard changeSet.hasChanges else {
-            print("[TrackEditSheet] No changes detected, skipping save")
-            return
-        }
+        guard changeSet.hasChanges else { return }
 
         track.title =
             title.isEmpty ? NSLocalizedString("library.unknown_title", comment: "") : title
@@ -655,7 +336,6 @@ struct TrackEditSheet: View {
                 mode: changeSet.persistenceMode,
                 reason: reason(for: changeSet.persistenceMode, preferredReason: preferredReason)
             )
-            print("[TrackEditSheet] Saved changes for: \(track.title)")
             if changeSet.affectsLiveLyrics {
                 refreshLiveLyricsIfEditingCurrentTrack(reason: "track info saved")
             }
@@ -779,12 +459,7 @@ struct TrackEditSheet: View {
     }
 
     private func formatDateForEditing(_ date: Date?) -> String {
-        guard let date else { return "" }
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+        Self.formatDateForEditing(date)
     }
 
     private func parseEditingDate(_ text: String) -> Date? {
@@ -796,73 +471,7 @@ struct TrackEditSheet: View {
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.date(from: trimmed)
     }
-
-    private func handleArtworkImport(_ result: Result<[URL], Error>) {
-        guard case .success(let urls) = result, let url = urls.first else { return }
-
-        Task { @MainActor in
-            let data = await Task.detached(priority: .userInitiated) { @Sendable in
-                let didStart = url.startAccessingSecurityScopedResource()
-                defer {
-                    if didStart {
-                        url.stopAccessingSecurityScopedResource()
-                    }
-                }
-                return try? Data(contentsOf: url)
-            }.value
-            if let data {
-                artworkData = data
-                print("[TrackEditSheet] Imported artwork: \(data.count) bytes")
-            }
-        }
-    }
-
-    private func fetchCover() {
-        coverFetchTask?.cancel()
-        coverCoordinator?.clear()
-
-        coverFetchTask = Task {
-            guard let coordinator = coverCoordinator else { return }
-            await coordinator.search(
-                artist: artist,
-                album: album,
-                title: title,
-                duration: track.duration
-            )
-            // Note: artworkData is updated reactively via onChange(of: selectedForPreview)
-        }
-    }
-
-    private func handleLyricsImport(_ result: Result<[URL], Error>) {
-        guard case .success(let urls) = result, let url = urls.first else { return }
-
-        Task { @MainActor in
-            let text = await Task.detached(priority: .userInitiated) { @Sendable in
-                let didStart = url.startAccessingSecurityScopedResource()
-                defer {
-                    if didStart {
-                        url.stopAccessingSecurityScopedResource()
-                    }
-                }
-                return try? String(contentsOf: url, encoding: .utf8)
-            }.value
-            if let text, let ttml = LyricsFormatSupport.normalizedTTMLText(text) {
-                lyricsText = ttml
-                print("[TrackEditSheet] Imported TTML lyrics: \(ttml.prefix(50))...")
-            } else if text != nil {
-                print("[TrackEditSheet] Rejected non-TTML lyrics import")
-            }
-        }
-    }
-
-    private func formatDuration(_ seconds: Double) -> String {
-        let mins = Int(seconds) / 60
-        let secs = Int(seconds) % 60
-        return String(format: "%d:%02d", mins, secs)
-    }
 }
-
-// MARK: - Preview
 
 #Preview("Track Edit Sheet") {
     let track = Track(
