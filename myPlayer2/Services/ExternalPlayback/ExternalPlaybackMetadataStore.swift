@@ -363,8 +363,25 @@ actor ExternalPlaybackMatchResolver {
 
         for candidate in candidates {
             let title = ExternalPlaybackTextNormalizer.normalize(candidate.title)
+
+            // Hard-reject gate: short single-token titles with edit distance > 1.
+            // Must be checked before the fuzzy score floor so artist score cannot save
+            // a fundamentally wrong title (e.g. "Colors" must not match "Closer").
+            if !title.compact.isEmpty,
+               ExternalPlaybackTextNormalizer.hasShortTitleConflict(sourceTitle, title) {
+                continue
+            }
+
             let titleScore = ExternalPlaybackTextNormalizer.stringSimilarity(sourceTitle, title)
-            guard titleScore >= 0.50 || title.compact.contains(sourceTitle.compact) || sourceTitle.compact.contains(title.compact) else {
+
+            // Raise the fuzzy floor for short single-token pairs (edit distance ≤ 1 survived above).
+            let bothShort = ExternalPlaybackTextNormalizer.isShortSingleToken(sourceTitle)
+                && ExternalPlaybackTextNormalizer.isShortSingleToken(title)
+            let titleFloor: Double = bothShort
+                ? ExternalPlaybackTextNormalizer.shortTitleFuzzyFloor
+                : 0.50
+
+            guard titleScore >= titleFloor || title.compact.contains(sourceTitle.compact) || sourceTitle.compact.contains(title.compact) else {
                 continue
             }
 

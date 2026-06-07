@@ -99,6 +99,36 @@ nonisolated enum ExternalPlaybackTextNormalizer {
         return false
     }
 
+    /// Returns true when both sides are short single-token titles (compact ≤ 6 chars)
+    /// AND their edit distance exceeds 1.  This is a hard-reject gate that must be
+    /// checked *before* the general titleScore threshold.
+    ///
+    /// Examples that are rejected: "colors" vs "closer" (ed=2), "stay" vs "star" (ed=2)
+    /// Examples that are NOT rejected: "color" vs "colors" (ed=1), "colour" vs "color" (ed=1)
+    static func hasShortTitleConflict(
+        _ source: NormalizedText,
+        _ candidate: NormalizedText
+    ) -> Bool {
+        guard isShortSingleToken(source), isShortSingleToken(candidate) else { return false }
+        // Allow containment (e.g. "love" inside "lover") — those share the same root
+        if source.compact.contains(candidate.compact) || candidate.compact.contains(source.compact) {
+            return false
+        }
+        return levenshteinDistance(source.compact, candidate.compact) > 1
+    }
+
+    /// Returns true when a NormalizedText has exactly one token and its compact form
+    /// is 6 characters or fewer.  "Short single-token" is the risk zone for Levenshtein
+    /// over-acceptance.
+    static func isShortSingleToken(_ text: NormalizedText) -> Bool {
+        text.tokens.count == 1 && text.compact.count <= 6
+    }
+
+    /// Minimum fuzzy title score when both sides are short single-token.
+    /// Threshold is 0.82 so that ed=1 pairs of equal length ≤ 5 (ratio = 0.80) are rejected,
+    /// while near-variant spellings of different lengths (e.g. Color/Colour ratio ≈ 0.833) pass.
+    static let shortTitleFuzzyFloor: Double = 0.82
+
     private static func fold(_ value: String) -> String {
         var result = value
             .precomposedStringWithCompatibilityMapping
@@ -209,9 +239,19 @@ nonisolated enum ExternalPlaybackTextNormalizer {
     }
 
     private static func levenshteinRatio(_ lhs: String, _ rhs: String) -> Double {
+        let distance = levenshteinDistance(lhs, rhs)
+        let maxLength = max(lhs.count, rhs.count)
+        guard maxLength > 0 else { return 1 }
+        return 1 - Double(distance) / Double(maxLength)
+    }
+
+    /// Returns the raw integer edit distance between two strings.
+    /// Used by hasShortTitleConflict for precise short-title gating.
+    static func levenshteinDistance(_ lhs: String, _ rhs: String) -> Int {
         let a = Array(lhs)
         let b = Array(rhs)
-        guard !a.isEmpty, !b.isEmpty else { return 0 }
+        guard !a.isEmpty else { return b.count }
+        guard !b.isEmpty else { return a.count }
 
         var previous = Array(0...b.count)
         var current = Array(repeating: 0, count: b.count + 1)
@@ -226,12 +266,10 @@ nonisolated enum ExternalPlaybackTextNormalizer {
                     previous[j - 1] + cost
                 )
             }
-            previous = current
+            swap(&previous, &current)
         }
 
-        let distance = previous[b.count]
-        let maxLength = max(a.count, b.count)
-        return 1 - Double(distance) / Double(maxLength)
+        return previous[b.count]
     }
 
     struct NormalizedText: Sendable {
