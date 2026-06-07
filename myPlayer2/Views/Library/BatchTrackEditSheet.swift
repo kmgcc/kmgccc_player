@@ -162,18 +162,9 @@ struct BatchTrackEditSheet: View {
 
             footerView
         }
-        .frame(minWidth: 1120, minHeight: 780)
+        .frame(width: 1120, height: 812)
         .tint(themeStore.accentColor)
         .accentColor(themeStore.accentColor)
-        .background(
-            WindowToolbarAccessor { window in
-                window.styleMask.insert(.resizable)
-                let minSize = NSSize(width: 1120, height: 780)
-                if window.minSize.width < minSize.width || window.minSize.height < minSize.height {
-                    window.minSize = minSize
-                }
-            }
-        )
         .onAppear {
             ensurePreviewLyricsViewModel()
             uiState.lyricsPanelSuppressedByModal = true

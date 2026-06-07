@@ -34,7 +34,7 @@ enum SettingsCategory: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .appearance: return "paintpalette"
-        case .nowPlaying: return "sparkles"
+        case .nowPlaying: return "macwindow"
         case .fullscreen: return "arrow.up.left.and.arrow.down.right"
         case .audio: return "waveform"
         case .externalPlayback: return "music.note.tv"

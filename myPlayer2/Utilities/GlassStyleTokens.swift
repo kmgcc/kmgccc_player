@@ -81,7 +81,7 @@ struct GlassStyleTokens {
             return darkNeutralOverlay(for: colorScheme)
         case .regular:
             return .clear
-        case .darkGlass:
+        case .normal:
             return colorScheme == .dark ? Color.black.opacity(0.30) : Color.black.opacity(0.14)
         }
     }

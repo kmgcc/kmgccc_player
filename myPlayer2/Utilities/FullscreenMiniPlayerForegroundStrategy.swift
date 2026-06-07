@@ -16,6 +16,7 @@ nonisolated struct FullscreenMiniPlayerForegroundProfile {
         case artisticDayDarkForeground
         case artisticNightLightForeground
         case chromeLightForeground
+        case chromeDarkForeground
     }
 
     let role: Role
@@ -50,7 +51,7 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
         }
 
         if skinID == coverGradientBlurSkinID,
-           isClearMaterial(materialStyle),
+           isClearOrNormalMaterial(materialStyle),
            hasArtworkThemeColor {
             let useDarkForeground = shouldUseDarkArtworkForeground(for: palette.analysis)
             if useDarkForeground {
@@ -65,6 +66,22 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
                 palette: palette,
                 enforceBrightProgressForeground: true
             )
+        }
+
+        // B. Classic, Rotate Cover, KMGCCC Cassette skins
+        if skinID == "coverLed" || skinID == "rotatingCover" || skinID == "kmgccc.cassette" {
+            if colorScheme == .light {
+                return darkOnBrightChromeProfile(
+                    role: .chromeDarkForeground,
+                    palette: palette
+                )
+            } else {
+                return lightProfile(
+                    role: .chromeLightForeground,
+                    palette: palette,
+                    enforceBrightProgressForeground: true
+                )
+            }
         }
 
         if fullscreenArtBackgroundEnabled {
@@ -99,11 +116,11 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
         analysis.usesDarkForeground
     }
 
-    private static func isClearMaterial(_ materialStyle: LiquidGlassPillMaterialStyle) -> Bool {
+    private static func isClearOrNormalMaterial(_ materialStyle: LiquidGlassPillMaterialStyle) -> Bool {
         switch materialStyle {
-        case .clear:
+        case .clear, .normal:
             return true
-        case .regular, .darkGlass:
+        case .regular:
             return false
         }
     }
@@ -181,5 +198,16 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
             enforceBrightProgressForeground: false,
             spectrumUsesDarkForeground: false
         )
+    }
+}
+
+extension FullscreenMiniPlayerForegroundProfile {
+    var isDarkForeground: Bool {
+        switch role {
+        case .coverBlurDarkForeground, .artisticDayDarkForeground, .chromeDarkForeground:
+            return true
+        case .appleFixedLight, .coverBlurLightForeground, .artisticNightLightForeground, .chromeLightForeground:
+            return false
+        }
     }
 }

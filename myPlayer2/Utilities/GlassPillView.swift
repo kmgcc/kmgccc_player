@@ -8,7 +8,7 @@ import SwiftUI
 enum LiquidGlassPillMaterialStyle {
     case clear
     case regular
-    case darkGlass
+    case normal
 }
 
 extension View {
