@@ -343,9 +343,16 @@ struct ExternalPlaybackSettingsView: View {
                         || target.index != dragLastTargetIndex else { return }
                 dragLastTargetSectionIsDisabled = target.isDisabled
                 dragLastTargetIndex = target.index
-                moveSource(source.id, toDisabledSection: target.isDisabled, index: target.index)
+                if target.isDisabled == dragStartSectionIsDisabled {
+                    moveSource(source.id, toDisabledSection: target.isDisabled, index: target.index)
+                }
             }
             .onEnded { _ in
+                moveSource(
+                    source.id,
+                    toDisabledSection: dragLastTargetSectionIsDisabled,
+                    index: dragLastTargetIndex
+                )
                 saveSourceSections()
                 settleSourceDrag(source.id)
             }
