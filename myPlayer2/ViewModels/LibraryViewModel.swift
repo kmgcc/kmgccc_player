@@ -1505,6 +1505,55 @@ final class LibraryViewModel {
         }
     }
 
+    func searchTrackMetadataCandidates(
+        title: String,
+        artist: String,
+        album: String,
+        duration: Double?
+    ) async -> [QQMusicArtworkCandidate] {
+        let durationInt = duration.map { Int($0.rounded()) }
+        do {
+            return try await QQMusicHelperProcess.shared.searchTrackArtwork(
+                title: title,
+                artist: artist,
+                album: album,
+                duration: durationInt,
+                limit: 5
+            )
+        } catch {
+            Log.warning(
+                "[MetadataDetail] search metadata candidates failed title=\(title) reason=\(error)",
+                category: .library
+            )
+            return []
+        }
+    }
+
+    func fetchTrackMetadataDetailForMid(
+        _ songMid: String,
+        title: String,
+        artist: String,
+        album: String,
+        duration: Double?
+    ) async -> TrackMetadataDetail? {
+        let durationInt = duration.map { Int($0.rounded()) }
+        do {
+            return try await metadataDetailCoordinator.fetchTrackDetail(
+                title: title,
+                artist: artist,
+                album: album,
+                songMid: songMid,
+                duration: durationInt
+            )
+        } catch {
+            Log.warning(
+                "[MetadataDetail] fetch track detail for mid failed mid=\(songMid) reason=\(error)",
+                category: .library
+            )
+            return nil
+        }
+    }
+
     func clearIndexCacheAndRebuild() async {
         await repository.clearIndexCacheAndRebuild()
         await refresh()

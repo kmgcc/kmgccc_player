@@ -350,13 +350,107 @@ actor QQMusicMetadataProvider: MetadataDetailProvider {
         songMid: String? = nil,
         duration: Int? = nil
     ) async throws -> TrackMetadataDetail? {
-        let detail = try await helper.fetchSongDetail(
+        let finalSongMid: String
+        let computedConfidence: Double
+
+        if let mid = songMid, !mid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            finalSongMid = mid
+            computedConfidence = 0.90
+        } else {
+            // No songMid, search candidates first to prevent mismatch
+            let candidates = try await helper.searchTrackArtwork(
+                title: title,
+                artist: artist,
+                album: album,
+                duration: duration,
+                limit: 5
+            )
+
+            var bestCandidate: QQMusicArtworkCandidate? = nil
+            var bestScore: Double = -1.0
+
+            for candidate in candidates {
+                let helperConfidence = min(max(candidate.confidence ?? 0.70, 0), 1)
+
+                // 1. Title validation
+                let sourceTitle = ExternalPlaybackTextNormalizer.normalize(title)
+                let candidateTitle = ExternalPlaybackTextNormalizer.normalize(candidate.title)
+
+                if !candidateTitle.compact.isEmpty,
+                   ExternalPlaybackTextNormalizer.hasShortTitleConflict(sourceTitle, candidateTitle) {
+                    continue
+                }
+
+                let titleScore = ExternalPlaybackTextNormalizer.stringSimilarity(sourceTitle, candidateTitle)
+                let bothShort = ExternalPlaybackTextNormalizer.isShortSingleToken(sourceTitle)
+                    && ExternalPlaybackTextNormalizer.isShortSingleToken(candidateTitle)
+                let titleFloor = bothShort ? ExternalPlaybackTextNormalizer.shortTitleFuzzyFloor : 0.50
+
+                guard titleScore >= titleFloor
+                      || candidateTitle.compact.contains(sourceTitle.compact)
+                      || sourceTitle.compact.contains(candidateTitle.compact)
+                else { continue }
+
+                // 2. Artist validation
+                let sourceArtist = ExternalPlaybackTextNormalizer.normalizeArtist(artist)
+                let candidateArtist = ExternalPlaybackTextNormalizer.normalizeArtist(candidate.artist ?? candidate.artistName)
+                let artistScore = ExternalPlaybackTextNormalizer.artistSimilarity(sourceArtist, candidateArtist)
+                guard artistScore >= 0.22 else { continue }
+
+                // 3. Duration/obvious conflict validation
+                if let duration, duration > 0, let candDuration = candidate.duration, candDuration > 0 {
+                    if ExternalPlaybackTextNormalizer.hasObviousConflict(
+                        titleScore: titleScore,
+                        artistScore: artistScore,
+                        sourceDuration: Double(duration),
+                        candidateDuration: Double(candDuration)
+                    ) {
+                        continue
+                    }
+                }
+
+                // 4. Scoring
+                let sourceAlbum = ExternalPlaybackTextNormalizer.normalize(album)
+                let candidateAlbum = ExternalPlaybackTextNormalizer.normalize(candidate.album)
+                let albumScore = sourceAlbum.compact.isEmpty || candidateAlbum.compact.isEmpty
+                    ? 0.5
+                    : ExternalPlaybackTextNormalizer.stringSimilarity(sourceAlbum, candidateAlbum)
+
+                let durationScore: Double
+                if let duration, duration > 0, let candDuration = candidate.duration, candDuration > 0 {
+                    durationScore = ExternalPlaybackTextNormalizer.durationScore(source: Double(duration), candidate: Double(candDuration))
+                } else {
+                    durationScore = 0.5
+                }
+
+                let score = titleScore * 0.46
+                    + artistScore * 0.28
+                    + durationScore * 0.18
+                    + albumScore * 0.06
+                    + helperConfidence * 0.02
+
+                if score > bestScore {
+                    bestScore = score
+                    bestCandidate = candidate
+                }
+            }
+
+            guard let selected = bestCandidate, let mid = selected.songMid else {
+                throw MetadataDetailError.noResults
+            }
+            finalSongMid = mid
+            computedConfidence = bestScore
+        }
+
+        var detail = try await helper.fetchSongDetail(
             title: title,
             artist: artist,
             album: album,
-            songMid: songMid,
+            songMid: finalSongMid,
             duration: duration
         )
+        detail.confidence = computedConfidence
+
         return TrackMetadataDetail(
             source: .qqmusic,
             title: nonEmpty(detail.title),

@@ -73,6 +73,7 @@ struct ExternalPlaybackInfoEditorView: View {
             onClearOverride: clearOverrideAction,
             onRestoreAutomatic: nil,
             onFetchMetadata: nil,
+            onSelectMetadataCandidate: nil,
             title: $title,
             artist: $artist,
             album: $album,
