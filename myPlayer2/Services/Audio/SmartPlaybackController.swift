@@ -431,25 +431,9 @@ final class SmartPlaybackController {
 
         if didChangeStats {
             // Write to disk
-            print("   💾 Writing meta only to disk...")
-            let metaPath = "\(NSHomeDirectory())/Music/kmgccc_player Library/Tracks/\(trackID.uuidString)/meta.json"
-            print("   Path: \(metaPath)")
-
+            print("   💾 Queueing meta-only sidecar write on background writer...")
             PreferenceStatsService.shared.saveStats(for: track)
-
-            // Verify write by checking file modification time
-            let fileURL = URL(fileURLWithPath: metaPath)
-            if let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-               let modDate = attributes[.modificationDate] as? Date {
-                let timeSinceMod = Date().timeIntervalSince(modDate)
-                if timeSinceMod < 1.0 {
-                    print("   ✅ Meta write confirmed (modified \(String(format: "%.2f", timeSinceMod))s ago)")
-                } else {
-                    print("   ⚠️ Meta file not recently modified (last mod: \(String(format: "%.2f", timeSinceMod))s ago)")
-                }
-            } else {
-                print("   ⚠️ Could not verify meta write")
-            }
+            print("   ✅ Meta write delegated to LocalLibraryService background pipeline")
         } else {
             print("   ⏭️ No stats delta, skipping disk write")
         }

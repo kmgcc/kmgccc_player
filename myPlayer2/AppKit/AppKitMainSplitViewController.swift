@@ -670,8 +670,9 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
     // WebViewHostView provides the correct superview type for mouse suppression and
     // scaled hit-testing (webViewLayoutScale) when render quality < 1.0.
     private var webViewHostView: WebViewHostView!
-    private var lastLayoutSignature: String?
+    private var lastAppliedLayoutSignature: String?
     private var pendingLayoutSignature: String?
+    private var isApplyingDeferredLayout = false
 
     // 24pt matches LyricsPanelView's .padding(.horizontal, 24) on AMLLWebView.
     private static let horizontalInset: CGFloat = 24
@@ -807,12 +808,20 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
 
     private func schedulePreparedWebViewLayout(reason: String) {
         let signature = layoutSignature(for: webViewHostView.bounds)
-        guard lastLayoutSignature != signature else { return }
+        guard lastAppliedLayoutSignature != signature else { return }
         guard pendingLayoutSignature != signature else { return }
+        guard !isApplyingDeferredLayout else {
+            pendingLayoutSignature = signature
+            return
+        }
 
         pendingLayoutSignature = signature
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            guard self.isViewLoaded, self.view.window != nil else {
+                self.pendingLayoutSignature = nil
+                return
+            }
             guard self.attachmentID != nil else {
                 self.pendingLayoutSignature = nil
                 return
@@ -825,10 +834,21 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
                 return
             }
 
+            self.isApplyingDeferredLayout = true
             self.pendingLayoutSignature = nil
-            guard self.lastLayoutSignature != signature else { return }
-            self.lastLayoutSignature = signature
+            guard self.lastAppliedLayoutSignature != signature else {
+                self.isApplyingDeferredLayout = false
+                return
+            }
+            self.lastAppliedLayoutSignature = signature
             self.mainStore.layoutPreparedWebView(in: self.webViewHostView.bounds, reason: reason)
+            self.isApplyingDeferredLayout = false
+
+            if let nextSignature = self.pendingLayoutSignature,
+               nextSignature != self.lastAppliedLayoutSignature
+            {
+                self.schedulePreparedWebViewLayout(reason: reason)
+            }
         }
     }
 
@@ -845,8 +865,9 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
     private func detachWebView() {
         guard let id = attachmentID else { return }
         attachmentID = nil
-        lastLayoutSignature = nil
+        lastAppliedLayoutSignature = nil
         pendingLayoutSignature = nil
+        isApplyingDeferredLayout = false
         let store = mainStore
         if let webView = store.preparedWebView, webView.superview === webViewHostView {
             webView.removeFromSuperview()

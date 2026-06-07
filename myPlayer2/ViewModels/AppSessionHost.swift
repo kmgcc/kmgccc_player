@@ -284,7 +284,11 @@ final class AppSessionHost: ObservableObject {
             try? await Task.sleep(for: .milliseconds(900))
             guard !Task.isCancelled else { return }
 
-            LyricsSurfaceManager.shared.prewarm(role: .main, reason: "app-start-idle")
+            await self.prewarmLyricsSurfaceWhenPlaybackQuiet(
+                role: .main,
+                playerVM: playerVM,
+                playbackCoordinator: playbackCoordinator
+            )
 
             try? await Task.sleep(for: .milliseconds(1_400))
             guard !Task.isCancelled, let libraryVM else { return }
@@ -311,7 +315,33 @@ final class AppSessionHost: ObservableObject {
             try? await Task.sleep(for: .milliseconds(isPlaying ? 3_000 : 1_800))
             guard !Task.isCancelled else { return }
 
-            LyricsSurfaceManager.shared.prewarm(role: .fullscreen, reason: "app-start-idle")
+            await self.prewarmLyricsSurfaceWhenPlaybackQuiet(
+                role: .fullscreen,
+                playerVM: playerVM,
+                playbackCoordinator: playbackCoordinator
+            )
+        }
+    }
+
+    private func prewarmLyricsSurfaceWhenPlaybackQuiet(
+        role: LyricsSurfaceRole,
+        playerVM: PlayerViewModel?,
+        playbackCoordinator: PlaybackCoordinator?
+    ) async {
+        while !Task.isCancelled {
+            let isPlaying = (playerVM?.isPlaying ?? false)
+                || (playbackCoordinator?.presentation.isPlaying ?? false)
+            guard !isPlaying else {
+                Log.info(
+                    "[FirstUsePrewarm] deferring \(role.rawValue) lyrics prewarm while playback is active",
+                    category: .perf
+                )
+                try? await Task.sleep(for: .milliseconds(1_500))
+                continue
+            }
+
+            LyricsSurfaceManager.shared.prewarm(role: role, reason: "app-start-idle")
+            return
         }
     }
 

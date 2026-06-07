@@ -106,6 +106,7 @@ final class PlaylistPageController {
     private var snapshotUpdateTask: Task<Void, Never>?
     private var prefetchTask: Task<Void, Never>?
     private var headerResolveTask: Task<Void, Never>?
+    private var headerDeferredLoadTask: Task<Void, Never>?
     private var headerUpgradeTask: Task<Void, Never>?
     private var headerHaloSeedTask: Task<Void, Never>?
     private var headerFadeTask: Task<Void, Never>?
@@ -367,6 +368,7 @@ final class PlaylistPageController {
     private func beginTeardown() {
         phaseTask?.cancel()
         headerResolveTask?.cancel()
+        headerDeferredLoadTask?.cancel()
         headerUpgradeTask?.cancel()
         headerHaloSeedTask?.cancel()
         headerFadeTask?.cancel()
@@ -676,6 +678,12 @@ final class PlaylistPageController {
             return
         }
 
+        headerDeferredLoadTask?.cancel()
+        if playerVM?.isPlaying == true {
+            scheduleDeferredHeaderArtworkLoad(selectionIdentity: page.selectionIdentity)
+            return
+        }
+
         LyricsRuntimeProfile.increment("header.loadHeaderArtwork")
         LyricsRuntimeProfile.setMetadata("header.selectionIdentity", value: page.selectionIdentity)
         LyricsRuntimeProfile.setMetadata("header.artworkIdentity", value: header.artworkIdentity)
@@ -720,6 +728,26 @@ final class PlaylistPageController {
                 selectionIdentity: selectionIdentity,
                 resolveToken: loadToken
             )
+        }
+    }
+
+    private func scheduleDeferredHeaderArtworkLoad(selectionIdentity: String) {
+        let token = FirstUseHitchDiagnostics.begin(
+            "PlaylistPageController.deferHeaderArtwork",
+            detail: selectionIdentity
+        )
+        headerDeferredLoadTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                guard !Task.isCancelled else { break }
+                guard self.page?.selectionIdentity == selectionIdentity else { break }
+                guard self.playerVM?.isPlaying == true else {
+                    FirstUseHitchDiagnostics.end(token, detail: "playback-quiet")
+                    self.loadHeaderArtwork()
+                    return
+                }
+            }
+            FirstUseHitchDiagnostics.end(token, detail: "cancelled")
         }
     }
 
@@ -879,35 +907,37 @@ final class PlaylistPageController {
         artworkIdentity: String,
         resolveToken: UUID
     ) {
-        // Resolve data: prefer payload.data, fall back to fileURL contents.
-        let resolvedData: Data? = {
-            if let data = payload.data, !data.isEmpty { return data }
-            if let fileURL = payload.fileURL,
-               FileManager.default.fileExists(atPath: fileURL.path) {
-                return try? Data(contentsOf: fileURL)
-            }
-            return nil
-        }()
-
-        // Dedupe: don't re-extract for the same identity + data.
-        let checksum = resolvedData.map { ColorMath.fnv1a($0) } ?? 0
-        if artworkIdentity == lastHeaderColorIdentity, checksum == lastHeaderColorChecksum, checksum != 0 {
-            return
-        }
-
         headerColorTask?.cancel()
         HeaderColorExtractor.shared.cancelPending()
 
-        guard let data = resolvedData, !data.isEmpty else {
-            // No data: fall back to global theme accent.
-            headerAccentColor = ThemeStore.shared.accentColor
-            headerSemanticPalette = nil
-            lastHeaderColorIdentity = artworkIdentity
-            lastHeaderColorChecksum = 0
-            return
-        }
-
         headerColorTask = Task { @MainActor in
+            let resolvedData: Data? = await Task.detached(priority: .utility) { @Sendable () -> Data? in
+                if let data = payload.data, !data.isEmpty { return data }
+                if let fileURL = payload.fileURL,
+                   FileManager.default.fileExists(atPath: fileURL.path) {
+                    return try? Data(contentsOf: fileURL)
+                }
+                return nil
+            }.value
+
+            guard !Task.isCancelled else { return }
+            guard self.headerResolveToken == resolveToken else { return }
+
+            let checksum = resolvedData.map { ColorMath.fnv1a($0) } ?? 0
+            if artworkIdentity == self.lastHeaderColorIdentity,
+               checksum == self.lastHeaderColorChecksum,
+               checksum != 0 {
+                return
+            }
+
+            guard let data = resolvedData, !data.isEmpty else {
+                self.headerAccentColor = ThemeStore.shared.accentColor
+                self.headerSemanticPalette = nil
+                self.lastHeaderColorIdentity = artworkIdentity
+                self.lastHeaderColorChecksum = 0
+                return
+            }
+
             let result = await HeaderColorExtractor.shared.extract(
                 from: data,
                 artworkIdentity: artworkIdentity
@@ -1225,13 +1255,12 @@ final class PlaylistPageController {
             config = nil
         case .playlist(let id):
             guard let playlist = libraryVM.playlists.first(where: { $0.id == id }) else { return nil }
-            let artworkRevision = LocalLibraryService.shared.playlistArtworkRevision(playlistID: playlist.id)
             config = .playlist(
                 playlist,
                 entry: PlaylistHeaderData(
                     description: playlist.userDescription,
                     tracks: displayedTracks,
-                    artworkRevision: artworkRevision
+                    artworkRevision: nil
                 )
             )
         case .artist(let key):
@@ -1252,8 +1281,7 @@ final class PlaylistPageController {
             guard let entry = libraryVM.albumEntries.first(where: { $0.canonicalKey == key }) else {
                 return nil
             }
-            let fallbackArtworkData = displayedTracks.first?.loadArtworkDataIfNeeded()
-            let fallbackArtwork = fallbackArtworkData.flatMap {
+            let fallbackArtwork = displayedTracks.first?.artworkData.flatMap {
                 ArtworkLoader.squareHeaderPreviewImage(data: $0, maxPixelSize: 320)
             }
             config = .album(
