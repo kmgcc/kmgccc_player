@@ -174,6 +174,14 @@ final class AppSessionHost: ObservableObject {
         self.libraryService = libraryService
         self.repository = repository
 
+        // Wire up stall monitor with playback state for enriched diagnostics.
+        mainThreadStallMonitor.playbackStateProvider = { [weak playerVM] in
+            let isPlaying = playerVM?.isPlaying ?? false
+            let trackPrefix = FirstUseHitchDiagnostics.trackIDPrefix(playerVM?.currentTrack?.id)
+            let surface = LyricsSurfaceManager.shared.activeSurfaceDescription
+            return (isPlaying, trackPrefix, surface)
+        }
+
         FullscreenWindowManager.shared.configure(
             libraryVM: libraryVM,
             playerVM: playerVM,
@@ -655,6 +663,10 @@ private final class MainThreadStallMonitor {
     private let warningThresholdMs = 50.0
     private let criticalThresholdMs = 100.0
 
+    /// Closure that returns the current playback state for stall diagnostics.
+    /// Set by AppSessionHost after dependencies are ready.
+    var playbackStateProvider: (() -> (isPlaying: Bool, trackIDPrefix: String, activeSurface: String))?
+
     func start() {
         guard timer == nil else { return }
 
@@ -684,9 +696,16 @@ private final class MainThreadStallMonitor {
 
         if delayMs >= warningThresholdMs {
             let severity = delayMs >= criticalThresholdMs ? "critical" : "warning"
-            let operation = FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none"
+            let stack = FirstUseHitchDiagnostics.currentOperationStack()
+            let recent = FirstUseHitchDiagnostics.recentEvents()
+
+            let state = playbackStateProvider?()
+            let isPlaying = state?.isPlaying ?? false
+            let trackPrefix = state?.trackIDPrefix ?? "n/a"
+            let surface = state?.activeSurface ?? "n/a"
+
             Log.warning(
-                "[MainThreadStall] delayMs=\(String(format: "%.1f", delayMs)) severity=\(severity) operation=\(operation)",
+                "[MainThreadStall] delayMs=\(String(format: "%.1f", delayMs)) severity=\(severity) thread=main operationStack=[\(stack)] recentEvents=[\(recent)] isPlaying=\(isPlaying) trackID=\(trackPrefix) surface=\(surface)",
                 category: .perf
             )
         }

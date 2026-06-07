@@ -673,7 +673,9 @@ struct PlaylistDetailView: View {
     }
 
     private func erasedTrackMenu(trackID: UUID) -> AnyView {
-        AnyView(trackMenu(trackID: trackID))
+        let opToken = FirstUseHitchDiagnostics.begin("contextMenu.build", detail: "track=\(FirstUseHitchDiagnostics.trackIDPrefix(trackID))")
+        defer { FirstUseHitchDiagnostics.end(opToken) }
+        return AnyView(trackMenu(trackID: trackID))
     }
 
     private var contentTopPadding: CGFloat { 16 }

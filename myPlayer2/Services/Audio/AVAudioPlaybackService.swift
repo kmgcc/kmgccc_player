@@ -323,6 +323,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         currentGraphOperation = operation
         if engine.isRunning {
             engine.stop()
+            if LogConfig.perfDebugEnabled {
+                Log.info("[PlaybackPipeline] engine.stop() operation=\(operation) operationStack=\(FirstUseHitchDiagnostics.currentOperationStack())", category: .audio)
+            }
         }
         let mainMixer = engine.mainMixerNode
         engine.disconnectNodeOutput(playerNode)
@@ -345,7 +348,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         graphState = .ready
         currentGraphOperation = "idle"
         Log.info(
-            "[PlaybackPipeline] graph ready generation=\(graphGeneration) operation=\(operation) topology=\(activeLookaheadEnabled ? "player->playbackMixer->delay->mainMixer" : "player->playbackMixer->mainMixer") delaySeconds=\(String(format: "%.3f", lookaheadSeconds)) engineRunning=\(engine.isRunning)",
+            "[PlaybackPipeline] graph ready generation=\(graphGeneration) operation=\(operation) topology=\(activeLookaheadEnabled ? "player->playbackMixer->delay->mainMixer" : "player->playbackMixer->mainMixer") delaySeconds=\(String(format: "%.3f", lookaheadSeconds)) engineRunning=\(engine.isRunning) operationStack=\(FirstUseHitchDiagnostics.currentOperationStack())",
             category: .audio
         )
     }
@@ -403,6 +406,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         delayNode.wetDryMix = seconds > 0 ? 100 : 0
         delayNode.lowPassCutoff = 20_000
         delayNode.reset()
+        if LogConfig.perfDebugEnabled {
+            Log.info("[PlaybackPipeline] delayNode configured delaySeconds=\(String(format: "%.3f", seconds)) reset operationStack=\(FirstUseHitchDiagnostics.currentOperationStack())", category: .audio)
+        }
     }
 
     /// Clears buffered delay-line audio. No-op when lookahead is off.
@@ -508,7 +514,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         activeScheduleToken = token
         scheduledGraphGeneration = graphGeneration
         Log.info(
-            "[AudioDiagnostics] scheduleFile frames=\(file.length) graphGeneration=\(graphGeneration) graphState=\(graphState.rawValue) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+            "[AudioDiagnostics] scheduleFile frames=\(file.length) graphGeneration=\(graphGeneration) graphState=\(graphState.rawValue) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
             category: .audio
         )
         playerNode.scheduleFile(file, at: nil) { [weak self] in
@@ -527,7 +533,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         activeScheduleToken = token
         scheduledGraphGeneration = graphGeneration
         Log.info(
-            "[AudioDiagnostics] scheduleSegment startFrame=\(startingFrame) frameCount=\(frameCount) graphGeneration=\(graphGeneration) graphState=\(graphState.rawValue) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+            "[AudioDiagnostics] scheduleSegment startFrame=\(startingFrame) frameCount=\(frameCount) graphGeneration=\(graphGeneration) graphState=\(graphState.rawValue) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
             category: .audio
         )
         playerNode.scheduleSegment(
@@ -689,6 +695,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         do {
             if !engine.isRunning {
                 try engine.start()
+                if LogConfig.perfDebugEnabled {
+                    Log.info("[PlaybackPipeline] engine.start() operation=finishStart operationStack=\(FirstUseHitchDiagnostics.currentOperationStack())", category: .audio)
+                }
             }
         } catch {
             Log.error("[PlaybackPipeline] engine start failed: \(error)", category: .audio)
@@ -756,7 +765,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         guard isPlaying else { return }
 
         Log.info(
-            "[AudioDiagnostics] pause currentTime=\(String(format: "%.3f", currentTime)) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+            "[AudioDiagnostics] pause currentTime=\(String(format: "%.3f", currentTime)) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
             category: .audio
         )
         cancelPendingCompletion()
@@ -772,7 +781,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         guard !isPlaying, audioFile != nil else { return }
 
         Log.info(
-            "[AudioDiagnostics] resume currentTime=\(String(format: "%.3f", currentTime)) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+            "[AudioDiagnostics] resume currentTime=\(String(format: "%.3f", currentTime)) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
             category: .audio
         )
         applyLookaheadPreferenceChangeIfNeeded(reason: "resume")
@@ -795,7 +804,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private func stopPlayback(clearQueue: Bool) {
         Log.info(
-            "[PlaybackPipeline] stopPlayback clearQueue=\(clearQueue) currentTrack=\(currentTrack?.id.uuidString ?? "nil") operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+            "[PlaybackPipeline] stopPlayback clearQueue=\(clearQueue) currentTrack=\(currentTrack?.id.uuidString ?? "nil") operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
             category: .audio
         )
         invalidatePreparation()
@@ -825,7 +834,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         let wasPlaying = isPlaying
         Log.info(
-            "[AudioDiagnostics] seek target=\(String(format: "%.3f", seconds)) wasPlaying=\(wasPlaying) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+            "[AudioDiagnostics] seek target=\(String(format: "%.3f", seconds)) wasPlaying=\(wasPlaying) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
             category: .audio
         )
 
@@ -978,7 +987,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             let clockDelta = currentTime - previousAudibleTime
             if timerGap >= 0.24 || abs(clockDelta - timerGap) >= 0.18 {
                 Log.warning(
-                    "[AudioClockGap] timerGapMs=\(String(format: "%.1f", timerGap * 1000)) clockDeltaMs=\(String(format: "%.1f", clockDelta * 1000)) playerNodePlaying=\(playerNode.isPlaying) engineRunning=\(isEngineInitialized ? engine.isRunning : false) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+                    "[AudioClockGap] timerGapMs=\(String(format: "%.1f", timerGap * 1000)) clockDeltaMs=\(String(format: "%.1f", clockDelta * 1000)) playerNodePlaying=\(playerNode.isPlaying) engineRunning=\(isEngineInitialized ? engine.isRunning : false) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
                     category: .audio
                 )
             }

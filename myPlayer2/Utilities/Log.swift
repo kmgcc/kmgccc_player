@@ -295,15 +295,39 @@ nonisolated struct FirstUseHitchToken: Sendable {
 }
 
 nonisolated enum FirstUseHitchDiagnostics {
+    // MARK: - Stack entry
+
+    private struct StackEntry: Sendable {
+        let id: UUID
+        let description: String
+        let startedAtUptime: TimeInterval
+    }
+
+    // MARK: - Ring buffer entry
+
+    struct RingEvent: Sendable {
+        let timestamp: TimeInterval
+        let description: String
+        let isBegin: Bool
+    }
+
+    // MARK: - State
+
     private static let lock = NSLock()
     private nonisolated(unsafe) static var countsByKey: [String: Int] = [:]
-    private nonisolated(unsafe) static var activeMainOperationID: UUID?
-    private nonisolated(unsafe) static var activeMainOperationDescription: String?
+    /// Operation stack — supports nested operations on the main thread.
+    private nonisolated(unsafe) static var operationStack: [StackEntry] = []
+    /// Ring buffer of recent begin/end events (all threads).
+    private nonisolated(unsafe) static var ringBuffer: [RingEvent] = []
+    private static let ringCapacity = 64
+    private static let ringLookbackSeconds: TimeInterval = 2.0
     private nonisolated(unsafe) static var signpostStates: [UUID: OSSignpostIntervalState] = [:]
     private static let signposter = OSSignposter(
         subsystem: "kmg.myplayer2",
         category: "first_use_hitch"
     )
+
+    // MARK: - Begin / End
 
     nonisolated static func begin(_ key: String, detail: String? = nil) -> FirstUseHitchToken {
         let id = UUID()
@@ -314,13 +338,15 @@ nonisolated enum FirstUseHitchDiagnostics {
         occurrence = (countsByKey[key] ?? 0) + 1
         countsByKey[key] = occurrence
         signpostStates[id] = state
+
+        let desc = operationDescription(key: key, occurrence: occurrence, detail: detail)
+        let uptime = ProcessInfo.processInfo.systemUptime
         if Thread.isMainThread {
-            activeMainOperationID = id
-            activeMainOperationDescription = operationDescription(
-                key: key,
-                occurrence: occurrence,
-                detail: detail
-            )
+            operationStack.append(StackEntry(id: id, description: desc, startedAtUptime: uptime))
+        }
+        ringBuffer.append(RingEvent(timestamp: uptime, description: "begin:\(desc)", isBegin: true))
+        if ringBuffer.count > ringCapacity {
+            ringBuffer.removeFirst(ringBuffer.count - ringCapacity)
         }
         lock.unlock()
 
@@ -345,9 +371,22 @@ nonisolated enum FirstUseHitchDiagnostics {
 
         lock.lock()
         state = signpostStates.removeValue(forKey: token.id)
-        if activeMainOperationID == token.id {
-            activeMainOperationID = nil
-            activeMainOperationDescription = nil
+        // Remove from stack (may not be top if nested operations ended out of order).
+        if let idx = operationStack.lastIndex(where: { $0.id == token.id }) {
+            operationStack.remove(at: idx)
+        }
+        let desc = operationDescription(
+            key: token.key,
+            occurrence: token.occurrence,
+            detail: detail
+        )
+        ringBuffer.append(RingEvent(
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            description: "end:\(desc)",
+            isBegin: false
+        ))
+        if ringBuffer.count > ringCapacity {
+            ringBuffer.removeFirst(ringBuffer.count - ringCapacity)
         }
         lock.unlock()
 
@@ -363,11 +402,35 @@ nonisolated enum FirstUseHitchDiagnostics {
         }
     }
 
+    // MARK: - Accessors
+
+    /// Top-of-stack operation description (backward compatible).
     nonisolated static func currentMainOperationDescription() -> String? {
         lock.lock()
         defer { lock.unlock() }
-        return activeMainOperationDescription
+        return operationStack.last?.description
     }
+
+    /// Full operation stack as "op1 > op2 > op3" (deepest last).
+    nonisolated static func currentOperationStack() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !operationStack.isEmpty else { return "none" }
+        return operationStack.map(\.description).joined(separator: " > ")
+    }
+
+    /// Recent events within the lookback window, formatted as compact strings.
+    nonisolated static func recentEvents(maxCount: Int = 8) -> String {
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        defer { lock.unlock() }
+        let cutoff = now - ringLookbackSeconds
+        let recent = ringBuffer.filter { $0.timestamp >= cutoff }.suffix(maxCount)
+        guard !recent.isEmpty else { return "none" }
+        return recent.map { "\($0.isBegin ? "+" : "-")\($0.description)" }.joined(separator: ", ")
+    }
+
+    // MARK: - Measure
 
     @discardableResult
     nonisolated static func measure<T>(_ key: String, detail: String? = nil, _ body: () throws -> T) rethrows -> T {
@@ -375,6 +438,16 @@ nonisolated enum FirstUseHitchDiagnostics {
         defer { end(token) }
         return try body()
     }
+
+    // MARK: - Privacy-safe helpers
+
+    /// First 8 characters of a UUID string for log prefixes.
+    nonisolated static func trackIDPrefix(_ id: UUID?) -> String {
+        guard let id else { return "nil" }
+        return String(id.uuidString.prefix(8))
+    }
+
+    // MARK: - Private
 
     private nonisolated static func operationDescription(
         key: String,

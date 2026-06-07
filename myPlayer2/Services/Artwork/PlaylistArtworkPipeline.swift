@@ -117,9 +117,12 @@ actor PlaylistArtworkPipeline {
     }
 
     @discardableResult
-    nonisolated func prefetch(_ requests: [PlaylistArtworkRequest]) -> Task<Void, Never>? {
+    nonisolated func prefetch(
+        _ requests: [PlaylistArtworkRequest],
+        priority: TaskPriority = .background
+    ) -> Task<Void, Never>? {
         guard !requests.isEmpty else { return nil }
-        return Task.detached(priority: .background) {
+        return Task.detached(priority: priority) {
             for request in requests {
                 if Task.isCancelled { return }
                 _ = await self.load(request)

@@ -106,7 +106,6 @@ final class PlaylistPageController {
     private var snapshotUpdateTask: Task<Void, Never>?
     private var prefetchTask: Task<Void, Never>?
     private var headerResolveTask: Task<Void, Never>?
-    private var headerDeferredLoadTask: Task<Void, Never>?
     private var headerUpgradeTask: Task<Void, Never>?
     private var headerHaloSeedTask: Task<Void, Never>?
     private var headerFadeTask: Task<Void, Never>?
@@ -368,7 +367,6 @@ final class PlaylistPageController {
     private func beginTeardown() {
         phaseTask?.cancel()
         headerResolveTask?.cancel()
-        headerDeferredLoadTask?.cancel()
         headerUpgradeTask?.cancel()
         headerHaloSeedTask?.cancel()
         headerFadeTask?.cancel()
@@ -394,10 +392,11 @@ final class PlaylistPageController {
     }
 
     private func activateFirstPaintPhases(for selection: LibrarySelection) {
+        let firstPaintToken = FirstUseHitchDiagnostics.begin("PlaylistPageController.firstPaint", detail: "selection=\(selection)")
         phaseTask?.cancel()
         let playbackActive = playerVM?.isPlaying == true
         areRowSecondaryInteractionsEnabled = false
-        areRowArtworkLoadsEnabled = !playbackActive
+        areRowArtworkLoadsEnabled = true
         isRowArtworkPrefetchEnabled = false
         isHeaderEffectsEnabled = selection == .allSongs && !playbackActive
 
@@ -409,12 +408,10 @@ final class PlaylistPageController {
             self.areRowSecondaryInteractionsEnabled = true
             if !playbackActive {
                 self.isRowArtworkPrefetchEnabled = true
-            }
-
-            if playbackActive {
-                try? await Task.sleep(nanoseconds: 420_000_000)
+            } else {
+                try? await Task.sleep(nanoseconds: 180_000_000)
                 guard !Task.isCancelled, self.phaseToken == token else { return }
-                self.areRowArtworkLoadsEnabled = true
+                self.isRowArtworkPrefetchEnabled = true
             }
 
             guard selection != .allSongs else { return }
@@ -424,6 +421,7 @@ final class PlaylistPageController {
             self.isHeaderEffectsEnabled = true
             LyricsRuntimeProfile.increment("header.effectsEnabled.true")
         }
+        FirstUseHitchDiagnostics.end(firstPaintToken)
     }
 
     private func cancelAllTasks(clearPage: Bool) {
@@ -465,6 +463,9 @@ final class PlaylistPageController {
         restoreScroll: Bool,
         token: UUID
     ) async {
+        let opToken = FirstUseHitchDiagnostics.begin("PlaylistPageController.rebuild", detail: "reason=\(reason)")
+        defer { FirstUseHitchDiagnostics.end(opToken) }
+
         guard let libraryVM else { return }
 
         let rebuildStart = ProcessInfo.processInfo.systemUptime
@@ -678,12 +679,6 @@ final class PlaylistPageController {
             return
         }
 
-        headerDeferredLoadTask?.cancel()
-        if playerVM?.isPlaying == true {
-            scheduleDeferredHeaderArtworkLoad(selectionIdentity: page.selectionIdentity)
-            return
-        }
-
         LyricsRuntimeProfile.increment("header.loadHeaderArtwork")
         LyricsRuntimeProfile.setMetadata("header.selectionIdentity", value: page.selectionIdentity)
         LyricsRuntimeProfile.setMetadata("header.artworkIdentity", value: header.artworkIdentity)
@@ -694,10 +689,11 @@ final class PlaylistPageController {
         let request = header.config.artworkRequest
         let selectionIdentity = page.selectionIdentity
         let loadToken = UUID()
+        let playbackActive = playerVM?.isPlaying == true
         headerResolveToken = loadToken
         resetHeaderHeavyWorkDeferralBaseline()
 
-        headerResolveTask = Task { @MainActor in
+        headerResolveTask = Task(priority: playbackActive ? .utility : .userInitiated) { @MainActor in
             let immediateStart = ProcessInfo.processInfo.systemUptime
             let immediate = DetailHeaderArtworkResolver.shared.resolveImmediately(for: request)
             LyricsRuntimeProfile.increment("header.resolveImmediate.count")
@@ -728,26 +724,6 @@ final class PlaylistPageController {
                 selectionIdentity: selectionIdentity,
                 resolveToken: loadToken
             )
-        }
-    }
-
-    private func scheduleDeferredHeaderArtworkLoad(selectionIdentity: String) {
-        let token = FirstUseHitchDiagnostics.begin(
-            "PlaylistPageController.deferHeaderArtwork",
-            detail: selectionIdentity
-        )
-        headerDeferredLoadTask = Task { @MainActor in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 900_000_000)
-                guard !Task.isCancelled else { break }
-                guard self.page?.selectionIdentity == selectionIdentity else { break }
-                guard self.playerVM?.isPlaying == true else {
-                    FirstUseHitchDiagnostics.end(token, detail: "playback-quiet")
-                    self.loadHeaderArtwork()
-                    return
-                }
-            }
-            FirstUseHitchDiagnostics.end(token, detail: "cancelled")
         }
     }
 
@@ -798,6 +774,7 @@ final class PlaylistPageController {
                 guard self.headerResolveToken == resolveToken else { return }
             }
             let upgradeStart = ProcessInfo.processInfo.systemUptime
+            let headerOpToken = FirstUseHitchDiagnostics.begin("PlaylistPageController.headerArtwork", detail: "identity=\(artworkIdentity.prefix(8))")
             let headerRequest = PlaylistArtworkPipeline.headerRequest(
                 artworkIdentity: artworkIdentity,
                 artworkData: payload.data,
@@ -826,9 +803,10 @@ final class PlaylistPageController {
                 "header.pipelineUpgrade",
                 ms: (ProcessInfo.processInfo.systemUptime - upgradeStart) * 1000
             )
-            guard !Task.isCancelled else { return }
-            guard self.headerResolveToken == resolveToken else { return }
-            guard self.page?.selectionIdentity == selectionIdentity else { return }
+            guard !Task.isCancelled else { FirstUseHitchDiagnostics.end(headerOpToken); return }
+            guard self.headerResolveToken == resolveToken else { FirstUseHitchDiagnostics.end(headerOpToken); return }
+            guard self.page?.selectionIdentity == selectionIdentity else { FirstUseHitchDiagnostics.end(headerOpToken); return }
+            FirstUseHitchDiagnostics.end(headerOpToken)
 
             if let headerImage {
                 self.publishHeaderImage(
@@ -848,27 +826,13 @@ final class PlaylistPageController {
     }
 
     private func scheduleInitialArtworkWarmup(for pageModel: PlaylistPageModel) {
-        if playerVM?.isPlaying == true {
-            let token = activeLoadToken
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 1_200_000_000)
-                guard !Task.isCancelled, self.activeLoadToken == token else { return }
-                guard self.playerVM?.isPlaying != true else {
-                    Log.info(
-                        "[PlaylistPageController] skipped initial artwork warmup while playback active selection=\(pageModel.selectionIdentity)",
-                        category: .perf
-                    )
-                    return
-                }
-                self.scheduleInitialArtworkWarmup(for: pageModel)
-            }
-            return
-        }
-
+        let playbackActive = playerVM?.isPlaying == true
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
-        let rows = Array(pageModel.rows.prefix(72))
+        let lowPriorityRowCount = playbackActive ? 24 : 72
+        let highPriorityRowCount = playbackActive ? 10 : 32
+        let rows = Array(pageModel.rows.prefix(lowPriorityRowCount))
         var requests: [PlaylistArtworkRequest] = []
-        requests.reserveCapacity(rows.count + min(rows.count, 32))
+        requests.reserveCapacity(rows.count + min(rows.count, highPriorityRowCount))
 
         requests.append(contentsOf: rows.map {
             PlaylistArtworkPipeline.rowLowRequest(
@@ -881,7 +845,7 @@ final class PlaylistPageController {
             )
         })
 
-        requests.append(contentsOf: rows.prefix(32).map {
+        requests.append(contentsOf: rows.prefix(highPriorityRowCount).map {
             PlaylistArtworkPipeline.rowHighRequest(
                 trackID: $0.id,
                 artworkData: $0.artworkData,
@@ -894,7 +858,8 @@ final class PlaylistPageController {
 
         startArtworkPrefetch(
             key: "\(pageModel.selectionIdentity)-initial-\(pageModel.sourceFingerprint)",
-            requests: requests
+            requests: requests,
+            priority: playbackActive ? .background : .utility
         )
 
         if let currentTrackID = playerVM?.currentTrack?.id {
@@ -911,6 +876,9 @@ final class PlaylistPageController {
         HeaderColorExtractor.shared.cancelPending()
 
         headerColorTask = Task { @MainActor in
+            let colorOpToken = FirstUseHitchDiagnostics.begin("PlaylistPageController.headerColor", detail: "identity=\(artworkIdentity.prefix(8))")
+            defer { FirstUseHitchDiagnostics.end(colorOpToken) }
+
             let resolvedData: Data? = await Task.detached(priority: .utility) { @Sendable () -> Data? in
                 if let data = payload.data, !data.isEmpty { return data }
                 if let fileURL = payload.fileURL,
@@ -977,7 +945,11 @@ final class PlaylistPageController {
         }
     }
 
-    private func startArtworkPrefetch(key: String, requests: [PlaylistArtworkRequest]) {
+    private func startArtworkPrefetch(
+        key: String,
+        requests: [PlaylistArtworkRequest],
+        priority: TaskPriority = .background
+    ) {
         guard !requests.isEmpty, !prefetchedArtworkKeys.contains(key) else { return }
         prefetchedArtworkKeys.insert(key)
 
@@ -986,7 +958,7 @@ final class PlaylistPageController {
             artworkPrefetchTasks.removeValue(forKey: oldestKey)
         }
 
-        guard let task = PlaylistArtworkPipeline.shared.prefetch(requests) else { return }
+        guard let task = PlaylistArtworkPipeline.shared.prefetch(requests, priority: priority) else { return }
         artworkPrefetchTasks[key] = task
 
         Task { @MainActor in

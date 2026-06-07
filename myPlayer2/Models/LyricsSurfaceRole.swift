@@ -82,9 +82,7 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
     /// Whether the renderer should use spring-based animation.
     var enableSpring: Bool {
         switch self {
-        case .batchPreview:
-            return false
-        case .main, .fullscreen, .fullscreenCoverBlurHighlight, .standalone:
+        case .main, .fullscreen, .fullscreenCoverBlurHighlight, .batchPreview, .standalone:
             return true
         }
     }
@@ -128,11 +126,7 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
     /// Active line scale multiplier.
     var activeScale: Double {
         switch self {
-        case .main:
-            return 1.2
-        case .batchPreview:
-            return 1.04
-        case .fullscreen, .fullscreenCoverBlurHighlight:
+        case .main, .fullscreen, .fullscreenCoverBlurHighlight, .batchPreview:
             return 1.2
         case .standalone:
             return 1.1
@@ -168,16 +162,10 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
     /// Whether this role supports user seek callbacks.
     var supportsSeekCallback: Bool {
         switch self {
-        case .main:
-            return true
-        case .fullscreen:
+        case .main, .fullscreen, .batchPreview, .standalone:
             return true
         case .fullscreenCoverBlurHighlight:
             return false  // Overlay is passthrough only
-        case .batchPreview:
-            return false  // Preview doesn't control playback
-        case .standalone:
-            return true
         }
     }
     

@@ -171,6 +171,9 @@ final class ThemeStore: ObservableObject {
         artworkIdentity: String?,
         assetTrackID: UUID?
     ) async {
+        let opToken = FirstUseHitchDiagnostics.begin("ThemeStore.updateTheme", detail: "track=\(FirstUseHitchDiagnostics.trackIDPrefix(assetTrackID))")
+        defer { FirstUseHitchDiagnostics.end(opToken) }
+
         let checksum = data.map(computeChecksum) ?? 0
         let updateState = "identity=\(artworkIdentity ?? "nil")|checksum=\(checksum)"
         if await LogStateTracker.shared.checkStateChanged(
