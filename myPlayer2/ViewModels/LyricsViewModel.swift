@@ -221,6 +221,8 @@ final class LyricsViewModel {
 
     private func getContentForTrack(_ track: Track?, currentTime: TimeInterval = 0, isPlaying: Bool = false) -> String {
         guard let track = track else { return "" }
+        let opToken = FirstUseHitchDiagnostics.begin("LyricsVM.getContent", detail: "track=\(FirstUseHitchDiagnostics.trackIDPrefix(track.id))")
+        defer { FirstUseHitchDiagnostics.end(opToken) }
 
         if let t1 = LyricsFormatSupport.normalizedTTMLText(track.loadTTMLLyricsIfNeeded()) {
             return t1

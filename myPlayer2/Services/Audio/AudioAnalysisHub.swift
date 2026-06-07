@@ -151,6 +151,9 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         mixerNode?.removeTap(onBus: 0)
         isInstalled = false
         stateLock.unlock()
+        if LogConfig.perfDebugEnabled {
+            Log.info("[AudioAnalysisHub] tap removed operationStack=\(FirstUseHitchDiagnostics.currentOperationStack())", category: .audio)
+        }
 
         updateTimerState()
         purgeInactiveState(preservingMixerAttachment: true)
@@ -359,6 +362,9 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
             [weak self] buffer, _ in
             self?.enqueue(buffer)
         }
+        if LogConfig.perfDebugEnabled {
+            Log.info("[AudioAnalysisHub] tap installed bufferSize=\(bufferSize) operationStack=\(FirstUseHitchDiagnostics.currentOperationStack())", category: .audio)
+        }
     }
 
     private func purgeInactiveState(preservingMixerAttachment: Bool) {
@@ -479,7 +485,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         processedFrames = 0
 
         Log.warning(
-            "[AudioDiagnostics] sampleBus droppedTapBuffers=\(dropped) skippedProcessReads=\(skipped) processedFrames=\(processed) operation=\(FirstUseHitchDiagnostics.currentMainOperationDescription() ?? "none")",
+            "[AudioDiagnostics] sampleBus droppedTapBuffers=\(dropped) skippedProcessReads=\(skipped) processedFrames=\(processed) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
             category: .audio
         )
     }

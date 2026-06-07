@@ -364,25 +364,26 @@ struct TrackInfoEditorCore: View {
             return
         }
 
-        let playbackActive = playerVM.isPlaying
+        if let cachedPreview = TrackInfoArtworkPreviewDecoder.cachedImage(forIdentity: identity) {
+            artworkPreviewSourceIdentity = identity
+            artworkPreviewImage = cachedPreview
+            return
+        }
+
         let scheduleToken = FirstUseHitchDiagnostics.begin(
             "TrackInfoEditorCore.artworkPreviewSchedule",
-            detail: "\(reason), bytes=\(data.count), identity=\(identity), playing=\(playbackActive)"
+            detail: "\(reason), bytes=\(data.count), identity=\(identity)"
         )
         artworkPreviewSourceIdentity = identity
         artworkPreviewImage = nil
         FirstUseHitchDiagnostics.end(scheduleToken)
 
-        artworkPreviewTask = Task.detached(priority: .utility) { [data, identity, playbackActive, reason] in
-            let delayNs: UInt64 = playbackActive ? 300_000_000 : 0
-            if delayNs > 0 {
-                try? await Task.sleep(nanoseconds: delayNs)
-            }
+        artworkPreviewTask = Task.detached(priority: .utility) { [data, identity, reason] in
             guard !Task.isCancelled else { return }
 
             let decodeToken = FirstUseHitchDiagnostics.begin(
                 "TrackInfoEditorCore.artworkPreviewDecode.background",
-                detail: "\(reason), bytes=\(data.count), identity=\(identity), delayMs=\(delayNs / 1_000_000)"
+                detail: "\(reason), bytes=\(data.count), identity=\(identity)"
             )
             let decoded = TrackInfoArtworkPreviewDecoder.decode(
                 data: data,
@@ -916,6 +917,12 @@ private nonisolated struct TrackInfoArtworkPreviewDecodeResult: Sendable {
 }
 
 private nonisolated enum TrackInfoArtworkPreviewDecoder {
+    private nonisolated(unsafe) static let previewCache: NSCache<NSString, TrackInfoArtworkPreviewImage> = {
+        let cache = NSCache<NSString, TrackInfoArtworkPreviewImage>()
+        cache.countLimit = 96
+        return cache
+    }()
+
     nonisolated static func lightweightIdentity(for data: Data) -> String {
         var hash: UInt64 = 1_469_598_103_934_665_603
         data.withUnsafeBytes { rawBuffer in
@@ -940,6 +947,10 @@ private nonisolated enum TrackInfoArtworkPreviewDecoder {
             }
         }
         return "\(data.count)-\(String(hash, radix: 16))"
+    }
+
+    nonisolated static func cachedImage(forIdentity identity: String) -> TrackInfoArtworkPreviewImage? {
+        previewCache.object(forKey: identity as NSString)
     }
 
     nonisolated static func decode(
@@ -982,7 +993,7 @@ private nonisolated enum TrackInfoArtworkPreviewDecoder {
         let checksum = ArtworkLoader.checksum(for: data)
         let checksumMs = elapsedMs(since: checksumStart)
 
-        return TrackInfoArtworkPreviewDecodeResult(
+        let result = TrackInfoArtworkPreviewDecodeResult(
             image: TrackInfoArtworkPreviewImage(
                 identity: identity,
                 cgImage: cgImage,
@@ -995,6 +1006,8 @@ private nonisolated enum TrackInfoArtworkPreviewDecoder {
             thumbnailMs: thumbnailMs,
             checksumMs: checksumMs
         )
+        previewCache.setObject(result.image, forKey: identity as NSString)
+        return result
     }
 
     private nonisolated static func elapsedMs(since start: TimeInterval) -> Double {

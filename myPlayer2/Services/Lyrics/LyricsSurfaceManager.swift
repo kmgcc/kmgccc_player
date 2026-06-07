@@ -88,6 +88,12 @@ final class LyricsSurfaceManager {
 
     private init() {}
 
+    /// Compact description of active surfaces for diagnostics (privacy-safe).
+    var activeSurfaceDescription: String {
+        guard !activeRoles.isEmpty else { return "none" }
+        return activeRoles.map(\.rawValue).sorted().joined(separator: ",")
+    }
+
     // MARK: - Mode Request API (Single Source of Truth)
 
     /// Request a mode switch. This is the ONLY way to change surfaces.

@@ -73,8 +73,12 @@ final class BackgroundAnimationClock: ObservableObject {
         tickCount = 0
         resetGates()
         scheduleTimer()
-        
-        print("[BackgroundAnimationClock] Started at 60Hz")
+
+        if LogConfig.perfDebugEnabled {
+            Log.info("[BackgroundAnimationClock] Started at 60Hz operationStack=\(FirstUseHitchDiagnostics.currentOperationStack())", category: .perf)
+        } else {
+            print("[BackgroundAnimationClock] Started at 60Hz")
+        }
     }
 
     /// Acquire a shared clock lease.
@@ -103,7 +107,11 @@ final class BackgroundAnimationClock: ObservableObject {
         tickCount = 0
         activeClientCount = 0
         resetGates()
-        print("[BackgroundAnimationClock] Stopped")
+        if LogConfig.perfDebugEnabled {
+            Log.info("[BackgroundAnimationClock] Stopped operationStack=\(FirstUseHitchDiagnostics.currentOperationStack())", category: .perf)
+        } else {
+            print("[BackgroundAnimationClock] Stopped")
+        }
     }
     
     /// Pause when app is backgrounded.
