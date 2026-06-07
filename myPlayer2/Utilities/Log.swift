@@ -9,6 +9,9 @@
 import CoreGraphics
 import Foundation
 import OSLog
+#if canImport(AppKit)
+import AppKit
+#endif
 
 // MARK: - Log Category
 
@@ -455,6 +458,161 @@ nonisolated enum FirstUseHitchDiagnostics {
         detail: String?
     ) -> String {
         "\(key)#\(occurrence == 1 ? "cold" : "warm")\(detail.map { ":\($0)" } ?? "")"
+    }
+}
+
+// MARK: - Context Menu Diagnostics
+
+nonisolated enum ContextMenuDiagnostics {
+    private static let lock = NSLock()
+    private nonisolated(unsafe) static var observersInstalled = false
+    private nonisolated(unsafe) static var pendingSurface: String?
+    private nonisolated(unsafe) static var pendingDetail: String?
+    private nonisolated(unsafe) static var pendingUptime: TimeInterval?
+    private nonisolated(unsafe) static var openSurface: String?
+    private nonisolated(unsafe) static var openDetail: String?
+    private nonisolated(unsafe) static var openToken: FirstUseHitchToken?
+    private nonisolated(unsafe) static var isMenuTracking = false
+    private static let pendingHintTTL: TimeInterval = 2.0
+
+    #if canImport(AppKit)
+    private nonisolated(unsafe) static var beginObserver: NSObjectProtocol?
+    private nonisolated(unsafe) static var endObserver: NSObjectProtocol?
+    #endif
+
+    nonisolated static func beginBuild(surface: String, detail: String? = nil) -> FirstUseHitchToken {
+        notePotentialOpen(surface: surface, detail: detail)
+        return FirstUseHitchDiagnostics.begin("\(surface).build", detail: detail)
+    }
+
+    nonisolated static func beginSubmenuBuild(surface: String, detail: String? = nil) -> FirstUseHitchToken {
+        notePotentialOpen(surface: surface, detail: detail)
+        return FirstUseHitchDiagnostics.begin("\(surface).submenuBuild", detail: detail)
+    }
+
+    nonisolated static func beginActionInvoke(surface: String, detail: String? = nil) -> FirstUseHitchToken {
+        notePotentialOpen(surface: surface, detail: detail)
+        return FirstUseHitchDiagnostics.begin("\(surface).actionInvoke", detail: detail)
+    }
+
+    nonisolated static func end(_ token: FirstUseHitchToken, detail: String? = nil) {
+        FirstUseHitchDiagnostics.end(token, detail: detail)
+    }
+
+    nonisolated static func markBodyUpdate(_ key: String, detail: String? = nil) {
+        guard isTrackingOrOpen else { return }
+        let token = FirstUseHitchDiagnostics.begin(key, detail: detail)
+        FirstUseHitchDiagnostics.end(token)
+    }
+
+    nonisolated static var isTrackingOrOpen: Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        defer { lock.unlock() }
+        let hasFreshPending = pendingSurface != nil
+            && pendingUptime.map { now - $0 <= pendingHintTTL } == true
+        return isMenuTracking || openToken != nil || hasFreshPending
+    }
+
+    nonisolated static func currentStateDescription() -> String {
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        defer { lock.unlock() }
+        let open = openSurface ?? "none"
+        let pendingIsFresh = pendingUptime.map { now - $0 <= pendingHintTTL } == true
+        let pending = pendingIsFresh ? (pendingSurface ?? "none") : "none"
+        let detail = openDetail ?? (pendingIsFresh ? pendingDetail : nil) ?? "none"
+        return "tracking=\(isMenuTracking) open=\(open) pending=\(pending) detail=\(detail)"
+    }
+
+    private nonisolated static func notePotentialOpen(surface: String, detail: String?) {
+        ensureObserversInstalled()
+        lock.lock()
+        pendingSurface = surface
+        pendingDetail = detail
+        pendingUptime = ProcessInfo.processInfo.systemUptime
+        lock.unlock()
+    }
+
+    private nonisolated static func handleMenuDidBeginTracking() {
+        let surface: String
+        let detail: String?
+        let oldToken: FirstUseHitchToken?
+
+        lock.lock()
+        surface = pendingSurface ?? "UnknownContextMenu"
+        detail = pendingDetail
+        oldToken = openToken
+        isMenuTracking = true
+        pendingSurface = nil
+        pendingDetail = nil
+        pendingUptime = nil
+        lock.unlock()
+
+        if let oldToken {
+            FirstUseHitchDiagnostics.end(oldToken, detail: "interrupted")
+        }
+
+        let token = FirstUseHitchDiagnostics.begin("\(surface).open", detail: detail)
+
+        lock.lock()
+        openSurface = surface
+        openDetail = detail
+        openToken = token
+        lock.unlock()
+    }
+
+    private nonisolated static func handleMenuDidEndTracking() {
+        let surface: String
+        let detail: String?
+        let token: FirstUseHitchToken?
+
+        lock.lock()
+        surface = openSurface ?? pendingSurface ?? "UnknownContextMenu"
+        detail = openDetail ?? pendingDetail
+        token = openToken
+        isMenuTracking = false
+        openSurface = nil
+        openDetail = nil
+        openToken = nil
+        pendingSurface = nil
+        pendingDetail = nil
+        pendingUptime = nil
+        lock.unlock()
+
+        if let token {
+            FirstUseHitchDiagnostics.end(token)
+        }
+
+        let dismissToken = FirstUseHitchDiagnostics.begin("\(surface).dismiss", detail: detail)
+        FirstUseHitchDiagnostics.end(dismissToken)
+    }
+
+    private nonisolated static func ensureObserversInstalled() {
+        #if canImport(AppKit)
+        lock.lock()
+        guard !observersInstalled else {
+            lock.unlock()
+            return
+        }
+        observersInstalled = true
+        lock.unlock()
+
+        beginObserver = NotificationCenter.default.addObserver(
+            forName: NSMenu.didBeginTrackingNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            handleMenuDidBeginTracking()
+        }
+        endObserver = NotificationCenter.default.addObserver(
+            forName: NSMenu.didEndTrackingNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            handleMenuDidEndTracking()
+        }
+        #endif
     }
 }
 

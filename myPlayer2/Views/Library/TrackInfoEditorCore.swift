@@ -10,10 +10,6 @@ import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
-func clearCurrentTextInputFocus() {
-    NSApp.keyWindow?.makeFirstResponder(nil)
-}
-
 struct TrackInfoEditorRawReference: Equatable {
     var title: String
     var artist: String
@@ -31,7 +27,6 @@ struct TrackInfoEditorCore: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(LibraryViewModel.self) private var libraryVM
-    @Environment(PlayerViewModel.self) private var playerVM
     @Environment(CoverDownloadService.self) private var coverDownloadService
     @Environment(NetEaseCoverService.self) private var netEaseCoverService
     @EnvironmentObject private var themeStore: ThemeStore
@@ -79,16 +74,18 @@ struct TrackInfoEditorCore: View {
     @State private var coverFetchTask: Task<Void, Never>?
     @State private var metadataFetchTask: Task<Void, Never>?
     @State private var artworkPreviewTask: Task<Void, Never>?
+    @State private var lyricsValidationTask: Task<Void, Never>?
     @State private var artworkPreviewImage: TrackInfoArtworkPreviewImage?
     @State private var artworkPreviewSourceIdentity: String?
     @State private var coverCoordinator: CoverSearchCoordinator?
     @State private var metadataCandidates: [QQMusicArtworkCandidate] = []
+    @State private var cachedLyricsValidationError: String?
 
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
     private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
 
-    private var lyricsValidationError: String? {
-        LyricsFormatSupport.validateManualTTML(lyricsText)
+    private var effectiveLyricsValidationError: String? {
+        lyricsValidationMessage ?? cachedLyricsValidationError
     }
 
     var body: some View {
@@ -99,33 +96,10 @@ struct TrackInfoEditorCore: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if mode == .externalPlayback {
-                        externalNoticeSection
-                    }
-
-                    if let rawReference {
-                        rawReferenceSection(rawReference)
-                        Divider()
-                    }
-
-                    artworkSection
-
-                    Divider()
-
-                    metadataSection
-
-                    Divider()
-
-                    lyricsSection
-
-                    Color.clear.frame(height: 240)
+                    editorScrollContent
                 }
                 .padding(24)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    clearCurrentTextInputFocus()
-                }
             }
 
             Divider()
@@ -136,24 +110,14 @@ struct TrackInfoEditorCore: View {
         .tint(themeStore.accentColor)
         .accentColor(themeStore.accentColor)
         .onAppear {
-            let token = FirstUseHitchDiagnostics.begin(
-                "TrackInfoEditorCore.onAppear",
-                detail: "mode=\(mode)"
-            )
-            coverCoordinator = CoverSearchCoordinator(
-                coverDownloadService: coverDownloadService,
-                netEaseCoverService: netEaseCoverService
-            )
-            scheduleArtworkPreviewDecode(reason: "appear")
-            let layoutToken = FirstUseHitchDiagnostics.begin(
-                "TrackInfoEditorCore.initialSheetLayout",
-                detail: "mode=\(mode)"
-            )
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 900_000_000)
-                FirstUseHitchDiagnostics.end(layoutToken)
+            if coverCoordinator == nil {
+                coverCoordinator = CoverSearchCoordinator(
+                    coverDownloadService: coverDownloadService,
+                    netEaseCoverService: netEaseCoverService
+                )
             }
-            FirstUseHitchDiagnostics.end(token)
+            scheduleArtworkPreviewDecode(reason: "onAppear")
+            scheduleLyricsValidation(reason: "onAppear", debounceNanoseconds: 0)
         }
         .onDisappear {
             coverFetchTask?.cancel()
@@ -162,6 +126,8 @@ struct TrackInfoEditorCore: View {
             metadataFetchTask = nil
             artworkPreviewTask?.cancel()
             artworkPreviewTask = nil
+            lyricsValidationTask?.cancel()
+            lyricsValidationTask = nil
             coverCoordinator?.cancelSearch()
         }
         .onChange(of: coverCoordinator?.selectedForPreview) { _, newValue in
@@ -171,6 +137,30 @@ struct TrackInfoEditorCore: View {
         }
         .onChange(of: artworkData) { _, _ in
             scheduleArtworkPreviewDecode(reason: "artworkData changed")
+        }
+        .onChange(of: lyricsText) { _, _ in
+            lyricsValidationMessage = nil
+            scheduleLyricsValidation(reason: "lyricsText changed")
+        }
+    }
+
+    private var editorScrollContent: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            if mode == .externalPlayback {
+                externalNoticeSection
+            }
+
+            if let rawReference {
+                rawReferenceSection(rawReference)
+                Divider()
+            }
+
+            artworkSection
+            Divider()
+            metadataSection
+            Divider()
+            lyricsSection
+            Color.clear.frame(height: 120)
         }
     }
 
@@ -332,37 +322,20 @@ struct TrackInfoEditorCore: View {
         .frame(width: size, height: size)
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .background(
-            TrackInfoArtworkPreviewRenderProbe(
-                identity: artworkPreviewImage?.identity ?? "placeholder",
-                role: "editor"
-            )
-        )
     }
 
-    private func scheduleArtworkPreviewDecode(reason: String) {
+    private func scheduleArtworkPreviewDecode(reason _: String) {
         artworkPreviewTask?.cancel()
         artworkPreviewTask = nil
 
         guard let data = artworkData, !data.isEmpty else {
-            let token = FirstUseHitchDiagnostics.begin(
-                "TrackInfoEditorCore.artworkPreviewClear",
-                detail: reason
-            )
             artworkPreviewImage = nil
             artworkPreviewSourceIdentity = nil
-            FirstUseHitchDiagnostics.end(token)
             return
         }
 
         let identity = TrackInfoArtworkPreviewDecoder.lightweightIdentity(for: data)
-        guard identity != artworkPreviewSourceIdentity else {
-            Log.debug(
-                "[TrackInfoEditorCore] skip artwork preview refresh reason=\(reason) identity=\(identity)",
-                category: .perf
-            )
-            return
-        }
+        guard identity != artworkPreviewSourceIdentity else { return }
 
         if let cachedPreview = TrackInfoArtworkPreviewDecoder.cachedImage(forIdentity: identity) {
             artworkPreviewSourceIdentity = identity
@@ -370,48 +343,21 @@ struct TrackInfoEditorCore: View {
             return
         }
 
-        let scheduleToken = FirstUseHitchDiagnostics.begin(
-            "TrackInfoEditorCore.artworkPreviewSchedule",
-            detail: "\(reason), bytes=\(data.count), identity=\(identity)"
-        )
         artworkPreviewSourceIdentity = identity
         artworkPreviewImage = nil
-        FirstUseHitchDiagnostics.end(scheduleToken)
 
-        artworkPreviewTask = Task.detached(priority: .utility) { [data, identity, reason] in
+        artworkPreviewTask = Task.detached(priority: .utility) { [data, identity] in
             guard !Task.isCancelled else { return }
-
-            let decodeToken = FirstUseHitchDiagnostics.begin(
-                "TrackInfoEditorCore.artworkPreviewDecode.background",
-                detail: "\(reason), bytes=\(data.count), identity=\(identity)"
-            )
             let decoded = TrackInfoArtworkPreviewDecoder.decode(
                 data: data,
                 identity: identity,
                 maxPixelSize: 320
             )
-            FirstUseHitchDiagnostics.end(
-                decodeToken,
-                detail: decoded?.diagnosticSummary ?? "success=false"
-            )
-
             guard !Task.isCancelled else { return }
 
             await MainActor.run {
-                guard artworkPreviewSourceIdentity == identity else {
-                    Log.debug(
-                        "[TrackInfoEditorCore] drop stale artwork preview identity=\(identity)",
-                        category: .perf
-                    )
-                    return
-                }
-
-                let commitToken = FirstUseHitchDiagnostics.begin(
-                    "TrackInfoEditorCore.artworkPreviewCommit",
-                    detail: decoded?.commitSummary ?? "success=false, identity=\(identity)"
-                )
+                guard artworkPreviewSourceIdentity == identity else { return }
                 artworkPreviewImage = decoded?.image
-                FirstUseHitchDiagnostics.end(commitToken)
             }
         }
     }
@@ -425,45 +371,8 @@ struct TrackInfoEditorCore: View {
                 labeledField("edit.track.track_title", prompt: "edit.track.track_title", text: $title)
                 labeledField("edit.track.artist", prompt: "edit.track.artist_name", text: $artist)
                 labeledField("edit.track.album", prompt: "edit.track.album_name", text: $album)
-                if allowsDescriptionEditing {
-                    labeledEditor(
-                        "edit.track.description",
-                        prompt: "edit.track.description_placeholder",
-                        text: $trackDescription
-                    )
-
-                    if let descriptionFallback,
-                       trackDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                       !descriptionFallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("来自专辑介绍")
-                                .font(.caption)
-                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
-                            Text(descriptionFallback)
-                                .font(.caption)
-                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
-                                .lineLimit(3)
-                        }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.thinMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                }
-
-                if showsDetailedMetadata {
-                    metadataLookupControl
-                    if !metadataCandidates.isEmpty {
-                        MetadataCandidateStripView(
-                            candidates: metadataCandidates,
-                            selectedSongMid: qqMusicSongMid,
-                            onSelect: { candidate in
-                                selectMetadataCandidate(candidate)
-                            }
-                        )
-                    }
-                    detailedMetadataSection
-                }
+                labeledField("流派 / 标签", prompt: "用逗号分隔", text: $genreTagsText)
+                labeledField("发行日期", prompt: "YYYY-MM-DD", text: $releaseDateText)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("edit.track.duration")
@@ -472,52 +381,98 @@ struct TrackInfoEditorCore: View {
                     Text(formatDuration(duration))
                         .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                 }
+
+                if allowsDescriptionEditing {
+                    descriptionEditorSection
+                }
+
+                if showsDetailedMetadata {
+                    metadataDetailsSection
+                }
             }
         }
     }
 
-    private var detailedMetadataSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            CollapsibleSectionHeader(
-                "更多详细元数据",
-                systemImage: "list.bullet.rectangle",
-                isExpanded: $isDetailedMetadataExpanded
+    private var descriptionEditorSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            labeledEditor(
+                "edit.track.description",
+                prompt: "edit.track.description_placeholder",
+                text: $trackDescription
             )
 
-            if isDetailedMetadataExpanded {
-                VStack(alignment: .leading, spacing: 12) {
-                    labeledField("流派 / 标签", prompt: "用逗号分隔", text: $genreTagsText)
-                    labeledField("语言", prompt: "语言", text: $language)
-                    labeledField("厂牌 / 公司", prompt: "厂牌或公司", text: $labelOrCompany)
-                    labeledField("发行日期", prompt: "YYYY-MM-DD", text: $releaseDateText)
-
-                    metadataReadonlySection
+            if let descriptionFallback,
+               trackDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !descriptionFallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("来自专辑介绍")
+                        .font(.caption)
+                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
+                    Text(descriptionFallback)
+                        .font(.caption)
+                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                        .lineLimit(3)
                 }
-                .padding(.top, 10)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.thinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
         }
     }
 
-    private var metadataLookupControl: some View {
-        HStack {
-            Button {
-                fetchMetadata()
-            } label: {
-                Label("查找元数据", systemImage: "sparkle.magnifyingglass")
-            }
-            .buttonStyle(.bordered)
-            .clipShape(Capsule())
-            .disabled(isMetadataLookupInFlight)
+    private var metadataDetailsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if onFetchMetadata != nil {
+                HStack {
+                    Button {
+                        fetchMetadata()
+                    } label: {
+                        Label("查找元数据", systemImage: "sparkle.magnifyingglass")
+                    }
+                    .buttonStyle(.bordered)
+                    .clipShape(Capsule())
+                    .disabled(isMetadataLookupInFlight)
 
-            if isMetadataLookupInFlight {
-                ProgressView()
-                    .controlSize(.small)
+                    if isMetadataLookupInFlight {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+
+                    if let metadataLookupMessage {
+                        Text(metadataLookupMessage)
+                            .font(.caption)
+                            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                    }
+                }
             }
 
-            if let metadataLookupMessage {
-                Text(metadataLookupMessage)
-                    .font(.caption)
-                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+            if !metadataCandidates.isEmpty {
+                MetadataCandidateStripView(
+                    candidates: metadataCandidates,
+                    selectedSongMid: qqMusicSongMid,
+                    onSelect: { candidate in
+                        selectMetadataCandidate(candidate)
+                    }
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 0) {
+                CollapsibleSectionHeader(
+                    "更多详细元数据",
+                    systemImage: "list.bullet.rectangle",
+                    isExpanded: $isDetailedMetadataExpanded
+                )
+
+                if isDetailedMetadataExpanded {
+                    VStack(alignment: .leading, spacing: 12) {
+                        labeledField("语言", prompt: "语言", text: $language)
+                        labeledField("厂牌 / 公司", prompt: "厂牌或公司", text: $labelOrCompany)
+
+                        metadataReadonlySection
+                    }
+                    .padding(.top, 10)
+                }
             }
         }
     }
@@ -566,36 +521,38 @@ struct TrackInfoEditorCore: View {
         prompt: LocalizedStringKey,
         text: Binding<String>
     ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label)
-                .font(.subheadline)
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+        AnyView(
+            VStack(alignment: .leading, spacing: 4) {
+                Text(label)
+                    .font(.subheadline)
+                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
 
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: text)
-                    .font(.body)
-                    .lineSpacing(4)
-                    .padding(8)
-                    .frame(height: 132)
-                    .scrollContentBackground(.hidden)
-
-                if text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(prompt)
-                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
+                ZStack(alignment: .topLeading) {
+                    TextEditor(text: text)
                         .font(.body)
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 16)
-                        .allowsHitTesting(false)
+                        .lineSpacing(4)
+                        .padding(8)
+                        .frame(height: 132)
+                        .scrollContentBackground(.hidden)
+
+                    if text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(prompt)
+                            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
+                            .font(.body)
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 16)
+                            .allowsHitTesting(false)
+                    }
                 }
+                .background(.thinMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(Color.secondary.opacity(0.22), lineWidth: 1)
+                }
+                .padding(.trailing, 18)
             }
-            .background(.thinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.secondary.opacity(0.22), lineWidth: 1)
-            }
-            .padding(.trailing, 18)
-        }
+        )
     }
 
     private var lyricsSection: some View {
@@ -663,7 +620,7 @@ struct TrackInfoEditorCore: View {
                 .font(.caption)
                 .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
 
-            if let message = lyricsValidationMessage ?? lyricsValidationError {
+            if let message = effectiveLyricsValidationError {
                 Text(message)
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -718,20 +675,22 @@ struct TrackInfoEditorCore: View {
 
     @ViewBuilder
     private var lyricsSearchSection: some View {
-        if let lyricsSearchTrack {
-            LDDCSearchSection(track: lyricsSearchTrack) { ttml in
-                lyricsText = ttml
+        VStack(alignment: .leading, spacing: 8) {
+            if let lyricsSearchTrack {
+                LDDCSearchSection(track: lyricsSearchTrack) { ttml in
+                    lyricsText = ttml
+                }
+            } else {
+                LDDCSearchSection(
+                    title: title,
+                    artist: artist,
+                    album: album,
+                    duration: duration
+                ) { ttml in
+                    lyricsText = ttml
+                }
+                .id("\(title)|\(artist)|\(album)|\(duration)")
             }
-        } else {
-            LDDCSearchSection(
-                title: title,
-                artist: artist,
-                album: album,
-                duration: duration
-            ) { ttml in
-                lyricsText = ttml
-            }
-            .id("\(title)|\(artist)|\(album)|\(duration)")
         }
     }
 
@@ -757,7 +716,7 @@ struct TrackInfoEditorCore: View {
             Spacer()
 
             Button(saveTitle) {
-                if let message = lyricsValidationError {
+                if let message = LyricsFormatSupport.validateManualTTML(lyricsText) {
                     lyricsValidationMessage = message
                     return
                 }
@@ -767,9 +726,32 @@ struct TrackInfoEditorCore: View {
             .buttonStyle(.borderedProminent)
             .clipShape(Capsule())
             .keyboardShortcut(.return)
-            .disabled(!canSave || lyricsValidationError != nil)
+            .disabled(!canSave || effectiveLyricsValidationError != nil)
         }
         .padding()
+    }
+
+    private func scheduleLyricsValidation(
+        reason _: String,
+        debounceNanoseconds: UInt64 = 120_000_000
+    ) {
+        lyricsValidationTask?.cancel()
+        let text = lyricsText
+        lyricsValidationTask = Task { @MainActor in
+            if debounceNanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: debounceNanoseconds)
+            }
+            guard !Task.isCancelled else { return }
+            let message = await Task.detached(priority: .utility) { @Sendable in
+                LyricsFormatSupport.validateManualTTML(text)
+            }.value
+            guard !Task.isCancelled else { return }
+            guard text == self.lyricsText else { return }
+            self.cachedLyricsValidationError = message
+            if message == nil, self.lyricsValidationMessage != nil {
+                self.lyricsValidationMessage = nil
+            }
+        }
     }
 
     private func fetchCover() {
@@ -901,19 +883,6 @@ private nonisolated final class TrackInfoArtworkPreviewImage: @unchecked Sendabl
 
 private nonisolated struct TrackInfoArtworkPreviewDecodeResult: Sendable {
     let image: TrackInfoArtworkPreviewImage
-    let fullChecksum: UInt64
-    let sourceMs: Double
-    let metadataMs: Double
-    let thumbnailMs: Double
-    let checksumMs: Double
-
-    var diagnosticSummary: String {
-        "success=true, identity=\(image.identity), checksum=\(String(fullChecksum, radix: 16)), source=\(image.sourcePixelWidth)x\(image.sourcePixelHeight), thumbnail=\(image.cgImage.width)x\(image.cgImage.height), sourceMs=\(String(format: "%.1f", sourceMs)), metadataMs=\(String(format: "%.1f", metadataMs)), thumbnailMs=\(String(format: "%.1f", thumbnailMs)), checksumMs=\(String(format: "%.1f", checksumMs))"
-    }
-
-    var commitSummary: String {
-        "success=true, identity=\(image.identity), thumbnail=\(image.cgImage.width)x\(image.cgImage.height)"
-    }
 }
 
 private nonisolated enum TrackInfoArtworkPreviewDecoder {
@@ -958,16 +927,13 @@ private nonisolated enum TrackInfoArtworkPreviewDecoder {
         identity: String,
         maxPixelSize: Int
     ) -> TrackInfoArtworkPreviewDecodeResult? {
-        let sourceStart = ProcessInfo.processInfo.systemUptime
         guard
             let source = CGImageSourceCreateWithData(
                 data as CFData,
                 [kCGImageSourceShouldCache: false] as CFDictionary
             )
         else { return nil }
-        let sourceMs = elapsedMs(since: sourceStart)
 
-        let metadataStart = ProcessInfo.processInfo.systemUptime
         let properties = CGImageSourceCopyPropertiesAtIndex(
             source,
             0,
@@ -975,9 +941,7 @@ private nonisolated enum TrackInfoArtworkPreviewDecoder {
         ) as? [CFString: Any]
         let sourceWidth = properties?[kCGImagePropertyPixelWidth] as? Int ?? 0
         let sourceHeight = properties?[kCGImagePropertyPixelHeight] as? Int ?? 0
-        let metadataMs = elapsedMs(since: metadataStart)
 
-        let thumbnailStart = ProcessInfo.processInfo.systemUptime
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceShouldCache: false,
@@ -987,11 +951,6 @@ private nonisolated enum TrackInfoArtworkPreviewDecoder {
         ]
         guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         else { return nil }
-        let thumbnailMs = elapsedMs(since: thumbnailStart)
-
-        let checksumStart = ProcessInfo.processInfo.systemUptime
-        let checksum = ArtworkLoader.checksum(for: data)
-        let checksumMs = elapsedMs(since: checksumStart)
 
         let result = TrackInfoArtworkPreviewDecodeResult(
             image: TrackInfoArtworkPreviewImage(
@@ -999,41 +958,10 @@ private nonisolated enum TrackInfoArtworkPreviewDecoder {
                 cgImage: cgImage,
                 sourcePixelWidth: sourceWidth,
                 sourcePixelHeight: sourceHeight
-            ),
-            fullChecksum: checksum,
-            sourceMs: sourceMs,
-            metadataMs: metadataMs,
-            thumbnailMs: thumbnailMs,
-            checksumMs: checksumMs
+            )
         )
         previewCache.setObject(result.image, forKey: identity as NSString)
         return result
-    }
-
-    private nonisolated static func elapsedMs(since start: TimeInterval) -> Double {
-        (ProcessInfo.processInfo.systemUptime - start) * 1000
-    }
-}
-
-private struct TrackInfoArtworkPreviewRenderProbe: View {
-    let identity: String
-    let role: String
-
-    var body: some View {
-        Color.clear
-            .onAppear {
-                Log.debug(
-                    "[TrackInfoEditorCore] artwork preview view appear role=\(role) identity=\(identity)",
-                    category: .perf
-                )
-            }
-            .onChange(of: identity) { _, newValue in
-                let token = FirstUseHitchDiagnostics.begin(
-                    "TrackInfoEditorCore.artworkPreviewViewUpdate",
-                    detail: "role=\(role), identity=\(newValue)"
-                )
-                FirstUseHitchDiagnostics.end(token)
-            }
     }
 }
 

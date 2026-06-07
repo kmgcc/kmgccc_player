@@ -52,6 +52,10 @@ struct MiniPlayerView: View {
     private var progressAreaMinWidth: CGFloat { 72 }
 
     var body: some View {
+        let _ = ContextMenuDiagnostics.markBodyUpdate(
+            "contextMenu.miniPlayerBodyUpdate",
+            detail: "surface=MiniPlayerView, track=\(FirstUseHitchDiagnostics.trackIDPrefix(playbackCoordinator.presentation.localTrack?.id)), isPlaying=\(playbackCoordinator.presentation.isPlaying)"
+        )
         return HStack(spacing: 12) {
             // MARK: - Left: Cover enters embedded fullscreen player, text keeps library/now playing toggle
             MiniPlayerLeftSection(
@@ -555,6 +559,10 @@ private struct MiniPlayerLeftSection: View, Equatable {
     }
 
     var body: some View {
+        let _ = ContextMenuDiagnostics.markBodyUpdate(
+            "contextMenu.miniPlayerBodyUpdate",
+            detail: "surface=MiniPlayerLeftSection"
+        )
         HStack(spacing: 10) {
             Button { onFullscreen() } label: {
                 artworkButtonContent
@@ -669,6 +677,11 @@ private struct MiniPlayerLeftSection: View, Equatable {
 
     @ViewBuilder
     private var nowPlayingInfoContextMenu: some View {
+        let token = ContextMenuDiagnostics.beginBuild(
+            surface: "MiniPlayerContextMenu",
+            detail: "surface=window, track=\(FirstUseHitchDiagnostics.trackIDPrefix(playbackCoordinator.presentation.localTrack?.id))"
+        )
+        let _ = ContextMenuDiagnostics.end(token)
         let presentation = playbackCoordinator.presentation
         if let track = presentation.localTrack {
             TrackActionMenuContent(
@@ -679,18 +692,29 @@ private struct MiniPlayerLeftSection: View, Equatable {
                 onEditTrack: { t in
                     trackToEdit = t
                 },
-                showsPlay: false
+                showsPlay: false,
+                diagnosticSurface: "MiniPlayerContextMenu"
             )
             if presentation.source.isExternal, presentation.externalStableKey != nil {
                 Button {
+                    let actionToken = ContextMenuDiagnostics.beginActionInvoke(
+                        surface: "MiniPlayerContextMenu",
+                        detail: "action=editExternalInfo, surface=window"
+                    )
                     isShowingExternalMatchEditor = true
+                    ContextMenuDiagnostics.end(actionToken)
                 } label: {
                     Label("编辑外部播放覆盖信息", systemImage: "slider.horizontal.3")
                 }
             }
         } else if presentation.source.isExternal, presentation.externalStableKey != nil {
             Button {
+                let actionToken = ContextMenuDiagnostics.beginActionInvoke(
+                    surface: "MiniPlayerContextMenu",
+                    detail: "action=editExternalInfo, surface=window"
+                )
                 isShowingExternalMatchEditor = true
+                ContextMenuDiagnostics.end(actionToken)
             } label: {
                 Label("编辑外部播放覆盖信息", systemImage: "slider.horizontal.3")
             }

@@ -986,8 +986,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             let timerGap = nowUptime - previousUptime
             let clockDelta = currentTime - previousAudibleTime
             if timerGap >= 0.24 || abs(clockDelta - timerGap) >= 0.18 {
+                let contextMenu = ContextMenuDiagnostics.currentStateDescription()
                 Log.warning(
-                    "[AudioClockGap] timerGapMs=\(String(format: "%.1f", timerGap * 1000)) clockDeltaMs=\(String(format: "%.1f", clockDelta * 1000)) playerNodePlaying=\(playerNode.isPlaying) engineRunning=\(isEngineInitialized ? engine.isRunning : false) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
+                    "[AudioClockGap] timerGapMs=\(String(format: "%.1f", timerGap * 1000)) clockDeltaMs=\(String(format: "%.1f", clockDelta * 1000)) playerNodePlaying=\(playerNode.isPlaying) engineRunning=\(isEngineInitialized ? engine.isRunning : false) operation=\(FirstUseHitchDiagnostics.currentOperationStack()) recentEvents=[\(FirstUseHitchDiagnostics.recentEvents())] isPlaying=\(isPlaying) trackID=\(FirstUseHitchDiagnostics.trackIDPrefix(currentTrack?.id)) surface=audio contextMenu=[\(contextMenu)]",
                     category: .audio
                 )
             }

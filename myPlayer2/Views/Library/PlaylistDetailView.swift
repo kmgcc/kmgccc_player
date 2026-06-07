@@ -41,6 +41,10 @@ struct PlaylistDetailView: View {
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("PlaylistDetailView.body")
         let _ = TintTimelineProbe.noteRootConsumer("PlaylistDetailView.body")
+        let _ = ContextMenuDiagnostics.markBodyUpdate(
+            "contextMenu.hostBodyUpdate",
+            detail: "surface=PlaylistDetailView, selection=\(selectionIdentity)"
+        )
         Group {
             if libraryVM.currentSelection == .allSongs {
                 if libraryVM.loadingPhase.isLoading && libraryVM.allTracks.isEmpty {
@@ -87,10 +91,6 @@ struct PlaylistDetailView: View {
         // Fill available space, anchor content to top
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.root"))
-        .environment(
-            \.libraryPresentedAccentColor,
-            pageController.headerAccentColor
-        )
         .background(
             PlaylistTopChromeInsetReader(topInset: $scrollFadeTopChromeInset)
                 .allowsHitTesting(false)
@@ -394,6 +394,7 @@ struct PlaylistDetailView: View {
                 pageController.refreshHeaderArtwork()
             }
         )
+        .environment(\.libraryPresentedAccentColor, pageController.headerAccentColor)
 
         Spacer().frame(height: 12)
     }
@@ -534,11 +535,11 @@ struct PlaylistDetailView: View {
         return String(format: format, displayedCount)
     }
 
-    @ViewBuilder
-    private func trackMenu(trackID: UUID) -> some View {
+    private func trackMenu(trackID: UUID) -> AnyView {
         if let track = pageController.latestTrackFromLibrary(trackID: trackID) {
             if pageController.isMultiselectMode && pageController.selectedTrackIDs.contains(trackID) {
-                Text("已选择 \(pageController.selectedTrackIDs.count) 首歌曲")
+                return AnyView(Group {
+                    Text("已选择 \(pageController.selectedTrackIDs.count) 首歌曲")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 4)
@@ -554,10 +555,27 @@ struct PlaylistDetailView: View {
                 Divider()
 
                 Menu {
+                    let detail = "mode=batch, selected=\(pageController.selectedTrackIDs.count), playlists=\(libraryVM.playlists.count)"
+                    let submenuToken = ContextMenuDiagnostics.beginSubmenuBuild(
+                        surface: "TrackContextMenu",
+                        detail: detail
+                    )
+                    let playlistToken = FirstUseHitchDiagnostics.begin(
+                        "PlaylistActionSubmenu.build",
+                        detail: detail
+                    )
+                    let hoverToken = FirstUseHitchDiagnostics.begin(
+                        "PlaylistActionSubmenu.hoverOpen",
+                        detail: detail
+                    )
+                    let _ = FirstUseHitchDiagnostics.end(hoverToken)
+                    let _ = FirstUseHitchDiagnostics.end(playlistToken)
+                    let _ = ContextMenuDiagnostics.end(submenuToken)
+
                     ForEach(libraryVM.playlists) { playlist in
                         if libraryVM.selectedPlaylist?.id != playlist.id {
                             Button {
-                                processBatchAction { tracks in
+                                processBatchAction(actionName: "batchAddToPlaylist") { tracks in
                                     await libraryVM.addTracksToPlaylist(tracks, playlist: playlist)
                                 }
                             } label: {
@@ -569,7 +587,7 @@ struct PlaylistDetailView: View {
                     Divider()
 
                     Button {
-                        processBatchAction { tracks in
+                        processBatchAction(actionName: "batchCreatePlaylistAndAdd") { tracks in
                             let playlist = await libraryVM.createNewPlaylist()
                             await libraryVM.addTracksToPlaylist(tracks, playlist: playlist)
                         }
@@ -583,7 +601,7 @@ struct PlaylistDetailView: View {
 
                 if let currentPlaylist = libraryVM.selectedPlaylist {
                     Button {
-                        processBatchAction { tracks in
+                        processBatchAction(actionName: "batchRemoveFromCurrentPlaylist") { tracks in
                             await libraryVM.removeTracksFromPlaylist(tracks, playlist: currentPlaylist)
                         }
                     } label: {
@@ -594,7 +612,7 @@ struct PlaylistDetailView: View {
                 Divider()
 
                 Button(role: .destructive) {
-                    processBatchAction { tracks in
+                    processBatchAction(actionName: "batchDeleteTracks") { tracks in
                         await libraryVM.deleteTracks(tracks)
                         await MainActor.run {
                             pageController.selectedTrackIDs.removeAll()
@@ -603,9 +621,9 @@ struct PlaylistDetailView: View {
                 } label: {
                     Label("从资料库删除", systemImage: "trash")
                 }
-
+                })
             } else {
-                TrackActionMenuContent(
+                return AnyView(TrackActionMenuContent(
                     track: track,
                     canSelectMultiple: true,
                     selectedPlaylistID: libraryVM.selectedPlaylist?.id,
@@ -637,20 +655,28 @@ struct PlaylistDetailView: View {
                             }
                         }
                     }
-                )
+                ))
             }
         } else {
-            Text("library.track_unavailable")
+            return AnyView(Text("library.track_unavailable"))
         }
     }
 
-    private func processBatchAction(action: @escaping ([Track]) async -> Void) {
+    private func processBatchAction(
+        actionName: String = "batchAction",
+        action: @escaping ([Track]) async -> Void
+    ) {
         let selectedTracks = selectedTracksForBatchEditor()
+        let token = ContextMenuDiagnostics.beginActionInvoke(
+            surface: "TrackContextMenu",
+            detail: "action=\(actionName), selected=\(selectedTracks.count)"
+        )
         Task {
             await action(selectedTracks)
             await MainActor.run {
                 pageController.clearMultiselectState()
             }
+            ContextMenuDiagnostics.end(token)
         }
     }
 
@@ -673,9 +699,10 @@ struct PlaylistDetailView: View {
     }
 
     private func erasedTrackMenu(trackID: UUID) -> AnyView {
-        let opToken = FirstUseHitchDiagnostics.begin("contextMenu.build", detail: "track=\(FirstUseHitchDiagnostics.trackIDPrefix(trackID))")
-        defer { FirstUseHitchDiagnostics.end(opToken) }
-        return AnyView(trackMenu(trackID: trackID))
+        let detail = "track=\(FirstUseHitchDiagnostics.trackIDPrefix(trackID))"
+        let opToken = ContextMenuDiagnostics.beginBuild(surface: "TrackContextMenu", detail: detail)
+        defer { ContextMenuDiagnostics.end(opToken) }
+        return trackMenu(trackID: trackID)
     }
 
     private var contentTopPadding: CGFloat { 16 }
@@ -823,6 +850,10 @@ private struct PlaylistTrackRowsSection: View {
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("PlaylistTrackRowsSection.body")
+        let _ = ContextMenuDiagnostics.markBodyUpdate(
+            "contextMenu.hostBodyUpdate",
+            detail: "surface=PlaylistTrackRowsSection, rows=\(rows.count), current=\(FirstUseHitchDiagnostics.trackIDPrefix(currentTrackID))"
+        )
         ForEach(rows) { row in
             TrackRowView(
                 model: row.trackRowModel,

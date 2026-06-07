@@ -48,6 +48,11 @@ final class PlaylistPageController {
         let fileURL: URL?
     }
 
+    private struct HeaderColorRequestKey: Equatable {
+        let artworkIdentity: String
+        let sourceKey: String
+    }
+
     private enum FadeTiming {
         /// Crossfade duration for header artwork (old layer stays visible during fade)
         static let headerCrossfadeDuration: Double = 0.26
@@ -80,8 +85,10 @@ final class PlaylistPageController {
     /// Full semantic palette derived from the current header artwork.
     private(set) var headerSemanticPalette: SemanticPalette?
     private var headerColorTask: Task<Void, Never>?
+    private var headerLoadDispatchTask: Task<Void, Never>?
     private var lastHeaderColorIdentity: String?
     private var lastHeaderColorChecksum: UInt64 = 0
+    private var inFlightHeaderColorRequestKey: HeaderColorRequestKey?
 
     // MARK: - Halo Crossfade State (low-resolution seed image)
     private(set) var haloCurrentImage: NSImage?
@@ -369,6 +376,7 @@ final class PlaylistPageController {
         headerResolveTask?.cancel()
         headerUpgradeTask?.cancel()
         headerHaloSeedTask?.cancel()
+        headerLoadDispatchTask?.cancel()
         headerFadeTask?.cancel()
         haloFadeTask?.cancel()
         prefetchTask?.cancel()
@@ -389,6 +397,7 @@ final class PlaylistPageController {
         headerIncomingOpacity = 0
         haloSourceBlendOpacity = 1
         haloPresentationOpacity = 0
+        inFlightHeaderColorRequestKey = nil
     }
 
     private func activateFirstPaintPhases(for selection: LibrarySelection) {
@@ -646,7 +655,17 @@ final class PlaylistPageController {
             selectionIdentity: pageModel.selectionIdentity
         )
         scheduleInitialArtworkWarmup(for: pageModel)
-        loadHeaderArtwork()
+        scheduleHeaderArtworkLoad(expectedSelectionIdentity: pageModel.selectionIdentity)
+    }
+
+    private func scheduleHeaderArtworkLoad(expectedSelectionIdentity: String) {
+        headerLoadDispatchTask?.cancel()
+        headerLoadDispatchTask = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            guard self.page?.selectionIdentity == expectedSelectionIdentity else { return }
+            self.loadHeaderArtwork()
+        }
     }
 
     private func rebuildCurrentHeaderModel(forceResetArtworkPresentation: Bool) {
@@ -872,12 +891,33 @@ final class PlaylistPageController {
         artworkIdentity: String,
         resolveToken: UUID
     ) {
+        let requestKey = HeaderColorRequestKey(
+            artworkIdentity: artworkIdentity,
+            sourceKey: headerColorSourceKey(for: payload)
+        )
+        if inFlightHeaderColorRequestKey == requestKey {
+            noteHeaderColorDiscard(reason: "dedup", artworkIdentity: artworkIdentity)
+            return
+        }
+
         headerColorTask?.cancel()
         HeaderColorExtractor.shared.cancelPending()
+        inFlightHeaderColorRequestKey = requestKey
 
-        headerColorTask = Task { @MainActor in
-            let colorOpToken = FirstUseHitchDiagnostics.begin("PlaylistPageController.headerColor", detail: "identity=\(artworkIdentity.prefix(8))")
+        headerColorTask = Task(priority: .utility) { @MainActor in
+            let colorOpToken = FirstUseHitchDiagnostics.begin(
+                "PlaylistPageController.headerColor",
+                detail: "identity=\(artworkIdentity.prefix(8))"
+            )
             defer { FirstUseHitchDiagnostics.end(colorOpToken) }
+            defer {
+                if self.inFlightHeaderColorRequestKey == requestKey {
+                    self.inFlightHeaderColorRequestKey = nil
+                }
+            }
+
+            await Task.yield()
+            guard !Task.isCancelled else { return }
 
             let resolvedData: Data? = await Task.detached(priority: .utility) { @Sendable () -> Data? in
                 if let data = payload.data, !data.isEmpty { return data }
@@ -889,20 +929,25 @@ final class PlaylistPageController {
             }.value
 
             guard !Task.isCancelled else { return }
-            guard self.headerResolveToken == resolveToken else { return }
+            guard self.headerResolveToken == resolveToken else {
+                self.noteHeaderColorDiscard(reason: "stale-token", artworkIdentity: artworkIdentity)
+                return
+            }
 
             let checksum = resolvedData.map { ColorMath.fnv1a($0) } ?? 0
             if artworkIdentity == self.lastHeaderColorIdentity,
-               checksum == self.lastHeaderColorChecksum,
-               checksum != 0 {
+               checksum == self.lastHeaderColorChecksum
+            {
                 return
             }
 
             guard let data = resolvedData, !data.isEmpty else {
-                self.headerAccentColor = ThemeStore.shared.accentColor
-                self.headerSemanticPalette = nil
-                self.lastHeaderColorIdentity = artworkIdentity
-                self.lastHeaderColorChecksum = 0
+                self.commitHeaderColor(
+                    accent: ThemeStore.shared.accentColor,
+                    palette: nil,
+                    artworkIdentity: artworkIdentity,
+                    checksum: 0
+                )
                 return
             }
 
@@ -911,15 +956,58 @@ final class PlaylistPageController {
                 artworkIdentity: artworkIdentity
             )
             guard !Task.isCancelled else { return }
-            guard self.headerResolveToken == resolveToken else { return }
+            guard self.headerResolveToken == resolveToken else {
+                self.noteHeaderColorDiscard(reason: "stale-result", artworkIdentity: artworkIdentity)
+                return
+            }
 
             if let result {
-                self.headerAccentColor = result.accent
-                self.headerSemanticPalette = result.palette
-                self.lastHeaderColorIdentity = artworkIdentity
-                self.lastHeaderColorChecksum = checksum
+                self.commitHeaderColor(
+                    accent: result.accent,
+                    palette: result.palette,
+                    artworkIdentity: artworkIdentity,
+                    checksum: checksum
+                )
             }
         }
+    }
+
+    private func headerColorSourceKey(for payload: HeaderArtworkPayload) -> String {
+        if let data = payload.data, !data.isEmpty {
+            return "data-\(data.count)-\(ArtworkDataFingerprint.sampledHash(for: data))"
+        }
+        if let fileURL = payload.fileURL {
+            return "file-\(fileURL.path)"
+        }
+        return "empty"
+    }
+
+    private func commitHeaderColor(
+        accent: Color,
+        palette: SemanticPalette?,
+        artworkIdentity: String,
+        checksum: UInt64
+    ) {
+        guard artworkIdentity != lastHeaderColorIdentity || checksum != lastHeaderColorChecksum else {
+            return
+        }
+        let token = FirstUseHitchDiagnostics.begin(
+            "PlaylistPageController.headerColorCommit",
+            detail: "identity=\(artworkIdentity.prefix(8)), checksum=\(String(checksum, radix: 16))"
+        )
+        headerAccentColor = accent
+        headerSemanticPalette = palette
+        lastHeaderColorIdentity = artworkIdentity
+        lastHeaderColorChecksum = checksum
+        FirstUseHitchDiagnostics.end(token)
+    }
+
+    private func noteHeaderColorDiscard(reason: String, artworkIdentity: String) {
+        let token = FirstUseHitchDiagnostics.begin(
+            "PlaylistPageController.headerColorDedupDiscard",
+            detail: "reason=\(reason), identity=\(artworkIdentity.prefix(8))"
+        )
+        FirstUseHitchDiagnostics.end(token)
     }
 
     private func startImmediateHaloSeedLoad(
@@ -1012,6 +1100,7 @@ final class PlaylistPageController {
         headerFadeTask?.cancel()
         haloFadeTask?.cancel()
         headerHaloSeedTask?.cancel()
+        headerLoadDispatchTask?.cancel()
         headerColorTask?.cancel()
         HeaderColorExtractor.shared.cancelPending()
         headerCurrentArtwork = nil
@@ -1025,6 +1114,7 @@ final class PlaylistPageController {
         headerSemanticPalette = nil
         lastHeaderColorIdentity = nil
         lastHeaderColorChecksum = 0
+        inFlightHeaderColorRequestKey = nil
     }
 
     private func publishHeaderImage(_ image: NSImage, identity: String, resolveToken: UUID) {

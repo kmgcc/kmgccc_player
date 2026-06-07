@@ -88,6 +88,10 @@ struct TrackRowView<MenuContent: View>: View {
         let _ = PlaylistPerfDiagnostics.markRowBodyRecompute()
         let _ = LyricsRuntimeProfile.increment("TrackRowView.body")
         let _ = LyricsRuntimeProfile.insertUniqueValue("TrackRowView.body.trackID", value: model.id.uuidString)
+        let _ = ContextMenuDiagnostics.markBodyUpdate(
+            "contextMenu.rowBodyUpdate",
+            detail: "track=\(FirstUseHitchDiagnostics.trackIDPrefix(model.id)), isPlaying=\(isPlaying), isHovering=\(isHovering), isSelected=\(isSelected)"
+        )
         if isPlaying {
             let _ = TintTimelineProbe.noteRootConsumer("TrackRowView.isPlaying")
         }
