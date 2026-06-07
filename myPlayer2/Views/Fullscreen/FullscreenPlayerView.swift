@@ -1973,10 +1973,7 @@ struct FullscreenPlayerView: View {
     ) -> some View {
         // Scale factor relative to base button size (60)
         let scaleFactor = size / fullscreenControlButtonSize
-        // When dark glass is selected, the capsule must use a dark colorScheme
-        // so .glassEffect renders dark material; otherwise respect ambient.
-        let controlColorScheme: ColorScheme =
-            materialStyle == .darkGlass ? .dark : fullscreenControlsColorScheme
+        let controlColorScheme = fullscreenControlsGlassStyle.colorScheme
 
         return HStack(spacing: 0) {
             leadingControlButton(size: size, help: "fullscreen.exit") {
@@ -2122,23 +2119,34 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenMiniPlayerForegroundProfile: FullscreenMiniPlayerForegroundProfile {
-        FullscreenMiniPlayerForegroundStrategy.resolve(
+        let materialStyle: LiquidGlassPillMaterialStyle =
+            settings.fullscreenMiniPlayerGlassMaterial == .normal ? .normal : .clear
+        return FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: themeStore.semanticPalette,
             hasArtworkThemeColor: themeStore.hasArtworkThemeColor,
             skinID: settings.fullscreen.skinID,
             colorScheme: colorScheme,
-            materialStyle: fullscreenControlsGlassStyle.materialStyle,
+            materialStyle: materialStyle,
             fullscreenArtBackgroundEnabled: settings.fullscreenArtBackgroundEnabled
         )
     }
 
     private var fullscreenControlsGlassStyle: FullscreenControlsGlassStyle {
         let materialStyle: LiquidGlassPillMaterialStyle =
-            settings.fullscreenMiniPlayerGlassMaterial == .darkGlass ? .darkGlass : .clear
-        // Dark glass requires a dark colorScheme for the material
-        // to render correctly regardless of ambient mode.
-        let effectiveColorScheme: ColorScheme =
-            materialStyle == .darkGlass ? .dark : fullscreenControlsColorScheme
+            settings.fullscreenMiniPlayerGlassMaterial == .normal ? .normal : .clear
+        
+        let effectiveColorScheme: ColorScheme
+        if materialStyle == .normal {
+            // Normal Glass adapts:
+            // - If the final text/icon is dark (isDarkForeground == true) -> light material (ColorScheme = .light)
+            // - If the final text/icon is light (isDarkForeground == false) -> dark material (ColorScheme = .dark)
+            let profile = fullscreenMiniPlayerForegroundProfile
+            effectiveColorScheme = profile.isDarkForeground ? .light : .dark
+        } else {
+            // Clear material or regular: use the default controls color scheme
+            effectiveColorScheme = fullscreenControlsColorScheme
+        }
+        
         return FullscreenControlsGlassStyle(
             colorScheme: effectiveColorScheme,
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,

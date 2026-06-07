@@ -26,14 +26,20 @@ struct MetadataCandidateStripView: View {
                 .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
                 .padding(.horizontal, 4)
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: spacing) {
-                    ForEach(candidates, id: \.songMid) { candidate in
-                        candidateCard(for: candidate)
-                    }
+            HorizontalFadeScrollContainer(
+                spacing: spacing,
+                fadeWidth: 10,
+                verticalPadding: 2,
+                leadingScrollPadding: 4,
+                trailingScrollPadding: 4,
+                showsEdgeFade: true,
+                showsScrollButtons: true,
+                scrollButtonLeadingInset: 2,
+                scrollButtonTrailingInset: 2
+            ) {
+                ForEach(candidates, id: \.songMid) { candidate in
+                    candidateCard(for: candidate)
                 }
-                .padding(.vertical, 4)
-                .padding(.horizontal, 4)
             }
         }
     }
@@ -58,14 +64,14 @@ struct MetadataCandidateStripView: View {
                         Color.secondary.opacity(0.12)
                     }
                     .frame(width: 44, height: 44)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 } else {
                     Image(systemName: "music.note")
                         .font(.body)
                         .foregroundStyle(.secondary)
                         .frame(width: 44, height: 44)
                         .background(Color.secondary.opacity(0.12))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
 
                 // Text details
@@ -100,17 +106,9 @@ struct MetadataCandidateStripView: View {
             }
             .padding(8)
             .frame(width: cardWidth, height: cardHeight)
+            .background(isSelected ? themeStore.accentColor.opacity(0.12) : Color.clear)
             .background(.ultraThinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(themeStore.accentColor, lineWidth: 2)
-                } else {
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-                }
-            }
+            .clipShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
     }

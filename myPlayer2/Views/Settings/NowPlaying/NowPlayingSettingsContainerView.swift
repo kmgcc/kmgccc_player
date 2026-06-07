@@ -19,7 +19,7 @@ struct NowPlayingSettingsContainerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.containerSpacing) {
-            SettingsHeaderLabel("settings.section.now_playing", systemImage: "sparkles")
+            SettingsHeaderLabel("settings.section.now_playing", systemImage: "macwindow")
 
             SettingsTabSelector(tabs: tabs, selectedTab: $selectedTab, fillsWidth: true)
                 .environmentObject(themeStore)

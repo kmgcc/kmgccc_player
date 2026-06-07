@@ -2663,7 +2663,7 @@ nonisolated enum ColorSystemSelfCheck {
             hasArtworkThemeColor: true,
             skinID: "appleStyle",
             colorScheme: .light,
-            materialStyle: .darkGlass,
+            materialStyle: .normal,
             fullscreenArtBackgroundEnabled: true
         )
         let coverBright = FullscreenMiniPlayerForegroundStrategy.resolve(

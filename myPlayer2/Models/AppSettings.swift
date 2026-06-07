@@ -837,7 +837,7 @@ public final class AppSettings {
 
     enum FullscreenMiniPlayerGlassMaterial: String, CaseIterable, Identifiable {
         case clear
-        case darkGlass
+        case normal
 
         var id: String { rawValue }
     }
@@ -873,6 +873,9 @@ public final class AppSettings {
     var fullscreenMiniPlayerGlassMaterial: FullscreenMiniPlayerGlassMaterial {
         get {
             access(keyPath: \.fullscreenMiniPlayerGlassMaterial)
+            if fullscreenMiniPlayerGlassMaterialRaw == "darkGlass" {
+                return .normal
+            }
             return FullscreenMiniPlayerGlassMaterial(rawValue: fullscreenMiniPlayerGlassMaterialRaw) ?? .clear
         }
         set {
