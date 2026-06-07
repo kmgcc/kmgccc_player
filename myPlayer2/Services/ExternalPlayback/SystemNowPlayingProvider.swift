@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import Darwin
 import Foundation
 
 @Observable
@@ -994,7 +995,8 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             nonEmpty(payload.applicationBundleIdentifier),
             nonEmpty(payload.clientBundleIdentifier),
             nonEmpty(payload.bundleIdentifier),
-            processBundleIdentifier(for: payload)
+            processOwnerBundleIdentifier(for: payload),
+            safariBundleIdentifierFallback(for: payload)
         ]
         .compactMap { normalizedBundleIdentifier($0) }
         .filter { $0 != Self.selfBundleID && !isInfrastructureOwner($0) }
@@ -1639,13 +1641,47 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         ownerBundleCandidates(for: payload).first
     }
 
-    private func processBundleIdentifier(for payload: Payload) -> String? {
-        guard let pid = payload.processIdentifier ?? payload.pid,
-              pid > 0,
-              let app = NSRunningApplication(processIdentifier: pid_t(pid)) else {
+    private func processOwnerBundleIdentifier(for payload: Payload) -> String? {
+        guard let rawPID = payload.processIdentifier ?? payload.pid,
+              rawPID > 0 else {
             return nil
         }
-        return app.bundleIdentifier
+
+        var pid = pid_t(rawPID)
+        var seen = Set<pid_t>()
+        for _ in 0..<8 {
+            guard pid > 1, seen.insert(pid).inserted else { break }
+            if let app = NSRunningApplication(processIdentifier: pid),
+               let bundleIdentifier = normalizedBundleIdentifier(app.bundleIdentifier),
+               bundleIdentifier != Self.selfBundleID,
+               !isInfrastructureOwner(bundleIdentifier) {
+                return bundleIdentifier
+            }
+            guard let parentPID = parentProcessIdentifier(for: pid) else { break }
+            pid = parentPID
+        }
+        return nil
+    }
+
+    private func safariBundleIdentifierFallback(for payload: Payload) -> String? {
+        let hasWebKitOwner = rawOwnerBundleCandidates(for: payload)
+            .contains { Self.webkitServiceBundleIDs.contains($0) }
+        guard hasWebKitOwner else { return nil }
+        return NSWorkspace.shared.runningApplications.contains { app in
+            normalizedBundleIdentifier(app.bundleIdentifier) == "com.apple.safari"
+        } ? "com.apple.safari" : nil
+    }
+
+    private func parentProcessIdentifier(for pid: pid_t) -> pid_t? {
+        var info = proc_bsdinfo()
+        let size = MemoryLayout<proc_bsdinfo>.stride
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: UInt8.self, capacity: size) { rebound in
+                proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, rebound, Int32(size))
+            }
+        }
+        guard result == Int32(size), info.pbi_ppid > 1 else { return nil }
+        return pid_t(info.pbi_ppid)
     }
 
     private func normalizedBundleIdentifier(_ value: String?) -> String? {
