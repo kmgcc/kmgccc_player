@@ -66,6 +66,8 @@ struct BatchTrackEditSheet: View {
     @State private var lyricsText = ""
     @State private var artworkData: Data?
     @State private var lyricsTimeOffsetMs: Double = 0
+    @State private var batchPreviewRefreshTask: Task<Void, Never>?
+    @State private var batchPreviewReloadToken = 0
 
     @State private var showingArtworkPicker = false
     @State private var showingLyricsPicker = false
@@ -166,6 +168,7 @@ struct BatchTrackEditSheet: View {
         .accentColor(themeStore.accentColor)
         .onAppear {
             uiState.lyricsPanelSuppressedByModal = true
+            LyricsSurfaceManager.shared.activate(role: .batchPreview)
             // Initialize cover coordinator with injected services
             coverCoordinator = CoverSearchCoordinator(
                 coverDownloadService: coverDownloadService,
@@ -173,6 +176,7 @@ struct BatchTrackEditSheet: View {
             )
             guard !tracks.isEmpty else { return }
             prepareTrack(at: 0, triggerAutoSearch: true)
+            scheduleBatchPreviewRefresh(reason: "sheet appeared", debounceMilliseconds: 0)
         }
         .onDisappear {
             uiState.lyricsPanelSuppressedByModal = false
@@ -180,6 +184,9 @@ struct BatchTrackEditSheet: View {
             coverFetchTask = nil
             metadataFetchTask?.cancel()
             metadataFetchTask = nil
+            batchPreviewRefreshTask?.cancel()
+            batchPreviewRefreshTask = nil
+            LyricsSurfaceManager.shared.deactivate(role: .batchPreview)
             coverCoordinator?.cancelSearch()
             lyricsVM.ensureAMLLLoaded(
                 track: playerVM.currentTrack,
@@ -204,9 +211,18 @@ struct BatchTrackEditSheet: View {
         .onChange(of: language) { _, _ in draftDidChange() }
         .onChange(of: labelOrCompany) { _, _ in draftDidChange() }
         .onChange(of: releaseDateText) { _, _ in draftDidChange() }
-        .onChange(of: lyricsText) { _, _ in draftDidChange() }
+        .onChange(of: lyricsText) { _, _ in
+            draftDidChange()
+            scheduleBatchPreviewRefresh(reason: "lyrics draft changed", debounceMilliseconds: 350)
+        }
         .onChange(of: artworkData) { _, _ in draftDidChange() }
         .onChange(of: lyricsTimeOffsetMs) { _, _ in draftDidChange() }
+        .onChange(of: currentIndex) { _, _ in
+            scheduleBatchPreviewRefresh(reason: "selected track changed", debounceMilliseconds: 0)
+        }
+        .onChange(of: themeStore.themeGeneration) { _, _ in
+            scheduleBatchPreviewRefresh(reason: "theme changed", debounceMilliseconds: 0)
+        }
         .onChange(of: coverCoordinator?.selectedForPreview) { _, newValue in
             // Reactively update artwork preview when coordinator selects a candidate
             if let candidate = newValue {
@@ -241,6 +257,22 @@ struct BatchTrackEditSheet: View {
     private var currentTrack: Track? {
         guard tracks.indices.contains(currentIndex) else { return nil }
         return tracks[currentIndex]
+    }
+
+    private var batchPreviewStore: LyricsWebViewStore {
+        LyricsSurfaceManager.shared.store(for: .batchPreview)
+    }
+
+    private var currentPreviewSnapshot: BatchEditTrackSnapshot? {
+        guard let track = currentTrack else { return nil }
+        return BatchEditTrackSnapshot(
+            id: track.id,
+            title: title,
+            artist: artist,
+            album: album,
+            artworkData: artworkData,
+            listRowID: track.id.uuidString
+        )
     }
 
     private var headerView: some View {
@@ -742,10 +774,12 @@ struct BatchTrackEditSheet: View {
 
     private var amllPreviewPanel: some View {
         BatchAMLLPreviewPanel(
-            editedTrack: currentTrack,
+            store: batchPreviewStore,
+            trackSnapshot: currentPreviewSnapshot,
             lyricsText: lyricsText,
             isDarkMode: colorScheme == .dark,
-            secondaryTextColor: themeStore.appForegroundPalette.secondary
+            secondaryTextColor: themeStore.appForegroundPalette.secondary,
+            reloadToken: batchPreviewReloadToken
         )
         .equatable()
         .padding(14)
@@ -806,6 +840,7 @@ struct BatchTrackEditSheet: View {
 
         loadTrackDraft(from: tracks[index])
         playCurrentTrackForEditing(tracks[index])
+        scheduleBatchPreviewRefresh(reason: "track prepared", debounceMilliseconds: 0)
 
         if triggerAutoSearch {
             autoSearchToken += 1
@@ -1225,6 +1260,59 @@ struct BatchTrackEditSheet: View {
         }
     }
 
+    private func scheduleBatchPreviewRefresh(reason: String, debounceMilliseconds: Int) {
+        batchPreviewRefreshTask?.cancel()
+        let snapshot = currentPreviewSnapshot
+        let lyricsDraft = lyricsText
+        let themePalette = themeStore.palette
+        let colorScheme = colorScheme
+
+        batchPreviewRefreshTask = Task { @MainActor in
+            if debounceMilliseconds > 0 {
+                try? await Task.sleep(for: .milliseconds(debounceMilliseconds))
+            }
+            guard !Task.isCancelled else { return }
+            applyBatchPreviewSnapshot(
+                snapshot,
+                lyricsText: lyricsDraft,
+                themePalette: themePalette,
+                colorScheme: colorScheme,
+                reason: reason
+            )
+        }
+    }
+
+    private func applyBatchPreviewSnapshot(
+        _ snapshot: BatchEditTrackSnapshot?,
+        lyricsText: String,
+        themePalette: ThemePalette?,
+        colorScheme: ColorScheme,
+        reason: String
+    ) {
+        let store = batchPreviewStore
+        let normalizedLyrics = LyricsFormatSupport.normalizedTTMLText(lyricsText) ?? ""
+
+        if let themePalette {
+            store.applyTheme(themePalette)
+        }
+
+        let previewConfig = BatchAMLLPreviewPanel.previewConfigJSON(colorScheme: colorScheme)
+        store.forceSetConfigJSON(previewConfig, reason: "batchPreview.\(reason)")
+
+        store.applyTrack(
+            trackID: snapshot?.id,
+            ttml: normalizedLyrics,
+            currentTime: 0,
+            isPlaying: false
+        )
+        store.setCurrentTime(0)
+        store.setPlaying(false)
+        if !normalizedLyrics.isEmpty {
+            store.revealExistingLyrics(reason: "batchPreview.\(reason)", currentTime: 0)
+        }
+        batchPreviewReloadToken &+= 1
+    }
+
     private func handleLyricsImport(_ result: Result<[URL], Error>) {
         guard case .success(let urls) = result, let url = urls.first else { return }
 
@@ -1329,16 +1417,48 @@ struct BatchTrackEditSheet: View {
 }
 
 private struct BatchAMLLPreviewPanel: View, Equatable {
-    let editedTrack: Track?
+    private enum PreviewState: Equatable {
+        case noTrack
+        case noLyrics
+        case invalidLyrics(String)
+        case ready(String)
+    }
+
+    let store: LyricsWebViewStore
+    let trackSnapshot: BatchEditTrackSnapshot?
     let lyricsText: String
     let isDarkMode: Bool
     let secondaryTextColor: NSColor
+    let reloadToken: Int
 
     static func == (lhs: BatchAMLLPreviewPanel, rhs: BatchAMLLPreviewPanel) -> Bool {
-        lhs.editedTrack?.id == rhs.editedTrack?.id
+        lhs.store === rhs.store
+            && lhs.trackSnapshot == rhs.trackSnapshot
             && lhs.lyricsText == rhs.lyricsText
             && lhs.isDarkMode == rhs.isDarkMode
             && lhs.secondaryTextColor.isEqual(rhs.secondaryTextColor)
+            && lhs.reloadToken == rhs.reloadToken
+    }
+
+    static func previewConfigJSON(colorScheme: ColorScheme) -> String {
+        let themeName = colorScheme == .dark ? "dark" : "light"
+        let payload: [String: Any] = [
+            "theme": themeName,
+            "enableBlur": false,
+            "enableSpring": false,
+            "enableScale": false,
+            "alignPosition": 0.5,
+            "wordFadeWidth": 0.3,
+            "fps": 45,
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
+           let json = String(data: data, encoding: .utf8)
+        {
+            return json
+        }
+        return colorScheme == .dark
+            ? "{\"theme\":\"dark\"}"
+            : "{\"theme\":\"light\"}"
     }
 
     private var backgroundColor: Color {
@@ -1351,11 +1471,16 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
         lyricsText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var previewText: String {
-        guard !trimmedLyricsText.isEmpty else {
-            return "当前歌曲没有歌词内容"
+    private var previewState: PreviewState {
+        guard trackSnapshot != nil else { return .noTrack }
+        guard !trimmedLyricsText.isEmpty else { return .noLyrics }
+        if let message = LyricsFormatSupport.validateManualTTML(lyricsText) {
+            return .invalidLyrics(message)
         }
-        return String(trimmedLyricsText.prefix(1200))
+        guard let normalized = LyricsFormatSupport.normalizedTTMLText(lyricsText) else {
+            return .invalidLyrics("歌词预览暂不可用")
+        }
+        return .ready(normalized)
     }
 
     var body: some View {
@@ -1364,7 +1489,7 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
             Text("歌词预览")
                 .font(.headline)
 
-            Text("批量编辑中暂不加载 AMLL WebView，避免编辑窗口触发布局反馈循环")
+            Text("AMLL 静态预览仅跟随当前草稿刷新，不接入播放进度。")
                 .font(.caption)
                 .foregroundStyle(appFgSecondary)
 
@@ -1375,22 +1500,79 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
                 RoundedRectangle(cornerRadius: 10)
                     .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
 
-                if editedTrack == nil {
+                switch previewState {
+                case .noTrack:
                     Text("无可预览歌曲")
                         .font(.caption)
                         .foregroundStyle(appFgSecondary)
-                } else {
-                    ScrollView {
-                        Text(previewText)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(trimmedLyricsText.isEmpty ? appFgSecondary : .primary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .topLeading)
-                            .padding(12)
+                case .noLyrics:
+                    Text("暂无歌词预览")
+                        .font(.caption)
+                        .foregroundStyle(appFgSecondary)
+                case .invalidLyrics(let message):
+                    VStack(spacing: 8) {
+                        Text("歌词预览暂不可用")
+                            .font(.caption)
+                            .foregroundStyle(appFgSecondary)
+                        Text(message)
+                            .font(.caption2)
+                            .foregroundStyle(appFgSecondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
                     }
+                case .ready:
+                    BatchAMLLPreviewWebView(store: store, reloadToken: reloadToken)
+                        .id(trackSnapshot?.id)
+                        .padding(8)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+private struct BatchAMLLPreviewWebView: View, Equatable {
+    let store: LyricsWebViewStore
+    let reloadToken: Int
+
+    @State private var didTimeout = false
+
+    static func == (lhs: BatchAMLLPreviewWebView, rhs: BatchAMLLPreviewWebView) -> Bool {
+        lhs.store === rhs.store && lhs.reloadToken == rhs.reloadToken
+    }
+
+    var body: some View {
+        Group {
+            if store.hasPreparedWebView || store.isReady {
+                AMLLWebView(store: store, animatesAttachment: false)
+                    .allowsHitTesting(false)
+                    .clipped()
+            } else if didTimeout {
+                VStack(spacing: 8) {
+                    Text("歌词预览暂不可用")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("WebView 初始化失败不会影响批量编辑和保存。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                VStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("歌词预览加载中")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .task(id: reloadToken) {
+                    didTimeout = false
+                    _ = store.webView
+                    try? await Task.sleep(for: .seconds(3))
+                    guard !Task.isCancelled else { return }
+                    didTimeout = !store.isReady
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

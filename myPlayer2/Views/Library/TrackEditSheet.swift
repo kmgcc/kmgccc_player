@@ -9,6 +9,77 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+private struct TrackEditDeferredMediaSnapshot: Sendable {
+    let trackID: UUID
+    let libraryRootSnapshot: String
+    let artworkFileName: String?
+    let lyricsFileName: String?
+    let ttmlLyricsFileName: String?
+
+    static func capture(from track: Track) -> TrackEditDeferredMediaSnapshot {
+        TrackEditDeferredMediaSnapshot(
+            trackID: track.id,
+            libraryRootSnapshot: track.libraryRootSnapshot,
+            artworkFileName: track.artworkFileName,
+            lyricsFileName: track.lyricsFileName,
+            ttmlLyricsFileName: track.ttmlLyricsFileName
+        )
+    }
+}
+
+private struct TrackEditDeferredMediaResult: Sendable {
+    let artworkData: Data?
+    let lyricsTTML: String?
+}
+
+private enum TrackEditDeferredMediaLoader {
+    nonisolated static func load(from snapshot: TrackEditDeferredMediaSnapshot) -> TrackEditDeferredMediaResult {
+        let root = snapshot.libraryRootSnapshot.isEmpty
+            ? LocalLibraryPaths.libraryRootURL
+            : URL(fileURLWithPath: snapshot.libraryRootSnapshot)
+        let folder = root
+            .appendingPathComponent("Tracks", isDirectory: true)
+            .appendingPathComponent(snapshot.trackID.uuidString, isDirectory: true)
+
+        let artworkURL = resolveArtworkURL(folder: folder, preferredFileName: snapshot.artworkFileName)
+        let artworkData = artworkURL.flatMap { try? Data(contentsOf: $0) }
+
+        let ttmlURL = snapshot.ttmlLyricsFileName.map { folder.appendingPathComponent($0) }
+        let lyricsURL = snapshot.lyricsFileName.map { folder.appendingPathComponent($0) }
+        let lyricsTTML: String?
+        if let ttmlURL,
+           let text = try? String(contentsOf: ttmlURL, encoding: .utf8),
+           let normalized = LyricsFormatSupport.normalizedTTMLText(text) {
+            lyricsTTML = normalized
+        } else if let lyricsURL,
+                  lyricsURL.lastPathComponent.lowercased().hasSuffix(".ttml"),
+                  let text = try? String(contentsOf: lyricsURL, encoding: .utf8),
+                  let normalized = LyricsFormatSupport.normalizedTTMLText(text) {
+            lyricsTTML = normalized
+        } else {
+            lyricsTTML = nil
+        }
+
+        return TrackEditDeferredMediaResult(
+            artworkData: artworkData,
+            lyricsTTML: lyricsTTML
+        )
+    }
+
+    private nonisolated static func resolveArtworkURL(folder: URL, preferredFileName: String?) -> URL? {
+        let fileManager = FileManager.default
+        for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
+            let candidate = folder.appendingPathComponent(fileName)
+            if fileManager.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+
+        guard let preferredFileName, !preferredFileName.isEmpty else { return nil }
+        return folder.appendingPathComponent(preferredFileName)
+    }
+}
+
 /// Sheet for editing track metadata.
 struct TrackEditSheet: View {
 
@@ -46,6 +117,10 @@ struct TrackEditSheet: View {
     @State private var showingArtworkPicker = false
     @State private var showingLyricsPicker = false
     @State private var coverFetchTask: Task<Void, Never>?
+    @State private var deferredMediaTask: Task<Void, Never>?
+    @State private var deferredMediaLoadGeneration: UInt64 = 0
+    @State private var originalArtworkData: Data?
+    @State private var originalLyricsStorage = TrackLyricsDraft.Storage(ttmlText: nil, plainText: nil)
 
     // MARK: - Cover Search Coordinator
 
@@ -112,6 +187,8 @@ struct TrackEditSheet: View {
         .onDisappear {
             coverFetchTask?.cancel()
             coverFetchTask = nil
+            deferredMediaTask?.cancel()
+            deferredMediaTask = nil
             coverCoordinator?.cancelSearch()
         }
     }
@@ -421,54 +498,60 @@ struct TrackEditSheet: View {
         metadataFetchedAt = track.metadataFetchedAt
         metadataConfidence = track.metadataConfidence
         lyricsText = LyricsFormatSupport.normalizedTTMLText(track.ttmlLyricText)
-            ?? LyricsFormatSupport.normalizedTTMLText(track.loadTTMLLyricsIfNeeded())
+            ?? LyricsFormatSupport.normalizedTTMLText(track.lyricsText)
             ?? ""
         artworkData = track.artworkData
         lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
+        originalArtworkData = artworkData
+        originalLyricsStorage = TrackLyricsDraft.storage(from: lyricsText)
         loadDeferredMediaData()
     }
 
     private func loadDeferredMediaData() {
-        let artworkURL = track.artworkData == nil ? track.resolvedArtworkURL() : nil
-        let ttmlURL = track.ttmlLyricText == nil ? track.resolvedTTMLURL() : nil
-        let legacyLyricsURL: URL? = nil
-
-        guard artworkURL != nil || ttmlURL != nil || legacyLyricsURL != nil else { return }
+        guard track.artworkData == nil || track.ttmlLyricText == nil else { return }
 
         let token = FirstUseHitchDiagnostics.begin(
             "TrackEditSheet.loadDeferredMediaData",
-            detail: "artwork=\(artworkURL != nil), ttml=\(ttmlURL != nil), legacy=\(legacyLyricsURL != nil)"
+            detail: "artwork=\(track.artworkData == nil), ttml=\(track.ttmlLyricText == nil)"
         )
-        Task { @MainActor in
-            async let artworkTask: Data? = Task.detached(priority: .utility) { @Sendable in
-                guard let artworkURL else { return nil }
-                return try? Data(contentsOf: artworkURL)
+        deferredMediaTask?.cancel()
+        deferredMediaLoadGeneration &+= 1
+        let generation = deferredMediaLoadGeneration
+        let snapshot = TrackEditDeferredMediaSnapshot.capture(from: track)
+
+        deferredMediaTask = Task { @MainActor in
+            let result = await Task.detached(priority: .utility) { @Sendable in
+                TrackEditDeferredMediaLoader.load(from: snapshot)
             }.value
-            async let lyricsTask: String? = Task.detached(priority: .utility) { @Sendable in
-                if let ttmlURL,
-                   let text = try? String(contentsOf: ttmlURL, encoding: .utf8),
-                   !text.isEmpty {
-                    return text
+
+            guard !Task.isCancelled, deferredMediaLoadGeneration == generation else {
+                FirstUseHitchDiagnostics.end(token, detail: "cancelled")
+                return
+            }
+
+            if let loadedArtwork = result.artworkData {
+                originalArtworkData = loadedArtwork
+                if artworkData == nil {
+                    artworkData = loadedArtwork
                 }
-                return nil
-            }.value
-
-            let loadedArtwork = await artworkTask
-            let loadedLyrics = await lyricsTask
-
-            if let loadedArtwork, artworkData == nil {
-                artworkData = loadedArtwork
-                track.artworkData = loadedArtwork
+                if track.artworkData == nil {
+                    track.artworkData = loadedArtwork
+                }
             }
-            if let loadedLyrics,
-               lyricsText.isEmpty,
-               let ttml = LyricsFormatSupport.normalizedTTMLText(loadedLyrics) {
-                lyricsText = ttml
-                track.ttmlLyricText = ttml
+
+            if let loadedLyrics = result.lyricsTTML {
+                originalLyricsStorage = TrackLyricsDraft.storage(from: loadedLyrics)
+                if lyricsText.isEmpty {
+                    lyricsText = loadedLyrics
+                }
+                if track.ttmlLyricText?.isEmpty != false {
+                    track.ttmlLyricText = loadedLyrics
+                }
             }
+
             FirstUseHitchDiagnostics.end(
                 token,
-                detail: "artworkBytes=\(loadedArtwork?.count ?? 0), lyricsChars=\(loadedLyrics?.count ?? 0)"
+                detail: "artworkBytes=\(result.artworkData?.count ?? 0), lyricsChars=\(result.lyricsTTML?.count ?? 0)"
             )
         }
     }
@@ -500,8 +583,8 @@ struct TrackEditSheet: View {
             || metadataConfidence != track.metadataConfidence
             || lyricsOffsetChanged
 
-        let lyricsChanged = TrackLyricsDraft.differs(from: track, editorText: lyricsText)
-        let artworkChanged = artworkData != track.artworkData
+        let lyricsChanged = TrackLyricsDraft.storage(from: lyricsText) != originalLyricsStorage
+        let artworkChanged = artworkData != originalArtworkData
         let hasChanges = metadataChanged || lyricsChanged || artworkChanged
 
         let persistenceMode: TrackEditPersistenceMode
@@ -554,8 +637,12 @@ struct TrackEditSheet: View {
         track.metadataSource = optionalTrimmed(metadataSource)
         track.metadataFetchedAt = metadataFetchedAt
         track.metadataConfidence = metadataConfidence
-        TrackLyricsDraft.assign(editorText: lyricsText, to: track)
-        track.artworkData = artworkData
+        if changeSet.persistenceMode == .metaAndLyrics || changeSet.persistenceMode == .metaLyricsAndArtwork {
+            TrackLyricsDraft.assign(editorText: lyricsText, to: track)
+        }
+        if changeSet.persistenceMode == .metaAndArtwork || changeSet.persistenceMode == .metaLyricsAndArtwork {
+            track.artworkData = artworkData
+        }
         track.lyricsTimeOffsetMs = lyricsTimeOffsetMs
 
         if changeSet.affectsLiveLyrics {
