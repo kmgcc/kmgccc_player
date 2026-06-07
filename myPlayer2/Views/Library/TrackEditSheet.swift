@@ -82,6 +82,9 @@ struct TrackEditSheet: View {
             onFetchMetadata: {
                 await fetchMissingMetadataIntoDraft()
             },
+            onSelectMetadataCandidate: { songMid in
+                await fetchMetadataForSongMidIntoDraft(songMid)
+            },
             title: $title,
             artist: $artist,
             album: $album,
@@ -615,6 +618,52 @@ struct TrackEditSheet: View {
             changed = true
         }
         return changed
+    }
+
+    @MainActor
+    private func fetchMetadataForSongMidIntoDraft(_ songMid: String) async -> Bool {
+        guard let detail = await libraryVM.fetchTrackMetadataDetailForMid(
+            songMid,
+            title: title,
+            artist: artist,
+            album: album,
+            duration: track.duration
+        ) else { return false }
+
+        var changed = false
+        updateString(&album, with: detail.album, changed: &changed)
+        updateString(&trackDescription, with: detail.description, changed: &changed)
+
+        let newGenreTags = detail.genreTags.joined(separator: ", ")
+        if genreTagsText != newGenreTags {
+            genreTagsText = newGenreTags
+            changed = true
+        }
+        updateString(&language, with: detail.language, changed: &changed)
+        updateString(&labelOrCompany, with: detail.labelOrCompany, changed: &changed)
+
+        let newReleaseDate = detail.releaseDate.map(formatDateForEditing) ?? ""
+        if releaseDateText != newReleaseDate {
+            releaseDateText = newReleaseDate
+            changed = true
+        }
+
+        updateString(&qqMusicSongMid, with: detail.qqMusicSongMid, changed: &changed)
+        updateString(&metadataSource, with: detail.source.rawValue, changed: &changed)
+
+        metadataFetchedAt = detail.fetchedAt ?? Date()
+        metadataConfidence = detail.confidence
+        changed = true
+
+        return changed
+    }
+
+    private func updateString(_ target: inout String, with candidate: String?, changed: inout Bool) {
+        let candidateVal = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if target != candidateVal {
+            target = candidateVal
+            changed = true
+        }
     }
 
     private func fillString(_ target: inout String, with candidate: String?, changed: inout Bool) {

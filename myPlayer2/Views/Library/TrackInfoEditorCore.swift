@@ -30,6 +30,7 @@ struct TrackInfoEditorCore: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
+    @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(CoverDownloadService.self) private var coverDownloadService
     @Environment(NetEaseCoverService.self) private var netEaseCoverService
@@ -51,6 +52,7 @@ struct TrackInfoEditorCore: View {
     let onClearOverride: (() -> Void)?
     let onRestoreAutomatic: (() -> Void)?
     let onFetchMetadata: (() async -> Bool)?
+    let onSelectMetadataCandidate: ((String) async -> Bool)?
 
     @Binding var title: String
     @Binding var artist: String
@@ -80,6 +82,7 @@ struct TrackInfoEditorCore: View {
     @State private var artworkPreviewImage: TrackInfoArtworkPreviewImage?
     @State private var artworkPreviewSourceIdentity: String?
     @State private var coverCoordinator: CoverSearchCoordinator?
+    @State private var metadataCandidates: [QQMusicArtworkCandidate] = []
 
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
     private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
@@ -449,6 +452,15 @@ struct TrackInfoEditorCore: View {
 
                 if showsDetailedMetadata {
                     metadataLookupControl
+                    if !metadataCandidates.isEmpty {
+                        MetadataCandidateStripView(
+                            candidates: metadataCandidates,
+                            selectedSongMid: qqMusicSongMid,
+                            onSelect: { candidate in
+                                selectMetadataCandidate(candidate)
+                            }
+                        )
+                    }
                     detailedMetadataSection
                 }
 
@@ -779,12 +791,39 @@ struct TrackInfoEditorCore: View {
         metadataFetchTask?.cancel()
         isMetadataLookupInFlight = true
         metadataLookupMessage = nil
+        metadataCandidates = []
 
         metadataFetchTask = Task {
+            let candidates = await libraryVM.searchTrackMetadataCandidates(
+                title: title,
+                artist: artist,
+                album: album,
+                duration: duration
+            )
+            await MainActor.run {
+                self.metadataCandidates = candidates
+            }
+
             let didApply = await onFetchMetadata()
             await MainActor.run {
                 isMetadataLookupInFlight = false
-                metadataLookupMessage = didApply ? "已补全缺失字段" : "没有可补全字段"
+                metadataLookupMessage = didApply ? "已自动应用最佳匹配" : "未发现新匹配字段，可手动选择"
+            }
+        }
+    }
+
+    private func selectMetadataCandidate(_ candidate: QQMusicArtworkCandidate) {
+        guard let songMid = candidate.songMid else { return }
+        guard let onSelectMetadataCandidate else { return }
+        metadataFetchTask?.cancel()
+        isMetadataLookupInFlight = true
+        metadataLookupMessage = nil
+
+        metadataFetchTask = Task {
+            let didApply = await onSelectMetadataCandidate(songMid)
+            await MainActor.run {
+                isMetadataLookupInFlight = false
+                metadataLookupMessage = didApply ? "已更新所选元数据" : "未发生更改"
             }
         }
     }

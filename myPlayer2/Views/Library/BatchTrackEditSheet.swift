@@ -9,6 +9,15 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct BatchEditTrackSnapshot: Identifiable, Equatable {
+    var id: UUID
+    var title: String
+    var artist: String
+    var album: String
+    var artworkData: Data?
+    var listRowID: String
+}
+
 struct BatchTrackEditSheet: View {
 
     private struct ProcessState {
@@ -37,6 +46,8 @@ struct BatchTrackEditSheet: View {
 
     let tracks: [Track]
 
+    @State private var trackSnapshots: [BatchEditTrackSnapshot] = []
+
     @State private var currentIndex = 0
     @State private var autoSearchToken = 0
 
@@ -63,6 +74,10 @@ struct BatchTrackEditSheet: View {
     @State private var isLoadingDraft = false
     @State private var processStateByTrackID: [UUID: ProcessState] = [:]
     @State private var coverFetchTask: Task<Void, Never>?
+    @State private var metadataCandidates: [QQMusicArtworkCandidate] = []
+    @State private var isMetadataLookupInFlight = false
+    @State private var metadataLookupMessage: String?
+    @State private var metadataFetchTask: Task<Void, Never>?
     @State private var previewLyricsVM: LyricsViewModel?
 
     // MARK: - Cover Search Coordinator
@@ -76,6 +91,47 @@ struct BatchTrackEditSheet: View {
     private var appFgPrimary: Color { Color(nsColor: themeStore.appForegroundPalette.primary) }
     private var appFgSecondary: Color { Color(nsColor: themeStore.appForegroundPalette.secondary) }
     private var appFgTertiary: Color { Color(nsColor: themeStore.appForegroundPalette.tertiary) }
+
+    init(tracks: [Track]) {
+        self.tracks = tracks
+        
+        var snapshots: [BatchEditTrackSnapshot] = []
+        var seenIDs = Set<UUID>()
+        var duplicateCount = 0
+        
+        print("[BatchTrackEditSheet] Initializing with \(tracks.count) tracks.")
+        for (index, track) in tracks.enumerated() {
+            let trackID = track.id
+            let isDuplicate = seenIDs.contains(trackID)
+            if isDuplicate {
+                duplicateCount += 1
+                print("[BatchTrackEditSheet] WARNING: Duplicate track ID detected: \(trackID) for track '\(track.title)'.")
+            } else {
+                seenIDs.insert(trackID)
+            }
+            
+            let listRowID = isDuplicate ? "\(trackID.uuidString)-fallback-\(index)" : trackID.uuidString
+            let title = track.title
+            let artist = track.artist
+            let album = track.album
+            let artwork = track.loadArtworkDataIfNeeded()
+            
+            print("[BatchTrackEditSheet] Track [\(index)]: ID=\(trackID), Title='\(title)' (empty: \(title.isEmpty)), Artist='\(artist)' (empty: \(artist.isEmpty)), Album='\(album)' (empty: \(album.isEmpty))")
+            
+            snapshots.append(
+                BatchEditTrackSnapshot(
+                    id: trackID,
+                    title: title,
+                    artist: artist,
+                    album: album,
+                    artworkData: artwork,
+                    listRowID: listRowID
+                )
+            )
+        }
+        
+        self._trackSnapshots = State(initialValue: snapshots)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -135,6 +191,8 @@ struct BatchTrackEditSheet: View {
             previewLyricsVM = nil
             coverFetchTask?.cancel()
             coverFetchTask = nil
+            metadataFetchTask?.cancel()
+            metadataFetchTask = nil
             coverCoordinator?.cancelSearch()
             lyricsVM.ensureAMLLLoaded(
                 track: playerVM.currentTrack,
@@ -143,6 +201,13 @@ struct BatchTrackEditSheet: View {
                 reason: "batch editor dismissed",
                 forceLyricsReload: true
             )
+            
+            // Print final summary
+            let totalCount = tracks.count
+            let savedCount = processStateByTrackID.values.filter { $0.saved }.count
+            let skippedCount = processStateByTrackID.values.filter { $0.skipped }.count
+            let failedCount = processStateByTrackID.values.filter { $0.saveError != nil }.count
+            print("[BatchTrackEditSheet] Batch Edit Session finished. Total tracks: \(totalCount), Saved successfully: \(savedCount), Skipped: \(skippedCount), Failed: \(failedCount)")
         }
         .onChange(of: title) { _, _ in draftDidChange() }
         .onChange(of: artist) { _, _ in draftDidChange() }
@@ -245,8 +310,8 @@ struct BatchTrackEditSheet: View {
     private var queuePanel: some View {
         ScrollView {
             LazyVStack(spacing: 8) {
-                ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-                    queueRow(track: track, index: index)
+                ForEach(Array(trackSnapshots.enumerated()), id: \.element.listRowID) { index, snapshot in
+                    queueRow(snapshot: snapshot, index: index)
                 }
             }
             .padding(.horizontal, 10)
@@ -255,8 +320,8 @@ struct BatchTrackEditSheet: View {
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
-    private func queueRow(track: Track, index: Int) -> some View {
-        let state = processStateByTrackID[track.id]
+    private func queueRow(snapshot: BatchEditTrackSnapshot, index: Int) -> some View {
+        let state = processStateByTrackID[snapshot.id]
         let isCurrent = index == currentIndex
         let status = queueStatus(for: state, isCurrent: isCurrent)
 
@@ -264,20 +329,20 @@ struct BatchTrackEditSheet: View {
             selectTrack(index)
         } label: {
             HStack(alignment: .top, spacing: 10) {
-                queueArtwork(track: track, index: index)
+                queueArtwork(snapshot: snapshot, index: index)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(track.title)
+                    Text(snapshot.title.isEmpty ? NSLocalizedString("library.unknown_title", comment: "") : snapshot.title)
                         .font(.subheadline)
                         .foregroundStyle(appFgPrimary)
                         .lineLimit(1)
 
-                    Text(displayArtist(track.artist))
+                    Text(displayArtist(snapshot.artist))
                         .font(.caption)
                         .foregroundStyle(appFgSecondary)
                         .lineLimit(1)
 
-                    Text(displayAlbum(track.album))
+                    Text(displayAlbum(snapshot.album))
                         .font(.caption2)
                         .foregroundStyle(appFgSecondary)
                         .lineLimit(1)
@@ -309,8 +374,8 @@ struct BatchTrackEditSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func queueArtwork(track: Track, index: Int) -> some View {
-        let rowArtworkData = index == currentIndex ? artworkData : track.artworkData
+    private func queueArtwork(snapshot: BatchEditTrackSnapshot, index: Int) -> some View {
+        let rowArtworkData = index == currentIndex ? artworkData : snapshot.artworkData
 
         return Group {
             if let data = rowArtworkData, let nsImage = NSImage(data: data) {
@@ -457,8 +522,43 @@ struct BatchTrackEditSheet: View {
             )
 
             VStack(alignment: .leading, spacing: 10) {
-                Label("更多详细元数据", systemImage: "list.bullet.rectangle")
-                    .font(.subheadline.weight(.semibold))
+                HStack {
+                    Label("更多详细元数据", systemImage: "list.bullet.rectangle")
+                        .font(.subheadline.weight(.semibold))
+
+                    Spacer()
+
+                    Button {
+                        fetchMetadata()
+                    } label: {
+                        Label("查找元数据", systemImage: "sparkle.magnifyingglass")
+                    }
+                    .buttonStyle(.bordered)
+                    .clipShape(Capsule())
+                    .disabled(isMetadataLookupInFlight)
+                    .font(.caption)
+
+                    if isMetadataLookupInFlight {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+
+                    if let metadataLookupMessage {
+                        Text(metadataLookupMessage)
+                            .font(.caption)
+                            .foregroundStyle(appFgSecondary)
+                    }
+                }
+
+                if !metadataCandidates.isEmpty {
+                    MetadataCandidateStripView(
+                        candidates: metadataCandidates,
+                        selectedSongMid: qqMusicSongMid,
+                        onSelect: { candidate in
+                            selectMetadataCandidate(candidate)
+                        }
+                    )
+                }
 
                 HStack(spacing: 10) {
                     batchLabeledField("流派 / 标签", prompt: "用逗号分隔", text: $genreTagsText)
@@ -712,6 +812,11 @@ struct BatchTrackEditSheet: View {
 
         currentIndex = index
         coverCoordinator?.clear()  // Clear stale candidates from previous track
+        metadataCandidates = []
+        metadataLookupMessage = nil
+        metadataFetchTask?.cancel()
+        metadataFetchTask = nil
+
         loadTrackDraft(from: tracks[index])
         playCurrentTrackForEditing(tracks[index])
         syncAMLLPreview(reason: "切换编辑歌曲", forceLyricsReload: true)
@@ -790,6 +895,14 @@ struct BatchTrackEditSheet: View {
         processStateByTrackID[track.id] = state
         statusMessage = "已跳过：\(track.title)"
 
+        // Print diagnostics
+        print("[BatchTrackEditSheet] Skipped track '\(track.title)'.")
+        let totalCount = tracks.count
+        let savedCount = processStateByTrackID.values.filter { $0.saved }.count
+        let skippedCount = processStateByTrackID.values.filter { $0.skipped }.count
+        let failedCount = processStateByTrackID.values.filter { $0.saveError != nil }.count
+        print("[BatchTrackEditSheet] Session Stats -> Total: \(totalCount), Saved: \(savedCount), Skipped: \(skippedCount), Failed: \(failedCount)")
+
         if currentIndex < tracks.count - 1 {
             prepareTrack(at: currentIndex + 1, triggerAutoSearch: true)
         }
@@ -801,13 +914,30 @@ struct BatchTrackEditSheet: View {
         markProcessedIfUnchanged: Bool,
         reason: String
     ) -> Bool {
-        guard let track = currentTrack else { return false }
-        guard !isSavingCurrent else { return false }
+        guard let track = currentTrack else {
+            print("[BatchTrackEditSheet] Save current track failed: No current track.")
+            return false
+        }
+        guard !isSavingCurrent else {
+            print("[BatchTrackEditSheet] Save current track skipped: Already saving.")
+            return false
+        }
 
         if let message = LyricsFormatSupport.validateManualTTML(lyricsText) {
             if showFailureMessage {
                 statusMessage = message
             }
+            var state = processStateByTrackID[track.id] ?? ProcessState()
+            state.saveError = message
+            processStateByTrackID[track.id] = state
+            
+            print("[BatchTrackEditSheet] Failed to save track '\(track.title)': \(message)")
+            let totalCount = tracks.count
+            let savedCount = processStateByTrackID.values.filter { $0.saved }.count
+            let skippedCount = processStateByTrackID.values.filter { $0.skipped }.count
+            let failedCount = processStateByTrackID.values.filter { $0.saveError != nil }.count
+            print("[BatchTrackEditSheet] Session Stats -> Total: \(totalCount), Saved: \(savedCount), Skipped: \(skippedCount), Failed: \(failedCount)")
+            
             return false
         }
 
@@ -816,6 +946,13 @@ struct BatchTrackEditSheet: View {
             if markProcessedIfUnchanged {
                 markTrackCompleted(track: track, edited: false)
                 statusMessage = "已完成：\(track.title)"
+                
+                print("[BatchTrackEditSheet] Track '\(track.title)' has no changes, marked completed.")
+                let totalCount = tracks.count
+                let savedCount = processStateByTrackID.values.filter { $0.saved }.count
+                let skippedCount = processStateByTrackID.values.filter { $0.skipped }.count
+                let failedCount = processStateByTrackID.values.filter { $0.saveError != nil }.count
+                print("[BatchTrackEditSheet] Session Stats -> Total: \(totalCount), Saved: \(savedCount), Skipped: \(skippedCount), Failed: \(failedCount)")
             }
             return true
         }
@@ -846,8 +983,25 @@ struct BatchTrackEditSheet: View {
             refreshLiveLyricsIfEditingCurrentTrack(track, reason: reason)
         }
         markTrackCompleted(track: track, edited: true)
+        
+        // Update snapshot in our array!
+        if trackSnapshots.indices.contains(currentIndex) {
+            trackSnapshots[currentIndex].title = track.title
+            trackSnapshots[currentIndex].artist = track.artist
+            trackSnapshots[currentIndex].album = track.album
+            trackSnapshots[currentIndex].artworkData = artworkData
+        }
+        
         statusMessage = "已保存：\(track.title)"
         syncAMLLPreview(reason: reason, forceLyricsReload: true)
+        
+        print("[BatchTrackEditSheet] Successfully saved track '\(track.title)'. changes: \(changeSet.persistenceMode)")
+        let totalCount = tracks.count
+        let savedCount = processStateByTrackID.values.filter { $0.saved }.count
+        let skippedCount = processStateByTrackID.values.filter { $0.skipped }.count
+        let failedCount = processStateByTrackID.values.filter { $0.saveError != nil }.count
+        print("[BatchTrackEditSheet] Session Stats -> Total: \(totalCount), Saved: \(savedCount), Skipped: \(skippedCount), Failed: \(failedCount)")
+        
         return true
     }
 
@@ -954,6 +1108,135 @@ struct BatchTrackEditSheet: View {
                 duration: currentDuration
             )
             // Note: artworkData is updated reactively via onChange
+        }
+    }
+
+    private func fetchMetadata() {
+        guard let track = currentTrack else { return }
+        metadataFetchTask?.cancel()
+        isMetadataLookupInFlight = true
+        metadataLookupMessage = nil
+        metadataCandidates = []
+
+        metadataFetchTask = Task {
+            let durationVal = track.duration.isFinite && track.duration > 0 ? track.duration : nil
+            let candidates = await libraryVM.searchTrackMetadataCandidates(
+                title: title,
+                artist: artist,
+                album: album,
+                duration: durationVal
+            )
+
+            await MainActor.run {
+                self.metadataCandidates = candidates
+            }
+
+            if let detail = await libraryVM.fetchTrackMetadataDetail(track) {
+                await MainActor.run {
+                    let didApply = applyMetadataDetailIntoDraft(detail)
+                    isMetadataLookupInFlight = false
+                    metadataLookupMessage = didApply ? "已自动应用最佳匹配" : "未发现新匹配字段，请手动选择"
+                }
+                return
+            }
+
+            await MainActor.run {
+                isMetadataLookupInFlight = false
+                metadataLookupMessage = "未发现匹配，请手动选择"
+            }
+        }
+    }
+
+    @MainActor
+    private func applyMetadataDetailIntoDraft(_ detail: TrackMetadataDetail) -> Bool {
+        var changed = false
+        if LibraryNormalization.isUnknownAlbum(album) {
+            updateString(&album, with: detail.album, changed: &changed)
+        }
+        updateString(&trackDescription, with: detail.description, changed: &changed)
+
+        let newGenreTags = detail.genreTags.joined(separator: ", ")
+        if genreTagsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !newGenreTags.isEmpty {
+            genreTagsText = newGenreTags
+            changed = true
+        }
+        updateString(&language, with: detail.language, changed: &changed)
+        updateString(&labelOrCompany, with: detail.labelOrCompany, changed: &changed)
+
+        let newReleaseDate = detail.releaseDate.map(formatDateForEditing) ?? ""
+        if releaseDateText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !newReleaseDate.isEmpty {
+            releaseDateText = newReleaseDate
+            changed = true
+        }
+
+        updateString(&qqMusicSongMid, with: detail.qqMusicSongMid, changed: &changed)
+        updateString(&metadataSource, with: detail.source.rawValue, changed: &changed)
+
+        metadataFetchedAt = detail.fetchedAt ?? Date()
+        metadataConfidence = detail.confidence
+        changed = true
+
+        return changed
+    }
+
+    private func selectMetadataCandidate(_ candidate: QQMusicArtworkCandidate) {
+        guard let songMid = candidate.songMid else { return }
+        guard let track = currentTrack else { return }
+        metadataLookupMessage = nil
+        isMetadataLookupInFlight = true
+
+        metadataFetchTask?.cancel()
+        metadataFetchTask = Task {
+            let durationVal = track.duration.isFinite && track.duration > 0 ? track.duration : nil
+            if let detail = await libraryVM.fetchTrackMetadataDetailForMid(
+                songMid,
+                title: title,
+                artist: artist,
+                album: album,
+                duration: durationVal
+            ) {
+                await MainActor.run {
+                    var changed = false
+                    updateString(&album, with: detail.album, changed: &changed)
+                    updateString(&trackDescription, with: detail.description, changed: &changed)
+
+                    let newGenreTags = detail.genreTags.joined(separator: ", ")
+                    if genreTagsText != newGenreTags {
+                        genreTagsText = newGenreTags
+                        changed = true
+                    }
+                    updateString(&language, with: detail.language, changed: &changed)
+                    updateString(&labelOrCompany, with: detail.labelOrCompany, changed: &changed)
+
+                    let newReleaseDate = detail.releaseDate.map(formatDateForEditing) ?? ""
+                    if releaseDateText != newReleaseDate {
+                        releaseDateText = newReleaseDate
+                        changed = true
+                    }
+
+                    updateString(&qqMusicSongMid, with: detail.qqMusicSongMid, changed: &changed)
+                    updateString(&metadataSource, with: detail.source.rawValue, changed: &changed)
+
+                    metadataFetchedAt = detail.fetchedAt ?? Date()
+                    metadataConfidence = detail.confidence
+
+                    isMetadataLookupInFlight = false
+                    metadataLookupMessage = "已应用所选元数据"
+                }
+            } else {
+                await MainActor.run {
+                    isMetadataLookupInFlight = false
+                    metadataLookupMessage = "元数据获取失败"
+                }
+            }
+        }
+    }
+
+    private func updateString(_ target: inout String, with candidate: String?, changed: inout Bool) {
+        let candidateVal = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if target != candidateVal {
+            target = candidateVal
+            changed = true
         }
     }
 

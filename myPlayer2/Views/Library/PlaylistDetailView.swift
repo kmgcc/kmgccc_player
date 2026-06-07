@@ -108,7 +108,6 @@ struct PlaylistDetailView: View {
             BatchTrackEditSheet(
                 tracks: request.tracks
             )
-            .presentationSizing(.page)
         }
         .onAppear {
             let token = FirstUseHitchDiagnostics.begin(
