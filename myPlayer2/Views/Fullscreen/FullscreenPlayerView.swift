@@ -2278,9 +2278,10 @@ struct FullscreenPlayerView: View {
     private func syncFullscreenLedService() {
         let enabled = isLedEnabledForFullscreenSkin()
         if enabled {
-            ledMeterProvider.getOrCreate().start()
+            ledMeterProvider.getOrCreate()
+                .updatePlaybackState(isPlaying: playbackCoordinator.presentation.isPlaying)
         } else {
-            ledMeterProvider.stop()
+            ledMeterProvider.releaseNowPlayingResources()
         }
     }
 

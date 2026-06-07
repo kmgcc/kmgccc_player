@@ -114,6 +114,7 @@ struct ClassicCoverArtworkView: View {
                     isPlaying: context.playback.isPlaying,
                     forceBrightLEDColors: forceBrightLEDColors || context.theme.artBackgroundIsUltraDark
                 )
+                .ledMeterLifecycle(isPlaying: context.playback.isPlaying)
             } else if visualizerMode == "spectrum" {
                 PillSpectrumView(
                     context: context,

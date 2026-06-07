@@ -78,7 +78,6 @@ struct BatchTrackEditSheet: View {
     @State private var isMetadataLookupInFlight = false
     @State private var metadataLookupMessage: String?
     @State private var metadataFetchTask: Task<Void, Never>?
-    @State private var previewLyricsVM: LyricsViewModel?
 
     // MARK: - Cover Search Coordinator
 
@@ -166,7 +165,6 @@ struct BatchTrackEditSheet: View {
         .tint(themeStore.accentColor)
         .accentColor(themeStore.accentColor)
         .onAppear {
-            ensurePreviewLyricsViewModel()
             uiState.lyricsPanelSuppressedByModal = true
             // Initialize cover coordinator with injected services
             coverCoordinator = CoverSearchCoordinator(
@@ -178,8 +176,6 @@ struct BatchTrackEditSheet: View {
         }
         .onDisappear {
             uiState.lyricsPanelSuppressedByModal = false
-            LyricsSurfaceManager.shared.deactivate(role: .batchPreview)
-            previewLyricsVM = nil
             coverFetchTask?.cancel()
             coverFetchTask = nil
             metadataFetchTask?.cancel()
@@ -746,8 +742,8 @@ struct BatchTrackEditSheet: View {
 
     private var amllPreviewPanel: some View {
         BatchAMLLPreviewPanel(
-            previewLyricsVM: previewLyricsVM,
             editedTrack: currentTrack,
+            lyricsText: lyricsText,
             isDarkMode: colorScheme == .dark,
             secondaryTextColor: themeStore.appForegroundPalette.secondary
         )
@@ -810,7 +806,6 @@ struct BatchTrackEditSheet: View {
 
         loadTrackDraft(from: tracks[index])
         playCurrentTrackForEditing(tracks[index])
-        syncAMLLPreview(reason: "切换编辑歌曲", forceLyricsReload: true)
 
         if triggerAutoSearch {
             autoSearchToken += 1
@@ -984,7 +979,6 @@ struct BatchTrackEditSheet: View {
         }
         
         statusMessage = "已保存：\(track.title)"
-        syncAMLLPreview(reason: reason, forceLyricsReload: true)
         
         print("[BatchTrackEditSheet] Successfully saved track '\(track.title)'. changes: \(changeSet.persistenceMode)")
         let totalCount = tracks.count
@@ -1262,16 +1256,6 @@ struct BatchTrackEditSheet: View {
         playbackCoordinator.play(track: track)
     }
 
-    private func syncAMLLPreview(reason: String, forceLyricsReload: Bool) {
-        previewLyricsVM?.ensureAMLLLoaded(
-            track: currentTrack,
-            currentTime: playerVM.lyricsCurrentTime,
-            isPlaying: playerVM.isPlaying,
-            reason: reason,
-            forceLyricsReload: forceLyricsReload
-        )
-    }
-
     private func refreshLiveLyricsIfEditingCurrentTrack(_ track: Track, reason: String) {
         guard playerVM.currentTrack?.id == track.id else { return }
         lyricsVM.ensureAMLLLoaded(
@@ -1281,11 +1265,6 @@ struct BatchTrackEditSheet: View {
             reason: reason,
             forceLyricsReload: true
         )
-    }
-
-    private func handlePlaybackTrackChange(_ newTrackID: UUID?) {
-        guard let track = currentTrack, newTrackID == track.id else { return }
-        syncAMLLPreview(reason: "播放轨道更新", forceLyricsReload: false)
     }
 
     private func queueStatus(for state: ProcessState?, isCurrent: Bool) -> (text: String, color: Color) {
@@ -1347,59 +1326,19 @@ struct BatchTrackEditSheet: View {
         return formatter.string(from: date)
     }
 
-    private func ensurePreviewLyricsViewModel() {
-        if previewLyricsVM == nil {
-            previewLyricsVM = LyricsViewModel(settings: AppSettings.shared)
-        }
-        previewLyricsVM?.onSeekRequest = { [weak playbackCoordinator] seconds in
-            playbackCoordinator?.seek(to: seconds)
-        }
-        LyricsSurfaceManager.shared.activate(role: .batchPreview)
-    }
-}
-
-private struct BatchPreviewPlaybackObserver: View {
-    @Environment(PlayerViewModel.self) private var playerVM
-
-    let previewLyricsVM: LyricsViewModel
-    let editedTrack: Track?
-
-    var body: some View {
-        Color.clear
-            .onChange(of: playerVM.currentTime) { _, newTime in
-                previewLyricsVM.syncTime(playerVM.lyricsCurrentTime)
-            }
-            .onChange(of: playerVM.isPlaying) { _, newValue in
-                previewLyricsVM.setPlaying(newValue)
-            }
-            .onChange(of: playerVM.currentTrack?.id) { oldValue, newValue in
-                guard oldValue != newValue, let editedTrack, newValue == editedTrack.id else { return }
-                previewLyricsVM.ensureAMLLLoaded(
-                    track: editedTrack,
-                    currentTime: playerVM.lyricsCurrentTime,
-                    isPlaying: playerVM.isPlaying,
-                    reason: "播放轨道更新",
-                    forceLyricsReload: false
-                )
-            }
-    }
 }
 
 private struct BatchAMLLPreviewPanel: View, Equatable {
-    let previewLyricsVM: LyricsViewModel?
     let editedTrack: Track?
+    let lyricsText: String
     let isDarkMode: Bool
     let secondaryTextColor: NSColor
 
     static func == (lhs: BatchAMLLPreviewPanel, rhs: BatchAMLLPreviewPanel) -> Bool {
-        lhs.previewIdentity == rhs.previewIdentity
-            && lhs.editedTrack?.id == rhs.editedTrack?.id
+        lhs.editedTrack?.id == rhs.editedTrack?.id
+            && lhs.lyricsText == rhs.lyricsText
             && lhs.isDarkMode == rhs.isDarkMode
             && lhs.secondaryTextColor.isEqual(rhs.secondaryTextColor)
-    }
-
-    private var previewIdentity: Int {
-        previewLyricsVM.map { ObjectIdentifier($0).hashValue } ?? 0
     }
 
     private var backgroundColor: Color {
@@ -1408,13 +1347,24 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
             : Color(nsColor: NSColor(calibratedWhite: 0.94, alpha: 1.0))
     }
 
+    private var trimmedLyricsText: String {
+        lyricsText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var previewText: String {
+        guard !trimmedLyricsText.isEmpty else {
+            return "当前歌曲没有歌词内容"
+        }
+        return String(trimmedLyricsText.prefix(1200))
+    }
+
     var body: some View {
         let appFgSecondary = Color(nsColor: secondaryTextColor)
         return VStack(alignment: .leading, spacing: 10) {
-            Text("AMLL 渲染预览")
+            Text("歌词预览")
                 .font(.headline)
 
-            Text("当前编辑歌曲的 AMLL 实际渲染效果")
+            Text("批量编辑中暂不加载 AMLL WebView，避免编辑窗口触发布局反馈循环")
                 .font(.caption)
                 .foregroundStyle(appFgSecondary)
 
@@ -1429,17 +1379,15 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
                     Text("无可预览歌曲")
                         .font(.caption)
                         .foregroundStyle(appFgSecondary)
-                } else if let previewLyricsVM {
-                    AMLLWebView(store: previewLyricsVM.webViewStore)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 10)
-                        .overlay {
-                            BatchPreviewPlaybackObserver(
-                                previewLyricsVM: previewLyricsVM,
-                                editedTrack: editedTrack
-                            )
-                            .allowsHitTesting(false)
-                        }
+                } else {
+                    ScrollView {
+                        Text(previewText)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(trimmedLyricsText.isEmpty ? appFgSecondary : .primary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .padding(12)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

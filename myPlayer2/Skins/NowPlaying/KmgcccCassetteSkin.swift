@@ -1397,6 +1397,7 @@ private struct CassetteOverlay: View {
                     isPlaying: context.playback.isPlaying,
                     forceBrightLEDColors: context.theme.artBackgroundIsUltraDark
                 )
+                .ledMeterLifecycle(isPlaying: context.playback.isPlaying)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .offset(x: horizontalOffset, y: yOffset)
             }

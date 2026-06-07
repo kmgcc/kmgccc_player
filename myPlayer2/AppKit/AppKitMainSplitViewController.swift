@@ -670,6 +670,8 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
     // WebViewHostView provides the correct superview type for mouse suppression and
     // scaled hit-testing (webViewLayoutScale) when render quality < 1.0.
     private var webViewHostView: WebViewHostView!
+    private var lastLayoutSignature: String?
+    private var pendingLayoutSignature: String?
 
     // 24pt matches LyricsPanelView's .padding(.horizontal, 24) on AMLLWebView.
     private static let horizontalInset: CGFloat = 24
@@ -735,19 +737,22 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         let inset = Self.horizontalInset
         // Always update the host frame so webViewHostView.bounds is correct when
         // viewDidAppear fires and attachWebViewIfNeeded reads it.
-        webViewHostView.frame = CGRect(
+        let targetFrame = CGRect(
             x: inset,
             y: 0,
             width: max(0, view.bounds.width - inset * 2),
             height: view.bounds.height
         )
+        if webViewHostView.frame != targetFrame {
+            webViewHostView.frame = targetFrame
+        }
         // Guard: skip layout when the WebView is detached (attachmentID == nil).
         // viewDidLayout fires during the NSSplitView collapse animation after
         // viewWillDisappear + detachWebView. Without this guard, the shrinking panel
         // bounds would corrupt the WebView's frame/transform, causing the "content
         // shrunk to top-left corner" regression on the next reopen.
         guard attachmentID != nil else { return }
-        mainStore.layoutPreparedWebView(in: webViewHostView.bounds, reason: "flatHostLayout")
+        schedulePreparedWebViewLayout(reason: "flatHostLayout")
     }
 
     private func installDriverIfNeeded() {
@@ -779,8 +784,8 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         }
         let webView = store.webView
         webViewHostView.webViewLayoutScale = CGFloat(AppSettings.shared.amllLyricsRenderQualityScale)
-        webViewHostView.onLayout = { [weak store] bounds in
-            store?.layoutPreparedWebView(in: bounds, reason: "hostLayout")
+        webViewHostView.onLayout = { [weak store] _ in
+            store?.requestLayoutResync(reason: "flatHost.hostLayout")
         }
         webViewHostView.onWindowStateChange = { [weak store] reason in
             store?.requestLayoutResync(reason: "flatHost.\(reason)")
@@ -800,9 +805,48 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         store.refreshMouseInteractionSuppression(reason: "flatHost.attach")
     }
 
+    private func schedulePreparedWebViewLayout(reason: String) {
+        let signature = layoutSignature(for: webViewHostView.bounds)
+        guard lastLayoutSignature != signature else { return }
+        guard pendingLayoutSignature != signature else { return }
+
+        pendingLayoutSignature = signature
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard self.attachmentID != nil else {
+                self.pendingLayoutSignature = nil
+                return
+            }
+
+            let currentSignature = self.layoutSignature(for: self.webViewHostView.bounds)
+            guard currentSignature == signature else {
+                self.pendingLayoutSignature = nil
+                self.schedulePreparedWebViewLayout(reason: reason)
+                return
+            }
+
+            self.pendingLayoutSignature = nil
+            guard self.lastLayoutSignature != signature else { return }
+            self.lastLayoutSignature = signature
+            self.mainStore.layoutPreparedWebView(in: self.webViewHostView.bounds, reason: reason)
+        }
+    }
+
+    private func layoutSignature(for bounds: CGRect) -> String {
+        let scale = AppSettings.shared.amllLyricsRenderQualityScale
+        return String(
+            format: "%.3fx%.3f|%.4f",
+            bounds.width,
+            bounds.height,
+            scale
+        )
+    }
+
     private func detachWebView() {
         guard let id = attachmentID else { return }
         attachmentID = nil
+        lastLayoutSignature = nil
+        pendingLayoutSignature = nil
         let store = mainStore
         if let webView = store.preparedWebView, webView.superview === webViewHostView {
             webView.removeFromSuperview()

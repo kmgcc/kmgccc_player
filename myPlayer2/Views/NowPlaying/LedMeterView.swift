@@ -204,6 +204,53 @@ struct LedMeterView: View {
     }
 }
 
+private struct LedMeterLifecycleModifier: ViewModifier {
+    @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
+    @State private var hasActiveSession = false
+
+    let isActive: Bool
+    let isPlaying: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear {
+                syncSession()
+            }
+            .onDisappear {
+                releaseSession()
+            }
+            .onChange(of: isActive) { _, _ in
+                syncSession()
+            }
+            .onChange(of: isPlaying) { _, newValue in
+                ledMeterProvider.updatePlaybackState(isPlaying: newValue)
+            }
+    }
+
+    private func syncSession() {
+        ledMeterProvider.updatePlaybackState(isPlaying: isPlaying)
+        if isActive {
+            guard !hasActiveSession else { return }
+            ledMeterProvider.acquireSession()
+            hasActiveSession = true
+        } else {
+            releaseSession()
+        }
+    }
+
+    private func releaseSession() {
+        guard hasActiveSession else { return }
+        ledMeterProvider.releaseSession()
+        hasActiveSession = false
+    }
+}
+
+extension View {
+    func ledMeterLifecycle(isActive: Bool = true, isPlaying: Bool) -> some View {
+        modifier(LedMeterLifecycleModifier(isActive: isActive, isPlaying: isPlaying))
+    }
+}
+
 // MARK: - Preview
 
 #Preview("LED Meter - 11 LEDs") {

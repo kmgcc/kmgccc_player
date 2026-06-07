@@ -145,14 +145,14 @@ final class LyricsWebViewStore: NSObject {
     private var didRegisterMessageHandlers = false
     private var isShutDown = false
     private var isMouseInteractionSuppressed = false
-    private var renderQualityScale: CGFloat = 1
-    private var lastAppliedBackingScale: CGFloat?
-    private var lastLoggedRenderQualityLayoutSignature: String?
-    private var lastAppliedLayoutSignature: String?
-    private var pendingLayoutResyncWorkItem: DispatchWorkItem?
-    private var pendingLayoutResyncReason: String?
-    private var layoutResyncGeneration: Int = 0
-    private var awaitingValidLayoutBounds = false
+    @ObservationIgnored private var renderQualityScale: CGFloat = 1
+    @ObservationIgnored private var lastAppliedBackingScale: CGFloat?
+    @ObservationIgnored private var lastLoggedRenderQualityLayoutSignature: String?
+    @ObservationIgnored private var lastAppliedLayoutSignature: String?
+    @ObservationIgnored private var pendingLayoutResyncWorkItem: DispatchWorkItem?
+    @ObservationIgnored private var pendingLayoutResyncReason: String?
+    @ObservationIgnored private var layoutResyncGeneration: Int = 0
+    @ObservationIgnored private var awaitingValidLayoutBounds = false
     // MARK: - Callbacks
 
     var onUserSeek: ((Double) -> Void)?
