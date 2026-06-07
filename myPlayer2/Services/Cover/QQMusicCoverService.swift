@@ -464,12 +464,31 @@ actor QQMusicCoverService {
         if let queryTitle = query.title, !queryTitle.isEmpty {
             let sourceTitle = ExternalPlaybackTextNormalizer.normalize(queryTitle)
             let candidateTitle = ExternalPlaybackTextNormalizer.normalize(candidate.title)
+
+            // Hard-reject gate: short single-token titles with edit distance > 1.
+            // This prevents "Colors" from being accepted as "Closer" (ed=2).
+            // Checked before the fuzzy-score floor so artist score cannot override it.
+            if !candidateTitle.compact.isEmpty,
+               ExternalPlaybackTextNormalizer.hasShortTitleConflict(sourceTitle, candidateTitle) {
+                rejectReason = "short-title conflict: query=\"\(queryTitle)\" candidate=\"\(candidate.title ?? "-")\""
+                return nil
+            }
+
             let titleScore = ExternalPlaybackTextNormalizer.stringSimilarity(sourceTitle, candidateTitle)
-            guard titleScore >= 0.50
+
+            // For short single-token pairs that survived the hard-reject gate (edit distance ≤ 1),
+            // require a higher fuzzy floor than the general 0.50 threshold.
+            let bothShort = ExternalPlaybackTextNormalizer.isShortSingleToken(sourceTitle)
+                && ExternalPlaybackTextNormalizer.isShortSingleToken(candidateTitle)
+            let titleFloor: Double = bothShort
+                ? ExternalPlaybackTextNormalizer.shortTitleFuzzyFloor
+                : 0.50
+
+            guard titleScore >= titleFloor
                     || candidateTitle.compact.contains(sourceTitle.compact)
                     || sourceTitle.compact.contains(candidateTitle.compact)
             else {
-                rejectReason = "title mismatch: score=\(String(format: "%.2f", titleScore)) query=\"\(queryTitle)\" candidate=\"\(candidate.title ?? "-")\""
+                rejectReason = "title mismatch: score=\(String(format: "%.2f", titleScore)) floor=\(String(format: "%.2f", titleFloor)) query=\"\(queryTitle)\" candidate=\"\(candidate.title ?? "-")\""
                 return nil
             }
 
