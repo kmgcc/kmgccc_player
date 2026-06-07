@@ -1001,6 +1001,7 @@ private struct RotatingCoverArtwork: View {
                     isPlaying: context.playback.isPlaying,
                     forceBrightLEDColors: context.theme.artBackgroundIsUltraDark
                 )
+                .ledMeterLifecycle(isPlaying: context.playback.isPlaying)
             } else if visualizerMode == "spectrum" {
                 PillSpectrumView(
                     context: context,

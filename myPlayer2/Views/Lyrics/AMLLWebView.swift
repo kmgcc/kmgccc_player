@@ -299,8 +299,8 @@ struct AMLLWebView: NSViewRepresentable {
 
         private func installHostCallbacks(on hostView: WebViewHostView) {
             hostView.webViewLayoutScale = renderQualityScale
-            hostView.onLayout = { [weak store] bounds in
-                store?.layoutPreparedWebView(in: bounds, reason: "hostLayout")
+            hostView.onLayout = { [weak store] _ in
+                store?.requestLayoutResync(reason: "hostLayout")
             }
             hostView.onWindowStateChange = { [weak store] reason in
                 store?.requestLayoutResync(reason: reason)

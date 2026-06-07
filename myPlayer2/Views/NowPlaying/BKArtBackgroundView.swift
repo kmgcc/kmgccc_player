@@ -478,6 +478,28 @@ private final class BKArtBackgroundLayerView: NSView {
         }
     }
 
+    private final class AssetLoadSnapshotBox: @unchecked Sendable {
+        nonisolated let budget: BKThemeAssets.PixelBudget
+        nonisolated let backgroundImages: [CGImage]
+        nonisolated let backgroundSourceIndices: [Int]
+        nonisolated let shapes: BKThemeAssets.ShapeLoadResult
+        nonisolated let maskFrames: [CGImage]
+
+        nonisolated init(
+            budget: BKThemeAssets.PixelBudget,
+            backgroundImages: [CGImage],
+            backgroundSourceIndices: [Int],
+            shapes: BKThemeAssets.ShapeLoadResult,
+            maskFrames: [CGImage]
+        ) {
+            self.budget = budget
+            self.backgroundImages = backgroundImages
+            self.backgroundSourceIndices = backgroundSourceIndices
+            self.shapes = shapes
+            self.maskFrames = maskFrames
+        }
+    }
+
     private struct ToneStopComponent: Sendable {
         let red: CGFloat
         let green: CGFloat
@@ -659,6 +681,8 @@ private final class BKArtBackgroundLayerView: NSView {
     private var autoTransitionTimer: DispatchSourceTimer?
     private var speedRampClockSubscription: AnyCancellable?
     private var maskWarmupTask: Task<Void, Never>?
+    private var assetSnapshotTask: Task<Void, Never>?
+    private var assetSnapshotGeneration: UInt64 = 0
     private var initialResourceUpgradeTask: Task<Void, Never>?
     private var backgroundRenderTasks: [String: Task<Void, Never>] = [:]
     private var backgroundRenderGeneration: UInt64 = 0
@@ -714,6 +738,7 @@ private final class BKArtBackgroundLayerView: NSView {
             speedRampClockSubscription?.cancel()
             solidCircleDotTimer?.cancel()
             maskWarmupTask?.cancel()
+            assetSnapshotTask?.cancel()
             initialResourceUpgradeTask?.cancel()
             rebuildDebounceTask?.cancel()
             backgroundRenderTasks.values.forEach { $0.cancel() }
@@ -917,9 +942,9 @@ private final class BKArtBackgroundLayerView: NSView {
         ensureBaseContainer(seed: seed)
         guard let current = fromContainer else { return }
         guard toContainer == nil else { return }
-        startMaskWarmupIfNeeded(maskBudget: loadedBudget.mask)
-        guard !loadedMaskFrames.isEmpty else {
+        guard transitionAssetsReadyForCurrentTarget() else {
             pendingTransitionSeed = seed
+            startTransitionAssetWarmupIfNeeded()
             return
         }
         pendingTransitionSeed = nil
@@ -1642,6 +1667,122 @@ private final class BKArtBackgroundLayerView: NSView {
         transitionClockSubscription?.cancel()
         transitionClockSubscription = nil
         updateClockActivity()
+    }
+
+    private func transitionAssetsReadyForCurrentTarget() -> Bool {
+        let budget = currentAssetBudget()
+        let backgroundSourceIndices = desiredBackgroundSourceIndices()
+        guard loadedBudget == budget else { return false }
+        guard loadedBackgroundSourceIndices == backgroundSourceIndices else { return false }
+        if !backgroundSourceIndices.isEmpty, loadedBackgrounds.isEmpty {
+            return false
+        }
+        guard !loadedShapes.images.isEmpty else { return false }
+        guard !loadedMaskFrames.isEmpty else { return false }
+        return true
+    }
+
+    private func startTransitionAssetWarmupIfNeeded() {
+        startAssetSnapshotLoadIfNeeded(
+            budget: currentAssetBudget(),
+            backgroundSourceIndices: desiredBackgroundSourceIndices(),
+            includeMasks: true,
+            applyBackgroundAssetMode: nil,
+            resumePendingTransition: true
+        )
+    }
+
+    private func startAssetSnapshotLoadIfNeeded(
+        budget: BKThemeAssets.PixelBudget,
+        backgroundSourceIndices: [Int],
+        includeMasks: Bool,
+        applyBackgroundAssetMode: BackgroundAssetMode?,
+        resumePendingTransition: Bool
+    ) {
+        guard assetSnapshotTask == nil else { return }
+        guard budget.background > 0 || budget.shape > 0 || budget.mask > 0 else { return }
+
+        if includeMasks {
+            maskWarmupTask?.cancel()
+            maskWarmupTask = nil
+        }
+
+        assetSnapshotGeneration &+= 1
+        let generation = assetSnapshotGeneration
+        let assets = self.assets
+
+        assetSnapshotTask = Task { [weak self] in
+            let snapshot = await Task.detached(priority: .userInitiated) {
+                let loadedBackgroundSet = Self.loadBackgrounds(
+                    assets: assets,
+                    sourceIndices: backgroundSourceIndices,
+                    maxPixel: budget.background
+                )
+                let shapes = assets.shapes(maxPixel: budget.shape)
+                let maskFrames: [CGImage]
+                if includeMasks {
+                    maskFrames = assets.maskFrames(maxPixel: budget.mask)
+                } else {
+                    maskFrames = assets.cachedMaskFrames(maxPixel: budget.mask) ?? []
+                }
+
+                return AssetLoadSnapshotBox(
+                    budget: budget,
+                    backgroundImages: loadedBackgroundSet.images,
+                    backgroundSourceIndices: loadedBackgroundSet.indices,
+                    shapes: shapes,
+                    maskFrames: maskFrames
+                )
+            }.value
+
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                guard let self else { return }
+                self.assetSnapshotTask = nil
+                guard self.assetSnapshotGeneration == generation else { return }
+                guard self.window != nil else { return }
+
+                if let applyBackgroundAssetMode {
+                    self.backgroundAssetMode = applyBackgroundAssetMode
+                }
+
+                guard
+                    self.currentAssetBudget() == snapshot.budget,
+                    self.desiredBackgroundSourceIndices() == backgroundSourceIndices
+                else {
+                    if resumePendingTransition, self.pendingTransitionSeed != nil {
+                        self.startTransitionAssetWarmupIfNeeded()
+                    }
+                    return
+                }
+
+                self.applyAssetSnapshot(snapshot)
+                self.applyCurrentBackgroundPhase()
+
+                guard resumePendingTransition, let pendingSeed = self.pendingTransitionSeed else { return }
+                self.pendingTransitionSeed = nil
+                self.triggerTransition(seed: pendingSeed)
+            }
+        }
+    }
+
+    private func applyAssetSnapshot(_ snapshot: AssetLoadSnapshotBox) {
+        let backgroundsChanged =
+            loadedBudget.background != snapshot.budget.background
+            || loadedBackgroundSourceIndices != snapshot.backgroundSourceIndices
+
+        if backgroundsChanged {
+            cancelBackgroundRenderTasks()
+        }
+
+        loadedBudget = snapshot.budget
+        loadedBackgrounds = snapshot.backgroundImages
+        loadedBackgroundSourceIndices = snapshot.backgroundSourceIndices
+        loadedShapes = snapshot.shapes
+        loadedMaskFrames = snapshot.maskFrames
+        tintedBackgroundCache.removeAllObjects()
+        prewarmTintedBackgroundsIfNeeded()
     }
 
     private func startMaskWarmupIfNeeded(maskBudget: Int) {
@@ -2539,6 +2680,8 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func syncLoadedAssetsIfNeeded(allowMaskWarmup: Bool) {
+        guard assetSnapshotTask == nil else { return }
+
         let budget = currentAssetBudget()
         let targetBackgroundIndices = desiredBackgroundSourceIndices()
         let backgroundBudgetChanged = budget.background != loadedBudget.background
@@ -2629,6 +2772,18 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func loadBackgrounds(sourceIndices: [Int], maxPixel: Int) -> (images: [CGImage], indices: [Int]) {
+        Self.loadBackgrounds(
+            assets: assets,
+            sourceIndices: sourceIndices,
+            maxPixel: maxPixel
+        )
+    }
+
+    private nonisolated static func loadBackgrounds(
+        assets: BKThemeAssets,
+        sourceIndices: [Int],
+        maxPixel: Int
+    ) -> (images: [CGImage], indices: [Int]) {
         guard !sourceIndices.isEmpty, maxPixel > 0 else { return ([], []) }
 
         if sourceIndices.count == assets.backgroundCount {
@@ -2682,20 +2837,16 @@ private final class BKArtBackgroundLayerView: NSView {
                 guard self.fromContainer != nil else { return }
                 guard self.backgroundAssetMode == .currentPhaseLowRes else { return }
 
-                self.promoteBackgroundAssetsToFullSet()
-                self.syncLoadedAssetsIfNeeded(allowMaskWarmup: false)
-                self.applyCurrentBackgroundPhase()
-            }
-
-            guard self.shouldAutoWarmMasksOnIdle else { return }
-
-            try? await Task.sleep(nanoseconds: self.initialMaskWarmupDelay)
-            guard !Task.isCancelled else { return }
-
-            await MainActor.run {
-                guard self.window != nil else { return }
-                guard self.fromContainer != nil else { return }
-                self.startMaskWarmupIfNeeded(maskBudget: self.loadedBudget.mask)
+                self.logDiagnostics(
+                    "scheduleFullAssetPromotion budget=\(self.debugBudgetDescription(self.fullResolutionAssetBudget())) trackID=\(self.trackID?.uuidString ?? "nil")"
+                )
+                self.startAssetSnapshotLoadIfNeeded(
+                    budget: self.fullResolutionAssetBudget(),
+                    backgroundSourceIndices: Array(0..<self.assets.backgroundCount),
+                    includeMasks: self.shouldAutoWarmMasksOnIdle,
+                    applyBackgroundAssetMode: .fullSet,
+                    resumePendingTransition: true
+                )
             }
         }
     }
@@ -2706,6 +2857,9 @@ private final class BKArtBackgroundLayerView: NSView {
         rebuildDebounceTask = nil
         maskWarmupTask?.cancel()
         maskWarmupTask = nil
+        assetSnapshotTask?.cancel()
+        assetSnapshotTask = nil
+        assetSnapshotGeneration &+= 1
         cancelBackgroundRenderTasks()
         pendingTransitionSeed = nil
         release(container: fromContainer)

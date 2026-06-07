@@ -12,19 +12,19 @@ import ImageIO
 final class BKThemeAssets: @unchecked Sendable {
     static let shared = BKThemeAssets()
 
-    struct PixelBudget: Equatable {
+    struct PixelBudget: Equatable, Sendable {
         let background: Int
         let shape: Int
         let mask: Int
     }
 
-    struct ShapeLoadResult {
+    struct ShapeLoadResult: @unchecked Sendable {
         var images: [CGImage]
         var scaleByIndex: [Int: CGFloat]
         var edgePinnedIndices: Set<Int>
         var fileNames: [String]
 
-        init(
+        nonisolated init(
             images: [CGImage],
             scaleByIndex: [Int: CGFloat],
             edgePinnedIndices: Set<Int>,
@@ -38,17 +38,17 @@ final class BKThemeAssets: @unchecked Sendable {
     }
 
     private final class ImageArrayBox: NSObject {
-        let images: [CGImage]
+        nonisolated let images: [CGImage]
 
-        init(images: [CGImage]) {
+        nonisolated init(images: [CGImage]) {
             self.images = images
         }
     }
 
     private final class ShapeLoadResultBox: NSObject {
-        let result: ShapeLoadResult
+        nonisolated let result: ShapeLoadResult
 
-        init(result: ShapeLoadResult) {
+        nonisolated init(result: ShapeLoadResult) {
             self.result = result
         }
     }
@@ -73,13 +73,13 @@ final class BKThemeAssets: @unchecked Sendable {
     private let artworkFrameEntries: [AssetEntry]
     private let usePlainArtAssetsInDebug: Bool
 
-    private let backgroundCache = NSCache<NSString, ImageArrayBox>()
-    private let shapeCache = NSCache<NSString, ShapeLoadResultBox>()
-    private let maskCache = NSCache<NSString, ImageArrayBox>()
-    private let artworkFrameCache = NSCache<NSString, ImageArrayBox>()
+    private nonisolated(unsafe) let backgroundCache = NSCache<NSString, ImageArrayBox>()
+    private nonisolated(unsafe) let shapeCache = NSCache<NSString, ShapeLoadResultBox>()
+    private nonisolated(unsafe) let maskCache = NSCache<NSString, ImageArrayBox>()
+    private nonisolated(unsafe) let artworkFrameCache = NSCache<NSString, ImageArrayBox>()
     private let encryptedLoader = EncryptedArtAssetLoader.shared
 
-    private static let maskProcessingContext = CIContext(options: [.cacheIntermediates: false])
+    private nonisolated static let maskProcessingContext = CIContext(options: [.cacheIntermediates: false])
 
     private init() {
         let resolvedBundle = Self.resolveBundle()
@@ -113,7 +113,7 @@ final class BKThemeAssets: @unchecked Sendable {
         artworkFrameCache.totalCostLimit = 24 * 1024 * 1024
     }
 
-    func backgrounds(maxPixel: Int) -> [CGImage] {
+    nonisolated func backgrounds(maxPixel: Int) -> [CGImage] {
         let key = "backgrounds-\(maxPixel)" as NSString
         if let cached = backgroundCache.object(forKey: key) {
             return cached.images
@@ -125,11 +125,11 @@ final class BKThemeAssets: @unchecked Sendable {
         return images
     }
 
-    var backgroundCount: Int {
+    nonisolated var backgroundCount: Int {
         backgroundEntries.count
     }
 
-    func background(at index: Int, maxPixel: Int) -> CGImage? {
+    nonisolated func background(at index: Int, maxPixel: Int) -> CGImage? {
         guard index >= 0, index < backgroundEntries.count else { return nil }
 
         let key = "background-\(index)-\(maxPixel)" as NSString
@@ -146,7 +146,7 @@ final class BKThemeAssets: @unchecked Sendable {
         return image
     }
 
-    func shapes(maxPixel: Int) -> ShapeLoadResult {
+    nonisolated func shapes(maxPixel: Int) -> ShapeLoadResult {
         let key = "shapes-\(maxPixel)" as NSString
         if let cached = shapeCache.object(forKey: key) {
             return cached.result
@@ -188,7 +188,7 @@ final class BKThemeAssets: @unchecked Sendable {
         return result
     }
 
-    func maskFrames(maxPixel: Int) -> [CGImage] {
+    nonisolated func maskFrames(maxPixel: Int) -> [CGImage] {
         let key = "mask-\(maxPixel)" as NSString
         if let cached = maskCache.object(forKey: key) {
             return cached.images
@@ -206,16 +206,16 @@ final class BKThemeAssets: @unchecked Sendable {
         return frames
     }
 
-    func cachedMaskFrames(maxPixel: Int) -> [CGImage]? {
+    nonisolated func cachedMaskFrames(maxPixel: Int) -> [CGImage]? {
         let key = "mask-\(maxPixel)" as NSString
         return maskCache.object(forKey: key)?.images
     }
 
-    var artworkFrameCount: Int {
+    nonisolated var artworkFrameCount: Int {
         artworkFrameEntries.count
     }
 
-    func artworkFrame(at index: Int, maxPixel: Int) -> CGImage? {
+    nonisolated func artworkFrame(at index: Int, maxPixel: Int) -> CGImage? {
         guard index >= 0, index < artworkFrameEntries.count else { return nil }
 
         let key = "artwork-frame-\(index)-\(maxPixel)" as NSString
@@ -232,7 +232,7 @@ final class BKThemeAssets: @unchecked Sendable {
         return image
     }
 
-    func purgeTransientCaches() {
+    nonisolated func purgeTransientCaches() {
         backgroundCache.removeAllObjects()
         shapeCache.removeAllObjects()
         maskCache.removeAllObjects()
@@ -446,7 +446,7 @@ final class BKThemeAssets: @unchecked Sendable {
         }
     }
 
-    private func downsampledImage(from entry: AssetEntry, maxPixel: Int) -> CGImage? {
+    private nonisolated func downsampledImage(from entry: AssetEntry, maxPixel: Int) -> CGImage? {
         guard maxPixel > 0 else { return nil }
         if usePlainArtAssetsInDebug, let plainURL = entry.plainURL {
             return Self.downsampledImage(from: plainURL, maxPixel: maxPixel)
@@ -469,7 +469,7 @@ final class BKThemeAssets: @unchecked Sendable {
         return nil
     }
 
-    private static func downsampledImage(from url: URL, maxPixel: Int) -> CGImage? {
+    private nonisolated static func downsampledImage(from url: URL, maxPixel: Int) -> CGImage? {
         guard maxPixel > 0 else { return nil }
         guard
             let source = CGImageSourceCreateWithURL(
@@ -489,7 +489,7 @@ final class BKThemeAssets: @unchecked Sendable {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
-    private static func maskAlphaImage(from image: CGImage) -> CGImage? {
+    private nonisolated static func maskAlphaImage(from image: CGImage) -> CGImage? {
         let input = CIImage(cgImage: image)
         let alphaMask = input.applyingFilter("CIMaskToAlpha")
         return maskProcessingContext.createCGImage(alphaMask, from: alphaMask.extent)
@@ -547,13 +547,13 @@ final class BKThemeAssets: @unchecked Sendable {
         #endif
     }
 
-    private static func byteCost(for images: [CGImage]) -> Int {
+    private nonisolated static func byteCost(for images: [CGImage]) -> Int {
         images.reduce(0) { partial, image in
             partial + byteCost(for: image)
         }
     }
 
-    private static func byteCost(for image: CGImage) -> Int {
+    private nonisolated static func byteCost(for image: CGImage) -> Int {
         max(1, image.bytesPerRow * image.height)
     }
 }

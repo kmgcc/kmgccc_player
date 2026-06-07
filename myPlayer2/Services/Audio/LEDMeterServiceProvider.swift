@@ -21,8 +21,9 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     private let mixerProvider: () -> AVAudioMixerNode
     private var externalPollTimer: Timer?
     private var externalPulse: UInt64 = 0
-    private var externalIsPlaying: Bool = true
+    private var externalIsPlaying: Bool = false
     private var externalPollSuspendWork: DispatchWorkItem?
+    private var lastObservedPlaying: Bool = false
 
     /// Active sampling sessions. The provider keeps the underlying meter alive
     /// while at least one session is held (Now Playing scene, fullscreen,
@@ -87,6 +88,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
         }
         let service = LEDMeterService(config: config)
         service.attachToMixer(mixerProvider())
+        service.updatePlaybackState(isPlaying: lastObservedPlaying)
         _service = service
         Log.debug("LEDMeterService lazily initialized", category: .audio)
         return service
@@ -104,6 +106,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
             startExternalPolling()
         } else {
             _service?.start()
+            _service?.updatePlaybackState(isPlaying: lastObservedPlaying)
         }
     }
 
@@ -113,6 +116,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     }
 
     func updatePlaybackState(isPlaying: Bool) {
+        lastObservedPlaying = isPlaying
         _service?.updatePlaybackState(isPlaying: isPlaying)
         externalIsPlaying = isPlaying
         // Idle-CPU (external mode): the 30Hz pulse only exists to re-read the
@@ -149,6 +153,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
         sessionCount += 1
         let service = getOrCreate()
         service.start()
+        service.updatePlaybackState(isPlaying: lastObservedPlaying)
         if playbackSource.isExternal {
             startExternalPolling()
         }
