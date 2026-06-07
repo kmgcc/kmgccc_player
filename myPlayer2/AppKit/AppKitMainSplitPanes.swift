@@ -623,8 +623,8 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         let chosen = Array(primary.prefix(2))
         let spectrumArtworkColors = SpectrumColorResolver.prepareSpectrumColors(chosen, analysis: analysis)
 
-        let audioMetrics = appSession.ledMeterProvider?.getOrCreate().audioMetrics ?? .zero
-        let ledMetrics = appSession.ledMeterProvider?.getOrCreate().metrics
+        let audioMetrics = appSession.ledMeterProvider?.audioMetrics ?? .zero
+        let ledMetrics = appSession.ledMeterProvider?.metrics
             ?? LEDMeterMetrics.zero(count: LEDDefaults.ledCount)
 
         let theme = SkinContext.ThemeTokens(

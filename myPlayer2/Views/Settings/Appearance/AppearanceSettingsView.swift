@@ -195,9 +195,6 @@ struct AppearanceSettingsView: View {
 
     private var homeSectionOrderEditor: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("拖动调整主页中各个板块的显示顺序。")
-                .settingsDescriptionStyle()
-
             // No inner list-level background container: each row carries its
             // own pill, the surrounding SettingsSection already provides chrome.
             //
@@ -236,9 +233,12 @@ struct AppearanceSettingsView: View {
             }
 
             HStack {
+                Text("拖动调整主页中各个板块的显示顺序")
+                    .settingsDescriptionStyle()
+
                 Spacer(minLength: 0)
 
-                Button("恢复默认顺序") {
+                Button("恢复默认排序") {
                     withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
                         homeSectionOrder = HomeSection.defaultOrder
                         draggingSection = nil
@@ -362,10 +362,6 @@ struct AppearanceSettingsView: View {
                 Capsule()
                     .fill(Color.primary.opacity(0.035))
             )
-            .overlay(
-                Capsule()
-                    .stroke(Color.secondary.opacity(0.10), lineWidth: 1)
-            )
             .clipShape(Capsule())
             .contentShape(Capsule())
     }
@@ -373,13 +369,6 @@ struct AppearanceSettingsView: View {
     private func homeSectionOrderPlaceholder() -> some View {
         Capsule()
             .fill(Color.secondary.opacity(0.035))
-            .overlay(
-                Capsule()
-                    .strokeBorder(
-                        Color.secondary.opacity(0.12),
-                        style: StrokeStyle(lineWidth: 1, dash: [5, 6])
-                    )
-            )
             .frame(maxWidth: .infinity)
             .contentShape(Capsule())
     }

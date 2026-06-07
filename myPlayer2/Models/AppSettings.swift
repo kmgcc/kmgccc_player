@@ -787,6 +787,10 @@ public final class AppSettings {
 
     // MARK: - External Playback Settings
 
+    private enum ExternalPlaybackKeys {
+        static let sourcePreferences = "externalPlaybackSourcePreferences"
+    }
+
     /// Whether to show the playback source switcher (local / Apple Music) in the sidebar.
     /// When false, shows the legacy app header (icon + app name) instead.
     @ObservationIgnored
@@ -801,6 +805,56 @@ public final class AppSettings {
     /// or Apple Music can safely disable it to declutter the UI.
     @ObservationIgnored
     @AppStorage("enableSystemNowPlayingMode") var enableSystemNowPlayingMode: Bool = false
+
+    var externalPlaybackSourcePreferences: [ExternalPlaybackSourcePreference] {
+        get {
+            access(keyPath: \.externalPlaybackSourcePreferences)
+            guard let data = UserDefaults.standard.data(forKey: ExternalPlaybackKeys.sourcePreferences),
+                  let decoded = try? JSONDecoder().decode([ExternalPlaybackSourcePreference].self, from: data)
+            else {
+                return []
+            }
+            return Self.normalizedExternalPlaybackSourcePreferences(decoded)
+        }
+        set {
+            withMutation(keyPath: \.externalPlaybackSourcePreferences) {
+                let normalized = Self.normalizedExternalPlaybackSourcePreferences(newValue)
+                if let data = try? JSONEncoder().encode(normalized) {
+                    UserDefaults.standard.set(data, forKey: ExternalPlaybackKeys.sourcePreferences)
+                }
+                NotificationCenter.default.post(
+                    name: .externalPlaybackSourcePreferencesDidChange,
+                    object: self
+                )
+            }
+        }
+    }
+
+    private static func normalizedExternalPlaybackSourcePreferences(
+        _ preferences: [ExternalPlaybackSourcePreference]
+    ) -> [ExternalPlaybackSourcePreference] {
+        var seen = Set<String>()
+        var normalized: [ExternalPlaybackSourcePreference] = []
+        normalized.reserveCapacity(preferences.count)
+        for preference in preferences {
+            let id = preference.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !id.isEmpty, seen.insert(id).inserted else { continue }
+            let bundleIdentifier = preference.bundleIdentifier
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            let displayName = preference.displayName
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            normalized.append(
+                ExternalPlaybackSourcePreference(
+                    id: id,
+                    bundleIdentifier: bundleIdentifier.isEmpty ? id : bundleIdentifier,
+                    displayName: displayName.isEmpty ? id : displayName,
+                    isDisabled: preference.isDisabled
+                )
+            )
+        }
+        return normalized
+    }
 
     // MARK: - Fullscreen Presentation Coordinator
 

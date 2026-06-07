@@ -67,6 +67,7 @@ struct LDDCSearchSection: View {
     
     @State private var isApplying = false
     @State private var applyError: String?
+    @State private var applyNotice: String?
     @AppStorage("lddc.stripExtraInfo") private var stripExtraInfo = true
 
     // Track current selection task to handle quick clicks
@@ -161,6 +162,8 @@ struct LDDCSearchSection: View {
             // Error Display
             if let error = searchError ?? previewError ?? applyError {
                 errorBanner(message: error)
+            } else if let notice = applyNotice {
+                noticeBanner(message: notice)
             }
         }
         .onAppear {
@@ -685,6 +688,19 @@ struct LDDCSearchSection: View {
         .background(Color.orange.opacity(0.1))
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
+
+    private func noticeBanner(message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "info.circle.fill")
+                .foregroundStyle(.secondary)
+            Text(message)
+                .font(.caption)
+            Spacer()
+        }
+        .padding(8)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
     
     // MARK: - Actions
 
@@ -706,6 +722,7 @@ struct LDDCSearchSection: View {
         searchError = nil
         previewError = nil
         applyError = nil
+        applyNotice = nil
         amlldbResults = []
         lddcResults = []
         searchResults = []
@@ -737,6 +754,9 @@ struct LDDCSearchSection: View {
         
         isSearching = true
         searchError = nil
+        previewError = nil
+        applyError = nil
+        applyNotice = nil
         searchResults = []
         amlldbResults = []
         lddcResults = []
@@ -950,6 +970,7 @@ struct LDDCSearchSection: View {
         previewOrig = nil
         previewTrans = nil
         applyError = nil
+        applyNotice = nil
 
         Self.logger.info("[LyricsSearch] Preview load start for: \(candidate.title)")
 
@@ -1033,6 +1054,7 @@ struct LDDCSearchSection: View {
 
         isApplying = true
         applyError = nil
+        applyNotice = nil
 
         do {
             let ttml: String
@@ -1087,6 +1109,9 @@ struct LDDCSearchSection: View {
                 }
             }
 
+        } catch LRCConversionError.instrumentalPlaceholderLyrics {
+            Self.logger.info("[LyricsApply] LDDC returned instrumental placeholder lyrics; skipping apply")
+            applyNotice = LRCConversionError.instrumentalPlaceholderLyrics.localizedDescription
         } catch {
             Self.logger.error("[LyricsApply] Apply failure: \(error.localizedDescription)")
             applyError = error.localizedDescription

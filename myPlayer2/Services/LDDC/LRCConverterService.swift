@@ -31,10 +31,24 @@ private enum LyricType {
     case char
 }
 
-private enum LRCConversionError: Error {
+enum LRCConversionError: LocalizedError {
     case noValidLyricsData
+    case instrumentalPlaceholderLyrics
     case fileReadFailed
     case invalidOutputPath
+
+    var errorDescription: String? {
+        switch self {
+        case .noValidLyricsData:
+            return "没有可用歌词"
+        case .instrumentalPlaceholderLyrics:
+            return "LDDC 返回的是纯音乐占位歌词，已按无歌词跳过"
+        case .fileReadFailed:
+            return "读取歌词文件失败"
+        case .invalidOutputPath:
+            return "歌词输出路径无效"
+        }
+    }
 }
 
 actor LRCConverterService {
@@ -127,7 +141,7 @@ actor LRCConverterService {
         }
 
         guard !isInstrumentalPlaceholderLyrics(processedLyricsData) else {
-            throw LRCConversionError.noValidLyricsData
+            throw LRCConversionError.instrumentalPlaceholderLyrics
         }
         
         let lyricType = detectLyricType(processedLyricsData)
@@ -188,7 +202,7 @@ actor LRCConverterService {
         }
 
         guard !isInstrumentalPlaceholderLyrics(lyricsData) else {
-            throw LRCConversionError.noValidLyricsData
+            throw LRCConversionError.instrumentalPlaceholderLyrics
         }
         
         // Parse translation

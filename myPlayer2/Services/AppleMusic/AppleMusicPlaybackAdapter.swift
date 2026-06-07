@@ -1170,6 +1170,12 @@ final class AppleMusicPlaybackAdapter {
                     )
                 } else {
                     switch result.status {
+                    case .noLyrics:
+                        self.autoLyricsLookupState = .noResults
+                        Log.info(
+                            "[AMAdapter] resolveLyrics: candidate reports no lyrics for '\(effective.title)'",
+                            category: .lyrics
+                        )
                     case .noCandidates:
                         self.autoLyricsLookupState = .noResults
                         Log.warning(

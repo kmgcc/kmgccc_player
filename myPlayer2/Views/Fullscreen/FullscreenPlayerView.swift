@@ -3450,8 +3450,8 @@ struct FullscreenPlayerView: View {
         return SkinContext(
             track: trackMeta,
             playback: playback,
-            audio: ledMeterProvider.getOrCreate().audioMetrics,
-            led: ledMeterProvider.getOrCreate().metrics,
+            audio: ledMeterProvider.audioMetrics,
+            led: ledMeterProvider.metrics,
             theme: theme,
             windowSize: windowSize,
             contentBounds: contentBounds,

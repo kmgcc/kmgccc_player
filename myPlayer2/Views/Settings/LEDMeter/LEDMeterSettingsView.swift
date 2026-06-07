@@ -39,11 +39,9 @@ struct LEDMeterSettingsView: View {
             VStack(alignment: .leading, spacing: 12) {
                 SettingsSectionTitle("settings.led.live_preview")
 
-                let ledMeter = ledMeterProvider.getOrCreate()
-
                 LedMeterView(
-                    level: Double(ledMeter.normalizedLevel),
-                    ledValues: ledMeter.metrics.leds,
+                    level: Double(ledMeterProvider.normalizedLevel),
+                    ledValues: ledMeterProvider.metrics.leds,
                     dotSize: 14,
                     spacing: 7,
                     isPlaying: playerVM.isPlaying
