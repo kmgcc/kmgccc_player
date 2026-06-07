@@ -247,6 +247,10 @@ final class PlaybackCoordinator {
         NowPlayingService.shared.updateNowPlaying(force: true)
     }
 
+    func checkSystemNowPlayingAvailability() async -> ExternalPlaybackPermissionState {
+        await systemNowPlayingProvider.checkAdapterAvailability()
+    }
+
     // MARK: - Local Track Playback (auto-switches source)
 
     func playTracks(

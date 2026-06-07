@@ -35,6 +35,7 @@ struct LyricsSearchHelper {
     struct AutomaticFetchResult: Sendable, Equatable {
         enum Status: String, Sendable, Equatable {
             case matched
+            case noLyrics
             case noCandidates
             case thresholdRejected
             case allCandidatesFailed
@@ -56,6 +57,12 @@ struct LyricsSearchHelper {
         let queryTitle: String
         let queryArtist: String?
         let queryAlbum: String?
+    }
+
+    private enum FetchLyricsContentResult {
+        case success(String)
+        case noLyrics
+        case failed
     }
 
     // MARK: - Full Search
@@ -286,14 +293,14 @@ struct LyricsSearchHelper {
     ///   - mode: LDDC mode (for conversion)
     ///   - translation: Whether to include translation
     ///   - stripMetadata: Whether to strip metadata from converted TTML
-    /// - Returns: TTML lyrics content, or nil if failed
-    static func fetchLyricsContent(
+    /// - Returns: TTML lyrics content, no-lyrics marker, or failed marker.
+    private static func fetchLyricsContent(
         candidate: LDDCCandidate,
         mode: LDDCMode = .verbatim,
         translation: Bool = true,
         stripMetadata: Bool = true
-    ) async -> String? {
-        guard !Task.isCancelled else { return nil }
+    ) async -> FetchLyricsContentResult {
+        guard !Task.isCancelled else { return .failed }
         Self.logger.info("[LyricsSearchHelper] Fetching lyrics for candidate: '\(candidate.title)' source=\(candidate.source)")
 
         do {
@@ -306,13 +313,13 @@ struct LyricsSearchHelper {
                 } catch {
                     throw error
                 }
-                guard !Task.isCancelled else { return nil }
+                guard !Task.isCancelled else { return .failed }
                 guard let normalized = LyricsFormatSupport.normalizedTTMLText(ttml) else {
                     Self.logger.warning("[LyricsSearchHelper] AMLLDB TTML invalid: \(rawLyricFile)")
-                    return nil
+                    return .failed
                 }
                 Self.logger.info("[LyricsSearchHelper] AMLLDB TTML fetched: \(rawLyricFile), \(normalized.count) bytes")
-                return normalized
+                return .success(normalized)
             }
 
             // LDDC candidates need conversion
@@ -328,7 +335,7 @@ struct LyricsSearchHelper {
                 } catch {
                     throw error
                 }
-                guard !Task.isCancelled else { return nil }
+                guard !Task.isCancelled else { return .failed }
 
                 let ttml: String
                 if let trans = transLyrics, !trans.isEmpty {
@@ -343,10 +350,10 @@ struct LyricsSearchHelper {
                     }
                     guard let normalized = LyricsFormatSupport.normalizedTTMLText(ttml) else {
                         Self.logger.warning("[LyricsSearchHelper] LDDC conversion with translation produced invalid TTML")
-                        return nil
+                        return .failed
                     }
                     Self.logger.info("[LyricsSearchHelper] LDDC converted with translation: \(normalized.count) bytes")
-                    return normalized
+                    return .success(normalized)
                 } else {
                     do {
                         ttml = try await TTMLConverter.shared.convertToTTML(
@@ -358,10 +365,10 @@ struct LyricsSearchHelper {
                     }
                     guard let normalized = LyricsFormatSupport.normalizedTTMLText(ttml) else {
                         Self.logger.warning("[LyricsSearchHelper] LDDC conversion produced invalid TTML")
-                        return nil
+                        return .failed
                     }
                     Self.logger.info("[LyricsSearchHelper] LDDC converted (no translation): \(normalized.count) bytes")
-                    return normalized
+                    return .success(normalized)
                 }
             } else {
                 let lyrics: String
@@ -374,7 +381,7 @@ struct LyricsSearchHelper {
                 } catch {
                     throw error
                 }
-                guard !Task.isCancelled else { return nil }
+                guard !Task.isCancelled else { return .failed }
                 let ttml: String
                 do {
                     ttml = try await TTMLConverter.shared.convertToTTML(
@@ -386,14 +393,17 @@ struct LyricsSearchHelper {
                 }
                 guard let normalized = LyricsFormatSupport.normalizedTTMLText(ttml) else {
                     Self.logger.warning("[LyricsSearchHelper] LDDC conversion produced invalid TTML")
-                    return nil
+                    return .failed
                 }
                 Self.logger.info("[LyricsSearchHelper] LDDC converted: \(normalized.count) bytes")
-                return normalized
+                return .success(normalized)
             }
+        } catch LRCConversionError.instrumentalPlaceholderLyrics {
+            Self.logger.info("[LyricsSearchHelper] LDDC returned instrumental placeholder lyrics; treating as no lyrics")
+            return .noLyrics
         } catch {
             Self.logger.error("[LyricsSearchHelper] Lyrics fetch failed: \(error.localizedDescription)")
-            return nil
+            return .failed
         }
     }
 
@@ -505,8 +515,9 @@ struct LyricsSearchHelper {
                 )
             }
             Self.logger.info("[LyricsSearchHelper] Trying candidate #\(index + 1)/\(candidates.count): '\(candidate.title)' source=\(candidate.source)")
-            let ttml = await fetchLyricsContent(candidate: candidate)
-            if let ttml, !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let fetchResult = await fetchLyricsContent(candidate: candidate)
+            if case .success(let ttml) = fetchResult,
+               !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Self.logger.info("[LyricsSearchHelper] Candidate #\(index + 1) succeeded: '\(candidate.title)' source=\(candidate.source) length=\(ttml.count)")
                 return AutomaticFetchResult(
                     status: .matched,
@@ -516,8 +527,18 @@ struct LyricsSearchHelper {
                     threshold: minimumTopCandidateScore
                 )
             }
-            let reason = ttml == nil ? "fetch failed" : "content empty"
-            Self.logger.warning("[LyricsSearchHelper] Candidate #\(index + 1) rejected: \(reason) — '\(candidate.title)' source=\(candidate.source)")
+            if case .noLyrics = fetchResult {
+                Self.logger.info("[LyricsSearchHelper] Candidate #\(index + 1) reports no lyrics; stopping fallback for '\(title)'")
+                return AutomaticFetchResult(
+                    status: .noLyrics,
+                    ttml: nil,
+                    topCandidate: topCandidate,
+                    fetchedCandidate: candidateSummary(for: candidate),
+                    threshold: minimumTopCandidateScore
+                )
+            }
+
+            Self.logger.warning("[LyricsSearchHelper] Candidate #\(index + 1) rejected: fetch failed — '\(candidate.title)' source=\(candidate.source)")
         }
 
         Self.logger.warning("[LyricsSearchHelper] All \(candidates.count) candidates failed for '\(title)'")

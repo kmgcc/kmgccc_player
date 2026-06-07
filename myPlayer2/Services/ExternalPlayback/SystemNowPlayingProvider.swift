@@ -5,6 +5,7 @@
 //  Bridges MediaRemote Adapter stream output into the external playback pipeline.
 //
 
+import AppKit
 import Foundation
 
 @Observable
@@ -225,19 +226,11 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     private let libraryVM: LibraryViewModel
     private let artworkResolver: AppleMusicArtworkResolver
     private let metadataStore: ExternalPlaybackMetadataStore
+    private let sourceStore: ExternalPlaybackSourceStore
     private let decoder = JSONDecoder()
     private let streamQueue = DispatchQueue(label: "myPlayer2.systemNowPlaying.stream", qos: .utility)
     private let controlQueue = DispatchQueue(label: "myPlayer2.systemNowPlaying.control", qos: .utility)
     private let systemProgressDisplayDelay: TimeInterval = 0.5
-    private let blockedExternalOwnerPrefixes = [
-        "com.apple.safari",
-        "com.google.chrome",
-        "com.microsoft.edgemac",
-        "org.mozilla.firefox",
-        "com.brave.browser",
-        "com.operasoftware.opera"
-    ]
-
     private var process: Process?
     private var stdoutPipe: Pipe?
     private var stderrPipe: Pipe?
@@ -308,6 +301,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     private var lockedExternalOwnerSince: Date?
     private var lastNonLockedOwnerLogAt: [String: Date] = [:]
     private var lastBlockedOwnerLogAt: [String: Date] = [:]
+    private var lastDisabledOwnerLogAt: [String: Date] = [:]
     private var hasLoggedProgressDisplayOffset = false
     private var lastControlAction: ControlAction?
     private var controlIssuedAt: Date?
@@ -325,6 +319,8 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     private var lastPausedStableRetainedLogAt: Date = .distantPast
     private var lastPausedEmptyIgnoredLogAt: Date = .distantPast
     private var isInvalidatingCurrentResolution = false
+    @ObservationIgnored
+    private var sourcePreferenceTask: Task<Void, Never>?
 
     private(set) var presentation: NowPlayingPresentation = .emptySystemNowPlaying
     var capabilities: ExternalPlaybackCapabilities { currentCapabilities }
@@ -332,11 +328,25 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     init(
         libraryVM: LibraryViewModel,
         artworkResolver: AppleMusicArtworkResolver = AppleMusicArtworkResolver(),
-        metadataStore: ExternalPlaybackMetadataStore? = nil
+        metadataStore: ExternalPlaybackMetadataStore? = nil,
+        sourceStore: ExternalPlaybackSourceStore = .shared
     ) {
         self.libraryVM = libraryVM
         self.artworkResolver = artworkResolver
         self.metadataStore = metadataStore ?? .shared
+        self.sourceStore = sourceStore
+        sourcePreferenceTask = Task { @MainActor [weak self] in
+            for await _ in NotificationCenter.default.notifications(
+                named: .externalPlaybackSourcePreferencesDidChange
+            ) {
+                guard !Task.isCancelled else { break }
+                self?.handleSourcePreferencesChanged()
+            }
+        }
+    }
+
+    deinit {
+        sourcePreferenceTask?.cancel()
     }
 
     func start() {
@@ -365,6 +375,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         controlCooldownUntil = .distantPast
         clearControlExpectation()
         unlockExternalOwner(reason: "provider_start")
+        sourceStore.setCurrentSourceID(nil)
         clearReliabilityTracking(to: .unavailable)
         logSelfBundleIDIfNeeded()
         updateUnavailablePresentation(
@@ -418,6 +429,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         Log.info("[SystemNowPlaying] stopping stream", category: .playback)
         streamGeneration &+= 1
         unlockExternalOwner(reason: "provider_stop")
+        sourceStore.setCurrentSourceID(nil)
         isStarting = false
         healthTask?.cancel()
         healthTask = nil
@@ -517,6 +529,12 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             await artworkResolver.clearCache()
         }
         invalidateCurrentResolution()
+    }
+
+    func checkAdapterAvailability() async -> ExternalPlaybackPermissionState {
+        guard let paths = resolveAdapterPaths() else { return .manual }
+        let status = await Self.runHealthTest(paths: paths)
+        return status == 0 ? .allowed : .manual
     }
 
     private func launchStreamProcess(
@@ -692,6 +710,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             handleSelfOwnedPayload(payload, source: source)
             return
         }
+        recordExternalSourceObservation(payload)
         if shouldIgnoreExternalOwner(payload, source: source) {
             return
         }
@@ -701,6 +720,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             handleSelfOwnedPayload(mergedPayload, source: source)
             return
         }
+        recordExternalSourceObservation(mergedPayload)
         if shouldIgnoreExternalOwner(mergedPayload, source: source) {
             return
         }
@@ -945,7 +965,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
     private func isSelfOwnedPayload(_ payload: Payload) -> Bool {
         let selfBundleID = Self.selfBundleID
-        for owner in ownerBundleCandidates(for: payload) {
+        for owner in rawOwnerBundleCandidates(for: payload) {
             guard owner == selfBundleID else { continue }
             return true
         }
@@ -956,7 +976,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         return false
     }
 
-    private func ownerBundleCandidates(for payload: Payload) -> [String] {
+    private func rawOwnerBundleCandidates(for payload: Payload) -> [String] {
         [
             nonEmpty(payload.bundleIdentifier),
             nonEmpty(payload.parentApplicationBundleIdentifier),
@@ -965,6 +985,22 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             nonEmpty(payload.applicationBundleIdentifier)
         ]
         .compactMap { $0?.lowercased() }
+    }
+
+    private func ownerBundleCandidates(for payload: Payload) -> [String] {
+        var candidates = [
+            nonEmpty(payload.parentApplicationBundleIdentifier),
+            nonEmpty(payload.ownerBundleIdentifier),
+            nonEmpty(payload.applicationBundleIdentifier),
+            nonEmpty(payload.clientBundleIdentifier),
+            nonEmpty(payload.bundleIdentifier),
+            processBundleIdentifier(for: payload)
+        ]
+        .compactMap { normalizedBundleIdentifier($0) }
+        .filter { $0 != Self.selfBundleID && !isInfrastructureOwner($0) }
+
+        candidates = Self.uniqued(candidates)
+        return candidates
     }
 
     private func rawOwnerBundle(for payload: Payload) -> String? {
@@ -983,12 +1019,26 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             return false
         }
 
-        if isBlockedExternalOwner(owner) {
+        if isAppleMusicOwner(owner) {
             logIgnoredBlockedOwnerIfNeeded(owner: owner, source: source)
             return true
         }
 
+        if sourceStore.isDisabled(owner) {
+            logIgnoredDisabledOwnerIfNeeded(owner: owner, source: source)
+            return true
+        }
+
         if let lockedExternalOwner, owner != lockedExternalOwner {
+            if sourceStore.hasHigherPriority(owner, than: lockedExternalOwner),
+               isPayloadPlaying(payload) {
+                Log.info(
+                    "[SystemNowPlaying] higher priority owner preempted locked owner incoming=\(owner) locked=\(lockedExternalOwner) source=\(source.rawValue)",
+                    category: .playback
+                )
+                unlockExternalOwner(reason: "higher_priority_owner incoming=\(owner)")
+                return false
+            }
             logIgnoredNonLockedOwnerIfNeeded(incoming: owner, locked: lockedExternalOwner, source: source)
             return true
         }
@@ -996,15 +1046,14 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         return false
     }
 
-    private func isBlockedExternalOwner(_ owner: String) -> Bool {
+    private func isAppleMusicOwner(_ owner: String) -> Bool {
         let lowercased = owner.lowercased()
-        return blockedExternalOwnerPrefixes.contains { lowercased.hasPrefix($0) }
+        return lowercased == "com.apple.music" || lowercased == "com.apple.itunes"
     }
 
     private func lockExternalOwnerIfNeeded(from payload: Payload, reason: String) {
         guard lockedExternalOwner == nil,
-              let owner = effectiveExternalBundleId(for: payload),
-              !isBlockedExternalOwner(owner) else { return }
+              let owner = effectiveExternalBundleId(for: payload) else { return }
         lockedExternalOwner = owner
         lockedExternalOwnerSince = Date()
         Log.info("[SystemNowPlaying] owner locked=\(owner) reason=\(reason)", category: .playback)
@@ -1016,6 +1065,15 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         lockedExternalOwnerSince = nil
         lastNonLockedOwnerLogAt.removeAll()
         Log.info("[SystemNowPlaying] owner unlocked reason=\(reason) owner=\(owner)", category: .playback)
+    }
+
+    private func handleSourcePreferencesChanged() {
+        sourceStore.reloadPreferences()
+        guard let owner = lockedExternalOwner ?? activeExternalOwnerBundle,
+              sourceStore.isDisabled(owner) else { return }
+        Log.info("[SystemNowPlaying] active owner disabled by user owner=\(owner)", category: .playback)
+        sourceStore.setCurrentSourceID(nil)
+        clearTemporarilyUnavailable()
     }
 
     private func logIgnoredSelfOwnedPayloadIfNeeded(_ payload: Payload, source: PayloadSource) {
@@ -1056,9 +1114,21 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         Log.warning("[SystemNowPlaying] ignored blocked owner=\(owner) source=\(source.rawValue)", category: .playback)
     }
 
+    private func logIgnoredDisabledOwnerIfNeeded(owner: String, source: PayloadSource) {
+        let key = "\(source.rawValue)|\(owner)"
+        let now = Date()
+        if let last = lastDisabledOwnerLogAt[key],
+           now.timeIntervalSince(last) < 1 {
+            return
+        }
+        lastDisabledOwnerLogAt[key] = now
+        Log.info("[SystemNowPlaying] ignored disabled owner=\(owner) source=\(source.rawValue)", category: .playback)
+    }
+
     private func logAcceptedExternalPayload(_ payload: Payload, source: PayloadSource) {
         acceptedExternalPayloadCount += 1
         let owner = effectiveExternalBundleId(for: payload) ?? lockedExternalOwner ?? rawOwnerBundle(for: payload) ?? "unknown"
+        sourceStore.setCurrentSourceID(owner)
         if activeExternalOwnerBundle != owner {
             activeExternalOwnerBundle = owner
             Log.info(
@@ -1066,6 +1136,16 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                 category: .playback
             )
         }
+    }
+
+    private func recordExternalSourceObservation(_ payload: Payload) {
+        guard let owner = effectiveExternalBundleId(for: payload),
+              !isAppleMusicOwner(owner) else { return }
+        sourceStore.recordDetection(
+            bundleIdentifier: owner,
+            isPlaying: playingSignal(for: payload),
+            hasTrack: nonEmpty(payload.title) != nil
+        )
     }
 
     private func updateReliability(with observation: PayloadObservation) {
@@ -1525,6 +1605,18 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     // confirm a track change and does not flip mid-track just because album/duration/bundle
     // drifted.
     private static let selfBundleID: String = (Bundle.main.bundleIdentifier ?? "kmgccc.player").lowercased()
+    private static let adapterOwnerBundleIDs: Set<String> = [
+        "com.apple.perl",
+        "com.apple.perl5",
+        "com.apple.perl5.30",
+        "com.apple.perl5.34",
+        "com.apple.perl5.36"
+    ]
+    private static let webkitServiceBundleIDs: Set<String> = [
+        "com.apple.webkit.gpu",
+        "com.apple.webkit.networking",
+        "com.apple.webkit.webcontent"
+    ]
 
     private func logSelfBundleIDIfNeeded() {
         guard !hasLoggedSelfBundleID else { return }
@@ -1544,18 +1636,30 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     }
 
     private func effectiveExternalBundleId(for payload: Payload) -> String? {
-        let candidates: [String?] = [
-            nonEmpty(payload.bundleIdentifier),
-            nonEmpty(payload.parentApplicationBundleIdentifier),
-            nonEmpty(payload.clientBundleIdentifier),
-            nonEmpty(payload.ownerBundleIdentifier),
-            nonEmpty(payload.applicationBundleIdentifier)
-        ]
-        for candidate in candidates {
-            guard let raw = candidate?.lowercased(), !raw.isEmpty, raw != Self.selfBundleID else { continue }
-            return raw
+        ownerBundleCandidates(for: payload).first
+    }
+
+    private func processBundleIdentifier(for payload: Payload) -> String? {
+        guard let pid = payload.processIdentifier ?? payload.pid,
+              pid > 0,
+              let app = NSRunningApplication(processIdentifier: pid_t(pid)) else {
+            return nil
         }
-        return nil
+        return app.bundleIdentifier
+    }
+
+    private func normalizedBundleIdentifier(_ value: String?) -> String? {
+        guard let value = nonEmpty(value) else { return nil }
+        let lowercased = value.lowercased()
+        return lowercased.isEmpty ? nil : lowercased
+    }
+
+    private func isInfrastructureOwner(_ owner: String) -> Bool {
+        let lowercased = owner.lowercased()
+        if Self.adapterOwnerBundleIDs.contains(lowercased) {
+            return true
+        }
+        return Self.webkitServiceBundleIDs.contains(lowercased)
     }
 
     private func nonEmpty(_ value: String?) -> String? {
@@ -1888,6 +1992,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         pendingHeavyPresentationTask = nil
         if connectionState == .unavailable || connectionState == .disconnected || connectionState == .connectedNoMetadata {
             unlockExternalOwner(reason: "unavailable_presentation state=\(connectionState.rawValue)")
+            sourceStore.setCurrentSourceID(nil)
         }
         lastPayload = nil
         latestStableMetadataKey = nil
@@ -2148,6 +2253,8 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                     self.autoLyricsLookupState = .idle
                 } else {
                     switch result.status {
+                    case .noLyrics:
+                        self.autoLyricsLookupState = .noResults
                     case .noCandidates:
                         self.autoLyricsLookupState = .noResults
                     case .thresholdRejected:
@@ -3168,6 +3275,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         isInvalidatingCurrentResolution = false
         if clearPresentation {
             transitionConnectionState(to: .disconnected, reason: "stopped")
+            sourceStore.setCurrentSourceID(nil)
             presentation = .emptySystemNowPlaying
         }
     }

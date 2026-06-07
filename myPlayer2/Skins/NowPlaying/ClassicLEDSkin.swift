@@ -300,7 +300,7 @@ private struct ClassicLEDSkinNormalSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            SettingsSwitchRow(title: "艺术化封面边缘", isOn: $artworkFrameMaskEnabled)
+            SettingsSwitchRow(title: "风格化封面边缘", isOn: $artworkFrameMaskEnabled)
 
             SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
                 get: { visualizerMode == "led" },
@@ -338,7 +338,7 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
             SettingsSwitchRow(
-                title: "艺术化封面边缘",
+                title: "风格化封面边缘",
                 isOn: $artworkFrameMaskEnabled,
                 titleFont: presentationStyle.rowLabelFont,
                 titleColor: presentationStyle.primaryTextColor
