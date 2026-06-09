@@ -48,6 +48,17 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
     }
 
+    func restorePausedPlayback(_ tracks: [Track], startingAt index: Int, positionSeconds: Double) {
+        queue = tracks
+        guard index >= 0, index < tracks.count else { return }
+        currentIndex = index
+        let track = tracks[index]
+        currentTrack = track
+        duration = track.duration
+        currentTime = min(max(0, positionSeconds), track.duration)
+        isPlaying = false
+    }
+
     func updateQueueTracks(_ tracks: [Track]) {
         queue = tracks
         if let currentID = currentTrack?.id,
