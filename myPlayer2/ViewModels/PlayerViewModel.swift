@@ -89,10 +89,11 @@ final class PlayerViewModel {
     func playTracks(
         _ tracks: [Track],
         startingAt index: Int = 0,
-        libraryQueueSource: LibraryQueueSource? = nil
+        libraryQueueSource: LibraryQueueSource? = nil,
+        startPolicy: PlaybackStartPolicy = .useSavedMode
     ) {
         activeLibraryQueueSource = libraryQueueSource
-        playbackService.playTracks(tracks, startingAt: index)
+        playbackService.playTracks(tracks, startingAt: index, startPolicy: startPolicy)
         startLevelMeterIfNeeded()
         nowPlayingService.updateNowPlaying(force: true)
     }

@@ -257,15 +257,17 @@ final class PlaybackCoordinator {
         _ tracks: [Track],
         startingAt index: Int = 0,
         libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil,
-        playbackOrderMode: PlaybackOrderMode? = nil
+        startPolicy: PlaybackStartPolicy = .useSavedMode
     ) {
         if activeSource != .local {
             setActiveSource(.local)
         }
-        if let playbackOrderMode {
-            playerVM.setPlaybackOrderMode(playbackOrderMode, announceChange: true)
-        }
-        playerVM.playTracks(tracks, startingAt: index, libraryQueueSource: libraryQueueSource)
+        playerVM.playTracks(
+            tracks,
+            startingAt: index,
+            libraryQueueSource: libraryQueueSource,
+            startPolicy: startPolicy
+        )
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
     }
@@ -279,13 +281,13 @@ final class PlaybackCoordinator {
             queue,
             startingAt: startIndex,
             libraryQueueSource: libraryQueueSource,
-            playbackOrderMode: .shuffle
+            startPolicy: .forceShuffleTemporary
         )
     }
 
     func playTrack(
         _ track: Track,
-        inRandomQueueFrom tracks: [Track],
+        inQueueFrom tracks: [Track],
         libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil
     ) {
         let queue = Self.availableUniqueTracks(from: tracks)
@@ -294,8 +296,7 @@ final class PlaybackCoordinator {
         playTracks(
             queue,
             startingAt: startIndex,
-            libraryQueueSource: libraryQueueSource,
-            playbackOrderMode: .shuffle
+            libraryQueueSource: libraryQueueSource
         )
     }
 

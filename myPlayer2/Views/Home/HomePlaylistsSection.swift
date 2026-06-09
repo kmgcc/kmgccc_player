@@ -407,7 +407,7 @@ struct HomePlaylistsSection: View {
     private func play(_ track: Track, in playlist: Playlist) {
         playbackCoordinator.playTrack(
             track,
-            inRandomQueueFrom: playlist.tracks,
+            inQueueFrom: playlist.tracks,
             libraryQueueSource: .librarySelection("home-playlist-\(playlist.id.uuidString)")
         )
     }

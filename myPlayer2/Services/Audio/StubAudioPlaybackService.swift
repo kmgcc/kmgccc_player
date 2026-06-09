@@ -40,7 +40,7 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
         print("▶️ [Stub] Playing: \(track.title)")
     }
 
-    func playTracks(_ tracks: [Track], startingAt index: Int) {
+    func playTracks(_ tracks: [Track], startingAt index: Int, startPolicy: PlaybackStartPolicy) {
         queue = tracks
         currentIndex = index
         if index >= 0 && index < tracks.count {

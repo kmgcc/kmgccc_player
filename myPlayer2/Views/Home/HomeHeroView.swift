@@ -582,7 +582,7 @@ struct HomeHeroView: View {
         guard !tracks.isEmpty else { return }
         playbackCoordinator.playTrack(
             track,
-            inRandomQueueFrom: tracks,
+            inQueueFrom: tracks,
             libraryQueueSource: .librarySelection("home")
         )
     }

@@ -392,7 +392,7 @@ final class AppSessionHost: ObservableObject {
 
     /// Restore the last session at launch **in a paused state**.
     ///
-    /// This rebuilds the queue, current track, playback order mode, position, and
+    /// This rebuilds the queue, current track, position, and
     /// UI without auto-playing. The audio is prepared and scheduled at the saved
     /// position but the player node is never started — the final state is paused,
     /// and the user resumes from the restored position with one tap.
@@ -431,14 +431,6 @@ final class AppSessionHost: ObservableObject {
             // The saved track is gone (deleted/unavailable): drop stale memory.
             PlaybackMemoryStore.clear()
             return
-        }
-
-        // Restore the saved playback order mode before building the session so
-        // the queue/shuffle state matches what the user left.
-        if let savedModeRaw = memory.playbackOrderMode,
-           let savedMode = PlaybackOrderMode(rawValue: savedModeRaw),
-           savedMode != AppSettings.shared.playbackOrderMode {
-            AppSettings.shared.setPlaybackOrderMode(savedMode, announceChange: false)
         }
 
         let restorableTime = PlaybackMemoryStore.restorableTime(from: memory)

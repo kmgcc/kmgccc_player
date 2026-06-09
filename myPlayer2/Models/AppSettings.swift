@@ -18,6 +18,32 @@ enum PlaybackOrderMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum PlaybackStartPolicy: Equatable {
+    case useSavedMode
+    case forceSequentialTemporary
+    case forceShuffleTemporary
+
+    var isTemporaryOverride: Bool {
+        switch self {
+        case .useSavedMode:
+            return false
+        case .forceSequentialTemporary, .forceShuffleTemporary:
+            return true
+        }
+    }
+
+    func resolvedMode(settings: AppSettings = .shared) -> PlaybackOrderMode {
+        switch self {
+        case .useSavedMode:
+            return settings.playbackOrderMode
+        case .forceSequentialTemporary:
+            return .sequence
+        case .forceShuffleTemporary:
+            return .shuffle
+        }
+    }
+}
+
 /// Observable app settings using AppStorage for persistence.
 /// Observable app settings using AppStorage for persistence.
 @Observable

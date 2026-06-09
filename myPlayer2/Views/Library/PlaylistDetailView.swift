@@ -374,7 +374,7 @@ struct PlaylistDetailView: View {
                     playbackCoordinator.playTracks(
                         queueTracks,
                         libraryQueueSource: .librarySelection(selectionIdentity),
-                        playbackOrderMode: .sequence
+                        startPolicy: .forceSequentialTemporary
                     )
                     return
                 }
@@ -637,13 +637,13 @@ struct PlaylistDetailView: View {
                                 queueTracks,
                                 startingAt: startIndex,
                                 libraryQueueSource: .librarySelection(selectionIdentity),
-                                playbackOrderMode: .sequence
+                                startPolicy: .forceSequentialTemporary
                             )
                             return
                         }
                         playbackCoordinator.playTrack(
                             track,
-                            inRandomQueueFrom: queueTracks,
+                            inQueueFrom: queueTracks,
                             libraryQueueSource: .librarySelection(selectionIdentity)
                         )
                     },
@@ -875,13 +875,13 @@ private struct PlaylistTrackRowsSection: View {
                                 queueTracks,
                                 startingAt: startIndex,
                                 libraryQueueSource: .librarySelection(selectionIdentity),
-                                playbackOrderMode: .sequence
+                                startPolicy: .forceSequentialTemporary
                             )
                             return
                         }
                         playbackCoordinator.playTrack(
                             track,
-                            inRandomQueueFrom: queueTracks,
+                            inQueueFrom: queueTracks,
                             libraryQueueSource: .librarySelection(selectionIdentity)
                         )
                     }
