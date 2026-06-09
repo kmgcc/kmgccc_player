@@ -97,6 +97,23 @@ final class PlayerViewModel {
         nowPlayingService.updateNowPlaying(force: true)
     }
 
+    /// Restore the last session in a paused state (playback memory at launch).
+    /// Builds the queue, current track, position, and UI state without playing.
+    /// The level meter is intentionally left off; it starts on the next resume.
+    func restorePausedPlayback(
+        _ tracks: [Track],
+        startingAt index: Int,
+        positionSeconds: Double
+    ) {
+        activeLibraryQueueSource = nil
+        playbackService.restorePausedPlayback(
+            tracks,
+            startingAt: index,
+            positionSeconds: positionSeconds
+        )
+        nowPlayingService.updateNowPlaying(force: true)
+    }
+
     func updateQueueTracks(_ tracks: [Track]) {
         playbackService.updateQueueTracks(tracks)
         nowPlayingService.updateNowPlaying(force: true)

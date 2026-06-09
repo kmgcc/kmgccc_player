@@ -376,40 +376,85 @@ final class AppSessionHost: ObservableObject {
 
         let currentTime = playerVM.currentTime.isFinite ? max(0, playerVM.currentTime) : 0
         let duration = playerVM.duration.isFinite ? max(0, playerVM.duration) : 0
+        let queueTrackIDs = playerVM.currentQueueTracks.map { $0.id }
 
         PlaybackMemoryStore.save(
             PlaybackMemory(
                 savedAt: Date(),
                 trackID: currentTrack.id,
                 currentTime: currentTime,
-                duration: duration
+                duration: duration,
+                queueTrackIDs: queueTrackIDs.isEmpty ? nil : queueTrackIDs,
+                playbackOrderMode: AppSettings.shared.playbackOrderMode.rawValue
             )
         )
     }
 
+    /// Restore the last session at launch **in a paused state**.
+    ///
+    /// This rebuilds the queue, current track, playback order mode, position, and
+    /// UI without auto-playing. The audio is prepared and scheduled at the saved
+    /// position but the player node is never started — the final state is paused,
+    /// and the user resumes from the restored position with one tap.
+    ///
+    /// The launch auto-play chain (`playTracks -> seek -> pause`) intentionally
+    /// stays disabled; this path never calls `playerNode.play()`. The saved
+    /// memory is **not** cleared on restore so repeated relaunches keep working
+    /// (the autosave timer keeps it current). It is only cleared when the saved
+    /// track is genuinely no longer present in the library.
     private func restorePlaybackMemoryIfNeeded() async {
         guard !didAttemptPlaybackMemoryRestore else { return }
         didAttemptPlaybackMemoryRestore = true
 
         guard DebugLaunchScenario.current == nil else { return }
         guard let memory = PlaybackMemoryStore.loadValid() else { return }
-        guard let repository else { return }
+        guard let repository, let playerVM else { return }
 
         await repository.reloadFromLibrary()
 
-        let restoredQueue = await repository.fetchTracks(in: nil)
+        let availableTracks = await repository.fetchTracks(in: nil)
             .filter { $0.availability != .missing }
+        guard !availableTracks.isEmpty else { return }
+
+        // Rebuild the exact saved queue when present; fall back to the full
+        // library (matching legacy behavior) for v1 payloads without a queue.
+        let tracksByID = Dictionary(availableTracks.map { ($0.id, $0) }) { first, _ in first }
+        let restoredQueue: [Track]
+        if let savedQueueIDs = memory.queueTrackIDs, !savedQueueIDs.isEmpty {
+            let rebuilt = savedQueueIDs.compactMap { tracksByID[$0] }
+            restoredQueue = rebuilt.isEmpty ? availableTracks : rebuilt
+        } else {
+            restoredQueue = availableTracks
+        }
+
         guard let startIndex = restoredQueue.firstIndex(where: { $0.id == memory.trackID }) else {
+            // The saved track is gone (deleted/unavailable): drop stale memory.
             PlaybackMemoryStore.clear()
             return
         }
 
+        // Restore the saved playback order mode before building the session so
+        // the queue/shuffle state matches what the user left.
+        if let savedModeRaw = memory.playbackOrderMode,
+           let savedMode = PlaybackOrderMode(rawValue: savedModeRaw),
+           savedMode != AppSettings.shared.playbackOrderMode {
+            AppSettings.shared.setPlaybackOrderMode(savedMode, announceChange: false)
+        }
+
+        let restorableTime = PlaybackMemoryStore.restorableTime(from: memory)
         let restoredTrack = restoredQueue[startIndex]
         Log.info(
-            "[PlaybackMemory] launch auto-play restore bypassed track=\(restoredTrack.id.uuidString) title=\(restoredTrack.title) savedTime=\(String(format: "%.1f", PlaybackMemoryStore.restorableTime(from: memory)))",
+            "[PlaybackMemory] restoring paused session track=\(restoredTrack.id.uuidString) title=\(restoredTrack.title) index=\(startIndex)/\(restoredQueue.count) savedTime=\(String(format: "%.1f", restorableTime)) mode=\(AppSettings.shared.playbackOrderMode.rawValue)",
             category: .playback
         )
-        PlaybackMemoryStore.clear()
+
+        // Paused restore: builds queue + current track + position + UI and
+        // prepares/schedules audio without playing. Ends paused (hard constraint).
+        playerVM.restorePausedPlayback(
+            restoredQueue,
+            startingAt: startIndex,
+            positionSeconds: restorableTime
+        )
     }
 
     private func runDebugLaunchScenarioIfNeeded(
@@ -720,6 +765,12 @@ private struct PlaybackMemory: Codable {
     let trackID: UUID
     let currentTime: Double
     let duration: Double
+    /// Ordered IDs of the last playback queue. Optional for backward
+    /// compatibility with `v1` payloads that only stored the current track; the
+    /// restore path falls back to the full library when this is empty/missing.
+    var queueTrackIDs: [UUID]?
+    /// Persisted playback order mode (`AppSettings.PlaybackOrderMode.rawValue`).
+    var playbackOrderMode: String?
 }
 
 private enum PlaybackMemoryStore {

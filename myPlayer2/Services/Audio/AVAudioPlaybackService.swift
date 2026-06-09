@@ -115,6 +115,20 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// The in-flight preparation task, cancelled when a newer request starts.
     private var prepTask: Task<Void, Never>?
 
+    // MARK: - Paused Restore (Playback Memory)
+
+    /// The `playGeneration` of an armed paused-restore load. The load owning this
+    /// exact generation must finish in a *paused* state and must never call
+    /// `playerNode.play()`. Scoping to a generation (instead of a bare flag)
+    /// ensures a superseding normal play request — which bumps the generation —
+    /// is never mistaken for the restore. Used to restore the last session at
+    /// launch without auto-playing. Consumed in `finishStart`.
+    private var restorePausedGeneration: UInt64?
+    /// Position (seconds) to schedule the restored track at while staying paused.
+    /// The seek is applied in `finishStart` once the engine is started/ready, so
+    /// it is deferred (not discarded) until the off-main prepare completes.
+    private var pendingRestorePositionSeconds: Double?
+
     // MARK: - Smart Shuffle Integration
 
     private let smartController = SmartPlaybackController()
@@ -568,6 +582,34 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         smartController.startPlayback(tracks: tracks, startingAt: index, shuffle: shuffleEnabled)
     }
 
+    /// Restore a saved session into a **paused** state: rebuilds the queue, loads
+    /// the current track and schedules audio at `positionSeconds`, but never
+    /// starts the player node. The user must press play to begin from the
+    /// restored position. This is the playback-memory restore path; it deliberately
+    /// does not auto-play (the launch auto-play chain stays disabled).
+    func restorePausedPlayback(_ tracks: [Track], startingAt index: Int, positionSeconds: Double) {
+        guard index >= 0, index < tracks.count else { return }
+        let shuffleEnabled = AppSettings.shared.shuffleEnabled
+
+        lastKnownShuffleEnabled = shuffleEnabled
+        lastKnownRepeatMode = AppSettings.shared.repeatMode
+
+        // Arm the target position BEFORE startPlayback triggers the load.
+        // startPlayback runs synchronously through playInternal (which calls
+        // stopPlayback → bumps playGeneration → creates the prep task), so once
+        // it returns, playGeneration identifies exactly this load. Tag that
+        // generation as the paused-restore load; finishStart consumes it.
+        pendingRestorePositionSeconds = max(0, positionSeconds)
+
+        Log.info(
+            "[PlaybackPipeline] restorePausedPlayback queueCount=\(tracks.count) startIndex=\(index) position=\(String(format: "%.1f", positionSeconds)) shuffle=\(shuffleEnabled)",
+            category: .audio
+        )
+
+        smartController.startPlayback(tracks: tracks, startingAt: index, shuffle: shuffleEnabled)
+        restorePausedGeneration = playGeneration
+    }
+
     private func playInternal(track: Track) {
         Log.info(
             "[PlaybackPipeline] load item requested track=\(track.id.uuidString) title=\(track.title)",
@@ -644,7 +686,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             )
             return
         }
-        finishStart(resource, track: track)
+        let restorePaused = (restorePausedGeneration == generation)
+        finishStart(resource, track: track, restorePaused: restorePaused)
     }
 
     /// Release a prepared resource's security scope, but only if it actually
@@ -658,7 +701,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// MainActor: lightweight engine scheduling for an already-prepared file.
     /// No file open / bookmark resolve happens here — only engine ops, which
     /// must run on main (AVAudioEngine is not Sendable).
-    private func finishStart(_ resource: PreparedAudioResource, track: Track) {
+    private func finishStart(_ resource: PreparedAudioResource, track: Track, restorePaused: Bool) {
         let scheduleToken = FirstUseHitchDiagnostics.begin(
             "AudioEngine.schedule",
             detail: "track=\(resource.trackID.uuidString.prefix(8))"
@@ -710,6 +753,16 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         configureDelay()
         resetDelayBufferIfActive()
+
+        // Paused-restore path: schedule at the saved position and stop here.
+        // The engine is started and the graph is ready at this point, so the
+        // deferred seek is applied now (not discarded). Hard constraint: never
+        // call playerNode.play() — the restored session must end paused.
+        if restorePaused {
+            finishRestorePaused(resource: resource, track: track)
+            return
+        }
+
         scheduleFile(resource.file)
         guard graphReadyForPlay(scheduledGeneration: scheduledGraphGeneration, operation: "finishStart.play") else {
             failPlaybackRequest(reason: "graph not ready before finishStart play")
@@ -721,6 +774,43 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         Log.info(
             "[PlaybackPipeline] item loaded track=\(resource.trackID.uuidString) duration=\(String(format: "%.1f", resource.duration))s engineRunning=\(engine.isRunning)",
+            category: .audio
+        )
+    }
+
+    /// MainActor: complete a paused restore. Schedules the track segment at the
+    /// saved position so a later `resume()` plays from there, but leaves the
+    /// player node stopped and `isPlaying == false`.
+    private func finishRestorePaused(resource: PreparedAudioResource, track: Track) {
+        let requested = pendingRestorePositionSeconds ?? 0
+        restorePausedGeneration = nil
+        pendingRestorePositionSeconds = nil
+
+        let totalFrames = resource.file.length
+        // Keep at least ~0.5s of headroom from the end so the segment is valid.
+        let upperBound = duration > 0.5 ? duration - 0.5 : 0
+        let clampedPosition = max(0, min(requested, upperBound))
+        let targetFrame = AVAudioFramePosition(clampedPosition * sampleRate)
+
+        if targetFrame > 0, targetFrame < totalFrames {
+            startingFramePosition = targetFrame
+            currentTime = clampedPosition
+            let frameCount = AVAudioFrameCount(totalFrames - targetFrame)
+            scheduleSegment(resource.file, startingFrame: targetFrame, frameCount: frameCount)
+        } else {
+            startingFramePosition = 0
+            currentTime = 0
+            scheduleFile(resource.file)
+        }
+
+        // HARD CONSTRAINT: no playerNode.play(), no progress timer. Paused only.
+        isPlaying = false
+        if duration > 0 {
+            smartController.updateProgress(currentTime: currentTime, duration: duration)
+        }
+
+        Log.info(
+            "[PlaybackPipeline] restored paused track=\(track.id.uuidString) position=\(String(format: "%.1f", currentTime))s duration=\(String(format: "%.1f", duration))s engineRunning=\(engine.isRunning)",
             category: .audio
         )
     }
@@ -807,6 +897,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             "[PlaybackPipeline] stopPlayback clearQueue=\(clearQueue) currentTrack=\(currentTrack?.id.uuidString ?? "nil") operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
             category: .audio
         )
+        // Drop any armed paused-restore intent: a new load is taking over.
+        // restorePausedPlayback re-arms this *after* startPlayback returns, so
+        // clearing here only discards stale intent from a superseded load.
+        restorePausedGeneration = nil
+        pendingRestorePositionSeconds = nil
+
         invalidatePreparation()
         cancelPendingCompletion()
         invalidateScheduleToken()

@@ -42,6 +42,11 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
     /// Play multiple tracks starting at an index.
     func playTracks(_ tracks: [Track], startingAt index: Int)
 
+    /// Restore a saved session into a paused state: rebuilds the queue and loads
+    /// the current track at `positionSeconds` without auto-playing. Used to
+    /// restore playback memory at launch. Ends paused; never starts audio.
+    func restorePausedPlayback(_ tracks: [Track], startingAt index: Int, positionSeconds: Double)
+
     /// Update current playable track set (playlist/filter/import/delete changes).
     func updateQueueTracks(_ tracks: [Track])
 

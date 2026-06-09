@@ -117,6 +117,10 @@ final class TelemetryService: NSObject {
     private var isWindowNowPlayingVisible = false
     private var checkpointTimer: Timer?
     private var uploadTask: Task<Void, Never>?
+    // Coarse anonymous device info, computed once per launch. Only attached to
+    // uploads when telemetry consent is enabled (never to the install-seen-only
+    // path used for non-consenting users).
+    private lazy var deviceSnapshot: DeviceTelemetrySnapshot = DeviceTelemetryProvider.current()
 
     var isTelemetryEnabled: Bool {
         consentStore.isEnabled
@@ -311,10 +315,11 @@ final class TelemetryService: NSObject {
         let events = queue.pendingEvents()
         guard !events.isEmpty else { return }
 
+        let device = deviceSnapshot
         uploadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let response = try await uploader.upload(events: events)
+                let response = try await uploader.upload(events: events, device: device)
                 try Task.checkCancellation()
                 await MainActor.run {
                     self.applyUploadResponse(response, uploadedEvents: events)
@@ -338,7 +343,7 @@ final class TelemetryService: NSObject {
         guard !events.isEmpty else { return }
 
         do {
-            let response = try uploader.uploadSynchronously(events: events, timeout: 3)
+            let response = try uploader.uploadSynchronously(events: events, timeout: 3, device: deviceSnapshot)
             applyUploadResponse(response, uploadedEvents: events)
         } catch {
             Log.warning("[Telemetry] termination upload failed: \(error)", category: .telemetry)
@@ -399,7 +404,7 @@ final class TelemetryService: NSObject {
             appVersion: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0",
             buildNumber: Bundle.main.infoDictionary?["CFBundleVersion"] as? String,
             platform: "macOS",
-            schemaVersion: 2,
+            schemaVersion: 3,
             properties: properties
         )
     }
@@ -1038,12 +1043,24 @@ private struct TelemetryUploadClient: Codable {
     let buildNumber: String?
     let platform: String
     let schemaVersion: Int
+    // Coarse anonymous device info. Optional so old/disabled-consent payloads omit
+    // them entirely (nil Optionals are dropped by JSONEncoder via encodeIfPresent).
+    let deviceFamily: String?
+    let chipFamily: String?
+    let chipTier: String?
+    let memoryGB: Int?
+    let osMajor: String?
 
     enum CodingKeys: String, CodingKey {
         case appVersion = "app_version"
         case buildNumber = "build_number"
         case platform
         case schemaVersion = "schema_version"
+        case deviceFamily = "device_family"
+        case chipFamily = "chip_family"
+        case chipTier = "chip_tier"
+        case memoryGB = "memory_gb"
+        case osMajor = "os_major"
     }
 }
 
@@ -1091,8 +1108,11 @@ private final class TelemetryUploader {
         session = URLSession(configuration: configuration)
     }
 
-    func upload(events: [TelemetryQueuedEvent]) async throws -> TelemetryUploadResponse {
-        let request = try makeRequest(events: events, timeout: 5)
+    func upload(
+        events: [TelemetryQueuedEvent],
+        device: DeviceTelemetrySnapshot? = nil
+    ) async throws -> TelemetryUploadResponse {
+        let request = try makeRequest(events: events, timeout: 5, device: device)
 
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse,
@@ -1103,8 +1123,12 @@ private final class TelemetryUploader {
         return try decoder.decode(TelemetryUploadResponse.self, from: data)
     }
 
-    func uploadSynchronously(events: [TelemetryQueuedEvent], timeout: TimeInterval) throws -> TelemetryUploadResponse {
-        let request = try makeRequest(events: events, timeout: timeout)
+    func uploadSynchronously(
+        events: [TelemetryQueuedEvent],
+        timeout: TimeInterval,
+        device: DeviceTelemetrySnapshot? = nil
+    ) throws -> TelemetryUploadResponse {
+        let request = try makeRequest(events: events, timeout: timeout, device: device)
         let semaphore = DispatchSemaphore(value: 0)
         var receivedData: Data?
         var receivedStatusCode: Int?
@@ -1136,7 +1160,11 @@ private final class TelemetryUploader {
         return try JSONDecoder().decode(TelemetryUploadResponse.self, from: receivedData)
     }
 
-    private func makeRequest(events: [TelemetryQueuedEvent], timeout: TimeInterval) throws -> URLRequest {
+    private func makeRequest(
+        events: [TelemetryQueuedEvent],
+        timeout: TimeInterval,
+        device: DeviceTelemetrySnapshot?
+    ) throws -> URLRequest {
         guard let first = events.first else {
             throw URLError(.badURL)
         }
@@ -1146,7 +1174,12 @@ private final class TelemetryUploader {
                 appVersion: first.appVersion,
                 buildNumber: first.buildNumber,
                 platform: "macOS",
-                schemaVersion: 2
+                schemaVersion: 3,
+                deviceFamily: device?.deviceFamily,
+                chipFamily: device?.chipFamily,
+                chipTier: device?.chipTier,
+                memoryGB: device?.memoryGB,
+                osMajor: device?.osMajor
             ),
             events: events
         )
