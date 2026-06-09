@@ -594,20 +594,19 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         lastKnownShuffleEnabled = shuffleEnabled
         lastKnownRepeatMode = AppSettings.shared.repeatMode
 
-        // Arm the target position BEFORE startPlayback triggers the load.
-        // startPlayback runs synchronously through playInternal (which calls
-        // stopPlayback → bumps playGeneration → creates the prep task), so once
-        // it returns, playGeneration identifies exactly this load. Tag that
-        // generation as the paused-restore load; finishStart consumes it.
-        pendingRestorePositionSeconds = max(0, positionSeconds)
-
         Log.info(
             "[PlaybackPipeline] restorePausedPlayback queueCount=\(tracks.count) startIndex=\(index) position=\(String(format: "%.1f", positionSeconds)) shuffle=\(shuffleEnabled)",
             category: .audio
         )
 
+        // startPlayback runs synchronously through playInternal (which calls
+        // stopPlayback → clears the restore arm, bumps playGeneration, creates
+        // the prep task), so once it returns, playGeneration identifies exactly
+        // this load. Arm the restore intent AFTER it returns — arming before
+        // would be wiped by stopPlayback. finishStart consumes these.
         smartController.startPlayback(tracks: tracks, startingAt: index, shuffle: shuffleEnabled)
         restorePausedGeneration = playGeneration
+        pendingRestorePositionSeconds = max(0, positionSeconds)
     }
 
     private func playInternal(track: Track) {
