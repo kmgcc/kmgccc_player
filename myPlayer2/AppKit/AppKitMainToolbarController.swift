@@ -784,7 +784,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                 playbackCoordinator.playTracks(
                     selectedTracks,
                     libraryQueueSource: .librarySelection(toolbarSelectionIdentity),
-                    playbackOrderMode: .sequence
+                    startPolicy: .forceSequentialTemporary
                 )
                 return
             }
@@ -801,7 +801,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             playbackCoordinator.playTracks(
                 queueTracks,
                 libraryQueueSource: .librarySelection(toolbarSelectionIdentity),
-                playbackOrderMode: .sequence
+                startPolicy: .forceSequentialTemporary
             )
             return
         }

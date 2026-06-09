@@ -100,7 +100,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// mapped `currentTime` legitimately resets).
     private var lastProgressScheduledToken: UUID?
     private var lastKnownShuffleEnabled = AppSettings.shared.shuffleEnabled
-    private var lastKnownRepeatMode = AppSettings.shared.repeatMode
+    private var activePlaybackOrderModeOverride: PlaybackOrderMode?
     private static let fixedAudioOutputDelaySeconds: Double = 0.18
 
     var audioOutputDelay: Double {
@@ -703,20 +703,16 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     func play(track: Track) {
         Log.debug("play(track:) called for: \(track.title)", category: .audio)
-        let shuffleEnabled = AppSettings.shared.shuffleEnabled
-        smartController.startPlayback(tracks: [track], startingAt: 0, shuffle: shuffleEnabled)
+        let mode = applyPlaybackStartPolicy(.useSavedMode)
+        smartController.startPlayback(tracks: [track], startingAt: 0, shuffle: mode == .shuffle)
     }
 
-    func playTracks(_ tracks: [Track], startingAt index: Int) {
+    func playTracks(_ tracks: [Track], startingAt index: Int, startPolicy: PlaybackStartPolicy) {
         guard index >= 0, index < tracks.count else { return }
-        let shuffleEnabled = AppSettings.shared.shuffleEnabled
-
-        // Update last known settings
-        lastKnownShuffleEnabled = shuffleEnabled
-        lastKnownRepeatMode = AppSettings.shared.repeatMode
+        let mode = applyPlaybackStartPolicy(startPolicy)
 
         // Pass to smart controller
-        smartController.startPlayback(tracks: tracks, startingAt: index, shuffle: shuffleEnabled)
+        smartController.startPlayback(tracks: tracks, startingAt: index, shuffle: mode == .shuffle)
     }
 
     /// Restore a saved session into a **paused** state: rebuilds the queue, loads
@@ -726,13 +722,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// does not auto-play (the launch auto-play chain stays disabled).
     func restorePausedPlayback(_ tracks: [Track], startingAt index: Int, positionSeconds: Double) {
         guard index >= 0, index < tracks.count else { return }
-        let shuffleEnabled = AppSettings.shared.shuffleEnabled
-
-        lastKnownShuffleEnabled = shuffleEnabled
-        lastKnownRepeatMode = AppSettings.shared.repeatMode
+        let mode = applyPlaybackStartPolicy(.useSavedMode)
 
         Log.info(
-            "[PlaybackPipeline] restorePausedPlayback queueCount=\(tracks.count) startIndex=\(index) position=\(String(format: "%.1f", positionSeconds)) shuffle=\(shuffleEnabled)",
+            "[PlaybackPipeline] restorePausedPlayback queueCount=\(tracks.count) startIndex=\(index) position=\(String(format: "%.1f", positionSeconds)) mode=\(mode.rawValue)",
             category: .audio
         )
 
@@ -741,9 +734,20 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         // the prep task), so once it returns, playGeneration identifies exactly
         // this load. Arm the restore intent AFTER it returns — arming before
         // would be wiped by stopPlayback. finishStart consumes these.
-        smartController.startPlayback(tracks: tracks, startingAt: index, shuffle: shuffleEnabled)
+        smartController.startPlayback(tracks: tracks, startingAt: index, shuffle: mode == .shuffle)
         restorePausedGeneration = playGeneration
         pendingRestorePositionSeconds = max(0, positionSeconds)
+    }
+
+    private func applyPlaybackStartPolicy(_ policy: PlaybackStartPolicy) -> PlaybackOrderMode {
+        let mode = policy.resolvedMode()
+        activePlaybackOrderModeOverride = policy.isTemporaryOverride ? mode : nil
+        lastKnownShuffleEnabled = AppSettings.shared.shuffleEnabled
+        return mode
+    }
+
+    private var effectivePlaybackOrderMode: PlaybackOrderMode {
+        activePlaybackOrderModeOverride ?? AppSettings.shared.playbackOrderMode
     }
 
     private func playInternal(track: Track) {
@@ -1146,6 +1150,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private func syncShuffleStateIfNeeded() {
+        guard activePlaybackOrderModeOverride == nil else { return }
         let enabled = AppSettings.shared.shuffleEnabled
         guard enabled != lastKnownShuffleEnabled else { return }
 
@@ -1269,9 +1274,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         // Next track must be deterministic. Repeat-one and stop-after-track do not
         // advance to a different track, so never prefetch in those modes.
-        if AppSettings.shared.stopAfterTrack { return }
-        let repeatMode = RepeatMode(rawValue: AppSettings.shared.repeatMode) ?? .off
-        if repeatMode == .one { return }
+        let playbackOrderMode = effectivePlaybackOrderMode
+        if playbackOrderMode == .stopAfterTrack { return }
+        if playbackOrderMode == .repeatOne { return }
 
         let remaining = duration - currentTime
         guard remaining <= Self.gaplessPrefetchLeadSeconds else { return }
@@ -1652,17 +1657,16 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         Log.info("[PlaybackPipeline] Playback completed: \(currentTrack?.title ?? "unknown")", category: .audio)
 
-        let stopAfterTrack = AppSettings.shared.stopAfterTrack
-        let repeatMode = RepeatMode(rawValue: AppSettings.shared.repeatMode) ?? .off
+        let playbackOrderMode = effectivePlaybackOrderMode
 
-        if stopAfterTrack {
+        if playbackOrderMode == .stopAfterTrack {
             smartController.finishCurrentTrackForStopAfterTrack()
             isPlaying = false
             currentTime = duration
             return
         }
 
-        if repeatMode == .one, currentTrack != nil {
+        if playbackOrderMode == .repeatOne, currentTrack != nil {
             smartController.replayCurrentTrackAfterCompletion()
             return
         }
@@ -1682,9 +1686,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private func gaplessBoundaryBlockReason(pending: ScheduledItem) -> GaplessFallbackReason? {
         if !AppSettings.shared.audioGaplessSchedulingEnabled { return .disabled }
         if activeLookaheadEnabled { return .lookaheadEnabled }
-        if AppSettings.shared.stopAfterTrack { return .stopAfterTrack }
-        let repeatMode = RepeatMode(rawValue: AppSettings.shared.repeatMode) ?? .off
-        if repeatMode == .one { return .repeatOne }
+        let playbackOrderMode = effectivePlaybackOrderMode
+        if playbackOrderMode == .stopAfterTrack { return .stopAfterTrack }
+        if playbackOrderMode == .repeatOne { return .repeatOne }
         guard let predicted = smartController.peekNextForGapless() else { return .noNext }
         guard predicted.id == pending.trackID else { return .predictionMismatch }
         return nil
@@ -1803,6 +1807,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     func setShuffleEnabled(_ enabled: Bool) {
+        activePlaybackOrderModeOverride = nil
         AppSettings.shared.shuffleEnabled = enabled
         lastKnownShuffleEnabled = enabled
         smartController.setShuffle(enabled)
@@ -1812,11 +1817,4 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         smartController.discardCurrentSessionStatsOnFinalizeOnce()
     }
 
-    // MARK: - Repeat Mode
-
-    private enum RepeatMode: String {
-        case off
-        case all
-        case one
-    }
 }

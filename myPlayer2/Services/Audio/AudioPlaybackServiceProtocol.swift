@@ -40,7 +40,7 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
     func play(track: Track)
 
     /// Play multiple tracks starting at an index.
-    func playTracks(_ tracks: [Track], startingAt index: Int)
+    func playTracks(_ tracks: [Track], startingAt index: Int, startPolicy: PlaybackStartPolicy)
 
     /// Restore a saved session into a paused state: rebuilds the queue and loads
     /// the current track at `positionSeconds` without auto-playing. Used to

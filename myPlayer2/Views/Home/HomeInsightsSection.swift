@@ -658,7 +658,7 @@ private struct HomeRankRow: View {
     private func play() {
         playbackCoordinator.playTrack(
             item.track,
-            inRandomQueueFrom: queueTracks,
+            inQueueFrom: queueTracks,
             libraryQueueSource: .librarySelection("home")
         )
     }

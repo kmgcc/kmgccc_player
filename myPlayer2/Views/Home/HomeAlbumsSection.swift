@@ -167,7 +167,7 @@ struct HomeAlbumsSection: View {
             tracks,
             startingAt: 0,
             libraryQueueSource: .librarySelection("home-album-\(album.canonicalKey)"),
-            playbackOrderMode: .sequence
+            startPolicy: .forceSequentialTemporary
         )
     }
 
