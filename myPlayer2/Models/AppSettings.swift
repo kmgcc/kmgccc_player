@@ -590,6 +590,25 @@ public final class AppSettings {
     @ObservationIgnored
     @AppStorage("audioDebugBypassDelayNode") var audioDebugBypassDelayNode: Bool = false
 
+    /// Kill-switch for gapless scheduling (pre-scheduling the next track onto the
+    /// same player node for a 0-second join). Default ON. Turn OFF to revert to
+    /// the legacy "load the next track only after completion" path without a
+    /// rebuild — useful to isolate any gapless-related issue in the field.
+    /// Gapless is additionally gated on the output delay being OFF (it never
+    /// runs while the 180ms lookahead delay node is in the graph).
+    @ObservationIgnored
+    @AppStorage("audioGaplessSchedulingEnabled") var audioGaplessSchedulingEnabled: Bool = true
+
+    /// Kill-switch for AAC gapless trimming (skipping encoder priming/padding at a
+    /// gapless join so AAC→AAC boundaries don't insert the encoder's leading/
+    /// trailing silence). Default ON. Turn OFF to keep Phase-1 gapless scheduling
+    /// but schedule each next AAC item at full length — useful to isolate any
+    /// trim-related issue without disabling gapless entirely. Only ever affects
+    /// the gapless-append path for AAC files with reliable packet-table metadata;
+    /// WAV / FLAC / MP3 and single-track playback are never trimmed.
+    @ObservationIgnored
+    @AppStorage("audioAACGaplessTrimEnabled") var audioAACGaplessTrimEnabled: Bool = true
+
     // MARK: - Now Playing Background Settings
 
     /// Enable BKArt animated background layer in Now Playing.

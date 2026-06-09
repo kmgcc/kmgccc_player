@@ -97,4 +97,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             toolbar.runCustomizationPalette(nil)
         }
     }
+
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
+        return true
+    }
 }

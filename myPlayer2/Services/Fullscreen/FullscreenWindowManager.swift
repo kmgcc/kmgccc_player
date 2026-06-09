@@ -177,6 +177,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         )
 
         window.title = "kmgccc_player - Fullscreen"
+        window.isRestorable = false
         window.backgroundColor = .black
         window.isOpaque = true
         window.hasShadow = false

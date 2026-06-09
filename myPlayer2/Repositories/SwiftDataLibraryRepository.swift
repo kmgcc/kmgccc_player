@@ -1441,7 +1441,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             }
             try indexContext.save()
         } catch {
-            print("⚠️ 清空索引缓存失败: \(error)")
+            Log.warning("清空索引缓存失败: \(error)", category: .library)
         }
     }
 
@@ -1464,7 +1464,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         do {
             try indexContext.save()
         } catch {
-            print("⚠️ 重建索引缓存失败: \(error)")
+            Log.warning("重建索引缓存失败: \(error)", category: .library)
         }
     }
 
@@ -1496,7 +1496,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             }
             try indexContext.save()
         } catch {
-            print("⚠️ 更新索引缓存条目失败: \(error)")
+            Log.warning("更新索引缓存条目失败: \(error)", category: .library)
         }
     }
 
@@ -1512,7 +1512,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             }
             try indexContext.save()
         } catch {
-            print("⚠️ 删除索引缓存条目失败: \(error)")
+            Log.warning("删除索引缓存条目失败: \(error)", category: .library)
         }
     }
 }

@@ -93,6 +93,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private var drainStartTime: Double = 0
     private var lastProgressUpdateUptime: TimeInterval?
     private var lastProgressAudibleTime: Double = 0
+    /// The scheduled-item token observed on the previous progress tick. Used to
+    /// detect a per-track clock re-base (gapless boundary, seek, reload, device
+    /// change) so the `[AudioClockGap]` diagnostic does not compare track times
+    /// across that discontinuity (the node sample clock is continuous, but the
+    /// mapped `currentTime` legitimately resets).
+    private var lastProgressScheduledToken: UUID?
     private var lastKnownShuffleEnabled = AppSettings.shared.shuffleEnabled
     private var lastKnownRepeatMode = AppSettings.shared.repeatMode
     private static let fixedAudioOutputDelaySeconds: Double = 0.18
@@ -128,6 +134,55 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// The seek is applied in `finishStart` once the engine is started/ready, so
     /// it is deferred (not discarded) until the off-main prepare completes.
     private var pendingRestorePositionSeconds: Double?
+
+    // MARK: - Gapless Scheduling
+
+    /// Queue of segments scheduled onto `playerNode`. Index 0 is the committed
+    /// current item; index 1 (when present) is the prefetched next item already
+    /// scheduled for a seamless join. See `PlaybackScheduling.swift`.
+    private var scheduleQueue = GaplessScheduleQueue()
+    /// Bumped whenever the scheduled queue is invalidated (stop, seek, manual
+    /// switch, lookahead/device rebuild, failure). Async prefetch results whose
+    /// captured value no longer matches are discarded. Distinct from
+    /// `playGeneration`, which guards the *current* track's prepare.
+    private var scheduleGeneration: UInt64 = 0
+    /// The in-flight gapless prefetch of the upcoming track.
+    private var prefetchTask: Task<Void, Never>?
+    /// Whether a prefetch has already been attempted for the current committed
+    /// item (regardless of outcome). Prevents re-spamming prefetch every progress
+    /// tick after a fallback. Reset whenever the committed current item changes.
+    private var prefetchAttemptedForCurrentItem = false
+    /// Security-scope owner for the prefetched-but-not-yet-current item. This is
+    /// the ONLY scope owner besides `currentFileURL` / `currentFileSecurityScoped`
+    /// (which own the committed current item). Released on discard, or
+    /// TRANSFERRED into the current-file bookkeeping at a gapless boundary commit
+    /// — never double-released.
+    private var prefetchedResource: PreparedAudioResource?
+    /// Seconds of remaining current-track audio at/under which the next track is
+    /// prefetched and gapless-scheduled.
+    private static let gaplessPrefetchLeadSeconds: Double = 20
+
+    /// Reasons a natural boundary could not (or chose not to) go gapless. Logged
+    /// for field diagnosis.
+    private enum GaplessFallbackReason: String {
+        case disabled
+        case lookaheadEnabled
+        case noNext
+        case formatMismatch
+        case prefetchFailed
+        case generationMismatch
+        case stopAfterTrack
+        case repeatOne
+        case predictionMismatch
+        case stateChanged
+        case notScheduledInTime
+    }
+
+    /// Gapless is allowed only when the user hasn't disabled it AND the output
+    /// delay node is not in the live graph (gapless never runs with lookahead on).
+    private var gaplessEnabled: Bool {
+        AppSettings.shared.audioGaplessSchedulingEnabled && !activeLookaheadEnabled
+    }
 
     // MARK: - Smart Shuffle Integration
 
@@ -248,6 +303,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
 
         playerNode.stop()
+        // A device change clears all scheduled buffers on the node, so drop any
+        // prefetched gapless item (releasing its scope) before rescheduling.
+        resetGaplessSchedulingState(reason: "deviceChange")
         stopProgressTimer()
         reconnectAudioGraph()
 
@@ -508,6 +566,69 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private func invalidateScheduleToken() {
         activeScheduleToken = UUID()
         scheduledGraphGeneration = nil
+        resetGaplessSchedulingState(reason: "invalidateScheduleToken")
+    }
+
+    /// Invalidate the gapless scheduled queue: bump the generation so in-flight
+    /// prefetch results are discarded, cancel the prefetch task, release the
+    /// prefetched item's security scope (single release site), and clear the
+    /// queue. Safe to call repeatedly. Does NOT touch the committed current
+    /// file's scope (owned by `currentFileURL` / `stopAccessingCurrentFile`).
+    private func resetGaplessSchedulingState(reason: String) {
+        scheduleGeneration &+= 1
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        prefetchAttemptedForCurrentItem = false
+        releasePrefetchedResource(reason: reason)
+        scheduleQueue.reset()
+    }
+
+    /// Release the prefetched item's security scope, if any. The single release
+    /// path for `prefetchedResource` when it is discarded (not promoted).
+    private func releasePrefetchedResource(reason: String) {
+        guard let resource = prefetchedResource else { return }
+        prefetchedResource = nil
+        releaseSecurityScope(for: resource)
+        if LogConfig.perfDebugEnabled {
+            Log.info(
+                "[Gapless] released prefetched resource track=\(resource.trackID.uuidString.prefix(8)) scoped=\(resource.didStartSecurityScopedAccess) reason=\(reason)",
+                category: .audio
+            )
+        }
+    }
+
+    /// Record the freshly-scheduled current segment into the queue with a node
+    /// clock base of 0. Every existing schedule path (finishStart, seek,
+    /// device-change, lookahead rebuild, restore-paused) re-starts the node from
+    /// a stopped state, so the node clock restarts at 0 for the new current item.
+    private func recordCurrentScheduledItem(
+        file: AVAudioFile,
+        token: UUID,
+        startFrameInFile: AVAudioFramePosition,
+        frameCount: AVAudioFrameCount
+    ) {
+        let item = ScheduledItem(
+            trackID: currentTrack?.id ?? UUID(),
+            token: token,
+            startNodeSample: 0,
+            startFrameInFile: startFrameInFile,
+            frameCount: frameCount,
+            sampleRate: file.processingFormat.sampleRate,
+            duration: duration
+        )
+        scheduleQueue.setCurrent(item)
+        prefetchAttemptedForCurrentItem = false
+    }
+
+    private func formatsGaplessCompatible(_ a: AVAudioFormat, _ b: AVAudioFormat) -> Bool {
+        // AVAudioFile.processingFormat is always float32 / deinterleaved, so
+        // sample rate + channel count fully determine node compatibility. This is
+        // also exactly the format the player node is connected with.
+        a.sampleRate == b.sampleRate && a.channelCount == b.channelCount
+    }
+
+    private func logGaplessFallback(_ reason: GaplessFallbackReason, context: String) {
+        Log.info("[Gapless] fallback reason=\(reason.rawValue) \(context)", category: .audio)
     }
 
     /// Invalidate any in-flight file preparation: bump the generation so a
@@ -527,10 +648,18 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let token = UUID()
         activeScheduleToken = token
         scheduledGraphGeneration = graphGeneration
-        Log.info(
-            "[AudioDiagnostics] scheduleFile frames=\(file.length) graphGeneration=\(graphGeneration) graphState=\(graphState.rawValue) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
-            category: .audio
+        recordCurrentScheduledItem(
+            file: file,
+            token: token,
+            startFrameInFile: 0,
+            frameCount: AVAudioFrameCount(file.length)
         )
+        if LogConfig.audioVerbose {
+            Log.info(
+                "[AudioDiagnostics] scheduleFile frames=\(file.length) graphGeneration=\(graphGeneration) graphState=\(graphState.rawValue) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
+                category: .audio
+            )
+        }
         playerNode.scheduleFile(file, at: nil) { [weak self] in
             Task { @MainActor [weak self] in
                 self?.handlePlaybackCompletion(token: token)
@@ -546,10 +675,18 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let token = UUID()
         activeScheduleToken = token
         scheduledGraphGeneration = graphGeneration
-        Log.info(
-            "[AudioDiagnostics] scheduleSegment startFrame=\(startingFrame) frameCount=\(frameCount) graphGeneration=\(graphGeneration) graphState=\(graphState.rawValue) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
-            category: .audio
+        recordCurrentScheduledItem(
+            file: file,
+            token: token,
+            startFrameInFile: startingFrame,
+            frameCount: frameCount
         )
+        if LogConfig.audioVerbose {
+            Log.info(
+                "[AudioDiagnostics] scheduleSegment startFrame=\(startingFrame) frameCount=\(frameCount) graphGeneration=\(graphGeneration) graphState=\(graphState.rawValue) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
+                category: .audio
+            )
+        }
         playerNode.scheduleSegment(
             file,
             startingFrame: startingFrame,
@@ -853,26 +990,28 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     func pause() {
         guard isPlaying else { return }
 
-        Log.info(
-            "[AudioDiagnostics] pause currentTime=\(String(format: "%.3f", currentTime)) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
-            category: .audio
-        )
+        if LogConfig.audioVerbose {
+            Log.info(
+                "[AudioDiagnostics] pause currentTime=\(String(format: "%.3f", currentTime)) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
+                category: .audio
+            )
+        }
         cancelPendingCompletion()
         playerNode.pause()
         resetDelayBufferIfActive()
         isPlaying = false
         stopProgressTimer()
-
-        print("⏸️ Paused at \(String(format: "%.1f", currentTime))s")
     }
 
     func resume() {
         guard !isPlaying, audioFile != nil else { return }
 
-        Log.info(
-            "[AudioDiagnostics] resume currentTime=\(String(format: "%.3f", currentTime)) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
-            category: .audio
-        )
+        if LogConfig.audioVerbose {
+            Log.info(
+                "[AudioDiagnostics] resume currentTime=\(String(format: "%.3f", currentTime)) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
+                category: .audio
+            )
+        }
         applyLookaheadPreferenceChangeIfNeeded(reason: "resume")
         configureDelay()
         resetDelayBufferIfActive()
@@ -883,8 +1022,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         playerNode.play()
         isPlaying = true
         startProgressTimer()
-
-        print("▶️ Resumed from \(String(format: "%.1f", currentTime))s")
     }
 
     func stop() {
@@ -928,10 +1065,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
 
         let wasPlaying = isPlaying
-        Log.info(
-            "[AudioDiagnostics] seek target=\(String(format: "%.3f", seconds)) wasPlaying=\(wasPlaying) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
-            category: .audio
-        )
+        if LogConfig.audioVerbose {
+            Log.info(
+                "[AudioDiagnostics] seek target=\(String(format: "%.3f", seconds)) wasPlaying=\(wasPlaying) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
+                category: .audio
+            )
+        }
 
         smartController.beginSeek()
 
@@ -945,7 +1084,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let totalFrames = audioFile.length
 
         guard targetFrame >= 0, targetFrame < totalFrames else {
-            print("⚠️ Seek position out of range")
+            Log.warning("[AudioDiagnostics] Seek position out of range", category: .audio)
             smartController.endSeek()
             return
         }
@@ -968,8 +1107,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             isPlaying = true
             startProgressTimer()
         }
-
-        print("⏩ Seeked to \(String(format: "%.1f", seconds))s")
     }
 
     // MARK: - Queue Management
@@ -1022,6 +1159,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         stopProgressTimer()
         lastProgressUpdateUptime = ProcessInfo.processInfo.systemUptime
         lastProgressAudibleTime = currentTime
+        lastProgressScheduledToken = scheduleQueue.current?.token
 
         progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) {
             [weak self] _ in
@@ -1071,13 +1209,30 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             return
         }
 
-        let currentFrame = startingFramePosition + playerTime.sampleTime
-        let newTime = Double(currentFrame) / sampleRate
+        // Map the node render clock through the scheduled queue so the time is
+        // correct even after a gapless boundary (the node clock keeps counting
+        // across items). For the first/only item this equals the legacy formula
+        // `startingFramePosition + sampleTime`, so seek/device/lookahead paths are
+        // unchanged. The fallback covers the (transient) empty-queue case only.
+        let nodeSample = playerTime.sampleTime
+        let newTime = scheduleQueue.currentTime(nodeSample: nodeSample)
+            ?? (Double(startingFramePosition + nodeSample) / sampleRate)
 
         currentTime = max(0, min(newTime, duration))
         lastProgressAudibleTime = currentTime
 
-        if let previousUptime {
+        // A gapless boundary (or seek / reload / device change) re-bases the
+        // per-track clock: `currentTime` resets to the new item's position while
+        // the node sample clock keeps counting, so a track-time delta across that
+        // tick is meaningless (it was producing `clockDeltaMs=-229090.5`-style
+        // false positives). Every such discontinuity changes the committed
+        // scheduled-item token, so skip the clock-gap check for that one tick and
+        // re-baseline on the next.
+        let scheduledToken = scheduleQueue.current?.token
+        let crossedScheduleBoundary = scheduledToken != lastProgressScheduledToken
+        lastProgressScheduledToken = scheduledToken
+
+        if !crossedScheduleBoundary, let previousUptime {
             let timerGap = nowUptime - previousUptime
             let clockDelta = currentTime - previousAudibleTime
             if timerGap >= 0.24 || abs(clockDelta - timerGap) >= 0.18 {
@@ -1093,6 +1248,352 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         if duration > 0 {
             smartController.updateProgress(currentTime: currentTime, duration: duration)
         }
+
+        // As the current track nears its end, prefetch + gapless-schedule the
+        // next one so the join is seamless.
+        maybeTriggerGaplessPrefetch()
+    }
+
+    // MARK: - Gapless Prefetch
+
+    /// Decide whether to prefetch the upcoming track for a seamless join. Called
+    /// every progress tick; the guards make it fire at most once per current item.
+    private func maybeTriggerGaplessPrefetch() {
+        guard gaplessEnabled else { return }
+        guard isPlaying else { return }
+        guard !prefetchAttemptedForCurrentItem, prefetchTask == nil else { return }
+        // Only prefetch when exactly the current item is scheduled (a pending
+        // next already covers the boundary).
+        guard scheduleQueue.count == 1 else { return }
+        guard duration > 0 else { return }
+
+        // Next track must be deterministic. Repeat-one and stop-after-track do not
+        // advance to a different track, so never prefetch in those modes.
+        if AppSettings.shared.stopAfterTrack { return }
+        let repeatMode = RepeatMode(rawValue: AppSettings.shared.repeatMode) ?? .off
+        if repeatMode == .one { return }
+
+        let remaining = duration - currentTime
+        guard remaining <= Self.gaplessPrefetchLeadSeconds else { return }
+
+        triggerGaplessPrefetch()
+    }
+
+    private func triggerGaplessPrefetch() {
+        prefetchAttemptedForCurrentItem = true
+
+        guard let nextTrack = smartController.peekNextForGapless() else {
+            logGaplessFallback(.noNext, context: "prefetch")
+            return
+        }
+
+        let generation = scheduleGeneration
+        let request = AudioPrepRequest(
+            trackID: nextTrack.id,
+            libraryRelativePath: nextTrack.libraryRelativePath,
+            fileBookmarkData: nextTrack.fileBookmarkData,
+            titleForLog: nextTrack.title
+        )
+
+        Log.info(
+            "[Gapless] prefetch started track=\(nextTrack.id.uuidString.prefix(8)) title=\(nextTrack.title) generation=\(generation)",
+            category: .audio
+        )
+
+        // Task {} (not detached) inherits this @MainActor context: the heavy work
+        // runs off-main inside the actor, then resumes on main. Captures only
+        // Sendable values + self (never the Track).
+        prefetchTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let resource = try await self.prepActor.prepare(request)
+                self.finishPrefetchIfCurrent(resource, generation: generation)
+            } catch {
+                self.handlePrefetchFailure(error, trackID: request.trackID, generation: generation)
+            }
+        }
+    }
+
+    /// MainActor: a prefetch finished preparing. Validate it is still wanted and
+    /// format-compatible, then schedule it onto the node. Any failure releases the
+    /// resource's scope and leaves the boundary to the legacy completion path.
+    private func finishPrefetchIfCurrent(_ resource: PreparedAudioResource, generation: UInt64) {
+        prefetchTask = nil
+
+        guard generation == scheduleGeneration else {
+            logGaplessFallback(.generationMismatch, context: "prepared track=\(resource.trackID.uuidString.prefix(8))")
+            releaseSecurityScope(for: resource)
+            return
+        }
+        guard gaplessEnabled, isPlaying, scheduleQueue.count == 1 else {
+            logGaplessFallback(.stateChanged, context: "prepared track=\(resource.trackID.uuidString.prefix(8))")
+            releaseSecurityScope(for: resource)
+            return
+        }
+        guard let currentFormat = audioFile?.processingFormat,
+              formatsGaplessCompatible(currentFormat, resource.file.processingFormat) else {
+            logGaplessFallback(.formatMismatch, context: "prepared track=\(resource.trackID.uuidString.prefix(8))")
+            releaseSecurityScope(for: resource)
+            return
+        }
+
+        Log.info(
+            "[Gapless] prefetch prepared track=\(resource.trackID.uuidString.prefix(8)) duration=\(String(format: "%.1f", resource.duration)) generation=\(generation)",
+            category: .audio
+        )
+        scheduleNextGapless(resource)
+    }
+
+    // MARK: - AAC Gapless Trim (Phase 1.2)
+
+    /// One resolved AAC trim: frames to skip at the head (encoder priming) and
+    /// drop at the tail (encoder padding), plus the resulting scheduled segment.
+    private struct AACTrimDecision {
+        let headTrimFrames: AVAudioFramePosition
+        let tailTrimFrames: AVAudioFramePosition
+        let scheduledFrameCount: AVAudioFrameCount
+        let scheduledDuration: Double
+    }
+
+    /// Decide whether to skip the prefetched AAC item's encoder priming/padding at
+    /// a gapless join. Returns `nil` (and logs a precise `[AACGapless] skipped
+    /// reason=…`) whenever trimming is disabled, the file is not AAC, metadata is
+    /// missing, the decoder already trimmed it, or the values fail safety checks —
+    /// in which case the caller schedules the full file exactly as Phase 1 did.
+    /// Only AAC files with reliable packet-table metadata are ever trimmed; WAV /
+    /// FLAC / MP3 and single-track playback are untouched.
+    private func resolveAACTrim(_ resource: PreparedAudioResource) -> AACTrimDecision? {
+        let idTag = resource.trackID.uuidString.prefix(8)
+
+        guard AppSettings.shared.audioAACGaplessTrimEnabled else {
+            Log.info("[AACGapless] skipped reason=disabled track=\(idTag)", category: .audio)
+            return nil
+        }
+
+        guard let info = resource.aacGaplessInfo else {
+            Log.info("[AACGapless] skipped reason=noMetadata track=\(idTag)", category: .audio)
+            return nil
+        }
+
+        guard info.isAAC else {
+            // MP3 / WAV / FLAC / ALAC: diagnostics only, never trimmed (Phase 1.2
+            // scope is AAC). Surface any priming the container reported.
+            Log.info(
+                "[AACGapless] skipped reason=unsupportedContainer track=\(idTag) format=\(info.formatTag) primingFrames=\(info.primingFrames) paddingFrames=\(info.paddingFrames) source=\(info.source)",
+                category: .audio
+            )
+            return nil
+        }
+
+        guard info.hasGaplessPadding else {
+            Log.info(
+                "[AACGapless] skipped reason=noMetadata track=\(idTag) format=\(info.formatTag) source=\(info.source)",
+                category: .audio
+            )
+            return nil
+        }
+
+        let priming = info.primingFrames
+        let padding = info.paddingFrames
+        let valid = info.validFrames
+
+        Log.info(
+            "[AACGapless] track=\(idTag) primingFrames=\(priming) paddingFrames=\(padding) source=\(info.source)",
+            category: .audio
+        )
+
+        // Determine how `AVAudioFile` presents the decoded stream so we never
+        // double-trim: compare the decoded length against the three plausible
+        // accountings and pick the closest. If none matches within tolerance the
+        // metadata is inconsistent with the decode → fall back (no trim).
+        let pcm = Int64(resource.frameLength)
+        let candIncludesBoth = valid + priming + padding   // priming + padding still in PCM
+        let candPaddingOnly = valid + padding              // priming consumed by edit list
+        let candFullyTrimmed = valid                       // decoder already removed both
+        let dBoth = abs(pcm - candIncludesBoth)
+        let dPadding = abs(pcm - candPaddingOnly)
+        let dTrimmed = abs(pcm - candFullyTrimmed)
+        let minDiff = min(dBoth, dPadding, dTrimmed)
+
+        let tolerance: Int64 = 256  // ~6ms @44.1k; far smaller than priming (~2112)
+        guard minDiff <= tolerance else {
+            Log.info(
+                "[AACGapless] skipped reason=unsafeValues track=\(idTag) pcm=\(pcm) valid=\(valid) priming=\(priming) padding=\(padding)",
+                category: .audio
+            )
+            return nil
+        }
+
+        let head: Int64
+        let tail: Int64
+        if minDiff == dBoth {
+            head = priming
+            tail = padding
+        } else if minDiff == dPadding {
+            head = 0
+            tail = padding
+        } else {
+            // Decoder already removed priming+padding (pcm ≈ validFrames): nothing
+            // to trim. Not an error — fall back to a full-file schedule.
+            Log.info(
+                "[AACGapless] skipped reason=noMetadata track=\(idTag) detail=decoderAlreadyTrimmed pcm=\(pcm) valid=\(valid)",
+                category: .audio
+            )
+            return nil
+        }
+
+        // Safety: trims non-negative, and head+tail must leave a positive segment
+        // that fits within the file's total frames.
+        let total = Int64(resource.frameLength)
+        guard head >= 0, tail >= 0, head + tail < total else {
+            Log.info(
+                "[AACGapless] skipped reason=unsafeValues track=\(idTag) head=\(head) tail=\(tail) total=\(total)",
+                category: .audio
+            )
+            return nil
+        }
+        let scheduled = total - head - tail
+        guard scheduled > 0, scheduled <= Int64(AVAudioFrameCount.max) else {
+            Log.info(
+                "[AACGapless] skipped reason=unsafeValues track=\(idTag) scheduledFrames=\(scheduled) total=\(total)",
+                category: .audio
+            )
+            return nil
+        }
+
+        let durationSec = resource.sampleRate > 0 ? Double(scheduled) / resource.sampleRate : resource.duration
+        let headMs = resource.sampleRate > 0 ? Double(head) / resource.sampleRate * 1000 : 0
+        let tailMs = resource.sampleRate > 0 ? Double(tail) / resource.sampleRate * 1000 : 0
+        Log.info(
+            "[AACGapless] applying headTrimFrames=\(head) tailTrimFrames=\(tail) track=\(idTag) headMs=\(String(format: "%.1f", headMs)) tailMs=\(String(format: "%.1f", tailMs)) scheduledFrames=\(scheduled)",
+            category: .audio
+        )
+
+        return AACTrimDecision(
+            headTrimFrames: AVAudioFramePosition(head),
+            tailTrimFrames: AVAudioFramePosition(tail),
+            scheduledFrameCount: AVAudioFrameCount(scheduled),
+            scheduledDuration: durationSec
+        )
+    }
+
+    /// MainActor: append the prepared next item after the current one on the
+    /// player node, without stopping/rebuilding. The node renders current→next
+    /// with no gap. Uses `.dataPlayedBack` so this item's completion fires at the
+    /// audible end (the current item keeps its existing completion callback).
+    private func scheduleNextGapless(_ resource: PreparedAudioResource) {
+        guard let startNodeSample = scheduleQueue.nextStartNodeSample else {
+            logGaplessFallback(.notScheduledInTime, context: "no current item to append after")
+            releaseSecurityScope(for: resource)
+            return
+        }
+
+        let token = UUID()
+
+        // AAC gapless trim (Phase 1.2): when the next item is AAC with reliable
+        // packet-table metadata, skip its encoder priming at the head and drop its
+        // padding at the tail by scheduling only the musical segment. `nil` means
+        // schedule the full file exactly as Phase 1 did (WAV/FLAC/MP3 and any AAC
+        // without usable metadata). Display origin stays 0 even when we skip the
+        // head priming — the trimmed start IS this track's time 0 — so the shared
+        // progress formula and the WAV/FLAC/seek paths are untouched.
+        let trim = resolveAACTrim(resource)
+        let frameCount = trim?.scheduledFrameCount ?? AVAudioFrameCount(resource.file.length)
+        let itemDuration = trim?.scheduledDuration ?? resource.duration
+
+        let item = ScheduledItem(
+            trackID: resource.trackID,
+            token: token,
+            startNodeSample: startNodeSample,
+            startFrameInFile: 0,
+            frameCount: frameCount,
+            sampleRate: resource.sampleRate,
+            duration: itemDuration
+        )
+
+        // Adopt the prefetched scope owner BEFORE scheduling so there is a single
+        // owner to release if anything later discards it.
+        prefetchedResource = resource
+        if LogConfig.perfDebugEnabled {
+            Log.info(
+                "[Gapless] adopt prefetched resource track=\(resource.trackID.uuidString.prefix(8)) scoped=\(resource.didStartSecurityScopedAccess)",
+                category: .audio
+            )
+        }
+
+        scheduleQueue.append(item)
+
+        let completion: AVAudioPlayerNodeCompletionHandler = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handlePlaybackCompletion(token: token)
+            }
+        }
+        if let trim {
+            playerNode.scheduleSegment(
+                resource.file,
+                startingFrame: trim.headTrimFrames,
+                frameCount: frameCount,
+                at: nil,
+                completionCallbackType: .dataPlayedBack,
+                completionHandler: completion
+            )
+        } else {
+            playerNode.scheduleFile(
+                resource.file,
+                at: nil,
+                completionCallbackType: .dataPlayedBack,
+                completionHandler: completion
+            )
+        }
+
+        let headTrim = trim?.headTrimFrames ?? 0
+        Log.info(
+            "[Gapless] scheduled next track=\(resource.trackID.uuidString.prefix(8)) startNodeSample=\(startNodeSample) frames=\(frameCount) headTrim=\(headTrim)",
+            category: .audio
+        )
+
+        // Boundary invariant: the next item is scheduled exactly at the current
+        // item's end on the node clock, so the difference must be 0. A non-zero
+        // value would mean the queue's node-sample math is wrong.
+        let currentEndNodeSample = scheduleQueue.current?.endNodeSample ?? startNodeSample
+        let boundaryDiffFrames = startNodeSample - currentEndNodeSample
+        let boundaryDiffMs = resource.sampleRate > 0
+            ? Double(boundaryDiffFrames) / resource.sampleRate * 1000
+            : 0
+        Log.info(
+            "[GaplessBoundary] currentEndNodeSample=\(currentEndNodeSample) nextStartNodeSample=\(startNodeSample) diffFrames=\(boundaryDiffFrames) diffMs=\(String(format: "%.3f", boundaryDiffMs))",
+            category: .audio
+        )
+
+        // DEBUG-only: measure the real audio content at the seam (current tail vs
+        // next head) off-main, so an audible gap can be attributed to file content
+        // (encoder delay / padding / leading silence) rather than the schedule.
+        #if DEBUG
+        if let currentURL = currentFileURL, let currentItem = scheduleQueue.current {
+            let currentTailEndFrame = currentItem.startFrameInFile + AVAudioFramePosition(currentItem.frameCount)
+            let currentTrackID = currentItem.trackID
+            let currentProbeURL = currentURL
+            let nextProbeURL = resource.resolvedURL
+            let nextTrackID = resource.trackID
+            Task.detached(priority: .utility) {
+                GaplessProbe.run(
+                    currentURL: currentProbeURL,
+                    currentTailEndFrame: currentTailEndFrame,
+                    currentTrackID: currentTrackID,
+                    nextURL: nextProbeURL,
+                    nextTrackID: nextTrackID
+                )
+            }
+        }
+        #endif
+    }
+
+    private func handlePrefetchFailure(_ error: Error, trackID: UUID, generation: UInt64) {
+        prefetchTask = nil
+        if error is CancellationError { return }
+        if case AudioFilePreparationActor.PrepError.cancelled = error { return }
+        logGaplessFallback(.prefetchFailed, context: "track=\(trackID.uuidString.prefix(8)) error=\(error)")
+        // A failed prepare never returns a resource, so there is no scope to free.
     }
 
     // MARK: - Playback Completion
@@ -1103,13 +1604,31 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         // With lookahead active, the player finishes ~lookahead seconds before
         // the audio is actually heard. Defer finalize so the buffered tail plays
-        // out (no truncated ending / premature track switch). Off → finalize now.
+        // out (no truncated ending / premature track switch). Gapless never runs
+        // while lookahead is on, so this path is unchanged.
         let delaySeconds = lookaheadSeconds
         if delaySeconds > 0 {
             beginDrain(lookaheadSeconds: delaySeconds, token: token)
             return
         }
 
+        // Gapless boundary: the next item is already scheduled and rendering on
+        // the same node. The completion handler only confirms the audible
+        // boundary and commits logical/UI state — it does NOT load the next track.
+        if scheduleQueue.current?.token == token, let pending = scheduleQueue.pendingNext {
+            if let reason = gaplessBoundaryBlockReason(pending: pending) {
+                logGaplessFallback(reason, context: "boundary track=\(pending.trackID.uuidString.prefix(8))")
+                // The scheduled-but-unwanted next is already on the node; stop and
+                // run the normal decision (reload the correct track, or stop).
+                abandonGaplessAndFinalize(token: token)
+                return
+            }
+            commitGaplessBoundary(pending: pending)
+            return
+        }
+
+        // No prefetched next (or token is a stale/cleared item): legacy
+        // completion — repeat-one, stop-after-track, auto-advance, or queue end.
         finalizePlaybackCompletion(token: token)
     }
 
@@ -1131,7 +1650,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         cancelPendingCompletion()
         stopProgressTimer()
 
-        print("✅ Playback completed: \(currentTrack?.title ?? "unknown")")
+        Log.info("[PlaybackPipeline] Playback completed: \(currentTrack?.title ?? "unknown")", category: .audio)
 
         let stopAfterTrack = AppSettings.shared.stopAfterTrack
         let repeatMode = RepeatMode(rawValue: AppSettings.shared.repeatMode) ?? .off
@@ -1153,6 +1672,108 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             isPlaying = false
             currentTime = duration
         }
+    }
+
+    // MARK: - Gapless Boundary
+
+    /// Returns a reason the pre-scheduled `pending` item must NOT play through
+    /// gaplessly (nil = good to commit). Re-derives the natural-advance decision
+    /// at the boundary so a mid-track settings/queue change is honored.
+    private func gaplessBoundaryBlockReason(pending: ScheduledItem) -> GaplessFallbackReason? {
+        if !AppSettings.shared.audioGaplessSchedulingEnabled { return .disabled }
+        if activeLookaheadEnabled { return .lookaheadEnabled }
+        if AppSettings.shared.stopAfterTrack { return .stopAfterTrack }
+        let repeatMode = RepeatMode(rawValue: AppSettings.shared.repeatMode) ?? .off
+        if repeatMode == .one { return .repeatOne }
+        guard let predicted = smartController.peekNextForGapless() else { return .noNext }
+        guard predicted.id == pending.trackID else { return .predictionMismatch }
+        return nil
+    }
+
+    /// Commit a natural gapless boundary: the audio for `pending` is already
+    /// rendering on the node. Transfer scope + audio state to it, advance the
+    /// queue, and advance the smart controller's logical/session state — all
+    /// WITHOUT stopping or rebuilding the node. `currentTrack` (and therefore
+    /// theme/lyrics/Now Playing) updates exactly as on the legacy advance path.
+    private func commitGaplessBoundary(pending: ScheduledItem) {
+        guard let resource = prefetchedResource else {
+            logGaplessFallback(.notScheduledInTime, context: "missing prefetched resource at commit")
+            abandonGaplessAndFinalize(token: activeScheduleToken)
+            return
+        }
+
+        // 1. Transfer security-scope + audio state to the new current item.
+        //    Release the outgoing current's scope (single site), then adopt the
+        //    prefetched scope into the current-file bookkeeping (no double-release).
+        stopAccessingCurrentFile()
+        prefetchedResource = nil
+        currentFileURL = resource.resolvedURL
+        currentFileSecurityScoped = resource.didStartSecurityScopedAccess
+        audioFile = resource.file
+        sampleRate = resource.sampleRate
+        // Use the scheduled item's duration, which reflects any AAC head/tail trim
+        // (== resource.duration when the item was scheduled untrimmed). This keeps
+        // the scrubber's total aligned with the actually-scheduled audio so it
+        // reaches 100% exactly at the audible boundary.
+        duration = pending.duration
+        startingFramePosition = pending.startFrameInFile
+        currentTime = 0
+
+        // 2. Promote the queue: drop the finished item; `pending` becomes current.
+        scheduleQueue.advance()
+        activeScheduleToken = pending.token
+        prefetchAttemptedForCurrentItem = false
+
+        // 3. Advance logical/session state WITHOUT restarting audio. Sets
+        //    currentTrack = next via onTrackChanged (posts .playbackTrackDidChange);
+        //    never calls onPlayTrack.
+        guard let advancedTrack = smartController.commitGaplessAdvance() else {
+            // Pre-validated to have a next; reaching here is an unexpected race.
+            Log.error(
+                "[Gapless] commit found no next despite a scheduled pending item; stopping",
+                category: .audio
+            )
+            playerNode.stop()
+            resetGaplessSchedulingState(reason: "commitNoNext")
+            stopProgressTimer()
+            isPlaying = false
+            return
+        }
+
+        // 4. Apply availability / refreshed bookmark to the new track (matches
+        //    finishStart). advancedTrack.id == resource.trackID by construction.
+        advancedTrack.availability = resource.newAvailability
+        if let refreshed = resource.refreshedBookmarkData {
+            advancedTrack.fileBookmarkData = refreshed
+        }
+
+        if LogConfig.perfDebugEnabled {
+            Log.info(
+                "[Gapless] adopt current-file from prefetch track=\(advancedTrack.id.uuidString.prefix(8)) scoped=\(currentFileSecurityScoped)",
+                category: .audio
+            )
+        }
+        Log.info(
+            "[Gapless] boundary committed track=\(advancedTrack.id.uuidString) title=\(advancedTrack.title) duration=\(String(format: "%.1f", duration))",
+            category: .audio
+        )
+
+        // 5. Keep playing; the node continues rendering the new item with no stop
+        //    or rebuild. The progress timer prefetches the following track as this
+        //    one nears its end.
+        if duration > 0 {
+            smartController.updateProgress(currentTime: currentTime, duration: duration)
+        }
+    }
+
+    /// The pre-scheduled next item must not play (a mid-track change made it the
+    /// wrong choice). Stop the node — which clears the scheduled item — drop the
+    /// gapless schedule, then run the normal completion decision (reload the
+    /// correct track, or stop). Only reached on an actual settings/queue change.
+    private func abandonGaplessAndFinalize(token: UUID) {
+        playerNode.stop()
+        resetGaplessSchedulingState(reason: "boundaryFallback")
+        finalizePlaybackCompletion(token: token)
     }
 
     // MARK: - File Access

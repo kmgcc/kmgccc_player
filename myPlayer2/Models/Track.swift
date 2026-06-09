@@ -231,7 +231,7 @@ final class Track {
 
             // Start accessing the security-scoped resource
             guard url.startAccessingSecurityScopedResource() else {
-                print("❌ Failed to access security-scoped resource: \(title)")
+                Log.error("Failed to access security-scoped resource: \(title)", category: .file)
                 return ResolveResult(
                     url: nil, refreshedBookmarkData: nil, newAvailability: .missing)
             }
@@ -239,7 +239,7 @@ final class Track {
             // If stale, try to refresh the bookmark
             var refreshedData: Data? = nil
             if isStale {
-                print("⚠️ Track bookmark is stale, refreshing: \(title)")
+                Log.warning("Track bookmark is stale, refreshing: \(title)", category: .file)
                 do {
                     refreshedData = try url.bookmarkData(
                         options: .withSecurityScope,
@@ -247,7 +247,7 @@ final class Track {
                         relativeTo: nil
                     )
                 } catch {
-                    print("⚠️ Failed to refresh bookmark: \(error)")
+                    Log.warning("Failed to refresh bookmark: \(error)", category: .file)
                     // File is accessible but bookmark couldn't be refreshed
                 }
             }
@@ -259,7 +259,7 @@ final class Track {
             )
 
         } catch {
-            print("❌ Failed to resolve bookmark for track \(title): \(error)")
+            Log.error("Failed to resolve bookmark for track \(title): \(error)", category: .file)
             return ResolveResult(url: nil, refreshedBookmarkData: nil, newAvailability: .missing)
         }
     }

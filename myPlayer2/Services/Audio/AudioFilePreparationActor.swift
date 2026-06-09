@@ -52,6 +52,11 @@ struct PreparedAudioResource: @unchecked Sendable {
     let sampleRate: Double
     let frameLength: AVAudioFramePosition
     let duration: Double
+    /// AAC encoder priming/padding metadata (nil when it could not be read).
+    /// Consumed only by the gapless-append path to skip the encoder's
+    /// leading/trailing silence at an AAC→AAC boundary; never used for
+    /// single-track playback or for non-AAC files.
+    let aacGaplessInfo: AACGaplessInfo?
 }
 
 /// Prepares audio files off the MainActor. Each `prepare(_:)` call is an
@@ -117,6 +122,11 @@ actor AudioFilePreparationActor {
         let frameLength = file.length
         let duration = sampleRate > 0 ? Double(frameLength) / sampleRate : 0
 
+        // Read AAC gapless metadata off-main here (cheap property reads on a
+        // separate AudioToolbox handle). Carried on the resource and used only by
+        // the gapless-append path; resilient (nil on any failure).
+        let aacGaplessInfo = AACGaplessMetadata.read(url: resolution.url)
+
         return PreparedAudioResource(
             trackID: request.trackID,
             file: file,
@@ -126,7 +136,8 @@ actor AudioFilePreparationActor {
             newAvailability: resolution.newAvailability,
             sampleRate: sampleRate,
             frameLength: frameLength,
-            duration: duration
+            duration: duration,
+            aacGaplessInfo: aacGaplessInfo
         )
     }
 

@@ -9,6 +9,9 @@
 import Foundation
 
 nonisolated enum TTMLPlainTextExtractor {
+    private static let lock = NSLock()
+    private nonisolated(unsafe) static var warnedDescriptions = Set<String>()
+
     static func extractPlainText(from ttml: String, sourceDescription: String? = nil) -> String {
         let parser = TTMLXMLTextParser()
         if let extracted = parser.parse(ttml), !extracted.isEmpty {
@@ -16,10 +19,20 @@ nonisolated enum TTMLPlainTextExtractor {
         }
 
         if let sourceDescription {
-            Log.warning(
-                "[SearchIndex] TTML parse failed; falling back to tag-stripped lyrics: \(sourceDescription)",
-                category: .library
-            )
+            let alreadyWarned: Bool
+            lock.lock()
+            alreadyWarned = warnedDescriptions.contains(sourceDescription)
+            if !alreadyWarned {
+                warnedDescriptions.insert(sourceDescription)
+            }
+            lock.unlock()
+
+            if !alreadyWarned {
+                Log.warning(
+                    "[SearchIndex] TTML parse failed; falling back to tag-stripped lyrics: \(sourceDescription)",
+                    category: .library
+                )
+            }
         }
         return fallbackStripTags(ttml)
     }

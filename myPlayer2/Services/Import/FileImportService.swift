@@ -17,6 +17,20 @@ import UniformTypeIdentifiers
 
 // MARK: - Shared Types
 
+/// Errors surfaced per-file during import. `errorDescription` is shown to the
+/// user in the batch import progress dialog, so messages are user-facing.
+nonisolated enum AudioImportError: LocalizedError, Sendable {
+    /// AVFoundation / Core Audio could not decode the file's audio.
+    case undecodable(fileName: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .undecodable(let fileName):
+            return "“\(fileName)”当前无法解码，文件可能已损坏或编码不受支持"
+        }
+    }
+}
+
 nonisolated struct ImportPreview: Sendable {
     let title: String
     let artist: String
@@ -2695,20 +2709,11 @@ final class FileImportService: FileImportServiceProtocol {
 
     // MARK: - Supported Types
 
-    nonisolated static let supportedExtensions: Set<String> = [
-        "mp3", "m4a", "aac", "alac", "flac", "wav", "aiff", "aif", "ncm",
-    ]
+    // Format support is centralized in `AudioFormatSupport` so the picker
+    // filter, the import whitelist, and library scanning cannot drift apart.
+    nonisolated static let supportedExtensions: Set<String> = AudioFormatSupport.importableExtensions
 
-    static let supportedUTTypes: [UTType] = [
-        .mp3,
-        .mpeg4Audio,
-        .aiff,
-        .wav,
-        UTType(filenameExtension: "flac") ?? .audio,
-        UTType(filenameExtension: "m4a") ?? .mpeg4Audio,
-        UTType(filenameExtension: "alac") ?? .audio,
-        UTType(filenameExtension: "ncm") ?? .audio,
-    ].compactMap { $0 }
+    static let supportedUTTypes: [UTType] = AudioFormatSupport.openPanelContentTypes
 
     // MARK: - Properties
 
@@ -4614,7 +4619,20 @@ final class FileImportService: FileImportServiceProtocol {
             let durationTime = try await asset.load(.duration)
             duration = CMTimeGetSeconds(durationTime)
         } catch {
-            print("⚠️ Failed to load duration: \(error)")
+            Log.warning("[Import] duration load via AVURLAsset failed: \(error.localizedDescription)", category: .import)
+        }
+
+        // Fallback: some containers (notably bare ADTS `.aac` streams) don't
+        // report a usable duration through AVURLAsset. Ask Core Audio directly
+        // before giving up, so we never persist a 0-second track for a file
+        // that is actually decodable.
+        if !(duration > 0) || !duration.isFinite {
+            if let audioFile = try? AVAudioFile(forReading: url) {
+                let sampleRate = audioFile.processingFormat.sampleRate
+                if sampleRate > 0 {
+                    duration = Double(audioFile.length) / sampleRate
+                }
+            }
         }
 
         do {
@@ -5018,6 +5036,10 @@ final class FileImportService: FileImportServiceProtocol {
 
         do {
             try await cancellationToken.checkCancellation()
+            try Self.ensureAudioIsDecodable(
+                candidate.fileURL,
+                knownDuration: candidate.metadata.duration
+            )
             let stagedFile = try await Self.importAudioFileToStaging(
                 from: candidate.fileURL,
                 trackId: trackId,
@@ -5160,6 +5182,27 @@ final class FileImportService: FileImportServiceProtocol {
         try fileManager.copyItem(at: sourceURL, to: destURL)
 
         return "Tracks/\(trackId.uuidString)/\(audioFileName)"
+    }
+
+    /// Final safety net before copying a file into the library: if we never
+    /// determined a positive duration, confirm Core Audio can at least open the
+    /// file. This turns "silently imported a 0-second broken track" into a
+    /// clear, per-file import failure. Files with a known duration short-circuit
+    /// (the common case), so valid audio is never rejected here.
+    nonisolated private static func ensureAudioIsDecodable(
+        _ url: URL,
+        knownDuration: Double
+    ) throws {
+        if knownDuration > 0, knownDuration.isFinite { return }
+        do {
+            _ = try AVAudioFile(forReading: url)
+        } catch {
+            Log.warning(
+                "[Import] rejected undecodable file '\(url.lastPathComponent)': \(error.localizedDescription)",
+                category: .import
+            )
+            throw AudioImportError.undecodable(fileName: url.lastPathComponent)
+        }
     }
 
     nonisolated private static func importAudioFileToStaging(

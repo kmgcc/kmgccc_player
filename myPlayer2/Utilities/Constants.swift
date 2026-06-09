@@ -88,7 +88,9 @@ nonisolated enum Constants {
     // MARK: - File Types
 
     enum FileTypes {
-        static let supportedAudioExtensions = ["mp3", "m4a", "flac", "wav", "aiff", "aac", "ogg"]
+        /// Audio extensions the app can decode/play. Single source of truth lives
+        /// in `AudioFormatSupport`; this alias is kept for existing call sites.
+        static let supportedAudioExtensions = Array(AudioFormatSupport.playableExtensions)
         static let lyricsExtensions = ["ttml"]
     }
 }
