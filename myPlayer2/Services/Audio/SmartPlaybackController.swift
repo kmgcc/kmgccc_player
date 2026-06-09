@@ -268,6 +268,60 @@ final class SmartPlaybackController {
         return nextTrack
     }
 
+    /// The track a *natural* auto-advance would play next, computed WITHOUT any
+    /// mutation or session side effects. Used by gapless scheduling to prefetch
+    /// the upcoming track and to validate a boundary before committing it.
+    /// Returns nil at the end of the queue — matching `autoAdvance`, which stops
+    /// rather than wraps on natural completion.
+    func peekNextForGapless() -> Track? {
+        if isShuffleEnabled, let session = shuffleSession {
+            guard let nextID = session.peekNext(count: 1).first else { return nil }
+            return sourceTracks.first { $0.id == nextID }
+        }
+        let nextIndex = currentSourceIndex + 1
+        guard nextIndex >= 0, nextIndex < sourceTracks.count else { return nil }
+        return sourceTracks[nextIndex]
+    }
+
+    /// Commit a natural advance whose audio is ALREADY scheduled and playing on
+    /// the player node (gapless transition). Mirrors `autoAdvance()` EXCEPT it
+    /// never calls `onPlayTrack` — there is no audio to (re)start. It determines
+    /// the next track first (no side effects), and only if one exists does it
+    /// finalize the current session as a natural completion, advance the
+    /// index/shuffle position, start the next session, and notify
+    /// `onTrackChanged` (which updates `currentTrack`). Returns the advanced-to
+    /// track, or nil when there is no next track (no state is mutated in that
+    /// case). The returned track equals `peekNextForGapless()` by construction.
+    func commitGaplessAdvance() -> Track? {
+        let nextTrack: Track?
+        if isShuffleEnabled, let session = shuffleSession {
+            nextTrack = session.peekNext(count: 1).first.flatMap { id in
+                sourceTracks.first { $0.id == id }
+            }
+        } else {
+            let nextIndex = currentSourceIndex + 1
+            nextTrack = (nextIndex >= 0 && nextIndex < sourceTracks.count)
+                ? sourceTracks[nextIndex]
+                : nil
+        }
+
+        guard let track = nextTrack else { return nil }
+
+        finalizeCurrentPlaybackSession(reason: .naturalCompletion)
+
+        if isShuffleEnabled, let session = shuffleSession {
+            // Advances currentIndex to the same id that peekNext returned.
+            _ = session.next()
+        } else {
+            currentSourceIndex += 1
+        }
+
+        // Fires onTrackChanged → currentTrack = track. Deliberately NO onPlayTrack:
+        // the audio for this track is already rendering on the player node.
+        startTrackSession(track: track)
+        return track
+    }
+
     /// Jump to a specific track.
     func jumpToTrack(_ track: Track) {
         finalizeCurrentPlaybackSession(reason: .userJumpToTrack)
@@ -291,13 +345,13 @@ final class SmartPlaybackController {
     private func startTrackSession(track: Track) {
         // End any existing session (safety net - should have been finalized already).
         if currentSessionTracker != nil {
-            print("⚠️ [PlaybackSession] startTrackSession called with existing tracker! Finalizing...")
+            Log.warning("[PlaybackSession] startTrackSession called with existing tracker! Finalizing...", category: .playback)
             finalizeCurrentPlaybackSession(reason: .systemInterrupt)
         }
 
         // Create new tracker.
         currentSessionTracker = PlaybackSessionTracker(track: track)
-        print("🎵 [PlaybackSession] Started new session for: \(track.title) (ID: \(track.id.uuidString.prefix(8)))")
+        Log.debug("[PlaybackSession] Started new session for: \(track.title) (ID: \(track.id.uuidString.prefix(8)))", category: .playback)
 
         // Notify about track change.
         onTrackChanged?(track)
@@ -309,7 +363,7 @@ final class SmartPlaybackController {
         if let tracker = currentSessionTracker {
             tracker.updateProgress(currentTime: currentTime)
         } else {
-            print("⚠️ [PlaybackSession] updateProgress called but no active tracker!")
+            Log.warning("[PlaybackSession] updateProgress called but no active tracker!", category: .playback)
         }
     }
 
@@ -339,7 +393,7 @@ final class SmartPlaybackController {
         }
 
         guard let track = currentTrack else {
-            print("⚠️ [PlaybackSession] No current track to finalize (source: \(source))")
+            Log.warning("[PlaybackSession] No current track to finalize (source: \(source))", category: .playback)
             currentSessionTracker = nil
             return
         }
@@ -366,21 +420,9 @@ final class SmartPlaybackController {
             return
         }
 
-        // Log session summary
-        print(String(repeating: "=", count: 60))
-        print("🎵 [PlaybackSession] FINALIZED - \(trackTitle)")
-        print("   Source: \(source)")
-        print("   Track ID: \(trackID)")
-        print("   End Reason: \(reason)")
-
-        // Get accumulated stats before applying
         let accumulatedSeconds = tracker.totalPlayedSeconds
         let isValidPlay = tracker.isValidPlay
         let isCompleted = tracker.isCompleted
-
-        print("   Accumulated Played Seconds: \(String(format: "%.2f", accumulatedSeconds))")
-        print("   Is Valid Play (>=2s): \(isValidPlay)")
-        print("   Is Completed: \(isCompleted)")
 
         // Apply to stats
         let didChangeStats = PreferenceStatsService.shared.applyPlaybackOutcome(
@@ -392,57 +434,78 @@ final class SmartPlaybackController {
         // Get updated stats for logging
         let updatedStats = PreferenceStatsService.shared.getStats(for: trackID)
 
-        // Calculate V2 preference score for debugging
-        let scoreResult = PreferenceScorerV2.calculateScore(
-            stats: updatedStats,
-            duration: track.duration,
-            manualLikeState: updatedStats.manualLikeState
-        )
-        print("   📊 V2 Score: conf=\(String(format: "%.2f", scoreResult.features.confidence))")
-        print("               raw=\(String(format: "%.3f", scoreResult.rawPreference))")
-        print("               bounded=\(String(format: "%.3f", scoreResult.boundedPreference))")
-        print("               baseWeight=\(String(format: "%.3f", scoreResult.baseWeight))")
-
-        // Log outcome details
-        switch outcome {
-        case .tooShort:
-            print("   ⏭️ Outcome: TOO SHORT (ignored)")
-        case .completed:
-            print("   ✅ Outcome: COMPLETED")
-            print("      playCount: \(updatedStats.playCount)")
-            print("      completePlayCount: \(updatedStats.completePlayCount)")
-        case .skipped(_, let progress, let playedSeconds, let allowsQuickSkip):
-            print("   ⏭️ Outcome: SKIPPED")
-            print("      Progress: \(String(format: "%.1f", progress * 100))%")
-            print("      Played: \(String(format: "%.1f", playedSeconds))s")
-            print("      playCount: \(updatedStats.playCount)")
-            print("      skipCount: \(updatedStats.skipCount)")
-            if allowsQuickSkip && tracker.isQuickSkip() {
-                print("      ⚡ QUICK SKIP detected!")
-                print("      quickSkipCount: \(updatedStats.quickSkipCount)")
-            }
-        case .interrupted(_, let progress, _):
-            print("   ⏸️ Outcome: INTERRUPTED")
-            print("      Progress: \(String(format: "%.1f", progress * 100))%")
-            print("      playCount: \(updatedStats.playCount)")
-        }
-
-        print("   Stats Changed: \(didChangeStats)")
-
         if didChangeStats {
             // Write to disk
-            print("   💾 Queueing meta-only sidecar write on background writer...")
             PreferenceStatsService.shared.saveStats(for: track)
-            print("   ✅ Meta write delegated to LocalLibraryService background pipeline")
-        } else {
-            print("   ⏭️ No stats delta, skipping disk write")
         }
 
         if didChangeStats {
             shuffleSession?.updateWeight(for: trackID, weight: updatedStats.effectiveWeightCache)
         }
 
-        print(String(repeating: "=", count: 60))
+        // Single-line summary
+        Log.info(
+            "[PlaybackStats] finalized title=\(trackTitle) reason=\(reason) played=\(String(format: "%.1f", accumulatedSeconds))s completed=\(isCompleted) statsChanged=\(didChangeStats) playCount=\(updatedStats.playCount) skipCount=\(updatedStats.skipCount)",
+            category: .playback
+        )
+
+        // Detailed verbose log
+        if LogConfig.playbackStatsVerbose {
+            print(String(repeating: "=", count: 60))
+            print("🎵 [PlaybackSession] FINALIZED - \(trackTitle)")
+            print("   Source: \(source)")
+            print("   Track ID: \(trackID)")
+            print("   End Reason: \(reason)")
+            print("   Accumulated Played Seconds: \(String(format: "%.2f", accumulatedSeconds))")
+            print("   Is Valid Play (>=2s): \(isValidPlay)")
+            print("   Is Completed: \(isCompleted)")
+
+            // Calculate V2 preference score for debugging
+            let scoreResult = PreferenceScorerV2.calculateScore(
+                stats: updatedStats,
+                duration: track.duration,
+                manualLikeState: updatedStats.manualLikeState
+            )
+            print("   📊 V2 Score: conf=\(String(format: "%.2f", scoreResult.features.confidence))")
+            print("               raw=\(String(format: "%.3f", scoreResult.rawPreference))")
+            print("               bounded=\(String(format: "%.3f", scoreResult.boundedPreference))")
+            print("               baseWeight=\(String(format: "%.3f", scoreResult.baseWeight))")
+
+            // Log outcome details
+            switch outcome {
+            case .tooShort:
+                print("   ⏭️ Outcome: TOO SHORT (ignored)")
+            case .completed:
+                print("   ✅ Outcome: COMPLETED")
+                print("      playCount: \(updatedStats.playCount)")
+                print("      completePlayCount: \(updatedStats.completePlayCount)")
+            case .skipped(_, let progress, let playedSeconds, let allowsQuickSkip):
+                print("   ⏭️ Outcome: SKIPPED")
+                print("      Progress: \(String(format: "%.1f", progress * 100))%")
+                print("      Played: \(String(format: "%.1f", playedSeconds))s")
+                print("      playCount: \(updatedStats.playCount)")
+                print("      skipCount: \(updatedStats.skipCount)")
+                if allowsQuickSkip && tracker.isQuickSkip() {
+                    print("      ⚡ QUICK SKIP detected!")
+                    print("      quickSkipCount: \(updatedStats.quickSkipCount)")
+                }
+            case .interrupted(_, let progress, _):
+                print("   ⏸️ Outcome: INTERRUPTED")
+                print("      Progress: \(String(format: "%.1f", progress * 100))%")
+                print("      playCount: \(updatedStats.playCount)")
+            }
+
+            print("   Stats Changed: \(didChangeStats)")
+
+            if didChangeStats {
+                print("   💾 Queueing meta-only sidecar write on background writer...")
+                print("   ✅ Meta write delegated to LocalLibraryService background pipeline")
+            } else {
+                print("   ⏭️ No stats delta, skipping disk write")
+            }
+
+            print(String(repeating: "=", count: 60))
+        }
 
         currentSessionTracker = nil
     }

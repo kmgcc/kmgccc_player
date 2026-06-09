@@ -102,9 +102,45 @@ enum LogConfig {
         return _logDebugEnabledCategories
     }
     
+    private nonisolated(unsafe) static var _audioVerbose = false
+    nonisolated static var audioVerbose: Bool {
+        get { _audioVerbose || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_AUDIO_VERBOSE"] == "1" }
+        set { _audioVerbose = newValue }
+    }
+
+    private nonisolated(unsafe) static var _themeColorVerbose = false
+    nonisolated static var themeColorVerbose: Bool {
+        get { _themeColorVerbose || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_THEME_COLOR_VERBOSE"] == "1" }
+        set { _themeColorVerbose = newValue }
+    }
+
+    private nonisolated(unsafe) static var _webviewVerbose = false
+    nonisolated static var webviewVerbose: Bool {
+        get { _webviewVerbose || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_WEBVIEW_VERBOSE"] == "1" }
+        set { _webviewVerbose = newValue }
+    }
+
+    private nonisolated(unsafe) static var _playbackStatsVerbose = false
+    nonisolated static var playbackStatsVerbose: Bool {
+        get { _playbackStatsVerbose || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_PLAYBACK_STATS_VERBOSE"] == "1" }
+        set { _playbackStatsVerbose = newValue }
+    }
+
+    private nonisolated(unsafe) static var _mainThreadStallLoggingEnabled = false
+    nonisolated static var mainThreadStallLoggingEnabled: Bool {
+        get { _mainThreadStallLoggingEnabled || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_MAIN_THREAD_STALL"] == "1" }
+        set { _mainThreadStallLoggingEnabled = newValue }
+    }
+
+    private nonisolated(unsafe) static var _menuDiagnosticsVerbose = false
+    nonisolated static var menuDiagnosticsVerbose: Bool {
+        get { _menuDiagnosticsVerbose || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_MENU_DIAGNOSTICS_VERBOSE"] == "1" }
+        set { _menuDiagnosticsVerbose = newValue }
+    }
+
     nonisolated static var printToConsole: Bool {
         #if DEBUG
-        return true
+        return ProcessInfo.processInfo.environment["KMGCCC_LOG_PRINT_TO_CONSOLE"] == "1"
         #else
         return false
         #endif
@@ -257,22 +293,24 @@ nonisolated private func _log(
         guard LogConfig.isCategoryEnabled(category) else { return }
     }
     
+    let prefix = "\(level.emoji)[\(category.rawValue)]"
+    let formattedMessage = "\(prefix) \(message)"
+    
     let logger = _getLogger(for: category)
     
     switch level {
     case .error:
-        logger.error("\(message)")
+        logger.error("\(formattedMessage)")
     case .warning:
-        logger.warning("\(message)")
+        logger.warning("\(formattedMessage)")
     case .info:
-        logger.info("\(message)")
+        logger.info("\(formattedMessage)")
     case .debug, .trace:
-        logger.debug("\(message)")
+        logger.debug("\(formattedMessage)")
     }
     
     if LogConfig.printToConsole {
-        let prefix = "\(level.emoji)[\(category.rawValue)]"
-        print("\(prefix) \(message)")
+        print(formattedMessage)
     }
 }
 
@@ -354,10 +392,12 @@ nonisolated enum FirstUseHitchDiagnostics {
         lock.unlock()
 
         if LogConfig.perfDebugEnabled {
-            Log.info(
-                "[FirstUseHitch] begin key=\(key) phase=\(occurrence == 1 ? "cold" : "warm") occurrence=\(occurrence) thread=\(Thread.isMainThread ? "main" : "background")\(detail.map { " detail=\($0)" } ?? "")",
-                category: .perf
-            )
+            if !isHighFrequencyMenuEvent(key) || LogConfig.menuDiagnosticsVerbose {
+                Log.info(
+                    "[FirstUseHitch] begin key=\(key) phase=\(occurrence == 1 ? "cold" : "warm") occurrence=\(occurrence) thread=\(Thread.isMainThread ? "main" : "background")\(detail.map { " detail=\($0)" } ?? "")",
+                    category: .perf
+                )
+            }
         }
 
         return FirstUseHitchToken(
@@ -398,11 +438,23 @@ nonisolated enum FirstUseHitchDiagnostics {
         }
 
         if LogConfig.perfDebugEnabled {
-            Log.info(
-                "[FirstUseHitch] end key=\(token.key) phase=\(token.phase) occurrence=\(token.occurrence) durationMs=\(String(format: "%.1f", durationMs))\(detail.map { " detail=\($0)" } ?? "")",
-                category: .perf
-            )
+            if !isHighFrequencyMenuEvent(token.key) || LogConfig.menuDiagnosticsVerbose {
+                Log.info(
+                    "[FirstUseHitch] end key=\(token.key) phase=\(token.phase) occurrence=\(token.occurrence) durationMs=\(String(format: "%.1f", durationMs))\(detail.map { " detail=\($0)" } ?? "")",
+                    category: .perf
+                )
+            }
         }
+    }
+
+    private nonisolated static func isHighFrequencyMenuEvent(_ key: String) -> Bool {
+        let lowerKey = key.lowercased()
+        return lowerKey.contains("bodyupdate")
+            || lowerKey.contains("contextmenu.build")
+            || lowerKey.contains("contextmenu.submenubuild")
+            || lowerKey.contains("contextmenu.actioninvoke")
+            || lowerKey.contains("trackactionmenucontent")
+            || lowerKey.contains("playlistactionsubmenu")
     }
 
     // MARK: - Accessors

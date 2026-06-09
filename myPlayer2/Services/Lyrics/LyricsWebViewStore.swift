@@ -212,10 +212,12 @@ final class LyricsWebViewStore: NSObject {
         lastAppliedBackingScale = nil
         lastAppliedLayoutSignature = nil
         lastLoggedRenderQualityLayoutSignature = nil
-        Log.info(
-            "AMLL render quality scale=\(String(format: "%.2f", clampedScale)), role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
-            category: .webview
-        )
+        if LogConfig.webviewVerbose {
+            Log.info(
+                "AMLL render quality scale=\(String(format: "%.2f", clampedScale)), role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
+                category: .webview
+            )
+        }
         requestLayoutResync(reason: "renderQuality:\(reason)")
         applyBackingScaleForRenderQuality(reason: reason)
     }
@@ -382,7 +384,7 @@ final class LyricsWebViewStore: NSObject {
             return
         }
 
-        hostView.layoutSubtreeIfNeeded()
+        // hostView.layoutSubtreeIfNeeded() // Removed to avoid AppKit layout warning during layout pass
         let bounds = hostView.bounds
         guard isValidHostBounds(bounds) else {
             awaitingValidLayoutBounds = true
@@ -431,10 +433,12 @@ final class LyricsWebViewStore: NSObject {
         guard lastLoggedRenderQualityLayoutSignature != layoutSignature else { return }
         lastLoggedRenderQualityLayoutSignature = layoutSignature
 
-        Log.info(
-            "AMLL render quality layout role=\(role), model=framePageZoomLayerScale, host=\(Int(hostBounds.width))x\(Int(hostBounds.height)), webFrame=\(Int(targetFrame.width))x\(Int(targetFrame.height)), pageZoom=\(String(format: "%.2f", webView.pageZoom)), layerScale=\(String(format: "%.2f", layerScale)), windowBackingScale=\(String(format: "%.2f", windowScale)), layerContentsScale=\(String(format: "%.2f", contentsScale)), layerRasterizationScale=\(String(format: "%.2f", rasterizationScale)), effectiveHostBackingScale=\(String(format: "%.2f", effectiveHostBackingScale)), reason=\(reason), objectID=\(webViewObjectID)",
-            category: .webview
-        )
+        if LogConfig.webviewVerbose {
+            Log.info(
+                "AMLL render quality layout role=\(role), model=framePageZoomLayerScale, host=\(Int(hostBounds.width))x\(Int(hostBounds.height)), webFrame=\(Int(targetFrame.width))x\(Int(targetFrame.height)), pageZoom=\(String(format: "%.2f", webView.pageZoom)), layerScale=\(String(format: "%.2f", layerScale)), windowBackingScale=\(String(format: "%.2f", windowScale)), layerContentsScale=\(String(format: "%.2f", contentsScale)), layerRasterizationScale=\(String(format: "%.2f", rasterizationScale)), effectiveHostBackingScale=\(String(format: "%.2f", effectiveHostBackingScale)), reason=\(reason), objectID=\(webViewObjectID)",
+                category: .webview
+            )
+        }
     }
 
     private func applyBackingScaleForRenderQuality(reason: String) {
@@ -456,10 +460,12 @@ final class LyricsWebViewStore: NSObject {
         lastAppliedBackingScale = targetScale
         webView.setNeedsDisplay(webView.bounds)
 
-        Log.debug(
-            "Applied AMLL backing scale=\(String(format: "%.2f", targetScale)), windowScale=\(String(format: "%.2f", windowScale)), renderQualityScale=\(String(format: "%.2f", renderQualityScale)), role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
-            category: .webview
-        )
+        if LogConfig.webviewVerbose {
+            Log.debug(
+                "Applied AMLL backing scale=\(String(format: "%.2f", targetScale)), windowScale=\(String(format: "%.2f", windowScale)), renderQualityScale=\(String(format: "%.2f", renderQualityScale)), role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
+                category: .webview
+            )
+        }
     }
 
     private func applyContentsScale(_ contentsScale: CGFloat, to layer: CALayer?) {

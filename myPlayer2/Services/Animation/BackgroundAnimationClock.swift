@@ -76,8 +76,6 @@ final class BackgroundAnimationClock: ObservableObject {
 
         if LogConfig.perfDebugEnabled {
             Log.info("[BackgroundAnimationClock] Started at 60Hz operationStack=\(FirstUseHitchDiagnostics.currentOperationStack())", category: .perf)
-        } else {
-            print("[BackgroundAnimationClock] Started at 60Hz")
         }
     }
 
@@ -109,8 +107,6 @@ final class BackgroundAnimationClock: ObservableObject {
         resetGates()
         if LogConfig.perfDebugEnabled {
             Log.info("[BackgroundAnimationClock] Stopped operationStack=\(FirstUseHitchDiagnostics.currentOperationStack())", category: .perf)
-        } else {
-            print("[BackgroundAnimationClock] Stopped")
         }
     }
     
@@ -119,7 +115,9 @@ final class BackgroundAnimationClock: ObservableObject {
         guard isRunning, !isPaused else { return }
         invalidateTimer()
         isPaused = true
-        print("[BackgroundAnimationClock] Paused")
+        if LogConfig.perfDebugEnabled {
+            Log.info("[BackgroundAnimationClock] Paused", category: .perf)
+        }
     }
     
     /// Resume after pause.
@@ -127,7 +125,9 @@ final class BackgroundAnimationClock: ObservableObject {
         guard isRunning, isPaused else { return }
         isPaused = false
         scheduleTimer()
-        print("[BackgroundAnimationClock] Resumed")
+        if LogConfig.perfDebugEnabled {
+            Log.info("[BackgroundAnimationClock] Resumed", category: .perf)
+        }
     }
     
     // MARK: - Private

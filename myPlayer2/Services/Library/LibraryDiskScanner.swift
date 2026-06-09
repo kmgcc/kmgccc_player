@@ -53,12 +53,26 @@ nonisolated struct LibraryDiskScanner: Sendable {
         writeManifest(newManifest, at: rootURL.appendingPathComponent(Self.manifestFileName), rootURL: rootURL)
 
         let elapsed = Date().timeIntervalSince(start)
-        logSummary(kind: "tracks", stats: tracks.stats)
-        logSummary(kind: "playlists", stats: playlists.stats)
-        logSummary(kind: "artists", stats: artists.stats)
-        logSummary(kind: "albums", stats: albums.stats)
+        let totalRescanned = tracks.stats.rescanned + playlists.stats.rescanned + artists.stats.rescanned + albums.stats.rescanned
+        let totalRemoved = tracks.stats.removed + playlists.stats.removed + artists.stats.removed + albums.stats.removed
+        let totalMissingMeta = tracks.stats.missingMeta + playlists.stats.missingMeta + artists.stats.missingMeta + albums.stats.missingMeta
+
+        let isSlow = elapsed > 2.0
+        let hasChangesOrIssues = totalRescanned > 0 || totalRemoved > 0 || totalMissingMeta > 0 || isSlow
+
+        if hasChangesOrIssues {
+            logSummary(kind: "tracks", stats: tracks.stats)
+            logSummary(kind: "playlists", stats: playlists.stats)
+            logSummary(kind: "artists", stats: artists.stats)
+            logSummary(kind: "albums", stats: albums.stats)
+            Log.info(
+                "[LibraryIncrementalScan] details: elapsed=\(String(format: "%.2f", elapsed))s manifest=\(manifestLoad.status)",
+                category: .library
+            )
+        }
+
         Log.info(
-            "[LibraryIncrementalScan] elapsed=\(String(format: "%.2f", elapsed))s manifest=\(manifestLoad.status)",
+            "[LibraryIncrementalScan] complete tracks=\(tracks.stats.total) playlists=\(playlists.stats.total) artists=\(artists.stats.total) albums=\(albums.stats.total) elapsed=\(String(format: "%.2f", elapsed))s",
             category: .library
         )
 

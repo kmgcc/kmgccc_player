@@ -165,10 +165,12 @@ nonisolated struct LibraryMaintenanceService {
             }
         }
 
-        Log.info(
-            "[LibraryMaintenance] track cleanup complete reason=\(reason) scanned=\(trackDirectories.count) deleted=\(deletedCount) failedDeletes=\(failedDeleteCount)",
-            category: .library
-        )
+        if deletedCount > 0 || failedDeleteCount > 0 {
+            Log.info(
+                "[LibraryMaintenance] track cleanup complete reason=\(reason) scanned=\(trackDirectories.count) deleted=\(deletedCount) failedDeletes=\(failedDeleteCount)",
+                category: .library
+            )
+        }
 
         return TrackDirectoryCleanupReport(
             scannedCount: trackDirectories.count,

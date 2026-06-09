@@ -727,7 +727,7 @@ private final class MainThreadStallMonitor {
         self.timer = timer
         timer.resume()
 
-        if LogConfig.perfDebugEnabled {
+        if LogConfig.mainThreadStallLoggingEnabled {
             Log.info("[MainThreadStall] monitor started thresholdMs=50", category: .perf)
         }
     }
@@ -739,7 +739,7 @@ private final class MainThreadStallMonitor {
             : 0
         let delayMs = Double(delayNs) / 1_000_000.0
 
-        if delayMs >= warningThresholdMs {
+        if LogConfig.mainThreadStallLoggingEnabled, delayMs >= warningThresholdMs {
             let severity = delayMs >= criticalThresholdMs ? "critical" : "warning"
             let stack = FirstUseHitchDiagnostics.currentOperationStack()
             let recent = FirstUseHitchDiagnostics.recentEvents()

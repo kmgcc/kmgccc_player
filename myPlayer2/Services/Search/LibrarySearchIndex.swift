@@ -47,7 +47,7 @@ actor LibrarySearchIndex {
             }
 
             try execute("COMMIT")
-            Log.info(
+            Log.debug(
                 "[SearchIndex] rebuild complete reason=\(reason) tracks=\(sources.count) ms=\(String(format: "%.1f", (ProcessInfo.processInfo.systemUptime - startedAt) * 1000))",
                 category: .library
             )
@@ -74,7 +74,7 @@ actor LibrarySearchIndex {
             }
 
             try execute("COMMIT")
-            Log.info(
+            Log.debug(
                 "[SearchIndex] upsert complete reason=\(reason) tracks=\(sources.count) ms=\(String(format: "%.1f", (ProcessInfo.processInfo.systemUptime - startedAt) * 1000))",
                 category: .library
             )
@@ -95,7 +95,7 @@ actor LibrarySearchIndex {
                 try deleteDocument(trackID: trackID.uuidString)
             }
             try execute("COMMIT")
-            Log.info(
+            Log.debug(
                 "[SearchIndex] delete complete reason=\(reason) tracks=\(uniqueIDs.count)",
                 category: .library
             )

@@ -215,6 +215,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         window.backgroundColor = .windowBackgroundColor
         window.contentViewController = rootViewController
         window.isReleasedWhenClosed = false
+        window.isRestorable = false
         window.contentMinSize = WindowMetrics.minimumContentSize
         window.minSize = WindowMetrics.minimumContentSize
 

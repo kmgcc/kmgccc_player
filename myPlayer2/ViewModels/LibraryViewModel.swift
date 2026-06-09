@@ -577,6 +577,7 @@ final class LibraryViewModel {
 
     private func performReload(capturedRoot: URL, generation: UInt64) async {
         guard loadGeneration == generation else { return }
+        let startTime = Date()
 
         state = .loading
         loadingPhase = .preparing
@@ -640,8 +641,9 @@ final class LibraryViewModel {
             loadingPhase = .loaded
             state = .loaded
 
+            let elapsed = Date().timeIntervalSince(startTime)
             Log.info(
-                "Library loaded: \(playlists.count) playlists, \(totalTrackCount) tracks",
+                "Library loaded: tracks=\(totalTrackCount) playlists=\(playlists.count) albums=\(albumEntries.count) artists=\(artistEntries.count) elapsed=\(String(format: "%.2f", elapsed))s",
                 category: .library
             )
 

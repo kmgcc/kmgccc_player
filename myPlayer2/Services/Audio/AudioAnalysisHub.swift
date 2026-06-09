@@ -120,7 +120,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
             guard let mixer = mixerNode else {
                 activeClients = max(0, activeClients - 1)
                 stateLock.unlock()
-                print("⚠️ AudioAnalysisHub: No mixer attached")
+                Log.warning("AudioAnalysisHub: No mixer attached", category: .audio)
                 return
             }
 
@@ -185,7 +185,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         }
         guard let mixer = mixerNode else {
             stateLock.unlock()
-            print("⚠️ AudioAnalysisHub: No mixer attached after engine configuration change")
+            Log.warning("AudioAnalysisHub: No mixer attached after engine configuration change", category: .audio)
             return
         }
 
@@ -206,7 +206,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         }
         guard let mixer = mixerNode else {
             stateLock.unlock()
-            print("⚠️ AudioAnalysisHub: No mixer attached for tap reinstall")
+            Log.warning("AudioAnalysisHub: No mixer attached for tap reinstall", category: .audio)
             return
         }
 
