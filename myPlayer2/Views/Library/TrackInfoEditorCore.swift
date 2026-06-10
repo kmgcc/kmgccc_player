@@ -80,6 +80,8 @@ struct TrackInfoEditorCore: View {
     @State private var coverCoordinator: CoverSearchCoordinator?
     @State private var metadataCandidates: [QQMusicArtworkCandidate] = []
     @State private var cachedLyricsValidationError: String?
+    @State private var lyricsEditorMaterialized = false
+    @State private var lyricsSearchMaterialized = false
 
     private let amllDbURL = URL(string: "https://github.com/amll-dev/amll-ttml-db")!
     private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
@@ -141,6 +143,23 @@ struct TrackInfoEditorCore: View {
         .onChange(of: lyricsText) { _, _ in
             lyricsValidationMessage = nil
             scheduleLyricsValidation(reason: "lyricsText changed")
+        }
+        .task {
+            // The editor scroll content is a plain (non-lazy) VStack, so without
+            // staging the sheet's opening frame would also build the below-the-fold
+            // lyrics editor (NSTextView loaded with the full TTML document) and the
+            // lyrics-search section (more text fields + first touch of the
+            // AMLLDB/LDDC service singletons) in one main-thread transaction.
+            // The delays land each chunk after the sheet's open animation; the
+            // section sits below the fold, so the placeholder is not visible
+            // unless the user scrolls down immediately.
+            guard !lyricsEditorMaterialized || !lyricsSearchMaterialized else { return }
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            lyricsEditorMaterialized = true
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            lyricsSearchMaterialized = true
         }
     }
 
@@ -555,7 +574,33 @@ struct TrackInfoEditorCore: View {
         )
     }
 
+    @ViewBuilder
     private var lyricsSection: some View {
+        if lyricsEditorMaterialized {
+            materializedLyricsSection
+        } else {
+            deferredSectionPlaceholder("edit.track.lyrics", systemImage: "text.quote")
+        }
+    }
+
+    private func deferredSectionPlaceholder(
+        _ titleKey: LocalizedStringKey,
+        systemImage: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(titleKey, systemImage: systemImage)
+                .font(.headline)
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("正在准备…")
+                    .font(.caption)
+                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
+            }
+        }
+    }
+
+    private var materializedLyricsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Label("edit.track.lyrics", systemImage: "text.quote")
@@ -634,7 +679,11 @@ struct TrackInfoEditorCore: View {
             Divider()
                 .padding(.vertical, 8)
 
-            lyricsSearchSection
+            if lyricsSearchMaterialized {
+                lyricsSearchSection
+            } else {
+                deferredSectionPlaceholder("歌词搜索", systemImage: "magnifyingglass")
+            }
         }
         .fileImporter(
             isPresented: $showingLyricsPicker,

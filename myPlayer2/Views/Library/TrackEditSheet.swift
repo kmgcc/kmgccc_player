@@ -106,6 +106,10 @@ struct TrackEditSheet: View {
     @State private var deferredMediaLoadGeneration: UInt64 = 0
     @State private var originalArtworkData: Data?
     @State private var originalLyricsStorage = TrackLyricsDraft.Storage(ttmlText: nil, plainText: nil)
+    /// The exact editor text that produced `originalLyricsStorage`; lets
+    /// `trackEditChangeSet` skip the full-document TTML regex when unchanged.
+    @State private var initialLyricsEditorText = ""
+    @State private var lyricsDraftInitialized = false
 
     private struct TrackEditChangeSet {
         let hasChanges: Bool
@@ -113,10 +117,16 @@ struct TrackEditSheet: View {
         let affectsLiveLyrics: Bool
     }
 
+    /// Uptime at struct init; onAppear logs the open-to-first-appear latency
+    /// when KMGCCC_DEBUG_PERF=1.
+    private let openedAtUptime = ProcessInfo.processInfo.systemUptime
+
     init(track: Track) {
         self.track = track
 
-        let initialLyricsText = Self.initialLyricsText(for: track)
+        // This init re-runs whenever the presenting view's body re-evaluates
+        // while the sheet is up, so it must stay cheap: the lyrics draft
+        // (full-document TTML regex) is seeded once in onAppear instead.
         let initialArtworkData = track.artworkData
 
         _title = State(initialValue: track.title)
@@ -131,11 +141,10 @@ struct TrackEditSheet: View {
         _metadataSource = State(initialValue: track.metadataSource ?? "")
         _metadataFetchedAt = State(initialValue: track.metadataFetchedAt)
         _metadataConfidence = State(initialValue: track.metadataConfidence)
-        _lyricsText = State(initialValue: initialLyricsText)
+        _lyricsText = State(initialValue: "")
         _artworkData = State(initialValue: initialArtworkData)
         _lyricsTimeOffsetMs = State(initialValue: track.lyricsTimeOffsetMs)
         _originalArtworkData = State(initialValue: initialArtworkData)
-        _originalLyricsStorage = State(initialValue: TrackLyricsDraft.storage(from: initialLyricsText))
     }
 
     var body: some View {
@@ -180,12 +189,29 @@ struct TrackEditSheet: View {
             lyricsTimeOffsetMs: $lyricsTimeOffsetMs
         )
         .onAppear {
+            if LogConfig.perfDebugEnabled {
+                let elapsedMs = (ProcessInfo.processInfo.systemUptime - openedAtUptime) * 1000
+                Log.info(
+                    "[TrackEditOpen] initToFirstAppearMs=\(String(format: "%.1f", elapsedMs))",
+                    category: .perf
+                )
+            }
+            initializeLyricsDraftIfNeeded()
             loadDeferredMediaData()
         }
         .onDisappear {
             deferredMediaTask?.cancel()
             deferredMediaTask = nil
         }
+    }
+
+    private func initializeLyricsDraftIfNeeded() {
+        guard !lyricsDraftInitialized else { return }
+        lyricsDraftInitialized = true
+        let initialText = Self.initialLyricsText(for: track)
+        lyricsText = initialText
+        initialLyricsEditorText = initialText
+        originalLyricsStorage = TrackLyricsDraft.storage(from: initialText)
     }
 
     private func loadDeferredMediaData() {
@@ -215,6 +241,7 @@ struct TrackEditSheet: View {
 
             if let loadedLyrics = result.lyricsTTML {
                 originalLyricsStorage = TrackLyricsDraft.storage(from: loadedLyrics)
+                initialLyricsEditorText = loadedLyrics
                 if lyricsText.isEmpty {
                     lyricsText = loadedLyrics
                 }
@@ -267,7 +294,11 @@ struct TrackEditSheet: View {
             || metadataConfidence != track.metadataConfidence
             || lyricsOffsetChanged
 
-        let lyricsChanged = TrackLyricsDraft.storage(from: lyricsText) != originalLyricsStorage
+        // String-equality fast path: storage is a pure function of the text, so
+        // identical text cannot change the draft; avoids regex-scanning the full
+        // lyric document on every body evaluation.
+        let lyricsChanged = lyricsText != initialLyricsEditorText
+            && TrackLyricsDraft.storage(from: lyricsText) != originalLyricsStorage
         let artworkChanged = artworkData != originalArtworkData
         let hasChanges = metadataChanged || lyricsChanged || artworkChanged
 

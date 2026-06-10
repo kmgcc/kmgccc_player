@@ -34,6 +34,9 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
     /// Currently playing track (nil if nothing playing).
     var currentTrack: Track? { get }
 
+    /// Effective playback order mode for the active local playback session.
+    var currentPlaybackOrderMode: PlaybackOrderMode { get }
+
     // MARK: - Playback Control
 
     /// Play a specific track.

@@ -204,7 +204,7 @@ struct MiniPlayerView: View {
     private var controlHitSize: CGFloat { 26 }
 
     private var currentPlaybackMode: PlaybackOrderMode {
-        settings.playbackOrderMode
+        playbackCoordinator.presentation.localPlaybackOrderMode ?? settings.playbackOrderMode
     }
 
     private var playbackModeView: some View {

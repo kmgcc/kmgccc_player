@@ -292,6 +292,19 @@ final class AppSessionHost: ObservableObject {
             try? await Task.sleep(for: .milliseconds(900))
             guard !Task.isCancelled else { return }
 
+            // Front-load the macOS text-input cold start (field editor + TSM/IMK
+            // session + AppleSpell XPC). The first time any text control becomes
+            // first responder these system services spin up and block the main
+            // thread for hundreds of ms — which freezes the UI (scrubber, spectrum,
+            // lyrics) when the song-Info editor is first opened during playback and
+            // is misperceived as an audio hitch. AVAudioEngine rendering is immune
+            // to main-thread stalls, so paying this cost off the interaction path at
+            // launch idle is safe and leaves the open-to-edit experience untouched.
+            // Distinct from the SwiftUI-host prewarm tried earlier: that warmed the
+            // view, not the system text services that actually cost the first frame.
+            TextInputSystemPrewarmer.prewarmOnce()
+            guard !Task.isCancelled else { return }
+
             await self.prewarmLyricsSurfaceWhenPlaybackQuiet(
                 role: .main,
                 playerVM: playerVM,

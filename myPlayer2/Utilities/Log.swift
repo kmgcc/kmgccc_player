@@ -108,6 +108,15 @@ enum LogConfig {
         set { _audioVerbose = newValue }
     }
 
+    private nonisolated(unsafe) static var _gaplessVerbose = false
+    /// Gapless playback diagnostics (prefetch / schedule / boundary commit / AAC
+    /// trim / boundary probe). Off by default so normal Debug runs aren't flooded.
+    /// Set this or `KMGCCC_DEBUG_GAPLESS_VERBOSE=1` to restore the full trace.
+    nonisolated static var gaplessVerbose: Bool {
+        get { _gaplessVerbose || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_GAPLESS_VERBOSE"] == "1" }
+        set { _gaplessVerbose = newValue }
+    }
+
     private nonisolated(unsafe) static var _themeColorVerbose = false
     nonisolated static var themeColorVerbose: Bool {
         get { _themeColorVerbose || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_THEME_COLOR_VERBOSE"] == "1" }

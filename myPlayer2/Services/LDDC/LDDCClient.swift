@@ -11,6 +11,10 @@ import Foundation
 /// HTTP client for the LDDC lyrics server.
 actor LDDCClient {
 
+    /// Stateless apart from its URLSession, so view code can share one instance
+    /// instead of paying URLSession creation per SwiftUI struct init.
+    static let shared = LDDCClient()
+
     private let session: URLSession
     private let timeout: TimeInterval = 30
 

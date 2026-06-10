@@ -54,6 +54,10 @@ final class PlayerViewModel {
         playbackService.currentTrack
     }
 
+    var currentPlaybackOrderMode: PlaybackOrderMode {
+        playbackService.currentPlaybackOrderMode
+    }
+
     var volume: Double {
         get { playbackService.volume }
         set {

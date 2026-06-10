@@ -23,6 +23,9 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
     var audioOutputDelay: Double { 0 }
     private(set) var duration: Double = 0
     private(set) var currentTrack: Track?
+    var currentPlaybackOrderMode: PlaybackOrderMode {
+        AppSettings.shared.playbackOrderMode
+    }
 
     // MARK: - Private
 
