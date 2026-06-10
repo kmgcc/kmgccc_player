@@ -26,7 +26,6 @@ final class AppSessionHost: ObservableObject {
     let homeVM = HomeViewModel()
 
     private let modelContainer: ModelContainer
-    private let settingsSceneDependencies: SettingsSceneDependencies
     private var hasSetupDependencies = false
     private var playbackModeObserver: NSObjectProtocol?
     private var libraryLocationObserver: NSObjectProtocol?
@@ -38,11 +37,9 @@ final class AppSessionHost: ObservableObject {
     private var didAttemptPlaybackMemoryRestore = false
 
     init(
-        modelContainer: ModelContainer,
-        settingsSceneDependencies: SettingsSceneDependencies
+        modelContainer: ModelContainer
     ) {
         self.modelContainer = modelContainer
-        self.settingsSceneDependencies = settingsSceneDependencies
     }
 
     var sharedModelContainer: ModelContainer {
@@ -208,12 +205,6 @@ final class AppSessionHost: ObservableObject {
             }
         }
 
-        settingsSceneDependencies.configure(
-            libraryVM: libraryVM,
-            playerVM: playerVM,
-            lyricsVM: lyricsVM,
-            ledMeterProvider: ledMeterProvider
-        )
 
         if playbackModeObserver == nil {
             playbackModeObserver = NotificationCenter.default.addObserver(

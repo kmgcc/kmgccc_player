@@ -470,6 +470,8 @@ struct AppKitMainWindowArtBackgroundLayer: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack {
+                ThemedBaseBackgroundColorView()
+
                 if shouldShowPlaylistHeaderBackground {
                     HeaderFullWindowBackgroundView(
                         state: playlistPageController.haloState,

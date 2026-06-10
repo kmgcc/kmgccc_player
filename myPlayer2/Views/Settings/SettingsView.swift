@@ -64,6 +64,8 @@ struct SettingsView: View {
             }
         }
         .frame(minWidth: 760, minHeight: 680)
+        .scrollContentBackground(.hidden)
+        .background(ThemedBaseBackgroundColorView())
         .onAppear {
             settings.fullscreen.normalizeConfiguration()
             showV2FeatureTipIfNeeded()
@@ -112,6 +114,7 @@ struct SettingsView: View {
         }
         .groupBoxStyle(SettingsWindowGroupBoxStyle())
         .environment(\.settingsAppForegroundColors, appColors)
+        .scrollContentBackground(.hidden)
     }
 
     // MARK: - Feature Tip

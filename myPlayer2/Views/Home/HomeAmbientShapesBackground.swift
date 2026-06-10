@@ -723,7 +723,7 @@ final class HomeAmbientRootView: NSView {
 
 // MARK: - Palette helpers
 
-private enum HomeAmbientPalette {
+enum HomeAmbientPalette {
     static func ambientBaseColor(
         from source: NSColor?,
         analysis: ArtworkColorAnalysis?,
