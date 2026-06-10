@@ -78,7 +78,6 @@ struct KmgcccPlayerApp: App {
 
     // MARK: - AppDelegate
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var settingsSceneDependencies: SettingsSceneDependencies
     @StateObject private var appSession: AppSessionHost
 
     // MARK: - SwiftData Container
@@ -109,13 +108,9 @@ struct KmgcccPlayerApp: App {
             }
         }()
 
-        let settingsSceneDependencies = SettingsSceneDependencies()
-
         self.sharedModelContainer = sharedModelContainer
-        _settingsSceneDependencies = StateObject(wrappedValue: settingsSceneDependencies)
         let appSessionHost = AppSessionHost(
-            modelContainer: sharedModelContainer,
-            settingsSceneDependencies: settingsSceneDependencies
+            modelContainer: sharedModelContainer
         )
         _appSession = StateObject(wrappedValue: appSessionHost)
         AppDelegate.launchMainWindowHandler = { @MainActor in
@@ -132,29 +127,12 @@ struct KmgcccPlayerApp: App {
 
     var body: some Scene {
         Settings {
-            Group {
-                if let libraryVM = settingsSceneDependencies.libraryVM,
-                   let playerVM = settingsSceneDependencies.playerVM,
-                   let lyricsVM = settingsSceneDependencies.lyricsVM,
-                   let ledMeterProvider = settingsSceneDependencies.ledMeterProvider {
-                    SettingsRootView(
-                        libraryVM: libraryVM,
-                        playerVM: playerVM,
-                        lyricsVM: lyricsVM,
-                        ledMeterProvider: ledMeterProvider
-                    )
-                } else {
-                    VStack(spacing: 16) {
-                        ProgressView()
-                        Text("加载设置中...")
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(width: 400, height: 200)
-                }
-            }
-            .modelContainer(sharedModelContainer)
+            EmptyView()
         }
         .commands {
+            // 0. 移除默认设置菜单
+            CommandGroup(replacing: .appSettings) {}
+
             // 1. 文件菜单
             CommandGroup(replacing: .newItem) {
                 Button(NSLocalizedString("menu.import_music", comment: "Import Music")) {

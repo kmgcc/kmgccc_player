@@ -60,7 +60,8 @@ struct FullscreenCoverGradientBlurSkin: NowPlayingSkin {
             blurEndRatio: blurEndRatio,
             overlayOffsetRatio: 0.15,
             blurCurveGamma: 5.0,
-            edgeFillMode: edgeFillMode
+            edgeFillMode: edgeFillMode,
+            blurMaskMode: .layeredCrossfade
         )
     }
 }

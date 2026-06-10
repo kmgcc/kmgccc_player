@@ -57,6 +57,7 @@ struct SettingsSidebarView: View {
                 )
             }
             .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
         }
         .background(Material.regularMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
