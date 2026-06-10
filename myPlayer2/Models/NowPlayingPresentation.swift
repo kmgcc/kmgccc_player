@@ -19,6 +19,7 @@ enum ExternalPlaybackConnectionState: String, Sendable {
 struct NowPlayingPresentation {
     var source: PlaybackSource
     var localTrack: Track?
+    var localPlaybackOrderMode: PlaybackOrderMode? = nil
     var title: String
     var artist: String
     var album: String?

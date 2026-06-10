@@ -107,6 +107,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         lookaheadSeconds
     }
 
+    var currentPlaybackOrderMode: PlaybackOrderMode {
+        effectivePlaybackOrderMode
+    }
+
     // MARK: - Off-Main Preparation
 
     /// Off-main file preparation (bookmark resolve + AVAudioFile open). See
@@ -176,6 +180,17 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         case predictionMismatch
         case stateChanged
         case notScheduledInTime
+
+        /// Reasons that indicate an unexpected internal state (vs. a normal,
+        /// expected fallback like end-of-queue or a superseded prefetch). Only
+        /// these are logged unconditionally; the rest are gated behind
+        /// `LogConfig.gaplessVerbose`.
+        var isUnexpected: Bool {
+            switch self {
+            case .notScheduledInTime: return true
+            default: return false
+            }
+        }
     }
 
     /// Gapless is allowed only when the user hasn't disabled it AND the output
@@ -589,12 +604,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         guard let resource = prefetchedResource else { return }
         prefetchedResource = nil
         releaseSecurityScope(for: resource)
-        if LogConfig.perfDebugEnabled {
-            Log.info(
-                "[Gapless] released prefetched resource track=\(resource.trackID.uuidString.prefix(8)) scoped=\(resource.didStartSecurityScopedAccess) reason=\(reason)",
-                category: .audio
-            )
-        }
+        gaplessLog("[Gapless] released prefetched resource track=\(resource.trackID.uuidString.prefix(8)) scoped=\(resource.didStartSecurityScopedAccess) reason=\(reason)")
     }
 
     /// Record the freshly-scheduled current segment into the queue with a node
@@ -628,7 +638,24 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private func logGaplessFallback(_ reason: GaplessFallbackReason, context: String) {
-        Log.info("[Gapless] fallback reason=\(reason.rawValue) \(context)", category: .audio)
+        // Unexpected internal state is always surfaced (warning). Normal,
+        // expected fallbacks (end-of-queue, superseded prefetch, format
+        // mismatch, etc.) are routine diagnostics gated behind gaplessVerbose.
+        if reason.isUnexpected {
+            Log.warning("[Gapless] fallback reason=\(reason.rawValue) \(context)", category: .audio)
+        } else {
+            gaplessLog("[Gapless] fallback reason=\(reason.rawValue) \(context)")
+        }
+    }
+
+    /// Routine gapless diagnostics. No-op unless `LogConfig.gaplessVerbose` is on,
+    /// so normal Debug runs stay quiet; the `@autoclosure` keeps the string from
+    /// being built when disabled. Use for expected prefetch/schedule/boundary/AAC
+    /// trace; use `Log.warning`/`Log.error` directly for genuine problems.
+    private func gaplessLog(_ message: @autoclosure () -> String) {
+        if LogConfig.gaplessVerbose {
+            Log.info(message(), category: .audio)
+        }
     }
 
     /// Invalidate any in-flight file preparation: bump the generation so a
@@ -1240,11 +1267,30 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         if !crossedScheduleBoundary, let previousUptime {
             let timerGap = nowUptime - previousUptime
             let clockDelta = currentTime - previousAudibleTime
-            if timerGap >= 0.24 || abs(clockDelta - timerGap) >= 0.18 {
+            // `audioBehind` is how far the audio render clock fell short of wall
+            // time over this interval. A genuine output underrun (HAL overload /
+            // dropout) advances the audio clock materially LESS than wall while the
+            // node is still playing → audioBehind large. A progress tick merely
+            // delayed by a main-thread stall is the opposite: the player keeps
+            // rendering on its real-time thread, so when the tick finally fires both
+            // wall and audio clocks have advanced together → audioBehind ~0 even
+            // though timerGap is large. The previous `timerGap >= 0.24` trigger
+            // conflated the two and fired on every first-use UI stall, mislabeling a
+            // frozen UI as an audio gap. Only flag a true audio discontinuity here.
+            let audioBehind = timerGap - clockDelta
+            if playerNode.isPlaying, audioBehind >= 0.12 {
                 let contextMenu = ContextMenuDiagnostics.currentStateDescription()
                 Log.warning(
-                    "[AudioClockGap] timerGapMs=\(String(format: "%.1f", timerGap * 1000)) clockDeltaMs=\(String(format: "%.1f", clockDelta * 1000)) playerNodePlaying=\(playerNode.isPlaying) engineRunning=\(isEngineInitialized ? engine.isRunning : false) operation=\(FirstUseHitchDiagnostics.currentOperationStack()) recentEvents=[\(FirstUseHitchDiagnostics.recentEvents())] isPlaying=\(isPlaying) trackID=\(FirstUseHitchDiagnostics.trackIDPrefix(currentTrack?.id)) surface=audio contextMenu=[\(contextMenu)]",
+                    "[AudioUnderrun] audioBehindMs=\(String(format: "%.1f", audioBehind * 1000)) timerGapMs=\(String(format: "%.1f", timerGap * 1000)) clockDeltaMs=\(String(format: "%.1f", clockDelta * 1000)) playerNodePlaying=\(playerNode.isPlaying) engineRunning=\(isEngineInitialized ? engine.isRunning : false) operation=\(FirstUseHitchDiagnostics.currentOperationStack()) recentEvents=[\(FirstUseHitchDiagnostics.recentEvents())] isPlaying=\(isPlaying) trackID=\(FirstUseHitchDiagnostics.trackIDPrefix(currentTrack?.id)) surface=audio contextMenu=[\(contextMenu)]",
                     category: .audio
+                )
+            } else if timerGap >= 0.5, LogConfig.mainThreadStallLoggingEnabled {
+                // Audio intact; the progress timer was just delayed by a main-thread
+                // stall (first-use UI cold start, menu tracking, etc.). Opt-in
+                // diagnostic only — explicitly NOT an audio gap.
+                Log.info(
+                    "[ProgressTimerStall] timerGapMs=\(String(format: "%.1f", timerGap * 1000)) clockDeltaMs=\(String(format: "%.1f", clockDelta * 1000)) audioIntact=true operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
+                    category: .perf
                 )
             }
         }
@@ -1300,10 +1346,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             titleForLog: nextTrack.title
         )
 
-        Log.info(
-            "[Gapless] prefetch started track=\(nextTrack.id.uuidString.prefix(8)) title=\(nextTrack.title) generation=\(generation)",
-            category: .audio
-        )
+        gaplessLog("[Gapless] prefetch started track=\(nextTrack.id.uuidString.prefix(8)) title=\(nextTrack.title) generation=\(generation)")
 
         // Task {} (not detached) inherits this @MainActor context: the heavy work
         // runs off-main inside the actor, then resumes on main. Captures only
@@ -1342,10 +1385,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             return
         }
 
-        Log.info(
-            "[Gapless] prefetch prepared track=\(resource.trackID.uuidString.prefix(8)) duration=\(String(format: "%.1f", resource.duration)) generation=\(generation)",
-            category: .audio
-        )
+        gaplessLog("[Gapless] prefetch prepared track=\(resource.trackID.uuidString.prefix(8)) duration=\(String(format: "%.1f", resource.duration)) generation=\(generation)")
         scheduleNextGapless(resource)
     }
 
@@ -1371,30 +1411,24 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let idTag = resource.trackID.uuidString.prefix(8)
 
         guard AppSettings.shared.audioAACGaplessTrimEnabled else {
-            Log.info("[AACGapless] skipped reason=disabled track=\(idTag)", category: .audio)
+            gaplessLog("[AACGapless] skipped reason=disabled track=\(idTag)")
             return nil
         }
 
         guard let info = resource.aacGaplessInfo else {
-            Log.info("[AACGapless] skipped reason=noMetadata track=\(idTag)", category: .audio)
+            gaplessLog("[AACGapless] skipped reason=noMetadata track=\(idTag)")
             return nil
         }
 
         guard info.isAAC else {
             // MP3 / WAV / FLAC / ALAC: diagnostics only, never trimmed (Phase 1.2
             // scope is AAC). Surface any priming the container reported.
-            Log.info(
-                "[AACGapless] skipped reason=unsupportedContainer track=\(idTag) format=\(info.formatTag) primingFrames=\(info.primingFrames) paddingFrames=\(info.paddingFrames) source=\(info.source)",
-                category: .audio
-            )
+            gaplessLog("[AACGapless] skipped reason=unsupportedContainer track=\(idTag) format=\(info.formatTag) primingFrames=\(info.primingFrames) paddingFrames=\(info.paddingFrames) source=\(info.source)")
             return nil
         }
 
         guard info.hasGaplessPadding else {
-            Log.info(
-                "[AACGapless] skipped reason=noMetadata track=\(idTag) format=\(info.formatTag) source=\(info.source)",
-                category: .audio
-            )
+            gaplessLog("[AACGapless] skipped reason=noMetadata track=\(idTag) format=\(info.formatTag) source=\(info.source)")
             return nil
         }
 
@@ -1402,10 +1436,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let padding = info.paddingFrames
         let valid = info.validFrames
 
-        Log.info(
-            "[AACGapless] track=\(idTag) primingFrames=\(priming) paddingFrames=\(padding) source=\(info.source)",
-            category: .audio
-        )
+        gaplessLog("[AACGapless] track=\(idTag) primingFrames=\(priming) paddingFrames=\(padding) source=\(info.source)")
 
         // Determine how `AVAudioFile` presents the decoded stream so we never
         // double-trim: compare the decoded length against the three plausible
@@ -1422,7 +1453,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         let tolerance: Int64 = 256  // ~6ms @44.1k; far smaller than priming (~2112)
         guard minDiff <= tolerance else {
-            Log.info(
+            // Metadata can't be reconciled with the decoded length — kept
+            // unconditional (this is the "unsafe AAC trim metadata" signal).
+            Log.warning(
                 "[AACGapless] skipped reason=unsafeValues track=\(idTag) pcm=\(pcm) valid=\(valid) priming=\(priming) padding=\(padding)",
                 category: .audio
             )
@@ -1440,10 +1473,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         } else {
             // Decoder already removed priming+padding (pcm ≈ validFrames): nothing
             // to trim. Not an error — fall back to a full-file schedule.
-            Log.info(
-                "[AACGapless] skipped reason=noMetadata track=\(idTag) detail=decoderAlreadyTrimmed pcm=\(pcm) valid=\(valid)",
-                category: .audio
-            )
+            gaplessLog("[AACGapless] skipped reason=noMetadata track=\(idTag) detail=decoderAlreadyTrimmed pcm=\(pcm) valid=\(valid)")
             return nil
         }
 
@@ -1451,7 +1481,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         // that fits within the file's total frames.
         let total = Int64(resource.frameLength)
         guard head >= 0, tail >= 0, head + tail < total else {
-            Log.info(
+            Log.warning(
                 "[AACGapless] skipped reason=unsafeValues track=\(idTag) head=\(head) tail=\(tail) total=\(total)",
                 category: .audio
             )
@@ -1459,7 +1489,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
         let scheduled = total - head - tail
         guard scheduled > 0, scheduled <= Int64(AVAudioFrameCount.max) else {
-            Log.info(
+            Log.warning(
                 "[AACGapless] skipped reason=unsafeValues track=\(idTag) scheduledFrames=\(scheduled) total=\(total)",
                 category: .audio
             )
@@ -1469,10 +1499,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let durationSec = resource.sampleRate > 0 ? Double(scheduled) / resource.sampleRate : resource.duration
         let headMs = resource.sampleRate > 0 ? Double(head) / resource.sampleRate * 1000 : 0
         let tailMs = resource.sampleRate > 0 ? Double(tail) / resource.sampleRate * 1000 : 0
-        Log.info(
-            "[AACGapless] applying headTrimFrames=\(head) tailTrimFrames=\(tail) track=\(idTag) headMs=\(String(format: "%.1f", headMs)) tailMs=\(String(format: "%.1f", tailMs)) scheduledFrames=\(scheduled)",
-            category: .audio
-        )
+        gaplessLog("[AACGapless] applying headTrimFrames=\(head) tailTrimFrames=\(tail) track=\(idTag) headMs=\(String(format: "%.1f", headMs)) tailMs=\(String(format: "%.1f", tailMs)) scheduledFrames=\(scheduled)")
 
         return AACTrimDecision(
             headTrimFrames: AVAudioFramePosition(head),
@@ -1519,12 +1546,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         // Adopt the prefetched scope owner BEFORE scheduling so there is a single
         // owner to release if anything later discards it.
         prefetchedResource = resource
-        if LogConfig.perfDebugEnabled {
-            Log.info(
-                "[Gapless] adopt prefetched resource track=\(resource.trackID.uuidString.prefix(8)) scoped=\(resource.didStartSecurityScopedAccess)",
-                category: .audio
-            )
-        }
+        gaplessLog("[Gapless] adopt prefetched resource track=\(resource.trackID.uuidString.prefix(8)) scoped=\(resource.didStartSecurityScopedAccess)")
 
         scheduleQueue.append(item)
 
@@ -1552,29 +1574,33 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
 
         let headTrim = trim?.headTrimFrames ?? 0
-        Log.info(
-            "[Gapless] scheduled next track=\(resource.trackID.uuidString.prefix(8)) startNodeSample=\(startNodeSample) frames=\(frameCount) headTrim=\(headTrim)",
-            category: .audio
-        )
+        gaplessLog("[Gapless] scheduled next track=\(resource.trackID.uuidString.prefix(8)) startNodeSample=\(startNodeSample) frames=\(frameCount) headTrim=\(headTrim)")
 
         // Boundary invariant: the next item is scheduled exactly at the current
         // item's end on the node clock, so the difference must be 0. A non-zero
-        // value would mean the queue's node-sample math is wrong.
+        // value would mean the queue's node-sample math is wrong, so surface it
+        // unconditionally; the expected diffFrames=0 case is gated behind verbose.
         let currentEndNodeSample = scheduleQueue.current?.endNodeSample ?? startNodeSample
         let boundaryDiffFrames = startNodeSample - currentEndNodeSample
         let boundaryDiffMs = resource.sampleRate > 0
             ? Double(boundaryDiffFrames) / resource.sampleRate * 1000
             : 0
-        Log.info(
-            "[GaplessBoundary] currentEndNodeSample=\(currentEndNodeSample) nextStartNodeSample=\(startNodeSample) diffFrames=\(boundaryDiffFrames) diffMs=\(String(format: "%.3f", boundaryDiffMs))",
-            category: .audio
-        )
+        if boundaryDiffFrames != 0 {
+            Log.warning(
+                "[GaplessBoundary] non-zero gap currentEndNodeSample=\(currentEndNodeSample) nextStartNodeSample=\(startNodeSample) diffFrames=\(boundaryDiffFrames) diffMs=\(String(format: "%.3f", boundaryDiffMs))",
+                category: .audio
+            )
+        } else {
+            gaplessLog("[GaplessBoundary] currentEndNodeSample=\(currentEndNodeSample) nextStartNodeSample=\(startNodeSample) diffFrames=0 diffMs=\(String(format: "%.3f", boundaryDiffMs))")
+        }
 
         // DEBUG-only: measure the real audio content at the seam (current tail vs
         // next head) off-main, so an audible gap can be attributed to file content
         // (encoder delay / padding / leading silence) rather than the schedule.
+        // Gated behind gaplessVerbose so the probe doesn't even read files in a
+        // normal Debug run.
         #if DEBUG
-        if let currentURL = currentFileURL, let currentItem = scheduleQueue.current {
+        if LogConfig.gaplessVerbose, let currentURL = currentFileURL, let currentItem = scheduleQueue.current {
             let currentTailEndFrame = currentItem.startFrameInFile + AVAudioFramePosition(currentItem.frameCount)
             let currentTrackID = currentItem.trackID
             let currentProbeURL = currentURL
@@ -1751,16 +1777,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             advancedTrack.fileBookmarkData = refreshed
         }
 
-        if LogConfig.perfDebugEnabled {
-            Log.info(
-                "[Gapless] adopt current-file from prefetch track=\(advancedTrack.id.uuidString.prefix(8)) scoped=\(currentFileSecurityScoped)",
-                category: .audio
-            )
-        }
-        Log.info(
-            "[Gapless] boundary committed track=\(advancedTrack.id.uuidString) title=\(advancedTrack.title) duration=\(String(format: "%.1f", duration))",
-            category: .audio
-        )
+        gaplessLog("[Gapless] adopt current-file from prefetch track=\(advancedTrack.id.uuidString.prefix(8)) scoped=\(currentFileSecurityScoped)")
+        gaplessLog("[Gapless] boundary committed track=\(advancedTrack.id.uuidString) title=\(advancedTrack.title) duration=\(String(format: "%.1f", duration))")
 
         // 5. Keep playing; the node continues rendering the new item with no stop
         //    or rebuild. The progress timer prefetches the following track as this

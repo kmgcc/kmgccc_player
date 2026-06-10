@@ -496,6 +496,7 @@ final class PlaybackCoordinator {
         return NowPlayingPresentation(
             source: .local,
             localTrack: track,
+            localPlaybackOrderMode: playerVM.currentPlaybackOrderMode,
             title: track.title,
             artist: track.artist,
             album: track.album.isEmpty ? nil : track.album,

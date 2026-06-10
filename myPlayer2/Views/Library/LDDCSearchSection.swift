@@ -79,7 +79,9 @@ struct LDDCSearchSection: View {
     @State private var isUpdatingAMLLDBIndex = false
     @State private var amlldbIndexStatus: String? = nil
     
-    private let client = LDDCClient()
+    // Shared instance: this struct is re-initialized on every parent body
+    // evaluation, so a per-instance LDDCClient would create a URLSession each time.
+    private let client = LDDCClient.shared
     private let amlldbService = AMLLDBService.shared
     private let panelMaxWidth: CGFloat = 380
     private let visibleLDDCSources: [LDDCSource] = [.QM, .KG, .NE]
