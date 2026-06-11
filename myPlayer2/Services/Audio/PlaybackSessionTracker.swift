@@ -78,6 +78,14 @@ final class PlaybackSessionTracker {
     /// Threshold for quick skip: < 8% played.
     static let quickSkipPercentage: Double = 0.08
 
+    /// Quick skip via the duration rule also requires low proportion, so short
+    /// songs are judged by how much of the song played, not a fixed second count.
+    static let quickSkipMaxProgress: Double = 0.30
+
+    /// Skips after this much of the track has played are treated as engaged
+    /// listening: they count as a play but carry no skip / quick-skip penalty.
+    static let substantialPlayPercentage: Double = 0.50
+
     /// Progress jumps above this are treated as seeks/position changes, not listening time.
     private static let maxContinuousProgressDelta: Double = 2.0
 
@@ -262,10 +270,12 @@ final class PlaybackSessionTracker {
 
         let progress = maxProgressReached / trackDuration
 
-        // Quick skip: very short play time OR very small percentage.
-        let isShortDuration = totalPlayedSeconds < Self.quickSkipDuration
+        // Quick skip: very small proportion, OR short play time that is also a
+        // small proportion (so a short song played most of the way is not a quick skip).
         let isSmallProgress = progress < Self.quickSkipPercentage
+        let isShortAndShallow = totalPlayedSeconds < Self.quickSkipDuration
+            && progress < Self.quickSkipMaxProgress
 
-        return isShortDuration || isSmallProgress
+        return isSmallProgress || isShortAndShallow
     }
 }

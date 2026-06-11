@@ -87,6 +87,21 @@ struct TrackActionMenuContent: View {
             Divider()
         }
 
+        Button {
+            let liked = track.isManuallyLiked
+            invokeAction(liked ? "unlike" : "like") {
+                track.setManualLikeState(liked ? .none : .liked)
+            }
+        } label: {
+            if track.isManuallyLiked {
+                Label("取消喜欢", systemImage: "heart.slash")
+            } else {
+                Label("喜欢", systemImage: "heart")
+            }
+        }
+
+        Divider()
+
         Menu {
             playlistSubmenuContent
         } label: {

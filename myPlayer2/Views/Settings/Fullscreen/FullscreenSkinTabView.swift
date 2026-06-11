@@ -38,8 +38,8 @@ struct FullscreenSkinTabView: View {
 
     private let fullscreenMiniPlayerGlassMaterialOptions:
         [(title: String, material: AppSettings.FullscreenMiniPlayerGlassMaterial)] = [
-            ("clear", .clear),
-            ("normal", .normal),
+            ("透明", .clear),
+            ("正常", .normal),
         ]
 
     var body: some View {
