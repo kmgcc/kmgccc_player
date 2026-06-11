@@ -1835,8 +1835,14 @@ struct FullscreenPlayerView: View {
                         updateFullscreenBottomControlsHoverGate(appearancePanel: false)
                     }
                 }
+                // No `.scale` here: the panel hosts AppKit-backed controls
+                // (Slider/Picker), and a fractional scaleEffect during the
+                // insertion/removal animation resizes their platform-view
+                // hosts every frame, spamming "min <= max" length warnings
+                // under the embedded-window hosting hierarchy. Offset keeps
+                // the motion without touching platform-view sizes.
                 .transition(
-                    .opacity.combined(with: .scale(scale: 0.98, anchor: .bottomLeading))
+                    .opacity.combined(with: .offset(x: -8, y: 8))
                 )
                 .zIndex(2)
             }
