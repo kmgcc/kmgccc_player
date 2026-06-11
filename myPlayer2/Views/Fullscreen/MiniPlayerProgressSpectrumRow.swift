@@ -18,6 +18,7 @@ struct MiniPlayerProgressSpectrumRow: View {
     let scale: CGFloat
     let isSpectrumEnabled: Bool
     let isPlaying: Bool
+    let isSpectrumActive: Bool
     let accentColor: Color?
     let foregroundColor: Color?
     let foregroundProfile: FullscreenMiniPlayerForegroundProfile?
@@ -52,6 +53,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         scale: CGFloat,
         isSpectrumEnabled: Bool,
         isPlaying: Bool,
+        isSpectrumActive: Bool = true,
         accentColor: Color?,
         foregroundColor: Color? = nil,
         foregroundProfile: FullscreenMiniPlayerForegroundProfile? = nil,
@@ -70,6 +72,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         self.scale = scale
         self.isSpectrumEnabled = isSpectrumEnabled
         self.isPlaying = isPlaying
+        self.isSpectrumActive = isSpectrumActive
         self.accentColor = accentColor
         self.foregroundColor = foregroundColor
         self.foregroundProfile = foregroundProfile
@@ -192,6 +195,7 @@ struct MiniPlayerProgressSpectrumRow: View {
     private var spectrumSection: some View {
         MiniPlayerSpectrumView(
             isPlaying: isPlaying,
+            isActive: isSpectrumActive,
             accentColor: spectrumFallbackColor,
             artworkColors: spectrumArtworkColors,
             usesDarkForeground: resolvedSpectrumUsesDarkForeground,

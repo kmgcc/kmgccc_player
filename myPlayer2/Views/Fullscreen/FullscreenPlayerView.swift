@@ -202,7 +202,6 @@ struct FullscreenPlayerView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @EnvironmentObject private var themeStore: ThemeStore
-    private let miniPlayerSpectrumService = AudioVisualizationService.shared
     @StateObject private var bkController = BKArtBackgroundController()
     @State private var skinRevision = 0
     @State private var rightPanelDisplayState: RightPanelDisplayState = .lyrics
@@ -214,6 +213,9 @@ struct FullscreenPlayerView: View {
     @State private var pendingFullscreenLyricsHostDetach: DispatchWorkItem?
     @State private var pendingFullscreenTrackRefresh: DispatchWorkItem?
     @State private var pendingFullscreenThemeReapply: DispatchWorkItem?
+    /// Last fully decoded artwork committed to the skin layer. Track metadata
+    /// can advance ahead of artwork decoding, so this remains stable until a
+    /// complete image for the current display track is ready.
     @State private var artworkSnapshot: ArtworkAssetSnapshot?
     @State private var coverBlurLyricsTheme: FullscreenCoverBlurLyricsTheme?
     @State private var deferredTrackUpdateDeadline: Date?
@@ -226,7 +228,6 @@ struct FullscreenPlayerView: View {
     @State private var fullscreenViewportSize: CGSize = .zero
     @State private var embeddedInitialThemeUnlocked = false
     @State private var didHandleFullscreenAppear = false
-    @State private var isFullscreenMiniPlayerSpectrumLeaseActive = false
     @State private var isFullscreenBottomControlsVisible = true
     @State private var isFullscreenBottomControlsHovered = false
     @State private var isFullscreenBottomControlsHotZoneHovered = false
@@ -418,9 +419,6 @@ struct FullscreenPlayerView: View {
         .onChange(of: fullscreenLedServiceSignature) { _, _ in
             syncFullscreenLedService()
         }
-        .onChange(of: settings.fullscreen.isMiniPlayerSpectrumEnabled) { _, _ in
-            syncFullscreenMiniPlayerSpectrumLease()
-        }
         .onChange(of: playerVM.currentTime, handleCurrentTimeChange)
         .onChange(of: playerVM.isPlaying) { _, newValue in
             guard playbackCoordinator.presentation.source == .local else { return }
@@ -429,9 +427,6 @@ struct FullscreenPlayerView: View {
             fullscreenStore.setPlaying(newValue)
             if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
                 coverBlurHighlightStore.setPlaying(newValue)
-            }
-            if isFullscreenMiniPlayerSpectrumLeaseActive {
-                miniPlayerSpectrumService.updatePlaybackState(isPlaying: newValue)
             }
         }
         .onChange(of: playerVM.currentTrack?.id, handleTrackIdChange)
@@ -516,7 +511,6 @@ struct FullscreenPlayerView: View {
             startFullscreenLyricsSurface(reason: "fullscreen appear")
         }
         resetFullscreenBottomControlsAutoHideState()
-        syncFullscreenMiniPlayerSpectrumLease()
         syncFullscreenLedService()
         showPlaybackModeRetapTipIfNeeded()
     }
@@ -550,7 +544,6 @@ struct FullscreenPlayerView: View {
         embeddedInitialThemeUnlocked = false
         isQuickAppearancePanelPresented = false
         isFullscreenBottomControlsAppearancePanelHovered = false
-        releaseFullscreenMiniPlayerSpectrumLease()
         cancelFullscreenBottomControlsAutoHide()
         cancelFullscreenSideControlCollapses()
         setLeftActionsExpanded(false, reason: "fullscreen-disappear")
@@ -1198,6 +1191,7 @@ struct FullscreenPlayerView: View {
                 .offset(x: leadingControlsOriginX)
 
             FullscreenMiniPlayerView(
+                isSpectrumActive: isFullscreenBottomControlsVisible,
                 glassStyle: fullscreenControlsGlassStyle,
                 playbackMode: currentPlaybackMode,
                 onPlaybackModeChange: handlePlaybackModeChange,
@@ -1722,6 +1716,7 @@ struct FullscreenPlayerView: View {
 
                     FullscreenMiniPlayerView(
                         scale: scale,
+                        isSpectrumActive: isFullscreenBottomControlsVisible,
                         glassStyle: fullscreenControlsGlassStyle,
                         playbackMode: currentPlaybackMode,
                         onPlaybackModeChange: handlePlaybackModeChange,
@@ -2170,14 +2165,6 @@ struct FullscreenPlayerView: View {
         (isCoverBlurFullscreenSkin || isAppleStyleFullscreenSkin) ? .dark : colorScheme
     }
 
-    private var shouldKeepFullscreenMiniPlayerSpectrumAlive: Bool {
-        guard settings.fullscreen.isMiniPlayerSpectrumEnabled else { return false }
-        if playbackCoordinator.activeSource.isExternal {
-            return playbackCoordinator.presentation.hasTrack
-        }
-        return playerVM.currentTrack != nil
-    }
-
     private var coverBlurBaseBlendMode: BlendMode {
         if isAppleStyleFullscreenSkin {
             return .plusLighter
@@ -2407,10 +2394,6 @@ struct FullscreenPlayerView: View {
 
         cancelPendingFullscreenLyricsThemeWork()
         coverBlurLyricsTheme = nil
-        if shouldClearDisplayedArtworkSnapshotOnTrackChange {
-            artworkSnapshot = nil
-        }
-        syncFullscreenMiniPlayerSpectrumLease()
 
         // Simplified track change handling - matches window mode behavior
         // Apply track immediately without deferred scheduling
@@ -2438,9 +2421,6 @@ struct FullscreenPlayerView: View {
         guard oldId != newId else { return }
         cancelPendingFullscreenLyricsThemeWork()
         coverBlurLyricsTheme = nil
-        if shouldClearDisplayedArtworkSnapshotOnTrackChange {
-            artworkSnapshot = nil
-        }
         syncFullscreenLyricsHostMount()
         reloadLyricsSurface(reason: "fullscreen external track changed", forceLyricsReload: true)
     }
@@ -2482,36 +2462,6 @@ struct FullscreenPlayerView: View {
         pendingFullscreenLyricsRefresh = nil
         pendingFullscreenThemeReapply?.cancel()
         pendingFullscreenThemeReapply = nil
-    }
-
-    private func syncFullscreenMiniPlayerSpectrumLease() {
-        let shouldKeepAlive = shouldKeepFullscreenMiniPlayerSpectrumAlive
-        guard shouldKeepAlive != isFullscreenMiniPlayerSpectrumLeaseActive else {
-            if shouldKeepAlive {
-                let isPlaying = playbackCoordinator.activeSource.isExternal
-                    ? playbackCoordinator.presentation.isPlaying
-                    : playerVM.isPlaying
-                miniPlayerSpectrumService.updatePlaybackState(isPlaying: isPlaying)
-            }
-            return
-        }
-
-        isFullscreenMiniPlayerSpectrumLeaseActive = shouldKeepAlive
-        if shouldKeepAlive {
-            miniPlayerSpectrumService.start()
-            let isPlaying = playbackCoordinator.activeSource.isExternal
-                ? playbackCoordinator.presentation.isPlaying
-                : playerVM.isPlaying
-            miniPlayerSpectrumService.updatePlaybackState(isPlaying: isPlaying)
-        } else {
-            miniPlayerSpectrumService.stop()
-        }
-    }
-
-    private func releaseFullscreenMiniPlayerSpectrumLease() {
-        guard isFullscreenMiniPlayerSpectrumLeaseActive else { return }
-        isFullscreenMiniPlayerSpectrumLeaseActive = false
-        miniPlayerSpectrumService.stop()
     }
 
     private func reloadLyricsSurface(
@@ -3374,17 +3324,19 @@ struct FullscreenPlayerView: View {
 
     private func makeContext(windowSize: CGSize, artworkColumnWidth: CGFloat, fullscreenScale: CGFloat = 1.0) -> SkinContext {
         let display = currentDisplayContext
+        let displayArtworkTrackID = display.artworkTrackID ?? display.trackID ?? Self.fallbackExternalTrackID
+        let artworkSnapshotMatchesCurrentTrack = artworkSnapshot?.trackID == displayArtworkTrackID
 
         let trackMeta: SkinContext.TrackMetadata? = display.hasTrack
             ? SkinContext.TrackMetadata(
-                id: display.artworkTrackID ?? display.trackID ?? Self.fallbackExternalTrackID,
+                id: displayArtworkTrackID,
                 title: display.title,
                 artist: display.artist,
                 album: display.album ?? "",
                 duration: display.duration,
                 artworkChecksum: artworkSnapshot?.artworkChecksum
                     ?? ArtworkDataFingerprint.sampledHash(for: display.artworkData),
-                artworkData: display.artworkData,
+                artworkData: artworkSnapshotMatchesCurrentTrack ? display.artworkData : nil,
                 artworkImage: artworkSnapshot?.fullImage
             )
             : nil
@@ -3787,9 +3739,6 @@ struct FullscreenPlayerView: View {
               let artworkData = display.artworkData,
               !artworkData.isEmpty
         else {
-            if shouldClearDisplayedArtworkSnapshotOnTrackChange {
-                artworkSnapshot = nil
-            }
             return
         }
 
@@ -3804,6 +3753,7 @@ struct FullscreenPlayerView: View {
         guard currentArtworkTrackID == expectedTrackID else { return }
         guard currentArtworkTaskKey == expectedTaskKey else { return }
         guard snapshot?.trackID == expectedTrackID else { return }
+        guard Self.isValidDisplayArtworkSnapshot(snapshot) else { return }
 
         artworkSnapshot = snapshot
 
@@ -3816,10 +3766,13 @@ struct FullscreenPlayerView: View {
         1_400
     }
 
-    private var shouldClearDisplayedArtworkSnapshotOnTrackChange: Bool {
-        let presentation = playbackCoordinator.presentation
-        guard presentation.source.isExternal else { return true }
-        return !presentation.isArtworkLoading
+    private static func isValidDisplayArtworkSnapshot(_ snapshot: ArtworkAssetSnapshot?) -> Bool {
+        guard let image = snapshot?.fullImage else { return false }
+        var proposedRect = CGRect(origin: .zero, size: image.size)
+        guard let cgImage = image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil) else {
+            return image.size.width > 1 && image.size.height > 1
+        }
+        return cgImage.width > 1 && cgImage.height > 1
     }
 
 }

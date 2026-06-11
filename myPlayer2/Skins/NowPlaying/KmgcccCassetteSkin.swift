@@ -351,7 +351,6 @@ private struct CassetteArtwork: View, Equatable {
                     .opacity(adjustedVisible ? 1 : 0)
             }
         }
-        .animation(.easeInOut(duration: 0.26), value: adjustedVisible)
         .frame(width: size.width, height: size.height)
         .scaleEffect(0.90)
         .clipped()
@@ -365,7 +364,7 @@ private struct CassetteArtwork: View, Equatable {
     }
 
     private var showAdjustedLayer: Bool {
-        adjustedArtworkKey == renderKey && adjustedArtworkImage != nil
+        adjustedArtworkImage != nil
     }
 
     private var originalArtworkImage: Image {
@@ -414,7 +413,8 @@ private struct CassetteArtwork: View, Equatable {
         let generation = processingGeneration
 
         guard let track = context.track, let data = track.artworkData else {
-            clearAdjustedArtworkState(resetRenderKey: true)
+            renderKey = ""
+            keepsOriginalArtworkLayer = adjustedArtworkImage == nil
             return
         }
 
@@ -433,12 +433,8 @@ private struct CassetteArtwork: View, Equatable {
             maxPixel: maxPixel
         )
         renderKey = key
-        if adjustedArtworkKey != key {
-            adjustedArtworkKey = nil
-            adjustedArtworkImage = nil
-        }
-        keepsOriginalArtworkLayer = true
-        adjustedVisible = false
+        keepsOriginalArtworkLayer = adjustedArtworkImage == nil
+        adjustedVisible = adjustedArtworkImage != nil
 
         processingTask = Task(priority: .utility) {
             defer {
@@ -455,9 +451,8 @@ private struct CassetteArtwork: View, Equatable {
                     guard self.processingGeneration == generation, self.renderKey == key else { return }
                     self.adjustedArtworkImage = cached
                     self.adjustedArtworkKey = key
-                    withAnimation(.easeInOut(duration: 0.26)) {
-                        self.adjustedVisible = true
-                    }
+                    self.adjustedVisible = true
+                    self.keepsOriginalArtworkLayer = false
                     self.scheduleOriginalArtworkLayerRelease(generation: generation, key: key)
                 }
                 return
@@ -487,9 +482,8 @@ private struct CassetteArtwork: View, Equatable {
                 }
                 self.adjustedArtworkImage = image
                 self.adjustedArtworkKey = key
-                withAnimation(.easeInOut(duration: 0.26)) {
-                    self.adjustedVisible = true
-                }
+                self.adjustedVisible = true
+                self.keepsOriginalArtworkLayer = false
                 self.scheduleOriginalArtworkLayerRelease(generation: generation, key: key)
             }
         }
@@ -580,6 +574,7 @@ private struct CassetteArtwork: View, Equatable {
             guard processingGeneration == generation else { return }
             guard renderKey == key else { return }
             guard adjustedVisible, showAdjustedLayer else { return }
+            guard adjustedArtworkKey == key else { return }
             keepsOriginalArtworkLayer = false
             originalArtworkReleaseTask = nil
         }

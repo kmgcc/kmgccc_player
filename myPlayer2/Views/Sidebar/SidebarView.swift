@@ -41,6 +41,9 @@ struct SidebarView: View {
     @State private var isHoveringAlbums = false
     @State private var settingsRotateTrigger = 0
     @State private var appearanceRotateTrigger = 0
+    @State private var scrollFadeState = ScrollEdgeFadeState()
+
+    private let scrollFadeHeight: CGFloat = 28
 
     var body: some View {
         VStack(spacing: 0) {
@@ -352,6 +355,12 @@ struct SidebarView: View {
                 }
             }
             .listStyle(.sidebar)
+            .onScrollGeometryChange(for: ScrollEdgeFadeState.self) { geometry in
+                ScrollEdgeFadeState(geometry: geometry, fadeHeight: scrollFadeHeight)
+            } action: { _, newState in
+                scrollFadeState = newState
+            }
+            .scrollEdgeFadeMask(scrollFadeState, fadeHeight: scrollFadeHeight)
             .onHover { hovering in
                 isHoveringPlaylists = hovering
             }

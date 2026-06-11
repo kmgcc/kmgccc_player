@@ -24,6 +24,7 @@ enum MiniPlayerSpectrumPausedBehavior {
 @MainActor
 struct MiniPlayerSpectrumView: View {
     let isPlaying: Bool
+    let isActive: Bool
     let accentColor: Color?
     let artworkColors: [NSColor]
     let usesDarkForeground: Bool
@@ -33,6 +34,7 @@ struct MiniPlayerSpectrumView: View {
 
     init(
         isPlaying: Bool,
+        isActive: Bool = true,
         accentColor: Color?,
         artworkColors: [NSColor] = [],
         usesDarkForeground: Bool = false,
@@ -41,6 +43,7 @@ struct MiniPlayerSpectrumView: View {
         pausedBehavior: MiniPlayerSpectrumPausedBehavior
     ) {
         self.isPlaying = isPlaying
+        self.isActive = isActive
         self.accentColor = accentColor
         self.artworkColors = artworkColors
         self.usesDarkForeground = usesDarkForeground
@@ -82,6 +85,7 @@ struct MiniPlayerSpectrumView: View {
         let resolvedAccent = Self.resolveStaticAccent(accentColor)
         MiniPlayerSpectrumContainer(
             isPlaying: isPlaying,
+            isActive: isActive,
             accentColor: resolvedAccent,
             artworkColors: artworkColors,
             usesDarkForeground: usesDarkForeground,
@@ -115,6 +119,7 @@ struct MiniPlayerSpectrumView: View {
 
 private struct MiniPlayerSpectrumContainer: NSViewRepresentable {
     let isPlaying: Bool
+    let isActive: Bool
     let accentColor: NSColor
     let artworkColors: [NSColor]
     let usesDarkForeground: Bool
@@ -132,7 +137,7 @@ private struct MiniPlayerSpectrumContainer: NSViewRepresentable {
             artworkColors: artworkColors,
             usesDarkForeground: usesDarkForeground
         )
-        view.start()
+        view.setActive(isActive)
         view.setPlayback(isPlaying: isPlaying)
         return view
     }
@@ -146,6 +151,7 @@ private struct MiniPlayerSpectrumContainer: NSViewRepresentable {
             artworkColors: artworkColors,
             usesDarkForeground: usesDarkForeground
         )
+        nsView.setActive(isActive)
         nsView.setPlayback(isPlaying: isPlaying)
     }
 
@@ -157,6 +163,7 @@ private struct MiniPlayerSpectrumContainer: NSViewRepresentable {
 extension MiniPlayerSpectrumContainer: Equatable {
     static func == (lhs: MiniPlayerSpectrumContainer, rhs: MiniPlayerSpectrumContainer) -> Bool {
         lhs.isPlaying == rhs.isPlaying
+            && lhs.isActive == rhs.isActive
             && lhs.dotSize == rhs.dotSize
             && lhs.spacing == rhs.spacing
             && lhs.pausedBehavior == rhs.pausedBehavior
@@ -362,6 +369,8 @@ private final class MiniPlayerSpectrumHostView: NSView {
     private var cachedColors: [CGColor] = []
     private var cachedStrokeColors: [CGColor] = []
     private var lastPlaybackState: Bool?
+    private var isActive = false
+    private var hasServiceLease = false
     private var lastLayoutSize: CGSize = .zero
     
     // Pause behavior configuration
@@ -395,8 +404,20 @@ private final class MiniPlayerSpectrumHostView: NSView {
         layoutCapsules()
     }
 
-    func start() {
+    func setActive(_ active: Bool) {
+        guard isActive != active else { return }
+        isActive = active
+        if active {
+            start()
+        } else {
+            stop()
+        }
+    }
+
+    private func start() {
         guard consumerID == nil else { return }
+        service.start()
+        hasServiceLease = true
         consumerID = service.addConsumer { [weak self] wave in
             self?.applyWave(wave)
         }
@@ -406,6 +427,10 @@ private final class MiniPlayerSpectrumHostView: NSView {
         if let consumerID {
             service.removeConsumer(consumerID)
             self.consumerID = nil
+        }
+        if hasServiceLease {
+            hasServiceLease = false
+            service.stop()
         }
         pauseTransitionTimer?.invalidate()
         pauseTransitionTimer = nil
