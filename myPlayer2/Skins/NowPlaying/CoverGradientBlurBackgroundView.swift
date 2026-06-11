@@ -10,7 +10,7 @@ import CoreImage
 import ImageIO
 import SwiftUI
 
-private let coverGradientBlurRendererCacheVersion = "layeredCrossfadeV6"
+private let coverGradientBlurRendererCacheVersion = "smoothStretchV8"
 
 // MARK: - Edge Fill Mode
 
@@ -33,7 +33,6 @@ enum CoverEdgeFillMode: String, Sendable, CaseIterable {
 enum CoverGradientBlurMaskMode: String, Sendable {
     case progressiveRamp
     case extensionOnly
-    case layeredCrossfade
 }
 
 struct CoverGradientBlurConfig: Sendable {
@@ -57,6 +56,14 @@ struct CoverGradientBlurConfig: Sendable {
     // CIColorPolynomial alpha channel coefficients (const, linear, quadratic, cubic).
     // nil = use the renderer's built-in default (0, 0.10, 0.34, 0.56).
     var blurAlphaCoefficients: (CGFloat, CGFloat, CGFloat, CGFloat)? = nil
+
+    // Strength of the extension blur floor as a fraction of blurRadius (capped
+    // at one ≤120px pass). The floor is a single masked-blur pass that is 0
+    // across the cover and full across the stretch extension, so the segment
+    // hugging the cover's right edge is already clearly blurred instead of
+    // inheriting the ramp masks' value of ~0 at the edge. 0 = disabled (the
+    // default; HomeHero and other consumers stay on the pure ramp pipeline).
+    var extensionFloorStrength: CGFloat = 0
 
     static let `default` = CoverGradientBlurConfig()
     static let fullscreen = CoverGradientBlurConfig(
@@ -97,7 +104,7 @@ private struct RenderKey: Equatable {
             alphaCoeffStr = "default"
         }
         self.configHash = String(
-            format: "%@-%.1f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%@-%@-%@-%.3f-%@",
+            format: "%@-%.1f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%@-%@-%@-%.3f-%@-%.3f",
             coverGradientBlurRendererCacheVersion,
             config.blurRadius,
             config.colorOverlayOpacity,
@@ -112,7 +119,8 @@ private struct RenderKey: Equatable {
             config.blurMaskMode.rawValue,
             prefersAdaptiveArtworkSizing ? "adaptive" : "fixed",
             config.blurStartRatioFromEdge,
-            alphaCoeffStr
+            alphaCoeffStr,
+            config.extensionFloorStrength
         )
         self.dominantColorHash = dominantColor?.hexString ?? "nil"
     }
@@ -455,107 +463,129 @@ enum CoverGradientBlurRenderer {
             return nil
         }
 
-        let blurredImage: CIImage
+        let nonLinearMask: CIImage?
         switch config.blurMaskMode {
-        case .layeredCrossfade:
-            // Layered crossfade progressive blur: composite full-frame Gaussian
-            // layers (geometric sigma ladder) left-to-right with smooth alpha
-            // ramps. Crossfades are continuous, so this avoids the vertical
-            // banding that CIMaskedVariableBlur's internal radius quantisation
-            // produces under steep masks.
-            guard
-                let layered = renderLayeredCrossfade(
-                    clampedBase: clampedImage,
-                    canvasRect: canvasRect,
-                    blurStartX: blurStartX,
+        case .progressiveRamp:
+            nonLinearMask = progressiveRampMask(
+                blurStartX: blurStartX,
+                blurEndX: blurEndX,
+                canvasRect: canvasRect,
+                canvasLogicalHeight: canvasLogicalHeight,
+                alphaCoefficients: config.blurAlphaCoefficients
+            )
+        case .extensionOnly:
+            nonLinearMask = extensionOnlyMask(
+                artworkRightEdgeX: artworkRightEdgeX,
+                canvasRect: canvasRect,
+                canvasLogicalHeight: canvasLogicalHeight
+            )
+        }
+
+        guard let nonLinearMask else { return nil }
+
+        // Progressive blur:
+        //   Pass 0 — fixed cap ≤150, full mask — defines the base cover-edge
+        //            transition and protects the left / cover-right-edge region.
+        //   Pass 1+ — staggered smooth-onset masks. Onsets are spread from the
+        //            cover's right edge into the extension region so total blur
+        //            ramps up early and each additional pass (= radius slider
+        //            increase) is visible across the whole gradient. The earlier
+        //            power-feathered masks (a², a³, a⁴, a⁶ of the cubic base
+        //            curve) confined nearly all later passes to the far right
+        //            edge, which also made the radius setting appear inert.
+        //            CISmoothLinearGradient keeps every mask seam-free; the
+        //            zone-threshold remap before that produced visible vertical
+        //            seams where later blur passes entered/exited.
+        var currentImage = clampedImage
+        let basePassRadius: CGFloat = 150.0
+        let totalRadius = max(0, config.blurRadius)
+
+        // Build pass radii: pass 0 is ≤150; remaining radius is split into
+        // standard ≤150 passes.
+        var passRadii: [CGFloat] = []
+        var remaining = totalRadius
+        let p0Radius = min(basePassRadius, remaining)
+        passRadii.append(p0Radius)
+        remaining -= p0Radius
+        while remaining > 0 {
+            let r = min(basePassRadius, remaining)
+            passRadii.append(r)
+            remaining -= r
+        }
+
+        // Extension blur floor. The ramp masks (pass 0 + staggered) are all at
+        // or near 0 alpha exactly at the cover's right edge, so the segment
+        // hugging the cover was starved (~0.14 of one pass ≈ 21px) no matter
+        // how the ramps were reshaped — a curve anchored at 0 there cannot be
+        // non-zero there. This single masked-blur pass lifts the whole stretch
+        // extension to a moderate floor (mask 0 in the cover, full across the
+        // extension), so the start is already clearly blurred while the right
+        // side keeps increasing on top via pass 0 + the staggered passes. Gated
+        // by `extensionFloorStrength` so non-opted-in consumers are unchanged.
+        if config.extensionFloorStrength > 0,
+           artworkRightEdgePixel < canvasPixelWidth {
+            let floorRadius = min(120, totalRadius * config.extensionFloorStrength)
+            if floorRadius > 0,
+               let floorMask = extensionFloorMask(
+                   coverEdgeX: artworkRightEdgeX,
+                   rampSpan: max(12, visibleArtworkWidth * 0.025),
+                   canvasRect: canvasRect,
+                   canvasLogicalHeight: canvasLogicalHeight
+               ),
+               let floorClampFilter = CIFilter(name: "CIAffineClamp") {
+                floorClampFilter.setValue(currentImage, forKey: kCIInputImageKey)
+                floorClampFilter.setValue(CGAffineTransform.identity, forKey: kCIInputTransformKey)
+                if let clampedFloorInput = floorClampFilter.outputImage,
+                   let floorBlurFilter = CIFilter(name: "CIMaskedVariableBlur") {
+                    floorBlurFilter.setValue(clampedFloorInput, forKey: kCIInputImageKey)
+                    floorBlurFilter.setValue(floorRadius, forKey: kCIInputRadiusKey)
+                    floorBlurFilter.setValue(floorMask, forKey: "inputMask")
+                    if let flooredImage = floorBlurFilter.outputImage?.cropped(to: canvasRect) {
+                        currentImage = flooredImage
+                    }
+                }
+            }
+        }
+
+        for (passIndex, passRadius) in passRadii.enumerated() {
+            guard passRadius > 0 else { continue }
+
+            let passMask: CIImage
+            if passIndex == 0 || config.blurMaskMode == .extensionOnly {
+                passMask = nonLinearMask
+            } else {
+                passMask = staggeredOnsetMask(
+                    passIndex: passIndex,
+                    featherPassCount: passRadii.count - 1,
                     coverEdgeX: artworkRightEdgeX,
                     blurEndX: blurEndX,
-                    totalRadius: max(0, config.blurRadius),
-                    canvasLogicalHeight: canvasLogicalHeight
-                )
-            else { return nil }
-            blurredImage = layered
-
-        case .progressiveRamp, .extensionOnly:
-            let nonLinearMask: CIImage?
-            if config.blurMaskMode == .progressiveRamp {
-                nonLinearMask = progressiveRampMask(
-                    blurStartX: blurStartX,
-                    blurEndX: blurEndX,
-                    canvasRect: canvasRect,
-                    canvasLogicalHeight: canvasLogicalHeight,
-                    alphaCoefficients: config.blurAlphaCoefficients
-                )
-            } else {
-                nonLinearMask = extensionOnlyMask(
-                    artworkRightEdgeX: artworkRightEdgeX,
                     canvasRect: canvasRect,
                     canvasLogicalHeight: canvasLogicalHeight
-                )
+                ) ?? nonLinearMask
             }
 
-            guard let nonLinearMask else { return nil }
-
-            // Progressive blur:
-            //   Pass 0 — fixed cap ≤150, full mask — defines the base cover-edge
-            //            transition and protects the left / cover-right-edge region.
-            //   Pass 1+ — each pass uses a continuous power-feathered mask. The
-            //            previous zone-threshold remap produced visible vertical
-            //            seams where later blur passes entered/exited.
-            var currentImage = clampedImage
-            let basePassRadius: CGFloat = 150.0
-            let totalRadius = max(0, config.blurRadius)
-
-            // Build pass radii: pass 0 is ≤150; remaining radius is split into
-            // standard ≤150 passes.
-            var passRadii: [CGFloat] = []
-            var remaining = totalRadius
-            let p0Radius = min(basePassRadius, remaining)
-            passRadii.append(p0Radius)
-            remaining -= p0Radius
-            while remaining > 0 {
-                let r = min(basePassRadius, remaining)
-                passRadii.append(r)
-                remaining -= r
+            guard let passClampFilter = CIFilter(name: "CIAffineClamp") else {
+                return nil
+            }
+            passClampFilter.setValue(currentImage, forKey: kCIInputImageKey)
+            passClampFilter.setValue(CGAffineTransform.identity, forKey: kCIInputTransformKey)
+            guard let clampedPassImage = passClampFilter.outputImage else {
+                return nil
             }
 
-            for (passIndex, passRadius) in passRadii.enumerated() {
-                guard passRadius > 0 else { continue }
-
-                let passMask: CIImage
-                if passIndex == 0 || config.blurMaskMode == .extensionOnly {
-                    passMask = nonLinearMask
-                } else {
-                    passMask = progressiveFeatherMask(
-                        from: nonLinearMask,
-                        passIndex: passIndex,
-                        extent: canvasRect
-                    ) ?? nonLinearMask
-                }
-
-                guard let passClampFilter = CIFilter(name: "CIAffineClamp") else {
-                    return nil
-                }
-                passClampFilter.setValue(currentImage, forKey: kCIInputImageKey)
-                passClampFilter.setValue(CGAffineTransform.identity, forKey: kCIInputTransformKey)
-                guard let clampedPassImage = passClampFilter.outputImage else {
-                    return nil
-                }
-
-                guard let blurFilter = CIFilter(name: "CIMaskedVariableBlur") else {
-                    return nil
-                }
-                blurFilter.setValue(clampedPassImage, forKey: kCIInputImageKey)
-                blurFilter.setValue(passRadius, forKey: kCIInputRadiusKey)
-                blurFilter.setValue(passMask, forKey: "inputMask")
-                guard let passImage = blurFilter.outputImage?.cropped(to: canvasRect) else {
-                    return nil
-                }
-                currentImage = passImage
+            guard let blurFilter = CIFilter(name: "CIMaskedVariableBlur") else {
+                return nil
             }
-
-            blurredImage = currentImage
+            blurFilter.setValue(clampedPassImage, forKey: kCIInputImageKey)
+            blurFilter.setValue(passRadius, forKey: kCIInputRadiusKey)
+            blurFilter.setValue(passMask, forKey: "inputMask")
+            guard let passImage = blurFilter.outputImage?.cropped(to: canvasRect) else {
+                return nil
+            }
+            currentImage = passImage
         }
+
+        let blurredImage = currentImage
 
         let overlayStartX = artworkRightEdgeX - (visibleArtworkWidth * config.overlayStartRatioFromEdge)
         let overlayEndX = canvasLogicalWidth
@@ -627,9 +657,9 @@ enum CoverGradientBlurRenderer {
         return cgImage
     }
 
-    /// Base ramp mask: linear gradient over the full blur span, shaped by a
-    /// cubic alpha polynomial. Pass 0 uses it directly; later passes derive
-    /// power-feathered variants from it.
+    /// Base ramp mask for pass 0: linear gradient over the full blur span,
+    /// shaped by a cubic alpha polynomial so the cover-interior transition
+    /// starts gently.
     private nonisolated static func progressiveRampMask(
         blurStartX: CGFloat,
         blurEndX: CGFloat,
@@ -702,170 +732,17 @@ enum CoverGradientBlurRenderer {
         return linearGradientFilter.outputImage?.cropped(to: canvasRect)
     }
 
-    /// Continuous feather mask for later blur passes. Integer powers keep low
-    /// mask values near zero and let high values gradually reach full strength
-    /// without introducing threshold bands or clamp plateaus.
-    private nonisolated static func progressiveFeatherMask(
-        from sourceMask: CIImage,
-        passIndex: Int,
-        extent: CGRect
-    ) -> CIImage? {
-        switch passIndex {
-        case 1:
-            return polynomialMask(sourceMask, power: 2, extent: extent)
-        case 2:
-            return polynomialMask(sourceMask, power: 3, extent: extent)
-        case 3:
-            guard let squared = polynomialMask(sourceMask, power: 2, extent: extent) else { return nil }
-            return polynomialMask(squared, power: 2, extent: extent)
-        default:
-            guard let squared = polynomialMask(sourceMask, power: 2, extent: extent) else { return nil }
-            return polynomialMask(squared, power: 3, extent: extent)
-        }
-    }
-
-    private nonisolated static func polynomialMask(
-        _ sourceMask: CIImage,
-        power: Int,
-        extent: CGRect
-    ) -> CIImage? {
-        guard let filter = CIFilter(name: "CIColorPolynomial") else {
-            return sourceMask.cropped(to: extent)
-        }
-        filter.setValue(sourceMask, forKey: kCIInputImageKey)
-        let coefficients: CIVector = power == 3
-            ? CIVector(x: 0, y: 0, z: 0, w: 1)
-            : CIVector(x: 0, y: 0, z: 1, w: 0)
-        filter.setValue(coefficients, forKey: "inputRedCoefficients")
-        filter.setValue(coefficients, forKey: "inputGreenCoefficients")
-        filter.setValue(coefficients, forKey: "inputBlueCoefficients")
-        filter.setValue(coefficients, forKey: "inputAlphaCoefficients")
-        return filter.outputImage?.cropped(to: extent)
-    }
-
-    // MARK: - Layered Crossfade Pipeline
-
-    /// Progressive blur built from full-frame Gaussian layers composited
-    /// left-to-right with smooth alpha ramps.
-    ///
-    /// - The sigma ladder is geometric (each crossfade band roughly doubles
-    ///   the blur), which reads as a perceptually even ramp.
-    /// - Band widths widen geometrically to the right, so blur builds up
-    ///   soonest just after the cover edge and the far right keeps the widest,
-    ///   strongest band.
-    /// - Every sigma scales continuously with `totalRadius`, so each step of
-    ///   the radius setting visibly shifts the whole gradient, including the
-    ///   cover interior.
-    private nonisolated static func renderLayeredCrossfade(
-        clampedBase: CIImage,
-        canvasRect: CGRect,
-        blurStartX: CGFloat,
+    /// Mask for the extension blur floor pass. Modeled on `extensionOnlyMask`:
+    /// alpha is 0 across the whole cover (left of `coverEdgeX`, where the
+    /// gradient clamps to color0) and rises to full just past the edge, then
+    /// stays full across the entire extension (right of the ramp, where it
+    /// clamps to color1). A `CISmoothLinearGradient` keeps the rise seam-free
+    /// so the cover→extension hand-off reads as a smooth transition, not a
+    /// fault. Because alpha is exactly 0 inside the cover, this pass never adds
+    /// blur to the cover interior.
+    private nonisolated static func extensionFloorMask(
         coverEdgeX: CGFloat,
-        blurEndX: CGFloat,
-        totalRadius: CGFloat,
-        canvasLogicalHeight: CGFloat
-    ) -> CIImage? {
-        let original = clampedBase.cropped(to: canvasRect)
-        guard totalRadius > 0 else { return original }
-
-        // Match the perceived strength scale of the old multi-pass pipeline
-        // (sequential ≤150 passes compose in quadrature to √(150·R)).
-        let sigmaMax = min(totalRadius, sqrt(150 * totalRadius))
-
-        // The interior level is what the cover region blends toward; it stays
-        // small so the cover reads clearly, and tracks the radius setting.
-        let interiorSigma = min(24, max(4, sigmaMax * 0.045))
-
-        let bandCount = max(2, Int(ceil(log2(sigmaMax / interiorSigma))))
-        let sigmaRatio = pow(sigmaMax / interiorSigma, 1 / CGFloat(bandCount))
-        var sigmas: [CGFloat] = [interiorSigma]
-        for band in 1...bandCount {
-            sigmas.append(interiorSigma * pow(sigmaRatio, CGFloat(band)))
-        }
-
-        // Stretch-region band widths grow by this factor per band.
-        let widthGrowth: CGFloat = 1.45
-        let weights = (0..<bandCount).map { pow(widthGrowth, CGFloat($0)) }
-        let weightSum = weights.reduce(0, +)
-        let stretchWidth = max(1, blurEndX - coverEdgeX)
-
-        var result = original
-        var bandStartX = blurStartX
-        var bandEndX = coverEdgeX
-
-        for (index, sigma) in sigmas.enumerated() {
-            guard
-                let layer = gaussianLayer(clampedBase, sigma: sigma, canvasRect: canvasRect),
-                let mask = smoothRampMask(
-                    fromX: bandStartX,
-                    toX: bandEndX,
-                    canvasRect: canvasRect,
-                    canvasLogicalHeight: canvasLogicalHeight
-                ),
-                let blendFilter = CIFilter(name: "CIBlendWithMask")
-            else { return nil }
-
-            blendFilter.setValue(layer, forKey: kCIInputImageKey)
-            blendFilter.setValue(result, forKey: kCIInputBackgroundImageKey)
-            blendFilter.setValue(mask, forKey: kCIInputMaskImageKey)
-            guard let blended = blendFilter.outputImage?.cropped(to: canvasRect) else {
-                return nil
-            }
-            result = blended
-
-            if index < bandCount {
-                bandStartX = bandEndX
-                bandEndX = min(bandEndX + stretchWidth * weights[index] / weightSum, blurEndX)
-            }
-        }
-
-        return result
-    }
-
-    /// Full-frame Gaussian blur layer. Large sigmas blur a downscaled copy and
-    /// scale back up — the result is smooth by construction, so the upscale
-    /// costs no visible quality and avoids huge blur kernels.
-    private nonisolated static func gaussianLayer(
-        _ clampedSource: CIImage,
-        sigma: CGFloat,
-        canvasRect: CGRect
-    ) -> CIImage? {
-        guard sigma > 0 else { return clampedSource.cropped(to: canvasRect) }
-
-        let maxDirectSigma: CGFloat = 60
-        if sigma <= maxDirectSigma {
-            guard let blurFilter = CIFilter(name: "CIGaussianBlur") else { return nil }
-            blurFilter.setValue(clampedSource, forKey: kCIInputImageKey)
-            blurFilter.setValue(sigma, forKey: kCIInputRadiusKey)
-            return blurFilter.outputImage?.cropped(to: canvasRect)
-        }
-
-        let scale = maxDirectSigma / sigma
-        let scaledRect = canvasRect.applying(CGAffineTransform(scaleX: scale, y: scale))
-        let downscaled = clampedSource
-            .cropped(to: canvasRect)
-            .transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-
-        guard let clampFilter = CIFilter(name: "CIAffineClamp") else { return nil }
-        clampFilter.setValue(downscaled, forKey: kCIInputImageKey)
-        clampFilter.setValue(CGAffineTransform.identity, forKey: kCIInputTransformKey)
-        guard let clampedDownscaled = clampFilter.outputImage else { return nil }
-
-        guard let blurFilter = CIFilter(name: "CIGaussianBlur") else { return nil }
-        blurFilter.setValue(clampedDownscaled, forKey: kCIInputImageKey)
-        blurFilter.setValue(maxDirectSigma, forKey: kCIInputRadiusKey)
-        guard let blurred = blurFilter.outputImage?.cropped(to: scaledRect) else { return nil }
-
-        return blurred
-            .transformed(by: CGAffineTransform(scaleX: 1 / scale, y: 1 / scale))
-            .cropped(to: canvasRect)
-    }
-
-    /// Grayscale black→white smooth ramp between two X positions, used as a
-    /// crossfade mask for CIBlendWithMask.
-    private nonisolated static func smoothRampMask(
-        fromX: CGFloat,
-        toX: CGFloat,
+        rampSpan: CGFloat,
         canvasRect: CGRect,
         canvasLogicalHeight: CGFloat
     ) -> CIImage? {
@@ -873,9 +750,58 @@ enum CoverGradientBlurRenderer {
             return nil
         }
 
-        let point0 = CIVector(x: fromX, y: canvasLogicalHeight / 2)
-        let point1 = CIVector(x: max(fromX + 1, toX), y: canvasLogicalHeight / 2)
-        let color0 = CIColor(red: 0, green: 0, blue: 0, alpha: 1)
+        let point0 = CIVector(x: coverEdgeX, y: canvasLogicalHeight / 2)
+        let point1 = CIVector(x: coverEdgeX + max(1, rampSpan), y: canvasLogicalHeight / 2)
+        let color0 = CIColor(red: 0, green: 0, blue: 0, alpha: 0)
+        let color1 = CIColor(red: 1, green: 1, blue: 1, alpha: 1)
+
+        gradientFilter.setValue(point0, forKey: "inputPoint0")
+        gradientFilter.setValue(point1, forKey: "inputPoint1")
+        gradientFilter.setValue(color0, forKey: "inputColor0")
+        gradientFilter.setValue(color1, forKey: "inputColor1")
+
+        return gradientFilter.outputImage?.cropped(to: canvasRect)
+    }
+
+    /// Mask for later blur passes. Each pass starts at its own onset X —
+    /// spread from the cover's right edge to `onsetSpanRatio` of the way into
+    /// the extension region — and ramps smoothly to full strength at
+    /// `blurEndX`. The cover interior (left of every onset) stays at mask 0,
+    /// so only pass 0's base curve touches it.
+    private nonisolated static func staggeredOnsetMask(
+        passIndex: Int,
+        featherPassCount: Int,
+        coverEdgeX: CGFloat,
+        blurEndX: CGFloat,
+        canvasRect: CGRect,
+        canvasLogicalHeight: CGFloat
+    ) -> CIImage? {
+        guard let gradientFilter = CIFilter(name: "CISmoothLinearGradient") else {
+            return nil
+        }
+
+        // Onsets are mildly biased toward the cover edge (power curve) and
+        // each pass ramps over a fixed fraction of the extension width, so
+        // blur builds up early after the cover edge instead of saving most of
+        // its growth for the far right. The last onset (0.55) plus the ramp
+        // width (0.45) reaches full strength exactly at blurEndX.
+        let onsetSpanRatio: CGFloat = 0.55
+        let rampWidthRatio: CGFloat = 0.45
+        let onsetExponent: CGFloat = 1.4
+        let stretchWidth = max(1, blurEndX - coverEdgeX)
+        let onsetFraction: CGFloat
+        if featherPassCount <= 1 {
+            onsetFraction = 0
+        } else {
+            let linearStep = CGFloat(passIndex - 1) / CGFloat(featherPassCount - 1)
+            onsetFraction = onsetSpanRatio * pow(linearStep, onsetExponent)
+        }
+        let onsetX = coverEdgeX + stretchWidth * onsetFraction
+        let endX = max(onsetX + 1, min(onsetX + stretchWidth * rampWidthRatio, blurEndX))
+
+        let point0 = CIVector(x: onsetX, y: canvasLogicalHeight / 2)
+        let point1 = CIVector(x: endX, y: canvasLogicalHeight / 2)
+        let color0 = CIColor(red: 0, green: 0, blue: 0, alpha: 0)
         let color1 = CIColor(red: 1, green: 1, blue: 1, alpha: 1)
 
         gradientFilter.setValue(point0, forKey: "inputPoint0")
@@ -986,7 +912,11 @@ enum CoverGradientBlurRenderer {
             return context.makeImage()
         }
 
-        context.interpolationQuality = .none
+        // Interpolate the stretched strip smoothly. Nearest-neighbour turned
+        // the few source columns into ~100px-wide flat vertical bands; flat
+        // bands are invariant under horizontal blur, so they read as blocky
+        // "steps" in the gradient no matter how the blur masks are shaped.
+        context.interpolationQuality = .high
         context.draw(stripCGImage, in: extensionRect)
 
         return context.makeImage()

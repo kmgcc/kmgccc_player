@@ -61,7 +61,16 @@ struct FullscreenCoverGradientBlurSkin: NowPlayingSkin {
             overlayOffsetRatio: 0.15,
             blurCurveGamma: 5.0,
             edgeFillMode: edgeFillMode,
-            blurMaskMode: .layeredCrossfade
+            // More back-loaded than the renderer default (0, 0.10, 0.34, 0.56):
+            // the cover interior stays clearer while the curve still reaches 1
+            // at the gradient end, so the hand-off into the extension region's
+            // blur is unchanged.
+            blurAlphaCoefficients: (0, 0.05, 0.18, 0.77),
+            // Lift the whole stretch extension to a moderate blur floor so the
+            // segment hugging the cover's right edge is clearly blurred. The
+            // floor mask is 0 inside the cover, so this does not increase the
+            // cover-interior blur.
+            extensionFloorStrength: 0.7
         )
     }
 }
