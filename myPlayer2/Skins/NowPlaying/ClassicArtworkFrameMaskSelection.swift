@@ -9,16 +9,10 @@ import Foundation
 
 struct ClassicArtworkFrameMaskKey: Equatable {
     let id: UUID
-    let title: String
-    let artist: String
-    let album: String
 
     init?(track: SkinContext.TrackMetadata?) {
         guard let track else { return nil }
-        self.id = track.id
-        self.title = track.title
-        self.artist = track.artist
-        self.album = track.album
+        self.id = track.displayedArtworkID ?? track.id
     }
 }
 

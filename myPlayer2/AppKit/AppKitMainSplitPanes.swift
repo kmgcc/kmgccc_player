@@ -599,7 +599,8 @@ struct AppKitMainWindowArtBackgroundLayer: View {
                 duration: presentation.duration,
                 artworkChecksum: artworkChecksum,
                 artworkData: presentation.artworkData,
-                artworkImage: nil
+                artworkImage: nil,
+                displayedArtworkID: nil
             )
             : nil
 

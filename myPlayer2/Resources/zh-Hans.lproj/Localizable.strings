@@ -152,6 +152,7 @@
 "sort.duration" = "时长";
 "sort.play_count" = "播放次数";
 "sort.preference" = "偏好程度";
+"sort.custom" = "自定义";
 "sort.ascending" = "升序";
 "sort.descending" = "降序";
 "sort.help" = "排序歌曲";

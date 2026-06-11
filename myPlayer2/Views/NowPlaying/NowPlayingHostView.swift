@@ -108,7 +108,6 @@ struct NowPlayingHostView: View {
         let displayArtworkTrackID = presentation.artworkDisplayTrackID
             ?? presentation.displayTrackID
             ?? Self.externalArtworkTrackID
-        let artworkSnapshotMatchesCurrentTrack = artworkSnapshot?.trackID == displayArtworkTrackID
 
         let trackMeta: SkinContext.TrackMetadata? = presentation.hasTrack
             ? SkinContext.TrackMetadata(
@@ -117,10 +116,10 @@ struct NowPlayingHostView: View {
                 artist: presentation.artist,
                 album: presentation.album ?? "",
                 duration: presentation.duration,
-                artworkChecksum: artworkSnapshot?.artworkChecksum
-                    ?? ArtworkDataFingerprint.sampledHash(for: presentation.artworkData),
-                artworkData: artworkSnapshotMatchesCurrentTrack ? presentation.artworkData : nil,
-                artworkImage: artworkSnapshot?.fullImage
+                artworkChecksum: ArtworkDataFingerprint.sampledHash(for: presentation.artworkData),
+                artworkData: presentation.artworkData,
+                artworkImage: artworkSnapshot?.fullImage,
+                displayedArtworkID: artworkSnapshot?.trackID
             )
             : nil
 
