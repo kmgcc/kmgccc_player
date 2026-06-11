@@ -33,8 +33,8 @@ struct PlaylistDetailView: View {
 
     @State private var trackToEdit: Track?
     @State private var batchEditRequest: BatchEditRequest?
-    @State private var trackScrollFadeState = PlaylistScrollFadeState()
-    @State private var detailScrollFadeState = PlaylistScrollFadeState()
+    @State private var trackScrollFadeState = ScrollEdgeFadeState()
+    @State private var detailScrollFadeState = ScrollEdgeFadeState()
     @State private var scrollFadeTopChromeInset: CGFloat = 0
     @State private var lifecycleToken = UUID()
 
@@ -272,12 +272,16 @@ struct PlaylistDetailView: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset)
             .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.trackList"))
-            .onScrollGeometryChange(for: PlaylistScrollFadeState.self) { geometry in
-                PlaylistScrollFadeState(geometry: geometry)
+            .onScrollGeometryChange(for: ScrollEdgeFadeState.self) { geometry in
+                ScrollEdgeFadeState(
+                    geometry: geometry,
+                    topFadeDistance: max(topFadeHeight, scrollFadeTopChromeInset),
+                    bottomFadeDistance: bottomFadeHeight
+                )
             } action: { _, newState in
                 trackScrollFadeState = newState
             }
-            .playlistVerticalEdgeFade(
+            .scrollEdgeFadeMask(
                 trackScrollFadeState,
                 topFadeHeight: topFadeHeight,
                 bottomFadeHeight: bottomFadeHeight,
@@ -317,12 +321,16 @@ struct PlaylistDetailView: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset)
             .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.detailScroll"))
-            .onScrollGeometryChange(for: PlaylistScrollFadeState.self) { geometry in
-                PlaylistScrollFadeState(geometry: geometry)
+            .onScrollGeometryChange(for: ScrollEdgeFadeState.self) { geometry in
+                ScrollEdgeFadeState(
+                    geometry: geometry,
+                    topFadeDistance: max(topFadeHeight, scrollFadeTopChromeInset),
+                    bottomFadeDistance: bottomFadeHeight
+                )
             } action: { _, newState in
                 detailScrollFadeState = newState
             }
-            .playlistVerticalEdgeFade(
+            .scrollEdgeFadeMask(
                 detailScrollFadeState,
                 topFadeHeight: topFadeHeight,
                 bottomFadeHeight: bottomFadeHeight,
@@ -755,82 +763,6 @@ private struct PlaylistTopChromeInsetReader: NSViewRepresentable {
     func updateNSView(_ nsView: PlaylistTopChromeInsetReaderView, context: Context) {
         nsView.onTopInsetChange = { topInset = $0 }
         nsView.needsLayout = true
-    }
-}
-
-private struct PlaylistScrollFadeState: Equatable {
-    var showsTopFade = false
-    var showsBottomFade = false
-
-    init() {}
-
-    init(geometry: ScrollGeometry) {
-        let epsilon: CGFloat = 1
-        let topOffset = -geometry.contentInsets.top
-        let bottomOffset = max(
-            topOffset,
-            geometry.contentSize.height - geometry.containerSize.height + geometry.contentInsets.bottom
-        )
-        let canScroll = bottomOffset - topOffset > epsilon
-        showsTopFade = canScroll && geometry.contentOffset.y > topOffset + epsilon
-        showsBottomFade = canScroll && geometry.contentOffset.y < bottomOffset - epsilon
-    }
-}
-
-private extension View {
-    func playlistVerticalEdgeFade(
-        _ state: PlaylistScrollFadeState,
-        topFadeHeight: CGFloat,
-        bottomFadeHeight: CGFloat,
-        topChromeInset: CGFloat
-    ) -> some View {
-        mask {
-            VerticalEdgeFadeMask(
-                showsTopFade: state.showsTopFade,
-                showsBottomFade: state.showsBottomFade,
-                topFadeHeight: topFadeHeight,
-                bottomFadeHeight: bottomFadeHeight,
-                topChromeInset: topChromeInset
-            )
-        }
-    }
-}
-
-private struct VerticalEdgeFadeMask: View {
-    let showsTopFade: Bool
-    let showsBottomFade: Bool
-    let topFadeHeight: CGFloat
-    let bottomFadeHeight: CGFloat
-    let topChromeInset: CGFloat
-
-    var body: some View {
-        GeometryReader { proxy in
-            let maxFadeHeight = max(0, proxy.size.height / 2)
-            let resolvedTopHeight = min(max(topFadeHeight, topChromeInset), maxFadeHeight)
-            let resolvedBottomHeight = min(bottomFadeHeight, maxFadeHeight)
-
-            VStack(spacing: 0) {
-                if showsTopFade {
-                    LinearGradient(
-                        colors: [.clear, .black],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: resolvedTopHeight)
-                }
-
-                Color.black
-
-                if showsBottomFade {
-                    LinearGradient(
-                        colors: [.black, .clear],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: resolvedBottomHeight)
-                }
-            }
-        }
     }
 }
 

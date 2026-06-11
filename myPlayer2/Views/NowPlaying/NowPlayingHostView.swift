@@ -22,6 +22,9 @@ struct NowPlayingHostView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var skinRevision = 0
+    /// Last fully decoded artwork committed to the skin layer.
+    /// Track metadata may advance before artwork finishes decoding; keep this
+    /// snapshot stable so skins never render placeholder/empty intermediate art.
     @State private var artworkSnapshot: ArtworkAssetSnapshot?
 
     let mainContentWidth: CGFloat
@@ -102,19 +105,21 @@ struct NowPlayingHostView: View {
 
     private func makeContext(windowSize: CGSize, contentBounds: CGRect) -> SkinContext {
         let presentation = playbackCoordinator.presentation
+        let displayArtworkTrackID = presentation.artworkDisplayTrackID
+            ?? presentation.displayTrackID
+            ?? Self.externalArtworkTrackID
+        let artworkSnapshotMatchesCurrentTrack = artworkSnapshot?.trackID == displayArtworkTrackID
 
         let trackMeta: SkinContext.TrackMetadata? = presentation.hasTrack
             ? SkinContext.TrackMetadata(
-                id: presentation.artworkDisplayTrackID
-                    ?? presentation.displayTrackID
-                    ?? Self.externalArtworkTrackID,
+                id: displayArtworkTrackID,
                 title: presentation.title,
                 artist: presentation.artist,
                 album: presentation.album ?? "",
                 duration: presentation.duration,
                 artworkChecksum: artworkSnapshot?.artworkChecksum
                     ?? ArtworkDataFingerprint.sampledHash(for: presentation.artworkData),
-                artworkData: presentation.artworkData,
+                artworkData: artworkSnapshotMatchesCurrentTrack ? presentation.artworkData : nil,
                 artworkImage: artworkSnapshot?.fullImage
             )
             : nil
@@ -197,26 +202,51 @@ struct NowPlayingHostView: View {
     
     private func loadArtworkSnapshot() async {
         let presentation = playbackCoordinator.presentation
+        let expectedTaskKey = currentArtworkTaskKey
         guard
+            presentation.hasTrack,
             let artworkData = presentation.artworkData,
             !artworkData.isEmpty
         else {
-            artworkSnapshot = nil
             return
         }
-        let trackID = presentation.localTrack?.id ?? Self.externalArtworkTrackID
+        let expectedTrackID = presentation.artworkDisplayTrackID
+            ?? presentation.displayTrackID
+            ?? presentation.localTrack?.id
+            ?? Self.externalArtworkTrackID
         
         let snapshot = await ArtworkAssetStore.shared.snapshot(
-            trackID: presentation.artworkDisplayTrackID ?? presentation.displayTrackID ?? trackID,
+            trackID: expectedTrackID,
             artworkData: artworkData,
             fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
         )
         guard !Task.isCancelled else { return }
+        guard currentArtworkTaskKey == expectedTaskKey else { return }
+        guard currentDisplayArtworkTrackID == expectedTrackID else { return }
+        guard snapshot?.trackID == expectedTrackID else { return }
+        guard Self.isValidDisplayArtworkSnapshot(snapshot) else { return }
         artworkSnapshot = snapshot
     }
 
     private var preferredArtworkFullImageMaxPixel: Int {
         1_400
+    }
+
+    private var currentDisplayArtworkTrackID: UUID {
+        let presentation = playbackCoordinator.presentation
+        return presentation.artworkDisplayTrackID
+            ?? presentation.displayTrackID
+            ?? presentation.localTrack?.id
+            ?? Self.externalArtworkTrackID
+    }
+
+    private static func isValidDisplayArtworkSnapshot(_ snapshot: ArtworkAssetSnapshot?) -> Bool {
+        guard let image = snapshot?.fullImage else { return false }
+        var proposedRect = CGRect(origin: .zero, size: image.size)
+        guard let cgImage = image.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil) else {
+            return image.size.width > 1 && image.size.height > 1
+        }
+        return cgImage.width > 1 && cgImage.height > 1
     }
 
     private func isLedEnabledForCurrentSkin() -> Bool {

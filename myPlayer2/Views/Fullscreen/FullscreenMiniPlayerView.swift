@@ -24,6 +24,7 @@ struct FullscreenMiniPlayerView: View {
 
     // Scale factor for responsive sizing at different resolutions
     var scale: CGFloat = 1.0
+    var isSpectrumActive: Bool = true
     let glassStyle: FullscreenControlsGlassStyle
     let playbackMode: PlaybackOrderMode
     let onPlaybackModeChange: (PlaybackOrderMode) -> Void
@@ -296,6 +297,7 @@ struct FullscreenMiniPlayerView: View {
             scale: scale,
             isSpectrumEnabled: settings.fullscreen.isMiniPlayerSpectrumEnabled,
             isPlaying: playbackCoordinator.presentation.isPlaying,
+            isSpectrumActive: isSpectrumActive,
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
             foregroundColor: controlPrimaryColor,
             foregroundProfile: resolvedForegroundProfile,
