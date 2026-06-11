@@ -200,8 +200,13 @@ struct PlaylistDetailView: View {
 
     private var scrollBinding: Binding<UUID?> {
         Binding(
-            get: { pageController.listScrollPositionID },
-            set: { pageController.updateScrollPosition($0) }
+            get: {
+                pageController.isManualTrackReorderActive ? nil : pageController.listScrollPositionID
+            },
+            set: { trackID in
+                guard !pageController.isManualTrackReorderActive else { return }
+                pageController.updateScrollPosition(trackID)
+            }
         )
     }
 
@@ -783,6 +788,8 @@ private struct PlaylistTrackRowsSection: View {
     var rowSecondaryColor: Color = ColorTokens.textSecondary
     var rowTertiaryColor: Color = ColorTokens.textTertiary
 
+    @Environment(\.colorScheme) private var colorScheme
+
     @State private var visualOrderIDs: [UUID]?
     @State private var rowFrames: [UUID: CGRect] = [:]
     @State private var dragContainerWidth: CGFloat = 0
@@ -794,23 +801,26 @@ private struct PlaylistTrackRowsSection: View {
     @State private var dragFloatingY: CGFloat = 0
     @State private var dragLastTargetIndex: Int = 0
     @State private var dragInsertionIndex: Int?
-    @State private var dragGatherYOffsetByID: [UUID: CGFloat] = [:]
+    @State private var dragCardYOffsetByID: [UUID: CGFloat] = [:]
+    @State private var dragPointerYOffset: CGFloat = 0
+    @State private var dragGlassOpacity: Double = 0
     @State private var dragDidReorder = false
     @State private var isFinishingDrag = false
     @State private var enclosingScrollView: NSScrollView?
+    @State private var reorderCoordinateView: NSView?
     @State private var autoScrollTask: Task<Void, Never>?
     @State private var autoScrollVelocity: CGFloat = 0
-    @State private var dragAutoScrollOffset: CGFloat = 0
 
     private let trackReorderSpace = "playlistTrackReorderSpace"
     private let dragHorizontalDamping: CGFloat = 0.45
     private let dragHorizontalLimit: CGFloat = 28
     private let autoScrollEdgeThreshold: CGFloat = 118
-    private let autoScrollMaxVelocity: CGFloat = 420
+    private let autoScrollBottomEdgeThreshold: CGFloat = 176
+    private let autoScrollMaxVelocity: CGFloat = 500
     private let autoScrollMinVelocity: CGFloat = 22
     private let autoScrollFrameInterval: UInt64 = 16_000_000
     private let maxVisibleDraggedCards = 5
-    private let pileCardOverlap: CGFloat = 7
+    private let pileCardOverlap: CGFloat = 12
     private let pileHorizontalJitter: CGFloat = 5
 
     private var dragReorderAnimation: Animation {
@@ -828,6 +838,9 @@ private struct PlaylistTrackRowsSection: View {
             detail: "surface=PlaylistTrackRowsSection, rows=\(rows.count), current=\(FirstUseHitchDiagnostics.trackIDPrefix(currentTrackID))"
         )
         ZStack(alignment: .topLeading) {
+            selectedTrackRunBackgrounds
+                .allowsHitTesting(false)
+
             LazyVStack(spacing: 0) {
                 ForEach(displayRows) { row in
                     trackRowContainer(row)
@@ -847,20 +860,31 @@ private struct PlaylistTrackRowsSection: View {
             )
             .coordinateSpace(name: trackReorderSpace)
             .background(
-                EnclosingScrollViewReader { scrollView in
+                EnclosingScrollViewReader { scrollView, coordinateView in
                     enclosingScrollView = scrollView
+                    reorderCoordinateView = coordinateView
                 }
             )
-            .onPreferenceChange(TrackRowFramePreferenceKey.self) { frames in
-                rowFrames = frames
-            }
+                .onPreferenceChange(TrackRowFramePreferenceKey.self) { frames in
+                    rowFrames = frames
+                }
 
-            if let indicatorY = insertionIndicatorY {
-                RoundedRectangle(cornerRadius: 1)
-                    .fill(Color.accentColor.opacity(0.82))
-                    .frame(width: dragContainerWidth, height: 2)
-                    .offset(y: indicatorY)
+            if let rect = dragPlaceholderRect, !isFinishingDrag {
+                RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.cornerRadius + 2)
+                    .strokeBorder(
+                        Color.accentColor.opacity(0.72),
+                        style: StrokeStyle(
+                            lineWidth: 2.2,
+                            lineCap: .round,
+                            lineJoin: .round,
+                            dash: [8, 6]
+                        )
+                    )
+                    .frame(width: rect.width, height: rect.height)
+                    .offset(x: rect.minX, y: rect.minY)
                     .allowsHitTesting(false)
+                    .transition(.opacity)
+                    .zIndex(5)
             }
 
             if draggingTrackID != nil {
@@ -871,8 +895,28 @@ private struct PlaylistTrackRowsSection: View {
                     .zIndex(10)
             }
         }
+        .background(
+            MultiselectExitKeyMonitor(
+                isEnabled: pageController.isMultiselectMode,
+                onEscape: {
+                    if pageController.isManualTrackReorderActive {
+                        cancelDrag()
+                    } else {
+                        pageController.clearMultiselectState()
+                    }
+                },
+                onReturn: {
+                    guard !pageController.isManualTrackReorderActive else { return }
+                    pageController.clearMultiselectState()
+                }
+            )
+        )
         .onExitCommand {
-            cancelDrag()
+            if draggingTrackID != nil {
+                cancelDrag()
+            } else if pageController.isMultiselectMode {
+                pageController.clearMultiselectState()
+            }
         }
         .onDisappear {
             cancelDrag()
@@ -931,14 +975,64 @@ private struct PlaylistTrackRowsSection: View {
         Array(draggedRows.prefix(maxVisibleDraggedCards))
     }
 
+    private var floatingDraggedRows: [PlaylistPageRowModel] {
+        draggedRows
+    }
+
     private var draggedTrackIDSet: Set<UUID> {
         Set(draggedTrackIDs)
     }
 
+    private var selectedTrackBackgroundFill: Color {
+        Color.accentColor.opacity(colorScheme == .dark ? 0.2 : 0.15)
+    }
+
+    private var selectedTrackRuns: [(first: UUID, ids: [UUID])] {
+        guard pageController.isMultiselectMode else { return [] }
+        var selectedIDs = pageController.selectedTrackIDs
+        if draggingTrackID != nil {
+            selectedIDs.subtract(draggedTrackIDSet)
+        }
+        guard !selectedIDs.isEmpty else { return [] }
+
+        var runs: [(first: UUID, ids: [UUID])] = []
+        var currentRun: [UUID] = []
+        for id in displayedOrderIDs {
+            if selectedIDs.contains(id) {
+                currentRun.append(id)
+            } else if !currentRun.isEmpty {
+                runs.append((first: currentRun[0], ids: currentRun))
+                currentRun = []
+            }
+        }
+        if !currentRun.isEmpty {
+            runs.append((first: currentRun[0], ids: currentRun))
+        }
+        return runs
+    }
+
+    private var dragPlaceholderRect: CGRect? {
+        guard draggingTrackID != nil, !draggedTrackIDs.isEmpty else { return nil }
+        let frames = draggedTrackIDs.compactMap { rowFrames[$0] }
+        guard let firstFrame = frames.first else { return nil }
+        let union = frames.dropFirst().reduce(firstFrame) { partial, frame in
+            partial.union(frame)
+        }
+        let insetX: CGFloat = 4
+        let insetY: CGFloat = 5
+        return CGRect(
+            x: insetX,
+            y: union.minY + insetY,
+            width: max(0, dragContainerWidth - insetX * 2),
+            height: max(0, union.height - insetY * 2)
+        )
+    }
+
     private var dragGroupHeight: CGFloat {
-        guard let first = draggedRows.first else { return 0 }
+        guard !visibleDraggedRows.isEmpty else { return 0 }
         let visibleCount = max(1, min(draggedRows.count, maxVisibleDraggedCards))
-        return rowHeight(for: first) + CGFloat(visibleCount - 1) * pileCardOverlap + 12
+        let maxRowHeight = visibleDraggedRows.map(rowHeight(for:)).max() ?? Constants.Layout.TrackRow.height
+        return maxRowHeight + CGFloat(visibleCount - 1) * pileCardOverlap + 16
     }
 
     private var insertionIndicatorY: CGFloat? {
@@ -965,18 +1059,28 @@ private struct PlaylistTrackRowsSection: View {
     private var floatingDragGroup: some View {
         ZStack(alignment: .topTrailing) {
             ZStack(alignment: .topLeading) {
-                ForEach(Array(visibleDraggedRows.enumerated()), id: \.element.id) { depth, row in
+                ForEach(Array(floatingDraggedRows.enumerated()), id: \.element.id) { depth, row in
+                    let settling = isFinishingDrag
+                    let pileDepth = min(depth, maxVisibleDraggedCards - 1)
+                    let pileX = settling ? 0 : pileXOffset(for: row.id, depth: pileDepth)
+                    let pileY = settling ? 0 : pileYOffset(pileDepth)
                     floatingTrackCard(row)
-                        .offset(
-                            x: pileXOffset(for: row.id, depth: depth),
-                            y: pileYOffset(depth)
+                        .frame(
+                            width: dragContainerWidth,
+                            height: rowHeight(for: row),
+                            alignment: .topLeading
                         )
-                        .offset(y: dragGatherYOffsetByID[row.id] ?? 0)
+                        .offset(
+                            x: pileX,
+                            y: pileY
+                        )
+                        .offset(y: dragCardYOffsetByID[row.id] ?? 0)
                         .rotationEffect(
-                            .degrees(pileRotationDegrees(for: row.id, depth: depth)),
+                            .degrees(settling ? 0 : pileRotationDegrees(for: row.id, depth: pileDepth)),
                             anchor: .center
                         )
-                        .zIndex(Double(maxVisibleDraggedCards - depth))
+                        .opacity(settling || depth < maxVisibleDraggedCards ? 1 : 0)
+                        .zIndex(Double(floatingDraggedRows.count - depth))
                 }
             }
             .frame(height: dragGroupHeight, alignment: .topLeading)
@@ -987,7 +1091,7 @@ private struct PlaylistTrackRowsSection: View {
                 y: 5
             )
 
-            if draggedTrackIDs.count > 1 {
+            if draggedTrackIDs.count > 1 && !isFinishingDrag {
                 Text("\(draggedTrackIDs.count)")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white)
@@ -1015,14 +1119,20 @@ private struct PlaylistTrackRowsSection: View {
             EmptyView()
         }
         .equatable()
+        .frame(
+            width: dragContainerWidth,
+            height: rowHeight(for: row),
+            alignment: .topLeading
+        )
         .background(
             shape
                 .fill(Color(nsColor: .windowBackgroundColor).opacity(0.72))
+                .glassEffect(.regular, in: shape)
+                .opacity(dragGlassOpacity)
         )
-        .glassEffect(.regular, in: shape)
         .overlay(
             shape
-                .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.8)
+                .strokeBorder(Color.white.opacity(0.16 * dragGlassOpacity), lineWidth: 0.8)
         )
         .clipShape(shape)
     }
@@ -1052,6 +1162,8 @@ private struct PlaylistTrackRowsSection: View {
             model: row.trackRowModel,
             isPlaying: currentTrackID == row.id,
             isSelected: pageController.isMultiselectMode && pageController.selectedTrackIDs.contains(row.id),
+            selectionContinuity: selectionContinuity(for: row.id),
+            showsSelectionBackground: false,
             enableSecondaryInteractions: pageController.areRowSecondaryInteractionsEnabled,
             enableArtworkLoading: pageController.areRowArtworkLoadsEnabled,
             onTap: { isShiftPressed in
@@ -1091,9 +1203,37 @@ private struct PlaylistTrackRowsSection: View {
         .equatable()
     }
 
+    private var selectedTrackRunBackgrounds: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(selectedTrackRuns, id: \.first) { run in
+                if let rect = selectedRunRect(run) {
+                    RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.cornerRadius)
+                        .fill(selectedTrackBackgroundFill)
+                        .frame(width: rect.width, height: rect.height)
+                        .offset(x: rect.minX, y: rect.minY)
+                }
+            }
+        }
+    }
+
+    private func selectedRunRect(_ run: (first: UUID, ids: [UUID])) -> CGRect? {
+        guard
+            let firstID = run.ids.first,
+            let lastID = run.ids.last,
+            let firstFrame = rowFrames[firstID],
+            let lastFrame = rowFrames[lastID]
+        else { return nil }
+
+        return CGRect(
+            x: 0,
+            y: firstFrame.minY,
+            width: dragContainerWidth,
+            height: max(0, lastFrame.maxY - firstFrame.minY)
+        )
+    }
+
     private func trackRowPlaceholder() -> some View {
-        RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.cornerRadius)
-            .fill(Color.secondary.opacity(0.035))
+        Color.clear
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
     }
@@ -1111,11 +1251,11 @@ private struct PlaylistTrackRowsSection: View {
         DragGesture(minimumDistance: 2, coordinateSpace: .named(trackReorderSpace))
             .onChanged { value in
                 if draggingTrackID != row.id {
-                    beginDrag(from: row.id)
+                    beginDrag(from: row.id, initialLocationY: value.location.y)
                 }
                 guard draggingTrackID == row.id else { return }
 
-                dragFloatingY = dragStartAnchorY + value.translation.height + dragAutoScrollOffset
+                dragFloatingY = floatingTopY(for: value)
                 dragFloatingX = max(
                     -dragHorizontalLimit,
                     min(dragHorizontalLimit, value.translation.width * dragHorizontalDamping)
@@ -1130,7 +1270,7 @@ private struct PlaylistTrackRowsSection: View {
             }
     }
 
-    private func beginDrag(from trackID: UUID) {
+    private func beginDrag(from trackID: UUID, initialLocationY: CGFloat?) {
         let startOrder = displayedOrderIDs
         guard startOrder.contains(trackID) else { return }
 
@@ -1149,9 +1289,13 @@ private struct PlaylistTrackRowsSection: View {
         draggedTrackIDs = groupIDs
         dragStartOrderedIDs = startOrder
         dragStartAnchorY = rowFrames[trackID]?.minY ?? 0
+        let initialPointerY = currentMouseYInReorderSpace()
+            ?? initialLocationY
+            ?? dragStartAnchorY + Constants.Layout.TrackRow.height / 2
+        dragPointerYOffset = initialPointerY - dragStartAnchorY
         dragFloatingY = dragStartAnchorY
         dragFloatingX = 0
-        dragAutoScrollOffset = 0
+        dragGlassOpacity = 0
         dragDidReorder = false
         isFinishingDrag = false
 
@@ -1165,13 +1309,15 @@ private struct PlaylistTrackRowsSection: View {
         dragInsertionIndex = originalTarget
 
         var gatherOffsets: [UUID: CGFloat] = [:]
-        for (depth, id) in groupIDs.prefix(maxVisibleDraggedCards).enumerated() {
-            let sourceY = rowFrames[id]?.minY ?? dragStartAnchorY + pileYOffset(depth)
-            gatherOffsets[id] = sourceY - dragStartAnchorY - pileYOffset(depth)
+        for (depth, id) in groupIDs.enumerated() {
+            let pileDepth = min(depth, maxVisibleDraggedCards - 1)
+            let sourceY = rowFrames[id]?.minY ?? dragStartAnchorY + pileYOffset(pileDepth)
+            gatherOffsets[id] = sourceY - dragStartAnchorY - pileYOffset(pileDepth)
         }
-        dragGatherYOffsetByID = gatherOffsets
+        dragCardYOffsetByID = gatherOffsets
         withAnimation(dragReorderAnimation) {
-            dragGatherYOffsetByID = [:]
+            dragCardYOffsetByID = [:]
+            dragGlassOpacity = 1
         }
     }
 
@@ -1208,11 +1354,13 @@ private struct PlaylistTrackRowsSection: View {
         guard let draggingTrackID else { return }
         let settledOrder = visualOrderIDs
         let finalY = finalDraggedGroupTopY() ?? insertionIndicatorY ?? dragFloatingY
-        isFinishingDrag = true
+        let settleOffsets = finalDraggedCardYOffsets(groupTopY: finalY)
         withAnimation(dragSettleAnimation) {
+            isFinishingDrag = true
             dragFloatingX = 0
             dragFloatingY = finalY
-            dragGatherYOffsetByID = [:]
+            dragCardYOffsetByID = settleOffsets
+            dragGlassOpacity = 0
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
@@ -1231,6 +1379,7 @@ private struct PlaylistTrackRowsSection: View {
             visualOrderIDs = dragStartOrderedIDs.isEmpty ? nil : dragStartOrderedIDs
             dragFloatingX = 0
             dragFloatingY = dragStartAnchorY
+            dragGlassOpacity = 0
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
             guard !isFinishingDrag else { return }
@@ -1246,12 +1395,13 @@ private struct PlaylistTrackRowsSection: View {
         draggedTrackIDs = []
         dragStartOrderedIDs = []
         dragStartAnchorY = 0
+        dragPointerYOffset = 0
         dragFloatingX = 0
         dragFloatingY = 0
-        dragAutoScrollOffset = 0
         dragLastTargetIndex = 0
         dragInsertionIndex = nil
-        dragGatherYOffsetByID = [:]
+        dragCardYOffsetByID = [:]
+        dragGlassOpacity = 0
         dragDidReorder = false
         isFinishingDrag = false
         stopAutoScroll()
@@ -1315,20 +1465,16 @@ private struct PlaylistTrackRowsSection: View {
     }
 
     private func autoScrollVelocity(forCenterY centerY: CGFloat) -> CGFloat {
-        let visibleIDs = displayedOrderIDs.filter { rowFrames[$0] != nil }
         guard
-            let firstID = visibleIDs.first,
-            let lastID = visibleIDs.last,
-            let firstFrame = rowFrames[firstID],
-            let lastFrame = rowFrames[lastID]
+            let viewport = visibleTrackViewportInReorderSpace(),
+            let scrollBounds = autoScrollOriginBounds()
         else { return 0 }
 
-        let order = displayedOrderIDs
-        let canScrollUp = order.firstIndex(of: firstID).map { $0 > 0 } ?? false
-        let canScrollDown = order.firstIndex(of: lastID).map { $0 < order.count - 1 } ?? false
+        let canScrollUp = scrollBounds.originY > scrollBounds.minY + 0.5
+        let canScrollDown = scrollBounds.originY < scrollBounds.maxY - 0.5
 
-        let topRatio = max(0, min(1, (autoScrollEdgeThreshold - (centerY - firstFrame.minY)) / autoScrollEdgeThreshold))
-        let bottomRatio = max(0, min(1, (autoScrollEdgeThreshold - (lastFrame.maxY - centerY)) / autoScrollEdgeThreshold))
+        let topRatio = max(0, min(1, (autoScrollEdgeThreshold - (centerY - viewport.minY)) / autoScrollEdgeThreshold))
+        let bottomRatio = max(0, min(1, (autoScrollBottomEdgeThreshold - (viewport.maxY - centerY)) / autoScrollBottomEdgeThreshold))
 
         if canScrollUp, topRatio > bottomRatio, topRatio > 0 {
             return -scaledAutoScrollVelocity(for: topRatio)
@@ -1373,8 +1519,9 @@ private struct PlaylistTrackRowsSection: View {
             return
         }
 
-        dragAutoScrollOffset += delta
-        dragFloatingY += delta
+        if let mouseY = currentMouseYInReorderSpace() {
+            dragFloatingY = mouseY - dragPointerYOffset
+        }
         let centerY = dragFloatingY + dragGroupHeight / 2
         updateDragTarget(forCenterY: centerY)
         updateAutoScroll(forCenterY: centerY)
@@ -1390,7 +1537,9 @@ private struct PlaylistTrackRowsSection: View {
         let clipView = scrollView.contentView
         let oldOrigin = clipView.bounds.origin
         let maxY = max(0, documentView.bounds.height - clipView.bounds.height)
-        let newY = max(0, min(maxY, oldOrigin.y + delta))
+        let minY = delta < 0 ? min(maxY, minimumAutoScrollOriginY(in: documentView)) : 0
+        guard delta >= 0 || oldOrigin.y > minY + 0.05 else { return 0 }
+        let newY = max(minY, min(maxY, oldOrigin.y + delta))
         guard abs(newY - oldOrigin.y) > 0.05 else { return 0 }
 
         clipView.scroll(to: NSPoint(x: oldOrigin.x, y: newY))
@@ -1398,9 +1547,82 @@ private struct PlaylistTrackRowsSection: View {
         return newY - oldOrigin.y
     }
 
+    private func visibleTrackViewportInReorderSpace() -> CGRect? {
+        guard
+            let scrollView = enclosingScrollView,
+            let documentView = scrollView.documentView,
+            let coordinateView = reorderCoordinateView
+        else { return nil }
+
+        let viewport = coordinateView
+            .convert(scrollView.contentView.documentVisibleRect, from: documentView)
+            .standardized
+        let clippedViewport = viewport.intersection(coordinateView.bounds).standardized
+        guard !clippedViewport.isNull, clippedViewport.height > 0 else { return nil }
+        return clippedViewport
+    }
+
+    private func autoScrollOriginBounds() -> (originY: CGFloat, minY: CGFloat, maxY: CGFloat)? {
+        guard
+            let scrollView = enclosingScrollView,
+            let documentView = scrollView.documentView
+        else { return nil }
+
+        let clipView = scrollView.contentView
+        let maxY = max(0, documentView.bounds.height - clipView.bounds.height)
+        let minY = min(maxY, minimumAutoScrollOriginY(in: documentView))
+        return (clipView.bounds.origin.y, minY, maxY)
+    }
+
     private func finalDraggedGroupTopY() -> CGFloat? {
         guard let firstDraggedID = draggedTrackIDs.first else { return nil }
         return rowFrames[firstDraggedID]?.minY
+    }
+
+    private func finalDraggedCardYOffsets(groupTopY: CGFloat) -> [UUID: CGFloat] {
+        var offsets: [UUID: CGFloat] = [:]
+        for id in draggedTrackIDs {
+            if let frame = rowFrames[id] {
+                offsets[id] = frame.minY - groupTopY
+            }
+        }
+        return offsets
+    }
+
+    private func floatingTopY(for value: DragGesture.Value) -> CGFloat {
+        let pointerY = currentMouseYInReorderSpace() ?? value.location.y
+        return pointerY - dragPointerYOffset
+    }
+
+    private func currentMouseYInReorderSpace() -> CGFloat? {
+        guard
+            let coordinateView = reorderCoordinateView,
+            let window = coordinateView.window
+        else { return nil }
+
+        let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        return coordinateView.convert(windowPoint, from: nil).y
+    }
+
+    private func minimumAutoScrollOriginY(in documentView: NSView) -> CGFloat {
+        guard let coordinateView = reorderCoordinateView else { return 0 }
+        let trackRect = coordinateView.convert(coordinateView.bounds, to: documentView)
+        return max(0, trackRect.minY)
+    }
+
+    private func selectionContinuity(for trackID: UUID) -> TrackRowSelectionContinuity {
+        let selectedIDs = pageController.selectedTrackIDs
+        guard pageController.isMultiselectMode, selectedIDs.contains(trackID) else {
+            return .isolated
+        }
+        let order = displayedOrderIDs
+        guard let index = order.firstIndex(of: trackID) else { return .isolated }
+        let connectsToPrevious = index > 0 && selectedIDs.contains(order[index - 1])
+        let connectsToNext = index + 1 < order.count && selectedIDs.contains(order[index + 1])
+        return TrackRowSelectionContinuity(
+            connectsToPrevious: connectsToPrevious,
+            connectsToNext: connectsToNext
+        )
     }
 
     private func pileYOffset(_ depth: Int) -> CGFloat {
@@ -1436,7 +1658,7 @@ private struct PlaylistTrackRowsSection: View {
 }
 
 private struct EnclosingScrollViewReader: NSViewRepresentable {
-    let onResolve: (NSScrollView?) -> Void
+    let onResolve: (NSScrollView?, NSView?) -> Void
 
     func makeNSView(context: Context) -> ResolverView {
         let view = ResolverView()
@@ -1450,7 +1672,9 @@ private struct EnclosingScrollViewReader: NSViewRepresentable {
     }
 
     final class ResolverView: NSView {
-        var onResolve: ((NSScrollView?) -> Void)?
+        var onResolve: ((NSScrollView?, NSView?) -> Void)?
+
+        override var isFlipped: Bool { true }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -1460,7 +1684,7 @@ private struct EnclosingScrollViewReader: NSViewRepresentable {
         func resolveSoon() {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                onResolve?(enclosingScrollView())
+                onResolve?(enclosingScrollView(), self)
             }
         }
 
@@ -1473,6 +1697,91 @@ private struct EnclosingScrollViewReader: NSViewRepresentable {
                 view = current.superview
             }
             return nil
+        }
+    }
+}
+
+private struct MultiselectExitKeyMonitor: NSViewRepresentable {
+    let isEnabled: Bool
+    let onEscape: () -> Void
+    let onReturn: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        context.coordinator.update(
+            isEnabled: isEnabled,
+            onEscape: onEscape,
+            onReturn: onReturn
+        )
+        context.coordinator.install()
+        return NSView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.update(
+            isEnabled: isEnabled,
+            onEscape: onEscape,
+            onReturn: onReturn
+        )
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.uninstall()
+    }
+
+    final class Coordinator {
+        private var monitor: Any?
+        private var isEnabled = false
+        private var onEscape: () -> Void = {}
+        private var onReturn: () -> Void = {}
+
+        func update(
+            isEnabled: Bool,
+            onEscape: @escaping () -> Void,
+            onReturn: @escaping () -> Void
+        ) {
+            self.isEnabled = isEnabled
+            self.onEscape = onEscape
+            self.onReturn = onReturn
+        }
+
+        func install() {
+            guard monitor == nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                self?.handle(event) ?? event
+            }
+        }
+
+        func uninstall() {
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+        }
+
+        private func handle(_ event: NSEvent) -> NSEvent? {
+            guard isEnabled, !isTextInputActive(for: event) else { return event }
+            switch event.keyCode {
+            case 36, 76:
+                onReturn()
+                return nil
+            case 53:
+                onEscape()
+                return nil
+            default:
+                return event
+            }
+        }
+
+        private func isTextInputActive(for event: NSEvent) -> Bool {
+            guard let responder = event.window?.firstResponder else { return false }
+            if responder is NSTextView || responder is NSTextField {
+                return true
+            }
+            return String(describing: type(of: responder)).contains("FieldEditor")
         }
     }
 }

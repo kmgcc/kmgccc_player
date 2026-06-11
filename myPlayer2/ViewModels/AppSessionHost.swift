@@ -380,7 +380,10 @@ final class AppSessionHost: ObservableObject {
 
         let currentTime = playerVM.currentTime.isFinite ? max(0, playerVM.currentTime) : 0
         let duration = playerVM.duration.isFinite ? max(0, playerVM.duration) : 0
-        let queueTrackIDs = playerVM.currentQueueTracks.map { $0.id }
+        let playbackOrderMode = AppSettings.shared.playbackOrderMode
+        let queueTrackIDs = playbackOrderMode == .shuffle
+            ? []
+            : playerVM.currentQueueTracks.map { $0.id }
 
         PlaybackMemoryStore.save(
             PlaybackMemory(
@@ -389,7 +392,7 @@ final class AppSessionHost: ObservableObject {
                 currentTime: currentTime,
                 duration: duration,
                 queueTrackIDs: queueTrackIDs.isEmpty ? nil : queueTrackIDs,
-                playbackOrderMode: AppSettings.shared.playbackOrderMode.rawValue
+                playbackOrderMode: playbackOrderMode.rawValue
             )
         )
     }
@@ -423,8 +426,14 @@ final class AppSessionHost: ObservableObject {
         // Rebuild the exact saved queue when present; fall back to the full
         // library (matching legacy behavior) for v1 payloads without a queue.
         let tracksByID = Dictionary(availableTracks.map { ($0.id, $0) }) { first, _ in first }
+        let savedPlaybackOrderMode = memory.playbackOrderMode.flatMap(PlaybackOrderMode.init(rawValue:))
+        let shouldUseFullLibraryQueue = savedPlaybackOrderMode == .shuffle
+            || AppSettings.shared.playbackOrderMode == .shuffle
+
         let restoredQueue: [Track]
-        if let savedQueueIDs = memory.queueTrackIDs, !savedQueueIDs.isEmpty {
+        if shouldUseFullLibraryQueue {
+            restoredQueue = availableTracks
+        } else if let savedQueueIDs = memory.queueTrackIDs, !savedQueueIDs.isEmpty {
             let rebuilt = savedQueueIDs.compactMap { tracksByID[$0] }
             restoredQueue = rebuilt.isEmpty ? availableTracks : rebuilt
         } else {

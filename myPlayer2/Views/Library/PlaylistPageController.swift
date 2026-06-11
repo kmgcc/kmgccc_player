@@ -211,6 +211,7 @@ final class PlaylistPageController {
     }
 
     func updateScrollPosition(_ trackID: UUID?) {
+        guard !isManualTrackReorderActive else { return }
         listScrollPositionID = trackID
         scheduleSnapshotUpdate()
     }
@@ -372,10 +373,13 @@ final class PlaylistPageController {
 
     func beginManualTrackReorderInteraction() {
         isManualTrackReorderActive = true
+        listScrollPositionID = nil
+        snapshotUpdateTask?.cancel()
     }
 
     func endManualTrackReorderInteraction() {
         isManualTrackReorderActive = false
+        listScrollPositionID = nil
     }
 
     func activateCustomSortFromCurrentDisplay(reason: String) {

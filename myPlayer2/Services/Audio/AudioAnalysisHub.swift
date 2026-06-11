@@ -76,6 +76,10 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     private nonisolated(unsafe) var skippedProcessReads: UInt64 = 0
     private nonisolated(unsafe) var processedFrames: UInt64 = 0
     private nonisolated(unsafe) var lastDiagnosticsDumpUptime: TimeInterval = 0
+    private nonisolated(unsafe) var lastSampleBusWarningUptime: TimeInterval = 0
+    private nonisolated(unsafe) var consecutiveDroppedDiagnosticWindows: Int = 0
+    private nonisolated(unsafe) var consecutiveSkippedDiagnosticWindows: Int = 0
+    private nonisolated(unsafe) var consecutiveNoProcessedFrameWindows: Int = 0
 
     // Serializes start / stop / attachToMixer so the AVAudioMixerNode never
     // sees two concurrent installTap calls (which trip the
@@ -93,6 +97,16 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     private nonisolated(unsafe) var pauseLingerActive = false
     private nonisolated(unsafe) var pauseLingerGeneration: UInt64 = 0
     private static let pauseLingerSeconds: TimeInterval = 0.45
+    private static let sampleBusDiagnosticsInterval: TimeInterval = 2.0
+    private static let sampleBusWarningThrottle: TimeInterval = 10.0
+    private static let minorDroppedTapBufferThreshold: UInt64 = 4
+    private static let minorSkippedProcessReadThreshold: UInt64 = 10
+    private static let sustainedDroppedTapBufferThreshold: UInt64 = 12
+    private static let sustainedDroppedTapBufferWindows = 2
+    private static let skippedProcessReadWindowThreshold: UInt64 = 20
+    private static let skippedProcessReadWarningWindows = 3
+    private static let skippedProcessReadBurstThreshold: UInt64 = 60
+    private static let noProcessedFrameWarningWindows = 3
 
     public static let shared = AudioAnalysisHub()
 
@@ -472,22 +486,116 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
     private nonisolated func dumpDiagnosticsIfNeeded() {
         let now = ProcessInfo.processInfo.systemUptime
-        guard now - lastDiagnosticsDumpUptime >= 2.0 else { return }
+        guard now - lastDiagnosticsDumpUptime >= Self.sampleBusDiagnosticsInterval else { return }
         lastDiagnosticsDumpUptime = now
 
         let dropped = droppedTapBuffers
         let skipped = skippedProcessReads
         let processed = processedFrames
-        guard dropped > 0 || skipped > 0 else { return }
 
         droppedTapBuffers = 0
         skippedProcessReads = 0
         processedFrames = 0
 
-        Log.warning(
-            "[AudioDiagnostics] sampleBus droppedTapBuffers=\(dropped) skippedProcessReads=\(skipped) processedFrames=\(processed) operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
-            category: .audio
+        let isActive = isPlaybackActiveForDiagnostics()
+        updateSampleBusDiagnosticStreaks(
+            dropped: dropped,
+            skipped: skipped,
+            processed: processed,
+            isActive: isActive
         )
+
+        guard dropped > 0 || skipped > 0 || (isActive && processed == 0) else { return }
+
+        let operation = FirstUseHitchDiagnostics.currentOperationStack()
+        let message = "[AudioDiagnostics] sampleBus droppedTapBuffers=\(dropped) skippedProcessReads=\(skipped) processedFrames=\(processed) active=\(isActive) operation=\(operation)"
+        let severity = sampleBusDiagnosticSeverity(
+            dropped: dropped,
+            skipped: skipped,
+            processed: processed,
+            isActive: isActive
+        )
+
+        switch severity {
+        case .warning(let reason):
+            guard now - lastSampleBusWarningUptime >= Self.sampleBusWarningThrottle else { return }
+            lastSampleBusWarningUptime = now
+            Log.warning("\(message) reason=\(reason)", category: .audio)
+        case .debug:
+            Log.sampleBusDebug(message)
+        case .silent:
+            return
+        }
+    }
+
+    private enum SampleBusDiagnosticSeverity {
+        case silent
+        case debug
+        case warning(reason: String)
+    }
+
+    private nonisolated func isPlaybackActiveForDiagnostics() -> Bool {
+        stateLock.lock()
+        let active = isInstalled && activeClients > 0 && (isPlaying || pauseLingerActive)
+        stateLock.unlock()
+        return active
+    }
+
+    private nonisolated func updateSampleBusDiagnosticStreaks(
+        dropped: UInt64,
+        skipped: UInt64,
+        processed: UInt64,
+        isActive: Bool
+    ) {
+        if dropped >= Self.sustainedDroppedTapBufferThreshold {
+            consecutiveDroppedDiagnosticWindows += 1
+        } else {
+            consecutiveDroppedDiagnosticWindows = 0
+        }
+
+        if skipped >= Self.skippedProcessReadWindowThreshold {
+            consecutiveSkippedDiagnosticWindows += 1
+        } else {
+            consecutiveSkippedDiagnosticWindows = 0
+        }
+
+        if isActive && processed == 0 {
+            consecutiveNoProcessedFrameWindows += 1
+        } else {
+            consecutiveNoProcessedFrameWindows = 0
+        }
+    }
+
+    private nonisolated func sampleBusDiagnosticSeverity(
+        dropped: UInt64,
+        skipped: UInt64,
+        processed: UInt64,
+        isActive: Bool
+    ) -> SampleBusDiagnosticSeverity {
+        if isActive,
+           processed == 0,
+           consecutiveNoProcessedFrameWindows >= Self.noProcessedFrameWarningWindows
+        {
+            return .warning(reason: "noProcessedFrames")
+        }
+
+        if consecutiveDroppedDiagnosticWindows >= Self.sustainedDroppedTapBufferWindows {
+            return .warning(reason: "sustainedDroppedTapBuffers")
+        }
+
+        if skipped >= Self.skippedProcessReadBurstThreshold
+            || consecutiveSkippedDiagnosticWindows >= Self.skippedProcessReadWarningWindows
+        {
+            return .warning(reason: "repeatedSkippedProcessReads")
+        }
+
+        if dropped < Self.minorDroppedTapBufferThreshold
+            && skipped < Self.minorSkippedProcessReadThreshold
+        {
+            return .silent
+        }
+
+        return .debug
     }
 
     private nonisolated func rebuildFFT() {
