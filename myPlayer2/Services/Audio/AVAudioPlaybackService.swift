@@ -271,6 +271,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             lookahead: desiredLookaheadEnabled,
             operation: "setupEngine"
         )
+        AudioAnalysisHub.shared.attachToMixer(playbackMixer)
 
         playerNode.volume = Float(volume)
         engine.prepare()

@@ -421,6 +421,7 @@ private final class MiniPlayerSpectrumHostView: NSView {
         consumerID = service.addConsumer { [weak self] wave in
             self?.applyWave(wave)
         }
+        service.updatePlaybackState(isPlaying: isCurrentlyPlaying)
     }
 
     func stop() {
@@ -439,11 +440,14 @@ private final class MiniPlayerSpectrumHostView: NSView {
     }
 
     func setPlayback(isPlaying: Bool) {
-        guard lastPlaybackState != isPlaying else { return }
+        let didChange = lastPlaybackState != isPlaying
         lastPlaybackState = isPlaying
         isCurrentlyPlaying = isPlaying
-        service.updatePlaybackState(isPlaying: isPlaying)
-        
+        if hasServiceLease {
+            service.updatePlaybackState(isPlaying: isPlaying)
+        }
+
+        guard didChange else { return }
         if pausedBehavior == .minimalDots {
             if !isPlaying {
                 frozenWave = currentWave
