@@ -25,6 +25,26 @@ final class PreferenceStatsService {
     /// Set of track IDs with unsaved changes.
     private var dirtyTrackIDs: Set<UUID> = []
 
+    // MARK: - Browsing-burst Detection
+
+    /// Timestamps of recent skip settlements, used to detect rapid "browsing /
+    /// finding a song" behavior so each individual skip carries less weight.
+    private var recentSkipTimestamps: [Date] = []
+
+    /// Rolling window for browsing detection.
+    private static let browsingWindowSeconds: TimeInterval = 25
+
+    /// Number of skips within the window that flags a browsing burst.
+    private static let browsingBurstThreshold: Int = 3
+
+    /// Record a skip timestamp and report whether we are in a browsing burst.
+    private func registerSkipAndDetectBrowsing(now: Date) -> Bool {
+        let cutoff = now.addingTimeInterval(-Self.browsingWindowSeconds)
+        recentSkipTimestamps = recentSkipTimestamps.filter { $0 >= cutoff }
+        recentSkipTimestamps.append(now)
+        return recentSkipTimestamps.count >= Self.browsingBurstThreshold
+    }
+
     // MARK: - Initialization
 
     private init() {}
@@ -106,6 +126,16 @@ final class PreferenceStatsService {
         }
 
         let finalizedAt = Date()
+
+        // Browsing-burst state is shared across tracks, so compute it before the
+        // per-track update closure. Only actual skips participate.
+        let isBrowsingBurst: Bool
+        if case .skipped = outcome {
+            isBrowsingBurst = registerSkipAndDetectBrowsing(now: finalizedAt)
+        } else {
+            isBrowsingBurst = false
+        }
+
         return updateStats(for: trackID, duration: trackDuration) { stats in
             switch outcome {
             case .completed(_, _, let playedSeconds):
@@ -116,16 +146,33 @@ final class PreferenceStatsService {
                 stats.lastCompletedAt = finalizedAt
 
             case .skipped(_, let progress, let playedSeconds, let allowsQuickSkip):
+                // Every settled skip is at least a play.
                 stats.playCount += 1
-                stats.skipCount += 1
                 stats.totalPlayedSeconds += playedSeconds
                 stats.lastPlayedAt = finalizedAt
+
+                if progress >= PlaybackSessionTracker.substantialPlayPercentage {
+                    // Listened to most of the track before moving on — treat as a
+                    // normal play, no skip / quick-skip penalty.
+                    break
+                }
+
+                stats.skipCount += 1
                 stats.lastSkippedAt = finalizedAt
 
-                // Check for quick skip.
-                let isQuick = playedSeconds < PlaybackSessionTracker.quickSkipDuration
-                    || progress < PlaybackSessionTracker.quickSkipPercentage
-                if allowsQuickSkip && isQuick {
+                // Proportion-aware quick-skip detection (short songs are judged by
+                // how much played, not a fixed second count).
+                let isQuick = allowsQuickSkip && (
+                    progress < PlaybackSessionTracker.quickSkipPercentage ||
+                    (playedSeconds < PlaybackSessionTracker.quickSkipDuration &&
+                     progress < PlaybackSessionTracker.quickSkipMaxProgress)
+                )
+
+                // Quick skips are downgraded to a plain skip when browsing rapidly
+                // (likely finding a song) or when the user has manually liked the
+                // track — in those cases a quick skip is only a mild signal.
+                let suppressQuickSkip = isBrowsingBurst || stats.manualLikeState == .liked
+                if isQuick && !suppressQuickSkip {
                     stats.quickSkipCount += 1
                 }
 

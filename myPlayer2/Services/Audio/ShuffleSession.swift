@@ -30,6 +30,21 @@ final class ShuffleSession {
     /// Maximum history size to maintain for runtime adjustments.
     static let maxHistorySize: Int = 50
 
+    /// Probability, per weight computation, of injecting a rediscovery boost.
+    /// Keeps the shuffle from ossifying into a fixed high-preference rotation
+    /// without overwhelming the normal experience.
+    static let explorationProbability: Double = 0.2
+
+    /// How many top rediscovery-eligible candidates to amplify when exploring.
+    static let rediscoveryBoostCount: Int = 3
+
+    /// Minimum eligibility score for a track to qualify for rediscovery amplification.
+    static let rediscoveryEligibilityThreshold: Double = 0.5
+
+    /// Recently-played window excluded from rediscovery (so just-skipped tracks
+    /// are never pulled back in by exploration).
+    static let rediscoveryRecentExclusion: Int = 10
+
     // MARK: - Session State
 
     /// The source pool of track IDs available for this session.
@@ -306,10 +321,14 @@ final class ShuffleSession {
     }
 
     /// Get runtime-adjusted weights using V2 penalty system.
-    /// Applies recent-history / same-artist / same-album penalties to base weights.
+    /// Composition: baseWeight (long-term preference + manual like)
+    ///   × runtime penalties (recent same-track / artist / album)
+    ///   × freshness multiplier (gentle boost for long-unplayed tracks)
+    ///   × occasional rediscovery amplification (low-exposure / stale candidates).
     /// This is temporary adjustment for sampling only, not persisted.
     private func getAdjustedWeights() -> [UUID: Double] {
         var adjustedWeights: [UUID: Double] = [:]
+        let now = Date()
 
         for (trackID, baseWeight) in baseWeights {
             guard let track = trackCache[trackID] else {
@@ -317,16 +336,55 @@ final class ShuffleSession {
                 continue
             }
 
-            let runtimeWeight = PreferenceScorerV2.applyRuntimePenalties(
+            var weight = PreferenceScorerV2.applyRuntimePenalties(
                 baseWeight: baseWeight,
                 track: track,
                 recentHistory: recentlyPlayedTrackIDs,
                 tracks: trackCache
             )
-            adjustedWeights[trackID] = runtimeWeight
+
+            // Gentle, always-on freshness boost (long-unplayed tracks resurface).
+            let stats = PreferenceStatsService.shared.getStats(for: trackID)
+            weight *= PreferenceScorerV2.freshnessMultiplier(
+                stats: stats,
+                duration: track.duration,
+                now: now
+            )
+
+            adjustedWeights[trackID] = weight
+        }
+
+        // Occasionally amplify a few rediscovery-eligible candidates so songs the
+        // shuffle has long ignored get a real chance, without recurring every round.
+        if Double.random(in: 0..<1) < Self.explorationProbability {
+            applyRediscoveryBoost(to: &adjustedWeights, now: now)
         }
 
         return adjustedWeights
+    }
+
+    /// Amplify the most rediscovery-eligible candidates (low exposure / long
+    /// unplayed, not recently played, not disliked / frequently quick-skipped).
+    private func applyRediscoveryBoost(to weights: inout [UUID: Double], now: Date) {
+        let recentSet = Set(recentlyPlayedTrackIDs.suffix(Self.rediscoveryRecentExclusion))
+
+        let eligible: [(id: UUID, score: Double)] = weights.keys.compactMap { id in
+            guard !recentSet.contains(id), let track = trackCache[id] else { return nil }
+            let score = PreferenceScorerV2.rediscoveryEligibility(
+                stats: PreferenceStatsService.shared.getStats(for: id),
+                duration: track.duration,
+                now: now
+            )
+            return score >= Self.rediscoveryEligibilityThreshold ? (id, score) : nil
+        }
+
+        guard !eligible.isEmpty else { return }
+
+        let boostRange = PreferenceAlgorithmV2.rediscoveryMaxBoost - 1.0
+        for entry in eligible.sorted(by: { $0.score > $1.score }).prefix(Self.rediscoveryBoostCount) {
+            let factor = 1.0 + boostRange * entry.score
+            weights[entry.id, default: 1.0] *= factor
+        }
     }
 
     // MARK: - History Management
