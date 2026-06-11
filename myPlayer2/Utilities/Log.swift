@@ -108,6 +108,23 @@ enum LogConfig {
         set { _audioVerbose = newValue }
     }
 
+    private nonisolated(unsafe) static var _sampleBusDiagnosticsVerbose = false
+    /// High-frequency sampleBus health counters. Off by default; enable only
+    /// while investigating visualizer / LED freezes or tap starvation.
+    nonisolated static var sampleBusDiagnosticsVerbose: Bool {
+        get {
+            #if SAMPLEBUS_DIAGNOSTICS
+            return true
+            #else
+            return _sampleBusDiagnosticsVerbose
+                || audioVerbose
+                || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_SAMPLEBUS"] == "1"
+                || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_SAMPLE_BUS"] == "1"
+            #endif
+        }
+        set { _sampleBusDiagnosticsVerbose = newValue }
+    }
+
     private nonisolated(unsafe) static var _gaplessVerbose = false
     /// Gapless playback diagnostics (prefetch / schedule / boundary commit / AAC
     /// trim / boundary probe). Off by default so normal Debug runs aren't flooded.
@@ -283,6 +300,21 @@ enum Log {
         let msg = message()
         let logger = _getLogger(for: .ui)
         logger.info("\(msg)")
+        if LogConfig.printToConsole {
+            print(msg)
+        }
+    }
+
+    /// Dedicated debug output for sampleBus counters. Uses the shared audio
+    /// category and OSLog debug level, but is gated by a narrow opt-in flag so
+    /// routine playback never prints high-frequency visualizer diagnostics.
+    nonisolated static func sampleBusDebug(
+        _ message: @autoclosure () -> String
+    ) {
+        guard LogConfig.sampleBusDiagnosticsVerbose else { return }
+        let msg = "\(LogLevel.debug.emoji)[\(LogCategory.audio.rawValue)] \(message())"
+        let logger = _getLogger(for: .audio)
+        logger.debug("\(msg)")
         if LogConfig.printToConsole {
             print(msg)
         }

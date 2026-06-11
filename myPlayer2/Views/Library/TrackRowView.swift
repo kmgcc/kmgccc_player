@@ -33,11 +33,23 @@ struct TrackRowModel: Identifiable, Equatable {
     }
 }
 
+struct TrackRowSelectionContinuity: Equatable {
+    let connectsToPrevious: Bool
+    let connectsToNext: Bool
+
+    static let isolated = TrackRowSelectionContinuity(
+        connectsToPrevious: false,
+        connectsToNext: false
+    )
+}
+
 /// Row view for displaying a track in a list.
 struct TrackRowView<MenuContent: View>: View {
     let model: TrackRowModel
     let isPlaying: Bool
     let isSelected: Bool
+    let selectionContinuity: TrackRowSelectionContinuity
+    let showsSelectionBackground: Bool
     let enableSecondaryInteractions: Bool
     let enableArtworkLoading: Bool
     let onTap: (_ isShiftPressed: Bool) -> Void
@@ -62,6 +74,8 @@ struct TrackRowView<MenuContent: View>: View {
         model: TrackRowModel,
         isPlaying: Bool,
         isSelected: Bool = false,
+        selectionContinuity: TrackRowSelectionContinuity = .isolated,
+        showsSelectionBackground: Bool = true,
         enableSecondaryInteractions: Bool = true,
         enableArtworkLoading: Bool = true,
         onTap: @escaping (_ isShiftPressed: Bool) -> Void,
@@ -74,6 +88,8 @@ struct TrackRowView<MenuContent: View>: View {
         self.model = model
         self.isPlaying = isPlaying
         self.isSelected = isSelected
+        self.selectionContinuity = selectionContinuity
+        self.showsSelectionBackground = showsSelectionBackground
         self.enableSecondaryInteractions = enableSecondaryInteractions
         self.enableArtworkLoading = enableArtworkLoading
         self.onTap = onTap
@@ -175,10 +191,7 @@ struct TrackRowView<MenuContent: View>: View {
         .padding(.vertical, Constants.Layout.TrackRow.verticalPadding)
         .padding(.horizontal, Constants.Layout.TrackRow.horizontalPadding)
         .frame(height: rowHeight)
-        .background(
-            RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.cornerRadius)
-                .fill(backgroundFill)
-        )
+        .background(rowBackground)
         .contentShape(Rectangle())
         .onHover { hover in
             guard enableSecondaryInteractions else { return }
@@ -272,10 +285,30 @@ struct TrackRowView<MenuContent: View>: View {
     }
 
     private var backgroundFill: Color {
-        if isSelected {
+        if isSelected && showsSelectionBackground {
             return Color.accentColor.opacity(colorScheme == .dark ? 0.2 : 0.15)
         }
+        if isSelected {
+            return Color.clear
+        }
         return isHovering ? Color.primary.opacity(0.04) : Color.clear
+    }
+
+    @ViewBuilder
+    private var rowBackground: some View {
+        if isSelected && showsSelectionBackground {
+            let radius = Constants.Layout.TrackRow.cornerRadius
+            TrackRowSelectionBackgroundShape(
+                continuity: selectionContinuity,
+                cornerRadius: radius
+            )
+            .fill(backgroundFill)
+            .padding(.top, selectionContinuity.connectsToPrevious ? -0.75 : 0)
+            .padding(.bottom, selectionContinuity.connectsToNext ? -0.75 : 0)
+        } else {
+            RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.cornerRadius)
+                .fill(backgroundFill)
+        }
     }
 
     private var trailingMenuGlyph: some View {
@@ -378,11 +411,70 @@ struct TrackRowView<MenuContent: View>: View {
     }
 }
 
+private struct TrackRowSelectionBackgroundShape: Shape {
+    let continuity: TrackRowSelectionContinuity
+    let cornerRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let radius = min(cornerRadius, rect.width / 2, rect.height / 2)
+        let topRadius = continuity.connectsToPrevious ? 0 : radius
+        let bottomRadius = continuity.connectsToNext ? 0 : radius
+
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + topRadius, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - topRadius, y: rect.minY))
+        addCorner(
+            to: &path,
+            radius: topRadius,
+            lineEnd: CGPoint(x: rect.maxX, y: rect.minY + topRadius),
+            control: CGPoint(x: rect.maxX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - bottomRadius))
+        addCorner(
+            to: &path,
+            radius: bottomRadius,
+            lineEnd: CGPoint(x: rect.maxX - bottomRadius, y: rect.maxY),
+            control: CGPoint(x: rect.maxX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX + bottomRadius, y: rect.maxY))
+        addCorner(
+            to: &path,
+            radius: bottomRadius,
+            lineEnd: CGPoint(x: rect.minX, y: rect.maxY - bottomRadius),
+            control: CGPoint(x: rect.minX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + topRadius))
+        addCorner(
+            to: &path,
+            radius: topRadius,
+            lineEnd: CGPoint(x: rect.minX + topRadius, y: rect.minY),
+            control: CGPoint(x: rect.minX, y: rect.minY)
+        )
+        path.closeSubpath()
+        return path
+    }
+
+    private func addCorner(
+        to path: inout Path,
+        radius: CGFloat,
+        lineEnd: CGPoint,
+        control: CGPoint
+    ) {
+        if radius > 0 {
+            path.addQuadCurve(to: lineEnd, control: control)
+        } else {
+            path.addLine(to: control)
+        }
+    }
+}
+
 extension TrackRowView: Equatable where MenuContent: View {
     static func == (lhs: TrackRowView<MenuContent>, rhs: TrackRowView<MenuContent>) -> Bool {
-        lhs.model == rhs.model
+            lhs.model == rhs.model
             && lhs.isPlaying == rhs.isPlaying
             && lhs.isSelected == rhs.isSelected
+            && lhs.selectionContinuity == rhs.selectionContinuity
+            && lhs.showsSelectionBackground == rhs.showsSelectionBackground
             && lhs.enableSecondaryInteractions == rhs.enableSecondaryInteractions
             && lhs.enableArtworkLoading == rhs.enableArtworkLoading
             && lhs.rowPrimaryColor == rhs.rowPrimaryColor
