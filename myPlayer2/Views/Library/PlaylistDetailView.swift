@@ -261,14 +261,15 @@ struct PlaylistDetailView: View {
     private var trackListView: some View {
         GeometryReader { proxy in
             ScrollView(.vertical) {
-                LazyVStack(spacing: 0) {
-                    trackRowsContent
-                }
-                .scrollTargetLayout()
+                trackRowsContent
                 .padding(.top, scrollContentTopPadding)
                 .padding(.bottom, listBottomPadding)
                 .padding(.horizontal)
-                .transaction { tx in tx.animation = nil }
+                .transaction { tx in
+                    if !pageController.isManualTrackReorderActive {
+                        tx.animation = nil
+                    }
+                }
             }
             .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset)
             .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.trackList"))
@@ -317,7 +318,11 @@ struct PlaylistDetailView: View {
                 .padding(.top, scrollContentTopPadding)
                 .padding(.bottom, listBottomPadding)
                 .padding(.horizontal)
-                .transaction { tx in tx.animation = nil }
+                .transaction { tx in
+                    if !pageController.isManualTrackReorderActive {
+                        tx.animation = nil
+                    }
+                }
             }
             .frame(width: proxy.size.width, height: proxy.size.height + scrollFadeTopChromeInset)
             .background(PlaylistLayoutPassProbe(key: "PlaylistDetailView.detailScroll"))
@@ -427,9 +432,7 @@ struct PlaylistDetailView: View {
                 .padding(.vertical, 40)
                 .frame(maxWidth: .infinity)
             } else {
-                LazyVStack(spacing: 0) {
-                    trackRowsContent
-                }
+                trackRowsContent
                 .padding(.horizontal, 16)
             }
         }
@@ -780,61 +783,716 @@ private struct PlaylistTrackRowsSection: View {
     var rowSecondaryColor: Color = ColorTokens.textSecondary
     var rowTertiaryColor: Color = ColorTokens.textTertiary
 
+    @State private var visualOrderIDs: [UUID]?
+    @State private var rowFrames: [UUID: CGRect] = [:]
+    @State private var dragContainerWidth: CGFloat = 0
+    @State private var draggingTrackID: UUID?
+    @State private var draggedTrackIDs: [UUID] = []
+    @State private var dragStartOrderedIDs: [UUID] = []
+    @State private var dragStartAnchorY: CGFloat = 0
+    @State private var dragFloatingX: CGFloat = 0
+    @State private var dragFloatingY: CGFloat = 0
+    @State private var dragLastTargetIndex: Int = 0
+    @State private var dragInsertionIndex: Int?
+    @State private var dragGatherYOffsetByID: [UUID: CGFloat] = [:]
+    @State private var dragDidReorder = false
+    @State private var isFinishingDrag = false
+    @State private var enclosingScrollView: NSScrollView?
+    @State private var autoScrollTask: Task<Void, Never>?
+    @State private var autoScrollVelocity: CGFloat = 0
+    @State private var dragAutoScrollOffset: CGFloat = 0
+
+    private let trackReorderSpace = "playlistTrackReorderSpace"
+    private let dragHorizontalDamping: CGFloat = 0.45
+    private let dragHorizontalLimit: CGFloat = 28
+    private let autoScrollEdgeThreshold: CGFloat = 118
+    private let autoScrollMaxVelocity: CGFloat = 420
+    private let autoScrollMinVelocity: CGFloat = 22
+    private let autoScrollFrameInterval: UInt64 = 16_000_000
+    private let maxVisibleDraggedCards = 5
+    private let pileCardOverlap: CGFloat = 7
+    private let pileHorizontalJitter: CGFloat = 5
+
+    private var dragReorderAnimation: Animation {
+        .spring(response: 0.30, dampingFraction: 0.88, blendDuration: 0.04)
+    }
+
+    private var dragSettleAnimation: Animation {
+        .spring(response: 0.38, dampingFraction: 0.90, blendDuration: 0.04)
+    }
+
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("PlaylistTrackRowsSection.body")
         let _ = ContextMenuDiagnostics.markBodyUpdate(
             "contextMenu.hostBodyUpdate",
             detail: "surface=PlaylistTrackRowsSection, rows=\(rows.count), current=\(FirstUseHitchDiagnostics.trackIDPrefix(currentTrackID))"
         )
-        ForEach(rows) { row in
-            TrackRowView(
-                model: row.trackRowModel,
-                isPlaying: currentTrackID == row.id,
-                isSelected: pageController.isMultiselectMode && pageController.selectedTrackIDs.contains(row.id),
-                enableSecondaryInteractions: pageController.areRowSecondaryInteractionsEnabled,
-                enableArtworkLoading: pageController.areRowArtworkLoadsEnabled,
-                onTap: { isShiftPressed in
-                    if pageController.isMultiselectMode {
-                        pageController.handleMultiselectRowTap(
-                            trackID: row.id,
-                            extendingRange: isShiftPressed
-                        )
-                    } else {
-                        guard let track = pageController.latestTrackFromLibrary(trackID: row.id) else { return }
-                        if case .album = selection {
-                            let startIndex = pageController.queueStartIndex(for: row.id)
-                            playbackCoordinator.playTracks(
-                                queueTracks,
-                                startingAt: startIndex,
-                                libraryQueueSource: .librarySelection(selectionIdentity),
-                                startPolicy: .forceSequentialTemporary
-                            )
-                            return
-                        }
-                        playbackCoordinator.playTrack(
-                            track,
-                            inQueueFrom: queueTracks,
-                            libraryQueueSource: .librarySelection(selectionIdentity)
-                        )
-                    }
-                },
-                onRowAppear: {
-                    pageController.prefetchAroundTrackID(row.id)
-                },
-                rowPrimaryColor: rowPrimaryColor,
-                rowSecondaryColor: rowSecondaryColor,
-                rowTertiaryColor: rowTertiaryColor
-            ) {
-                menuBuilder(row.id)
-            }
-            .equatable()
-            .contextMenu {
-                if pageController.areRowSecondaryInteractionsEnabled {
-                    menuBuilder(row.id)
+        ZStack(alignment: .topLeading) {
+            LazyVStack(spacing: 0) {
+                ForEach(displayRows) { row in
+                    trackRowContainer(row)
+                        .background(rowFrameReporter(for: row.id))
                 }
+                Color.clear.frame(height: 160)
+            }
+            .scrollTargetLayout()
+            .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { dragContainerWidth = proxy.size.width }
+                        .onChange(of: proxy.size.width) { _, newValue in
+                            dragContainerWidth = newValue
+                        }
+                }
+            )
+            .coordinateSpace(name: trackReorderSpace)
+            .background(
+                EnclosingScrollViewReader { scrollView in
+                    enclosingScrollView = scrollView
+                }
+            )
+            .onPreferenceChange(TrackRowFramePreferenceKey.self) { frames in
+                rowFrames = frames
+            }
+
+            if let indicatorY = insertionIndicatorY {
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(Color.accentColor.opacity(0.82))
+                    .frame(width: dragContainerWidth, height: 2)
+                    .offset(y: indicatorY)
+                    .allowsHitTesting(false)
+            }
+
+            if draggingTrackID != nil {
+                floatingDragGroup
+                    .frame(width: dragContainerWidth, alignment: .topLeading)
+                    .offset(x: dragFloatingX, y: dragFloatingY)
+                    .allowsHitTesting(false)
+                    .zIndex(10)
             }
         }
-        Color.clear.frame(height: 160)
+        .onExitCommand {
+            cancelDrag()
+        }
+        .onDisappear {
+            cancelDrag()
+            stopAutoScroll()
+        }
+        .onChange(of: rows.map(\.id)) { _, _ in
+            if draggingTrackID == nil {
+                visualOrderIDs = nil
+            } else if !isFinishingDrag {
+                cancelDrag()
+            }
+        }
+        .onChange(of: pageController.isMultiselectMode) { _, isEnabled in
+            if !isEnabled {
+                cancelDrag()
+            }
+        }
+        .onChange(of: pageController.isSearchFilteringTracks) { _, isFiltering in
+            if isFiltering {
+                cancelDrag()
+            }
+        }
+    }
+
+    private var isReorderEnabled: Bool {
+        pageController.isMultiselectMode
+            && pageController.canManuallyReorderCurrentTracks
+            && !pageController.isSearchFilteringTracks
+            && rows.count > 1
+    }
+
+    private var rowLookup: [UUID: PlaylistPageRowModel] {
+        Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+    }
+
+    private var displayedOrderIDs: [UUID] {
+        let source = rows.map(\.id)
+        guard let visualOrderIDs else { return source }
+        let validIDs = Set(source)
+        let ordered = visualOrderIDs.filter { validIDs.contains($0) }
+        guard ordered.count == source.count else { return source }
+        return ordered
+    }
+
+    private var displayRows: [PlaylistPageRowModel] {
+        let lookup = rowLookup
+        return displayedOrderIDs.compactMap { lookup[$0] }
+    }
+
+    private var draggedRows: [PlaylistPageRowModel] {
+        let lookup = rowLookup
+        return draggedTrackIDs.compactMap { lookup[$0] }
+    }
+
+    private var visibleDraggedRows: [PlaylistPageRowModel] {
+        Array(draggedRows.prefix(maxVisibleDraggedCards))
+    }
+
+    private var draggedTrackIDSet: Set<UUID> {
+        Set(draggedTrackIDs)
+    }
+
+    private var dragGroupHeight: CGFloat {
+        guard let first = draggedRows.first else { return 0 }
+        let visibleCount = max(1, min(draggedRows.count, maxVisibleDraggedCards))
+        return rowHeight(for: first) + CGFloat(visibleCount - 1) * pileCardOverlap + 12
+    }
+
+    private var insertionIndicatorY: CGFloat? {
+        guard draggingTrackID != nil, let dragInsertionIndex else { return nil }
+        let remaining = displayedOrderIDs.filter { !draggedTrackIDSet.contains($0) }
+        if remaining.isEmpty {
+            return dragFloatingY
+        }
+        if dragInsertionIndex < remaining.count,
+           let frame = rowFrames[remaining[dragInsertionIndex]] {
+            return frame.minY
+        }
+        if dragInsertionIndex > 0,
+           let frame = rowFrames[remaining[dragInsertionIndex - 1]] {
+            return frame.maxY
+        }
+        if let first = remaining.first,
+           let frame = rowFrames[first] {
+            return frame.minY
+        }
+        return nil
+    }
+
+    private var floatingDragGroup: some View {
+        ZStack(alignment: .topTrailing) {
+            ZStack(alignment: .topLeading) {
+                ForEach(Array(visibleDraggedRows.enumerated()), id: \.element.id) { depth, row in
+                    floatingTrackCard(row)
+                        .offset(
+                            x: pileXOffset(for: row.id, depth: depth),
+                            y: pileYOffset(depth)
+                        )
+                        .offset(y: dragGatherYOffsetByID[row.id] ?? 0)
+                        .rotationEffect(
+                            .degrees(pileRotationDegrees(for: row.id, depth: depth)),
+                            anchor: .center
+                        )
+                        .zIndex(Double(maxVisibleDraggedCards - depth))
+                }
+            }
+            .frame(height: dragGroupHeight, alignment: .topLeading)
+            .shadow(
+                color: GlassStyleTokens.subtleShadowColor,
+                radius: GlassStyleTokens.subtleShadowRadius + 5,
+                x: 0,
+                y: 5
+            )
+
+            if draggedTrackIDs.count > 1 {
+                Text("\(draggedTrackIDs.count)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.accentColor))
+                    .offset(x: 5, y: -6)
+            }
+        }
+    }
+
+    private func floatingTrackCard(_ row: PlaylistPageRowModel) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.cornerRadius)
+        return TrackRowView(
+            model: row.trackRowModel,
+            isPlaying: currentTrackID == row.id,
+            isSelected: true,
+            enableSecondaryInteractions: false,
+            enableArtworkLoading: pageController.areRowArtworkLoadsEnabled,
+            onTap: { _ in },
+            rowPrimaryColor: rowPrimaryColor,
+            rowSecondaryColor: rowSecondaryColor,
+            rowTertiaryColor: rowTertiaryColor
+        ) {
+            EmptyView()
+        }
+        .equatable()
+        .background(
+            shape
+                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.72))
+        )
+        .glassEffect(.regular, in: shape)
+        .overlay(
+            shape
+                .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.8)
+        )
+        .clipShape(shape)
+    }
+
+    private func trackRowContainer(_ row: PlaylistPageRowModel) -> some View {
+        let isDragged = draggingTrackID != nil && draggedTrackIDSet.contains(row.id)
+        return ZStack {
+            trackRowPlaceholder()
+                .opacity(isDragged ? 1 : 0)
+            trackRow(row)
+                .opacity(isDragged ? 0 : 1)
+        }
+        .contentShape(Rectangle())
+        .playlistTrackReorderGesture(
+            isReorderEnabled,
+            reorderGesture(for: row)
+        )
+        .contextMenu {
+            if pageController.areRowSecondaryInteractionsEnabled {
+                menuBuilder(row.id)
+            }
+        }
+    }
+
+    private func trackRow(_ row: PlaylistPageRowModel) -> some View {
+        TrackRowView(
+            model: row.trackRowModel,
+            isPlaying: currentTrackID == row.id,
+            isSelected: pageController.isMultiselectMode && pageController.selectedTrackIDs.contains(row.id),
+            enableSecondaryInteractions: pageController.areRowSecondaryInteractionsEnabled,
+            enableArtworkLoading: pageController.areRowArtworkLoadsEnabled,
+            onTap: { isShiftPressed in
+                if pageController.isMultiselectMode {
+                    pageController.handleMultiselectRowTap(
+                        trackID: row.id,
+                        extendingRange: isShiftPressed
+                    )
+                } else {
+                    guard let track = pageController.latestTrackFromLibrary(trackID: row.id) else { return }
+                    if case .album = selection {
+                        let startIndex = pageController.queueStartIndex(for: row.id)
+                        playbackCoordinator.playTracks(
+                            queueTracks,
+                            startingAt: startIndex,
+                            libraryQueueSource: .librarySelection(selectionIdentity),
+                            startPolicy: .forceSequentialTemporary
+                        )
+                        return
+                    }
+                    playbackCoordinator.playTrack(
+                        track,
+                        inQueueFrom: queueTracks,
+                        libraryQueueSource: .librarySelection(selectionIdentity)
+                    )
+                }
+            },
+            onRowAppear: {
+                pageController.prefetchAroundTrackID(row.id)
+            },
+            rowPrimaryColor: rowPrimaryColor,
+            rowSecondaryColor: rowSecondaryColor,
+            rowTertiaryColor: rowTertiaryColor
+        ) {
+            menuBuilder(row.id)
+        }
+        .equatable()
+    }
+
+    private func trackRowPlaceholder() -> some View {
+        RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.cornerRadius)
+            .fill(Color.secondary.opacity(0.035))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Rectangle())
+    }
+
+    private func rowFrameReporter(for trackID: UUID) -> some View {
+        GeometryReader { proxy in
+            Color.clear.preference(
+                key: TrackRowFramePreferenceKey.self,
+                value: [trackID: proxy.frame(in: .named(trackReorderSpace))]
+            )
+        }
+    }
+
+    private func reorderGesture(for row: PlaylistPageRowModel) -> some Gesture {
+        DragGesture(minimumDistance: 2, coordinateSpace: .named(trackReorderSpace))
+            .onChanged { value in
+                if draggingTrackID != row.id {
+                    beginDrag(from: row.id)
+                }
+                guard draggingTrackID == row.id else { return }
+
+                dragFloatingY = dragStartAnchorY + value.translation.height + dragAutoScrollOffset
+                dragFloatingX = max(
+                    -dragHorizontalLimit,
+                    min(dragHorizontalLimit, value.translation.width * dragHorizontalDamping)
+                )
+
+                let centerY = dragFloatingY + dragGroupHeight / 2
+                updateAutoScroll(forCenterY: centerY)
+                updateDragTarget(forCenterY: centerY)
+            }
+            .onEnded { _ in
+                endDrag()
+            }
+    }
+
+    private func beginDrag(from trackID: UUID) {
+        let startOrder = displayedOrderIDs
+        guard startOrder.contains(trackID) else { return }
+
+        let selectedIDs = pageController.selectedTrackIDs
+        let groupIDs: [UUID]
+        if selectedIDs.contains(trackID) {
+            groupIDs = startOrder.filter { selectedIDs.contains($0) }
+        } else {
+            groupIDs = [trackID]
+        }
+        guard !groupIDs.isEmpty else { return }
+
+        pageController.beginManualTrackReorderInteraction()
+        visualOrderIDs = startOrder
+        draggingTrackID = trackID
+        draggedTrackIDs = groupIDs
+        dragStartOrderedIDs = startOrder
+        dragStartAnchorY = rowFrames[trackID]?.minY ?? 0
+        dragFloatingY = dragStartAnchorY
+        dragFloatingX = 0
+        dragAutoScrollOffset = 0
+        dragDidReorder = false
+        isFinishingDrag = false
+
+        let remaining = startOrder.filter { !Set(groupIDs).contains($0) }
+        let originalTarget = insertionIndexForCurrentGroup(
+            groupIDs: groupIDs,
+            in: startOrder,
+            remaining: remaining
+        )
+        dragLastTargetIndex = originalTarget
+        dragInsertionIndex = originalTarget
+
+        var gatherOffsets: [UUID: CGFloat] = [:]
+        for (depth, id) in groupIDs.prefix(maxVisibleDraggedCards).enumerated() {
+            let sourceY = rowFrames[id]?.minY ?? dragStartAnchorY + pileYOffset(depth)
+            gatherOffsets[id] = sourceY - dragStartAnchorY - pileYOffset(depth)
+        }
+        dragGatherYOffsetByID = gatherOffsets
+        withAnimation(dragReorderAnimation) {
+            dragGatherYOffsetByID = [:]
+        }
+    }
+
+    private func moveDraggedRows(to targetIndex: Int) {
+        guard let visualOrderIDs else { return }
+        let draggedSet = Set(draggedTrackIDs)
+        var remaining = visualOrderIDs.filter { !draggedSet.contains($0) }
+        let index = max(0, min(remaining.count, targetIndex))
+        remaining.insert(contentsOf: draggedTrackIDs, at: index)
+        guard remaining != visualOrderIDs else { return }
+        dragDidReorder = true
+        withAnimation(dragReorderAnimation) {
+            self.visualOrderIDs = remaining
+        }
+    }
+
+    private func endDrag() {
+        guard draggingTrackID != nil else { return }
+        stopAutoScroll()
+        let finalOrder = visualOrderIDs ?? rows.map(\.id)
+        let shouldCommit = dragDidReorder && finalOrder != dragStartOrderedIDs
+
+        if shouldCommit {
+            pageController.commitManualTrackOrder(
+                orderedTrackIDs: finalOrder,
+                reason: "manual-track-reorder"
+            )
+        }
+
+        settleDrag(commitSucceeded: shouldCommit)
+    }
+
+    private func settleDrag(commitSucceeded: Bool) {
+        guard let draggingTrackID else { return }
+        let settledOrder = visualOrderIDs
+        let finalY = finalDraggedGroupTopY() ?? insertionIndicatorY ?? dragFloatingY
+        isFinishingDrag = true
+        withAnimation(dragSettleAnimation) {
+            dragFloatingX = 0
+            dragFloatingY = finalY
+            dragGatherYOffsetByID = [:]
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
+            guard isFinishingDrag, self.draggingTrackID == draggingTrackID else { return }
+            let keepVisualOrder = commitSucceeded
+                && settledOrder != nil
+                && rows.map(\.id) != settledOrder
+            clearDragState(keepVisualOrder: keepVisualOrder)
+        }
+    }
+
+    private func cancelDrag() {
+        guard draggingTrackID != nil else { return }
+        stopAutoScroll()
+        withAnimation(dragSettleAnimation) {
+            visualOrderIDs = dragStartOrderedIDs.isEmpty ? nil : dragStartOrderedIDs
+            dragFloatingX = 0
+            dragFloatingY = dragStartAnchorY
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
+            guard !isFinishingDrag else { return }
+            clearDragState(keepVisualOrder: false)
+        }
+    }
+
+    private func clearDragState(keepVisualOrder: Bool) {
+        if !keepVisualOrder {
+            visualOrderIDs = nil
+        }
+        draggingTrackID = nil
+        draggedTrackIDs = []
+        dragStartOrderedIDs = []
+        dragStartAnchorY = 0
+        dragFloatingX = 0
+        dragFloatingY = 0
+        dragAutoScrollOffset = 0
+        dragLastTargetIndex = 0
+        dragInsertionIndex = nil
+        dragGatherYOffsetByID = [:]
+        dragDidReorder = false
+        isFinishingDrag = false
+        stopAutoScroll()
+        pageController.endManualTrackReorderInteraction()
+    }
+
+    private func targetInsertionIndex(forCenterY centerY: CGFloat) -> Int {
+        let remaining = displayedOrderIDs.filter { !draggedTrackIDSet.contains($0) }
+        guard !remaining.isEmpty else { return 0 }
+
+        let visibleRows = remaining.enumerated().compactMap { index, id -> (index: Int, frame: CGRect)? in
+            guard let frame = rowFrames[id] else { return nil }
+            return (index, frame)
+        }
+        guard let firstVisible = visibleRows.first else {
+            return max(0, min(remaining.count, dragLastTargetIndex))
+        }
+
+        if centerY < firstVisible.frame.midY {
+            return firstVisible.index
+        }
+
+        for visible in visibleRows where centerY < visible.frame.midY {
+            return visible.index
+        }
+
+        if let lastVisible = visibleRows.last {
+            return min(remaining.count, lastVisible.index + 1)
+        }
+        return remaining.count
+    }
+
+    private func insertionIndexForCurrentGroup(
+        groupIDs: [UUID],
+        in order: [UUID],
+        remaining: [UUID]
+    ) -> Int {
+        guard let firstDraggedIndex = order.firstIndex(where: { groupIDs.contains($0) }) else {
+            return 0
+        }
+        let removedBefore = order[..<firstDraggedIndex].filter { groupIDs.contains($0) }.count
+        return max(0, min(remaining.count, firstDraggedIndex - removedBefore))
+    }
+
+    private func updateDragTarget(forCenterY centerY: CGFloat) {
+        let target = targetInsertionIndex(forCenterY: centerY)
+        dragInsertionIndex = target
+        guard target != dragLastTargetIndex else { return }
+        dragLastTargetIndex = target
+        moveDraggedRows(to: target)
+    }
+
+    private func updateAutoScroll(forCenterY centerY: CGFloat) {
+        let velocity = autoScrollVelocity(forCenterY: centerY)
+        autoScrollVelocity = velocity
+        if abs(velocity) > 0.5 {
+            startAutoScrollIfNeeded()
+        } else {
+            stopAutoScroll()
+        }
+    }
+
+    private func autoScrollVelocity(forCenterY centerY: CGFloat) -> CGFloat {
+        let visibleIDs = displayedOrderIDs.filter { rowFrames[$0] != nil }
+        guard
+            let firstID = visibleIDs.first,
+            let lastID = visibleIDs.last,
+            let firstFrame = rowFrames[firstID],
+            let lastFrame = rowFrames[lastID]
+        else { return 0 }
+
+        let order = displayedOrderIDs
+        let canScrollUp = order.firstIndex(of: firstID).map { $0 > 0 } ?? false
+        let canScrollDown = order.firstIndex(of: lastID).map { $0 < order.count - 1 } ?? false
+
+        let topRatio = max(0, min(1, (autoScrollEdgeThreshold - (centerY - firstFrame.minY)) / autoScrollEdgeThreshold))
+        let bottomRatio = max(0, min(1, (autoScrollEdgeThreshold - (lastFrame.maxY - centerY)) / autoScrollEdgeThreshold))
+
+        if canScrollUp, topRatio > bottomRatio, topRatio > 0 {
+            return -scaledAutoScrollVelocity(for: topRatio)
+        }
+        if canScrollDown, bottomRatio > 0 {
+            return scaledAutoScrollVelocity(for: bottomRatio)
+        }
+        return 0
+    }
+
+    private func scaledAutoScrollVelocity(for ratio: CGFloat) -> CGFloat {
+        let eased = pow(Double(ratio), 1.7)
+        return autoScrollMinVelocity
+            + (autoScrollMaxVelocity - autoScrollMinVelocity) * CGFloat(eased)
+    }
+
+    private func startAutoScrollIfNeeded() {
+        guard autoScrollTask == nil else { return }
+        autoScrollTask = Task { @MainActor in
+            while !Task.isCancelled {
+                performAutoScrollStep()
+                try? await Task.sleep(nanoseconds: autoScrollFrameInterval)
+            }
+        }
+    }
+
+    private func stopAutoScroll() {
+        autoScrollTask?.cancel()
+        autoScrollTask = nil
+        autoScrollVelocity = 0
+    }
+
+    private func performAutoScrollStep() {
+        guard draggingTrackID != nil, abs(autoScrollVelocity) > 0.5 else {
+            stopAutoScroll()
+            return
+        }
+
+        let delta = scrollEnclosingScrollView(by: autoScrollVelocity / 60)
+        guard abs(delta) > 0.05 else {
+            stopAutoScroll()
+            return
+        }
+
+        dragAutoScrollOffset += delta
+        dragFloatingY += delta
+        let centerY = dragFloatingY + dragGroupHeight / 2
+        updateDragTarget(forCenterY: centerY)
+        updateAutoScroll(forCenterY: centerY)
+    }
+
+    @discardableResult
+    private func scrollEnclosingScrollView(by delta: CGFloat) -> CGFloat {
+        guard
+            let scrollView = enclosingScrollView,
+            let documentView = scrollView.documentView
+        else { return 0 }
+
+        let clipView = scrollView.contentView
+        let oldOrigin = clipView.bounds.origin
+        let maxY = max(0, documentView.bounds.height - clipView.bounds.height)
+        let newY = max(0, min(maxY, oldOrigin.y + delta))
+        guard abs(newY - oldOrigin.y) > 0.05 else { return 0 }
+
+        clipView.scroll(to: NSPoint(x: oldOrigin.x, y: newY))
+        scrollView.reflectScrolledClipView(clipView)
+        return newY - oldOrigin.y
+    }
+
+    private func finalDraggedGroupTopY() -> CGFloat? {
+        guard let firstDraggedID = draggedTrackIDs.first else { return nil }
+        return rowFrames[firstDraggedID]?.minY
+    }
+
+    private func pileYOffset(_ depth: Int) -> CGFloat {
+        CGFloat(depth) * pileCardOverlap
+    }
+
+    private func pileXOffset(for id: UUID, depth: Int) -> CGFloat {
+        guard depth > 0 else { return 0 }
+        let seed = pileSeed(for: id)
+        let normalized = CGFloat((seed % 7) - 3) / 3
+        return normalized * pileHorizontalJitter
+    }
+
+    private func pileRotationDegrees(for id: UUID, depth: Int) -> Double {
+        guard depth > 0 else { return 0 }
+        let seed = pileSeed(for: id)
+        let sign: Double = seed.isMultiple(of: 2) ? 1 : -1
+        return sign * (1.2 + Double(seed % 11) * 0.18)
+    }
+
+    private func pileSeed(for id: UUID) -> Int {
+        id.uuidString.unicodeScalars.reduce(0) { partial, scalar in
+            partial &+ Int(scalar.value)
+        }
+    }
+
+    private func rowHeight(for row: PlaylistPageRowModel) -> CGFloat {
+        let snippet = row.lyricSnippetLine?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return snippet.isEmpty
+            ? Constants.Layout.TrackRow.height
+            : Constants.Layout.TrackRow.lyricSnippetHeight
+    }
+}
+
+private struct EnclosingScrollViewReader: NSViewRepresentable {
+    let onResolve: (NSScrollView?) -> Void
+
+    func makeNSView(context: Context) -> ResolverView {
+        let view = ResolverView()
+        view.onResolve = onResolve
+        return view
+    }
+
+    func updateNSView(_ nsView: ResolverView, context: Context) {
+        nsView.onResolve = onResolve
+        nsView.resolveSoon()
+    }
+
+    final class ResolverView: NSView {
+        var onResolve: ((NSScrollView?) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            resolveSoon()
+        }
+
+        func resolveSoon() {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                onResolve?(enclosingScrollView())
+            }
+        }
+
+        private func enclosingScrollView() -> NSScrollView? {
+            var view = superview
+            while let current = view {
+                if let scrollView = current as? NSScrollView {
+                    return scrollView
+                }
+                view = current.superview
+            }
+            return nil
+        }
+    }
+}
+
+private struct TrackRowFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] = [:]
+
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func playlistTrackReorderGesture<G: Gesture>(_ enabled: Bool, _ gesture: G) -> some View {
+        if enabled {
+            highPriorityGesture(gesture)
+        } else {
+            self
+        }
     }
 }
 

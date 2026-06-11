@@ -502,7 +502,9 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                 sortMenu.addItem(item)
             }
         default:
-            for key in TrackSortKey.allCases {
+            for key in TrackSortKey.allCases
+                where key != .custom || libraryVM.supportsCustomTrackOrder()
+            {
                 let item = NSMenuItem(
                     title: key.title,
                     action: #selector(handleSortKey(_:)),
@@ -517,10 +519,19 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
         sortMenu.addItem(.separator())
 
+        let isCustomTrackSort: Bool = {
+            switch libraryVM.currentSelection {
+            case .allAlbums, .allArtists:
+                return false
+            default:
+                return libraryVM.trackSortKey == .custom
+            }
+        }()
         for order in TrackSortOrder.allCases {
             let item = NSMenuItem(title: order.title, action: #selector(handleSortOrder(_:)), keyEquivalent: "")
             item.representedObject = order.rawValue
             item.state = (libraryVM.trackSortOrder == order) ? .on : .off
+            item.isEnabled = !isCustomTrackSort
             item.target = self
             sortMenu.addItem(item)
         }
@@ -545,6 +556,11 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             libraryVM.artistSortKey = key
         default:
             guard let key = TrackSortKey(rawValue: raw) else { return }
+            if key == .custom {
+                currentPageController?.activateCustomSortFromCurrentDisplay(reason: "toolbar.customSort")
+                validateCurrentToolbarVisibleItems()
+                return
+            }
             libraryVM.trackSortKey = key
             currentPageController?.handleSortChange(reason: "toolbar.sortKey")
         }

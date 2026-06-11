@@ -30,6 +30,7 @@ struct SkinContext {
         let artworkChecksum: UInt64
         let artworkData: Data?
         let artworkImage: NSImage?
+        let displayedArtworkID: UUID?
     }
 
     struct PlaybackState {

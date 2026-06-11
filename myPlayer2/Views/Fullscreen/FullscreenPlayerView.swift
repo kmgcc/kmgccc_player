@@ -3325,7 +3325,6 @@ struct FullscreenPlayerView: View {
     private func makeContext(windowSize: CGSize, artworkColumnWidth: CGFloat, fullscreenScale: CGFloat = 1.0) -> SkinContext {
         let display = currentDisplayContext
         let displayArtworkTrackID = display.artworkTrackID ?? display.trackID ?? Self.fallbackExternalTrackID
-        let artworkSnapshotMatchesCurrentTrack = artworkSnapshot?.trackID == displayArtworkTrackID
 
         let trackMeta: SkinContext.TrackMetadata? = display.hasTrack
             ? SkinContext.TrackMetadata(
@@ -3334,10 +3333,10 @@ struct FullscreenPlayerView: View {
                 artist: display.artist,
                 album: display.album ?? "",
                 duration: display.duration,
-                artworkChecksum: artworkSnapshot?.artworkChecksum
-                    ?? ArtworkDataFingerprint.sampledHash(for: display.artworkData),
-                artworkData: artworkSnapshotMatchesCurrentTrack ? display.artworkData : nil,
-                artworkImage: artworkSnapshot?.fullImage
+                artworkChecksum: ArtworkDataFingerprint.sampledHash(for: display.artworkData),
+                artworkData: display.artworkData,
+                artworkImage: artworkSnapshot?.fullImage,
+                displayedArtworkID: artworkSnapshot?.trackID
             )
             : nil
 

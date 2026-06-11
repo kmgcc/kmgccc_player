@@ -26,6 +26,7 @@ enum TrackSortKey: String, CaseIterable, Identifiable {
     case duration
     case playCount
     case preference
+    case custom
 
     var id: String { rawValue }
 
@@ -45,6 +46,8 @@ enum TrackSortKey: String, CaseIterable, Identifiable {
             return NSLocalizedString("sort.play_count", comment: "")
         case .preference:
             return NSLocalizedString("sort.preference", comment: "")
+        case .custom:
+            return NSLocalizedString("sort.custom", comment: "")
         }
     }
 }
@@ -534,7 +537,55 @@ final class LibraryViewModel {
 
     /// Sort tracks for playlist display.
     func sortedTracks(_ tracks: [Track]) -> [Track] {
-        tracks.sorted { sortTrack($0, $1) }
+        guard trackSortKey != .custom else { return tracks }
+        return tracks.sorted { sortTrack($0, $1) }
+    }
+
+    func supportsCustomTrackOrder(for selection: LibrarySelection? = nil) -> Bool {
+        switch selection ?? currentSelection {
+        case .playlist, .artist, .album:
+            return true
+        case .home, .allSongs, .allAlbums, .allArtists:
+            return false
+        }
+    }
+
+    func customTrackOrderIDsForCurrentSelection(displayedTrackIDs: [UUID]) -> [UUID]? {
+        customTrackOrderIDs(for: currentSelection, displayedTrackIDs: displayedTrackIDs)
+    }
+
+    func hasCustomTrackOrderForCurrentSelection() -> Bool {
+        customTrackOrderIDs(for: currentSelection) != nil
+    }
+
+    @discardableResult
+    func initializeCustomTrackOrderForCurrentSelectionIfNeeded(
+        displayedTrackIDs: [UUID]
+    ) -> Bool {
+        guard supportsCustomTrackOrder(), !displayedTrackIDs.isEmpty else { return false }
+        guard customTrackOrderIDs(for: currentSelection) == nil else { return false }
+        return saveCustomTrackOrder(for: currentSelection, trackIDs: displayedTrackIDs)
+    }
+
+    @discardableResult
+    func saveCustomTrackOrderForCurrentSelection(trackIDs: [UUID]) -> Bool {
+        guard supportsCustomTrackOrder(), !trackIDs.isEmpty else { return false }
+        return saveCustomTrackOrder(for: currentSelection, trackIDs: trackIDs)
+    }
+
+    func customTrackOrderSignatureForCurrentSelection(displayedTrackIDs: [UUID]) -> String {
+        guard
+            trackSortKey == .custom,
+            let order = customTrackOrderIDsForCurrentSelection(displayedTrackIDs: displayedTrackIDs)
+        else {
+            return ""
+        }
+
+        var hasher = Hasher()
+        for id in order {
+            hasher.combine(id)
+        }
+        return String(hasher.finalize())
     }
 
     // MARK: - Loading
@@ -1684,6 +1735,7 @@ final class LibraryViewModel {
         static let trackSortOrder = "trackSortOrder"
         static let trackSortPreferencesByPlaylist = "trackSortPreferencesByPlaylist"
         static let trackSortMigrationDone = "trackSortMigrationDone"
+        static let customTrackOrderBySelection = "customTrackOrderBySelection"
         static let albumSortKey = "albumSortKey"
         static let artistSortKey = "artistSortKey"
     }
@@ -1772,9 +1824,15 @@ final class LibraryViewModel {
     private func validSortPreference(_ preference: SortPreference?) -> SortPreference? {
         guard
             let preference,
-            TrackSortKey(rawValue: preference.key) != nil,
+            let key = TrackSortKey(rawValue: preference.key),
             TrackSortOrder(rawValue: preference.order) != nil
         else {
+            return nil
+        }
+        guard key != .custom || (
+            supportsCustomTrackOrder()
+                && customTrackOrderIDs(for: currentSelection) != nil
+        ) else {
             return nil
         }
         return preference
@@ -1978,6 +2036,8 @@ final class LibraryViewModel {
             result = compareInts(lhs.preferenceStats.playCount, rhs.preferenceStats.playCount)
         case .preference:
             result = compareDoubles(lhs.preferenceScore, rhs.preferenceScore)
+        case .custom:
+            return false
         }
 
         if result == .orderedSame {
@@ -2006,5 +2066,85 @@ final class LibraryViewModel {
     private func compareInts(_ lhs: Int, _ rhs: Int) -> ComparisonResult {
         if lhs == rhs { return .orderedSame }
         return lhs < rhs ? .orderedAscending : .orderedDescending
+    }
+
+    private func customTrackOrderContextKey(for selection: LibrarySelection) -> String? {
+        switch selection {
+        case .playlist(let id):
+            return "playlist-\(id.uuidString)"
+        case .artist(let key):
+            if let entry = artistEntries.first(where: { $0.canonicalName == key }) {
+                return "artist-\(entry.id.uuidString)"
+            }
+            return "artist-\(key)"
+        case .album(let key):
+            if let entry = albumEntries.first(where: { $0.canonicalKey == key }) {
+                return "album-\(entry.id.uuidString)"
+            }
+            return "album-\(key)"
+        case .home, .allSongs, .allAlbums, .allArtists:
+            return nil
+        }
+    }
+
+    private func customTrackOrderIDs(
+        for selection: LibrarySelection,
+        displayedTrackIDs: [UUID]? = nil
+    ) -> [UUID]? {
+        guard
+            supportsCustomTrackOrder(for: selection),
+            let key = customTrackOrderContextKey(for: selection),
+            let rawIDs = loadCustomTrackOrderMap()[key]
+        else {
+            return nil
+        }
+
+        var seen = Set<UUID>()
+        let persistedIDs = rawIDs.compactMap(UUID.init(uuidString:)).filter { seen.insert($0).inserted }
+        guard let displayedTrackIDs else { return persistedIDs }
+
+        let available = Set(displayedTrackIDs)
+        var merged: [UUID] = []
+        seen.removeAll(keepingCapacity: true)
+
+        for id in persistedIDs where available.contains(id) && seen.insert(id).inserted {
+            merged.append(id)
+        }
+        for id in displayedTrackIDs where seen.insert(id).inserted {
+            merged.append(id)
+        }
+        return merged
+    }
+
+    private func loadCustomTrackOrderMap() -> [String: [String]] {
+        guard
+            let data = UserDefaults.standard.data(forKey: DefaultsKey.customTrackOrderBySelection)
+        else {
+            return [:]
+        }
+        return (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:]
+    }
+
+    private func saveCustomTrackOrderMap(_ map: [String: [String]]) {
+        guard let data = try? JSONEncoder().encode(map) else { return }
+        UserDefaults.standard.set(data, forKey: DefaultsKey.customTrackOrderBySelection)
+    }
+
+    @discardableResult
+    private func saveCustomTrackOrder(for selection: LibrarySelection, trackIDs: [UUID]) -> Bool {
+        guard
+            supportsCustomTrackOrder(for: selection),
+            let key = customTrackOrderContextKey(for: selection)
+        else {
+            return false
+        }
+
+        var seen = Set<UUID>()
+        let normalized = trackIDs.filter { seen.insert($0).inserted }.map(\.uuidString)
+        var map = loadCustomTrackOrderMap()
+        guard map[key] != normalized else { return false }
+        map[key] = normalized
+        saveCustomTrackOrderMap(map)
+        return true
     }
 }

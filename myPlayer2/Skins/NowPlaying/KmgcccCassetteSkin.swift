@@ -231,12 +231,11 @@ private struct CassetteArtwork: View, Equatable {
     @Environment(\.displayScale) private var displayScale
     @State private var adjustedArtworkImage: NSImage?
     @State private var adjustedArtworkKey: String?
+    @State private var previewArtworkImage: NSImage?
+    @State private var previewArtworkKey: String?
     @State private var renderKey: String = ""
-    @State private var adjustedVisible: Bool = false
     @State private var processingTask: Task<Void, Never>?
     @State private var processingGeneration: UInt64 = 0
-    @State private var originalArtworkReleaseTask: Task<Void, Never>?
-    @State private var keepsOriginalArtworkLayer: Bool = true
 
     @AppStorage("skin.kmgcccCassette.visualizerMode") private var normalVisualizerMode: String = "off"
     @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "off"
@@ -336,21 +335,9 @@ private struct CassetteArtwork: View, Equatable {
 
     @ViewBuilder
     private func maskedArtwork(size: CGSize, maskImage: NSImage?) -> some View {
-        ZStack {
-            if keepsOriginalArtworkLayer || !showAdjustedLayer {
-                originalArtworkImage
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .opacity(showAdjustedLayer ? 0 : 1)
-            }
-
-            if showAdjustedLayer, let adjustedArtworkImage {
-                Image(nsImage: adjustedArtworkImage)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .opacity(adjustedVisible ? 1 : 0)
-            }
-        }
+        displayedArtworkImage
+            .resizable()
+            .aspectRatio(contentMode: .fill)
         .frame(width: size.width, height: size.height)
         .scaleEffect(0.90)
         .clipped()
@@ -364,7 +351,20 @@ private struct CassetteArtwork: View, Equatable {
     }
 
     private var showAdjustedLayer: Bool {
-        adjustedArtworkImage != nil
+        adjustedArtworkKey == renderKey && adjustedArtworkImage != nil
+    }
+
+    private var displayedArtworkImage: Image {
+        if showAdjustedLayer, let adjustedArtworkImage {
+            return Image(nsImage: adjustedArtworkImage)
+        }
+        if previewArtworkKey == renderKey, let previewArtworkImage {
+            return Image(nsImage: previewArtworkImage)
+        }
+        if let adjustedArtworkImage {
+            return Image(nsImage: adjustedArtworkImage)
+        }
+        return originalArtworkImage
     }
 
     private var originalArtworkImage: Image {
@@ -408,13 +408,11 @@ private struct CassetteArtwork: View, Equatable {
 
     private func scheduleAdjustedArtworkProcessing(targetSize: CGSize) {
         processingTask?.cancel()
-        originalArtworkReleaseTask?.cancel()
         processingGeneration &+= 1
         let generation = processingGeneration
 
         guard let track = context.track, let data = track.artworkData else {
             renderKey = ""
-            keepsOriginalArtworkLayer = adjustedArtworkImage == nil
             return
         }
 
@@ -433,8 +431,10 @@ private struct CassetteArtwork: View, Equatable {
             maxPixel: maxPixel
         )
         renderKey = key
-        keepsOriginalArtworkLayer = adjustedArtworkImage == nil
-        adjustedVisible = adjustedArtworkImage != nil
+        if previewArtworkKey != key {
+            previewArtworkKey = nil
+            previewArtworkImage = nil
+        }
 
         processingTask = Task(priority: .utility) {
             defer {
@@ -451,11 +451,20 @@ private struct CassetteArtwork: View, Equatable {
                     guard self.processingGeneration == generation, self.renderKey == key else { return }
                     self.adjustedArtworkImage = cached
                     self.adjustedArtworkKey = key
-                    self.adjustedVisible = true
-                    self.keepsOriginalArtworkLayer = false
-                    self.scheduleOriginalArtworkLayerRelease(generation: generation, key: key)
                 }
                 return
+            }
+
+            let preview = await Task.detached(priority: .userInitiated) {
+                Self.previewArtworkImage(from: data, maxPixel: min(520, max(280, maxPixel / 2)))
+            }.value
+
+            if let preview, !Task.isCancelled {
+                await MainActor.run {
+                    guard self.processingGeneration == generation, self.renderKey == key else { return }
+                    self.previewArtworkImage = preview
+                    self.previewArtworkKey = key
+                }
             }
 
             let result = await CassetteArtworkProcessor.shared.process(
@@ -482,9 +491,6 @@ private struct CassetteArtwork: View, Equatable {
                 }
                 self.adjustedArtworkImage = image
                 self.adjustedArtworkKey = key
-                self.adjustedVisible = true
-                self.keepsOriginalArtworkLayer = false
-                self.scheduleOriginalArtworkLayerRelease(generation: generation, key: key)
             }
         }
     }
@@ -540,23 +546,19 @@ private struct CassetteArtwork: View, Equatable {
     }
 
     private func clearAdjustedArtworkState(resetRenderKey: Bool) {
-        originalArtworkReleaseTask?.cancel()
-        originalArtworkReleaseTask = nil
         if resetRenderKey {
             renderKey = ""
         }
         adjustedArtworkKey = nil
         adjustedArtworkImage = nil
-        adjustedVisible = false
-        keepsOriginalArtworkLayer = true
+        previewArtworkKey = nil
+        previewArtworkImage = nil
     }
 
     private func teardownArtworkState(purgeCaches: Bool) {
         processingGeneration &+= 1
         processingTask?.cancel()
         processingTask = nil
-        originalArtworkReleaseTask?.cancel()
-        originalArtworkReleaseTask = nil
         clearAdjustedArtworkState(resetRenderKey: true)
 
         guard purgeCaches else { return }
@@ -566,18 +568,27 @@ private struct CassetteArtwork: View, Equatable {
         }
     }
 
-    private func scheduleOriginalArtworkLayerRelease(generation: UInt64, key: String) {
-        originalArtworkReleaseTask?.cancel()
-        originalArtworkReleaseTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 320_000_000)
-            guard !Task.isCancelled else { return }
-            guard processingGeneration == generation else { return }
-            guard renderKey == key else { return }
-            guard adjustedVisible, showAdjustedLayer else { return }
-            guard adjustedArtworkKey == key else { return }
-            keepsOriginalArtworkLayer = false
-            originalArtworkReleaseTask = nil
+    private nonisolated static func previewArtworkImage(from data: Data, maxPixel: Int) -> NSImage? {
+        guard
+            let source = CGImageSourceCreateWithData(
+                data as CFData,
+                [kCGImageSourceShouldCache: false] as CFDictionary
+            )
+        else { return nil }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixel),
+        ]
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
+              cgImage.width > 1,
+              cgImage.height > 1
+        else {
+            return nil
         }
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 }
 

@@ -102,6 +102,7 @@ final class PlaylistPageController {
     var selectedTrackIDs: Set<UUID> = []
     var selectionAnchorTrackID: UUID?
     var rendersHeaderBackgroundInWindowLayer = false
+    private(set) var isManualTrackReorderActive = false
 
     let haloState = HeaderHaloState()
 
@@ -231,6 +232,7 @@ final class PlaylistPageController {
         isMultiselectMode = false
         selectedTrackIDs.removeAll()
         selectionAnchorTrackID = nil
+        isManualTrackReorderActive = false
     }
 
     func releaseSelectionStateForTeardown() {
@@ -239,6 +241,7 @@ final class PlaylistPageController {
         selectionAnchorTrackID = nil
         listScrollPositionID = nil
         lastPrefetchBucket = nil
+        isManualTrackReorderActive = false
     }
 
     func beginMultiselectSelection(at trackID: UUID) {
@@ -358,6 +361,52 @@ final class PlaylistPageController {
         page?.queueIndexMap[trackID] ?? 0
     }
 
+    var canManuallyReorderCurrentTracks: Bool {
+        guard let libraryVM else { return false }
+        return libraryVM.supportsCustomTrackOrder(for: libraryVM.currentSelection)
+    }
+
+    var isSearchFilteringTracks: Bool {
+        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func beginManualTrackReorderInteraction() {
+        isManualTrackReorderActive = true
+    }
+
+    func endManualTrackReorderInteraction() {
+        isManualTrackReorderActive = false
+    }
+
+    func activateCustomSortFromCurrentDisplay(reason: String) {
+        guard let libraryVM, canManuallyReorderCurrentTracks else { return }
+        let visibleTrackIDs = isSearchFilteringTracks
+            ? page?.queueTracks.map(\.id) ?? []
+            : page?.rows.map(\.id) ?? []
+        guard !visibleTrackIDs.isEmpty else { return }
+        libraryVM.initializeCustomTrackOrderForCurrentSelectionIfNeeded(
+            displayedTrackIDs: visibleTrackIDs
+        )
+        if libraryVM.trackSortKey != .custom {
+            libraryVM.trackSortKey = .custom
+        }
+        scheduleRebuild(reason: reason)
+    }
+
+    func commitManualTrackOrder(orderedTrackIDs: [UUID], reason: String) {
+        guard let libraryVM, canManuallyReorderCurrentTracks else { return }
+        guard !orderedTrackIDs.isEmpty else { return }
+
+        let didSave = libraryVM.saveCustomTrackOrderForCurrentSelection(trackIDs: orderedTrackIDs)
+        let didSwitchSort = libraryVM.trackSortKey != .custom
+        if didSwitchSort {
+            libraryVM.trackSortKey = .custom
+        }
+
+        guard didSave || didSwitchSort else { return }
+        scheduleRebuild(reason: reason)
+    }
+
     private func beginSelectionTransition(to selection: LibrarySelection) {
         isSelectionTransitioning = true
         phase = .transitioning
@@ -390,6 +439,7 @@ final class PlaylistPageController {
         rebuildTask?.cancel()
         phaseToken = UUID()
         headerResolveToken = UUID()
+        isManualTrackReorderActive = false
         areRowSecondaryInteractionsEnabled = false
         areRowArtworkLoadsEnabled = false
         isRowArtworkPrefetchEnabled = false
@@ -488,13 +538,20 @@ final class PlaylistPageController {
             libraryVM: libraryVM
         )
         let isSearching = !trimmedSearch.isEmpty
+        let displayedTrackIDs = displayedTracks.map(\.id)
+        let customOrderIDs = libraryVM.trackSortKey == .custom
+            ? libraryVM.customTrackOrderIDsForCurrentSelection(displayedTrackIDs: displayedTrackIDs)
+            : nil
+        let sortOrderCacheComponent = libraryVM.trackSortKey == .custom
+            ? "custom:\(libraryVM.customTrackOrderSignatureForCurrentSelection(displayedTrackIDs: displayedTrackIDs))"
+            : libraryVM.trackSortOrder.rawValue
 
         let modelKey = await PlaylistPageModelCacheService.shared.cacheKey(
             selectionIdentity: selectionIdentity,
             sourceFingerprint: sourceFingerprint,
             searchText: trimmedSearch,
             sortKeyRawValue: libraryVM.trackSortKey.rawValue,
-            sortOrderRawValue: libraryVM.trackSortOrder.rawValue
+            sortOrderRawValue: sortOrderCacheComponent
         )
 
         if !isSearching,
@@ -558,7 +615,8 @@ final class PlaylistPageController {
             searchText: trimmedSearch,
             searchHits: searchHits,
             sortKey: libraryVM.trackSortKey,
-            sortOrder: libraryVM.trackSortOrder
+            sortOrder: libraryVM.trackSortOrder,
+            customOrderIDs: customOrderIDs
         )
 
         guard !Task.isCancelled, activeLoadToken == token else { return }
@@ -600,8 +658,8 @@ final class PlaylistPageController {
                     sourceFingerprint: sourceFingerprint,
                     searchText: trimmedSearch,
                     sortKeyRawValue: libraryVM.trackSortKey.rawValue,
-                    sortOrderRawValue: libraryVM.trackSortOrder.rawValue,
-                    displayedTrackIDs: displayedTracks.map(\.id),
+                    sortOrderRawValue: sortOrderCacheComponent,
+                    displayedTrackIDs: displayedTrackIDs,
                     rowRecords: buildResult.rowRecords,
                     queueTrackIDs: buildResult.queueTrackIDs,
                     queueIndexMap: buildResult.queueIndexMap,
@@ -1522,7 +1580,8 @@ final class PlaylistPageController {
         searchText: String,
         searchHits: [UUID: LibrarySearchHit],
         sortKey: TrackSortKey,
-        sortOrder: TrackSortOrder
+        sortOrder: TrackSortOrder,
+        customOrderIDs: [UUID]?
     ) async -> BuildResult {
         await Task.detached(priority: .userInitiated) {
             let filteredEntries: [SortableTrackEntry]
@@ -1534,6 +1593,39 @@ final class PlaylistPageController {
                 }
             }
 
+            let sourceIndex = Dictionary(uniqueKeysWithValues: entries.enumerated().map {
+                ($0.element.id, $0.offset)
+            })
+            let customRank = customOrderIDs.map { orderIDs in
+                Dictionary(uniqueKeysWithValues: orderIDs.enumerated().map {
+                    ($0.element, $0.offset)
+                })
+            }
+            let customComparator: (SortableTrackEntry, SortableTrackEntry) -> Bool = { lhs, rhs in
+                guard let customRank else {
+                    return (sourceIndex[lhs.id] ?? Int.max) < (sourceIndex[rhs.id] ?? Int.max)
+                }
+
+                let lhsRank = customRank[lhs.id]
+                let rhsRank = customRank[rhs.id]
+                switch (lhsRank, rhsRank) {
+                case let (lhs?, rhs?):
+                    if lhs != rhs { return lhs < rhs }
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                case (nil, nil):
+                    break
+                }
+                let lhsSource = sourceIndex[lhs.id] ?? Int.max
+                let rhsSource = sourceIndex[rhs.id] ?? Int.max
+                if lhsSource != rhsSource {
+                    return lhsSource < rhsSource
+                }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+
             let sortedFiltered = filteredEntries.sorted { lhs, rhs in
                 if !searchText.isEmpty,
                    let lhsHit = searchHits[lhs.id],
@@ -1541,12 +1633,18 @@ final class PlaylistPageController {
                    abs(lhsHit.score - rhsHit.score) > 0.000_1 {
                     return lhsHit.score > rhsHit.score
                 }
+                if sortKey == .custom {
+                    return customComparator(lhs, rhs)
+                }
                 return compareSortableTracks(lhs, rhs, sortKey: sortKey, sortOrder: sortOrder)
             }
             let queueEntries = searchText.isEmpty
                 ? sortedFiltered
                 : entries.sorted {
-                    compareSortableTracks($0, $1, sortKey: sortKey, sortOrder: sortOrder)
+                    if sortKey == .custom {
+                        return customComparator($0, $1)
+                    }
+                    return compareSortableTracks($0, $1, sortKey: sortKey, sortOrder: sortOrder)
                 }
 
             let displayedTrackByID = Dictionary(uniqueKeysWithValues: displayedTracks.map { ($0.id, $0) })
@@ -1636,6 +1734,8 @@ final class PlaylistPageController {
             result = compareInts(lhs.playCount, rhs.playCount)
         case .preference:
             result = compareDoubles(lhs.preferenceScore, rhs.preferenceScore)
+        case .custom:
+            return false
         }
 
         if result == .orderedSame {
