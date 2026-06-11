@@ -162,7 +162,10 @@ struct FullscreenSettingsPresentationStyle: Equatable {
             headerBottomPadding: 2 * scale,
             tabFontSize: 13.0 * scale,
             tabMinWidth: 96 * scale,
-            tabHeight: 30 * scale,
+            // tabHeight is applied as an exact `.frame(height:)` on AppKit-backed
+            // Sliders; a sub-pixel value makes AppKitPlatformViewHost log
+            // "maximum length doesn't satisfy min <= max" for every slider.
+            tabHeight: (30 * scale).rounded(),
             tabHorizontalPadding: 0,
             tabVerticalPadding: 4 * scale,
             tabTrackHorizontalPadding: 5 * scale,
