@@ -44,6 +44,12 @@ enum PlaybackStartPolicy: Equatable {
     }
 }
 
+struct LyricSpringUserSettings: Equatable {
+    var enabled: Bool
+    var duration: Double
+    var bounce: Double
+}
+
 /// Observable app settings using AppStorage for persistence.
 /// Observable app settings using AppStorage for persistence.
 @Observable
@@ -497,6 +503,24 @@ public final class AppSettings {
         static let lyricsRenderQuality = "amllLyricsRenderQuality"
         static let highResolutionLyricsEnabled = "amllHighResolutionLyricsEnabled"
         static let discreteWordHighlightEnabled = "amllDiscreteWordHighlightEnabled"
+        static let springEnabled = "amllLyricsSpringEnabled"
+        static let springDuration = "amllLyricsSpringDuration"
+        static let springBounce = "amllLyricsSpringBounce"
+    }
+
+    static let lyricSpringDurationRange: ClosedRange<Double> = 0.10...1.20
+    static let lyricSpringBounceRange: ClosedRange<Double> = -0.30...0.80
+    static let defaultLyricSpringDuration: Double = 0.65
+    static let defaultLyricSpringBounce: Double = 0.25
+
+    private static func clampLyricSpringDuration(_ value: Double) -> Double {
+        guard value.isFinite else { return defaultLyricSpringDuration }
+        return min(max(value, lyricSpringDurationRange.lowerBound), lyricSpringDurationRange.upperBound)
+    }
+
+    private static func clampLyricSpringBounce(_ value: Double) -> Double {
+        guard value.isFinite else { return defaultLyricSpringBounce }
+        return min(max(value, lyricSpringBounceRange.lowerBound), lyricSpringBounceRange.upperBound)
     }
 
     /// Shared render quality for AMLL lyric WebViews.
@@ -542,6 +566,60 @@ public final class AppSettings {
                 UserDefaults.standard.set(newValue, forKey: AMLLKeys.discreteWordHighlightEnabled)
             }
         }
+    }
+
+    var amllLyricsSpringEnabled: Bool {
+        get {
+            access(keyPath: \.amllLyricsSpringEnabled)
+            let defaults = UserDefaults.standard
+            guard defaults.object(forKey: AMLLKeys.springEnabled) != nil else { return true }
+            return defaults.bool(forKey: AMLLKeys.springEnabled)
+        }
+        set {
+            withMutation(keyPath: \.amllLyricsSpringEnabled) {
+                UserDefaults.standard.set(newValue, forKey: AMLLKeys.springEnabled)
+            }
+        }
+    }
+
+    var amllLyricsSpringDuration: Double {
+        get {
+            access(keyPath: \.amllLyricsSpringDuration)
+            let defaults = UserDefaults.standard
+            guard defaults.object(forKey: AMLLKeys.springDuration) != nil else {
+                return Self.defaultLyricSpringDuration
+            }
+            return Self.clampLyricSpringDuration(defaults.double(forKey: AMLLKeys.springDuration))
+        }
+        set {
+            withMutation(keyPath: \.amllLyricsSpringDuration) {
+                UserDefaults.standard.set(Self.clampLyricSpringDuration(newValue), forKey: AMLLKeys.springDuration)
+            }
+        }
+    }
+
+    var amllLyricsSpringBounce: Double {
+        get {
+            access(keyPath: \.amllLyricsSpringBounce)
+            let defaults = UserDefaults.standard
+            guard defaults.object(forKey: AMLLKeys.springBounce) != nil else {
+                return Self.defaultLyricSpringBounce
+            }
+            return Self.clampLyricSpringBounce(defaults.double(forKey: AMLLKeys.springBounce))
+        }
+        set {
+            withMutation(keyPath: \.amllLyricsSpringBounce) {
+                UserDefaults.standard.set(Self.clampLyricSpringBounce(newValue), forKey: AMLLKeys.springBounce)
+            }
+        }
+    }
+
+    var lyricSpringUserSettings: LyricSpringUserSettings {
+        LyricSpringUserSettings(
+            enabled: amllLyricsSpringEnabled,
+            duration: amllLyricsSpringDuration,
+            bounce: amllLyricsSpringBounce
+        )
     }
 
     /// Now Playing skin identifier

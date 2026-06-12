@@ -1537,6 +1537,7 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
             -20000,
             min(20000, lyricsTimeOffsetMs - effectiveGlobalAdvanceMs)
         )
+        let springSettings = settings.lyricSpringUserSettings
         let payload: [String: Any] = [
             "theme": themeName,
             "fontSize": settings.lyricsFontSize + overlay.mainFontSizeDeltaPx,
@@ -1556,7 +1557,9 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
             "seekTimeOffsetMs": max(-15000, min(15000, lyricsTimeOffsetMs)),
             "renderScale": role.renderScale,
             "enableBlur": role.enableBlur,
-            "enableSpring": role.enableSpring,
+            "enableSpring": role.enableSpring && springSettings.enabled,
+            "springDuration": springSettings.duration,
+            "springBounce": springSettings.bounce,
             "fpsCap": role.fpsCap,
             "overscanPx": role.overscanPx,
             "wordFadeWidth": role.wordFadeWidth,

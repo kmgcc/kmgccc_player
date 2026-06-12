@@ -13,7 +13,7 @@ import IOKit
 /// Coarse, anonymous device snapshot uploaded alongside basic telemetry.
 /// Every field is product-family / generation level — nothing here identifies a
 /// specific machine or user.
-struct DeviceTelemetrySnapshot: Equatable {
+struct DeviceTelemetrySnapshot: Equatable, Sendable {
     let deviceFamily: String
     let chipFamily: String
     let chipTier: String
@@ -64,7 +64,8 @@ enum DeviceTelemetryProvider {
         guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return nil }
         var buffer = [CChar](repeating: 0, count: size)
         guard sysctlbyname(name, &buffer, &size, nil, 0) == 0 else { return nil }
-        let value = String(cString: buffer)
+        let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        let value = String(decoding: bytes, as: UTF8.self)
         return value.isEmpty ? nil : value
     }
 
