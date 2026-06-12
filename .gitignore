@@ -39,11 +39,6 @@ myPlayer2/Assets.xcassets/
 .codegraph/
 .codex/
 
-# Nx monorepo internal cache (AMLL fork)
-applemusic-like-lyrics-kmgcccplayer-integration/.nx/cache/
-applemusic-like-lyrics-kmgcccplayer-integration/.nx/workspace-data/
-applemusic-like-lyrics-kmgcccplayer-integration/.nx/scripts/
-
 # macOS
 .DS_Store
 
