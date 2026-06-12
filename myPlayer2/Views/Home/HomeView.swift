@@ -301,9 +301,38 @@ struct HomeView: View {
         } action: { _, newValue in
             ambientMotion.setScrollOffset(newValue)
         }
+        .task(id: homeArtworkPreheatToken(mode: mode, sectionOrder: settings.homeSectionOrder)) {
+            HomeArtworkPreheater.shared.schedule(
+                heroTrack: homeVM.heroTrack,
+                albums: homeVM.albums,
+                artists: homeVM.artists,
+                playlists: homeVM.playlists,
+                preferenceRanking: homeVM.preferenceRanking,
+                libraryVM: libraryVM,
+                mode: mode,
+                sectionOrder: settings.homeSectionOrder
+            )
+        }
         .transaction { transaction in
             transaction.animation = nil
         }
+    }
+
+    private func homeArtworkPreheatToken(
+        mode: HomeLayoutMode,
+        sectionOrder: [HomeSection]
+    ) -> String {
+        [
+            "mode:\(mode)",
+            "refresh:\(libraryVM.refreshTrigger)",
+            "tracks:\(libraryVM.allTracks.count)",
+            "hero:\(homeVM.heroTrack?.id.uuidString ?? "none")",
+            "albums:\(homeVM.albums.prefix(10).map { $0.id.uuidString }.joined(separator: ","))",
+            "artists:\(homeVM.artists.prefix(10).map { $0.id.uuidString }.joined(separator: ","))",
+            "playlists:\(homeVM.playlists.prefix(10).map { $0.id.uuidString }.joined(separator: ","))",
+            "rank:\(homeVM.preferenceRanking.prefix(10).map { $0.id.uuidString }.joined(separator: ","))",
+            "order:\(sectionOrder.map(\.rawValue).joined(separator: ","))",
+        ].joined(separator: "|")
     }
 
     @ViewBuilder

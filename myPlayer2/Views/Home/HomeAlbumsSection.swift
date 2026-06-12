@@ -201,6 +201,34 @@ private struct HomeAlbumCard: View {
     @State private var image: NSImage?
     @Environment(\.colorScheme) private var colorScheme
 
+    init(
+        album: AlbumEntry,
+        mode: HomeLayoutMode,
+        titleColor: Color = Color.primary,
+        subtitleColor: Color = Color.secondary,
+        onOpen: @escaping () -> Void,
+        onPlay: @escaping () -> Void,
+        onEdit: @escaping () -> Void,
+        onDelete: @escaping () -> Void
+    ) {
+        self.album = album
+        self.mode = mode
+        self.titleColor = titleColor
+        self.subtitleColor = subtitleColor
+        self.onOpen = onOpen
+        self.onPlay = onPlay
+        self.onEdit = onEdit
+        self.onDelete = onDelete
+        _image = State(
+            initialValue: HomeArtworkMemoryStore.shared.cachedImage(
+                for: HomeArtworkMemoryStore.albumKey(
+                    for: album,
+                    pixelSide: mode.homeAlbumRailPixelSide
+                )
+            )
+        )
+    }
+
     // Outer card geometry. Cover radius is derived so the cover and card
     // form concentric rounded rectangles: innerR = outerR − inset.
     private let outerCornerRadius: CGFloat = 18
@@ -288,6 +316,7 @@ private struct HomeAlbumCard: View {
             }
         }
         .task {
+            if image != nil { return }
             await loadImage()
         }
     }
@@ -313,6 +342,12 @@ private struct HomeAlbumCard: View {
             cacheKey: key,
             targetPixelSize: targetSize
         )
+        if let loaded {
+            HomeArtworkMemoryStore.shared.store(
+                loaded,
+                for: HomeArtworkMemoryStore.albumKey(for: album, pixelSide: pixelSide)
+            )
+        }
         image = loaded
     }
 }
