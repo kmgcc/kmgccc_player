@@ -98,7 +98,6 @@
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLineWrapper"] {
             opacity: 1 !important;
-            filter: none !important;
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
             contain: none !important;
             overflow: visible !important;
@@ -131,7 +130,7 @@
             ) !important;
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) {
             color: var(
                 --amll-cb-main-line-timing-inactive,
                 var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -223,8 +222,8 @@
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="base"] .amll-cb-char-active {
             visibility: hidden !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricLine"]:not([class*="active"]),
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricLine"]:not([class*="active"]) *,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]),
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) *,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricSubLine"],
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricSubLine"] *,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-render-layer="highlight"] [class*="lyricBgLine"],
@@ -271,8 +270,8 @@
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) > [class*="lyricSubLine"],
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) > [class*="lyricSubLine"] * {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) > [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) > [class*="lyricSubLine"] * {
             color: var(
                 --amll-cb-sub-color,
                 var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -308,8 +307,8 @@
             pointer-events: none !important;
             user-select: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-cb-word-base,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-cb-char-base {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) .amll-cb-word-base,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) .amll-cb-char-base {
             color: var(
                 --amll-cb-main-line-timing-inactive,
                 var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -336,13 +335,13 @@
                 opacity .50s cubic-bezier(0.22, 0.61, 0.36, 1),
                 color .14s ease-out !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-char-active {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-char-active {
             opacity: 0 !important;
             visibility: visible !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-char-active {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-cb-char-active {
             color: var(
                 --amll-cb-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
@@ -385,8 +384,8 @@
                 opacity 0.20s linear 0.05s,
                 color 0.20s linear 0.05s !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-cb-word-active,
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-cb-char-active {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) .amll-cb-word-active,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur.fs-line-timing-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) .amll-cb-char-active {
             transition:
                 opacity 0.50s ease-out 0s,
                 color 0.50s ease-out 0s !important;
@@ -503,7 +502,6 @@
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="lyricLineWrapper"] {
             opacity: 1 !important;
-            filter: none !important;
             mix-blend-mode: normal !important;
             contain: none !important;
             overflow: visible !important;
@@ -517,7 +515,7 @@
                 var(--amll-inactive, var(--amll-lp-color, white))
             ) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) {
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) {
             color: var(
                 --amll-fs-main-line-timing-inactive,
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -541,7 +539,7 @@
         .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"][class*="active"] [class*="lyricMainLine"] * {
             color: inherit !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) {
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) {
             transition:
                 color var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay) !important;
         }
@@ -625,13 +623,13 @@
             pointer-events: none !important;
             user-select: none !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-fs-word-base {
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) .amll-fs-word-base {
             color: var(
                 --amll-fs-main-line-timing-inactive,
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
             ) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-fs-char-base {
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) .amll-fs-char-base {
             color: var(
                 --amll-fs-main-line-timing-inactive,
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -669,8 +667,8 @@
                 opacity .50s cubic-bezier(0.22, 0.61, 0.36, 1),
                 color .14s ease-out !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-fs-word-active,
-        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.amll-word-highlight-discrete [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]) .amll-fs-char-active {
             opacity: 0 !important;
             visibility: visible !important;
         }
@@ -679,7 +677,7 @@
             opacity: 0 !important;
             visibility: visible !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]):not([data-amll-exiting-highlight="1"]) .amll-fs-word-active {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]):not([data-amll-exiting-highlight="1"]) .amll-fs-word-active {
             color: var(
                 --amll-fs-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
@@ -688,7 +686,7 @@
             visibility: visible !important;
             opacity: 0 !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]):not([data-amll-exiting-highlight="1"]) .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]):not([data-fs-completed-highlight="1"]):not([data-amll-exit-catch-up="1"]):not([data-amll-exiting-highlight="1"]) .amll-fs-char-active {
             color: var(
                 --amll-fs-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
@@ -750,9 +748,9 @@
         }
         /* 移除激活/非激活状态的颜色差异，翻译行统一使用非高亮色 */
         .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"][class*="active"] > [class*="lyricSubLine"],
-        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="active"]) > [class*="lyricSubLine"],
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) > [class*="lyricSubLine"],
         .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"][class*="active"] > [class*="lyricSubLine"],
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) > [class*="lyricSubLine"] {
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) > [class*="lyricSubLine"] {
             color: var(
                 --amll-fs-sub-color,
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -778,8 +776,8 @@
                 opacity var(--amll-fs-line-switch-highlight-in-duration) linear var(--amll-fs-line-switch-highlight-delay),
                 color var(--amll-fs-line-switch-highlight-in-duration) linear var(--amll-fs-line-switch-highlight-delay) !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-fs-word-active,
-        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="active"]) .amll-fs-char-active {
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) .amll-fs-word-active,
+        .amll-lyric-player.amll-surface-fullscreen.fs-line-timing-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) .amll-fs-char-active {
             transition:
                 opacity var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay),
                 color var(--amll-fs-line-switch-highlight-out-duration) ease-out var(--amll-fs-line-switch-highlight-out-delay) !important;
@@ -955,8 +953,8 @@
             ) !important;
         }
 
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"]:not([class*="active"]),
-        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"]:not([class*="active"]) *,
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]),
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) *,
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricBgLine"],
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricBgLine"] *,
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="interludeDots"],
@@ -5595,9 +5593,9 @@
                     mainNonHighlight: snapshotLayer(".amll-cb-word-base, .amll-cb-char-base")
                         || snapshotLayer(".amll-fs-word-base, .amll-fs-char-base")
                         || snapshotLayer('[class*="lyricMainLine"]'),
-                    inactiveLyric: snapshotLayer('[class*="lyricLine"]:not([class*="active"]) .amll-cb-word-base, [class*="lyricLine"]:not([class*="active"]) .amll-cb-char-base')
-                        || snapshotLayer('[class*="lyricLine"]:not([class*="active"]) .amll-fs-word-base, [class*="lyricLine"]:not([class*="active"]) .amll-fs-char-base')
-                        || snapshotLayer('[class*="lyricLine"]:not([class*="active"]) [class*="lyricMainLine"]'),
+                    inactiveLyric: snapshotLayer('[class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) .amll-cb-word-base, [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) .amll-cb-char-base')
+                        || snapshotLayer('[class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) .amll-fs-word-base, [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) .amll-fs-char-base')
+                        || snapshotLayer('[class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) [class*="lyricMainLine"]'),
                     translation: snapshotLayer('[class*="lyricLine"][class*="active"] > [class*="lyricSubLine"]')
                         || snapshotLayer('[class*="lyricSubLine"]'),
                     backgroundLyric: snapshotLayer('[class*="lyricBgLine"][class*="active"] > *')
@@ -5615,12 +5613,12 @@
                 },
                 hitTests: {
                     activeMainLine: hitTestVisibleLayer('[class*="lyricLine"][class*="active"] [class*="lyricMainLine"]'),
-                    inactiveMainLine: hitTestVisibleLayer('[class*="lyricLine"]:not([class*="active"]) [class*="lyricMainLine"]'),
+                    inactiveMainLine: hitTestVisibleLayer('[class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) [class*="lyricMainLine"]'),
                     activeSubLine: hitTestVisibleLayer('[class*="lyricLine"][class*="active"] > [class*="lyricSubLine"]'),
                     interludeDots: hitTestVisibleLayer('[class*="interludeDots"] > *'),
                     activeWord: hitTestVisibleLayer('.amll-cb-word-active, .amll-fs-word-active'),
                     inactiveWordBase: hitTestVisibleLayer(
-                        '[class*="lyricLine"]:not([class*="active"]) .amll-cb-word-base, [class*="lyricLine"]:not([class*="active"]) .amll-fs-word-base'
+                        '[class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) .amll-cb-word-base, [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]) .amll-fs-word-base'
                     ),
                 },
                 activeHighlight: collectActiveHighlightState(`debugDump:${label}`),
