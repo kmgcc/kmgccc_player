@@ -1,3 +1,0 @@
-*.md   linguist-documentation
-*.mdx  linguist-documentation
-packages/playground/core/src/components/ui/**  linguist-vendored

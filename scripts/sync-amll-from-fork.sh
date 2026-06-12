@@ -2,12 +2,13 @@
 set -euo pipefail
 
 APP_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEFAULT_AMLL_SOURCE="/Users/kmg/Documents/vscode/player/myPlayer2/applemusic-like-lyrics-kmgcccplayer-integration"
+DEFAULT_AMLL_SOURCE="$APP_REPO_ROOT/applemusic-like-lyrics-kmgcccplayer-integration"
 AMLL_SOURCE="${AMLL_SOURCE:-$DEFAULT_AMLL_SOURCE}"
 APP_AMLL_DIR="$APP_REPO_ROOT/myPlayer2/Resources/AMLL"
 
-if [[ ! -d "$AMLL_SOURCE/.git" ]]; then
+if [[ ! -e "$AMLL_SOURCE/.git" ]]; then
   echo "AMLL source repo not found: $AMLL_SOURCE" >&2
+  echo "Run: git submodule update --init --recursive" >&2
   exit 1
 fi
 
