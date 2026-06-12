@@ -389,6 +389,7 @@ final class LyricsViewModel {
         let clampedTranslationWeight = max(100, min(900, translationWeight))
         let leadInMs = max(0, settings.lyricsLeadInMs)
         let nearSwitchGapMs = max(0, min(500, settings.lyricsNearSwitchGapMs))
+        let springSettings = settings.lyricSpringUserSettings
 
         let config: [String: Any] = [
             "fontSize": settings.lyricsFontSize,
@@ -404,7 +405,9 @@ final class LyricsViewModel {
             "theme": resolvedTheme,
             "renderScale": surfaceRole.renderScale,
             "enableBlur": surfaceRole.enableBlur,
-            "enableSpring": surfaceRole.enableSpring,
+            "enableSpring": surfaceRole.enableSpring && springSettings.enabled,
+            "springDuration": springSettings.duration,
+            "springBounce": springSettings.bounce,
             "fpsCap": surfaceRole.fpsCap,
             "overscanPx": surfaceRole.overscanPx,
             "wordFadeWidth": surfaceRole.wordFadeWidth,

@@ -7,8 +7,9 @@
 
 import AppKit
 import Foundation
+import Synchronization
 
-enum TelemetryPlaybackMode: String, Codable {
+enum TelemetryPlaybackMode: String, Codable, Sendable {
     case local
     case appleMusic = "apple_music"
     case external
@@ -25,19 +26,19 @@ enum TelemetryPlaybackMode: String, Codable {
     }
 }
 
-enum TelemetrySessionEndReason: String, Codable {
+enum TelemetrySessionEndReason: String, Codable, Sendable {
     case appTerminated = "app_terminated"
     case recoveredAfterUngracefulExit = "recovered_after_ungraceful_exit"
     case other
 }
 
-private enum TelemetryTimelineKind: String, Codable {
+private enum TelemetryTimelineKind: String, Codable, Sendable {
     case foreground
     case mode
     case playback
 }
 
-private enum TelemetryTimelineValue: String, Codable {
+private enum TelemetryTimelineValue: String, Codable, Sendable {
     case active
     case inactive
     case local
@@ -66,7 +67,7 @@ private enum TelemetryTimelineValue: String, Codable {
     }
 }
 
-private struct TelemetryTimelineSegment: Codable {
+private struct TelemetryTimelineSegment: Codable, Sendable {
     let kind: TelemetryTimelineKind
     let value: TelemetryTimelineValue
     let startOffsetSeconds: Int
@@ -80,18 +81,18 @@ private struct TelemetryTimelineSegment: Codable {
     }
 }
 
-private struct TelemetryOpenTimelineSegment: Codable {
+private struct TelemetryOpenTimelineSegment: Codable, Sendable {
     let kind: TelemetryTimelineKind
     let value: TelemetryTimelineValue
     let startOffsetSeconds: Int
 }
 
-private enum TelemetrySkinUsageContext: String, Codable {
+private enum TelemetrySkinUsageContext: String, Codable, Sendable {
     case window
     case fullscreen
 }
 
-private struct TelemetrySkinUsageRecord: Codable {
+private struct TelemetrySkinUsageRecord: Codable, Sendable {
     let skinID: String
     let context: TelemetrySkinUsageContext
     let durationSeconds: Int
@@ -887,7 +888,7 @@ private struct TelemetrySessionCheckpoint: Codable {
     }
 }
 
-private enum TelemetryJSONValue: Codable {
+private enum TelemetryJSONValue: Codable, Sendable {
     case string(String)
     case int(Int)
     case object([String: TelemetryJSONValue])
@@ -921,7 +922,7 @@ private enum TelemetryJSONValue: Codable {
     }
 }
 
-private struct TelemetryQueuedEvent: Codable {
+private struct TelemetryQueuedEvent: Codable, Sendable {
     let eventID: String
     let occurredAt: Date
     let installID: String
@@ -1033,12 +1034,12 @@ private enum TelemetryFilePaths {
     }
 }
 
-private struct TelemetryUploadRequest: Codable {
+private struct TelemetryUploadRequest: Codable, Sendable {
     let client: TelemetryUploadClient
     let events: [TelemetryQueuedEvent]
 }
 
-private struct TelemetryUploadClient: Codable {
+private struct TelemetryUploadClient: Codable, Sendable {
     let appVersion: String
     let buildNumber: String?
     let platform: String
@@ -1064,7 +1065,7 @@ private struct TelemetryUploadClient: Codable {
     }
 }
 
-private struct TelemetryUploadResponse: Decodable {
+private struct TelemetryUploadResponse: Decodable, Sendable {
     let success: Bool
     let acceptedCount: Int
     let duplicateCount: Int
@@ -1082,7 +1083,7 @@ private struct TelemetryUploadResponse: Decodable {
     }
 }
 
-private struct TelemetryAcceptedEvent: Decodable {
+private struct TelemetryAcceptedEvent: Decodable, Sendable {
     let eventID: String
     let status: String
 
@@ -1092,7 +1093,7 @@ private struct TelemetryAcceptedEvent: Decodable {
     }
 }
 
-private struct TelemetryRejectedEvent: Decodable {
+private struct TelemetryRejectedEvent: Decodable, Sendable {
     let index: Int
     let reason: String
 }
@@ -1115,12 +1116,7 @@ private final class TelemetryUploader {
         let request = try makeRequest(events: events, timeout: 5, device: device)
 
         let (data, response) = try await session.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200..<300).contains(httpResponse.statusCode) else {
-            throw URLError(.badServerResponse)
-        }
-        let decoder = JSONDecoder()
-        return try decoder.decode(TelemetryUploadResponse.self, from: data)
+        return try Self.decodeUploadResponse(data: data, response: response)
     }
 
     func uploadSynchronously(
@@ -1130,34 +1126,43 @@ private final class TelemetryUploader {
     ) throws -> TelemetryUploadResponse {
         let request = try makeRequest(events: events, timeout: timeout, device: device)
         let semaphore = DispatchSemaphore(value: 0)
-        var receivedData: Data?
-        var receivedStatusCode: Int?
-        var receivedError: Error?
+        let outcome = Mutex<TelemetrySynchronousUploadOutcome?>(nil)
 
-        let task = session.dataTask(with: request) { data, response, error in
-            defer { semaphore.signal() }
-            if let error {
-                receivedError = error
-                return
+        let task = Task.detached(priority: .utility) {
+            let uploadOutcome: TelemetrySynchronousUploadOutcome
+            do {
+                let response = try await Self.uploadOnce(request: request, timeout: timeout)
+                uploadOutcome = .success(response)
+            } catch let error as TelemetrySynchronousUploadError {
+                uploadOutcome = .failure(error)
+            } catch let error as URLError {
+                uploadOutcome = .failure(.url(error.code))
+            } catch let error as DecodingError {
+                uploadOutcome = .failure(.decoding(String(describing: error)))
+            } catch {
+                uploadOutcome = .failure(.unexpected(String(describing: error)))
             }
-            receivedStatusCode = (response as? HTTPURLResponse)?.statusCode
-            receivedData = data
+
+            outcome.withLock { value in
+                value = uploadOutcome
+            }
+            semaphore.signal()
         }
-        task.resume()
 
         if semaphore.wait(timeout: .now() + timeout) == .timedOut {
             task.cancel()
             throw URLError(.timedOut)
         }
-        if let receivedError {
-            throw receivedError
+
+        guard let uploadOutcome = outcome.withLock({ $0 }) else {
+            throw TelemetrySynchronousUploadError.missingResult
         }
-        guard let statusCode = receivedStatusCode,
-              (200..<300).contains(statusCode),
-              let receivedData else {
-            throw URLError(.badServerResponse)
+        switch uploadOutcome {
+        case .success(let response):
+            return response
+        case .failure(let error):
+            throw error
         }
-        return try JSONDecoder().decode(TelemetryUploadResponse.self, from: receivedData)
     }
 
     private func makeRequest(
@@ -1192,6 +1197,57 @@ private final class TelemetryUploader {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(requestBody)
         return request
+    }
+
+    private static func uploadOnce(
+        request: URLRequest,
+        timeout: TimeInterval
+    ) async throws -> TelemetryUploadResponse {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = timeout
+        configuration.timeoutIntervalForResource = timeout
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+
+        let (data, response) = try await session.data(for: request)
+        return try decodeUploadResponse(data: data, response: response)
+    }
+
+    private static func decodeUploadResponse(
+        data: Data,
+        response: URLResponse
+    ) throws -> TelemetryUploadResponse {
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode) else {
+            throw URLError(.badServerResponse)
+        }
+        let decoder = JSONDecoder()
+        return try decoder.decode(TelemetryUploadResponse.self, from: data)
+    }
+}
+
+private enum TelemetrySynchronousUploadOutcome: Sendable {
+    case success(TelemetryUploadResponse)
+    case failure(TelemetrySynchronousUploadError)
+}
+
+private enum TelemetrySynchronousUploadError: Error, Sendable, CustomStringConvertible {
+    case missingResult
+    case url(URLError.Code)
+    case decoding(String)
+    case unexpected(String)
+
+    var description: String {
+        switch self {
+        case .missingResult:
+            return "upload finished without a result"
+        case .url(let code):
+            return "url error: \(code)"
+        case .decoding(let detail):
+            return "decoding error: \(detail)"
+        case .unexpected(let detail):
+            return "unexpected error: \(detail)"
+        }
     }
 }
 

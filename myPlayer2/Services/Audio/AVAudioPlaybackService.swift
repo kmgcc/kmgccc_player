@@ -688,11 +688,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
                 category: .audio
             )
         }
-        playerNode.scheduleFile(file, at: nil) { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.handlePlaybackCompletion(token: token)
-            }
-        }
+        let completion = playbackBoundaryHandler(token: token)
+        playerNode.scheduleFile(file, at: nil, completionHandler: completion)
     }
 
     private func scheduleSegment(
@@ -715,16 +712,14 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
                 category: .audio
             )
         }
+        let completion = playbackBoundaryHandler(token: token)
         playerNode.scheduleSegment(
             file,
             startingFrame: startingFrame,
             frameCount: frameCount,
-            at: nil
-        ) { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.handlePlaybackCompletion(token: token)
-            }
-        }
+            at: nil,
+            completionHandler: completion
+        )
     }
 
     // MARK: - Playback Control
@@ -1551,11 +1546,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         scheduleQueue.append(item)
 
-        let completion: AVAudioPlayerNodeCompletionHandler = { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handlePlaybackCompletion(token: token)
-            }
-        }
+        let completion = playbackBoundaryCallback(token: token)
         if let trim {
             playerNode.scheduleSegment(
                 resource.file,
@@ -1629,6 +1620,24 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     // MARK: - Playback Completion
+
+    private func playbackBoundaryHandler(token: UUID) -> @Sendable () -> Void {
+        { [weak self] in
+            self?.submitPlaybackBoundaryEvent(token: token)
+        }
+    }
+
+    private func playbackBoundaryCallback(token: UUID) -> @Sendable (AVAudioPlayerNodeCompletionCallbackType) -> Void {
+        { [weak self] _ in
+            self?.submitPlaybackBoundaryEvent(token: token)
+        }
+    }
+
+    nonisolated private func submitPlaybackBoundaryEvent(token: UUID) {
+        Task { @MainActor [weak self] in
+            self?.handlePlaybackCompletion(token: token)
+        }
+    }
 
     private func handlePlaybackCompletion(token: UUID) {
         guard token == activeScheduleToken else { return }

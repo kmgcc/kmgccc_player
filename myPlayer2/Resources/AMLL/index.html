@@ -1230,10 +1230,150 @@
         let renderScale = defaultRenderScale;
         let blurEnabled = defaultEnableBlur;
         let springEnabled = defaultEnableSpring;
+        let springDuration = 0.65;
+        let springBounce = 0.25;
         let overscanPx = defaultOverscanPx;
         let fpsCap = defaultFPSCap;
         let wordFadeWidth = defaultWordFadeWidth;
         let wordHighlightMode = "smooth";
+        const SPRING_DURATION_MIN = 0.10;
+        const SPRING_DURATION_MAX = 1.20;
+        const SPRING_BOUNCE_MIN = -0.30;
+        const SPRING_BOUNCE_MAX = 0.80;
+        const DEFAULT_SPRING_DURATION = 0.65;
+        const DEFAULT_SPRING_BOUNCE = 0.25;
+        const DEFAULT_LINE_POS_X_SPRING_PARAMS = Object.freeze({
+            mass: 1,
+            damping: 10,
+            stiffness: 100,
+            soft: false,
+        });
+        const DEFAULT_LINE_POS_Y_SPRING_PARAMS = Object.freeze({
+            mass: 0.9,
+            damping: 15,
+            stiffness: 90,
+            soft: false,
+        });
+        const DEFAULT_LINE_SCALE_SPRING_PARAMS = Object.freeze({
+            mass: 2,
+            damping: 25,
+            stiffness: 100,
+            soft: false,
+        });
+        const clampSpringNumber = (value, min, max, fallback) => {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric)) return fallback;
+            return Math.max(min, Math.min(max, numeric));
+        };
+        const isDefaultLyricSpringSetting = (duration, bounce) =>
+            Math.abs(duration - DEFAULT_SPRING_DURATION) < 0.0001
+            && Math.abs(bounce - DEFAULT_SPRING_BOUNCE) < 0.0001;
+        const springParamsFromDurationBounce = (duration, bounce) => {
+            const d = clampSpringNumber(
+                duration,
+                SPRING_DURATION_MIN,
+                SPRING_DURATION_MAX,
+                DEFAULT_SPRING_DURATION
+            );
+            const b = clampSpringNumber(
+                bounce,
+                SPRING_BOUNCE_MIN,
+                SPRING_BOUNCE_MAX,
+                DEFAULT_SPRING_BOUNCE
+            );
+            const mass = 1;
+            const stiffness = Math.pow((2 * Math.PI) / d, 2);
+            let damping;
+
+            if (b >= 0) {
+                damping = 1 - (4 * Math.PI * b) / d;
+            } else {
+                const denominator = d + 4 * Math.PI * b;
+                damping = (4 * Math.PI) / Math.max(0.001, denominator);
+            }
+
+            return {
+                mass,
+                stiffness,
+                damping: Math.max(0.001, damping),
+                soft: false,
+            };
+        };
+        const originalSetLinePosXSpringParams =
+            typeof lyricPlayer.setLinePosXSpringParams === "function"
+                ? lyricPlayer.setLinePosXSpringParams.bind(lyricPlayer)
+                : null;
+        const originalSetLinePosYSpringParams =
+            typeof lyricPlayer.setLinePosYSpringParams === "function"
+                ? lyricPlayer.setLinePosYSpringParams.bind(lyricPlayer)
+                : null;
+        const originalSetLineScaleSpringParams =
+            typeof lyricPlayer.setLineScaleSpringParams === "function"
+                ? lyricPlayer.setLineScaleSpringParams.bind(lyricPlayer)
+                : null;
+        let lyricSpringOverrideParams = null;
+        let applyingLyricSpringOverride = false;
+        if (originalSetLinePosYSpringParams) {
+            lyricPlayer.setLinePosYSpringParams = (params = {}) => {
+                const nextParams =
+                    lyricSpringOverrideParams && !applyingLyricSpringOverride
+                        ? { ...params, ...lyricSpringOverrideParams.linePosY }
+                        : params;
+                return originalSetLinePosYSpringParams(nextParams);
+            };
+        }
+        if (originalSetLineScaleSpringParams) {
+            lyricPlayer.setLineScaleSpringParams = (params = {}) => {
+                const nextParams =
+                    lyricSpringOverrideParams && !applyingLyricSpringOverride
+                        ? { ...params, ...lyricSpringOverrideParams.lineScale }
+                        : params;
+                return originalSetLineScaleSpringParams(nextParams);
+            };
+        }
+        const applyLyricSpringParams = (duration, bounce) => {
+            const nextDuration = clampSpringNumber(
+                duration,
+                SPRING_DURATION_MIN,
+                SPRING_DURATION_MAX,
+                DEFAULT_SPRING_DURATION
+            );
+            const nextBounce = clampSpringNumber(
+                bounce,
+                SPRING_BOUNCE_MIN,
+                SPRING_BOUNCE_MAX,
+                DEFAULT_SPRING_BOUNCE
+            );
+            const isDefault = isDefaultLyricSpringSetting(nextDuration, nextBounce);
+            lyricSpringOverrideParams = isDefault
+                ? null
+                : {
+                    linePosX: springParamsFromDurationBounce(nextDuration, nextBounce),
+                    linePosY: springParamsFromDurationBounce(nextDuration, nextBounce),
+                    lineScale: springParamsFromDurationBounce(nextDuration, nextBounce),
+                };
+
+            applyingLyricSpringOverride = true;
+            try {
+                if (originalSetLinePosXSpringParams) {
+                    originalSetLinePosXSpringParams(
+                        lyricSpringOverrideParams?.linePosX ?? DEFAULT_LINE_POS_X_SPRING_PARAMS
+                    );
+                }
+                if (originalSetLinePosYSpringParams) {
+                    originalSetLinePosYSpringParams(
+                        lyricSpringOverrideParams?.linePosY ?? DEFAULT_LINE_POS_Y_SPRING_PARAMS
+                    );
+                }
+                if (originalSetLineScaleSpringParams) {
+                    originalSetLineScaleSpringParams(
+                        lyricSpringOverrideParams?.lineScale ?? DEFAULT_LINE_SCALE_SPRING_PARAMS
+                    );
+                }
+            } finally {
+                applyingLyricSpringOverride = false;
+            }
+        };
         const syncWordHighlightModeRootState = () => {
             const playerElement = lyricPlayer.getElement();
             if (!(playerElement instanceof HTMLElement)) return;
@@ -5691,6 +5831,33 @@
 		                            lyricPlayer.setEnableSpring(springEnabled);
 		                        }
 		                    }
+                            if (hasOwn("springDuration") || hasOwn("springBounce")) {
+                                const nextSpringDuration = hasOwn("springDuration")
+                                    ? clampSpringNumber(
+                                        config.springDuration,
+                                        SPRING_DURATION_MIN,
+                                        SPRING_DURATION_MAX,
+                                        DEFAULT_SPRING_DURATION
+                                    )
+                                    : springDuration;
+                                const nextSpringBounce = hasOwn("springBounce")
+                                    ? clampSpringNumber(
+                                        config.springBounce,
+                                        SPRING_BOUNCE_MIN,
+                                        SPRING_BOUNCE_MAX,
+                                        DEFAULT_SPRING_BOUNCE
+                                    )
+                                    : springBounce;
+                                if (
+                                    nextSpringDuration !== springDuration
+                                    || nextSpringBounce !== springBounce
+                                    || hasOwn("enableSpring")
+                                ) {
+                                    springDuration = nextSpringDuration;
+                                    springBounce = nextSpringBounce;
+                                    applyLyricSpringParams(springDuration, springBounce);
+                                }
+                            }
                             let renderScaleDidChange = false;
 		                    if (typeof config.renderScale === "number" && !Number.isNaN(config.renderScale)) {
 		                        const nextRenderScale = Math.max(0.35, Math.min(1.0, config.renderScale));

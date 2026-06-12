@@ -2973,6 +2973,7 @@ struct FullscreenPlayerView: View {
         let scaledFontSize = scaledBaseFontSize + overlay.mainFontSizeDeltaPx
         let scaledTranslationFontSize =
             scaledBaseTranslationFontSize + overlay.translationFontSizeDeltaPx
+        let springSettings = settings.lyricSpringUserSettings
 
         if EmbeddedFullscreenTrace.enabled, hostContext == .embeddedWindow {
             Log.info(
@@ -2993,7 +2994,9 @@ struct FullscreenPlayerView: View {
             ),
             "renderScale": surfaceRole.renderScale,
             "enableBlur": surfaceRole.enableBlur,
-            "enableSpring": surfaceRole.enableSpring,
+            "enableSpring": surfaceRole.enableSpring && springSettings.enabled,
+            "springDuration": springSettings.duration,
+            "springBounce": springSettings.bounce,
             "fpsCap": surfaceRole.fpsCap,
             "overscanPx": surfaceRole.overscanPx,
             "wordFadeWidth": surfaceRole.wordFadeWidth,

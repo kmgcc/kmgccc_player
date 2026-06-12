@@ -202,7 +202,7 @@ struct MiniPlayerControlPalette: Equatable, Sendable {
     let progressTrack: NSColor
 }
 
-enum SemanticPaletteFactory {
+nonisolated enum SemanticPaletteFactory {
     static func make(
         from analysis: ArtworkColorAnalysis,
         scheme: ColorScheme,
@@ -1514,7 +1514,7 @@ enum SemanticPaletteFactory {
 }
 
 /// Format a CGFloat to 3 decimal places for debug logging.
-private func f3(_ value: CGFloat) -> String {
+nonisolated private func f3(_ value: CGFloat) -> String {
     String(format: "%.3f", Double(value))
 }
 
