@@ -116,7 +116,7 @@
             --amll-cb-main-glow: rgb(0, 0, 0);
             --amll-cb-sub-glow: rgb(50, 50, 50);
         }
-        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"] {
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLine"]:not([class*="lyricLineWrapper"]) {
             color: var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white))) !important;
             mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
             filter: none !important;
@@ -506,7 +506,7 @@
             contain: none !important;
             overflow: visible !important;
         }
-        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"] {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="lyricLineWrapper"]) {
             color: var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white))) !important;
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"][class*="active"] {
@@ -923,7 +923,7 @@
         }
 
         /* Ensure the lyric line container allows overflow */
-        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"] {
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLine"]:not([class*="lyricLineWrapper"]) {
             overflow: visible !important;
             contain: none !important;
         }
@@ -2408,6 +2408,21 @@
                 playerElement.style.removeProperty("background-color");
             }
             syncFullscreenDerivedColors();
+        };
+
+        const promoteFullscreenGroupWrapperFilters = () => {
+            if (!(fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode || isFullscreenCoverBlurGenericMode())) {
+                return;
+            }
+            const playerElement = lyricPlayer.getElement();
+            if (!(playerElement instanceof HTMLElement)) return;
+
+            for (const wrapper of playerElement.querySelectorAll('[class*="lyricLineWrapper"]')) {
+                if (!(wrapper instanceof HTMLElement)) continue;
+                const inlineFilter = wrapper.style.getPropertyValue("filter");
+                if (!inlineFilter || inlineFilter === "unset") continue;
+                wrapper.style.setProperty("filter", inlineFilter, "important");
+            }
         };
 
         const startFullscreenCompositingGuard = () => {};
@@ -4009,6 +4024,7 @@
                 }
             }
             updateFullscreenFadingHighlightState();
+            promoteFullscreenGroupWrapperFilters();
             logActiveHighlightState(`patch-fullscreen:${reason}`);
         };
         let coverBlurPackedAnimationTargetMap = new WeakMap();
@@ -4449,6 +4465,7 @@
                 applyCoverBlurFinalLayerStyles();
                 lastCoverBlurBlendSignature = nextBlendSignature;
             }
+            promoteFullscreenGroupWrapperFilters();
             logActiveHighlightState(`patch-cover-blur:${reason}`);
         };
 
@@ -5337,6 +5354,7 @@
 	            // Always update parallel highlight tracking for fullscreen modes
 	            if (fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode) {
 	                updateFullscreenParallelHighlightState();
+                    promoteFullscreenGroupWrapperFilters();
 	            }
 	        };
 	        lyricPlayer.setCurrentTime = originalSetCurrentTime;
@@ -6450,6 +6468,7 @@
                 }
             }
             lyricPlayer.update(delta);
+            promoteFullscreenGroupWrapperFilters();
             // Keep rendering while playing, or until the paused settle window
             // elapses; otherwise idle until wakeRenderer() re-arms the loop.
             if (externalIsPlaying || time < rafKeepAliveUntil) {
