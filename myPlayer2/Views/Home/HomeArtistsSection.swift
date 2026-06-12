@@ -187,6 +187,32 @@ private struct HomeArtistCircle: View {
     @State private var image: NSImage?
     @Environment(\.colorScheme) private var colorScheme
 
+    init(
+        artist: ArtistEntry,
+        mode: HomeLayoutMode,
+        titleColor: Color = Color.primary,
+        onOpen: @escaping () -> Void,
+        onPlay: @escaping () -> Void,
+        onEdit: @escaping () -> Void,
+        onDelete: @escaping () -> Void
+    ) {
+        self.artist = artist
+        self.mode = mode
+        self.titleColor = titleColor
+        self.onOpen = onOpen
+        self.onPlay = onPlay
+        self.onEdit = onEdit
+        self.onDelete = onDelete
+        _image = State(
+            initialValue: HomeArtworkMemoryStore.shared.cachedImage(
+                for: HomeArtworkMemoryStore.artistKey(
+                    for: artist,
+                    pixelSide: mode.homeArtistRailPixelSide
+                )
+            )
+        )
+    }
+
     private var circleSize: CGFloat {
         switch mode {
         case .wide:    return 136
@@ -264,6 +290,7 @@ private struct HomeArtistCircle: View {
             }
         }
         .task {
+            if image != nil { return }
             await loadImage()
         }
     }
@@ -284,6 +311,12 @@ private struct HomeArtistCircle: View {
                 cacheKey: key,
                 targetPixelSize: targetSize
             )
+            if let loaded {
+                HomeArtworkMemoryStore.shared.store(
+                    loaded,
+                    for: HomeArtworkMemoryStore.artistKey(for: artist, pixelSide: pixelSide)
+                )
+            }
             image = loaded
             return
         }
@@ -298,6 +331,12 @@ private struct HomeArtistCircle: View {
             trackSources: trackSources,
             pixelSide: pixelSide
         )
+        if let generated {
+            HomeArtworkMemoryStore.shared.store(
+                generated,
+                for: HomeArtworkMemoryStore.artistKey(for: artist, pixelSide: pixelSide)
+            )
+        }
         image = generated
     }
 }

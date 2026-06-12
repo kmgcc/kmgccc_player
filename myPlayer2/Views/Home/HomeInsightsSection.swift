@@ -669,6 +669,19 @@ private struct HomeRankArtworkView: View {
     let side: CGFloat
     @State private var image: NSImage?
 
+    init(item: HomeViewModel.PreferenceRankItem, side: CGFloat) {
+        self.item = item
+        self.side = side
+        _image = State(
+            initialValue: HomeArtworkMemoryStore.shared.cachedImage(
+                for: HomeArtworkMemoryStore.rankKey(
+                    trackID: item.id,
+                    pixelSide: Self.pixelSide(for: side)
+                )
+            )
+        )
+    }
+
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -687,6 +700,7 @@ private struct HomeRankArtworkView: View {
         .frame(width: side, height: side)
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .task(id: item.id) {
+            if image != nil { return }
             await loadImage()
         }
     }
@@ -701,18 +715,30 @@ private struct HomeRankArtworkView: View {
             return
         }
 
-        let targetSize = CGSize(width: side * 2, height: side * 2)
+        let pixelSide = Self.pixelSide(for: side)
+        let targetSize = CGSize(width: pixelSide, height: pixelSide)
         let checksum = ArtworkLoader.checksum(for: data)
         let key = ArtworkLoader.cacheKey(
             trackID: item.id,
             checksum: checksum,
             targetPixelSize: targetSize
         )
-        image = await ArtworkLoader.loadImage(
+        let loaded = await ArtworkLoader.loadImage(
             artworkData: data,
             cacheKey: key,
             targetPixelSize: targetSize
         )
+        if let loaded {
+            HomeArtworkMemoryStore.shared.store(
+                loaded,
+                for: HomeArtworkMemoryStore.rankKey(trackID: item.id, pixelSide: pixelSide)
+            )
+        }
+        image = loaded
+    }
+
+    private static func pixelSide(for logicalSide: CGFloat) -> Int {
+        HomeArtworkMemoryStore.rankPixelSide(for: logicalSide)
     }
 }
 

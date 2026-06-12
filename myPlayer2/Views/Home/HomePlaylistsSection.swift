@@ -504,9 +504,13 @@ private struct HomePlaylistCard: View {
         // HomePlaylistPreviewArtworkStore pattern already used for the
         // featured-card preview thumbs).
         _coverImage = State(
-            initialValue: HomePlaylistCardCoverStore.shared.cachedImage(
-                for: Self.headerArtworkIdentity(for: playlist)
-            )
+            initialValue: {
+                let identity = Self.headerArtworkIdentity(for: playlist)
+                return HomePlaylistCardCoverStore.shared.cachedImage(for: identity)
+                    ?? HomeArtworkMemoryStore.shared.cachedImage(
+                        for: HomeArtworkMemoryStore.playlistHeaderKey(identity: identity)
+                    )
+            }()
         )
     }
     // Hover state intentionally removed — playlist cards used to apply a
@@ -805,12 +809,20 @@ private struct HomePlaylistCard: View {
         if let image = await loadHeaderImage(from: immediate) {
             coverImage = image
             HomePlaylistCardCoverStore.shared.store(image, for: identity)
+            HomeArtworkMemoryStore.shared.store(
+                image,
+                for: HomeArtworkMemoryStore.playlistHeaderKey(identity: identity)
+            )
         }
 
         let resolved = await DetailHeaderArtworkResolver.shared.resolveDeferredArtwork(for: request)
         if let image = await loadHeaderImage(from: resolved ?? immediate) {
             coverImage = image
             HomePlaylistCardCoverStore.shared.store(image, for: identity)
+            HomeArtworkMemoryStore.shared.store(
+                image,
+                for: HomeArtworkMemoryStore.playlistHeaderKey(identity: identity)
+            )
         }
     }
 
@@ -847,7 +859,7 @@ private struct HomePlaylistCard: View {
 /// entry automatically — the next render computes a new identity and
 /// misses the cache.
 @MainActor
-private final class HomePlaylistCardCoverStore {
+final class HomePlaylistCardCoverStore {
     static let shared = HomePlaylistCardCoverStore()
 
     private var images: [String: NSImage] = [:]
@@ -873,7 +885,7 @@ private final class HomePlaylistCardCoverStore {
 }
 
 @MainActor
-private final class HomePlaylistPreviewCache {
+final class HomePlaylistPreviewCache {
     static let shared = HomePlaylistPreviewCache()
 
     private struct Key: Hashable {
@@ -962,6 +974,9 @@ private struct HomeFeaturedPlaylistTrackArtwork: View {
         // below populates and memoizes the image.
         _image = State(
             initialValue: HomePlaylistPreviewArtworkStore.shared.cachedImage(forTrackID: track.id)
+                ?? HomeArtworkMemoryStore.shared.cachedImage(
+                    for: HomeArtworkMemoryStore.playlistPreviewKey(trackID: track.id)
+                )
         )
     }
 
@@ -1031,6 +1046,10 @@ private struct HomeFeaturedPlaylistTrackArtwork: View {
 
         guard let loaded else { return }
         HomePlaylistPreviewArtworkStore.shared.store(loaded, forTrackID: track.id)
+        HomeArtworkMemoryStore.shared.store(
+            loaded,
+            for: HomeArtworkMemoryStore.playlistPreviewKey(trackID: track.id)
+        )
         if image !== loaded {
             image = loaded
         }

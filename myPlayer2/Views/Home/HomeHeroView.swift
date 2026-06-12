@@ -85,6 +85,23 @@ struct HomeHeroView: View {
 
     @State private var trackToEdit: Track?
 
+    init(
+        track: Track,
+        containerWidth: CGFloat = 700,
+        mode: HomeLayoutMode = .wide,
+        onSwitchTrack: (() -> Void)? = nil
+    ) {
+        self.track = track
+        self.containerWidth = containerWidth
+        self.mode = mode
+        self.onSwitchTrack = onSwitchTrack
+        _coverImage = State(
+            initialValue: HomeArtworkMemoryStore.shared.cachedImage(
+                for: HomeArtworkMemoryStore.heroCoverKey(for: track)
+            )
+        )
+    }
+
     private var baseHeroHeight: CGFloat {
         switch mode {
         case .wide:    return 320
@@ -588,13 +605,15 @@ struct HomeHeroView: View {
     }
 
     private func loadCoverImage() async {
-        coverImage = nil
+        coverImage = HomeArtworkMemoryStore.shared.cachedImage(
+            for: HomeArtworkMemoryStore.heroCoverKey(for: track)
+        )
         artworkData = nil
         heroBackdropImage = nil
         heroCoverHoverBackdropImage = nil
         heroArtworkChecksum = 0
         heroAnalysis = nil
-        let data = track.loadArtworkDataIfNeeded()
+        let data = await track.loadArtworkDataOffMainIfNeeded()
         guard let data, !data.isEmpty else { return }
         let checksum = ArtworkLoader.checksum(for: data)
         artworkData = data
@@ -626,6 +645,12 @@ struct HomeHeroView: View {
         // the result if this hero card's artwork hasn't changed underneath us.
         guard heroArtworkChecksum == checksum else { return }
         coverImage = image
+        if let image {
+            HomeArtworkMemoryStore.shared.store(
+                image,
+                for: HomeArtworkMemoryStore.heroCoverKey(for: track)
+            )
+        }
         heroBackdropImage = backdrop
         heroAnalysis = analysis
 
