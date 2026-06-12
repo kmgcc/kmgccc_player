@@ -95,6 +95,8 @@
             overflow: visible !important;
             --amll-lp-mix-opacity: 1;
             --amll-lp-mix-blend-mode: normal;
+            --amll-cb-bg-base-opacity: 0.38;
+            --amll-cb-bg-karaoke-opacity: 0.84;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLineWrapper"] {
             opacity: 1 !important;
@@ -105,6 +107,8 @@
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="lighter"] {
             --amll-cb-main-blend: plus-lighter;
             --amll-cb-highlight-blend: normal;
+            --amll-cb-bg-base-opacity: 0.34;
+            --amll-cb-bg-karaoke-opacity: 0.80;
             /* Use solid colors instead of rgba for glow */
             --amll-cb-main-glow: rgb(255, 255, 255);
             --amll-cb-sub-glow: rgb(200, 200, 200);
@@ -112,6 +116,8 @@
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="darker"] {
             --amll-cb-main-blend: plus-darker;
             --amll-cb-highlight-blend: normal;
+            --amll-cb-bg-base-opacity: 0.44;
+            --amll-cb-bg-karaoke-opacity: 0.86;
             /* Use solid colors instead of rgba for glow */
             --amll-cb-main-glow: rgb(0, 0, 0);
             --amll-cb-sub-glow: rgb(50, 50, 50);
@@ -409,7 +415,7 @@
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"][class*="active"] {
             visibility: visible !important;
-            opacity: 0.4 !important;
+            opacity: 1 !important;
             color: var(
                 --amll-cb-bg-inactive,
                 var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -430,13 +436,24 @@
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"][class*="active"] > * {
             transform: translateY(0) !important;
         }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"] .amll-cb-word-base,
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"] .amll-cb-char-base {
+            color: var(
+                --amll-cb-bg-inactive,
+                var(--amll-cb-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
+            ) !important;
+            opacity: var(--amll-cb-bg-base-opacity, 0.38) !important;
+        }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"] .amll-cb-word-active,
         .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricBgLine"] .amll-cb-char-active {
             color: var(
-                --amll-cb-bg-active,
-                var(--amll-cb-main-active, var(--amll-active, var(--amll-lp-color, white)))
+                --amll-cb-bg-karaoke-active,
+                var(--amll-cb-bg-active,
+                    var(--amll-cb-main-active, var(--amll-active, var(--amll-lp-color, white)))
+                )
             ) !important;
             visibility: visible !important;
+            opacity: var(--amll-cb-bg-karaoke-opacity, 0.84) !important;
         }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur .amll-cb-glow-layer {
             position: absolute !important;
@@ -496,9 +513,19 @@
             text-shadow: none !important;
             --amll-lp-mix-opacity: 1;
             --amll-lp-mix-blend-mode: normal;
+            --amll-fs-bg-base-opacity: 0.46;
+            --amll-fs-bg-karaoke-opacity: 0.86;
             /* Allow glow effects to extend beyond container */
             contain: none !important;
             overflow: visible !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-generic[data-amll-cover-blur-profile="lighter"] {
+            --amll-fs-bg-base-opacity: 0.38;
+            --amll-fs-bg-karaoke-opacity: 0.82;
+        }
+        .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-generic[data-amll-cover-blur-profile="darker"] {
+            --amll-fs-bg-base-opacity: 0.48;
+            --amll-fs-bg-karaoke-opacity: 0.86;
         }
         .amll-lyric-player.amll-surface-fullscreen [class*="lyricLineWrapper"] {
             opacity: 1 !important;
@@ -800,10 +827,10 @@
                 color .35s ease-out !important;
             will-change: opacity, filter, transform, color !important;
         }
-        /* 高亮状态：使用主歌词高亮色的较暗版本（通过 brightness 实现） */
+        /* 高亮状态：使用主歌词高亮色混入少量非高亮色，保持同一 skin 色相但低一档。 */
         .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"][class*="active"] {
             visibility: visible !important;
-            opacity: 0.4 !important;
+            opacity: 1 !important;
             color: var(
                 --amll-fs-bg-inactive,
                 var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
@@ -826,13 +853,24 @@
             transform: translateY(0) !important;
             color: inherit !important;
         }
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"] .amll-fs-word-base,
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"] .amll-fs-char-base {
+            color: var(
+                --amll-fs-bg-inactive,
+                var(--amll-fs-main-inactive, var(--amll-inactive, var(--amll-lp-color, white)))
+            ) !important;
+            opacity: var(--amll-fs-bg-base-opacity, 0.46) !important;
+        }
         .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"] .amll-fs-word-active,
         .amll-lyric-player.amll-surface-fullscreen [class*="lyricBgLine"] .amll-fs-char-active {
             color: var(
-                --amll-fs-bg-active,
-                var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
+                --amll-fs-bg-karaoke-active,
+                var(--amll-fs-bg-active,
+                    var(--amll-fs-main-active, var(--amll-active, var(--amll-lp-color, white)))
+                )
             ) !important;
             visibility: visible !important;
+            opacity: var(--amll-fs-bg-karaoke-opacity, 0.86) !important;
         }
 
         /* === Task 1: Fullscreen emphasis glow above text layer === */
@@ -1295,6 +1333,7 @@
         };
         installAMLLUpgradeCompatAccessors(lyricPlayer);
         playerContainer.appendChild(lyricPlayer.getElement());
+        let fullscreenLyricPointerInside = false;
         lyricPlayer.getElement().classList.toggle("amll-surface-main", isMainSurface);
         lyricPlayer.getElement().classList.toggle(
             "amll-surface-fullscreen-cover-blur-highlight-only",
@@ -2258,11 +2297,13 @@
         const fullscreenDerivedColorVarNames = [
             "--amll-fs-sub-color",
             "--amll-fs-bg-inactive",
+            "--amll-fs-bg-karaoke-active",
         ];
         const coverBlurDerivedColorVarNames = [
             "--amll-cb-sub-color",
             "--amll-cb-bg-inactive",
             "--amll-cb-bg-active",
+            "--amll-cb-bg-karaoke-active",
         ];
         const removeStyleVars = (element, names) => {
             if (!(element instanceof HTMLElement) || !Array.isArray(names)) return;
@@ -2417,13 +2458,50 @@
             const playerElement = lyricPlayer.getElement();
             if (!(playerElement instanceof HTMLElement)) return;
 
+            const releaseForPointerHover = fullscreenLyricPointerInside === true;
             for (const wrapper of playerElement.querySelectorAll('[class*="lyricLineWrapper"]')) {
                 if (!(wrapper instanceof HTMLElement)) continue;
                 const inlineFilter = wrapper.style.getPropertyValue("filter");
                 if (!inlineFilter || inlineFilter === "unset") continue;
+                if (releaseForPointerHover) {
+                    if (wrapper.style.getPropertyPriority("filter") === "important") {
+                        wrapper.style.setProperty("filter", inlineFilter);
+                    }
+                    continue;
+                }
                 wrapper.style.setProperty("filter", inlineFilter, "important");
             }
         };
+
+        const syncFullscreenPointerHoverFilterState = (inside) => {
+            fullscreenLyricPointerInside = inside === true;
+            promoteFullscreenGroupWrapperFilters();
+            rendererRuntime.wakeRenderer?.();
+        };
+
+        const installFullscreenPointerHoverFilterHooks = () => {
+            const playerElement = lyricPlayer.getElement();
+            if (!(playerElement instanceof HTMLElement) || playerElement.__amllFullscreenHoverFilterHooksInstalled === true) {
+                return;
+            }
+            playerElement.addEventListener("pointerenter", () => {
+                syncFullscreenPointerHoverFilterState(true);
+            });
+            playerElement.addEventListener("pointerleave", () => {
+                syncFullscreenPointerHoverFilterState(false);
+            });
+            playerElement.addEventListener("mouseenter", () => {
+                syncFullscreenPointerHoverFilterState(true);
+            });
+            playerElement.addEventListener("mouseleave", () => {
+                syncFullscreenPointerHoverFilterState(false);
+            });
+            window.addEventListener("blur", () => {
+                syncFullscreenPointerHoverFilterState(false);
+            });
+            playerElement.__amllFullscreenHoverFilterHooksInstalled = true;
+        };
+        installFullscreenPointerHoverFilterHooks();
 
         const startFullscreenCompositingGuard = () => {};
 
@@ -2497,6 +2575,31 @@
             return formatted ? toOpaqueColor(formatted) : opaqueValue;
         };
 
+        const mixRGBAColors = (foreground, background, foregroundWeight = 0.88) => {
+            if (!foreground || !background) return null;
+            const weight = Math.max(0, Math.min(1, foregroundWeight));
+            return {
+                r: foreground.r * weight + background.r * (1 - weight),
+                g: foreground.g * weight + background.g * (1 - weight),
+                b: foreground.b * weight + background.b * (1 - weight),
+                a: foreground.a * weight + background.a * (1 - weight),
+            };
+        };
+
+        const deriveMixedOpaqueColor = (foregroundValue, backgroundValue, foregroundWeight = 0.88) => {
+            const foreground = toOpaqueColor(foregroundValue);
+            const background = toOpaqueColor(backgroundValue);
+            const mixed = mixRGBAColors(
+                parseRGBAColor(foreground),
+                parseRGBAColor(background),
+                foregroundWeight
+            );
+            const formatted = formatRGBAColor(mixed);
+            if (formatted) return toOpaqueColor(formatted);
+            const percent = Math.round(Math.max(0, Math.min(1, foregroundWeight)) * 100);
+            return `color-mix(in srgb, ${foreground} ${percent}%, ${background} ${100 - percent}%)`;
+        };
+
         const resolveComputedOpaqueColor = (computedStyle, ...candidates) => {
             for (const candidate of candidates) {
                 if (typeof candidate !== "string") continue;
@@ -2540,6 +2643,13 @@
                 ) ?? fsMainInactive;
                 playerElement.style.setProperty("--amll-fs-sub-color", fsSubInactive);
                 playerElement.style.setProperty("--amll-fs-bg-inactive", fsMainInactive);
+                const fsBgKaraokeWeight = playerElement.dataset.amllCoverBlurProfile === "lighter"
+                    ? 0.90
+                    : 0.88;
+                playerElement.style.setProperty(
+                    "--amll-fs-bg-karaoke-active",
+                    deriveMixedOpaqueColor(fsMainActive, fsMainInactive, fsBgKaraokeWeight)
+                );
                 const explicitFsBgActive = playerElement.style.getPropertyValue("--amll-fs-bg-active");
                 if (typeof explicitFsBgActive !== "string" || explicitFsBgActive.trim().length === 0) {
                     playerElement.style.setProperty(
@@ -2571,6 +2681,13 @@
                 ) ?? cbMainInactive;
                 playerElement.style.setProperty("--amll-cb-sub-color", cbSubInactive);
                 playerElement.style.setProperty("--amll-cb-bg-inactive", cbMainInactive);
+                const cbBgKaraokeWeight = playerElement.dataset.amllCoverBlurProfile === "lighter"
+                    ? 0.90
+                    : 0.86;
+                playerElement.style.setProperty(
+                    "--amll-cb-bg-karaoke-active",
+                    deriveMixedOpaqueColor(cbMainActive, cbMainInactive, cbBgKaraokeWeight)
+                );
                 const explicitCbBgActive = playerElement.style.getPropertyValue("--amll-cb-bg-active");
                 if (typeof explicitCbBgActive !== "string" || explicitCbBgActive.trim().length === 0) {
                     playerElement.style.setProperty(
