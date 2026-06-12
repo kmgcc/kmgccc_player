@@ -29,84 +29,55 @@
     --amll-lp-line-padding-x: 0;
   }
 }
-.xkZOxW_lyricLine {
-  backface-visibility: hidden;
-  transform-origin: 0;
-  width: var(--amll-lp-width, 100%);
-  min-width: var(--amll-lp-width, 100%);
-  max-width: var(--amll-lp-width, 100%);
-  contain: content;
-  will-change: transform;
+.REXxza_lyricLineWrapper {
   box-sizing: border-box;
-  border-radius: .25em;
   width: 100%;
-  height: fit-content;
-  padding: .5em 1em;
-  transition: opacity .25s, filter .2s, background-color .25s, box-shadow .25s;
+  padding: .4em var(--lyric-line-padding-x);
+  will-change: transform, opacity, filter;
+  border-radius: .25em;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: .3em;
+  transition: opacity .4s, filter .4s, background-color .25s;
+  display: flex;
   position: absolute;
+  top: 0;
+  left: 0;
 
-  @media screen and (width <= 500px) {
-    padding-left: 20px;
-    padding-right: 20px;
-  }
-
-  &.xkZOxW_dirty {
-    opacity: 0;
-    visibility: hidden;
-  }
-
-  &:has( > *):hover {
+  &:hover {
     background-color: var(--amll-lp-hover-bg-color, #fff1);
   }
 
-  &:has( > *):active {
+  &:active {
     background-color: var(--amll-lp-hover-bg-color, #ffffff05);
   }
 }
 
-.xkZOxW_lyricBgLine {
-  opacity: .0001;
-  font-size: max(calc(1em * var(--amll-lp-bg-line-scale, .7)), 10px);
-  padding: 1vh
-		calc(var(--amll-lp-line-padding-x, 1em) / var(--amll-lp-bg-line-scale, .7));
-  transition: opacity .25s, scale .5s, filter .2s, background-color .25s, box-shadow .25s;
-
-  & .xkZOxW_lyricMainLine {
-    padding: 1.2em 1em;
-  }
-
-  &.xkZOxW_active {
-    opacity: .4;
-    transition: opacity .5s .25s, scale 1.5s cubic-bezier(0, 1, 0, 1) .25s, filter .2s, background-color .25s, box-shadow .25s;
-  }
+.REXxza_lyricLine {
+  box-sizing: border-box;
+  width: var(--amll-lp-width, 100%);
+  min-width: var(--amll-lp-width, 100%);
+  max-width: var(--amll-lp-width, 100%);
+  contain: layout style paint;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 40px;
+  backface-visibility: hidden;
+  transform-origin: 0;
+  will-change: transform, filter, opacity;
+  height: fit-content;
+  margin: -.2em;
+  padding: .2em;
+  transition: box-shadow .25s;
+  position: relative;
 }
 
-.amll-lyric-player {
-  &:hover .xkZOxW_lyricLine {
-    filter: unset !important;
-  }
-
-  &.xkZOxW_hasDuetLine {
-    & .xkZOxW_lyricLine:not(.xkZOxW_lyricDuetLine) {
-      padding-right: 15%;
-    }
-
-    & .xkZOxW_lyricDuetLine {
-      padding-left: 15%;
-    }
-  }
-
-  &:not(.playing) > .xkZOxW_lyricBgLine {
-    opacity: .4;
-  }
-}
-
-.xkZOxW_lyricDuetLine {
+.REXxza_lyricDuetLine {
   text-align: right;
   transform-origin: 100%;
 }
 
-.xkZOxW_lyricMainLine {
+.REXxza_lyricMainLine {
+  contain: layout style;
   margin: -1em;
   padding: 1em;
   transition: opacity .3s .1s;
@@ -117,14 +88,14 @@
     display: inline-block;
   }
 
-  & .xkZOxW_romanWord {
+  & .REXxza_romanWord {
     padding-inline-end: .3em;
     font-size: .5em;
     line-height: 1em;
     display: flex;
   }
 
-  & .xkZOxW_rubyWord {
+  & .REXxza_rubyWord {
     justify-content: center;
     min-height: 1em;
     font-size: .5em;
@@ -132,34 +103,35 @@
     display: flex;
   }
 
-  & .xkZOxW_wordWithRuby {
+  & .REXxza_wordWithRuby {
     vertical-align: bottom;
     flex-direction: column;
     align-items: center;
     display: inline-flex;
   }
 
-  & .xkZOxW_wordBody {
+  & .REXxza_wordBody {
     flex-direction: column;
     align-items: center;
     display: flex;
   }
 
-  & > span, & span.xkZOxW_emphasizeWrapper {
+  & > span, & span.REXxza_emphasizeWrapper {
     white-space: pre-wrap;
-    will-change: transform;
     vertical-align: bottom;
+    will-change: transform, text-shadow;
+    contain: layout style;
     margin: -1em;
     padding: 1em;
     display: inline-block;
 
-    &.xkZOxW_emphasize, & span.xkZOxW_emphasize {
+    &.REXxza_emphasize, & span.REXxza_emphasize {
       backface-visibility: hidden;
       margin: -1em;
       padding: 1em;
 
       & > span {
-        will-change: transform;
+        will-change: transform, text-shadow;
         backface-visibility: hidden;
         margin: -1em;
         padding: 1em;
@@ -168,20 +140,89 @@
   }
 }
 
-.xkZOxW_lyricSubLine {
+.REXxza_lyricBgLine {
+  opacity: .4;
+  font-size: max(calc(1em * var(--amll-lp-bg-line-scale, .7)), 10px);
+  transition: background-color .25s, box-shadow .25s;
+
+  & .REXxza_lyricMainLine {
+    padding: 1.2em 1em;
+  }
+
+  &.REXxza_active {
+    opacity: .4;
+    transition: background-color .25s, box-shadow .25s;
+  }
+}
+
+.REXxza_lyricSubLine {
   opacity: .3;
   font-size: max(.5em, 10px);
   line-height: 1.5em;
   transition: opacity .2s .25s;
+
+  @supports (mix-blend-mode: plus-lighter) {
+    opacity: .3;
+  }
 }
 
-.xkZOxW_disableSpring > * {
-  transition: filter .25s, transform .5s, background-color .25s, box-shadow .25s;
+.REXxza_bottomLine {
+  cursor: default;
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 1.8em;
+
+  &:empty {
+    height: 0;
+    margin: 0;
+    padding: 0;
+    display: none;
+  }
 }
 
-.xkZOxW_interludeDots {
-  transform-origin: center;
+.REXxza_bgWrapper {
+  top: 100%;
+  left: var(--lyric-line-padding-x);
+  z-index: -1;
+  align-items: inherit;
+  width: calc(100% - var(--lyric-line-padding-x) * 2);
+  visibility: visible;
+  pointer-events: auto;
   opacity: 0;
+  transform-origin: 0 0;
+  flex-direction: column;
+  transition: opacity .3s;
+  display: flex;
+  position: absolute;
+}
+
+.REXxza_bgWrapperTop {
+  transform-origin: 0 100%;
+  width: 100%;
+  margin-top: -999px;
+  position: relative;
+  top: auto;
+  bottom: auto;
+  left: 0;
+}
+
+.REXxza_bgWrapperActive {
+  opacity: 1;
+  width: 100%;
+  position: relative;
+  top: auto;
+  bottom: auto;
+  left: 0;
+}
+
+.REXxza_bgWrapperHidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.REXxza_interludeDots {
+  opacity: 0;
+  transform-origin: center;
   gap: .25em;
   width: fit-content;
   height: clamp(.5em, 1vh, 3em);
@@ -191,13 +232,13 @@
   position: absolute;
   left: 0;
 
-  &.xkZOxW_enabled {
+  &.REXxza_enabled {
     opacity: 1;
   }
 
   & > * {
-    aspect-ratio: 1;
     background-color: var(--amll-lp-color, white);
+    aspect-ratio: 1;
     border-radius: 50%;
     width: clamp(.5em, 1vh, 3em);
     height: clamp(.5em, 1vh, 3em);
@@ -205,32 +246,59 @@
     display: inline-block;
   }
 
-  &.xkZOxW_duet {
+  &.REXxza_duet {
     transform-origin: center;
     right: 0;
   }
 }
 
-@supports (mix-blend-mode: plus-lighter) {
-  .xkZOxW_lyricSubLine {
-    opacity: .3;
-  }
+.REXxza_disableSpring > *, .REXxza_disableSpring .REXxza_lyricLine {
+  transition: filter .25s, transform .5s, background-color .25s, box-shadow .25s;
 }
 
-.xkZOxW_tmpDisableTransition {
+.REXxza_tmpDisableTransition {
   transition: none !important;
 }
 
-.xkZOxW_bottomLine {
-  cursor: default;
-  padding-top: 0;
-  padding-bottom: 0;
-  line-height: 1.8em;
-}
+.amll-lyric-player {
+  --lyric-line-padding-x: 1em;
 
-.xkZOxW_bottomLine:empty {
-  height: 0;
-  margin: 0;
-  padding: 0;
-  display: none;
+  @media screen and (width <= 500px) {
+    --lyric-line-padding-x: 20px;
+  }
+
+  &:hover .REXxza_lyricLine, &:hover .REXxza_lyricLineWrapper {
+    filter: unset !important;
+  }
+
+  &:not(.REXxza_playing) .REXxza_bgWrapper {
+    opacity: 1;
+    width: 100%;
+    position: relative;
+    top: auto;
+    bottom: auto;
+    left: 0;
+  }
+
+  &.REXxza_hasDuetLine {
+    & .REXxza_lyricLine:not(.REXxza_lyricDuetLine) {
+      padding-right: 15%;
+    }
+
+    & .REXxza_lyricDuetLine {
+      padding-left: 15%;
+    }
+
+    & .REXxza_lyricLineWrapper:has(.REXxza_lyricDuetLine) {
+      align-items: flex-end;
+
+      & .REXxza_bgWrapper {
+        transform-origin: 100% 0;
+      }
+
+      & .REXxza_bgWrapperTop {
+        transform-origin: 100% 100%;
+      }
+    }
+  }
 }

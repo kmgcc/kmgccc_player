@@ -118,11 +118,6 @@ const Values = {
 * @see https://github.com/amll-dev/amll-ttml-db/wiki/%E6%A0%BC%E5%BC%8F%E8%A7%84%E8%8C%83
 */
 var TTMLGenerator = class TTMLGenerator {
-	domImpl;
-	options;
-	xmlSerializer;
-	doc;
-	timingMode = "Line";
 	/**
 	* 构造一个 TTML 生成器实例
 	*
@@ -131,6 +126,7 @@ var TTMLGenerator = class TTMLGenerator {
 	* 在 Node.js 环境下必须注入 `domImplementation` 和 `xmlSerializer` 实例（例如用 `@xmldom/xmldom` 等）
 	*/
 	constructor(options = {}) {
+		this.timingMode = "Line";
 		this.options = options;
 		if (this.options.domImplementation) this.domImpl = this.options.domImplementation;
 		else if (typeof document !== "undefined" && document.implementation) this.domImpl = document.implementation;
@@ -500,11 +496,18 @@ var TTMLGenerator = class TTMLGenerator {
 * @see https://github.com/amll-dev/amll-ttml-db/wiki/%E6%A0%BC%E5%BC%8F%E8%A7%84%E8%8C%83
 */
 var TTMLParser = class TTMLParser {
-	domParser;
-	static TIME_REGEX = /^(?:(?:(?<hours>\d+):)?(?<minutes>\d+):)?(?<seconds>\d+(?:\.\d+)?)$/;
-	static LEADING_SPACE_REGEX = /^\s/;
-	static TRAILING_SPACE_REGEX = /\s$/;
-	static MULTI_SPACE_REGEX = /\s+/g;
+	static {
+		this.TIME_REGEX = /^(?:(?:(?<hours>\d+):)?(?<minutes>\d+):)?(?<seconds>\d+(?:\.\d+)?)$/;
+	}
+	static {
+		this.LEADING_SPACE_REGEX = /^\s/;
+	}
+	static {
+		this.TRAILING_SPACE_REGEX = /\s$/;
+	}
+	static {
+		this.MULTI_SPACE_REGEX = /\s+/g;
+	}
 	normalizeText(text, trim = true) {
 		if (!text) return "";
 		const normalized = text.replace(TTMLParser.MULTI_SPACE_REGEX, " ");
@@ -1152,18 +1155,44 @@ function toAmllLyrics(result, options) {
 	};
 }
 function alignRomanization(amllWords, romanWords) {
-	let i = 0;
-	let j = 0;
-	const TIME_TOLERANCE_MS = 30;
-	while (i < amllWords.length && j < romanWords.length) {
+	let romanSearchStartIndex = 0;
+	/** 交并比阈值，至少有 10% 的面积重合 */
+	const MIN_IOU_THRESHOLD = .1;
+	/** 快速通道，优先匹配时间戳完全相同的主歌词和音译音节，同时避免浮点数误差 */
+	const FAST_TRACK_TOLERANCE_MS = 2;
+	for (let i = 0; i < amllWords.length; i++) {
 		const main = amllWords[i];
-		const sub = romanWords[j];
-		if (Math.abs(main.startTime - sub.startTime) < TIME_TOLERANCE_MS) {
-			main.romanWord = sub.text;
-			i++;
+		const mainEndTime = main.endTime;
+		let maxIou = 0;
+		let bestMatchIndex = -1;
+		let isFastTrackMatched = false;
+		let j = romanSearchStartIndex;
+		while (j < romanWords.length) {
+			const sub = romanWords[j];
+			if (Math.abs(main.startTime - sub.startTime) <= FAST_TRACK_TOLERANCE_MS) {
+				main.romanWord = sub.text;
+				romanSearchStartIndex = j + 1;
+				isFastTrackMatched = true;
+				break;
+			}
+			const subEndTime = sub.endTime;
+			const overlapStart = Math.max(main.startTime, sub.startTime);
+			const intersection = Math.max(0, Math.min(mainEndTime, subEndTime) - overlapStart);
+			if (intersection > 0) {
+				const unionStart = Math.min(main.startTime, sub.startTime);
+				const iou = intersection / Math.max(1, Math.max(mainEndTime, subEndTime) - unionStart);
+				if (iou > maxIou) {
+					maxIou = iou;
+					bestMatchIndex = j;
+				}
+			}
+			if (sub.startTime >= mainEndTime) break;
 			j++;
-		} else if (sub.startTime < main.startTime) j++;
-		else i++;
+		}
+		if (!isFastTrackMatched && bestMatchIndex !== -1 && maxIou >= MIN_IOU_THRESHOLD) {
+			main.romanWord = romanWords[bestMatchIndex].text;
+			romanSearchStartIndex = bestMatchIndex + 1;
+		}
 	}
 }
 /**
@@ -1305,15 +1334,6 @@ function exportTTML(ttmlLyric) {
 	return new TTMLGenerator().generate(result);
 }
 //#endregion
-//#region src/formats/ttml.ts
-/**
-* 将歌词数组转换为 TTML 格式（包含 AMLL 特有属性信息）的歌词字符串
-* @param ttmlLyric TTML 歌词对象
-*/
-function stringifyTTML(ttmlLyric) {
-	return exportTTML(ttmlLyric);
-}
-//#endregion
 //#region src/utils.ts
 const createLine = (line) => ({
 	words: [],
@@ -1358,6 +1378,101 @@ function* pairwise(iterable) {
 		prev = curr;
 		hasPrev = true;
 	}
+}
+//#endregion
+//#region src/formats/lrca2.ts
+/**
+* 解析 LRC A2 格式的歌词字符串
+* @param lrc 歌词字符串
+* @returns 成功解析出来的歌词
+*/
+function parseLrcA2(lrc) {
+	const lines = lrc.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+	const lyricLines = [];
+	const lineTimeStampRegex = /^\[((?:\d+:)*\d+(?:\.\d+)?)\]/;
+	const wordTimestampRegex = /<((?:\d+:)*\d+(?:\.\d+)?)>/;
+	const wordTimestampPrefixRegex = /^<((?:\d+:)*\d+(?:\.\d+)?)>/;
+	for (let lineStr of lines) {
+		if (lineStr.match(/^\[([a-z]):(.+)\]$/i)) continue;
+		const lineTimeStampmatch = lineStr.match(lineTimeStampRegex);
+		if (!lineTimeStampmatch) continue;
+		const [lineTimeStamp, lineTimeStr] = lineTimeStampmatch;
+		const lineStartTime = parseTime(lineTimeStr);
+		if (Number.isNaN(lineStartTime)) continue;
+		lineStr = lineStr.slice(lineTimeStamp.length).trim();
+		if (!lineStr) continue;
+		const lineItems = [];
+		while (lineStr.length) {
+			const prefixedTimeStampMatch = lineStr.match(wordTimestampPrefixRegex);
+			if (prefixedTimeStampMatch) {
+				const [wordTimeStamp, wordTimeStr] = prefixedTimeStampMatch;
+				const parsedWordTime = parseTime(wordTimeStr);
+				if (!Number.isNaN(parsedWordTime)) lineItems.push(parsedWordTime);
+				lineStr = lineStr.slice(wordTimeStamp.length);
+				continue;
+			}
+			const nextWordTimeStampIndex = lineStr.search(wordTimestampRegex);
+			const text = nextWordTimeStampIndex === -1 ? lineStr : lineStr.slice(0, nextWordTimeStampIndex);
+			lineItems.push(text);
+			lineStr = lineStr.slice(text.length);
+		}
+		const words = [];
+		lineItems.forEach((item, index) => {
+			if (typeof item === "number") return;
+			const startTime = lineItems[index - 1] ?? lineStartTime;
+			const endTime = lineItems[index + 1] ?? startTime;
+			if (typeof startTime !== "number" || typeof endTime !== "number") return;
+			if (item.startsWith(" ") && words[words.length - 1]?.word.trim()) words.push(createWord({ word: " " }));
+			words.push(createWord({
+				word: item.trim(),
+				startTime,
+				endTime
+			}));
+			if (item.endsWith(" ")) words.push(createWord({ word: " " }));
+		});
+		const lineEndTime = words[words.length - 1]?.endTime ?? lineStartTime;
+		lyricLines.push(createLine({
+			startTime: lineStartTime,
+			endTime: lineEndTime,
+			words
+		}));
+	}
+	return lyricLines;
+}
+/**
+* 将歌词数组转换为 LRC A2 格式的字符串
+* @param lines 歌词数组
+* @returns LRC A2 格式的字符串
+*/
+function stringifyLrcA2(lines) {
+	return lines.map((line) => {
+		const normalizedLineStartTime = normalizeTimestamp(line.startTime);
+		if (line.words.length === 0) return `[${formatTime(normalizedLineStartTime)}]`;
+		const normalizedWords = [];
+		line.words.forEach((w) => {
+			if (!w.word.trim() && normalizedWords.length) {
+				normalizedWords[normalizedWords.length - 1].word += w.word;
+				return;
+			}
+			normalizedWords.push({
+				word: w.word,
+				startTime: normalizeTimestamp(w.startTime),
+				endTime: normalizeTimestamp(w.endTime)
+			});
+		});
+		const lineItems = normalizedWords.flatMap((w) => [w.startTime, w.word]);
+		lineItems.push(normalizedWords[normalizedWords.length - 1].endTime);
+		return `[${formatTime(normalizedLineStartTime)}]` + lineItems.map((item) => typeof item === "number" ? `<${formatTime(item)}>` : item).join("");
+	}).join("\n");
+}
+//#endregion
+//#region src/formats/ttml.ts
+/**
+* 将歌词数组转换为 TTML 格式（包含 AMLL 特有属性信息）的歌词字符串
+* @param ttmlLyric TTML 歌词对象
+*/
+function stringifyTTML(ttmlLyric) {
+	return exportTTML(ttmlLyric);
 }
 //#endregion
 //#region src/formats/ass.ts
@@ -6780,92 +6895,6 @@ function stringifyLrc(lines) {
 	}).join("\n");
 }
 //#endregion
-//#region src/formats/lrca2.ts
-/**
-* 解析 LRC A2 格式的歌词字符串
-* @param lrc 歌词字符串
-* @returns 成功解析出来的歌词
-*/
-function parseLrcA2(lrc) {
-	const lines = lrc.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
-	const lyricLines = [];
-	const lineTimeStampRegex = /^\[((?:\d+:)*\d+(?:\.\d+)?)\]/;
-	const wordTimestampRegex = /<((?:\d+:)*\d+(?:\.\d+)?)>/;
-	const wordTimestampPrefixRegex = /^<((?:\d+:)*\d+(?:\.\d+)?)>/;
-	for (let lineStr of lines) {
-		if (lineStr.match(/^\[([a-z]):(.+)\]$/i)) continue;
-		const lineTimeStampmatch = lineStr.match(lineTimeStampRegex);
-		if (!lineTimeStampmatch) continue;
-		const [lineTimeStamp, lineTimeStr] = lineTimeStampmatch;
-		const lineStartTime = parseTime(lineTimeStr);
-		if (Number.isNaN(lineStartTime)) continue;
-		lineStr = lineStr.slice(lineTimeStamp.length).trim();
-		if (!lineStr) continue;
-		const lineItems = [];
-		while (lineStr.length) {
-			const prefixedTimeStampMatch = lineStr.match(wordTimestampPrefixRegex);
-			if (prefixedTimeStampMatch) {
-				const [wordTimeStamp, wordTimeStr] = prefixedTimeStampMatch;
-				const parsedWordTime = parseTime(wordTimeStr);
-				if (!Number.isNaN(parsedWordTime)) lineItems.push(parsedWordTime);
-				lineStr = lineStr.slice(wordTimeStamp.length);
-				continue;
-			}
-			const nextWordTimeStampIndex = lineStr.search(wordTimestampRegex);
-			const text = nextWordTimeStampIndex === -1 ? lineStr : lineStr.slice(0, nextWordTimeStampIndex);
-			lineItems.push(text);
-			lineStr = lineStr.slice(text.length);
-		}
-		const words = [];
-		lineItems.forEach((item, index) => {
-			if (typeof item === "number") return;
-			const startTime = lineItems[index - 1] ?? lineStartTime;
-			const endTime = lineItems[index + 1] ?? startTime;
-			if (typeof startTime !== "number" || typeof endTime !== "number") return;
-			if (item.startsWith(" ") && words[words.length - 1]?.word.trim()) words.push(createWord({ word: " " }));
-			words.push(createWord({
-				word: item.trim(),
-				startTime,
-				endTime
-			}));
-			if (item.endsWith(" ")) words.push(createWord({ word: " " }));
-		});
-		const lineEndTime = words[words.length - 1]?.endTime ?? lineStartTime;
-		lyricLines.push(createLine({
-			startTime: lineStartTime,
-			endTime: lineEndTime,
-			words
-		}));
-	}
-	return lyricLines;
-}
-/**
-* 将歌词数组转换为 LRC A2 格式的字符串
-* @param lines 歌词数组
-* @returns LRC A2 格式的字符串
-*/
-function stringifylrcA2(lines) {
-	return lines.map((line) => {
-		const normalizedLineStartTime = normalizeTimestamp(line.startTime);
-		if (line.words.length === 0) return `[${formatTime(normalizedLineStartTime)}]`;
-		const normalizedWords = [];
-		line.words.forEach((w) => {
-			if (!w.word.trim() && normalizedWords.length) {
-				normalizedWords[normalizedWords.length - 1].word += w.word;
-				return;
-			}
-			normalizedWords.push({
-				word: w.word,
-				startTime: normalizeTimestamp(w.startTime),
-				endTime: normalizeTimestamp(w.endTime)
-			});
-		});
-		const lineItems = normalizedWords.flatMap((w) => [w.startTime, w.word]);
-		lineItems.push(normalizedWords[normalizedWords.length - 1].endTime);
-		return `[${formatTime(normalizedLineStartTime)}]` + lineItems.map((item) => typeof item === "number" ? `<${formatTime(item)}>` : item).join("");
-	}).join("\n");
-}
-//#endregion
 //#region src/formats/lyl.ts
 /**
 * 解析 LYL 格式的歌词字符串
@@ -7073,6 +7102,9 @@ function stringifyYrc(lines) {
 }
 //#endregion
 //#region src/myplayer-app.ts
+function stringifylrcA2(...args) {
+	return stringifyLrcA2(...args);
+}
 const TTML_NS = "http://www.w3.org/ns/ttml";
 const ROLE_ATTR_NAMES = ["role", "ttm:role"];
 const PREFERRED_TRANSLATION_LANGUAGES = [
@@ -7211,6 +7243,6 @@ function parseTTML(ttmlText) {
 	return fallback.lines.length > 0 ? fallback : result;
 }
 //#endregion
-export { decryptQrcHex, encryptQrcHex, parseEslrc, parseLqe, parseLrc, parseLrcA2, parseLyl, parseLys, parseQrc, parseTTML, parseYrc, stringifyAss, stringifyEslrc, stringifyLqe, stringifyLrc, stringifyLyl, stringifyLys, stringifyQrc, stringifyTTML, stringifyYrc, stringifylrcA2 };
+export { decryptQrcHex, encryptQrcHex, parseEslrc, parseLqe, parseLrc, parseLrcA2, parseLyl, parseLys, parseQrc, parseTTML, parseYrc, stringifyAss, stringifyEslrc, stringifyLqe, stringifyLrc, stringifyLrcA2, stringifyLyl, stringifyLys, stringifyQrc, stringifyTTML, stringifyYrc, stringifylrcA2 };
 
 //# sourceMappingURL=amll-lyric.mjs.map

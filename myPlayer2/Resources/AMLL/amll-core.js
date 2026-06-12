@@ -207,27 +207,43 @@ var esm_default = typeof structuredClone === "function" ? (any, options) => opti
 //#endregion
 //#region src/styles/lyric-player.module.css
 var lyric_player_module_default = {
-	"active": "xkZOxW_active",
-	"bottomLine": "xkZOxW_bottomLine",
-	"dirty": "xkZOxW_dirty",
-	"disableSpring": "xkZOxW_disableSpring",
-	"duet": "xkZOxW_duet",
-	"emphasize": "xkZOxW_emphasize",
-	"emphasizeWrapper": "xkZOxW_emphasizeWrapper",
-	"enabled": "xkZOxW_enabled",
-	"hasDuetLine": "xkZOxW_hasDuetLine",
-	"interludeDots": "xkZOxW_interludeDots",
-	"lyricBgLine": "xkZOxW_lyricBgLine",
-	"lyricDuetLine": "xkZOxW_lyricDuetLine",
-	"lyricLine": "xkZOxW_lyricLine",
-	"lyricMainLine": "xkZOxW_lyricMainLine",
-	"lyricSubLine": "xkZOxW_lyricSubLine",
-	"romanWord": "xkZOxW_romanWord",
-	"rubyWord": "xkZOxW_rubyWord",
-	"tmpDisableTransition": "xkZOxW_tmpDisableTransition",
-	"wordBody": "xkZOxW_wordBody",
-	"wordWithRuby": "xkZOxW_wordWithRuby"
+	"active": "REXxza_active",
+	"bgWrapper": "REXxza_bgWrapper",
+	"bgWrapperActive": "REXxza_bgWrapperActive",
+	"bgWrapperHidden": "REXxza_bgWrapperHidden",
+	"bgWrapperTop": "REXxza_bgWrapperTop",
+	"bottomLine": "REXxza_bottomLine",
+	"disableSpring": "REXxza_disableSpring",
+	"duet": "REXxza_duet",
+	"emphasize": "REXxza_emphasize",
+	"emphasizeWrapper": "REXxza_emphasizeWrapper",
+	"enabled": "REXxza_enabled",
+	"hasDuetLine": "REXxza_hasDuetLine",
+	"interludeDots": "REXxza_interludeDots",
+	"lyricBgLine": "REXxza_lyricBgLine",
+	"lyricDuetLine": "REXxza_lyricDuetLine",
+	"lyricLine": "REXxza_lyricLine",
+	"lyricLineWrapper": "REXxza_lyricLineWrapper",
+	"lyricMainLine": "REXxza_lyricMainLine",
+	"lyricSubLine": "REXxza_lyricSubLine",
+	"playing": "REXxza_playing",
+	"romanWord": "REXxza_romanWord",
+	"rubyWord": "REXxza_rubyWord",
+	"tmpDisableTransition": "REXxza_tmpDisableTransition",
+	"wordBody": "REXxza_wordBody",
+	"wordWithRuby": "REXxza_wordWithRuby"
 };
+//#endregion
+//#region src/utils/clamp.ts
+function clamp(x, min, max) {
+	return Math.min(Math.max(x, min), max);
+}
+function clamp01(x) {
+	return clamp(x, 0, 1);
+}
+function clampPositive(x) {
+	return Math.max(0, x);
+}
 //#endregion
 //#region src/utils/optimize-lyric.ts
 const DEFAULT_OPTIMIZE_OPTIONS = {
@@ -388,17 +404,6 @@ function optimizeLyricLines(lines, options) {
 	if (config.syncMainAndBackgroundLines) syncMainAndBackgroundLines(lines);
 	if (config.cleanUnintentionalOverlaps) cleanUnintentionalOverlaps(lines);
 	if (config.tryAdvanceStartTime) tryAdvanceStartTime(lines);
-}
-//#endregion
-//#region src/utils/clamp.ts
-function clamp(x, min, max) {
-	return Math.min(Math.max(x, min), max);
-}
-function clamp01(x) {
-	return clamp(x, 0, 1);
-}
-function clampPositive(x) {
-	return Math.max(0, x);
 }
 //#endregion
 //#region src/lyric-player/dom/interlude-dots.ts
@@ -656,6 +661,7 @@ function solveSpring(from, velocity, to, delay = 0, params) {
 //#endregion
 //#region src/lyric-player/base/bottom-line.ts
 var BottomLineEl = class {
+	lyricPlayer;
 	element = document.createElement("div");
 	left = 0;
 	top = 0;
@@ -785,19 +791,19 @@ const LayoutAlignAnchor = {
 function computeCurrentInterlude(input) {
 	const currentTime = input.currentTime + 20;
 	const currentIndex = input.scrollToIndex;
-	const lines = input.processedLines;
+	const groups = input.currentGroups;
 	const checkGap = (k) => {
-		if (k < -1 || k >= lines.length - 1) return void 0;
-		const prevLine = k === -1 ? null : lines[k];
-		const nextLine = lines[k + 1];
-		const gapStart = prevLine ? prevLine.endTime : 0;
-		const gapEnd = Math.max(gapStart, nextLine.startTime - 250);
-		if (gapEnd - gapStart < 4e3) return;
+		if (k < -1 || k >= groups.length - 1) return void 0;
+		const prevGroup = k === -1 ? null : groups[k];
+		const nextGroup = groups[k + 1];
+		const gapStart = prevGroup ? prevGroup.endTime : 0;
+		const gapEnd = Math.max(gapStart, nextGroup.startTime - 250);
+		if (gapEnd - gapStart < 4e3) return void 0;
 		if (gapEnd > currentTime && gapStart < currentTime) return {
 			startTime: Math.max(gapStart, currentTime),
 			endTime: gapEnd,
 			anchorLineIndex: k,
-			isNextDuet: nextLine.isDuet
+			isNextDuet: nextGroup.mainLine.getLine().isDuet
 		};
 	};
 	return checkGap(currentIndex - 1) || checkGap(currentIndex) || checkGap(currentIndex + 1);
@@ -810,8 +816,8 @@ function computeCurrentInterlude(input) {
 * - 普通播放时根据相邻歌词的时间间隔动态调整 stiffness / damping
 */
 function computeLinePosYSpringParams(input) {
-	const { enabled, processedLines, scrollToIndex, isSeeking, isInterludeActive } = input;
-	if (!enabled || processedLines.length === 0) return { shouldUpdate: false };
+	const { enabled, currentGroups, scrollToIndex, isSeeking, isInterludeActive } = input;
+	if (!enabled || currentGroups.length === 0) return { shouldUpdate: false };
 	if (isSeeking || isInterludeActive) return {
 		shouldUpdate: true,
 		params: {
@@ -819,10 +825,10 @@ function computeLinePosYSpringParams(input) {
 			damping: 15
 		}
 	};
-	const currentLine = processedLines[scrollToIndex];
-	const prevLine = processedLines[scrollToIndex - 1];
-	if (!currentLine || !prevLine) return { shouldUpdate: false };
-	const interval = currentLine.startTime - (prevLine.words[0]?.startTime ?? prevLine.startTime);
+	const currentGroup = currentGroups[scrollToIndex];
+	const prevGroup = currentGroups[scrollToIndex - 1];
+	if (!currentGroup || !prevGroup) return { shouldUpdate: false };
+	const interval = currentGroup.startTime - prevGroup.startTime;
 	const MIN_INTERVAL = 100;
 	const MAX_INTERVAL = 800;
 	const clampedInterval = clamp(interval, MIN_INTERVAL, MAX_INTERVAL);
@@ -840,38 +846,33 @@ function computeLinePosYSpringParams(input) {
 	};
 }
 /**
-* 计算单行歌词在当前布局中的视觉呈现参数。
+* 计算一组歌词在当前布局中的视觉呈现参数。
 *
 * 根据播放状态、缓冲状态、布局模式与间奏信息，
-* 生成一行歌词最终应使用的 opacity、scale、blur 和 render mode。
+* 生成一组歌词最终应使用的活跃状态、不透明度与模糊值。
 */
-function computeLinePresentation(input) {
-	const { line, lineIndex, scrollToIndex, latestIndex, hasBuffered, hidePassedLines, isPlaying, isNonDynamic, enableScale, enableBlur, isUserScrolling, isCompact, interlude } = input;
-	const isActive = hasBuffered || lineIndex >= scrollToIndex && lineIndex < latestIndex;
+function computeGroupPresentation(input) {
+	const { groupIndex, scrollToIndex, latestIndex, hasBuffered, hidePassedLines, isPlaying, isNonDynamic, enableBlur, isUserScrolling, isCompact, interlude } = input;
+	const isActive = hasBuffered || groupIndex >= scrollToIndex && groupIndex < latestIndex;
 	const blurLevel = computeLineBlur({
 		enableBlur,
 		isUserScrolling,
 		isActive,
-		itemIndex: lineIndex,
+		itemIndex: groupIndex,
 		scrollToIndex,
 		latestIndex,
 		isCompact
 	});
 	let targetOpacity;
-	if (hidePassedLines) if (lineIndex < (interlude ? interlude.anchorLineIndex + 1 : scrollToIndex) && isPlaying) targetOpacity = 1e-4;
+	if (hidePassedLines) if (groupIndex < (interlude ? interlude.anchorLineIndex + 1 : scrollToIndex) && isPlaying) targetOpacity = 1e-4;
 	else if (hasBuffered) targetOpacity = .85;
 	else targetOpacity = isNonDynamic ? .2 : 1;
 	else if (hasBuffered) targetOpacity = .85;
 	else targetOpacity = isNonDynamic ? .2 : 1;
-	const SCALE_ASPECT = enableScale ? 97 : 100;
-	let targetScale = 100;
-	if (!isActive && isPlaying) targetScale = line.isBG ? 75 : SCALE_ASPECT;
 	return {
 		isActive,
 		targetOpacity,
-		targetScale,
-		blurLevel,
-		renderMode: isActive ? LyricLineRenderMode.GRADIENT : LyricLineRenderMode.SOLID
+		blurLevel
 	};
 }
 /**
@@ -1027,50 +1028,29 @@ const eqSet = (xs, ys) => xs.size === ys.size && [...xs].every((x) => ys.has(x))
 * - 根据新的热行状态和已有的缓冲行状态，计算出应移除的缓冲行 ID
 */
 function computePlayerTimeState(input) {
-	const { time, processedLines, timelineState: { hotLines, bufferedLines } } = input;
-	const nextHotLines = new Set(hotLines);
+	const { time, currentGroups, timelineState: { hotGroups, bufferedGroups } } = input;
+	const nextHotGroups = new Set(hotGroups);
 	const addedIds = /* @__PURE__ */ new Set();
 	const removedHotIds = /* @__PURE__ */ new Set();
 	const removedBufferedIds = /* @__PURE__ */ new Set();
-	for (const lastHotId of hotLines) {
-		const line = processedLines[lastHotId];
-		if (!line) {
-			nextHotLines.delete(lastHotId);
-			removedHotIds.add(lastHotId);
-			continue;
-		}
-		if (line.isBG) continue;
-		const nextLine = processedLines[lastHotId + 1];
-		if (nextLine?.isBG) {
-			const nextMainLine = processedLines[lastHotId + 2];
-			const startTime = Math.min(line.startTime, nextLine.startTime);
-			const endTime = Math.min(Math.max(line.endTime, nextMainLine?.startTime ?? Number.MAX_VALUE), Math.max(line.endTime, nextLine.endTime));
-			if (time < startTime || endTime <= time) {
-				nextHotLines.delete(lastHotId);
-				removedHotIds.add(lastHotId);
-				nextHotLines.delete(lastHotId + 1);
-				removedHotIds.add(lastHotId + 1);
-			}
-		} else if (time < line.startTime || line.endTime <= time) {
-			nextHotLines.delete(lastHotId);
+	for (const lastHotId of hotGroups) {
+		const group = currentGroups[lastHotId];
+		if (!group || time < group.startTime || group.endTime <= time) {
+			nextHotGroups.delete(lastHotId);
 			removedHotIds.add(lastHotId);
 		}
 	}
-	for (let id = 0; id < processedLines.length; id++) {
-		const line = processedLines[id];
-		if (!line || line.isBG) continue;
-		if (line.startTime <= time && line.endTime > time && !nextHotLines.has(id)) {
-			nextHotLines.add(id);
+	for (let id = 0; id < currentGroups.length; id++) {
+		const group = currentGroups[id];
+		if (!group) continue;
+		if (group.startTime <= time && group.endTime > time && !nextHotGroups.has(id)) {
+			nextHotGroups.add(id);
 			addedIds.add(id);
-			if (processedLines[id + 1]?.isBG) {
-				nextHotLines.add(id + 1);
-				addedIds.add(id + 1);
-			}
 		}
 	}
-	for (const id of bufferedLines) if (!nextHotLines.has(id)) removedBufferedIds.add(id);
+	for (const id of bufferedGroups) if (!nextHotGroups.has(id)) removedBufferedIds.add(id);
 	return {
-		nextHotLines,
+		nextHotGroups,
 		addedIds,
 		removedHotIds,
 		removedBufferedIds
@@ -1082,10 +1062,10 @@ function computePlayerTimeState(input) {
 * 若当前仍存在缓冲行，则优先对齐到最靠前的缓冲行；
 * 否则对齐到第一条开始时间不小于当前时间的歌词行。
 */
-function pickScrollToIndexForSeek(time, processedLines, bufferedLines) {
-	if (bufferedLines.size > 0) return Math.min(...bufferedLines);
-	const foundIndex = processedLines.findIndex((line) => line.startTime >= time);
-	return foundIndex === -1 ? processedLines.length : foundIndex;
+function pickScrollToIndexForSeek(time, currentGroups, bufferedGroups) {
+	if (bufferedGroups.size > 0) return Math.min(...bufferedGroups);
+	const foundIndex = currentGroups.findIndex((group) => group.startTime >= time);
+	return foundIndex === -1 ? currentGroups.length : foundIndex;
 }
 /**
 * 提交时间线状态转移的纯函数。
@@ -1095,45 +1075,45 @@ function pickScrollToIndexForSeek(time, processedLines, bufferedLines) {
 * 是否需要重置用户滚动状态、是否需要触发布局。
 */
 function commitPlayerTimeState(input) {
-	const { timelineState, time, processedLines, hasBottomContent, stateResult } = input;
+	const { timelineState, time, currentGroups, hasBottomContent, stateResult } = input;
 	const { addedIds, removedHotIds, removedBufferedIds } = stateResult;
 	const { isSeeking } = timelineState;
 	timelineState.currentTime = time;
-	timelineState.hotLines = stateResult.nextHotLines;
+	timelineState.hotGroups = stateResult.nextHotGroups;
 	let shouldLayout = false;
 	let shouldResetScroll = false;
-	const linesToEnable = [];
-	const linesToDisable = /* @__PURE__ */ new Set();
+	const groupsToEnable = [];
+	const groupsToDisable = /* @__PURE__ */ new Set();
 	if (isSeeking) {
-		timelineState.bufferedLines = new Set([...timelineState.hotLines]);
-		timelineState.scrollToIndex = pickScrollToIndexForSeek(time, processedLines, timelineState.bufferedLines);
-		for (const id of removedHotIds) linesToDisable.add(id);
-		for (const id of timelineState.hotLines) linesToEnable.push(id);
-		for (const id of removedBufferedIds) linesToDisable.add(id);
+		timelineState.bufferedGroups = new Set([...timelineState.hotGroups]);
+		timelineState.scrollToIndex = pickScrollToIndexForSeek(time, currentGroups, timelineState.bufferedGroups);
+		for (const id of removedHotIds) groupsToDisable.add(id);
+		for (const id of timelineState.hotGroups) groupsToEnable.push(id);
+		for (const id of removedBufferedIds) groupsToDisable.add(id);
 		shouldResetScroll = true;
 		shouldLayout = true;
 	} else if (addedIds.size > 0) {
 		for (const id of addedIds) {
-			timelineState.bufferedLines.add(id);
-			linesToEnable.push(id);
+			timelineState.bufferedGroups.add(id);
+			groupsToEnable.push(id);
 		}
 		for (const id of removedBufferedIds) {
-			timelineState.bufferedLines.delete(id);
-			linesToDisable.add(id);
+			timelineState.bufferedGroups.delete(id);
+			groupsToDisable.add(id);
 		}
-		if (timelineState.bufferedLines.size > 0) timelineState.scrollToIndex = Math.min(...timelineState.bufferedLines);
+		if (timelineState.bufferedGroups.size > 0) timelineState.scrollToIndex = Math.min(...timelineState.bufferedGroups);
 		shouldLayout = true;
-	} else if (removedBufferedIds.size > 0 && eqSet(removedBufferedIds, timelineState.bufferedLines)) {
-		for (const id of timelineState.bufferedLines) {
-			if (timelineState.hotLines.has(id)) continue;
-			timelineState.bufferedLines.delete(id);
-			linesToDisable.add(id);
+	} else if (removedBufferedIds.size > 0 && eqSet(removedBufferedIds, timelineState.bufferedGroups)) {
+		for (const id of timelineState.bufferedGroups) {
+			if (timelineState.hotGroups.has(id)) continue;
+			timelineState.bufferedGroups.delete(id);
+			groupsToDisable.add(id);
 		}
 		shouldLayout = true;
 	}
-	if (timelineState.bufferedLines.size === 0 && processedLines.length > 0) {
-		if (time >= processedLines[processedLines.length - 1].endTime) {
-			const targetIndex = hasBottomContent ? processedLines.length : processedLines.length - 1;
+	if (timelineState.bufferedGroups.size === 0 && currentGroups.length > 0) {
+		if (time >= currentGroups[currentGroups.length - 1].endTime) {
+			const targetIndex = hasBottomContent ? currentGroups.length : currentGroups.length - 1;
 			if (timelineState.scrollToIndex !== targetIndex) {
 				timelineState.scrollToIndex = targetIndex;
 				shouldLayout = true;
@@ -1144,8 +1124,8 @@ function commitPlayerTimeState(input) {
 	return {
 		shouldLayout,
 		shouldResetScroll,
-		linesToEnable,
-		linesToDisable: [...linesToDisable]
+		groupsToEnable,
+		groupsToDisable: [...groupsToDisable]
 	};
 }
 //#endregion
@@ -1160,17 +1140,15 @@ var LyricPlayerBase = class extends EventTarget {
 	timelineState = {
 		currentTime: 0,
 		lastCurrentTime: 0,
-		hotLines: /* @__PURE__ */ new Set(),
-		bufferedLines: /* @__PURE__ */ new Set(),
+		hotGroups: /* @__PURE__ */ new Set(),
+		bufferedGroups: /* @__PURE__ */ new Set(),
 		scrollToIndex: 0,
 		isSeeking: false,
 		isPlaying: true,
 		initialLayoutFinished: false
 	};
 	/** @internal */
-	lyricLinesSize = /* @__PURE__ */ new WeakMap();
-	/** @internal */
-	lyricLineElementMap = /* @__PURE__ */ new WeakMap();
+	lyricGroupElementMap = /* @__PURE__ */ new WeakMap();
 	currentLyricLines = [];
 	processedLines = [];
 	lyricLinesIndexes = /* @__PURE__ */ new WeakMap();
@@ -1202,10 +1180,13 @@ var LyricPlayerBase = class extends EventTarget {
 		isScrolled: false,
 		isUserScrolling: false
 	};
-	currentLyricLineObjects = [];
+	currentLyricGroups = [];
+	lyricGroupSize = /* @__PURE__ */ new WeakMap();
 	size = [0, 0];
 	isPageVisible = true;
 	optimizeOptions = {};
+	/** 是否强制让背景人声行始终后置（即始终在主歌词下方显示，不前置背景人声） */
+	alwaysPostpositionBackground = false;
 	posXSpringParams = {
 		mass: 1,
 		damping: 10,
@@ -1255,13 +1236,13 @@ var LyricPlayerBase = class extends EventTarget {
 				shouldRelayout = true;
 			}
 		} else {
-			const lineObj = this.lyricLineElementMap.get(entry.target);
-			if (lineObj) {
+			const groupObj = this.lyricGroupElementMap.get(entry.target);
+			if (groupObj) {
 				const newSize = [entry.target.clientWidth, entry.target.clientHeight];
-				const oldSize = this.lyricLinesSize.get(lineObj) ?? [0, 0];
+				const oldSize = this.lyricGroupSize.get(groupObj) ?? [0, 0];
 				if (newSize[0] !== oldSize[0] || newSize[1] !== oldSize[1]) {
-					this.lyricLinesSize.set(lineObj, newSize);
-					lineObj.onLineSizeChange(newSize);
+					this.lyricGroupSize.set(groupObj, newSize);
+					groupObj.onLineSizeChange(newSize);
 					shouldRelayout = true;
 				}
 			}
@@ -1394,7 +1375,7 @@ var LyricPlayerBase = class extends EventTarget {
 		}
 	}
 	rebuildLyricLines() {
-		for (const lineObj of this.currentLyricLineObjects) lineObj.rebuildElement();
+		for (const group of this.currentLyricGroups) group.rebuildAllLines();
 	}
 	/**
 	* 根据当前配置处理不雅用语单词
@@ -1495,11 +1476,11 @@ var LyricPlayerBase = class extends EventTarget {
 			break;
 		}
 		this.hasDuetLine = this.processedLines.some((line) => line.isDuet);
-		for (const line of this.currentLyricLineObjects) line.dispose();
+		for (const group of this.currentLyricGroups) group.dispose();
+		this.currentLyricGroups = [];
 		this.interludeDots.setInterlude(void 0);
-		this.timelineState.hotLines.clear();
-		this.timelineState.bufferedLines.clear();
-		this.setCurrentTime(0, true);
+		this.timelineState.hotGroups.clear();
+		this.timelineState.bufferedGroups.clear();
 	}
 	/**
 	* 获取当前是否在播放
@@ -1524,19 +1505,19 @@ var LyricPlayerBase = class extends EventTarget {
 		if (!timelineState.initialLayoutFinished && !timelineState.isSeeking) return;
 		const stateResult = computePlayerTimeState({
 			time,
-			processedLines: this.processedLines,
+			currentGroups: this.currentLyricGroups,
 			timelineState
 		});
 		const hasBottomContent = this.bottomLine.getElement().innerHTML.trim().length > 0;
 		const commitResult = commitPlayerTimeState({
 			timelineState,
 			time,
-			processedLines: this.processedLines,
+			currentGroups: this.currentLyricGroups,
 			hasBottomContent,
 			stateResult
 		});
-		for (const id of commitResult.linesToDisable) this.currentLyricLineObjects[id]?.disable(isSeek);
-		for (const id of commitResult.linesToEnable) this.currentLyricLineObjects[id]?.enable();
+		for (const id of commitResult.groupsToDisable) this.currentLyricGroups[id]?.disable(isSeek);
+		for (const id of commitResult.groupsToEnable) this.currentLyricGroups[id]?.enable();
 		if (commitResult.shouldResetScroll) this.resetScroll();
 		if (commitResult.shouldLayout) this.calcLayout();
 	}
@@ -1561,14 +1542,14 @@ var LyricPlayerBase = class extends EventTarget {
 		const interlude = computeCurrentInterlude({
 			currentTime: this.timelineState.currentTime,
 			scrollToIndex: this.timelineState.scrollToIndex,
-			processedLines: this.processedLines
+			currentGroups: this.currentLyricGroups
 		});
 		const isInterludeActive = !!interlude;
 		if (this.layoutState.targetAlignIndex !== this.timelineState.scrollToIndex || this.layoutState.lastInterludeState !== isInterludeActive) {
 			this.layoutState.lastInterludeState = isInterludeActive;
 			const springParams = computeLinePosYSpringParams({
 				enabled: this.getEnableSpring(),
-				processedLines: this.processedLines,
+				currentGroups: this.currentLyricGroups,
 				scrollToIndex: this.timelineState.scrollToIndex,
 				isSeeking: this.timelineState.isSeeking,
 				isInterludeActive
@@ -1586,17 +1567,15 @@ var LyricPlayerBase = class extends EventTarget {
 			if (interlude.anchorLineIndex !== -1) curPos -= totalInterludeHeight;
 		}
 		const LINE_HEIGHT_FALLBACK = this.size[1] / 5;
-		const scrollOffset = this.currentLyricLineObjects.slice(0, targetAlignIndex).reduce((acc, el) => acc + (el.getLine().isBG && this.timelineState.isPlaying ? 0 : this.lyricLinesSize.get(el)?.[1] ?? LINE_HEIGHT_FALLBACK), 0);
+		const scrollOffset = this.currentLyricGroups.slice(0, targetAlignIndex).reduce((acc, group) => acc + (this.lyricGroupSize.get(group)?.[1] ?? LINE_HEIGHT_FALLBACK), 0);
 		this.scrollState.scrollBoundary.minOffset = -scrollOffset;
 		curPos -= scrollOffset;
 		curPos += this.size[1] * this.layoutState.alignPosition;
-		const curLine = this.currentLyricLineObjects[targetAlignIndex];
+		const curGroup = this.currentLyricGroups[targetAlignIndex];
 		this.layoutState.targetAlignIndex = targetAlignIndex;
-		const isBottomFocused = targetAlignIndex === this.currentLyricLineObjects.length;
+		const isBottomFocused = targetAlignIndex === this.currentLyricGroups.length;
 		this.bottomLine.setFocused(isBottomFocused);
-		let targetLineHeight = 0;
-		if (curLine) targetLineHeight = this.lyricLinesSize.get(curLine)?.[1] ?? LINE_HEIGHT_FALLBACK;
-		else if (isBottomFocused) targetLineHeight = this.bottomLine.lineSize[1];
+		const targetLineHeight = curGroup ? this.lyricGroupSize.get(curGroup)?.[1] ?? LINE_HEIGHT_FALLBACK : isBottomFocused ? this.bottomLine.lineSize[1] : 0;
 		if (targetLineHeight > 0) switch (this.layoutState.alignAnchor) {
 			case LayoutAlignAnchor.Bottom:
 				curPos -= targetLineHeight;
@@ -1606,13 +1585,12 @@ var LyricPlayerBase = class extends EventTarget {
 				break;
 			case LayoutAlignAnchor.Top: break;
 		}
-		const latestIndex = Math.max(...this.timelineState.bufferedLines);
+		const latestIndex = Math.max(...this.timelineState.bufferedGroups);
 		let delay = 0;
 		let baseDelay = sync ? 0 : .05;
 		let setDots = false;
-		this.currentLyricLineObjects.forEach((lineObj, i) => {
-			const hasBuffered = this.timelineState.bufferedLines.has(i);
-			const line = lineObj.getLine();
+		this.currentLyricGroups.forEach((group, i) => {
+			const hasBuffered = this.timelineState.bufferedGroups.has(i);
 			const shouldShowDots = interlude && i === interlude.anchorLineIndex + 1;
 			if (!setDots && shouldShowDots) {
 				setDots = true;
@@ -1624,31 +1602,28 @@ var LyricPlayerBase = class extends EventTarget {
 				curPos += this.layoutState.interludeDotsSize[1];
 				curPos += dotMargin;
 			}
-			const presentation = computeLinePresentation({
-				line,
-				lineIndex: i,
+			const presentation = computeGroupPresentation({
+				groupIndex: i,
 				scrollToIndex: this.timelineState.scrollToIndex,
 				latestIndex,
 				hasBuffered,
 				hidePassedLines: this.hidePassedLines,
 				isPlaying: this.timelineState.isPlaying,
 				isNonDynamic: this.isNonDynamic,
-				enableScale: this.enableScale,
 				enableBlur: this.enableBlur,
 				isUserScrolling: this.scrollState.isUserScrolling,
 				isCompact: window.innerWidth <= 1024,
 				interlude
 			});
-			lineObj.setTransform(curPos, presentation.targetScale, presentation.targetOpacity, presentation.blurLevel, force, delay, presentation.renderMode);
-			if (line.isBG && (presentation.isActive || !this.timelineState.isPlaying)) curPos += this.lyricLinesSize.get(lineObj)?.[1] ?? LINE_HEIGHT_FALLBACK;
-			else if (!line.isBG) curPos += this.lyricLinesSize.get(lineObj)?.[1] ?? LINE_HEIGHT_FALLBACK;
+			group.setTransform(curPos, force, delay, presentation.isActive, presentation.targetOpacity, presentation.blurLevel);
+			curPos += this.lyricGroupSize.get(group)?.[1] ?? LINE_HEIGHT_FALLBACK;
 			if (curPos >= 0 && !this.timelineState.isSeeking) {
-				if (!line.isBG) delay += baseDelay;
+				delay += baseDelay;
 				if (i >= this.timelineState.scrollToIndex) baseDelay /= 1.05;
 			}
 		});
 		this.scrollState.scrollBoundary.maxOffset = curPos + this.scrollState.scrollOffset - this.size[1] / 2;
-		const bottomIndex = this.currentLyricLineObjects.length;
+		const bottomIndex = this.currentLyricGroups.length;
 		const finalBottomBlur = computeLineBlur({
 			enableBlur: this.enableBlur,
 			isUserScrolling: this.scrollState.isUserScrolling,
@@ -1678,7 +1653,10 @@ var LyricPlayerBase = class extends EventTarget {
 			...params
 		};
 		this.bottomLine.lineTransforms.posY.updateParams(this.posYSpringParams);
-		for (const line of this.currentLyricLineObjects) line.lineTransforms.posY.updateParams(this.posYSpringParams);
+		for (const group of this.currentLyricGroups) {
+			group.posY.updateParams(this.posYSpringParams);
+			group.bgSlideY.updateParams(this.posYSpringParams);
+		}
 	}
 	/**
 	* 设置所有歌词行在​缩放大小上的弹簧属性，包括重量、弹力和阻力。
@@ -1694,8 +1672,10 @@ var LyricPlayerBase = class extends EventTarget {
 			...this.scaleForBGSpringParams,
 			...params
 		};
-		for (const lineObj of this.currentLyricLineObjects) if (lineObj.getLine().isBG) lineObj.lineTransforms.scale.updateParams(this.scaleForBGSpringParams);
-		else lineObj.lineTransforms.scale.updateParams(this.scaleSpringParams);
+		for (const group of this.currentLyricGroups) {
+			group.mainLine.lineTransforms.scale.updateParams(this.scaleSpringParams);
+			group.bgLine?.lineTransforms.scale.updateParams(this.scaleForBGSpringParams);
+		}
 	}
 	/**
 	* 暂停部分效果演出，目前会暂停播放间奏点的动画，且将背景歌词显示出来
@@ -1767,6 +1747,23 @@ var LyricPlayerBase = class extends EventTarget {
 	getCurrentTime() {
 		return this.timelineState.currentTime;
 	}
+	/**
+	* 设置是否让背景人声行始终后置显示
+	*
+	* 默认情况下，如果背景歌词开始时间早于主歌词，会在主歌词上方展示；
+	* 如果设置为 `true`，则无论时间顺序如何，背景歌词都会始终在主歌词下方展示
+	* @param enable 是否启用始终后置
+	*/
+	setAlwaysPostpositionBackground(enable) {
+		if (this.alwaysPostpositionBackground === enable) return;
+		this.alwaysPostpositionBackground = enable;
+		this.rebuildLyricLines();
+		this.calcLayout();
+	}
+	/** 获取当前是否设置了让背景人声行始终后置显示 */
+	getAlwaysPostpositionBackground() {
+		return this.alwaysPostpositionBackground;
+	}
 	getElement() {
 		return this.element;
 	}
@@ -1774,6 +1771,195 @@ var LyricPlayerBase = class extends EventTarget {
 		this.element.remove();
 		window.removeEventListener("pageshow", this.onPageShow);
 		window.removeEventListener("pagehide", this.onPageHide);
+	}
+};
+//#endregion
+//#region src/lyric-player/base/group.ts
+var LyricLineGroupBase = class {
+	mainLine;
+	bgLine;
+	posY = new Spring(0);
+	bgSlideY = new Spring(-80);
+	top = 0;
+	delay = 0;
+	isActive = false;
+	opacity = 1;
+	blur = 0;
+	isBgFirst = false;
+	constructor(mainLine, bgLine) {
+		this.mainLine = mainLine;
+		this.bgLine = bgLine;
+		this.posY = mainLine.lineTransforms.posY;
+	}
+	get startTime() {
+		return this.mainLine.getLine().startTime;
+	}
+	get endTime() {
+		return this.mainLine.getLine().endTime;
+	}
+	onLineSizeChange(size) {
+		this.mainLine.onLineSizeChange(size);
+		this.bgLine?.onLineSizeChange(size);
+	}
+	setTransform(top, force, delay, isActive, opacity, blur) {
+		this.top = top;
+		this.delay = delay;
+		this.isActive = isActive;
+		this.opacity = opacity;
+		this.blur = blur;
+		this.setLineTransformations(force, delay);
+		const enableSpring = this.lyricPlayer.getEnableSpring();
+		const hiddenSlideY = (this.lyricPlayer.getAlwaysPostpositionBackground() ? false : this.isBgFirst) ? 80 : -80;
+		const isPlaying = this.lyricPlayer.getIsPlaying();
+		const targetBgSlideY = isActive || !isPlaying ? 0 : hiddenSlideY;
+		if (force || !enableSpring) {
+			this.posY.setPosition(top);
+			this.bgSlideY.setPosition(targetBgSlideY);
+			this.renderStyles();
+		} else {
+			this.posY.setTargetPosition(top, delay);
+			this.bgSlideY.setTargetPosition(targetBgSlideY, delay);
+		}
+	}
+	setLineTransformations(force, delay) {
+		const enableScale = this.lyricPlayer.getEnableScale();
+		const isPlaying = this.lyricPlayer.getIsPlaying();
+		const renderMode = this.isActive ? LyricLineRenderMode.GRADIENT : LyricLineRenderMode.SOLID;
+		const SCALE_ASPECT = enableScale ? 97 : 100;
+		let mainScale = 100;
+		if (!this.isActive && isPlaying) mainScale = SCALE_ASPECT;
+		this.mainLine.setTransform(mainScale, 1, 0, force, delay, renderMode);
+		let bgScale = 100;
+		if (!this.isActive && isPlaying) bgScale = 75;
+		this.bgLine?.setTransform(bgScale, 1, 0, force, delay, renderMode);
+	}
+	update(delta) {
+		if (this.lyricPlayer.getEnableSpring()) {
+			this.posY.update(delta);
+			this.bgSlideY.update(delta);
+			this.renderStyles();
+		}
+		this.mainLine.update(delta);
+		this.bgLine?.update(delta);
+	}
+	rebuildAllLines() {
+		this.mainLine.rebuildElement();
+		this.bgLine?.rebuildElement();
+	}
+	enable(time, shouldPlay) {
+		this.mainLine.enable(time, shouldPlay);
+		this.bgLine?.enable(time, shouldPlay);
+	}
+	disable(isSeek) {
+		this.mainLine.disable(isSeek);
+		this.bgLine?.disable(isSeek);
+	}
+	dispose() {
+		this.mainLine.dispose();
+		this.bgLine?.dispose();
+	}
+};
+//#endregion
+//#region src/lyric-player/dom/lyric-group.ts
+var LyricLineGroup = class extends LyricLineGroupBase {
+	lyricPlayer;
+	element;
+	bgWrapper;
+	lastIsActive;
+	constructor(lyricPlayer, mainLine) {
+		super(mainLine);
+		this.lyricPlayer = lyricPlayer;
+		this.element = document.createElement("div");
+		this.element.className = lyric_player_module_default.lyricLineWrapper;
+		this.element.appendChild(mainLine.getElement());
+		this.posY.setPosition(window.innerHeight * 2);
+		lyricPlayer.resizeObserver.observe(this.element);
+	}
+	get isInSight() {
+		const t = this.posY.getCurrentPosition();
+		let h = this.lyricPlayer.lyricGroupSize?.get(this)?.[1];
+		if (h === void 0 || h === 0) h = this.element.clientHeight || 0;
+		const pb = this.lyricPlayer.size[1];
+		const ov = this.lyricPlayer.getOverscanPx();
+		return !(t > pb + h + ov || t < -h - ov);
+	}
+	show() {
+		if (!this.element.parentElement) {
+			const playerEl = this.lyricPlayer.getElement();
+			const groups = this.lyricPlayer.currentLyricGroups;
+			const myIndex = groups.indexOf(this);
+			let referenceNode = null;
+			if (myIndex !== -1) {
+				for (let i = myIndex + 1; i < groups.length; i++) if (groups[i].element.parentElement === playerEl) {
+					referenceNode = groups[i].element;
+					break;
+				}
+			}
+			playerEl.insertBefore(this.element, referenceNode);
+			this.lyricPlayer.resizeObserver.observe(this.element);
+		}
+		this.mainLine.show();
+		this.bgLine?.show();
+	}
+	hide() {
+		if (this.element.parentElement) {
+			this.lyricPlayer.resizeObserver.unobserve(this.element);
+			this.element.remove();
+			this.mainLine.teardownContent();
+			this.bgLine?.teardownContent();
+		}
+	}
+	update(delta) {
+		if (this.isInSight) this.show();
+		else this.hide();
+		super.update(delta);
+	}
+	addBgLine(bgLine) {
+		if (this.bgLine) this.bgLine.dispose();
+		if (this.bgWrapper) this.bgWrapper.remove();
+		this.bgLine = bgLine;
+		const bgStartTime = bgLine.getLine().words[0]?.startTime ?? bgLine.getLine().startTime;
+		const mainStartTime = this.mainLine.getLine().words[0]?.startTime ?? this.mainLine.getLine().startTime;
+		this.isBgFirst = bgStartTime < mainStartTime;
+		if (this.mainLine.getLine().isDuet) bgLine.getElement().classList.add(lyric_player_module_default.lyricDuetLine);
+		this.bgWrapper = document.createElement("div");
+		this.bgWrapper.className = lyric_player_module_default.bgWrapper;
+		this.bgWrapper.appendChild(bgLine.getElement());
+		if (!this.lyricPlayer.getAlwaysPostpositionBackground() && this.isBgFirst) {
+			this.bgWrapper.classList.add(lyric_player_module_default.bgWrapperTop);
+			this.element.insertBefore(this.bgWrapper, this.mainLine.getElement());
+			this.bgSlideY.setPosition(80);
+		} else this.element.appendChild(this.bgWrapper);
+	}
+	renderStyles() {
+		const y = this.posY.getCurrentPosition().toFixed(1);
+		this.element.style.transform = `translateY(${y}px)`;
+		this.element.style.opacity = this.opacity.toString();
+		this.element.style.filter = `blur(${Math.min(5, this.blur)}px)`;
+		if (!this.lyricPlayer.getEnableSpring()) this.element.style.transitionDelay = `${this.delay}ms`;
+		if (this.bgWrapper) {
+			if (this.lastIsActive !== this.isActive) {
+				this.lastIsActive = this.isActive;
+				this.bgWrapper.classList.toggle(lyric_player_module_default.bgWrapperActive, this.isActive);
+			}
+			const slideY = this.bgSlideY.getCurrentPosition();
+			const slideYStr = slideY.toFixed(1);
+			const activeProgress = clamp01(1 - Math.abs(slideY) / 80);
+			const scaleStr = (.8 + activeProgress * .2).toFixed(3);
+			this.bgWrapper.style.transform = `translateY(${slideYStr}%) scale(${scaleStr})`;
+			const shouldBgFirst = !this.lyricPlayer.getAlwaysPostpositionBackground() && this.isBgFirst;
+			if (shouldBgFirst) {
+				const currentMarginTop = -(this.bgWrapper.clientHeight || 0) * (1 - activeProgress);
+				this.bgWrapper.style.marginTop = `${currentMarginTop.toFixed(1)}px`;
+			} else this.bgWrapper.style.marginTop = "";
+			const isHidden = slideYStr === (shouldBgFirst ? "80.0" : "-80.0") && !this.isActive;
+			this.bgWrapper.classList.toggle(lyric_player_module_default.bgWrapperHidden, isHidden);
+		}
+	}
+	dispose() {
+		super.dispose();
+		this.lyricPlayer.resizeObserver.unobserve(this.element);
+		this.element.remove();
 	}
 };
 //#endregion
@@ -1858,9 +2044,7 @@ var LyricLineBase = class extends EventTarget {
 	* 用于正确处理 emoji、复合字符等
 	*/
 	static graphemeSegmenter = typeof Intl !== "undefined" && Intl.Segmenter ? new Intl.Segmenter(void 0, { granularity: "grapheme" }) : null;
-	onLineSizeChange(_size) {}
-	setTransform(top = this.top, scale = this.scale, opacity = this.opacity, blur = this.blur, _force = false, delay = 0, _mode = LyricLineRenderMode.SOLID) {
-		this.top = top;
+	setTransform(scale = this.scale, opacity = this.opacity, blur = this.blur, _force = false, delay = 0, _mode = LyricLineRenderMode.SOLID) {
 		this.scale = scale;
 		this.opacity = opacity;
 		this.blur = blur;
@@ -1983,6 +2167,7 @@ function getMeasurementContext() {
 * 用于平衡歌词行在换行后的各行长度
 */
 var LineBalancer = class {
+	mainElement;
 	isBalancing = false;
 	lastBalancedContainerWidth = -1;
 	constructor(mainElement) {
@@ -2352,13 +2537,9 @@ function generateFadeGradient(width, padding = 0, bright = "rgba(0,0,0,var(--bri
 	const leftPos = (1 - widthInTotal) / 2;
 	return [`linear-gradient(to right,${bright} ${leftPos * 100}%,${dark} ${(leftPos + widthInTotal) * 100}%)`, totalAspect];
 }
-var RawLyricLineMouseEvent = class extends MouseEvent {
-	constructor(line, event) {
-		super(event.type, event);
-		this.line = line;
-	}
-};
 var LyricLineEl = class extends LyricLineBase {
+	lyricPlayer;
+	lyricLine;
 	element = document.createElement("div");
 	splittedWords = [];
 	built = false;
@@ -2385,12 +2566,9 @@ var LyricLineEl = class extends LyricLineBase {
 		super();
 		this.lyricPlayer = lyricPlayer;
 		this.lyricLine = lyricLine;
-		this._prevParentEl = lyricPlayer.getElement();
-		lyricPlayer.resizeObserver.observe(this.element);
 		this.element.setAttribute("class", lyric_player_module_default.lyricLine);
 		if (this.lyricLine.isBG) this.element.classList.add(lyric_player_module_default.lyricBgLine);
 		if (this.lyricLine.isDuet) this.element.classList.add(lyric_player_module_default.lyricDuetLine);
-		this.lineTransforms.posY.setPosition(window.innerHeight * 2);
 		this.element.appendChild(document.createElement("div"));
 		this.element.appendChild(document.createElement("div"));
 		this.element.appendChild(document.createElement("div"));
@@ -2406,33 +2584,6 @@ var LyricLineEl = class extends LyricLineBase {
 	isFullscreenSurface() {
 		const playerElement = this.lyricPlayer?.getElement?.();
 		return !!(playerElement?.classList?.contains?.("amll-surface-fullscreen") || playerElement?.classList?.contains?.("amll-surface-fullscreen-cover-blur"));
-	}
-	listenersMap = /* @__PURE__ */ new Map();
-	onMouseEvent = (e) => {
-		const wrapped = new RawLyricLineMouseEvent(this, e);
-		for (const listener of this.listenersMap.get(e.type) ?? []) listener.call(this, wrapped);
-		if (!this.dispatchEvent(wrapped) || wrapped.defaultPrevented) {
-			e.preventDefault();
-			e.stopPropagation();
-			e.stopImmediatePropagation();
-		}
-	};
-	addMouseEventListener(type, callback, options) {
-		if (callback) {
-			const listeners = this.listenersMap.get(type) ?? /* @__PURE__ */ new Set();
-			if (listeners.size === 0) this.element.addEventListener(type, this.onMouseEvent, options);
-			listeners.add(callback);
-			this.listenersMap.set(type, listeners);
-		}
-	}
-	removeMouseEventListener(type, callback, options) {
-		if (callback) {
-			const listeners = this.listenersMap.get(type);
-			if (listeners) {
-				listeners.delete(callback);
-				if (listeners.size === 0) this.element.removeEventListener(type, this.onMouseEvent, options);
-			}
-		}
 	}
 	areWordsOnSameLine(word1, word2) {
 		if (word1?.mainElement && word2?.mainElement) {
@@ -2579,34 +2730,18 @@ var LyricLineEl = class extends LyricLineBase {
 	getLine() {
 		return this.lyricLine;
 	}
-	_prevParentEl;
 	lastStyle = "";
 	show() {
-		if (!this.element.parentElement) {
-			this._prevParentEl.appendChild(this.element);
-			this.lyricPlayer.resizeObserver.observe(this.element);
-		}
 		if (!this.built) {
 			this.rebuildElement();
 			this.built = true;
 			this.updateMaskImageSync();
 		}
-		this.rebuildStyle();
-	}
-	hide() {
-		if (this.element.parentElement) {
-			this._prevParentEl.removeChild(this.element);
-			this.lyricPlayer.resizeObserver.unobserve(this.element);
-		}
-		if (this.built) {
-			this.disposeElements();
-			this.built = false;
-		}
 	}
 	rebuildStyle() {
 		let style = "";
-		style += `transform:translateY(${this.lineTransforms.posY.getCurrentPosition().toFixed(1)}px) scale(${(this.lineTransforms.scale.getCurrentPosition() / 100).toFixed(4)});`;
-		if (!this.lyricPlayer.getEnableSpring() && this.isInSight) style += `transition-delay:${this.delay}ms;`;
+		style += `transform: scale(${(this.lineTransforms.scale.getCurrentPosition() / 100).toFixed(4)});`;
+		if (!this.lyricPlayer.getEnableSpring()) style += `transition-delay:${this.delay}ms;`;
 		style += `filter:blur(${Math.min(5, this.blur)}px);`;
 		if (style !== this.lastStyle) {
 			this.lastStyle = style;
@@ -2619,7 +2754,7 @@ var LyricLineEl = class extends LyricLineBase {
 		const trans = this.element.children[1];
 		const roman = this.element.children[2];
 		if (this.lyricPlayer._getIsNonDynamic()) {
-			main.innerText = this.lyricLine.words.map((w) => this.lyricPlayer.processObsceneWord(w)).join("");
+			main.textContent = this.lyricLine.words.map((w) => this.lyricPlayer.processObsceneWord(w)).join("");
 			this.setSubLinesText(trans, roman);
 			return;
 		}
@@ -2632,8 +2767,8 @@ var LyricLineEl = class extends LyricLineBase {
 	}
 	/** 设置翻译与音译行文本 */
 	setSubLinesText(trans, roman) {
-		trans.innerText = this.lyricLine.translatedLyric;
-		roman.innerText = this.lyricLine.romanLyric;
+		trans.textContent = this.lyricLine.translatedLyric;
+		roman.textContent = this.lyricLine.romanLyric;
 	}
 	getRubyCharCount(word) {
 		return (word.ruby ?? []).reduce((total, ruby) => total + ruby.word.length, 0);
@@ -2651,7 +2786,7 @@ var LyricLineEl = class extends LyricLineBase {
 			const rubySegments = this.getRubySegments(word);
 			for (const ruby of rubySegments) {
 				const rubyPartEl = document.createElement("span");
-				rubyPartEl.innerText = ruby.word;
+				rubyPartEl.textContent = ruby.word;
 				rubyPartEl.dataset.startTime = String(ruby.startTime);
 				rubyPartEl.dataset.endTime = String(ruby.endTime);
 				rubyWordEl.appendChild(rubyPartEl);
@@ -2668,24 +2803,24 @@ var LyricLineEl = class extends LyricLineBase {
 			const trimmedWord = displayWord.trim();
 			if (LyricLineBase.graphemeSegmenter) for (const { segment } of LyricLineBase.graphemeSegmenter.segment(trimmedWord)) {
 				const charEl = document.createElement("span");
-				charEl.innerText = segment;
+				charEl.textContent = segment;
 				subElements.push(charEl);
 				wordContainer.appendChild(charEl);
 			}
 			else for (const segment of Array.from(trimmedWord)) {
 				const charEl = document.createElement("span");
-				charEl.innerText = segment;
+				charEl.textContent = segment;
 				subElements.push(charEl);
 				wordContainer.appendChild(charEl);
 			}
 		} else if (hasRomanLine) {
 			const wordEl = document.createElement("div");
-			wordEl.innerText = displayWord.trim();
+			wordEl.textContent = displayWord.trim();
 			wordContainer.appendChild(wordEl);
-		} else if (romanWord.length === 0) wordContainer.innerText = displayWord.trim();
+		} else if (romanWord.length === 0) wordContainer.textContent = displayWord.trim();
 		if (hasRomanLine) {
 			const romanWordEl = document.createElement("div");
-			romanWordEl.innerText = romanWord.length > 0 ? romanWord : "\xA0";
+			romanWordEl.textContent = romanWord.length > 0 ? romanWord : "\xA0";
 			romanWordEl.classList.add(lyric_player_module_default.romanWord);
 			wordContainer.appendChild(romanWordEl);
 		}
@@ -2802,7 +2937,7 @@ var LyricLineEl = class extends LyricLineBase {
 			const glow = el.animate(frames, {
 				duration: animateDu,
 				delay: Number.isFinite(wordDe) ? wordDe : 0,
-				id: `emphasize-word-${el.innerText}-${i}`,
+				id: `emphasize-word-${el.textContent}-${i}`,
 				iterations: 1,
 				composite: "replace",
 				fill: "both"
@@ -3164,25 +3299,19 @@ var LyricLineEl = class extends LyricLineBase {
 		this.element.style.setProperty("--bright-mask-alpha", this.currentBrightAlpha.toFixed(3));
 		this.element.style.setProperty("--dark-mask-alpha", this.currentDarkAlpha.toFixed(3));
 	}
-	setTransform(top = this.top, scale = this.scale, opacity = 1, blur = 0, force = false, delay = 0, mode = LyricLineRenderMode.SOLID) {
-		super.setTransform(top, scale, opacity, blur, force, delay);
+	setTransform(scale = this.scale, opacity = 1, blur = 0, force = false, delay = 0, mode = LyricLineRenderMode.SOLID) {
+		super.setTransform(scale, opacity, blur, force, delay);
 		this.renderMode = mode;
-		const beforeInSight = this.isInSight;
 		const enableSpring = this.lyricPlayer.getEnableSpring();
-		this.top = top;
+		this.top = 0;
 		this.scale = scale;
 		this.delay = delay * 1e3 | 0;
 		const main = this.element.children[0];
 		main.style.opacity = `${opacity}`;
 		if (force || !enableSpring) {
 			this.blur = Math.min(32, blur);
-			this.lineTransforms.posY.setPosition(top);
 			this.lineTransforms.scale.setPosition(scale);
-			if (!enableSpring) {
-				const afterInSight = this.isInSight;
-				if (beforeInSight || afterInSight) this.show();
-				else this.hide();
-			} else this.rebuildStyle();
+			this.rebuildStyle();
 			const currentScale = this.lineTransforms.scale.getCurrentPosition();
 			this.updateMaskAlphaTargets(currentScale / 100);
 			this.currentBrightAlpha = this.targetBrightAlpha;
@@ -3190,35 +3319,31 @@ var LyricLineEl = class extends LyricLineBase {
 			this.element.style.setProperty("--bright-mask-alpha", String(this.currentBrightAlpha));
 			this.element.style.setProperty("--dark-mask-alpha", String(this.currentDarkAlpha));
 		} else {
-			this.lineTransforms.posY.setTargetPosition(top, delay);
 			this.lineTransforms.scale.setTargetPosition(scale);
 			if (this.blur !== Math.min(5, blur)) {
 				this.blur = Math.min(5, blur);
-				const roundedBlur = blur.toFixed(3);
-				this.element.style.filter = `blur(${roundedBlur}px)`;
+				this.element.style.filter = `blur(${blur.toFixed(3)}px)`;
 			}
 		}
 	}
 	update(delta = 0) {
 		if (!this.lyricPlayer.getEnableSpring()) return;
-		this.lineTransforms.posY.update(delta);
 		this.lineTransforms.scale.update(delta);
-		if (this.isInSight) this.show();
-		else this.hide();
+		this.rebuildStyle();
+		if (!this.built) return;
 		const currentScale = this.lineTransforms.scale.getCurrentPosition() / 100;
 		this.updateMaskAlphaTargets(currentScale);
 		this.applyAlphaToDom(delta);
 	}
+	/** @internal */
 	_getDebugTargetPos() {
 		return `[位移: ${this.top}; 缩放: ${this.scale}; 延时: ${this.delay}]`;
 	}
-	get isInSight() {
-		const t = this.lineTransforms.posY.getCurrentPosition();
-		const h = this.lyricPlayer.lyricLinesSize.get(this)?.[1] ?? 0;
-		const b = t + h;
-		const pb = this.lyricPlayer.size[1];
-		const ov = this.lyricPlayer.getOverscanPx();
-		return !(t > pb + h + ov || b < -h - ov);
+	teardownContent() {
+		if (this.built) {
+			this.disposeElements();
+			this.built = false;
+		}
 	}
 	disposeElements() {
 		this.balancer?.reset();
@@ -3251,13 +3376,29 @@ var LyricLineEl = class extends LyricLineBase {
 //#endregion
 //#region src/lyric-player/dom/index.ts
 /**
-* 歌词行鼠标相关事件，可以获取到歌词行的索引和歌词行元素
+* 歌词行鼠标相关事件，可以获取到歌词行的索引、主歌词行以及背景歌词行（如果有）元素
 */
 var LyricLineMouseEvent = class extends MouseEvent {
-	constructor(lineIndex, line, event) {
+	lineIndex;
+	line;
+	bgLine;
+	/**
+	* 自定义标志位，用于记录外部是否调用了 `stopPropagation`
+	*/
+	isPropagationStopped = false;
+	constructor(lineIndex, line, bgLine, event) {
 		super(`line-${event.type}`, event);
 		this.lineIndex = lineIndex;
 		this.line = line;
+		this.bgLine = bgLine;
+	}
+	stopPropagation() {
+		this.isPropagationStopped = true;
+		super.stopPropagation();
+	}
+	stopImmediatePropagation() {
+		this.isPropagationStopped = true;
+		super.stopImmediatePropagation();
 	}
 };
 /**
@@ -3266,7 +3407,8 @@ var LyricLineMouseEvent = class extends MouseEvent {
 * 尽可能贴切 Apple Music for iPad 的歌词效果设计，且做了力所能及的优化措施
 */
 var DomLyricPlayer = class extends LyricPlayerBase {
-	currentLyricLineObjects = [];
+	abortController = new AbortController();
+	currentLyricGroups = [];
 	onResize() {
 		const computedStyles = getComputedStyle(this.element);
 		this._baseFontSize = Number.parseFloat(computedStyles.fontSize);
@@ -3275,10 +3417,18 @@ var DomLyricPlayer = class extends LyricPlayerBase {
 	supportPlusLighter = CSS.supports("mix-blend-mode", "plus-lighter");
 	supportMaskImage = CSS.supports("mask-image", "none");
 	innerSize = [0, 0];
-	onLineClickedHandler = (e) => {
-		const evt = new LyricLineMouseEvent(this.lyricLinesIndexes.get(e.line) ?? -1, e.line, e);
-		if (!this.dispatchEvent(evt)) {
-			e.preventDefault();
+	onMouseEventHandler = (e) => {
+		const target = e.target;
+		if (!(target instanceof Element)) return;
+		const groupEl = target.closest(`.${lyric_player_module_default.lyricLineWrapper}`);
+		if (!groupEl) return;
+		const group = this.lyricGroupElementMap.get(groupEl);
+		if (!group) return;
+		const mainLine = group.mainLine;
+		const bgLine = group.bgLine;
+		const evt = new LyricLineMouseEvent(this.lyricLinesIndexes.get(mainLine) ?? -1, mainLine, bgLine, e);
+		if (!this.dispatchEvent(evt) || evt.defaultPrevented) e.preventDefault();
+		if (evt.isPropagationStopped) {
 			e.stopPropagation();
 			e.stopImmediatePropagation();
 		}
@@ -3299,15 +3449,23 @@ var DomLyricPlayer = class extends LyricPlayerBase {
 		this.onResize();
 		this.element.classList.add("amll-lyric-player", "dom");
 		if (this.disableSpring) this.element.classList.add(lyric_player_module_default.disableSpring);
+		this.element.addEventListener("click", this.onMouseEventHandler, { signal: this.abortController.signal });
+		this.element.addEventListener("contextmenu", this.onMouseEventHandler, { signal: this.abortController.signal });
 	}
 	rebuildStyle() {}
 	setWordFadeWidth(value = .5) {
 		super.setWordFadeWidth(value);
-		for (const el of this.currentLyricLineObjects) el.updateMaskImageSync();
+		for (const group of this.currentLyricGroups) {
+			group.mainLine.updateMaskImageSync();
+			group.bgLine?.updateMaskImageSync();
+		}
 	}
 	setWordHighlightMode(mode = "smooth") {
 		super.setWordHighlightMode(mode);
-		for (const el of this.currentLyricLineObjects) el.updateMaskImageSync();
+		for (const group of this.currentLyricGroups) {
+			group.mainLine.updateMaskImageSync();
+			group.bgLine?.updateMaskImageSync();
+		}
 	}
 	/**
 	* 设置当前播放歌词，要注意传入后这个数组内的信息不得修改，否则会发生错误
@@ -3319,36 +3477,43 @@ var DomLyricPlayer = class extends LyricPlayerBase {
 		if (this.hasDuetLine) this.element.classList.add(lyric_player_module_default.hasDuetLine);
 		else this.element.classList.remove(lyric_player_module_default.hasDuetLine);
 		if (!this.supportMaskImage) this.element.style.setProperty("--amll-player-time", `${initialTime}`);
-		for (const line of this.currentLyricLineObjects) {
-			line.removeMouseEventListener("click", this.onLineClickedHandler);
-			line.removeMouseEventListener("contextmenu", this.onLineClickedHandler);
-			line.dispose();
-		}
-		this.currentLyricLineObjects = this.processedLines.map((line, i) => {
+		for (const group of this.currentLyricGroups) group.dispose();
+		this.currentLyricGroups = [];
+		let currentGroup = null;
+		for (let i = 0; i < this.processedLines.length; i++) {
+			const line = this.processedLines[i];
 			const lineEl = new LyricLineEl(this, line);
-			lineEl.addMouseEventListener("click", this.onLineClickedHandler);
-			lineEl.addMouseEventListener("contextmenu", this.onLineClickedHandler);
 			this.lyricLinesIndexes.set(lineEl, i);
-			this.lyricLineElementMap.set(lineEl.getElement(), lineEl);
-			return lineEl;
-		});
+			if (!line.isBG || !currentGroup) {
+				currentGroup = new LyricLineGroup(this, lineEl);
+				this.currentLyricGroups.push(currentGroup);
+				this.lyricGroupElementMap.set(currentGroup.element, currentGroup);
+			} else currentGroup.addBgLine(lineEl);
+		}
 		this.setLinePosXSpringParams({});
 		this.setLinePosYSpringParams({});
 		this.setLineScaleSpringParams({});
+		this.setCurrentTime(initialTime, true);
 		this.calcLayout(true);
 		this.update(0);
 	}
 	pause() {
 		super.pause();
-		this.element.classList.remove("playing");
+		this.element.classList.remove(lyric_player_module_default.playing);
 		this.interludeDots.pause();
-		for (const line of this.currentLyricLineObjects) line.pause();
+		for (const group of this.currentLyricGroups) {
+			group.mainLine.pause();
+			group.bgLine?.pause();
+		}
 	}
 	resume() {
 		super.resume();
-		this.element.classList.add("playing");
+		this.element.classList.add(lyric_player_module_default.playing);
 		this.interludeDots.resume();
-		for (const line of this.currentLyricLineObjects) line.resume();
+		for (const group of this.currentLyricGroups) {
+			group.mainLine.resume();
+			group.bgLine?.resume();
+		}
 	}
 	update(delta = 0) {
 		if (!this.timelineState.initialLayoutFinished) return;
@@ -3356,12 +3521,13 @@ var DomLyricPlayer = class extends LyricPlayerBase {
 		if (!this.supportMaskImage) this.element.style.setProperty("--amll-player-time", `${this.timelineState.currentTime}`);
 		if (!this.isPageVisible) return;
 		const deltaS = delta / 1e3;
-		for (const line of this.currentLyricLineObjects) line.update(deltaS);
+		for (const group of this.currentLyricGroups) group.update(deltaS);
 	}
 	dispose() {
 		super.dispose();
+		this.abortController.abort();
 		this.element.remove();
-		for (const el of this.currentLyricLineObjects) el.dispose();
+		for (const group of this.currentLyricGroups) group.dispose();
 		this.bottomLine.dispose();
 		this.interludeDots.dispose();
 	}
