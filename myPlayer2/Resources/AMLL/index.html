@@ -96,6 +96,13 @@
             --amll-lp-mix-opacity: 1;
             --amll-lp-mix-blend-mode: normal;
         }
+        .amll-lyric-player.amll-surface-fullscreen-cover-blur [class*="lyricLineWrapper"] {
+            opacity: 1 !important;
+            filter: none !important;
+            mix-blend-mode: var(--amll-cb-main-blend, plus-lighter) !important;
+            contain: none !important;
+            overflow: visible !important;
+        }
         .amll-lyric-player.amll-surface-fullscreen-cover-blur[data-amll-cover-blur-profile="lighter"] {
             --amll-cb-main-blend: plus-lighter;
             --amll-cb-highlight-blend: normal;
@@ -491,6 +498,13 @@
             --amll-lp-mix-opacity: 1;
             --amll-lp-mix-blend-mode: normal;
             /* Allow glow effects to extend beyond container */
+            contain: none !important;
+            overflow: visible !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen [class*="lyricLineWrapper"] {
+            opacity: 1 !important;
+            filter: none !important;
+            mix-blend-mode: normal !important;
             contain: none !important;
             overflow: visible !important;
         }
@@ -1185,12 +1199,101 @@
                     },
                 });
             };
-            defineTimelineGetter("hotLines", () => new Set(), (state) => state.hotLines);
-            defineTimelineGetter("bufferedLines", () => new Set(), (state) => state.bufferedLines);
+            defineTimelineGetter("hotLines", () => new Set(), (state) => state.hotLines ?? state.hotGroups);
+            defineTimelineGetter("bufferedLines", () => new Set(), (state) => state.bufferedLines ?? state.bufferedGroups);
             defineTimelineGetter("scrollToIndex", 0, (state) => state.scrollToIndex);
             defineTimelineGetter("initialLayoutFinished", false, (state) => state.initialLayoutFinished);
             defineTimelineGetter("currentTime", 0, (state) => state.currentTime);
             defineTimelineGetter("isPlaying", true, (state) => state.isPlaying);
+
+            if (!("currentLyricLineObjects" in player)) {
+                Object.defineProperty(player, "currentLyricLineObjects", {
+                    configurable: true,
+                    enumerable: false,
+                    get() {
+                        const groups = Array.isArray(player.currentLyricGroups)
+                            ? player.currentLyricGroups
+                            : [];
+                        return groups
+                            .map((group) => group?.mainLine)
+                            .filter((line) => line && typeof line.getLine === "function");
+                    },
+                });
+            }
+
+            if (!("lyricLinesSize" in player)) {
+                const findGroupForLine = (lineObj) => {
+                    const groups = Array.isArray(player.currentLyricGroups)
+                        ? player.currentLyricGroups
+                        : [];
+                    return groups.find((group) => group?.mainLine === lineObj || group?.bgLine === lineObj) ?? null;
+                };
+                const lineSizeCompat = {
+                    get(lineObj) {
+                        const group = findGroupForLine(lineObj);
+                        const groupSize = group ? player.lyricGroupSize?.get?.(group) : null;
+                        if (Array.isArray(groupSize)) return groupSize;
+                        const element = lineObj?.getElement?.();
+                        if (element instanceof HTMLElement) {
+                            return [element.clientWidth || 0, element.clientHeight || 0];
+                        }
+                        return undefined;
+                    },
+                    set() {},
+                    has(lineObj) {
+                        return !!findGroupForLine(lineObj);
+                    },
+                    delete() {
+                        return false;
+                    },
+                };
+                Object.defineProperty(player, "lyricLinesSize", {
+                    configurable: true,
+                    enumerable: false,
+                    get() {
+                        return lineSizeCompat;
+                    },
+                });
+            }
+
+            if (!("lyricLineElementMap" in player)) {
+                const resolveGroupLine = (node) => {
+                    if (!(node instanceof Element)) return null;
+                    const directGroup = player.lyricGroupElementMap?.get?.(node);
+                    if (directGroup?.mainLine) return directGroup.mainLine;
+
+                    const groups = Array.isArray(player.currentLyricGroups)
+                        ? player.currentLyricGroups
+                        : [];
+                    for (const group of groups) {
+                        const mainElement = group?.mainLine?.getElement?.();
+                        if (mainElement === node) return group.mainLine;
+                        const bgElement = group?.bgLine?.getElement?.();
+                        if (bgElement === node) return group.bgLine;
+                    }
+
+                    const wrapper = node.closest?.('[class*="lyricLineWrapper"]');
+                    const wrapperGroup = wrapper ? player.lyricGroupElementMap?.get?.(wrapper) : null;
+                    return wrapperGroup?.mainLine ?? null;
+                };
+                const lineElementMapCompat = {
+                    get: resolveGroupLine,
+                    has(node) {
+                        return !!resolveGroupLine(node);
+                    },
+                    set() {},
+                    delete() {
+                        return false;
+                    },
+                };
+                Object.defineProperty(player, "lyricLineElementMap", {
+                    configurable: true,
+                    enumerable: false,
+                    get() {
+                        return lineElementMapCompat;
+                    },
+                });
+            }
         };
         installAMLLUpgradeCompatAccessors(lyricPlayer);
         playerContainer.appendChild(lyricPlayer.getElement());
