@@ -343,6 +343,9 @@ struct FullscreenMiniPlayerView: View {
     
     private var currentArtworkTaskKey: String {
         let presentation = playbackCoordinator.presentation
+        if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
+            return "local-\(source.sourceKey)-thumb"
+        }
         let identity = presentation.artworkIdentity
             ?? presentation.lyricsIdentity
             ?? presentation.localTrack?.id.uuidString
@@ -352,6 +355,13 @@ struct FullscreenMiniPlayerView: View {
     
     private func loadArtworkThumbnail() async {
         let presentation = playbackCoordinator.presentation
+        if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
+            let image = await TrackArtworkCache.shared.thumbnail(for: source)
+            guard !Task.isCancelled else { return }
+            artworkImage = image
+            return
+        }
+
         guard
             let artworkData = presentation.artworkData,
             !artworkData.isEmpty

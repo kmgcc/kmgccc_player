@@ -444,21 +444,15 @@ private struct QueueRow: View {
     // MARK: - Load Artwork
 
     private func loadArtwork() async {
-        let artworkData = track.loadArtworkDataIfNeeded()
-        guard let artworkData, !artworkData.isEmpty else {
+        guard let source = track.trackArtworkSource() else {
             await MainActor.run {
                 artworkImage = nil
             }
             return
         }
 
-        let snapshot = await ArtworkAssetStore.shared.snapshot(
-            trackID: track.id,
-            artworkData: artworkData
-        )
-
+        let image = await TrackArtworkCache.shared.thumbnail(for: source)
         guard !Task.isCancelled else { return }
-        let image = snapshot?.thumbnailImage ?? snapshot?.fullImage
         await MainActor.run {
             artworkImage = image
         }

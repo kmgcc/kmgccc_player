@@ -34,6 +34,7 @@ nonisolated enum CacheManager {
 
     static func clearLibraryCaches() async {
         await ArtworkAssetStore.shared.clearCache()
+        await TrackArtworkCache.shared.clearMemory()
         await ArtworkDerivativeCacheStore.shared.clearAll()
         await ThemeStore.shared.clearArtworkColorCache()
         await ExternalPlaybackMetadataStore.shared.clearAutomaticCaches()
@@ -158,6 +159,8 @@ nonisolated enum CacheManager {
     private static var libraryCacheDirectories: [URL] {
         [
             StorageLocations.playlistArtworkDerivativesURL,
+            StorageLocations.trackArtworkOriginalsURL,
+            StorageLocations.trackArtworkDerivativesURL,
             StorageLocations.qqMusicCoverCacheURL,
             StorageLocations.lyricsCacheRootURL,
             StorageLocations.colorsCacheURL,
