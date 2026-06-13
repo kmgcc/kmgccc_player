@@ -110,9 +110,10 @@ actor PlaylistArtworkPipeline {
     
     private func parseTrackID(from sourceIdentity: String) -> UUID? {
         guard sourceIdentity.hasPrefix("row-") else { return nil }
-        let parts = sourceIdentity.split(separator: "-")
-        guard parts.count >= 3 else { return nil }
-        let uuidString = parts[1...].dropLast().joined(separator: "-")
+        let start = sourceIdentity.index(sourceIdentity.startIndex, offsetBy: 4)
+        let uuidEnd = sourceIdentity.index(start, offsetBy: 36, limitedBy: sourceIdentity.endIndex)
+        guard let uuidEnd else { return nil }
+        let uuidString = String(sourceIdentity[start..<uuidEnd])
         return UUID(uuidString: uuidString)
     }
 
@@ -148,8 +149,22 @@ actor PlaylistArtworkPipeline {
 extension PlaylistArtworkPipeline {
     nonisolated static func rowSourceIdentity(trackID: UUID, artworkData: Data?, artworkFileURL: URL? = nil) -> String {
         let checksum = ArtworkLoader.checksum(for: artworkData)
-        let fileHash = artworkFileURL?.path.hashValue ?? 0
-        return "row-\(trackID.uuidString)-\(checksum)-\(fileHash)"
+        let fileVersion = stableFileVersion(for: artworkFileURL)
+        return "row-\(trackID.uuidString)-\(checksum)-\(fileVersion)"
+    }
+
+    private nonisolated static func stableFileVersion(for artworkFileURL: URL?) -> String {
+        guard let artworkFileURL,
+              let values = try? artworkFileURL.resourceValues(
+                forKeys: [.fileSizeKey, .contentModificationDateKey]
+              )
+        else {
+            return "no-file"
+        }
+        let fileSize = values.fileSize ?? 0
+        let modified = values.contentModificationDate?.timeIntervalSince1970 ?? 0
+        let modifiedNanos = Int64((modified * 1_000_000_000).rounded())
+        return "\(artworkFileURL.lastPathComponent):\(fileSize):\(modifiedNanos)"
     }
 
     nonisolated static func rowLowRequest(

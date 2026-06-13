@@ -580,7 +580,8 @@ final class PlaybackCoordinator {
         guard sidecarHydratingTrackID != track.id else { return }
 
         let trackID = track.id
-        let artworkURL = needsArtwork ? track.resolvedArtworkURL() : nil
+        let artworkSource = needsArtwork ? track.trackArtworkSource(fallbackData: track.artworkData) : nil
+        let artworkURL = artworkSource?.artworkFileURL
         let ttmlURL = needsTTMLLyrics ? track.resolvedTTMLURL() : nil
         let ttmlFallbackURL = needsTTMLLyrics ? track.resolvedLyricsURL() : nil
 
@@ -592,10 +593,10 @@ final class PlaybackCoordinator {
                     detail: "track=\(trackID.uuidString.prefix(8)) artwork=\(artworkURL != nil) ttml=\(ttmlURL != nil || ttmlFallbackURL != nil)"
                 )
 
-            async let artworkTask: Data? = Task.detached(priority: .utility) { @Sendable in
-                guard let artworkURL else { return nil }
-                return try? Data(contentsOf: artworkURL)
-            }.value
+            async let artworkTask: Data? = {
+                guard let artworkSource else { return nil }
+                return await TrackArtworkCache.shared.sourceData(for: artworkSource)
+            }()
 
             async let ttmlTask: String? = Task.detached(priority: .utility) { @Sendable in
                 if let ttmlURL,

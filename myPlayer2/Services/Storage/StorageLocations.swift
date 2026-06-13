@@ -24,6 +24,14 @@ nonisolated enum StorageLocations {
         artworkCacheRootURL.appendingPathComponent("PlaylistDerivatives", isDirectory: true)
     }
 
+    static var trackArtworkOriginalsURL: URL {
+        artworkCacheRootURL.appendingPathComponent("Tracks", isDirectory: true)
+    }
+
+    static var trackArtworkDerivativesURL: URL {
+        artworkCacheRootURL.appendingPathComponent("Derivatives", isDirectory: true)
+    }
+
     static var qqMusicCoverCacheURL: URL {
         artworkCacheRootURL.appendingPathComponent("QQMusic", isDirectory: true)
     }

@@ -1006,10 +1006,10 @@ public final class AppSettings {
         static let lyricsFontNameZh = "PingFang SC"
         static let lyricsFontNameEn = "SF Pro Text"
         static let lyricsTranslationFontName = "SF Pro Text"
-        static let lyricsFontWeight = 600
-        static let lyricsTranslationFontWeight = 500
-        static let lyricsFontSize: Double = 38
-        static let lyricsTranslationFontSize: Double = 20
+        static let lyricsFontWeight = 700
+        static let lyricsTranslationFontWeight = 600
+        static let lyricsFontSize: Double = 48
+        static let lyricsTranslationFontSize: Double = 24
     }
 
     enum FullscreenMiniPlayerGlassMaterial: String, CaseIterable, Identifiable {

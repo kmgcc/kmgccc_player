@@ -192,6 +192,9 @@ struct NowPlayingHostView: View {
     private var currentArtworkTaskKey: String {
         let presentation = playbackCoordinator.presentation
         guard presentation.hasTrack else { return "none" }
+        if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
+            return "local-\(source.sourceKey)-px:\(preferredArtworkFullImageMaxPixel)"
+        }
         let identity = presentation.artworkIdentity
             ?? presentation.externalStableKey
             ?? presentation.localTrack?.id.uuidString
@@ -202,23 +205,29 @@ struct NowPlayingHostView: View {
     private func loadArtworkSnapshot() async {
         let presentation = playbackCoordinator.presentation
         let expectedTaskKey = currentArtworkTaskKey
-        guard
-            presentation.hasTrack,
-            let artworkData = presentation.artworkData,
-            !artworkData.isEmpty
-        else {
+        guard presentation.hasTrack else {
             return
         }
         let expectedTrackID = presentation.artworkDisplayTrackID
             ?? presentation.displayTrackID
             ?? presentation.localTrack?.id
             ?? Self.externalArtworkTrackID
-        
-        let snapshot = await ArtworkAssetStore.shared.snapshot(
-            trackID: expectedTrackID,
-            artworkData: artworkData,
-            fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
-        )
+
+        let snapshot: ArtworkAssetSnapshot?
+        if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
+            snapshot = await TrackArtworkCache.shared.snapshot(
+                for: source,
+                fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
+            )
+        } else if let artworkData = presentation.artworkData, !artworkData.isEmpty {
+            snapshot = await ArtworkAssetStore.shared.snapshot(
+                trackID: expectedTrackID,
+                artworkData: artworkData,
+                fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
+            )
+        } else {
+            return
+        }
         guard !Task.isCancelled else { return }
         guard currentArtworkTaskKey == expectedTaskKey else { return }
         guard currentDisplayArtworkTrackID == expectedTrackID else { return }

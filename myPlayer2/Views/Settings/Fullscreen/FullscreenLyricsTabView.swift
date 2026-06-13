@@ -138,7 +138,7 @@ struct FullscreenLyricsTabView: View {
                         .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
                         .font(.system(size: presentationStyle.rowValueFontSize, weight: .medium, design: .monospaced))
                 }
-                Slider(value: $fullscreenLyricsTranslationFontSize, in: 14...40, step: 1)
+                Slider(value: $fullscreenLyricsTranslationFontSize, in: 12...36, step: 1)
                     .frame(height: presentationStyle.tabHeight)
 
                 HStack {
