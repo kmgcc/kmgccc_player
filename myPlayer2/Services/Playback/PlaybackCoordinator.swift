@@ -29,6 +29,8 @@ final class PlaybackCoordinator {
     private var lastTelemetryIsPlaying: Bool?
     private var sidecarHydrationTask: Task<Void, Never>?
     private var sidecarHydratingTrackID: UUID?
+    private var trackArtworkWarmupTask: Task<Void, Never>?
+    private var trackArtworkWarmupSignature: String?
 
     private(set) var activeSource: PlaybackSource
     private(set) var presentation: NowPlayingPresentation = .emptyLocal
@@ -344,6 +346,7 @@ final class PlaybackCoordinator {
         }
 
         notifyTelemetryIfNeeded(source: activeSource, isPlaying: isPlaying)
+        scheduleTrackArtworkWarmupIfNeeded(for: newPresentation)
 
         guard !newPresentation.isEffectivelyEqual(to: presentation) else { return }
         presentation = newPresentation
@@ -490,8 +493,14 @@ final class PlaybackCoordinator {
         }
 
         let artworkData = track.artworkData
+        let artworkSource = track.trackArtworkSource(fallbackData: artworkData)
+        let hasDiskArtworkCache = artworkSource.map {
+            TrackArtworkCache.shared.hasAnyDiskCache(for: $0)
+        } ?? false
         let lyricsText = preferredLyricsTextSnapshot(for: track)
-        let isArtworkLoading = track.artworkData?.isEmpty != false && track.resolvedArtworkURL() != nil
+        let isArtworkLoading = track.artworkData?.isEmpty != false
+            && track.resolvedArtworkURL() != nil
+            && !hasDiskArtworkCache
         scheduleSidecarHydrationIfNeeded(for: track)
         return NowPlayingPresentation(
             source: .local,
@@ -565,6 +574,53 @@ final class PlaybackCoordinator {
         ].joined(separator: ":")
     }
 
+    private func scheduleTrackArtworkWarmupIfNeeded(for presentation: NowPlayingPresentation) {
+        guard activeSource == .local, let currentTrack = presentation.localTrack else {
+            trackArtworkWarmupTask?.cancel()
+            trackArtworkWarmupTask = nil
+            trackArtworkWarmupSignature = nil
+            return
+        }
+
+        let queue = playerVM.currentQueueTracks
+        let currentIndex = queue.firstIndex(where: { $0.id == currentTrack.id })
+        var targets: [Track] = [currentTrack]
+        if let currentIndex {
+            for offset in 1...2 {
+                let index = currentIndex + offset
+                if queue.indices.contains(index) {
+                    targets.append(queue[index])
+                }
+            }
+            let previousIndex = currentIndex - 1
+            if queue.indices.contains(previousIndex) {
+                targets.append(queue[previousIndex])
+            }
+        }
+
+        var seen = Set<UUID>()
+        let sources = targets.compactMap { track -> TrackArtworkSource? in
+            guard seen.insert(track.id).inserted else { return nil }
+            let fallbackData = track.id == currentTrack.id ? presentation.artworkData : track.artworkData
+            return track.trackArtworkSource(fallbackData: fallbackData)
+        }
+        guard !sources.isEmpty else {
+            trackArtworkWarmupTask?.cancel()
+            trackArtworkWarmupTask = nil
+            trackArtworkWarmupSignature = nil
+            return
+        }
+
+        let signature = sources.map(\.sourceKey).joined(separator: "||")
+        guard signature != trackArtworkWarmupSignature else { return }
+        trackArtworkWarmupSignature = signature
+        trackArtworkWarmupTask?.cancel()
+        trackArtworkWarmupTask = TrackArtworkCache.shared.preloadPlaybackArtwork(
+            for: sources,
+            reason: "playback-current-window"
+        )
+    }
+
     private func textSignature(_ text: String?) -> String {
         guard let text, !text.isEmpty else { return "empty" }
         let head = String(text.prefix(16))
@@ -595,7 +651,7 @@ final class PlaybackCoordinator {
 
             async let artworkTask: Data? = {
                 guard let artworkSource else { return nil }
-                return await TrackArtworkCache.shared.sourceData(for: artworkSource)
+                return await TrackArtworkCache.shared.sourceData(for: artworkSource, purpose: "hydration")
             }()
 
             async let ttmlTask: String? = Task.detached(priority: .utility) { @Sendable in

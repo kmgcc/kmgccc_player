@@ -164,6 +164,19 @@ enum LogConfig {
         set { _menuDiagnosticsVerbose = newValue }
     }
 
+    private nonisolated(unsafe) static var _trackArtworkCacheVerbose = false
+    nonisolated static var trackArtworkCacheVerbose: Bool {
+        get {
+            #if DEBUG
+            return _trackArtworkCacheVerbose
+                || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_TRACK_ARTWORK_CACHE"] == "1"
+            #else
+            return _trackArtworkCacheVerbose
+            #endif
+        }
+        set { _trackArtworkCacheVerbose = newValue }
+    }
+
     nonisolated static var printToConsole: Bool {
         #if DEBUG
         return ProcessInfo.processInfo.environment["KMGCCC_LOG_PRINT_TO_CONSOLE"] == "1"

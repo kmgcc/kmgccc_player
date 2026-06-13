@@ -355,7 +355,11 @@ struct MiniPlayerView: View {
         if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
             let image = await TrackArtworkCache.shared.thumbnail(for: source)
             guard !Task.isCancelled else { return }
-            artworkImage = image
+            if let image {
+                artworkImage = image
+            } else if !presentation.isArtworkLoading {
+                artworkImage = nil
+            }
             return
         }
 
@@ -363,7 +367,9 @@ struct MiniPlayerView: View {
             let artworkData = presentation.artworkData,
             !artworkData.isEmpty
         else {
-            artworkImage = nil
+            if !presentation.hasTrack || !presentation.isArtworkLoading {
+                artworkImage = nil
+            }
             return
         }
         
@@ -375,7 +381,11 @@ struct MiniPlayerView: View {
             artworkData: artworkData
         )
         guard !Task.isCancelled else { return }
-        artworkImage = snapshot?.thumbnailImage ?? snapshot?.fullImage
+        if let image = snapshot?.thumbnailImage ?? snapshot?.fullImage {
+            artworkImage = image
+        } else if !presentation.isArtworkLoading {
+            artworkImage = nil
+        }
     }
 
     private var progressFillColor: Color {
