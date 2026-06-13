@@ -47,8 +47,8 @@ final class UpdateChecker: ObservableObject {
     }
 
     /// Current app build number (`CFBundleVersion`) — the primary update signal.
-    /// Returns nil if the bundle value is missing or non-numeric, in which case the
-    /// update decision safely falls back to semantic version comparison.
+    /// Returns nil if the bundle value is missing or non-numeric; update checks
+    /// fail closed in that case.
     var localBuildNumber: Int? {
         guard let raw = Bundle.main.infoDictionary?["CFBundleVersion"] as? String else { return nil }
         return Int(raw.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -114,15 +114,13 @@ final class UpdateChecker: ObservableObject {
             // Perform update decision and log result
             let decision = UpdateAvailability.decide(
                 localBuild: localBuildNumber,
-                remoteBuild: info.buildNumber,
-                localVersion: localVersion,
-                remoteVersion: info.latestVersion
+                remoteBuild: info.buildNumber
             )
             switch decision.reason {
             case .buildNumber(let local, let remote):
                 print("[UpdateChecker] \(decision.isUpdateAvailable ? "⬆️ New build available" : "✓ Up to date") by build: \(local) → \(remote)")
-            case .semanticVersion:
-                print("[UpdateChecker] \(decision.isUpdateAvailable ? "⬆️ New version available" : "✓ Up to date") by semantic version (no build_number)")
+            case .missingBuildNumber(let local, let remote):
+                print("[UpdateChecker] ⚠️ Skipping update prompt because build number is missing: local=\(local.map(String.init) ?? "nil"), remote=\(remote.map(String.init) ?? "nil")")
             }
 
         } catch {
@@ -195,8 +193,8 @@ final class UpdateChecker: ObservableObject {
         )
     }
     
-    /// Check if update should be shown based on version comparison
-    /// - Parameter forceShow: If true, always returns true regardless of version (for testing)
+    /// Check if update should be shown based on build comparison.
+    /// - Parameter forceShow: If true, always returns true regardless of build (for testing)
     func shouldShowUpdate(forceShow: Bool = false) -> Bool {
         if forceShow {
             return true
@@ -206,13 +204,9 @@ final class UpdateChecker: ObservableObject {
             return false
         }
 
-        // Primary: build-number comparison; falls back to semantic version when
-        // build numbers are unavailable (older fallback JSON).
         return UpdateAvailability.decide(
             localBuild: localBuildNumber,
-            remoteBuild: remoteInfo.buildNumber,
-            localVersion: localVersion,
-            remoteVersion: remoteInfo.latestVersion
+            remoteBuild: remoteInfo.buildNumber
         ).isUpdateAvailable
     }
 

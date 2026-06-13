@@ -12,7 +12,7 @@ import WhatsNewKit
 
 enum WhatsNewConfiguration {
 
-    /// The current app version's What's New content
+    /// The current What's New content. Display version is separate from the build gate.
     static let current = WhatsNew(
         version: WhatsNewConfig.whatsNewVersion,
         title: "kmgccc player 新功能！",

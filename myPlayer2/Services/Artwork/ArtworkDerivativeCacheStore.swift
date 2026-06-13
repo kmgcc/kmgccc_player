@@ -22,20 +22,17 @@ actor ArtworkDerivativeCacheStore {
 
     private let memoryCache = NSCache<NSString, ArtworkDerivativeImageBox>()
     private let fileManager = FileManager.default
-    private let diskRootURL: URL
     private let maxDiskBytes: Int64 = 220 * 1024 * 1024
     private let decodeGate = ArtworkDecodeGate(maxConcurrent: 2)
     private var writeCounter = 0
+    private nonisolated var diskRootURL: URL {
+        StorageLocations.playlistArtworkDerivativesURL
+    }
 
     private init() {
         memoryCache.countLimit = 720
         memoryCache.totalCostLimit = 96 * 1024 * 1024
 
-        let cachesRoot = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        diskRootURL = cachesRoot
-            .appendingPathComponent("kmgccc_player", isDirectory: true)
-            .appendingPathComponent("PlaylistArtworkDerivatives", isDirectory: true)
         try? fileManager.createDirectory(at: diskRootURL, withIntermediateDirectories: true)
     }
 
@@ -111,6 +108,7 @@ actor ArtworkDerivativeCacheStore {
     func clearAll() {
         memoryCache.removeAllObjects()
         try? fileManager.removeItem(at: diskRootURL)
+        try? fileManager.removeItem(at: StorageLocations.legacyPlaylistArtworkDerivativesURL)
         try? fileManager.createDirectory(at: diskRootURL, withIntermediateDirectories: true)
     }
 
@@ -128,6 +126,7 @@ actor ArtworkDerivativeCacheStore {
 
     private func persist(image: NSImage, to url: URL) {
         guard let png = pngData(for: image) else { return }
+        try? fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? png.write(to: url, options: .atomic)
 
         writeCounter += 1

@@ -69,13 +69,16 @@ final class AppSessionHost: ObservableObject {
     }
 
     private func setupDependencies() {
-        // TEMPORARY (2.1.1): one-time correction flipping the anonymous-usage
+        // TEMPORARY (2.1.1 / build 4): one-time correction flipping the anonymous-usage
         // consent default from OFF to ON. Must run before Telemetry reads
         // consent below. Remove with the next version.
         TelemetryDefaultMigration2_1_1.runIfNeeded()
 
         let libraryService = LocalLibraryService.shared
         libraryService.ensureLibraryFolders()
+        Task.detached(priority: .utility) {
+            await CacheManager.cleanupStaleImportStaging(reason: "startup")
+        }
 
         let repository = SwiftDataLibraryRepository(
             modelContext: modelContainer.mainContext,

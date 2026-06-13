@@ -2,11 +2,54 @@
 //  AppVersion.swift
 //  myPlayer2
 //
-//  kmgccc_player - Semantic version comparison utility
+//  kmgccc_player - App version/build helpers
 //
 
 import Foundation
 
+/// Monotonic app build number (`CFBundleVersion`).
+///
+/// Use this for internal release gates: update checks, What's New seen state,
+/// Feature Tip introduction gates, and one-time migrations.
+struct AppBuild: Comparable, Codable, Hashable {
+    static let legacyBaseline = AppBuild(0)
+
+    let rawValue: Int
+
+    init(_ rawValue: Int) {
+        self.rawValue = rawValue
+    }
+
+    init?(from string: String) {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value = Int(trimmed) else { return nil }
+        self.rawValue = value
+    }
+
+    static var current: AppBuild {
+        let buildString = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        return buildString.flatMap { AppBuild(from: $0) } ?? .legacyBaseline
+    }
+
+    var stringValue: String {
+        String(rawValue)
+    }
+
+    static func < (lhs: AppBuild, rhs: AppBuild) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+}
+
+extension AppBuild: CustomStringConvertible {
+    var description: String {
+        stringValue
+    }
+}
+
+/// Marketing version (`CFBundleShortVersionString`).
+///
+/// Keep this for UI display and APIs that require a semantic version object.
+/// Do not use it for release-state decisions.
 struct AppVersion: Comparable, Codable {
     
     let major: Int

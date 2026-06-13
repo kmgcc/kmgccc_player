@@ -843,11 +843,7 @@ private actor HomeStartupSnapshotStore {
     }
 
     private func cacheURL() -> URL {
-        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
-        return root
-            .appendingPathComponent("kmgccc_player", isDirectory: true)
-            .appendingPathComponent("Home", isDirectory: true)
+        StorageLocations.homeCacheURL
             .appendingPathComponent("startup-snapshot-v\(HomeStartupSnapshot.currentSchemaVersion).json")
     }
 }

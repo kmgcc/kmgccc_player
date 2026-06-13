@@ -441,9 +441,7 @@ actor QQMusicCoverService {
     }
 
     private func cacheRoot() -> URL {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("kmgccc_player/QQMusicCoverCache", isDirectory: true)
+        StorageLocations.qqMusicCoverCacheURL
     }
 
     private nonisolated static func score(

@@ -29,7 +29,7 @@ struct SettingsView: View {
 
     private enum FeatureTips {
         static let v2FeatureKey = "settings.v2DataManagement"
-        static let v2FeatureIntroducedVersion = AppVersion(major: 2, minor: 0, patch: 0)
+        static let v2FeatureIntroducedBuild = AppBuild(1)
         static let v2FeatureMaxDisplayCount = 2
     }
 
@@ -123,7 +123,7 @@ struct SettingsView: View {
         guard !showV2FeatureTip else { return }
         guard AppVersionGate.shared.shouldShowFeatureTip(
             featureKey: FeatureTips.v2FeatureKey,
-            introducedVersion: FeatureTips.v2FeatureIntroducedVersion,
+            introducedBuild: FeatureTips.v2FeatureIntroducedBuild,
             maxDisplayCount: FeatureTips.v2FeatureMaxDisplayCount
         ) else { return }
 

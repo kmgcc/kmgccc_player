@@ -17,9 +17,8 @@ struct DataManagementSettingsView: View {
 
     @State private var showResetDataAlert: Bool = false
     @State private var showClearIndexCacheAlert: Bool = false
-    @State private var showClearArtworkColorCacheAlert: Bool = false
-    @State private var showClearExternalCacheAlert: Bool = false
-    @State private var isClearingExternalCaches: Bool = false
+    @State private var showClearLibraryCacheAlert: Bool = false
+    @State private var isClearingLibraryCaches: Bool = false
     @State private var isMoreSettingsExpanded: Bool = false
 
     var body: some View {
@@ -62,13 +61,13 @@ struct DataManagementSettingsView: View {
             // Reset app settings
             SettingsSection {
                 VStack(alignment: .leading, spacing: 12) {
-                    Button("初始化应用设置", role: .destructive) {
+                    Button("重置应用设置与状态", role: .destructive) {
                         showResetDataAlert = true
                     }
                     .buttonStyle(.borderedProminent)
                     .clipShape(Capsule())
 
-                    Text("将应用设置恢复为初始默认值")
+                    Text("清除 UserDefaults 中的应用偏好、窗口与播放状态，不会删除音乐资料库文件")
                         .settingsDescriptionStyle()
                 }
             }
@@ -102,13 +101,13 @@ struct DataManagementSettingsView: View {
                 }
             }
         }
-        .alert("初始化应用数据？", isPresented: $showResetDataAlert) {
+        .alert("重置应用设置与状态？", isPresented: $showResetDataAlert) {
             Button("取消", role: .cancel) {}
-            Button("初始化", role: .destructive) {
+            Button("重置", role: .destructive) {
                 resetAppDataExceptMusicLibrary()
             }
         } message: {
-            Text("会重置应用设置与界面状态，不会修改音乐资料库内容")
+            Text("会清除应用偏好、界面布局、播放状态、排序记忆和自定义资料库位置设置。不会删除默认或自定义位置中的音乐资料库文件。")
         }
         .alert("清除索引缓存？", isPresented: $showClearIndexCacheAlert) {
             Button("取消", role: .cancel) {}
@@ -120,23 +119,13 @@ struct DataManagementSettingsView: View {
         } message: {
             Text("将清空索引缓存并立即重新扫描音乐资料库，不会删除歌曲文件或播放列表。")
         }
-        .alert("清除取色缓存？", isPresented: $showClearArtworkColorCacheAlert) {
+        .alert("清理资料库缓存？", isPresented: $showClearLibraryCacheAlert) {
             Button("取消", role: .cancel) {}
             Button("清除", role: .destructive) {
-                Task {
-                    await ArtworkAssetStore.shared.clearCache()
-                }
+                clearLibraryCaches()
             }
         } message: {
-            Text("将清空歌曲封面取色缓存，下次播放时会重新提取颜色，可能降低加载速度")
-        }
-        .alert("清理外部播放缓存？", isPresented: $showClearExternalCacheAlert) {
-            Button("取消", role: .cancel) {}
-            Button("清理", role: .destructive) {
-                clearExternalPlaybackCaches()
-            }
-        } message: {
-            Text("将清除外部播放的手动匹配覆盖、匹配结果、联网封面、联网歌词和相关解析缓存。不会删除本地资料库歌曲。")
+            Text("将清除封面缩略图、QQMusic 封面缓存、AMLLDB 索引缓存、外部播放自动缓存、颜色缓存、Home 缓存和过期导入暂存。不会删除歌曲文件、播放列表、喜欢状态、播放统计、自定义排序、手动外部播放规则或资料库位置设置。")
         }
     }
 
@@ -149,11 +138,14 @@ struct DataManagementSettingsView: View {
         UserDefaults.standard.synchronize()
     }
 
-    private func clearExternalPlaybackCaches() {
-        clearExternalPlaybackCachesAction(
-            isClearing: $isClearingExternalCaches,
-            playbackCoordinator: playbackCoordinator
-        )
+    private func clearLibraryCaches() {
+        guard !isClearingLibraryCaches else { return }
+        isClearingLibraryCaches = true
+        Task {
+            await CacheManager.clearLibraryCaches()
+            playbackCoordinator.clearExternalPlaybackRuntimeCaches()
+            isClearingLibraryCaches = false
+        }
     }
 
     private var telemetryEnabledBinding: Binding<Bool> {
@@ -180,32 +172,21 @@ struct DataManagementSettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Button("清除取色缓存") {
-                    showClearArtworkColorCacheAlert = true
-                }
-                .buttonStyle(.bordered)
-                .clipShape(Capsule())
-
-                Text("若遇到取色异常、颜色显示不正确，可尝试清除取色缓存")
-                    .settingsDescriptionStyle()
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
                 Button(role: .destructive) {
-                    showClearExternalCacheAlert = true
+                    showClearLibraryCacheAlert = true
                 } label: {
-                    if isClearingExternalCaches {
+                    if isClearingLibraryCaches {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Text("清理外部播放元数据缓存")
+                        Text("清理资料库缓存")
                     }
                 }
                 .buttonStyle(.bordered)
                 .clipShape(Capsule())
-                .disabled(isClearingExternalCaches)
+                .disabled(isClearingLibraryCaches)
 
-                Text("遇到问题时，可以尝试清除来自外部播放过程中产生的歌曲元数据匹配结果缓存、手动覆盖元数据。此操作不影响本地播放歌曲的数据")
+                Text("清除可再生成的封面、歌词索引、外部播放自动缓存、颜色、Home 与导入暂存缓存，保留资料库资产和手动外部播放规则")
                     .settingsDescriptionStyle()
             }
         }

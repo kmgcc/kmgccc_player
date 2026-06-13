@@ -2,7 +2,7 @@
 //  AppVersionGate.swift
 //  myPlayer2
 //
-//  kmgccc_player - Shared version and feature-tip gate.
+//  kmgccc_player - Shared build and feature-tip gate.
 //
 
 import Foundation
@@ -24,12 +24,27 @@ final class AppVersionGate {
     static let shared = AppVersionGate()
 
     private enum Keys {
-        static let previousInstalledVersion = "kmgccc_player.previousInstalledVersion"
-        static let latestInstalledVersion = "kmgccc_player.latestInstalledVersion"
-        static let lastSeenWhatsNewVersion = "kmgccc_player.lastSeenWhatsNewVersion"
+        static let previousInstalledBuild = "kmgccc_player.previousInstalledBuild"
+        static let latestInstalledBuild = "kmgccc_player.latestInstalledBuild"
+        static let lastSeenWhatsNewBuild = "kmgccc_player.lastSeenWhatsNewBuild"
+        static let legacyPreviousInstalledVersion = "kmgccc_player.previousInstalledVersion"
+        static let legacyLatestInstalledVersion = "kmgccc_player.latestInstalledVersion"
+        static let legacyLastSeenWhatsNewVersion = "kmgccc_player.lastSeenWhatsNewVersion"
         static let dismissedFeatureTipPrefix = "kmgccc_player.dismissedFeatureTip."
         static let featureTipDisplayCountPrefix = "kmgccc_player.featureTipDisplayCount."
     }
+
+    private static let legacyVersionBuilds: [String: AppBuild] = [
+        "1.2.1": .legacyBaseline,
+        "1.2.2": .legacyBaseline,
+        "1.3.1": .legacyBaseline,
+        "1.4.1": .legacyBaseline,
+        "2.0.0": AppBuild(1),
+        "2.1.0": AppBuild(3),
+        "2.1.1": AppBuild(4),
+        "2.1.2": AppBuild(5),
+        "2.1.3": AppBuild(6)
+    ]
 
     private let defaults: UserDefaults
 
@@ -37,66 +52,65 @@ final class AppVersionGate {
         self.defaults = defaults
     }
 
-    var currentAppVersion: AppVersion {
-        AppVersion.current
+    var currentAppBuild: AppBuild {
+        AppBuild.current
     }
 
-    var previousInstalledVersion: AppVersion? {
-        get { version(forKey: Keys.previousInstalledVersion) }
-        set { setVersion(newValue, forKey: Keys.previousInstalledVersion) }
+    var previousInstalledBuild: AppBuild? {
+        get { build(forKey: Keys.previousInstalledBuild) ?? legacyBuild(forKey: Keys.legacyPreviousInstalledVersion) }
+        set { setBuild(newValue, forKey: Keys.previousInstalledBuild) }
     }
 
-    var latestInstalledVersion: AppVersion? {
-        get { version(forKey: Keys.latestInstalledVersion) }
-        set { setVersion(newValue, forKey: Keys.latestInstalledVersion) }
+    var latestInstalledBuild: AppBuild? {
+        get { build(forKey: Keys.latestInstalledBuild) ?? legacyBuild(forKey: Keys.legacyLatestInstalledVersion) }
+        set { setBuild(newValue, forKey: Keys.latestInstalledBuild) }
     }
 
-    var lastSeenWhatsNewVersion: AppVersion? {
-        get { version(forKey: Keys.lastSeenWhatsNewVersion) }
-        set { setVersion(newValue, forKey: Keys.lastSeenWhatsNewVersion) }
+    var lastSeenWhatsNewBuild: AppBuild? {
+        get { build(forKey: Keys.lastSeenWhatsNewBuild) ?? legacyBuild(forKey: Keys.legacyLastSeenWhatsNewVersion) }
+        set { setBuild(newValue, forKey: Keys.lastSeenWhatsNewBuild) }
     }
 
-    func recordCurrentAppLaunch(currentVersion: AppVersion = AppVersion.current) {
-        let storedLatest = latestInstalledVersion
+    func recordCurrentAppLaunch(currentBuild: AppBuild = AppBuild.current) {
+        let storedLatest = latestInstalledBuild
 
-        if storedLatest == currentVersion {
-            // Legacy migration: users upgrading from versions that predate AppVersionGate
-            // may have latestInstalledVersion set but no previousInstalledVersion.
+        if storedLatest == currentBuild {
+            // Legacy migration: users upgrading from versions that predate build
+            // tracking may have latestInstalledBuild set but no previousInstalledBuild.
             // Treat them as coming from a very old version so Feature Tips can display.
-            if previousInstalledVersion == nil {
-                previousInstalledVersion = AppVersion(major: 0)
+            if previousInstalledBuild == nil {
+                previousInstalledBuild = .legacyBaseline
             }
             return
         }
 
-        previousInstalledVersion = storedLatest ?? previousInstalledVersion ?? lastSeenWhatsNewVersion
-        latestInstalledVersion = currentVersion
+        previousInstalledBuild = storedLatest ?? previousInstalledBuild ?? lastSeenWhatsNewBuild ?? .legacyBaseline
+        latestInstalledBuild = currentBuild
     }
 
-    func wasUpgradedFromVersionBelow(_ versionString: String) -> Bool {
-        guard let version = AppVersion(from: versionString) else { return false }
-        return wasUpgradedFromVersionBelow(version)
+    func wasUpgradedFromBuildBelow(_ buildNumber: Int) -> Bool {
+        wasUpgradedFromBuildBelow(AppBuild(buildNumber))
     }
 
-    func wasUpgradedFromVersionBelow(_ version: AppVersion) -> Bool {
-        guard let previous = previousInstalledVersion else {
-            // Missing previousInstalledVersion means the migration state was
-            // never recorded.  If latestInstalledVersion is present the user
-            // has launched the app before — treat as upgrade from a very old
-            // version so Feature Tips can display.
-            return latestInstalledVersion != nil
+    func wasUpgradedFromBuildBelow(_ build: AppBuild) -> Bool {
+        guard let previous = previousInstalledBuild else {
+            // Missing previousInstalledBuild means the migration state was never
+            // recorded. If latestInstalledBuild is present the user has launched
+            // the app before — treat as upgrade from a very old build so Feature
+            // Tips can display.
+            return latestInstalledBuild != nil
         }
-        let latest = latestInstalledVersion ?? currentAppVersion
-        return previous < version && latest >= version
+        let latest = latestInstalledBuild ?? currentAppBuild
+        return previous < build && latest >= build
     }
 
-    func shouldShowWhatsNew(targetVersion: AppVersion) -> Bool {
-        guard let lastSeen = lastSeenWhatsNewVersion else { return true }
-        return lastSeen < targetVersion
+    func shouldShowWhatsNew(targetBuild: AppBuild) -> Bool {
+        guard let lastSeen = lastSeenWhatsNewBuild else { return true }
+        return lastSeen < targetBuild
     }
 
-    func markWhatsNewSeen(targetVersion: AppVersion) {
-        lastSeenWhatsNewVersion = targetVersion
+    func markWhatsNewSeen(targetBuild: AppBuild) {
+        lastSeenWhatsNewBuild = targetBuild
     }
 
     func isFeatureTipDismissed(featureKey: String) -> Bool {
@@ -116,30 +130,28 @@ final class AppVersionGate {
         defaults.set(defaults.integer(forKey: key) + 1, forKey: key)
     }
 
-    func shouldShowFeatureTip(featureKey: String, introducedVersion: AppVersion) -> Bool {
-        shouldShowFeatureTip(featureKey: featureKey, introducedVersion: introducedVersion, maxDisplayCount: 4)
+    func shouldShowFeatureTip(featureKey: String, introducedBuild: AppBuild) -> Bool {
+        shouldShowFeatureTip(featureKey: featureKey, introducedBuild: introducedBuild, maxDisplayCount: 4)
     }
 
     func shouldShowFeatureTip(
         featureKey: String,
-        introducedVersion: AppVersion,
+        introducedBuild: AppBuild,
         maxDisplayCount: Int
     ) -> Bool {
         FeatureTipCatalog.isEnabled(featureKey: featureKey)
             && !isFeatureTipDismissed(featureKey: featureKey)
             && featureTipDisplayCount(featureKey: featureKey) < maxDisplayCount
-            && wasUpgradedFromVersionBelow(introducedVersion)
-    }
-
-    func shouldShowFeatureTip(featureKey: String, introducedVersion versionString: String) -> Bool {
-        guard let version = AppVersion(from: versionString) else { return false }
-        return shouldShowFeatureTip(featureKey: featureKey, introducedVersion: version)
+            && wasUpgradedFromBuildBelow(introducedBuild)
     }
 
     func resetStoredState() {
-        defaults.removeObject(forKey: Keys.previousInstalledVersion)
-        defaults.removeObject(forKey: Keys.latestInstalledVersion)
-        defaults.removeObject(forKey: Keys.lastSeenWhatsNewVersion)
+        defaults.removeObject(forKey: Keys.previousInstalledBuild)
+        defaults.removeObject(forKey: Keys.latestInstalledBuild)
+        defaults.removeObject(forKey: Keys.lastSeenWhatsNewBuild)
+        defaults.removeObject(forKey: Keys.legacyPreviousInstalledVersion)
+        defaults.removeObject(forKey: Keys.legacyLatestInstalledVersion)
+        defaults.removeObject(forKey: Keys.legacyLastSeenWhatsNewVersion)
 
         for key in defaults.dictionaryRepresentation().keys
             where key.hasPrefix(Keys.dismissedFeatureTipPrefix)
@@ -157,16 +169,26 @@ final class AppVersionGate {
         Keys.featureTipDisplayCountPrefix + featureKey
     }
 
-    private func version(forKey key: String) -> AppVersion? {
-        guard let string = defaults.string(forKey: key) else { return nil }
-        return AppVersion(from: string)
+    private func build(forKey key: String) -> AppBuild? {
+        guard defaults.object(forKey: key) != nil else { return nil }
+        return AppBuild(defaults.integer(forKey: key))
     }
 
-    private func setVersion(_ version: AppVersion?, forKey key: String) {
-        if let version {
-            defaults.set(version.stringValue, forKey: key)
+    private func setBuild(_ build: AppBuild?, forKey key: String) {
+        if let build {
+            defaults.set(build.rawValue, forKey: key)
         } else {
             defaults.removeObject(forKey: key)
         }
+    }
+
+    private func legacyBuild(forKey key: String) -> AppBuild? {
+        guard let version = version(forKey: key) else { return nil }
+        return Self.legacyVersionBuilds[version.stringValue] ?? .legacyBaseline
+    }
+
+    private func version(forKey key: String) -> AppVersion? {
+        guard let string = defaults.string(forKey: key) else { return nil }
+        return AppVersion(from: string)
     }
 }
