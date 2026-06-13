@@ -641,7 +641,7 @@ struct PlaylistDetailView: View {
             } else {
                 return AnyView(TrackActionMenuContent(
                     track: track,
-                    canSelectMultiple: true,
+                    canSelectMultiple: !pageController.isSearchFilteringTracks,
                     selectedPlaylistID: libraryVM.selectedPlaylist?.id,
                     onSelectMultiple: {
                         pageController.beginMultiselectSelection(at: trackID)

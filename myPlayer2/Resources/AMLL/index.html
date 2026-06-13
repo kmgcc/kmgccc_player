@@ -1378,10 +1378,10 @@
         let wordHighlightMode = "smooth";
         let alignAnchor = "top";
         let alignPosition = 0.2;
-        const SPRING_DURATION_MIN = 0.20;
-        const SPRING_DURATION_MAX = 1.10;
-        const SPRING_BOUNCE_MIN = -0.75;
-        const SPRING_BOUNCE_MAX = 1.25;
+        const SPRING_DURATION_MIN = 0.30;
+        const SPRING_DURATION_MAX = 1.20;
+        const SPRING_BOUNCE_MIN = -0.25;
+        const SPRING_BOUNCE_MAX = 3.25;
         const DEFAULT_SPRING_DURATION = 0.65;
         const DEFAULT_SPRING_BOUNCE = 0.25;
         const DEFAULT_LINE_POS_X_SPRING_PARAMS = Object.freeze({
@@ -1439,12 +1439,17 @@
             const bounceOffset = b - DEFAULT_SPRING_BOUNCE;
 
             if (bounceOffset > 0) {
-                const t = Math.min(
-                    1,
-                    bounceOffset / (SPRING_BOUNCE_MAX - DEFAULT_SPRING_BOUNCE)
+                const primaryT = Math.min(1, bounceOffset / 1.0);
+                const compressed = primaryT * primaryT;
+                damping *= 1 - compressed * 0.55;
+
+                const extraTravel = Math.max(0, bounceOffset - 1.0);
+                const extraRange = Math.max(
+                    0.001,
+                    SPRING_BOUNCE_MAX - DEFAULT_SPRING_BOUNCE - 1.0
                 );
-                const compressed = t * t * t;
-                damping *= 1 - compressed * 0.32;
+                const extraT = Math.min(1, extraTravel / extraRange);
+                damping *= 1 - extraT * 0.35;
             } else if (bounceOffset < 0) {
                 const t = Math.min(
                     1,
