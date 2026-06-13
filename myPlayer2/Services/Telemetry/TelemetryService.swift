@@ -478,7 +478,12 @@ private enum TelemetryDefaults {
 
 private final class TelemetryConsentStore {
     var isEnabled: Bool {
-        get { UserDefaults.standard.bool(forKey: TelemetryDefaults.consentKey) }
+        get {
+            if UserDefaults.standard.object(forKey: TelemetryDefaults.consentKey) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: TelemetryDefaults.consentKey)
+        }
         set { UserDefaults.standard.set(newValue, forKey: TelemetryDefaults.consentKey) }
     }
 }

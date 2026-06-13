@@ -13,7 +13,7 @@ struct DataManagementSettingsView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
-    @AppStorage("telemetry.anonymousUsageEnabled") private var telemetryEnabled: Bool = false
+    @AppStorage("telemetry.anonymousUsageEnabled") private var telemetryEnabled: Bool = true
 
     @State private var showResetDataAlert: Bool = false
     @State private var showClearIndexCacheAlert: Bool = false
@@ -119,13 +119,13 @@ struct DataManagementSettingsView: View {
         } message: {
             Text("将清空索引缓存并立即重新扫描音乐资料库，不会删除歌曲文件或播放列表。")
         }
-        .alert("清理资料库缓存？", isPresented: $showClearLibraryCacheAlert) {
+        .alert("清理运行缓存？", isPresented: $showClearLibraryCacheAlert) {
             Button("取消", role: .cancel) {}
             Button("清除", role: .destructive) {
                 clearLibraryCaches()
             }
         } message: {
-            Text("将清除封面缩略图、QQMusic 封面缓存、AMLLDB 索引缓存、外部播放自动缓存、颜色缓存、Home 缓存和过期导入暂存。不会删除歌曲文件、播放列表、喜欢状态、播放统计、自定义排序、手动外部播放规则或资料库位置设置。")
+            Text("将清除封面缩略图、联网搜索缓存、外部播放自动缓存、颜色缓存、Home 缓存和过期导入暂存。不会删除歌曲或手动外部播放规则。")
         }
     }
 
@@ -179,14 +179,14 @@ struct DataManagementSettingsView: View {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Text("清理资料库缓存")
+                        Text("清理运行缓存")
                     }
                 }
                 .buttonStyle(.bordered)
                 .clipShape(Capsule())
                 .disabled(isClearingLibraryCaches)
 
-                Text("清除可再生成的封面、歌词索引、外部播放自动缓存、颜色、Home 与导入暂存缓存，保留资料库资产和手动外部播放规则")
+                Text("包含可再生成的封面缩略图、歌词索引、外部播放自动缓存、颜色、Home 与导入暂存缓存")
                     .settingsDescriptionStyle()
             }
         }

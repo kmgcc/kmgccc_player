@@ -274,6 +274,7 @@ final class ExternalPlaybackMetadataStore {
     }
 
     func clearAutomaticCaches() async {
+        migrateLegacyManualOverrideArtworkToCurrentCache()
         let manualArtworkFileNames = Set(records.values.compactMap { record in
             record.artworkSource == "manualOverride" ? record.networkArtworkFileName : nil
         })
@@ -309,6 +310,38 @@ final class ExternalPlaybackMetadataStore {
             for directory in directories {
                 Self.removeArtworkFiles(at: directory, preserving: manualArtworkFileNames)
             }
+        }.value
+    }
+
+    var hasAutomaticCacheData: Bool {
+        records.values.contains { record in
+            if record.matchResult.status != .noResult {
+                return true
+            }
+            if record.networkLyrics?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+               record.lyricsSource != "manualOverride" {
+                return true
+            }
+            if let source = record.artworkSource,
+               source != "manualOverride",
+               record.networkArtworkFileName?.isEmpty == false {
+                return true
+            }
+            return false
+        }
+    }
+
+    func clearBuild7LegacyAutomaticCaches() async {
+        migrateLegacyManualOverrideArtworkToCurrentCache()
+        let manualArtworkFileNames = Set(records.values.compactMap { record in
+            record.artworkSource == "manualOverride" ? record.networkArtworkFileName : nil
+        })
+        await Task.detached(priority: .utility) {
+            Self.removeArtworkFiles(
+                at: StorageLocations.legacyExternalPlaybackArtworkURL,
+                preserving: manualArtworkFileNames
+            )
+            Self.removeDirectoryIfEmpty(StorageLocations.legacyExternalPlaybackArtworkURL)
         }.value
     }
 
@@ -363,6 +396,38 @@ final class ExternalPlaybackMetadataStore {
         StorageLocations.externalPlaybackArtworkURL
     }
 
+    private func migrateLegacyManualOverrideArtworkToCurrentCache() {
+        let fileNames = Set(records.values.compactMap { record in
+            record.artworkSource == "manualOverride" ? record.networkArtworkFileName : nil
+        })
+        guard !fileNames.isEmpty else { return }
+
+        let sourceDirectory = StorageLocations.legacyExternalPlaybackArtworkURL
+        let destinationDirectory = artworkCacheDirectory()
+        try? fileManager.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+
+        for fileName in fileNames {
+            let sourceURL = sourceDirectory.appendingPathComponent(fileName)
+            let destinationURL = destinationDirectory.appendingPathComponent(fileName)
+            guard fileManager.fileExists(atPath: sourceURL.path),
+                  !fileManager.fileExists(atPath: destinationURL.path)
+            else { continue }
+            do {
+                try fileManager.moveItem(at: sourceURL, to: destinationURL)
+            } catch {
+                do {
+                    try fileManager.copyItem(at: sourceURL, to: destinationURL)
+                    try? fileManager.removeItem(at: sourceURL)
+                } catch {
+                    Log.warning(
+                        "[ExternalPlayback] failed to migrate manual override artwork from legacy cache: \(error.localizedDescription)",
+                        category: .playback
+                    )
+                }
+            }
+        }
+    }
+
     private nonisolated static func removeArtworkFiles(at directory: URL, preserving preservedFileNames: Set<String>) {
         let fileManager = FileManager.default
         guard let files = try? fileManager.contentsOfDirectory(
@@ -374,6 +439,18 @@ final class ExternalPlaybackMetadataStore {
         for url in files where !preservedFileNames.contains(url.lastPathComponent) {
             try? fileManager.removeItem(at: url)
         }
+    }
+
+    private nonisolated static func removeDirectoryIfEmpty(_ directory: URL) {
+        let fileManager = FileManager.default
+        guard let children = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ), children.isEmpty else {
+            return
+        }
+        try? fileManager.removeItem(at: directory)
     }
 
     private func sanitize(_ value: String) -> String {
