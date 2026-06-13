@@ -3759,13 +3759,20 @@ struct FullscreenPlayerView: View {
                 fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
             )
         } else {
+            if !display.isArtworkLoading {
+                artworkSnapshot = nil
+            }
             return
         }
         guard !Task.isCancelled else { return }
         guard currentArtworkTrackID == expectedTrackID else { return }
         guard currentArtworkTaskKey == expectedTaskKey else { return }
-        guard snapshot?.trackID == expectedTrackID else { return }
-        guard Self.isValidDisplayArtworkSnapshot(snapshot) else { return }
+        guard let snapshot, snapshot.trackID == expectedTrackID, Self.isValidDisplayArtworkSnapshot(snapshot) else {
+            if !display.isArtworkLoading {
+                artworkSnapshot = nil
+            }
+            return
+        }
 
         artworkSnapshot = snapshot
 

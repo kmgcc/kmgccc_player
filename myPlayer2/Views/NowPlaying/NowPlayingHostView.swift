@@ -226,13 +226,20 @@ struct NowPlayingHostView: View {
                 fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
             )
         } else {
+            if !presentation.isArtworkLoading {
+                artworkSnapshot = nil
+            }
             return
         }
         guard !Task.isCancelled else { return }
         guard currentArtworkTaskKey == expectedTaskKey else { return }
         guard currentDisplayArtworkTrackID == expectedTrackID else { return }
-        guard snapshot?.trackID == expectedTrackID else { return }
-        guard Self.isValidDisplayArtworkSnapshot(snapshot) else { return }
+        guard let snapshot, snapshot.trackID == expectedTrackID, Self.isValidDisplayArtworkSnapshot(snapshot) else {
+            if !presentation.isArtworkLoading {
+                artworkSnapshot = nil
+            }
+            return
+        }
         artworkSnapshot = snapshot
     }
 

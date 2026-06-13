@@ -105,7 +105,7 @@ struct NowPlayingLyricsTabView: View {
                         .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
                         .font(presentationStyle.rowValueFont)
                 }
-                Slider(value: $lyricsFontSize, in: 16...48, step: 1)
+                Slider(value: $lyricsFontSize, in: 16...44, step: 1)
                     .frame(height: presentationStyle.tabHeight)
 
                 HStack {
@@ -146,7 +146,7 @@ struct NowPlayingLyricsTabView: View {
                         .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
                         .font(presentationStyle.rowValueFont)
                 }
-                Slider(value: $lyricsTranslationFontSize, in: 12...36, step: 1)
+                Slider(value: $lyricsTranslationFontSize, in: 10...26, step: 1)
                     .frame(height: presentationStyle.tabHeight)
 
                 HStack {

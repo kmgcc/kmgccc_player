@@ -415,11 +415,11 @@ public final class AppSettings {
 
     /// Translation font size
     @ObservationIgnored
-    @AppStorage("lyricsTranslationFontSize") var lyricsTranslationFontSize: Double = 16.0
+    @AppStorage("lyricsTranslationFontSize") var lyricsTranslationFontSize: Double = 18.0
 
     /// Translation font weight in light mode (100~900)
     @ObservationIgnored
-    @AppStorage("lyricsTranslationFontWeightLight") var lyricsTranslationFontWeightLight: Int = 400
+    @AppStorage("lyricsTranslationFontWeightLight") var lyricsTranslationFontWeightLight: Int = 500
 
     /// Translation font weight in dark mode (100~900)
     @ObservationIgnored
@@ -435,7 +435,7 @@ public final class AppSettings {
 
     /// Lyrics font size
     @ObservationIgnored
-    @AppStorage("lyricsFontSize") var lyricsFontSize: Double = 26.0
+    @AppStorage("lyricsFontSize") var lyricsFontSize: Double = 30.0
 
     /// Lead-in milliseconds for near-switch lyric line advance
     @ObservationIgnored

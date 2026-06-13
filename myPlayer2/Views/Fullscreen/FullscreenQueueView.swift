@@ -389,7 +389,7 @@ private struct QueueRow: View {
         .onHover { hovering in
             isHovering = hovering
         }
-        .task(id: track.id) {
+        .task(id: currentArtworkTaskKey) {
             await loadArtwork()
         }
     }
@@ -443,6 +443,10 @@ private struct QueueRow: View {
 
     // MARK: - Load Artwork
 
+    private var currentArtworkTaskKey: String {
+        track.trackArtworkSource()?.sourceKey ?? "none-\(track.id.uuidString)"
+    }
+
     private func loadArtwork() async {
         guard let source = track.trackArtworkSource() else {
             await MainActor.run {
@@ -454,7 +458,11 @@ private struct QueueRow: View {
         let image = await TrackArtworkCache.shared.thumbnail(for: source)
         guard !Task.isCancelled else { return }
         await MainActor.run {
-            artworkImage = image
+            if let image {
+                artworkImage = image
+            } else {
+                artworkImage = nil
+            }
         }
     }
 }
