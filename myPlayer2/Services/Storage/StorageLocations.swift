@@ -78,6 +78,10 @@ nonisolated enum StorageLocations {
         legacyAppCacheRootURL.appendingPathComponent("ExternalPlaybackArtwork", isDirectory: true)
     }
 
+    static var legacyColorsCacheURL: URL {
+        legacyAppCacheRootURL.appendingPathComponent("Colors", isDirectory: true)
+    }
+
     static var legacyHomeCacheURL: URL {
         legacyAppCacheRootURL.appendingPathComponent("Home", isDirectory: true)
     }
