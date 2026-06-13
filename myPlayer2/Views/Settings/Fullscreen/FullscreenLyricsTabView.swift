@@ -23,17 +23,10 @@ struct FullscreenLyricsTabView: View {
     @State private var fullscreenLyricsFontSize: Double = AppSettings.shared.fullscreenLyricsFontSize
     @State private var fullscreenLyricsTranslationFontSize: Double = AppSettings.shared.fullscreenLyricsTranslationFontSize
     @State private var amllLyricsRenderQuality: AppSettings.AMLLLyricsRenderQuality = AppSettings.shared.amllLyricsRenderQuality
-    @State private var amllLyricsSpringEnabled: Bool = AppSettings.shared.amllLyricsSpringEnabled
     @State private var amllLyricsSpringDuration: Double = AppSettings.shared.amllLyricsSpringDuration
     @State private var amllLyricsSpringBounce: Double = AppSettings.shared.amllLyricsSpringBounce
     @State private var amllDiscreteWordHighlightEnabled: Bool = AppSettings.shared.amllDiscreteWordHighlightEnabled
-
-    private var fontFamilies: [String] {
-        Self.cachedFontFamilies
-    }
-
-    private static let cachedFontFamilies: [String] =
-        NSFontManager.shared.availableFontFamilies.sorted()
+    @State private var pendingSpringSettingsRefreshTask: Task<Void, Never>?
 
     private let fontWeights: [(label: LocalizedStringKey, value: Int)] = [
         ("settings.lyrics.weight_thin", 100),
@@ -68,9 +61,8 @@ struct FullscreenLyricsTabView: View {
         .onChange(of: fullscreenLyricsFontSize) { _, _ in syncToSettings() }
         .onChange(of: fullscreenLyricsTranslationFontSize) { _, _ in syncToSettings() }
         .onChange(of: amllLyricsRenderQuality) { _, _ in syncToSettings() }
-        .onChange(of: amllLyricsSpringEnabled) { _, _ in syncToSettings() }
-        .onChange(of: amllLyricsSpringDuration) { _, _ in syncToSettings() }
-        .onChange(of: amllLyricsSpringBounce) { _, _ in syncToSettings() }
+        .onChange(of: amllLyricsSpringDuration) { _, _ in syncSpringSettingsDebounced() }
+        .onChange(of: amllLyricsSpringBounce) { _, _ in syncSpringSettingsDebounced() }
         .onChange(of: amllDiscreteWordHighlightEnabled) { _, _ in syncToSettings() }
     }
 
@@ -80,7 +72,6 @@ struct FullscreenLyricsTabView: View {
                 AMLLLyricsRenderQualitySlider(quality: $amllLyricsRenderQuality)
 
                 AMLLLyricSpringSettingsControls(
-                    enabled: $amllLyricsSpringEnabled,
                     duration: $amllLyricsSpringDuration,
                     bounce: $amllLyricsSpringBounce
                 )
@@ -157,56 +148,14 @@ struct FullscreenLyricsTabView: View {
 
                 Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
 
-                HStack {
-                    Text("中文字体")
-                        .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
-                        .foregroundStyle(presentationStyle.primaryTextColor)
-                    Spacer()
-                    Picker("", selection: $fullscreenLyricsFontNameZh) {
-                        ForEach(fontFamilies, id: \.self) { family in
-                            Text(family)
-                                .font(.custom(family, size: 12))
-                                .tag(family)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: presentationStyle.pickerWidth)
-                }
-
-                HStack {
-                    Text("英文字体")
-                        .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
-                        .foregroundStyle(presentationStyle.primaryTextColor)
-                    Spacer()
-                    Picker("", selection: $fullscreenLyricsFontNameEn) {
-                        ForEach(fontFamilies, id: \.self) { family in
-                            Text(family)
-                                .font(.custom(family, size: 12))
-                                .tag(family)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: presentationStyle.pickerWidth)
-                }
-
-                HStack {
-                    Text("翻译字体")
-                        .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
-                        .foregroundStyle(presentationStyle.primaryTextColor)
-                    Spacer()
-                    Picker("", selection: $fullscreenLyricsTranslationFontName) {
-                        ForEach(fontFamilies, id: \.self) { family in
-                            Text(family)
-                                .font(.custom(family, size: 12))
-                                .tag(family)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: presentationStyle.pickerWidth)
-                }
+                DeferredLyricsFontPickerRows(
+                    mainFontNameZh: $fullscreenLyricsFontNameZh,
+                    mainFontNameEn: $fullscreenLyricsFontNameEn,
+                    translationFontName: $fullscreenLyricsTranslationFontName,
+                    zhTitle: "中文字体",
+                    enTitle: "英文字体",
+                    translationTitle: "翻译字体"
+                )
             }
         }
     }
@@ -236,7 +185,6 @@ struct FullscreenLyricsTabView: View {
         fullscreenLyricsFontSize = settings.fullscreenLyricsFontSize
         fullscreenLyricsTranslationFontSize = settings.fullscreenLyricsTranslationFontSize
         amllLyricsRenderQuality = settings.amllLyricsRenderQuality
-        amllLyricsSpringEnabled = settings.amllLyricsSpringEnabled
         amllLyricsSpringDuration = settings.amllLyricsSpringDuration
         amllLyricsSpringBounce = settings.amllLyricsSpringBounce
         amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
@@ -251,10 +199,27 @@ struct FullscreenLyricsTabView: View {
         settings.fullscreenLyricsFontSize = fullscreenLyricsFontSize
         settings.fullscreenLyricsTranslationFontSize = fullscreenLyricsTranslationFontSize
         settings.amllLyricsRenderQuality = amllLyricsRenderQuality
-        settings.amllLyricsSpringEnabled = amllLyricsSpringEnabled
+        settings.amllLyricsSpringEnabled = true
         settings.amllLyricsSpringDuration = amllLyricsSpringDuration
         settings.amllLyricsSpringBounce = amllLyricsSpringBounce
         settings.amllDiscreteWordHighlightEnabled = amllDiscreteWordHighlightEnabled
         lyricsVM.refreshConfigFromSettings()
+    }
+
+    private func syncSpringSettingsDebounced() {
+        settings.amllLyricsSpringEnabled = true
+        settings.amllLyricsSpringDuration = amllLyricsSpringDuration
+        settings.amllLyricsSpringBounce = amllLyricsSpringBounce
+
+        pendingSpringSettingsRefreshTask?.cancel()
+        pendingSpringSettingsRefreshTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(1))
+            } catch {
+                return
+            }
+            lyricsVM.refreshConfigFromSettings()
+            NotificationCenter.default.post(name: .lyricSpringSettingsDidSettle, object: nil)
+        }
     }
 }

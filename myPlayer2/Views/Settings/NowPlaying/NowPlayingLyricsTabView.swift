@@ -25,17 +25,10 @@ struct NowPlayingLyricsTabView: View {
     @State private var lyricsTranslationFontWeightLight: Int = AppSettings.shared.lyricsTranslationFontWeightLight
     @State private var lyricsTranslationFontWeightDark: Int = AppSettings.shared.lyricsTranslationFontWeightDark
     @State private var amllLyricsRenderQuality: AppSettings.AMLLLyricsRenderQuality = AppSettings.shared.amllLyricsRenderQuality
-    @State private var amllLyricsSpringEnabled: Bool = AppSettings.shared.amllLyricsSpringEnabled
     @State private var amllLyricsSpringDuration: Double = AppSettings.shared.amllLyricsSpringDuration
     @State private var amllLyricsSpringBounce: Double = AppSettings.shared.amllLyricsSpringBounce
     @State private var amllDiscreteWordHighlightEnabled: Bool = AppSettings.shared.amllDiscreteWordHighlightEnabled
-
-    private var fontFamilies: [String] {
-        Self.cachedFontFamilies
-    }
-
-    private static let cachedFontFamilies: [String] =
-        NSFontManager.shared.availableFontFamilies.sorted()
+    @State private var pendingSpringSettingsRefreshTask: Task<Void, Never>?
 
     private let fontWeights: [(label: LocalizedStringKey, value: Int)] = [
         ("settings.lyrics.weight_thin", 100),
@@ -66,7 +59,6 @@ struct NowPlayingLyricsTabView: View {
                 AMLLLyricsRenderQualitySlider(quality: $amllLyricsRenderQuality)
 
                 AMLLLyricSpringSettingsControls(
-                    enabled: $amllLyricsSpringEnabled,
                     duration: $amllLyricsSpringDuration,
                     bounce: $amllLyricsSpringBounce
                 )
@@ -82,15 +74,13 @@ struct NowPlayingLyricsTabView: View {
         }
         .onAppear {
             amllLyricsRenderQuality = settings.amllLyricsRenderQuality
-            amllLyricsSpringEnabled = settings.amllLyricsSpringEnabled
             amllLyricsSpringDuration = settings.amllLyricsSpringDuration
             amllLyricsSpringBounce = settings.amllLyricsSpringBounce
             amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
         }
         .onChange(of: amllLyricsRenderQuality) { _, _ in syncToSettings() }
-        .onChange(of: amllLyricsSpringEnabled) { _, _ in syncToSettings() }
-        .onChange(of: amllLyricsSpringDuration) { _, _ in syncToSettings() }
-        .onChange(of: amllLyricsSpringBounce) { _, _ in syncToSettings() }
+        .onChange(of: amllLyricsSpringDuration) { _, _ in syncSpringSettingsDebounced() }
+        .onChange(of: amllLyricsSpringBounce) { _, _ in syncSpringSettingsDebounced() }
         .onChange(of: amllDiscreteWordHighlightEnabled) { _, _ in syncToSettings() }
     }
 
@@ -179,56 +169,14 @@ struct NowPlayingLyricsTabView: View {
 
                 Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
 
-                HStack {
-                    Text("settings.lyrics.chinese_font")
-                        .font(presentationStyle.rowLabelFont)
-                    Spacer()
-                    Picker("", selection: $lyricsFontNameZh) {
-                        ForEach(fontFamilies, id: \.self) { family in
-                            Text(family)
-                                .font(.custom(family, size: 12))
-                                .tag(family)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .font(presentationStyle.rowLabelFont)
-                    .frame(width: presentationStyle.pickerWidth)
-                }
-
-                HStack {
-                    Text("settings.lyrics.english_font")
-                        .font(presentationStyle.rowLabelFont)
-                    Spacer()
-                    Picker("", selection: $lyricsFontNameEn) {
-                        ForEach(fontFamilies, id: \.self) { family in
-                            Text(family)
-                                .font(.custom(family, size: 12))
-                                .tag(family)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .font(presentationStyle.rowLabelFont)
-                    .frame(width: presentationStyle.pickerWidth)
-                }
-
-                HStack {
-                    Text("settings.lyrics.translation_font")
-                        .font(presentationStyle.rowLabelFont)
-                    Spacer()
-                    Picker("", selection: $lyricsTranslationFontName) {
-                        ForEach(fontFamilies, id: \.self) { family in
-                            Text(family)
-                                .font(.custom(family, size: 12))
-                                .tag(family)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .font(presentationStyle.rowLabelFont)
-                    .frame(width: presentationStyle.pickerWidth)
-                }
+                DeferredLyricsFontPickerRows(
+                    mainFontNameZh: $lyricsFontNameZh,
+                    mainFontNameEn: $lyricsFontNameEn,
+                    translationFontName: $lyricsTranslationFontName,
+                    zhTitle: "settings.lyrics.chinese_font",
+                    enTitle: "settings.lyrics.english_font",
+                    translationTitle: "settings.lyrics.translation_font"
+                )
             }
         }
         .onAppear {
@@ -285,7 +233,6 @@ struct NowPlayingLyricsTabView: View {
         lyricsTranslationFontWeightLight = settings.lyricsTranslationFontWeightLight
         lyricsTranslationFontWeightDark = settings.lyricsTranslationFontWeightDark
         amllLyricsRenderQuality = settings.amllLyricsRenderQuality
-        amllLyricsSpringEnabled = settings.amllLyricsSpringEnabled
         amllLyricsSpringDuration = settings.amllLyricsSpringDuration
         amllLyricsSpringBounce = settings.amllLyricsSpringBounce
         amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
@@ -302,10 +249,27 @@ struct NowPlayingLyricsTabView: View {
         settings.lyricsTranslationFontWeightLight = lyricsTranslationFontWeightLight
         settings.lyricsTranslationFontWeightDark = lyricsTranslationFontWeightDark
         settings.amllLyricsRenderQuality = amllLyricsRenderQuality
-        settings.amllLyricsSpringEnabled = amllLyricsSpringEnabled
+        settings.amllLyricsSpringEnabled = true
         settings.amllLyricsSpringDuration = amllLyricsSpringDuration
         settings.amllLyricsSpringBounce = amllLyricsSpringBounce
         settings.amllDiscreteWordHighlightEnabled = amllDiscreteWordHighlightEnabled
         lyricsVM.refreshConfigFromSettings()
+    }
+
+    private func syncSpringSettingsDebounced() {
+        settings.amllLyricsSpringEnabled = true
+        settings.amllLyricsSpringDuration = amllLyricsSpringDuration
+        settings.amllLyricsSpringBounce = amllLyricsSpringBounce
+
+        pendingSpringSettingsRefreshTask?.cancel()
+        pendingSpringSettingsRefreshTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(1))
+            } catch {
+                return
+            }
+            lyricsVM.refreshConfigFromSettings()
+            NotificationCenter.default.post(name: .lyricSpringSettingsDidSettle, object: nil)
+        }
     }
 }
