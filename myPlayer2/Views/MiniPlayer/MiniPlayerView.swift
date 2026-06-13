@@ -18,6 +18,7 @@ struct MiniPlayerView: View {
 
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
@@ -65,6 +66,7 @@ struct MiniPlayerView: View {
                 displayArtist: playbackCoordinator.presentation.artist,
                 emptyTitleKey: playbackCoordinator.presentation.emptyTitleKey,
                 artworkImage: artworkImage,
+                contextMenuRefreshTrigger: libraryVM.refreshTrigger,
                 isFullscreenPresented: fullscreenWindowManager.isFullscreenPlayerPresented,
                 trackToEdit: $trackToEdit,
                 isShowingExternalMatchEditor: $isShowingExternalMatchEditor,
@@ -532,6 +534,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
     let displayArtist: String
     let emptyTitleKey: String
     let artworkImage: NSImage?
+    let contextMenuRefreshTrigger: Int
     let isFullscreenPresented: Bool
 
     @Binding var trackToEdit: Track?
@@ -555,6 +558,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
             && lhs.displayArtist == rhs.displayArtist
             && lhs.emptyTitleKey == rhs.emptyTitleKey
             && lhs.artworkImage === rhs.artworkImage
+            && lhs.contextMenuRefreshTrigger == rhs.contextMenuRefreshTrigger
             && lhs.isFullscreenPresented == rhs.isFullscreenPresented
     }
 

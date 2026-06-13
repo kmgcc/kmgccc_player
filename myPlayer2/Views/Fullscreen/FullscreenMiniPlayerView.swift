@@ -39,6 +39,7 @@ struct FullscreenMiniPlayerView: View {
     private let fixedBarHeight: CGFloat = 60
 
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
@@ -120,6 +121,7 @@ struct FullscreenMiniPlayerView: View {
                 scale: scale,
                 primaryColor: lyricsDynamicPrimaryColor,
                 secondaryColor: lyricsDynamicSecondaryColor,
+                contextMenuRefreshTrigger: libraryVM.refreshTrigger,
                 onEditTrack: { track in
                     onInteraction()
                     onEditTrackRequested(track)
@@ -583,6 +585,7 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
     let scale: CGFloat
     let primaryColor: Color
     let secondaryColor: Color
+    let contextMenuRefreshTrigger: Int
 
     let onEditTrack: (Track) -> Void
     let onEditExternalInfo: () -> Void
@@ -608,6 +611,7 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
             && lhs.scale == rhs.scale
             && lhs.primaryColor == rhs.primaryColor
             && lhs.secondaryColor == rhs.secondaryColor
+            && lhs.contextMenuRefreshTrigger == rhs.contextMenuRefreshTrigger
     }
 
     var body: some View {
