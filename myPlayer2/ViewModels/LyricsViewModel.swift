@@ -405,7 +405,7 @@ final class LyricsViewModel {
             "theme": resolvedTheme,
             "renderScale": surfaceRole.renderScale,
             "enableBlur": surfaceRole.enableBlur,
-            "enableSpring": surfaceRole.enableSpring && springSettings.enabled,
+            "enableSpring": surfaceRole.enableSpring,
             "springDuration": springSettings.duration,
             "springBounce": springSettings.bounce,
             "fpsCap": surfaceRole.fpsCap,

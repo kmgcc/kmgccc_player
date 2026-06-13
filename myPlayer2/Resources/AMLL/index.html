@@ -1376,10 +1376,12 @@
         let fpsCap = defaultFPSCap;
         let wordFadeWidth = defaultWordFadeWidth;
         let wordHighlightMode = "smooth";
-        const SPRING_DURATION_MIN = 0.10;
-        const SPRING_DURATION_MAX = 1.20;
-        const SPRING_BOUNCE_MIN = -0.30;
-        const SPRING_BOUNCE_MAX = 0.80;
+        let alignAnchor = "top";
+        let alignPosition = 0.2;
+        const SPRING_DURATION_MIN = 0.20;
+        const SPRING_DURATION_MAX = 1.10;
+        const SPRING_BOUNCE_MIN = -0.75;
+        const SPRING_BOUNCE_MAX = 1.25;
         const DEFAULT_SPRING_DURATION = 0.65;
         const DEFAULT_SPRING_BOUNCE = 0.25;
         const DEFAULT_LINE_POS_X_SPRING_PARAMS = Object.freeze({
@@ -1408,7 +1410,11 @@
         const isDefaultLyricSpringSetting = (duration, bounce) =>
             Math.abs(duration - DEFAULT_SPRING_DURATION) < 0.0001
             && Math.abs(bounce - DEFAULT_SPRING_BOUNCE) < 0.0001;
-        const springParamsFromDurationBounce = (duration, bounce) => {
+        const SPRING_STIFFNESS_MIN = 8;
+        const SPRING_STIFFNESS_MAX = 5000;
+        const SPRING_DAMPING_MIN = 0.8;
+        const SPRING_DAMPING_MAX = 260;
+        const springParamsFromDurationBounce = (duration, bounce, baseParams) => {
             const d = clampSpringNumber(
                 duration,
                 SPRING_DURATION_MIN,
@@ -1421,22 +1427,43 @@
                 SPRING_BOUNCE_MAX,
                 DEFAULT_SPRING_BOUNCE
             );
-            const mass = 1;
-            const stiffness = Math.pow((2 * Math.PI) / d, 2);
-            let damping;
+            const speedRatio = DEFAULT_SPRING_DURATION / d;
+            const mass = baseParams.mass;
+            const stiffness = clampSpringNumber(
+                baseParams.stiffness * speedRatio * speedRatio,
+                SPRING_STIFFNESS_MIN,
+                SPRING_STIFFNESS_MAX,
+                baseParams.stiffness
+            );
+            let damping = baseParams.damping * speedRatio;
+            const bounceOffset = b - DEFAULT_SPRING_BOUNCE;
 
-            if (b >= 0) {
-                damping = 1 - (4 * Math.PI * b) / d;
-            } else {
-                const denominator = d + 4 * Math.PI * b;
-                damping = (4 * Math.PI) / Math.max(0.001, denominator);
+            if (bounceOffset > 0) {
+                const t = Math.min(
+                    1,
+                    bounceOffset / (SPRING_BOUNCE_MAX - DEFAULT_SPRING_BOUNCE)
+                );
+                const compressed = t * t * t;
+                damping *= 1 - compressed * 0.32;
+            } else if (bounceOffset < 0) {
+                const t = Math.min(
+                    1,
+                    -bounceOffset / (DEFAULT_SPRING_BOUNCE - SPRING_BOUNCE_MIN)
+                );
+                const shaped = Math.sqrt(t);
+                damping *= 1 + shaped * 1.15;
             }
 
             return {
                 mass,
                 stiffness,
-                damping: Math.max(0.001, damping),
-                soft: false,
+                damping: clampSpringNumber(
+                    damping,
+                    SPRING_DAMPING_MIN,
+                    SPRING_DAMPING_MAX,
+                    baseParams.damping
+                ),
+                soft: baseParams.soft ?? false,
             };
         };
         const originalSetLinePosXSpringParams =
@@ -1488,9 +1515,21 @@
             lyricSpringOverrideParams = isDefault
                 ? null
                 : {
-                    linePosX: springParamsFromDurationBounce(nextDuration, nextBounce),
-                    linePosY: springParamsFromDurationBounce(nextDuration, nextBounce),
-                    lineScale: springParamsFromDurationBounce(nextDuration, nextBounce),
+                    linePosX: springParamsFromDurationBounce(
+                        nextDuration,
+                        nextBounce,
+                        DEFAULT_LINE_POS_X_SPRING_PARAMS
+                    ),
+                    linePosY: springParamsFromDurationBounce(
+                        nextDuration,
+                        nextBounce,
+                        DEFAULT_LINE_POS_Y_SPRING_PARAMS
+                    ),
+                    lineScale: springParamsFromDurationBounce(
+                        nextDuration,
+                        nextBounce,
+                        DEFAULT_LINE_SCALE_SPRING_PARAMS
+                    ),
                 };
 
             applyingLyricSpringOverride = true;
@@ -1683,8 +1722,8 @@
             durationKey: "calcLayoutDurationMs",
         });
         // Align active line toward top (instead of center)
-        lyricPlayer.setAlignAnchor("top");
-        lyricPlayer.setAlignPosition(0.2);
+        lyricPlayer.setAlignAnchor(alignAnchor);
+        lyricPlayer.setAlignPosition(alignPosition);
         
         // Helper to map TTML lines to AMLL LyricLine format
         const mapTTMLLyric = (line) => ({
@@ -6084,14 +6123,18 @@
                                         DEFAULT_SPRING_BOUNCE
                                     )
                                     : springBounce;
-                                if (
+                                const springParamsDidChange =
                                     nextSpringDuration !== springDuration
-                                    || nextSpringBounce !== springBounce
-                                    || hasOwn("enableSpring")
-                                ) {
+                                    || nextSpringBounce !== springBounce;
+                                if (springParamsDidChange) {
                                     springDuration = nextSpringDuration;
                                     springBounce = nextSpringBounce;
                                     applyLyricSpringParams(springDuration, springBounce);
+                                    requestAnimationFrame(() => {
+                                        triggerExistingLinePositionSpringReveal({
+                                            reason: "spring-config-change",
+                                        });
+                                    });
                                 }
                             }
                             let renderScaleDidChange = false;
@@ -6370,12 +6413,19 @@
                         syncFullscreenDerivedColors();
                         syncFullscreenCoverBlurGenericRootState();
 	                    if (typeof config.alignAnchor === "string" && typeof lyricPlayer.setAlignAnchor === "function") {
-	                        lyricPlayer.setAlignAnchor(config.alignAnchor);
+                            if (config.alignAnchor !== alignAnchor) {
+                                alignAnchor = config.alignAnchor;
+	                            lyricPlayer.setAlignAnchor(alignAnchor);
+                            }
 	                    }
 	                    if (typeof config.alignPosition === "number" && !Number.isNaN(config.alignPosition)) {
 	                        const nextAlignPosition = Math.max(0, Math.min(1, config.alignPosition));
-	                        if (typeof lyricPlayer.setAlignPosition === "function") {
-	                            lyricPlayer.setAlignPosition(nextAlignPosition);
+	                        if (
+                                typeof lyricPlayer.setAlignPosition === "function"
+                                && Math.abs(nextAlignPosition - alignPosition) > 0.0001
+                            ) {
+                                alignPosition = nextAlignPosition;
+	                            lyricPlayer.setAlignPosition(alignPosition);
 	                        }
 	                    }
 					    // alignOffset: additional pixel offset for current line position (negative = up).

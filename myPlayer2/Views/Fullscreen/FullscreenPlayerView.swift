@@ -476,6 +476,9 @@ struct FullscreenPlayerView: View {
             }
             setRightPanelDisplayState(nextState)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .lyricSpringSettingsDidSettle)) { _ in
+            applyFullscreenLyricsTheme(reason: "lyric spring settings settled")
+        }
         .onChange(of: settings.fullscreenMiniPlayerAutoHideSeconds) { _, _ in
             resetFullscreenBottomControlsAutoHideState()
         }
@@ -892,23 +895,6 @@ struct FullscreenPlayerView: View {
         // is for AMLL to handle the animation internally via setAlignPosition,
         // keeping the current line fixed while other lines converge.
         .animation(bottomControlsAnimation, value: isFullscreenBottomControlsVisible)  // mask only
-        .onChange(of: isFullscreenBottomControlsVisible) { oldValue, newValue in
-            // ISSUE 1 FIX: The "jerk" was caused by overlapping animations.
-            // Swift-side animates: mask (0.34s spring), scaleEffect (0.34s), artwork position (0.62s)
-            // AMLL-side animates: setAlignPosition reposition (internal spring)
-            // When these animate simultaneously, they fight each other.
-            //
-            // ROOT CAUSE: The 0.02s delay sent AMLL config while Swift animation was still
-            // in progress (spring response 0.34s, settling ~0.5s). AMLL repositioned during
-            // Swift geometry change, causing visible discontinuity.
-            //
-            // FIX: Hold alignPosition/alignOffset CONSTANT during animation by waiting
-            // until after the longest Swift animation settles (lyricsLayoutAnimation = 0.62s).
-            // This proves the remaining jerk is AMLL-side timing vs Swift-side timing.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.65) {
-                applyFullscreenLyricsTheme(reason: "bottomControlsVisibility-changed")
-            }
-        }
     }
 
     @ViewBuilder
@@ -2994,7 +2980,7 @@ struct FullscreenPlayerView: View {
             ),
             "renderScale": surfaceRole.renderScale,
             "enableBlur": surfaceRole.enableBlur,
-            "enableSpring": surfaceRole.enableSpring && springSettings.enabled,
+            "enableSpring": surfaceRole.enableSpring,
             "springDuration": springSettings.duration,
             "springBounce": springSettings.bounce,
             "fpsCap": surfaceRole.fpsCap,
@@ -3012,9 +2998,7 @@ struct FullscreenPlayerView: View {
             "fullscreenLineTimingInactiveColor": lineTimingMainInactiveColor,
             "fullscreenLineTimingSubInactiveColor": lineTimingSubInactiveColor,
             "alignAnchor": "top",
-            // Hidden-state fix: Restore to higher position (was 0.32, too low).
-            // Visible state left unchanged at 0.18 (already correct).
-            "alignPosition": isFullscreenBottomControlsVisible ? 0.18 : 0.20,
+            "alignPosition": 0.18,
             "alignOffset": 0,
             "lineHeight": 1.8,
             "activeScale": 1.2,

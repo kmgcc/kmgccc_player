@@ -50,6 +50,10 @@ struct LyricSpringUserSettings: Equatable {
     var bounce: Double
 }
 
+extension Notification.Name {
+    static let lyricSpringSettingsDidSettle = Notification.Name("kmgccc_player.lyricSpringSettingsDidSettle")
+}
+
 /// Observable app settings using AppStorage for persistence.
 /// Observable app settings using AppStorage for persistence.
 @Observable
@@ -508,8 +512,8 @@ public final class AppSettings {
         static let springBounce = "amllLyricsSpringBounce"
     }
 
-    static let lyricSpringDurationRange: ClosedRange<Double> = 0.10...1.20
-    static let lyricSpringBounceRange: ClosedRange<Double> = -0.30...0.80
+    static let lyricSpringDurationRange: ClosedRange<Double> = 0.30...1.20
+    static let lyricSpringBounceRange: ClosedRange<Double> = -0.25...3.25
     static let defaultLyricSpringDuration: Double = 0.65
     static let defaultLyricSpringBounce: Double = 0.25
 

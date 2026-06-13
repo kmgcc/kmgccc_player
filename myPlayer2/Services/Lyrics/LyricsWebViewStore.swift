@@ -1382,6 +1382,21 @@ final class LyricsWebViewStore: NSObject {
         isPlaying: Bool
     ) {
         let previousTrackID = lastTrackID
+        if let concreteTTML = ttml,
+            trackID == previousTrackID,
+            concreteTTML == lastTTML
+        {
+            Log.debug(
+                "applyTrack skipped duplicate lyrics payload: role=\(role), "
+                    + "trackID=\(trackID?.uuidString.prefix(8) ?? "nil"), "
+                    + "ttmlLen=\(concreteTTML.count), objectID=\(webViewObjectID)",
+                category: .webview
+            )
+            setCurrentTime(currentTime)
+            setPlaying(isPlaying)
+            return
+        }
+
         let didSwitchTracks =
             previousTrackID != nil
             && trackID != nil
