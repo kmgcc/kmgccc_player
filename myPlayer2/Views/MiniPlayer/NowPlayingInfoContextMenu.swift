@@ -87,13 +87,15 @@ struct TrackActionMenuContent: View {
             Divider()
         }
 
+        let isManuallyLiked = currentManualLikeState == .liked
         Button {
-            let liked = track.isManuallyLiked
-            invokeAction(liked ? "unlike" : "like") {
-                track.setManualLikeState(liked ? .none : .liked)
+            let nextState: ManualLikeState = isManuallyLiked ? .none : .liked
+            invokeAction(isManuallyLiked ? "unlike" : "like") {
+                track.setManualLikeState(nextState)
+                libraryVM.notifyTrackAuxiliaryDataChanged(trackIDs: [track.id])
             }
         } label: {
-            if track.isManuallyLiked {
+            if isManuallyLiked {
                 Label("取消喜欢", systemImage: "heart.slash")
             } else {
                 Label("喜欢", systemImage: "heart")
@@ -220,6 +222,11 @@ struct TrackActionMenuContent: View {
 
     private var trackIDPrefix: String {
         FirstUseHitchDiagnostics.trackIDPrefix(track.id)
+    }
+
+    private var currentManualLikeState: ManualLikeState {
+        let _ = libraryVM.refreshTrigger
+        return track.preferenceStats.manualLikeState
     }
 
     private func invokeAction(_ actionName: String, _ action: () -> Void) {
