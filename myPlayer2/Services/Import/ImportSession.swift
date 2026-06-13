@@ -69,8 +69,7 @@ final class ImportSession {
 
     init(id: UUID = UUID(), fileManager: FileManager = .default) throws {
         self.id = id
-        let root = LocalLibraryPaths.libraryRootURL
-            .appendingPathComponent("ImportStaging", isDirectory: true)
+        let root = StorageLocations.importStagingRootURL
         self.stagingDirectoryURL = root
             .appendingPathComponent(id.uuidString, isDirectory: true)
         try fileManager.createDirectory(

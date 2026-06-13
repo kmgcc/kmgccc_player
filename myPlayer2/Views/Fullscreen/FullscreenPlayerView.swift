@@ -56,7 +56,7 @@ struct FullscreenPlayerView: View {
 
     private enum FeatureTips {
         static let playbackModeRetapKey = "fullscreen.playbackModeRetap"
-        static let playbackModeRetapIntroducedVersion = AppVersion(major: 2, minor: 0, patch: 0)
+        static let playbackModeRetapIntroducedBuild = AppBuild(1)
         static let playbackModeRetapMaxDisplayCount = 2
     }
 
@@ -2352,7 +2352,7 @@ struct FullscreenPlayerView: View {
         guard showPlaybackModeRetapTip == false else { return }
         guard AppVersionGate.shared.shouldShowFeatureTip(
             featureKey: FeatureTips.playbackModeRetapKey,
-            introducedVersion: FeatureTips.playbackModeRetapIntroducedVersion,
+            introducedBuild: FeatureTips.playbackModeRetapIntroducedBuild,
             maxDisplayCount: FeatureTips.playbackModeRetapMaxDisplayCount
         ) else { return }
 

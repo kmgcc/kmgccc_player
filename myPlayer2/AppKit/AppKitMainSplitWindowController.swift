@@ -51,7 +51,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
     private enum FeatureTips {
         static let externalPlaybackKey = "playbackSource.externalAppPlayback"
-        static let externalPlaybackIntroducedVersion = AppVersion(major: 2, minor: 0, patch: 0)
+        static let externalPlaybackIntroducedBuild = AppBuild(1)
         static let externalPlaybackMaxDisplayCount = 2
     }
 
@@ -321,12 +321,12 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
         let gateResult = AppVersionGate.shared.shouldShowFeatureTip(
             featureKey: FeatureTips.externalPlaybackKey,
-            introducedVersion: FeatureTips.externalPlaybackIntroducedVersion,
+            introducedBuild: FeatureTips.externalPlaybackIntroducedBuild,
             maxDisplayCount: FeatureTips.externalPlaybackMaxDisplayCount
         )
         let dismissed = AppVersionGate.shared.isFeatureTipDismissed(featureKey: FeatureTips.externalPlaybackKey)
         let count = AppVersionGate.shared.featureTipDisplayCount(featureKey: FeatureTips.externalPlaybackKey)
-        let upgraded = AppVersionGate.shared.wasUpgradedFromVersionBelow(FeatureTips.externalPlaybackIntroducedVersion)
+        let upgraded = AppVersionGate.shared.wasUpgradedFromBuildBelow(FeatureTips.externalPlaybackIntroducedBuild)
         print("[FeatureTip:externalPlayback] gate result=\(gateResult) dismissed=\(dismissed) displayCount=\(count) upgraded=\(upgraded)")
 
         guard gateResult else {

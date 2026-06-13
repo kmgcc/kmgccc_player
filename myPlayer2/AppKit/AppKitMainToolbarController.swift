@@ -15,7 +15,7 @@ import SwiftUI
 final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarItemValidation, NSMenuDelegate {
     private enum FeatureTips {
         static let shiftRangeSelectionKey = "playlist.shiftRangeSelection"
-        static let shiftRangeSelectionIntroducedVersion = AppVersion(major: 2, minor: 0, patch: 0)
+        static let shiftRangeSelectionIntroducedBuild = AppBuild(1)
         static let shiftRangeSelectionMaxDisplayCount = 4
     }
 
@@ -639,7 +639,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         guard featureTipPopover?.isShown != true else { return }
         guard AppVersionGate.shared.shouldShowFeatureTip(
             featureKey: FeatureTips.shiftRangeSelectionKey,
-            introducedVersion: FeatureTips.shiftRangeSelectionIntroducedVersion,
+            introducedBuild: FeatureTips.shiftRangeSelectionIntroducedBuild,
             maxDisplayCount: FeatureTips.shiftRangeSelectionMaxDisplayCount
         ) else { return }
         guard let anchor = multiselectTipAnchor() else { return }

@@ -10,9 +10,8 @@ import Foundation
 /// Remote version information from version.json
 struct RemoteVersionInfo: Decodable {
     let latestVersion: String
-    /// Remote build number — the primary update signal. Compared against the local
-    /// `CFBundleVersion`. May be absent in older fallback JSON, in which case the
-    /// update decision falls back to semantic `latestVersion` comparison.
+    /// Remote build number. Compared against local `CFBundleVersion`; this is the
+    /// only internal update signal.
     let buildNumber: Int?
     let releaseURL: String
     let downloadURL: String?
@@ -190,34 +189,12 @@ extension RemoteVersionInfo {
     }
 }
 
-/// Version comparison helper
-enum VersionComparison {
-    case newerAvailable(current: AppVersion, remote: AppVersion)
-    case upToDate(current: AppVersion)
-    case failedToParse
-
-    /// Check if update is available
-    static func check(localVersion: String, remoteVersion: String) -> VersionComparison {
-        guard let local = AppVersion(from: localVersion),
-              let remote = AppVersion(from: remoteVersion) else {
-            return .failedToParse
-        }
-
-        if local < remote {
-            return .newerAvailable(current: local, remote: remote)
-        } else {
-            return .upToDate(current: local)
-        }
-    }
-}
-
 /// The signal used to decide whether a remote build is newer.
 enum UpdateDecisionReason: Equatable {
-    /// Decided by integer build-number comparison (preferred, monotonic).
+    /// Decided by integer build-number comparison (monotonic).
     case buildNumber(local: Int, remote: Int)
-    /// Decided by semantic `latest_version` comparison (fallback when build numbers
-    /// are unavailable on either side — e.g. legacy fallback JSON).
-    case semanticVersion
+    /// Could not decide because at least one build number was missing.
+    case missingBuildNumber(local: Int?, remote: Int?)
 }
 
 /// Outcome of an update availability decision.
@@ -229,15 +206,12 @@ struct UpdateDecision: Equatable {
 enum UpdateAvailability {
     /// Decide whether the remote release is newer than the running app.
     ///
-    /// Primary signal is the build number (`CFBundleVersion` vs remote `build_number`),
-    /// which is monotonic and does not depend on remembering to bump the display
-    /// version string. Falls back to semantic version comparison only when build
-    /// numbers cannot be obtained from either side.
+    /// The only signal is the build number (`CFBundleVersion` vs remote
+    /// `build_number`), which is monotonic and does not depend on remembering to
+    /// bump the display version string.
     static func decide(
         localBuild: Int?,
-        remoteBuild: Int?,
-        localVersion: String,
-        remoteVersion: String
+        remoteBuild: Int?
     ) -> UpdateDecision {
         if let localBuild, let remoteBuild {
             return UpdateDecision(
@@ -246,10 +220,9 @@ enum UpdateAvailability {
             )
         }
 
-        let comparison = VersionComparison.check(localVersion: localVersion, remoteVersion: remoteVersion)
-        if case .newerAvailable = comparison {
-            return UpdateDecision(isUpdateAvailable: true, reason: .semanticVersion)
-        }
-        return UpdateDecision(isUpdateAvailable: false, reason: .semanticVersion)
+        return UpdateDecision(
+            isUpdateAvailable: false,
+            reason: .missingBuildNumber(local: localBuild, remote: remoteBuild)
+        )
     }
 }

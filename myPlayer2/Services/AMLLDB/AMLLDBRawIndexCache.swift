@@ -49,8 +49,7 @@ final class AMLLDBRawIndexCache: ObservableObject {
 
     /// Local cache directory
     private var cacheDirectory: URL {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        return caches.appendingPathComponent("AMLLDB", isDirectory: true)
+        StorageLocations.amllDBCacheURL
     }
 
     /// Local index file path
@@ -331,6 +330,9 @@ final class AMLLDBRawIndexCache: ObservableObject {
         }
         if FileManager.default.fileExists(atPath: lastUpdateFileURL.path) {
             try FileManager.default.removeItem(at: lastUpdateFileURL)
+        }
+        if FileManager.default.fileExists(atPath: StorageLocations.legacyAMLLDBCacheURL.path) {
+            try? FileManager.default.removeItem(at: StorageLocations.legacyAMLLDBCacheURL)
         }
 
         entries = []

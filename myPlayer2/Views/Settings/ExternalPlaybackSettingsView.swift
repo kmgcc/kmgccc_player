@@ -15,7 +15,7 @@ func clearExternalPlaybackCachesAction(
     guard !isClearing.wrappedValue else { return }
     isClearing.wrappedValue = true
     Task {
-        await ExternalPlaybackMetadataStore.shared.clearAllCaches()
+        await ExternalPlaybackMetadataStore.shared.clearAutomaticCaches()
         playbackCoordinator.clearExternalPlaybackRuntimeCaches()
         isClearing.wrappedValue = false
     }
@@ -109,14 +109,14 @@ struct ExternalPlaybackSettingsView: View {
                             ProgressView()
                                 .controlSize(.small)
                         } else {
-                            Text("清理外部播放元数据缓存")
+                            Text("清理外部播放匹配与媒体缓存")
                         }
                     }
                     .buttonStyle(.borderedProminent)
                     .clipShape(Capsule())
                     .disabled(isClearingCaches)
 
-                    Text("清除外部播放匹配、覆盖、封面和歌词缓存。")
+                    Text("清除自动匹配结果、自动封面和自动歌词缓存；保留手动匹配、手动歌词和播放源规则。")
                         .settingsDescriptionStyle()
                 }
             }
@@ -145,7 +145,7 @@ struct ExternalPlaybackSettingsView: View {
                 clearExternalPlaybackCaches()
             }
         } message: {
-            Text("将清除外部播放的手动匹配覆盖、匹配结果、联网封面、联网歌词和相关解析缓存。不会删除本地资料库歌曲。")
+            Text("将清除外部播放自动匹配结果、自动下载封面、自动歌词和相关解析缓存。不会删除手动匹配、手动歌词、播放源规则或本地资料库歌曲。")
         }
     }
 

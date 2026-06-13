@@ -156,7 +156,12 @@ final class ExternalPlaybackMetadataStore {
 
     func cachedNetworkArtwork(for stableKey: String) -> Data? {
         guard let fileName = records[stableKey]?.networkArtworkFileName else { return nil }
-        return try? Data(contentsOf: artworkCacheDirectory().appendingPathComponent(fileName))
+        let currentURL = artworkCacheDirectory().appendingPathComponent(fileName)
+        if let data = try? Data(contentsOf: currentURL) {
+            return data
+        }
+        let legacyURL = StorageLocations.legacyExternalPlaybackArtworkURL.appendingPathComponent(fileName)
+        return try? Data(contentsOf: legacyURL)
     }
 
     func cachedArtwork(for stableKey: String, source: String) -> Data? {
@@ -268,15 +273,49 @@ final class ExternalPlaybackMetadataStore {
         }
     }
 
+    func clearAutomaticCaches() async {
+        let manualArtworkFileNames = Set(records.values.compactMap { record in
+            record.artworkSource == "manualOverride" ? record.networkArtworkFileName : nil
+        })
+        records = records.compactMapValues { record in
+            guard record.artworkSource == "manualOverride",
+                  let fileName = record.networkArtworkFileName,
+                  !fileName.isEmpty
+            else {
+                return nil
+            }
+            var preserved = record
+            preserved.libraryFingerprint = ""
+            preserved.matchResult = ExternalPlaybackMatchResult(
+                status: .noResult,
+                trackID: nil,
+                confidence: 0,
+                reason: "manual artwork preserved"
+            )
+            preserved.networkLyrics = nil
+            preserved.lyricsSource = nil
+            preserved.artworkSource = "manualOverride"
+            preserved.networkArtworkFileName = fileName
+            preserved.manualLyricsFingerprint = overrides[record.stableKey]?.manualLyricsFingerprint
+            preserved.updatedAt = Date()
+            return preserved
+        }
+        persistRecords()
+        let directories = [
+            artworkCacheDirectory(),
+            StorageLocations.legacyExternalPlaybackArtworkURL
+        ]
+        await Task.detached(priority: .utility) {
+            for directory in directories {
+                Self.removeArtworkFiles(at: directory, preserving: manualArtworkFileNames)
+            }
+        }.value
+    }
+
     func clearAllCaches() async {
         overrides.removeAll()
-        records.removeAll()
         persistOverrides()
-        persistRecords()
-        let directory = artworkCacheDirectory()
-        await Task.detached(priority: .utility) {
-            try? FileManager.default.removeItem(at: directory)
-        }.value
+        await clearAutomaticCaches()
     }
 
     private func updateRecord(stableKey: String, mutate: (inout ExternalPlaybackCacheRecord) -> Void) {
@@ -321,11 +360,20 @@ final class ExternalPlaybackMetadataStore {
     }
 
     private func artworkCacheDirectory() -> URL {
-        let root = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return root
-            .appendingPathComponent("kmgccc_player", isDirectory: true)
-            .appendingPathComponent("ExternalPlaybackArtwork", isDirectory: true)
+        StorageLocations.externalPlaybackArtworkURL
+    }
+
+    private nonisolated static func removeArtworkFiles(at directory: URL, preserving preservedFileNames: Set<String>) {
+        let fileManager = FileManager.default
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        for url in files where !preservedFileNames.contains(url.lastPathComponent) {
+            try? fileManager.removeItem(at: url)
+        }
     }
 
     private func sanitize(_ value: String) -> String {

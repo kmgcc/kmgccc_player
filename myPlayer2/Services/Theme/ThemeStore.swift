@@ -114,6 +114,11 @@ final class ThemeStore: ObservableObject {
         }
     }
 
+    func clearArtworkColorCache() {
+        dominantColorCache.removeAllObjects()
+        averageColorCache = nil
+    }
+
     /// Legacy entrypoint kept for compatibility with old call sites.
     func updateArtwork(_ data: Data?) async {
         await updateThemeFromArtworkData(data, artworkIdentity: nil, assetTrackID: nil)

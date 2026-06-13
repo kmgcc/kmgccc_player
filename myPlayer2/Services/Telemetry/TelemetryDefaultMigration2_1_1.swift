@@ -11,7 +11,7 @@
 //
 //  This is a one-time migration, NOT a per-launch override:
 //    - It runs at most once (guarded by a did-run flag).
-//    - It only acts while the app version is exactly 2.1.1.
+//    - It only acts while the app build is exactly 4 (display version 2.1.1).
 //    - After it runs, the consent toggle behaves normally — a user who turns it
 //      back off keeps that choice and is never re-forced on.
 //
@@ -26,12 +26,12 @@ enum TelemetryDefaultMigration2_1_1 {
     private static let consentKey = "telemetry.anonymousUsageEnabled"
     /// Dedicated flag so the correction runs at most once, even if the user later opts out.
     private static let didRunKey = "telemetry.defaultOnMigration.2_1_1.didRun"
-    private static let targetVersion = AppVersion(major: 2, minor: 1, patch: 2)
+    private static let targetBuild = AppBuild(4)
 
     /// Runs the one-time consent default correction if applicable. Must be called
     /// before `TelemetryService` reads consent at launch.
     static func runIfNeeded(defaults: UserDefaults = .standard) {
-        guard AppVersion.current == targetVersion else { return }
+        guard AppBuild.current == targetBuild else { return }
         guard !defaults.bool(forKey: didRunKey) else { return }
 
         defaults.set(true, forKey: consentKey)
