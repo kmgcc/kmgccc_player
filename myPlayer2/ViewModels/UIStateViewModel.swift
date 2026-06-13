@@ -327,10 +327,12 @@ final class UIStateViewModel {
     /// Used both when starting drill-down from Home and when drilling further
     /// from "All Albums" / "All Artists".
     func pushSelectionInHomeContext(_ target: LibrarySelection, libraryVM: LibraryViewModel) {
-        homeBackStack.append(libraryVM.currentSelection)
-        homeForwardStack.removeAll()
+        if libraryVM.currentSelection != target {
+            homeBackStack.append(libraryVM.currentSelection)
+            homeForwardStack.removeAll()
+        }
         isHomeDrilldown = (target != .home)
-        libraryVM.currentSelection = target
+        libraryVM.selectOrResetCurrentSelection(target)
         showLibrary()
     }
 
@@ -344,7 +346,7 @@ final class UIStateViewModel {
     func goBackInHomeContext(libraryVM: LibraryViewModel) {
         guard let previous = homeBackStack.popLast() else { return }
         homeForwardStack.append(libraryVM.currentSelection)
-        libraryVM.currentSelection = previous
+        libraryVM.selectOrResetCurrentSelection(previous)
         isHomeDrilldown = (previous != .home)
         showLibrary()
     }
@@ -353,7 +355,7 @@ final class UIStateViewModel {
     func goForwardInHomeContext(libraryVM: LibraryViewModel) {
         guard let next = homeForwardStack.popLast() else { return }
         homeBackStack.append(libraryVM.currentSelection)
-        libraryVM.currentSelection = next
+        libraryVM.selectOrResetCurrentSelection(next)
         isHomeDrilldown = (next != .home)
         showLibrary()
     }

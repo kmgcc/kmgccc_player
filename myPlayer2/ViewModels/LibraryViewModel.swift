@@ -317,6 +317,16 @@ final class LibraryViewModel {
     /// Trigger to reset search text and focus in the UI (incremented on sidebar selection).
     private(set) var searchResetTrigger: Int = 0
 
+    /// Select a library navigation target. Re-selecting the active target is a
+    /// refresh/reset gesture for page-local search state.
+    func selectOrResetCurrentSelection(_ selection: LibrarySelection) {
+        if currentSelection == selection {
+            searchResetTrigger += 1
+        } else {
+            currentSelection = selection
+        }
+    }
+
     /// Track sorting preference for playlist views.
     var trackSortKey: TrackSortKey {
         didSet {

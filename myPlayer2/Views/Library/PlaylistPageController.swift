@@ -191,7 +191,16 @@ final class PlaylistPageController {
     }
 
     func handleSearchChange() {
+        if isSearchFilteringTracks {
+            clearMultiselectState()
+        }
         scheduleRebuild(reason: "search", debounceNanoseconds: 150_000_000)
+    }
+
+    func prepareForSearchInteraction() {
+        if isMultiselectMode {
+            clearMultiselectState()
+        }
     }
 
     func clearSearchAndRebuildIfNeeded(reason: String) {
@@ -245,7 +254,24 @@ final class PlaylistPageController {
         isManualTrackReorderActive = false
     }
 
+    @discardableResult
+    func toggleMultiselectModeIfAllowed() -> Bool {
+        if isSearchFilteringTracks {
+            clearMultiselectState()
+            return false
+        }
+
+        if isMultiselectMode {
+            clearMultiselectState()
+            return false
+        }
+
+        isMultiselectMode = true
+        return true
+    }
+
     func beginMultiselectSelection(at trackID: UUID) {
+        guard !isSearchFilteringTracks else { return }
         isMultiselectMode = true
         selectedTrackIDs.insert(trackID)
         selectionAnchorTrackID = trackID
@@ -253,6 +279,10 @@ final class PlaylistPageController {
 
     func handleMultiselectRowTap(trackID: UUID, extendingRange: Bool) {
         guard isMultiselectMode else { return }
+        guard !isSearchFilteringTracks else {
+            clearMultiselectState()
+            return
+        }
 
         if extendingRange,
            let anchorTrackID = selectionAnchorTrackID,

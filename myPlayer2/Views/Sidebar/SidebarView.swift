@@ -63,7 +63,7 @@ struct SidebarView: View {
             // Home Link
             Button {
                 uiState.clearHomeNavigationContext()
-                libraryVM.currentSelection = .home
+                libraryVM.selectOrResetCurrentSelection(.home)
                 uiState.showLibrary()
             } label: {
                 HStack {
@@ -84,7 +84,7 @@ struct SidebarView: View {
 
             // Main Library Link
             Button {
-                libraryVM.currentSelection = .allSongs
+                libraryVM.selectOrResetCurrentSelection(.allSongs)
                 uiState.showLibrary()
             } label: {
                 HStack {
@@ -645,9 +645,9 @@ struct SidebarView: View {
         uiState.clearHomeNavigationContext()
         switch item {
         case .home:
-            libraryVM.currentSelection = .home
+            libraryVM.selectOrResetCurrentSelection(.home)
         case .allSongs:
-            libraryVM.currentSelection = .allSongs
+            libraryVM.selectOrResetCurrentSelection(.allSongs)
         case .allAlbums:
             uiState.pushSelectionInHomeContext(.allAlbums, libraryVM: libraryVM)
             return
@@ -655,11 +655,11 @@ struct SidebarView: View {
             uiState.pushSelectionInHomeContext(.allArtists, libraryVM: libraryVM)
             return
         case .playlist(let id):
-            libraryVM.currentSelection = .playlist(id)
+            libraryVM.selectOrResetCurrentSelection(.playlist(id))
         case .artist(let key):
-            libraryVM.currentSelection = .artist(key)
+            libraryVM.selectOrResetCurrentSelection(.artist(key))
         case .album(let key):
-            libraryVM.currentSelection = .album(key)
+            libraryVM.selectOrResetCurrentSelection(.album(key))
         }
         uiState.showLibrary()
     }

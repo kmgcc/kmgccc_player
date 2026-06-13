@@ -12,7 +12,7 @@ import Observation
 import SwiftUI
 
 @MainActor
-final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarItemValidation, NSMenuDelegate {
+final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarItemValidation, NSMenuDelegate, NSTextFieldDelegate {
     private enum FeatureTips {
         static let shiftRangeSelectionKey = "playlist.shiftRangeSelection"
         static let shiftRangeSelectionIntroducedBuild = AppBuild(1)
@@ -170,6 +170,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         let queueTracks = currentPageController?.page?.queueTracks ?? []
         let hasRows = (currentPageController?.page?.rows.isEmpty == false)
         let hasSelection = (currentPageController?.selectedTrackIDs.isEmpty == false)
+        let isSearching = currentPageController?.isSearchFilteringTracks == true
 
         switch item.itemIdentifier {
         case Identifier.sort:
@@ -177,7 +178,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         case Identifier.search:
             return isLibraryMode && hasLibrary
         case Identifier.multiselect:
-            return isLibraryMode && hasLibrary && !isHomeSelection && hasRows
+            return isLibraryMode && hasLibrary && !isHomeSelection && hasRows && !isSearching
         case Identifier.play:
             if !(isLibraryMode && hasLibrary && hasPlayback) { return false }
             if isHomeSelection {
@@ -405,6 +406,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             field.sendsSearchStringImmediately = true
             field.target = self
             field.action = #selector(handleSearchChange(_:))
+            field.delegate = self
             container.addSubview(field)
 
             NSLayoutConstraint.activate([
@@ -583,8 +585,17 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
     @objc
     private func handleSearchChange(_ sender: NSSearchField) {
+        currentPageController?.prepareForSearchInteraction()
         currentPageController?.searchText = sender.stringValue
         currentPageController?.handleSearchChange()
+        syncMultiselectItemPresentation()
+        validateCurrentToolbarVisibleItems()
+    }
+
+    func controlTextDidBeginEditing(_ obj: Notification) {
+        guard let field = obj.object as? NSSearchField, field === searchField else { return }
+        currentPageController?.prepareForSearchInteraction()
+        syncMultiselectItemPresentation()
         validateCurrentToolbarVisibleItems()
     }
 
@@ -619,14 +630,13 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     private func handleToggleMultiselect(_ sender: NSToolbarItem) {
         guard let pageController = currentPageController else { return }
         guard let page = pageController.page, !page.rows.isEmpty else { return }
-        pageController.isMultiselectMode.toggle()
-        if !pageController.isMultiselectMode {
-            pageController.selectedTrackIDs.removeAll()
+        let didEnable = pageController.toggleMultiselectModeIfAllowed()
+        if !didEnable {
             closeFeatureTipPopover()
         }
         syncMultiselectItemPresentation()
         validateCurrentToolbarVisibleItems()
-        if pageController.isMultiselectMode {
+        if didEnable {
             let generation = attachmentGeneration
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isCurrentAttachment(generation) else { return }
@@ -943,9 +953,13 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     }
 
     private func syncMultiselectItemPresentation() {
-        let isOn = currentPageController?.isMultiselectMode == true
+        let pageController = currentPageController
+        let isOn = pageController?.isMultiselectMode == true
         let symbol = isOn ? "checkmark.circle.fill" : "checkmark.circle"
         multiselectItem?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: multiselectItem?.label)
+        multiselectItem?.isEnabled = currentLibraryVM?.currentSelection != .home
+            && pageController?.page?.rows.isEmpty == false
+            && pageController?.isSearchFilteringTracks != true
     }
 
     private func syncSearchFieldFromModel() {
@@ -1165,6 +1179,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                    let field = firstSubview(in: itemView, matching: { $0 is NSSearchField }) as? NSSearchField {
                     field.target = self
                     field.action = #selector(handleSearchChange(_:))
+                    field.delegate = self
                     searchField = field
                 }
 
@@ -1228,6 +1243,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         if let searchField = item.view.flatMap({ firstSubview(in: $0, matching: { $0 is NSSearchField }) }) as? NSSearchField {
             searchField.target = nil
             searchField.action = nil
+            searchField.delegate = nil
         }
     }
 
