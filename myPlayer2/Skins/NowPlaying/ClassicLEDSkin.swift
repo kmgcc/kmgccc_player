@@ -263,9 +263,9 @@ private enum ClassicArtworkFrameCoverTuning {
     /// artwork frame mask, so it scales the cover and mask result together.
     static let finalMaskedArtworkScaleByFrameIndex: [Int: CGFloat] = [
         0: 1.0,
-        1: 1.0,
-        2: 1.0,
-        3: 1.0,
+        1: 1.06,
+        2: 1.1,
+        3: 1.2,
     ]
 
     static let fallbackFinalMaskedArtworkScale: CGFloat = 1.0

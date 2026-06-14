@@ -103,7 +103,9 @@ struct FullscreenSkinTabView: View {
                         detailColor: presentationStyle.secondaryTextColor
                     )
 
-                    artworkScaleSection
+                    if settings.fullscreen.skinID != "fullscreen.coverGradientBlur" {
+                        artworkScaleSection
+                    }
 
                     if settings.fullscreen.skinID != AppleStyleSkin.skinID {
                         dimmingIntensitySection
@@ -112,11 +114,20 @@ struct FullscreenSkinTabView: View {
             }
         }
         .onAppear {
-            fullscreenArtworkScale = settings.fullscreenArtworkScale
+            let skinID = settings.fullscreen.skinID
+            let scale = settings.fullscreenArtworkScale
+            let range = artworkScaleRange(for: skinID)
+            fullscreenArtworkScale = min(max(scale, range.lowerBound), range.upperBound)
+
             fullscreenDimmingIntensity = settings.fullscreenDimmingIntensity
             fullscreenArtBackgroundEnabled = settings.fullscreenArtBackgroundEnabled
             fullscreenMiniPlayerAutoHideSeconds = settings.fullscreenMiniPlayerAutoHideSeconds
             fullscreenMiniPlayerGlassMaterial = settings.fullscreenMiniPlayerGlassMaterial
+        }
+        .onChange(of: settings.fullscreen.skinID) { _, newSkinID in
+            let scale = settings.artworkScale(for: newSkinID)
+            let range = artworkScaleRange(for: newSkinID)
+            fullscreenArtworkScale = min(max(scale, range.lowerBound), range.upperBound)
         }
         .onChange(of: fullscreenArtworkScale) { _, newValue in
             settings.fullscreenArtworkScale = newValue
@@ -211,6 +222,15 @@ struct FullscreenSkinTabView: View {
         }
     }
 
+    private func artworkScaleRange(for skinID: String) -> ClosedRange<Double> {
+        let maxVal = AppSettings.maxArtworkScale(for: skinID)
+        return 0.9...maxVal
+    }
+
+    private var currentArtworkScaleRange: ClosedRange<Double> {
+        artworkScaleRange(for: settings.fullscreen.skinID)
+    }
+
     private var artworkScaleSection: some View {
         VStack(alignment: .leading, spacing: presentationStyle.sliderBlockSpacing) {
             HStack {
@@ -225,7 +245,7 @@ struct FullscreenSkinTabView: View {
             }
             Slider(
                 value: $fullscreenArtworkScale,
-                in: 0.9...1.6,
+                in: currentArtworkScaleRange,
                 step: 0.05
             )
             .frame(height: presentationStyle.tabHeight)
