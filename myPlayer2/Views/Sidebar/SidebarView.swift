@@ -504,10 +504,6 @@ struct SidebarView: View {
             knob: {
                 Capsule(style: .continuous)
                     .fill(themeStore.accentColor.opacity(currentColorScheme == .dark ? 0.36 : 0.18))
-                    .overlay(
-                        Capsule(style: .continuous)
-                            .strokeBorder(themeStore.accentColor.opacity(0.32), lineWidth: 1)
-                    )
             },
             content: { source, isSelected in
                 playbackSourceSegment(source, isSelected: isSelected)
@@ -519,10 +515,6 @@ struct SidebarView: View {
         .background(
             Capsule(style: .continuous)
                 .fill(Color.primary.opacity(currentColorScheme == .dark ? 0.12 : 0.08))
-                .overlay(
-                    Capsule(style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
-                )
         )
         .frame(maxWidth: .infinity)
         .frame(height: metrics.trayHeight)
