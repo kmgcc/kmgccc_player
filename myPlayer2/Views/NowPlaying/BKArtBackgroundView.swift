@@ -1327,7 +1327,7 @@ private final class BKArtBackgroundLayerView: NSView {
         let hueRange: ClosedRange<Double> = -Double(hueJitterMax)...Double(hueJitterMax)
         let satRange: ClosedRange<Double> = -Double(satJitterMax)...Double(satJitterMax)
         let briRange: ClosedRange<Double> = -Double(briJitterMax)...Double(briJitterMax)
-        return BKColorEngine.stabilize(
+        let stabilized = BKColorEngine.stabilize(
             color: base,
             kind: .shape,
             palette: harmonized,
@@ -1335,6 +1335,37 @@ private final class BKArtBackgroundLayerView: NSView {
             saturationJitter: CGFloat(rng.next(in: satRange)),
             brightnessJitter: CGFloat(rng.next(in: briRange))
         )
+        return energizedLightShapeTint(stabilized)
+    }
+
+    private func energizedLightShapeTint(_ color: CGColor) -> CGColor {
+        guard !harmonized.isDark else { return color }
+        guard let nsColor = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) else {
+            return color
+        }
+
+        var h: CGFloat = 0
+        var s: CGFloat = 0
+        var b: CGFloat = 0
+        var a: CGFloat = 0
+        nsColor.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+
+        let minS: CGFloat
+        let maxS: CGFloat
+        if harmonized.isGrayscaleCover {
+            minS = 0.12
+            maxS = 0.24
+        } else if harmonized.isNearGray || harmonized.complexity == .low {
+            minS = 0.22
+            maxS = 0.38
+        } else {
+            minS = 0.34
+            maxS = 0.48
+        }
+
+        let liftedS = min(maxS, max(minS, s * 1.32 + 0.035))
+        let liftedB = min(1.0, max(0.985, b + 0.045))
+        return NSColor(deviceHue: h, saturation: liftedS, brightness: liftedB, alpha: a).cgColor
     }
 
     private func makeShapeTintPlan(
@@ -1636,19 +1667,43 @@ private final class BKArtBackgroundLayerView: NSView {
         return layer
     }
 
-    private nonisolated static func tintedCircleImage(from image: CGImage, tint: CGColor) -> CGImage? {
+    private nonisolated static func tintedCircleImage(
+        from image: CGImage,
+        tint: CGColor,
+        invertLuminance: Bool
+    ) -> CGImage? {
         let nsColor = NSColor(cgColor: tint) ?? .white
         let rgb = nsColor.usingColorSpace(.deviceRGB) ?? nsColor
         let input = CIImage(cgImage: image)
-        let tinted = input.applyingFilter(
-            "CIColorMatrix",
-            parameters: [
-                "inputRVector": CIVector(x: rgb.redComponent, y: 0, z: 0, w: 0),
-                "inputGVector": CIVector(x: 0, y: rgb.greenComponent, z: 0, w: 0),
-                "inputBVector": CIVector(x: 0, y: 0, z: rgb.blueComponent, w: 0),
-                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: rgb.alphaComponent),
-            ]
-        )
+        
+        let tinted: CIImage
+        if invertLuminance {
+            // Dark Mode: invert asset (making strokes light) and multiply
+            let source = input.applyingFilter("CIColorInvert")
+            tinted = source.applyingFilter(
+                "CIColorMatrix",
+                parameters: [
+                    "inputRVector": CIVector(x: rgb.redComponent, y: 0, z: 0, w: 0),
+                    "inputGVector": CIVector(x: 0, y: rgb.greenComponent, z: 0, w: 0),
+                    "inputBVector": CIVector(x: 0, y: 0, z: rgb.blueComponent, w: 0),
+                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: rgb.alphaComponent),
+                ]
+            )
+        } else {
+            // Light Mode: paint dark strokes with tint color, keep light areas light (no inversion)
+            // Formula: Out = Src * (1 - Tint) + Tint
+            tinted = input.applyingFilter(
+                "CIColorMatrix",
+                parameters: [
+                    "inputRVector": CIVector(x: 1.0 - rgb.redComponent, y: 0, z: 0, w: 0),
+                    "inputGVector": CIVector(x: 0, y: 1.0 - rgb.greenComponent, z: 0, w: 0),
+                    "inputBVector": CIVector(x: 0, y: 0, z: 1.0 - rgb.blueComponent, w: 0),
+                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: rgb.alphaComponent),
+                    "inputBiasVector": CIVector(x: rgb.redComponent, y: rgb.greenComponent, z: rgb.blueComponent, w: 0)
+                ]
+            )
+        }
+        
         let outputSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         let rendered = circleTintContext.createCGImage(
             tinted,
@@ -2030,7 +2085,24 @@ private final class BKArtBackgroundLayerView: NSView {
             saturationJitter: satJitter,
             brightnessJitter: briJitter
         )
-        let withAlpha = (NSColor(cgColor: finalColor) ?? .white).withAlphaComponent(0.90).cgColor
+        var withAlpha = (NSColor(cgColor: finalColor) ?? .white).withAlphaComponent(0.90).cgColor
+        if dotRenderStyle == .solidCircles {
+            if let nsColor = NSColor(cgColor: finalColor),
+               var lch = OKColor.nsColorToOKLCH(nsColor) {
+                let targetAlpha: CGFloat
+                if harmonized.isDark {
+                    lch.l = lch.l * 0.50
+                    lch.c = lch.c * 0.70
+                    targetAlpha = 0.80
+                } else {
+                    lch.l = min(max(lch.l, 0.70), 0.79)
+                    lch.c = max(0.18, lch.c * 1.80)
+                    targetAlpha = 0.90
+                }
+                let adjustedNS = OKColor.okLCHToNSColor(lch, alpha: 1.0)
+                withAlpha = adjustedNS.withAlphaComponent(targetAlpha).cgColor
+            }
+        }
         slot.color = withAlpha
 
         CATransaction.begin()
@@ -2039,8 +2111,13 @@ private final class BKArtBackgroundLayerView: NSView {
         slot.cellSmall?.fillColor = slot.color
         if let layer = slot.circleImageLayer,
            let source = slot.circleImageSource,
-           let tinted = Self.tintedCircleImage(from: source, tint: withAlpha) {
+           let tinted = Self.tintedCircleImage(
+               from: source,
+               tint: withAlpha,
+               invertLuminance: harmonized.isDark
+           ) {
             layer.contents = tinted
+            layer.opacity = harmonized.isDark ? 0.68 : 0.75
         }
         CATransaction.commit()
     }
@@ -2551,8 +2628,8 @@ private final class BKArtBackgroundLayerView: NSView {
             "CIColorControls",
             parameters: [
                 kCIInputSaturationKey: 1.0,
-                kCIInputContrastKey: isDark ? 1.035 : 1.015,
-                kCIInputBrightnessKey: isDark ? -0.035 : 0.032,
+                kCIInputContrastKey: isDark ? 1.024 : 1.015,
+                kCIInputBrightnessKey: isDark ? -0.014 : 0.032,
             ]
         )
     }
@@ -3257,10 +3334,6 @@ private final class BKArtBackgroundLayerView: NSView {
                     opacity: 0.68,
                     zPosition: 0
                 )
-                imageLayer.shadowColor = NSColor.black.cgColor
-                imageLayer.shadowOpacity = 0.18
-                imageLayer.shadowRadius = max(12, slot.maskBaseRadiusSmall * 0.12)
-                imageLayer.shadowOffset = .zero
                 imageLayer.setAffineTransform(CGAffineTransform(rotationAngle: slot.rotationBaseAngle))
                 slot.rootLayer.addSublayer(imageLayer)
                 slot.circleImageLayer = imageLayer
