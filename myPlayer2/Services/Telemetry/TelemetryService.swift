@@ -113,6 +113,7 @@ final class TelemetryService: NSObject {
     private let queue = TelemetryLocalQueue()
     private let recoveryStore = TelemetryRecoveryStore()
     private let uploader = TelemetryUploader()
+    private lazy var signer = TelemetryRequestSigner(keyStore: .shared)
     private var accumulator: SessionMetricsAccumulator?
     private weak var playbackCoordinator: PlaybackCoordinator?
     private var isWindowNowPlayingVisible = false
@@ -136,6 +137,9 @@ final class TelemetryService: NSObject {
     }
 
     func configure(playbackCoordinator: PlaybackCoordinator) {
+        #if DEBUG
+        TelemetryRequestSigner.runSelfCheck()
+        #endif
         self.playbackCoordinator = playbackCoordinator
         playbackCoordinator.onTelemetryPlaybackStateChanged = { [weak self] source, isPlaying in
             Task { @MainActor in
@@ -311,16 +315,33 @@ final class TelemetryService: NSObject {
         self.accumulator = accumulator
     }
 
+    /// Ensures the signing key is registered before signed uploads. Idempotent;
+    /// no-ops once UserDefaults records success. Safe to call when consent is on.
+    private func ensureRegistered() async {
+        guard consentStore.isEnabled else { return }
+        if UserDefaults.standard.integer(forKey: TelemetryDefaults.signingRegisteredKey) >= 1 {
+            return
+        }
+        let ok = await uploader.registerSigningKey(clientID: identityStore.installID, signer: signer)
+        if ok {
+            UserDefaults.standard.set(1, forKey: TelemetryDefaults.signingRegisteredKey)
+        }
+    }
+
     private func flushQueue() {
         guard consentStore.isEnabled, uploadTask == nil else { return }
         let events = queue.pendingEvents()
         guard !events.isEmpty else { return }
 
         let device = deviceSnapshot
+        let clientID = identityStore.installID
         uploadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let response = try await uploader.upload(events: events, device: device)
+                await self.ensureRegistered()
+                let response = try await uploader.upload(
+                    events: events, device: device,
+                    signer: self.signer, clientID: clientID)
                 try Task.checkCancellation()
                 await MainActor.run {
                     self.applyUploadResponse(response, uploadedEvents: events)
@@ -331,6 +352,10 @@ final class TelemetryService: NSObject {
                 }
             } catch {
                 await MainActor.run {
+                    if case TelemetryUploadError.unauthorized = error {
+                        // Server no longer recognizes our key; re-register next flush.
+                        UserDefaults.standard.set(0, forKey: TelemetryDefaults.signingRegisteredKey)
+                    }
                     Log.warning("[Telemetry] upload failed: \(error)", category: .telemetry)
                     self.uploadTask = nil
                 }
@@ -343,8 +368,15 @@ final class TelemetryService: NSObject {
         let events = queue.pendingEvents()
         guard !events.isEmpty else { return }
 
+        // The process is exiting: do not block on a network registration round-trip.
+        // Sign only if registration already succeeded in a prior run; otherwise the
+        // upload goes out unsigned and the server compat path accepts it.
+        let isRegistered = UserDefaults.standard.integer(forKey: TelemetryDefaults.signingRegisteredKey) >= 1
         do {
-            let response = try uploader.uploadSynchronously(events: events, timeout: 3, device: deviceSnapshot)
+            let response = try uploader.uploadSynchronously(
+                events: events, timeout: 3, device: deviceSnapshot,
+                signer: isRegistered ? signer : nil,
+                clientID: isRegistered ? identityStore.installID : nil)
             applyUploadResponse(response, uploadedEvents: events)
         } catch {
             Log.warning("[Telemetry] termination upload failed: \(error)", category: .telemetry)
@@ -474,6 +506,7 @@ private enum TelemetryDefaults {
     static let installIDKey = "telemetry.anonymousInstallID"
     static let installSeenAcknowledgedKey = "telemetry.installSeenAcknowledged"
     static let installSeenEventIDKey = "telemetry.installSeenEventID"
+    static let signingRegisteredKey = "telemetry.signingKeyRegisteredVersion"
 }
 
 private final class TelemetryConsentStore {
@@ -1103,8 +1136,11 @@ private struct TelemetryRejectedEvent: Decodable, Sendable {
     let reason: String
 }
 
+enum TelemetryUploadError: Error { case unauthorized }
+
 private final class TelemetryUploader {
     private let endpoint = URL(string: "https://player.kmgccc.cn/api/v1/telemetry/events/batch")!
+    private let registerEndpoint = URL(string: "https://player.kmgccc.cn/api/v1/telemetry/register")!
     private let session: URLSession
 
     init() {
@@ -1114,11 +1150,50 @@ private final class TelemetryUploader {
         session = URLSession(configuration: configuration)
     }
 
+    /// Registers this install's public key (TOFU). Returns true on HTTP 200
+    /// (registered or already_registered), false on transport error or non-200.
+    func registerSigningKey(clientID: String, signer: TelemetryRequestSigner) async -> Bool {
+        guard let publicKey = TelemetrySigningKeyStore.shared.publicKeyBase64() else { return false }
+        let payload: [String: Any] = [
+            "client_id": clientID,
+            "public_key": publicKey,
+            "algorithm": "ecdsa-p256-sha256",
+            "key_version": 1,
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: payload,
+                                                     options: [.sortedKeys]) else { return false }
+        guard let headers = signer.sign(method: "POST",
+                                        path: "/api/v1/telemetry/register",
+                                        body: body, clientID: clientID) else { return false }
+        var request = URLRequest(url: registerEndpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 8
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(headers.clientID, forHTTPHeaderField: "X-Client-Id")
+        request.setValue(headers.timestamp, forHTTPHeaderField: "X-Timestamp")
+        request.setValue(headers.nonce, forHTTPHeaderField: "X-Nonce")
+        request.setValue(headers.signature, forHTTPHeaderField: "X-Signature")
+        request.httpBody = body
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 8
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        do {
+            let (_, response) = try await session.data(for: request)
+            return (response as? HTTPURLResponse)?.statusCode == 200
+        } catch {
+            return false
+        }
+    }
+
     func upload(
         events: [TelemetryQueuedEvent],
-        device: DeviceTelemetrySnapshot? = nil
+        device: DeviceTelemetrySnapshot? = nil,
+        signer: TelemetryRequestSigner? = nil,
+        clientID: String? = nil
     ) async throws -> TelemetryUploadResponse {
-        let request = try makeRequest(events: events, timeout: 5, device: device)
+        let request = try makeRequest(events: events, timeout: 5, device: device,
+                                      signer: signer, clientID: clientID)
 
         let (data, response) = try await session.data(for: request)
         return try Self.decodeUploadResponse(data: data, response: response)
@@ -1127,9 +1202,12 @@ private final class TelemetryUploader {
     func uploadSynchronously(
         events: [TelemetryQueuedEvent],
         timeout: TimeInterval,
-        device: DeviceTelemetrySnapshot? = nil
+        device: DeviceTelemetrySnapshot? = nil,
+        signer: TelemetryRequestSigner? = nil,
+        clientID: String? = nil
     ) throws -> TelemetryUploadResponse {
-        let request = try makeRequest(events: events, timeout: timeout, device: device)
+        let request = try makeRequest(events: events, timeout: timeout, device: device,
+                                      signer: signer, clientID: clientID)
         let semaphore = DispatchSemaphore(value: 0)
         let outcome = Mutex<TelemetrySynchronousUploadOutcome?>(nil)
 
@@ -1173,7 +1251,9 @@ private final class TelemetryUploader {
     private func makeRequest(
         events: [TelemetryQueuedEvent],
         timeout: TimeInterval,
-        device: DeviceTelemetrySnapshot?
+        device: DeviceTelemetrySnapshot?,
+        signer: TelemetryRequestSigner?,
+        clientID: String?
     ) throws -> URLRequest {
         guard let first = events.first else {
             throw URLError(.badURL)
@@ -1201,6 +1281,17 @@ private final class TelemetryUploader {
         request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(requestBody)
+
+        if let signer, let clientID,
+           let headers = signer.sign(method: "POST",
+                                     path: "/api/v1/telemetry/events/batch",
+                                     body: request.httpBody ?? Data(),
+                                     clientID: clientID) {
+            request.setValue(headers.clientID, forHTTPHeaderField: "X-Client-Id")
+            request.setValue(headers.timestamp, forHTTPHeaderField: "X-Timestamp")
+            request.setValue(headers.nonce, forHTTPHeaderField: "X-Nonce")
+            request.setValue(headers.signature, forHTTPHeaderField: "X-Signature")
+        }
         return request
     }
 
@@ -1222,8 +1313,13 @@ private final class TelemetryUploader {
         data: Data,
         response: URLResponse
     ) throws -> TelemetryUploadResponse {
-        guard let httpResponse = response as? HTTPURLResponse,
-              (200..<300).contains(httpResponse.statusCode) else {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        if httpResponse.statusCode == 401 {
+            throw TelemetryUploadError.unauthorized
+        }
+        guard (200..<300).contains(httpResponse.statusCode) else {
             throw URLError(.badServerResponse)
         }
         let decoder = JSONDecoder()
