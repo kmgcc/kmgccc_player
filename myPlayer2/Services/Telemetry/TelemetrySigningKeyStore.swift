@@ -10,17 +10,19 @@ final class TelemetrySigningKeyStore {
     static let shared = TelemetrySigningKeyStore()
 
     private let tag = "cn.kmgccc.player.telemetry.signingKey".data(using: .utf8)!
+    private let fallbackTag = "cn.kmgccc.player.telemetry.signingKey.fallback".data(using: .utf8)!
     private var cachedKey: SecKey?
+    private lazy var keychainAccessGroup: String? = Self.currentKeychainAccessGroup()
 
     /// Returns the existing private key or creates one. Returns nil only if the
     /// Secure Enclave is unavailable or key creation fails.
     func privateKey() -> SecKey? {
         if let cachedKey { return cachedKey }
-        if let existing = loadKey() {
+        if let existing = loadKey(tag: tag) ?? loadKey(tag: fallbackTag) {
             cachedKey = existing
             return existing
         }
-        let created = createKey()
+        let created = createKey(tag: tag, secureEnclave: true) ?? createKey(tag: fallbackTag, secureEnclave: false)
         cachedKey = created
         return created
     }
@@ -48,13 +50,16 @@ final class TelemetrySigningKeyStore {
         return sig.base64EncodedString()
     }
 
-    private func loadKey() -> SecKey? {
-        let query: [String: Any] = [
+    private func loadKey(tag: Data) -> SecKey? {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassKey,
             kSecAttrApplicationTag as String: tag,
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecReturnRef as String: true,
         ]
+        if let keychainAccessGroup {
+            query[kSecAttrAccessGroup as String] = keychainAccessGroup
+        }
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else {
             return nil
@@ -62,7 +67,7 @@ final class TelemetrySigningKeyStore {
         return (item as! SecKey)
     }
 
-    private func createKey() -> SecKey? {
+    private func createKey(tag: Data, secureEnclave: Bool) -> SecKey? {
         var acError: Unmanaged<CFError>?
         guard let access = SecAccessControlCreateWithFlags(
             kCFAllocatorDefault,
@@ -70,19 +75,60 @@ final class TelemetrySigningKeyStore {
             .privateKeyUsage,
             &acError
         ) else {
+            if let acError {
+                Log.warning("[TelemetrySigning] access control creation failed: \(acError.takeRetainedValue())", category: .telemetry)
+            }
             return nil
         }
-        let attributes: [String: Any] = [
+        var attributes: [String: Any] = [
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecAttrKeySizeInBits as String: 256,
-            kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
             kSecPrivateKeyAttrs as String: [
                 kSecAttrIsPermanent as String: true,
                 kSecAttrApplicationTag as String: tag,
                 kSecAttrAccessControl as String: access,
             ],
         ]
+        if let keychainAccessGroup {
+            attributes[kSecAttrAccessGroup as String] = keychainAccessGroup
+        }
+        if secureEnclave {
+            attributes[kSecAttrTokenID as String] = kSecAttrTokenIDSecureEnclave
+        }
         var error: Unmanaged<CFError>?
-        return SecKeyCreateRandomKey(attributes as CFDictionary, &error)
+        if let key = SecKeyCreateRandomKey(attributes as CFDictionary, &error) {
+            Log.info(
+                "[TelemetrySigning] created \(secureEnclave ? "Secure Enclave" : "Keychain") signing key",
+                category: .telemetry
+            )
+            return key
+        }
+        if let error {
+            Log.warning(
+                "[TelemetrySigning] \(secureEnclave ? "Secure Enclave" : "Keychain") key creation failed: \(error.takeRetainedValue())",
+                category: .telemetry
+            )
+        }
+        return nil
+    }
+
+    private static func currentKeychainAccessGroup() -> String? {
+        var error: Unmanaged<CFError>?
+        guard let task = SecTaskCreateFromSelf(kCFAllocatorDefault),
+              let value = SecTaskCopyValueForEntitlement(
+                task,
+                "keychain-access-groups" as CFString,
+                &error
+              ) else {
+            if let error {
+                Log.warning("[TelemetrySigning] keychain access group entitlement missing: \(error.takeRetainedValue())", category: .telemetry)
+            }
+            return nil
+        }
+        guard let groups = value as? [String], let group = groups.first, !group.isEmpty else {
+            Log.warning("[TelemetrySigning] keychain access group entitlement is empty", category: .telemetry)
+            return nil
+        }
+        return group
     }
 }

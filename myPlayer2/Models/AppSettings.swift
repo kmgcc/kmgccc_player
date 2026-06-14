@@ -1023,10 +1023,62 @@ public final class AppSettings {
         var id: String { rawValue }
     }
 
-    /// Fullscreen player artwork scale (0.8 to 1.5, default 1.20)
-    @ObservationIgnored
-    @AppStorage("fullscreenArtworkScale") var fullscreenArtworkScale: Double =
-        FullscreenDefaults.artworkScale
+    /// Fullscreen player artwork scale (default varies by skin, stored per skin ID)
+    var fullscreenArtworkScale: Double {
+        get {
+            access(keyPath: \.fullscreenArtworkScale)
+            _ = fullscreen.skinID
+            return artworkScale(for: fullscreen.skinID)
+        }
+        set {
+            withMutation(keyPath: \.fullscreenArtworkScale) {
+                setArtworkScale(newValue, for: fullscreen.skinID)
+            }
+        }
+    }
+
+    public static func defaultArtworkScale(for skinID: String) -> Double {
+        switch skinID {
+        case "kmgccc.cassette":
+            return 1.25
+        case "rotatingCover":
+            return 1.1
+        case "appleStyle":
+            return 1.1
+        case "coverLed":
+            return 1.1
+        default:
+            return 1.1
+        }
+    }
+
+    public static func maxArtworkScale(for skinID: String) -> Double {
+        switch skinID {
+        case "coverLed":
+            return 1.35
+        case "appleStyle":
+            return 1.45
+        case "rotatingCover":
+            return 1.35
+        default:
+            return 1.6
+        }
+    }
+
+    public func artworkScale(for skinID: String) -> Double {
+        let key = "fullscreenArtworkScale_" + skinID.replacingOccurrences(of: ".", with: "_")
+        let defaultVal = Self.defaultArtworkScale(for: skinID)
+        let scale = UserDefaults.standard.object(forKey: key) as? Double ?? defaultVal
+        let maxVal = Self.maxArtworkScale(for: skinID)
+        return min(max(scale, 0.9), maxVal)
+    }
+
+    public func setArtworkScale(_ scale: Double, for skinID: String) {
+        let key = "fullscreenArtworkScale_" + skinID.replacingOccurrences(of: ".", with: "_")
+        let maxVal = Self.maxArtworkScale(for: skinID)
+        let clamped = min(max(scale, 0.9), maxVal)
+        UserDefaults.standard.set(clamped, forKey: key)
+    }
 
     /// Fullscreen player lyrics font size multiplier (1.0 to 3.0, default 2.0)
     @ObservationIgnored

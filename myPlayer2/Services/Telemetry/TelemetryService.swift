@@ -316,16 +316,20 @@ final class TelemetryService: NSObject {
     }
 
     /// Ensures the signing key is registered before signed uploads. Idempotent;
-    /// no-ops once UserDefaults records success. Safe to call when consent is on.
-    private func ensureRegistered() async {
-        guard consentStore.isEnabled else { return }
+    /// no-ops once UserDefaults records success. Safe for install-seen-only uploads
+    /// because those are already sent even when usage telemetry is disabled.
+    private func ensureRegistered() async -> Bool {
         if UserDefaults.standard.integer(forKey: TelemetryDefaults.signingRegisteredKey) >= 1 {
-            return
+            if TelemetrySigningKeyStore.shared.publicKeyBase64() != nil {
+                return true
+            }
+            UserDefaults.standard.set(0, forKey: TelemetryDefaults.signingRegisteredKey)
         }
         let ok = await uploader.registerSigningKey(clientID: identityStore.installID, signer: signer)
         if ok {
             UserDefaults.standard.set(1, forKey: TelemetryDefaults.signingRegisteredKey)
         }
+        return ok
     }
 
     private func flushQueue() {
@@ -338,10 +342,11 @@ final class TelemetryService: NSObject {
         uploadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                await self.ensureRegistered()
+                let canSign = await self.ensureRegistered()
                 let response = try await uploader.upload(
                     events: events, device: device,
-                    signer: self.signer, clientID: clientID)
+                    signer: canSign ? self.signer : nil,
+                    clientID: canSign ? clientID : nil)
                 try Task.checkCancellation()
                 await MainActor.run {
                     self.applyUploadResponse(response, uploadedEvents: events)
@@ -388,10 +393,16 @@ final class TelemetryService: NSObject {
         let events = queue.pendingEvents().filter { $0.eventType == "app_install_seen" }
         guard !events.isEmpty else { return }
 
+        let clientID = identityStore.installID
         uploadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let response = try await uploader.upload(events: events)
+                let canSign = await self.ensureRegistered()
+                let response = try await uploader.upload(
+                    events: events,
+                    signer: canSign ? self.signer : nil,
+                    clientID: canSign ? clientID : nil
+                )
                 try Task.checkCancellation()
                 await MainActor.run {
                     self.applyUploadResponse(response, uploadedEvents: events)
