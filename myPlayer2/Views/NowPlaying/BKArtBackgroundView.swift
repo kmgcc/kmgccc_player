@@ -484,19 +484,22 @@ private final class BKArtBackgroundLayerView: NSView {
         nonisolated let backgroundSourceIndices: [Int]
         nonisolated let shapes: BKThemeAssets.ShapeLoadResult
         nonisolated let maskFrames: [CGImage]
+        nonisolated let fullscreenCircleImages: [CGImage]
 
         nonisolated init(
             budget: BKThemeAssets.PixelBudget,
             backgroundImages: [CGImage],
             backgroundSourceIndices: [Int],
             shapes: BKThemeAssets.ShapeLoadResult,
-            maskFrames: [CGImage]
+            maskFrames: [CGImage],
+            fullscreenCircleImages: [CGImage]
         ) {
             self.budget = budget
             self.backgroundImages = backgroundImages
             self.backgroundSourceIndices = backgroundSourceIndices
             self.shapes = shapes
             self.maskFrames = maskFrames
+            self.fullscreenCircleImages = fullscreenCircleImages
         }
     }
 
@@ -572,10 +575,14 @@ private final class BKArtBackgroundLayerView: NSView {
         var maskSmall: CALayer?
         var cellBig: CAShapeLayer?  // Reference to replicator prototype or similar if we want to change color
         var cellSmall: CAShapeLayer?
+        var circleImageLayer: CALayer?
+        var circleImageSource: CGImage?
 
         var anim: DotAnimState
         var color: CGColor?
         let colorSeed: UInt64
+        var rotationBaseAngle: CGFloat
+        var rotationTravelAngle: CGFloat
 
         var baseRadius: CGFloat
         var radiusBig: CGFloat
@@ -591,6 +598,8 @@ private final class BKArtBackgroundLayerView: NSView {
             self.radiusSmall = 0
             self.maskBaseRadiusBig = max(1, baseRadius * 0.75)
             self.maskBaseRadiusSmall = max(1, baseRadius)
+            self.rotationBaseAngle = 0
+            self.rotationTravelAngle = 0
         }
     }
 
@@ -657,6 +666,8 @@ private final class BKArtBackgroundLayerView: NSView {
         scaleByIndex: [:],
         edgePinnedIndices: []
     )
+    private var loadedFullscreenCircleImages: [CGImage] = []
+    private var loadedFullscreenCircleMaxPixel = 0
     private var loadedMaskFrames: [CGImage] = []
     private var loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0)
     private var loadedBackgroundSourceIndices: [Int] = []
@@ -709,6 +720,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private static let solidCircleFrameIntervalNanos: Int = 33_333_333
     private static let fullscreenDiagnosticsEnabled =
         ProcessInfo.processInfo.environment["KMGCCC_FULLSCREEN_BK_DIAGNOSTICS"] == "1"
+    private nonisolated static let circleTintContext = CIContext(options: [.cacheIntermediates: false])
 
     // Style Selector State
     private var lastStyle: BackgroundStyle?
@@ -1593,6 +1605,61 @@ private final class BKArtBackgroundLayerView: NSView {
         return root
     }
 
+    private func fullscreenCircleImagesForSolidCircle() -> [CGImage] {
+        if dotRenderStyle == .solidCircles, loadedFullscreenCircleImages.count < 2 {
+            let budget = currentAssetBudget().background
+            loadedFullscreenCircleImages = assets.fullscreenCircleImages(maxPixel: budget)
+            loadedFullscreenCircleMaxPixel = budget
+        }
+        return loadedFullscreenCircleImages
+    }
+
+    private func makeCircleImageLayer(
+        image: CGImage,
+        side: CGFloat,
+        position: CGPoint,
+        opacity: Float,
+        zPosition: CGFloat
+    ) -> CALayer {
+        let layer = CALayer()
+        layer.bounds = CGRect(x: 0, y: 0, width: side, height: side)
+        layer.position = position
+        layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        layer.opacity = opacity
+        layer.zPosition = zPosition
+        layer.contentsGravity = .resizeAspect
+        layer.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
+        layer.minificationFilter = .trilinear
+        layer.magnificationFilter = .linear
+        layer.allowsEdgeAntialiasing = true
+        layer.contents = image
+        return layer
+    }
+
+    private nonisolated static func tintedCircleImage(from image: CGImage, tint: CGColor) -> CGImage? {
+        let nsColor = NSColor(cgColor: tint) ?? .white
+        let rgb = nsColor.usingColorSpace(.deviceRGB) ?? nsColor
+        let input = CIImage(cgImage: image)
+        let tinted = input.applyingFilter(
+            "CIColorMatrix",
+            parameters: [
+                "inputRVector": CIVector(x: rgb.redComponent, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: rgb.greenComponent, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: rgb.blueComponent, w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: rgb.alphaComponent),
+            ]
+        )
+        let outputSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let rendered = circleTintContext.createCGImage(
+            tinted,
+            from: input.extent,
+            format: .RGBA8,
+            colorSpace: outputSpace
+        )
+        circleTintContext.clearCaches()
+        return rendered
+    }
+
     private func startTimersIfNeeded() {
         guard window != nil, !isPausedFrozen else { return }
         startBackgroundTimerIfNeeded()
@@ -1710,6 +1777,7 @@ private final class BKArtBackgroundLayerView: NSView {
         assetSnapshotGeneration &+= 1
         let generation = assetSnapshotGeneration
         let assets = self.assets
+        let shouldLoadFullscreenCircleImages = dotRenderStyle == .solidCircles
 
         assetSnapshotTask = Task { [weak self] in
             let snapshot = await Task.detached(priority: .userInitiated) {
@@ -1719,6 +1787,9 @@ private final class BKArtBackgroundLayerView: NSView {
                     maxPixel: budget.background
                 )
                 let shapes = assets.shapes(maxPixel: budget.shape)
+                let fullscreenCircleImages = shouldLoadFullscreenCircleImages
+                    ? assets.fullscreenCircleImages(maxPixel: budget.background)
+                    : []
                 let maskFrames: [CGImage]
                 if includeMasks {
                     maskFrames = assets.maskFrames(maxPixel: budget.mask)
@@ -1731,7 +1802,8 @@ private final class BKArtBackgroundLayerView: NSView {
                     backgroundImages: loadedBackgroundSet.images,
                     backgroundSourceIndices: loadedBackgroundSet.indices,
                     shapes: shapes,
-                    maskFrames: maskFrames
+                    maskFrames: maskFrames,
+                    fullscreenCircleImages: fullscreenCircleImages
                 )
             }.value
 
@@ -1780,6 +1852,8 @@ private final class BKArtBackgroundLayerView: NSView {
         loadedBackgrounds = snapshot.backgroundImages
         loadedBackgroundSourceIndices = snapshot.backgroundSourceIndices
         loadedShapes = snapshot.shapes
+        loadedFullscreenCircleImages = snapshot.fullscreenCircleImages
+        loadedFullscreenCircleMaxPixel = snapshot.budget.background
         loadedMaskFrames = snapshot.maskFrames
         tintedBackgroundCache.removeAllObjects()
         prewarmTintedBackgroundsIfNeeded()
@@ -1963,6 +2037,11 @@ private final class BKArtBackgroundLayerView: NSView {
         CATransaction.setDisableActions(true)
         slot.cellBig?.fillColor = slot.color
         slot.cellSmall?.fillColor = slot.color
+        if let layer = slot.circleImageLayer,
+           let source = slot.circleImageSource,
+           let tinted = Self.tintedCircleImage(from: source, tint: withAlpha) {
+            layer.contents = tinted
+        }
         CATransaction.commit()
     }
 
@@ -2468,8 +2547,14 @@ private final class BKArtBackgroundLayerView: NSView {
     )
 
     private nonisolated static func toneMap(image: CIImage, isDark: Bool) -> CIImage {
-        guard isDark else { return image }
-        return image
+        image.applyingFilter(
+            "CIColorControls",
+            parameters: [
+                kCIInputSaturationKey: 1.0,
+                kCIInputContrastKey: isDark ? 1.035 : 1.015,
+                kCIInputBrightnessKey: isDark ? -0.035 : 0.032,
+            ]
+        )
     }
 
     private func imageVariantTuning(for colors: [NSColor]) -> ImageVariantTuning {
@@ -2530,6 +2615,20 @@ private final class BKArtBackgroundLayerView: NSView {
             mapAlpha = max(mapAlpha, 0.84)
             originalSaturation = min(originalSaturation, 0.12)
             composedBoost = max(composedBoost, 1.16)
+        }
+        let hasTrustedTint =
+            currentAnalysis?.hasTrustedHueCandidate
+            ?? (!harmonized.isGrayscaleCover && coverAvgS >= 0.12)
+        if harmonized.isDark, hasTrustedTint, !harmonized.isGrayscaleCover {
+            let chromaEvidence = max(avgS, coverAvgS)
+            let vividT = max(0, min(1, (chromaEvidence - 0.10) / 0.34))
+            let darkT = max(0, min(1, (0.36 - harmonized.imageCoverLuma) / 0.30))
+            mapAlpha = max(mapAlpha, min(0.96, lerp(0.88, 0.95, t: vividT) + darkT * 0.02))
+            originalSaturation = min(originalSaturation, lerp(0.10, 0.055, t: vividT))
+            composedBoost = max(
+                composedBoost,
+                min(1.34, 1.14 + vividT * 0.14 + darkT * 0.06)
+            )
         }
 
         return ImageVariantTuning(
@@ -2592,7 +2691,38 @@ private final class BKArtBackgroundLayerView: NSView {
         let minB: CGFloat = harmonized.isDark ? 0.10 : 0.22
         let clampedS = max(minS, min(1.0, s))
         let clampedB = max(minB, min(1.0, b))
-        return NSColor(deviceHue: h, saturation: clampedS, brightness: clampedB, alpha: a)
+        let hsbAdjusted = NSColor(deviceHue: h, saturation: clampedS, brightness: clampedB, alpha: a)
+        return energizedDarkImageTone(hsbAdjusted)
+    }
+
+    private func energizedDarkImageTone(_ color: NSColor) -> NSColor {
+        guard harmonized.isDark,
+              !harmonized.isGrayscaleCover
+        else {
+            return color
+        }
+
+        let hasTrustedTint =
+            currentAnalysis?.hasTrustedHueCandidate
+            ?? (harmonized.coverAvgS >= 0.12)
+        guard hasTrustedTint,
+              let lch = OKColor.nsColorToOKLCH(color),
+              lch.c >= 0.018
+        else {
+            return color
+        }
+
+        let chromaEvidence = max(harmonized.coverAvgS, lch.c * 2.4)
+        let vividT = max(0, min(1, (chromaEvidence - 0.12) / 0.36))
+        let lowLightT = max(0, min(1, (0.38 - lch.l) / 0.24))
+        let floorC = min(0.070, lch.c + lowLightT * vividT * 0.026)
+        let scaledC = max(floorC, lch.c * (1.0 + lowLightT * (0.30 + vividT * 0.20)))
+        let shouldered = OKColor.chromaSoftShoulder(
+            OKColor.OKLCH(l: lch.l, c: scaledC, h: lch.h),
+            ceiling: 0.116,
+            softness: 0.034
+        )
+        return OKColor.okLCHToNSColor(shouldered, alpha: color.alphaComponent)
     }
 
     private nonisolated static func makeColorMapImage(colors: [ToneStopComponent]) -> CIImage? {
@@ -2687,9 +2817,17 @@ private final class BKArtBackgroundLayerView: NSView {
         let backgroundBudgetChanged = budget.background != loadedBudget.background
         let shapeBudgetChanged = budget.shape != loadedBudget.shape
         let maskBudgetChanged = budget.mask != loadedBudget.mask
+        let circleBudgetChanged =
+            dotRenderStyle == .solidCircles
+            && budget.background != loadedFullscreenCircleMaxPixel
         let backgroundSetChanged = targetBackgroundIndices != loadedBackgroundSourceIndices
 
-        guard backgroundBudgetChanged || shapeBudgetChanged || maskBudgetChanged || backgroundSetChanged else {
+        guard backgroundBudgetChanged
+            || shapeBudgetChanged
+            || maskBudgetChanged
+            || circleBudgetChanged
+            || backgroundSetChanged
+        else {
             if allowMaskWarmup {
                 startMaskWarmupIfNeeded(maskBudget: budget.mask)
             }
@@ -2714,6 +2852,10 @@ private final class BKArtBackgroundLayerView: NSView {
         loadedBackgroundSourceIndices = loadedBackgroundSet.indices
         if shapeBudgetChanged || loadedShapes.images.isEmpty {
             loadedShapes = assets.shapes(maxPixel: budget.shape)
+        }
+        if dotRenderStyle == .solidCircles, circleBudgetChanged || loadedFullscreenCircleImages.isEmpty {
+            loadedFullscreenCircleImages = assets.fullscreenCircleImages(maxPixel: budget.background)
+            loadedFullscreenCircleMaxPixel = budget.background
         }
         loadedMaskFrames = assets.cachedMaskFrames(maxPixel: budget.mask) ?? []
         tintedBackgroundCache.removeAllObjects()
@@ -2873,6 +3015,8 @@ private final class BKArtBackgroundLayerView: NSView {
         loadedBackgrounds.removeAll(keepingCapacity: false)
         loadedBackgroundSourceIndices.removeAll(keepingCapacity: false)
         loadedShapes = BKThemeAssets.ShapeLoadResult(images: [], scaleByIndex: [:], edgePinnedIndices: [])
+        loadedFullscreenCircleImages.removeAll(keepingCapacity: false)
+        loadedFullscreenCircleMaxPixel = 0
         loadedMaskFrames.removeAll(keepingCapacity: false)
         loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0)
         backgroundAssetMode = .currentPhaseLowRes
@@ -2947,6 +3091,8 @@ private final class BKArtBackgroundLayerView: NSView {
             slot.cellSmall = nil
             slot.maskBig = nil
             slot.maskSmall = nil
+            slot.circleImageLayer = nil
+            slot.circleImageSource = nil
             slot.rootLayer.removeAllAnimations()
             slot.rootLayer.sublayers?.forEach { sublayer in
                 sublayer.removeAllAnimations()
@@ -3092,48 +3238,73 @@ private final class BKArtBackgroundLayerView: NSView {
         slot.radiusSmall = CGFloat(rng.next(in: 3.0...4.0))
         slot.maskBaseRadiusBig = max(1, dotBaseRadius * 0.75)
         slot.maskBaseRadiusSmall = max(1, dotBaseRadius)
+        slot.rotationBaseAngle = CGFloat(rng.next(in: 0...(Double.pi * 2)))
+        let rotationDirection: CGFloat = rng.next(in: 0.0...1.0) >= 0.5 ? 1 : -1
+        slot.rotationTravelAngle = rotationDirection * CGFloat(rng.next(in: (Double.pi * 0.45)...(Double.pi * 0.95)))
 
         slot.rootLayer.frame = root.bounds
 
         // 3. Build Layer Tree for this Slot
         if dotRenderStyle == .solidCircles {
-            let solid1 = CAShapeLayer()
-            solid1.bounds = CGRect(
-                x: 0,
-                y: 0,
-                width: slot.maskBaseRadiusBig * 2,
-                height: slot.maskBaseRadiusBig * 2
-            )
-            solid1.path = CGPath(ellipseIn: solid1.bounds, transform: nil)
-            solid1.position = anim.start
-            solid1.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            solid1.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
-            solid1.opacity = 0.68
-            solid1.zPosition = 1
-            slot.rootLayer.addSublayer(solid1)
-            slot.cellBig = solid1
-            slot.maskBig = solid1
+            let circleImages = fullscreenCircleImagesForSolidCircle()
+            if !circleImages.isEmpty {
+                let imageIndex = Int(rng.nextUInt64() % UInt64(circleImages.count))
+                let source = circleImages[imageIndex]
+                let imageLayer = makeCircleImageLayer(
+                    image: source,
+                    side: slot.maskBaseRadiusSmall * 2,
+                    position: anim.start,
+                    opacity: 0.68,
+                    zPosition: 0
+                )
+                imageLayer.shadowColor = NSColor.black.cgColor
+                imageLayer.shadowOpacity = 0.18
+                imageLayer.shadowRadius = max(12, slot.maskBaseRadiusSmall * 0.12)
+                imageLayer.shadowOffset = .zero
+                imageLayer.setAffineTransform(CGAffineTransform(rotationAngle: slot.rotationBaseAngle))
+                slot.rootLayer.addSublayer(imageLayer)
+                slot.circleImageLayer = imageLayer
+                slot.circleImageSource = source
+                slot.maskSmall = imageLayer
+            } else {
+                let solid1 = CAShapeLayer()
+                solid1.bounds = CGRect(
+                    x: 0,
+                    y: 0,
+                    width: slot.maskBaseRadiusBig * 2,
+                    height: slot.maskBaseRadiusBig * 2
+                )
+                solid1.path = CGPath(ellipseIn: solid1.bounds, transform: nil)
+                solid1.position = anim.start
+                solid1.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+                solid1.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
+                solid1.opacity = 0.68
+                solid1.zPosition = 1
+                slot.rootLayer.addSublayer(solid1)
+                slot.cellBig = solid1
+                slot.maskBig = solid1
 
-            let solid2 = CAShapeLayer()
-            solid2.bounds = CGRect(
-                x: 0,
-                y: 0,
-                width: slot.maskBaseRadiusSmall * 2,
-                height: slot.maskBaseRadiusSmall * 2
-            )
-            solid2.path = CGPath(ellipseIn: solid2.bounds, transform: nil)
-            solid2.position = anim.start
-            solid2.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            solid2.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
-            solid2.opacity = 0.48
-            solid2.zPosition = 0
-            slot.rootLayer.addSublayer(solid2)
-            slot.cellSmall = solid2
-            solid2.shadowColor = NSColor.black.cgColor
-            solid2.shadowOpacity = 0.18
-            solid2.shadowRadius = max(12, slot.maskBaseRadiusSmall * 0.12)
-            solid2.shadowOffset = .zero
-            slot.maskSmall = solid2
+                let solid2 = CAShapeLayer()
+                solid2.bounds = CGRect(
+                    x: 0,
+                    y: 0,
+                    width: slot.maskBaseRadiusSmall * 2,
+                    height: slot.maskBaseRadiusSmall * 2
+                )
+                solid2.path = CGPath(ellipseIn: solid2.bounds, transform: nil)
+                solid2.position = anim.start
+                solid2.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+                solid2.fillColor = NSColor(white: 0.3, alpha: 1.0).cgColor
+                solid2.opacity = 0.48
+                solid2.zPosition = 0
+                slot.rootLayer.addSublayer(solid2)
+                slot.cellSmall = solid2
+                solid2.shadowColor = NSColor.black.cgColor
+                solid2.shadowOpacity = 0.18
+                solid2.shadowRadius = max(12, slot.maskBaseRadiusSmall * 0.12)
+                solid2.shadowOffset = .zero
+                slot.maskSmall = solid2
+            }
         } else {
             let dotSpacing: CGFloat = 30
             let cols = Int(baseSize / dotSpacing) + 6
@@ -3186,7 +3357,11 @@ private final class BKArtBackgroundLayerView: NSView {
             slot.maskSmall = mask2
         }
 
-        // 4. Add to container. Tint is assigned when this slot enters moving.
+        if dotRenderStyle == .solidCircles {
+            applyDotColor(to: slot, colorSeed: slot.colorSeed)
+        }
+
+        // 4. Add to container.
         root.addSublayer(slot.rootLayer)
         container.dotSlots.append(slot)
     }
@@ -3449,7 +3624,15 @@ private final class BKArtBackgroundLayerView: NSView {
                     let targetR1 = max(1, currentR)
                     let scale1 = targetR1 / max(1, slot.maskBaseRadiusSmall)
                     mask1.position = pos
-                    mask1.setAffineTransform(CGAffineTransform(scaleX: scale1, y: scale1))
+                    if slot.circleImageLayer === mask1 {
+                        let rotationT = Self.circleRotationProgress(at: min(1.0, max(0.0, nextT)))
+                        let angle = slot.rotationBaseAngle + slot.rotationTravelAngle * CGFloat(rotationT)
+                        mask1.setAffineTransform(
+                            CGAffineTransform(rotationAngle: angle).scaledBy(x: scale1, y: scale1)
+                        )
+                    } else {
+                        mask1.setAffineTransform(CGAffineTransform(scaleX: scale1, y: scale1))
+                    }
                 }
 
                 CATransaction.commit()
@@ -3496,6 +3679,16 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func easeInQuint(_ x: Double) -> Double {
         return x * x * x * x * x
+    }
+
+    private nonisolated static func circleRotationProgress(at t: Double) -> Double {
+        let p = min(1.0, max(0.0, t))
+        let edgeWeightedIntegral = (4.0 / 3.0) * p * p * p - 2.0 * p * p + p
+        let totalIntegral = 1.0 / 3.0
+        let baseVelocity = 0.55
+        let edgeBoost = 1.25
+        return (baseVelocity * p + edgeBoost * edgeWeightedIntegral)
+            / (baseVelocity + edgeBoost * totalIntegral)
     }
 
     private func randomOffscreenPoint(

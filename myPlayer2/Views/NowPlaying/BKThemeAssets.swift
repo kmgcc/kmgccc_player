@@ -71,12 +71,14 @@ final class BKThemeAssets: @unchecked Sendable {
     private let shapeEntries: [ShapeEntry]
     private let maskFrameEntries: [AssetEntry]
     private let artworkFrameEntries: [AssetEntry]
+    private let fullscreenCircleEntries: [AssetEntry]
     private let usePlainArtAssetsInDebug: Bool
 
     private nonisolated(unsafe) let backgroundCache = NSCache<NSString, ImageArrayBox>()
     private nonisolated(unsafe) let shapeCache = NSCache<NSString, ShapeLoadResultBox>()
     private nonisolated(unsafe) let maskCache = NSCache<NSString, ImageArrayBox>()
     private nonisolated(unsafe) let artworkFrameCache = NSCache<NSString, ImageArrayBox>()
+    private nonisolated(unsafe) let fullscreenCircleCache = NSCache<NSString, ImageArrayBox>()
     private let encryptedLoader = EncryptedArtAssetLoader.shared
 
     private nonisolated static let maskProcessingContext = CIContext(options: [.cacheIntermediates: false])
@@ -102,6 +104,10 @@ final class BKThemeAssets: @unchecked Sendable {
             from: resolvedBundle,
             preferPlain: usePlainArtAssetsInDebug
         )
+        self.fullscreenCircleEntries = Self.resolveFullscreenCircleEntries(
+            from: resolvedBundle,
+            preferPlain: usePlainArtAssetsInDebug
+        )
 
         backgroundCache.countLimit = 4
         backgroundCache.totalCostLimit = 32 * 1024 * 1024
@@ -111,6 +117,8 @@ final class BKThemeAssets: @unchecked Sendable {
         maskCache.totalCostLimit = 48 * 1024 * 1024
         artworkFrameCache.countLimit = 12
         artworkFrameCache.totalCostLimit = 24 * 1024 * 1024
+        fullscreenCircleCache.countLimit = 2
+        fullscreenCircleCache.totalCostLimit = 16 * 1024 * 1024
     }
 
     nonisolated func backgrounds(maxPixel: Int) -> [CGImage] {
@@ -232,11 +240,24 @@ final class BKThemeAssets: @unchecked Sendable {
         return image
     }
 
+    nonisolated func fullscreenCircleImages(maxPixel: Int) -> [CGImage] {
+        let key = "fullscreen-circle-\(maxPixel)" as NSString
+        if let cached = fullscreenCircleCache.object(forKey: key) {
+            return cached.images
+        }
+
+        let images = fullscreenCircleEntries.compactMap { downsampledImage(from: $0, maxPixel: maxPixel) }
+        let box = ImageArrayBox(images: images)
+        fullscreenCircleCache.setObject(box, forKey: key, cost: Self.byteCost(for: images))
+        return images
+    }
+
     nonisolated func purgeTransientCaches() {
         backgroundCache.removeAllObjects()
         shapeCache.removeAllObjects()
         maskCache.removeAllObjects()
         artworkFrameCache.removeAllObjects()
+        fullscreenCircleCache.removeAllObjects()
         Self.maskProcessingContext.clearCaches()
         encryptedLoader.purgeCache()
     }
@@ -438,6 +459,28 @@ final class BKThemeAssets: @unchecked Sendable {
                             forResource: name,
                             withExtension: "png",
                             subdirectory: "BKThemes/ArtworkFrame"
+                        )
+                    }.first
+                : nil
+            guard encryptedExists || plainURL != nil else { return nil }
+            return AssetEntry(logicalName: logicalName, plainURL: plainURL, fileName: "\(name).png")
+        }
+    }
+
+    private static func resolveFullscreenCircleEntries(from bundle: Bundle?, preferPlain: Bool) -> [AssetEntry] {
+        let searchBundles = uniqueBundles([bundle, Bundle.main])
+        return ["bigcir1", "bigcir2"].compactMap { name in
+            let logicalName = "BKThemes/FullscreenCircle/\(name)"
+            let encryptedExists = searchBundles.contains {
+                EncryptedArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
+            }
+            let plainURL = preferPlain
+                ? debugPlainAssetURL(relativePath: "FullscreenCircle/\(name).png")
+                    ?? searchBundles.compactMap {
+                        $0.url(
+                            forResource: name,
+                            withExtension: "png",
+                            subdirectory: "BKThemes/FullscreenCircle"
                         )
                     }.first
                 : nil
