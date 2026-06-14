@@ -37,6 +37,16 @@ final class BKThemeAssets: @unchecked Sendable {
         }
     }
 
+    struct FullscreenCircleLoadResult: @unchecked Sendable {
+        var outerImages: [CGImage]
+        var innerImages: [CGImage]
+
+        nonisolated init(outerImages: [CGImage] = [], innerImages: [CGImage] = []) {
+            self.outerImages = outerImages
+            self.innerImages = innerImages
+        }
+    }
+
     private final class ImageArrayBox: NSObject {
         nonisolated let images: [CGImage]
 
@@ -49,6 +59,14 @@ final class BKThemeAssets: @unchecked Sendable {
         nonisolated let result: ShapeLoadResult
 
         nonisolated init(result: ShapeLoadResult) {
+            self.result = result
+        }
+    }
+
+    private final class FullscreenCircleLoadResultBox: NSObject {
+        nonisolated let result: FullscreenCircleLoadResult
+
+        nonisolated init(result: FullscreenCircleLoadResult) {
             self.result = result
         }
     }
@@ -71,14 +89,15 @@ final class BKThemeAssets: @unchecked Sendable {
     private let shapeEntries: [ShapeEntry]
     private let maskFrameEntries: [AssetEntry]
     private let artworkFrameEntries: [AssetEntry]
-    private let fullscreenCircleEntries: [AssetEntry]
+    private let fullscreenCircleOuterEntries: [AssetEntry]
+    private let fullscreenCircleInnerEntries: [AssetEntry]
     private let usePlainArtAssetsInDebug: Bool
 
     private nonisolated(unsafe) let backgroundCache = NSCache<NSString, ImageArrayBox>()
     private nonisolated(unsafe) let shapeCache = NSCache<NSString, ShapeLoadResultBox>()
     private nonisolated(unsafe) let maskCache = NSCache<NSString, ImageArrayBox>()
     private nonisolated(unsafe) let artworkFrameCache = NSCache<NSString, ImageArrayBox>()
-    private nonisolated(unsafe) let fullscreenCircleCache = NSCache<NSString, ImageArrayBox>()
+    private nonisolated(unsafe) let fullscreenCircleCache = NSCache<NSString, FullscreenCircleLoadResultBox>()
     private let encryptedLoader = EncryptedArtAssetLoader.shared
 
     private nonisolated static let maskProcessingContext = CIContext(options: [.cacheIntermediates: false])
@@ -104,10 +123,12 @@ final class BKThemeAssets: @unchecked Sendable {
             from: resolvedBundle,
             preferPlain: usePlainArtAssetsInDebug
         )
-        self.fullscreenCircleEntries = Self.resolveFullscreenCircleEntries(
+        let fullscreenCircleEntries = Self.resolveFullscreenCircleEntries(
             from: resolvedBundle,
             preferPlain: usePlainArtAssetsInDebug
         )
+        self.fullscreenCircleOuterEntries = fullscreenCircleEntries.outer
+        self.fullscreenCircleInnerEntries = fullscreenCircleEntries.inner
 
         backgroundCache.countLimit = 4
         backgroundCache.totalCostLimit = 32 * 1024 * 1024
@@ -240,16 +261,23 @@ final class BKThemeAssets: @unchecked Sendable {
         return image
     }
 
-    nonisolated func fullscreenCircleImages(maxPixel: Int) -> [CGImage] {
+    nonisolated func fullscreenCircleImages(maxPixel: Int) -> FullscreenCircleLoadResult {
         let key = "fullscreen-circle-\(maxPixel)" as NSString
         if let cached = fullscreenCircleCache.object(forKey: key) {
-            return cached.images
+            return cached.result
         }
 
-        let images = fullscreenCircleEntries.compactMap { downsampledImage(from: $0, maxPixel: maxPixel) }
-        let box = ImageArrayBox(images: images)
-        fullscreenCircleCache.setObject(box, forKey: key, cost: Self.byteCost(for: images))
-        return images
+        let outerImages = fullscreenCircleOuterEntries.compactMap {
+            downsampledImage(from: $0, maxPixel: maxPixel)
+        }
+        let innerImages = fullscreenCircleInnerEntries.compactMap {
+            downsampledImage(from: $0, maxPixel: maxPixel)
+        }
+        let result = FullscreenCircleLoadResult(outerImages: outerImages, innerImages: innerImages)
+        let box = FullscreenCircleLoadResultBox(result: result)
+        let cost = Self.byteCost(for: outerImages) + Self.byteCost(for: innerImages)
+        fullscreenCircleCache.setObject(box, forKey: key, cost: cost)
+        return result
     }
 
     nonisolated func purgeTransientCaches() {
@@ -467,26 +495,37 @@ final class BKThemeAssets: @unchecked Sendable {
         }
     }
 
-    private static func resolveFullscreenCircleEntries(from bundle: Bundle?, preferPlain: Bool) -> [AssetEntry] {
+    private static func resolveFullscreenCircleEntries(
+        from bundle: Bundle?,
+        preferPlain: Bool
+    ) -> (outer: [AssetEntry], inner: [AssetEntry]) {
         let searchBundles = uniqueBundles([bundle, Bundle.main])
-        return ["bigcir1", "bigcir2"].compactMap { name in
-            let logicalName = "BKThemes/FullscreenCircle/\(name)"
-            let encryptedExists = searchBundles.contains {
-                EncryptedArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
+
+        func entries(for names: [String]) -> [AssetEntry] {
+            names.compactMap { name in
+                let logicalName = "BKThemes/FullscreenCircle/\(name)"
+                let encryptedExists = searchBundles.contains {
+                    EncryptedArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
+                }
+                let plainURL = preferPlain
+                    ? debugPlainAssetURL(relativePath: "FullscreenCircle/\(name).png")
+                        ?? searchBundles.compactMap {
+                            $0.url(
+                                forResource: name,
+                                withExtension: "png",
+                                subdirectory: "BKThemes/FullscreenCircle"
+                            )
+                        }.first
+                    : nil
+                guard encryptedExists || plainURL != nil else { return nil }
+                return AssetEntry(logicalName: logicalName, plainURL: plainURL, fileName: "\(name).png")
             }
-            let plainURL = preferPlain
-                ? debugPlainAssetURL(relativePath: "FullscreenCircle/\(name).png")
-                    ?? searchBundles.compactMap {
-                        $0.url(
-                            forResource: name,
-                            withExtension: "png",
-                            subdirectory: "BKThemes/FullscreenCircle"
-                        )
-                    }.first
-                : nil
-            guard encryptedExists || plainURL != nil else { return nil }
-            return AssetEntry(logicalName: logicalName, plainURL: plainURL, fileName: "\(name).png")
         }
+
+        let outer = entries(for: ["bigcir_outer1", "bigcir_outer2"])
+        let inner = entries(for: ["bigcir_inner1", "bigcir_inner2"])
+
+        return (outer, inner)
     }
 
     private nonisolated func downsampledImage(from entry: AssetEntry, maxPixel: Int) -> CGImage? {

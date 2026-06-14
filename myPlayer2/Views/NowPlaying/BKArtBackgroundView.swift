@@ -484,7 +484,7 @@ private final class BKArtBackgroundLayerView: NSView {
         nonisolated let backgroundSourceIndices: [Int]
         nonisolated let shapes: BKThemeAssets.ShapeLoadResult
         nonisolated let maskFrames: [CGImage]
-        nonisolated let fullscreenCircleImages: [CGImage]
+        nonisolated let fullscreenCircleImages: BKThemeAssets.FullscreenCircleLoadResult
 
         nonisolated init(
             budget: BKThemeAssets.PixelBudget,
@@ -492,7 +492,7 @@ private final class BKArtBackgroundLayerView: NSView {
             backgroundSourceIndices: [Int],
             shapes: BKThemeAssets.ShapeLoadResult,
             maskFrames: [CGImage],
-            fullscreenCircleImages: [CGImage]
+            fullscreenCircleImages: BKThemeAssets.FullscreenCircleLoadResult
         ) {
             self.budget = budget
             self.backgroundImages = backgroundImages
@@ -558,6 +558,11 @@ private final class BKArtBackgroundLayerView: NSView {
         case moving(Double)
     }
 
+    private enum FullscreenCircleLayerRole {
+        case outer
+        case inner
+    }
+
     private struct DotAnimState {
         var motion: DotMotionState
         var start: CGPoint
@@ -575,14 +580,18 @@ private final class BKArtBackgroundLayerView: NSView {
         var maskSmall: CALayer?
         var cellBig: CAShapeLayer?  // Reference to replicator prototype or similar if we want to change color
         var cellSmall: CAShapeLayer?
-        var circleImageLayer: CALayer?
-        var circleImageSource: CGImage?
+        var circleOuterImageLayer: CALayer?
+        var circleInnerImageLayer: CALayer?
+        var circleOuterImageSource: CGImage?
+        var circleInnerImageSource: CGImage?
 
         var anim: DotAnimState
         var color: CGColor?
         let colorSeed: UInt64
-        var rotationBaseAngle: CGFloat
-        var rotationTravelAngle: CGFloat
+        var outerRotationBaseAngle: CGFloat
+        var outerRotationTravelAngle: CGFloat
+        var innerRotationBaseAngle: CGFloat
+        var innerRotationTravelAngle: CGFloat
 
         var baseRadius: CGFloat
         var radiusBig: CGFloat
@@ -598,8 +607,10 @@ private final class BKArtBackgroundLayerView: NSView {
             self.radiusSmall = 0
             self.maskBaseRadiusBig = max(1, baseRadius * 0.75)
             self.maskBaseRadiusSmall = max(1, baseRadius)
-            self.rotationBaseAngle = 0
-            self.rotationTravelAngle = 0
+            self.outerRotationBaseAngle = 0
+            self.outerRotationTravelAngle = 0
+            self.innerRotationBaseAngle = 0
+            self.innerRotationTravelAngle = 0
         }
     }
 
@@ -666,7 +677,7 @@ private final class BKArtBackgroundLayerView: NSView {
         scaleByIndex: [:],
         edgePinnedIndices: []
     )
-    private var loadedFullscreenCircleImages: [CGImage] = []
+    private var loadedFullscreenCircleImages = BKThemeAssets.FullscreenCircleLoadResult()
     private var loadedFullscreenCircleMaxPixel = 0
     private var loadedMaskFrames: [CGImage] = []
     private var loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0)
@@ -1636,8 +1647,10 @@ private final class BKArtBackgroundLayerView: NSView {
         return root
     }
 
-    private func fullscreenCircleImagesForSolidCircle() -> [CGImage] {
-        if dotRenderStyle == .solidCircles, loadedFullscreenCircleImages.count < 2 {
+    private func fullscreenCircleImagesForSolidCircle() -> BKThemeAssets.FullscreenCircleLoadResult {
+        if dotRenderStyle == .solidCircles,
+           loadedFullscreenCircleImages.outerImages.count < 2
+            || loadedFullscreenCircleImages.innerImages.count < 2 {
             let budget = currentAssetBudget().background
             loadedFullscreenCircleImages = assets.fullscreenCircleImages(maxPixel: budget)
             loadedFullscreenCircleMaxPixel = budget
@@ -1670,40 +1683,47 @@ private final class BKArtBackgroundLayerView: NSView {
     private nonisolated static func tintedCircleImage(
         from image: CGImage,
         tint: CGColor,
-        invertLuminance: Bool
+        role: FullscreenCircleLayerRole,
+        isDark: Bool
     ) -> CGImage? {
         let nsColor = NSColor(cgColor: tint) ?? .white
         let rgb = nsColor.usingColorSpace(.deviceRGB) ?? nsColor
         let input = CIImage(cgImage: image)
-        
-        let tinted: CIImage
-        if invertLuminance {
-            // Dark Mode: invert asset (making strokes light) and multiply
-            let source = input.applyingFilter("CIColorInvert")
-            tinted = source.applyingFilter(
-                "CIColorMatrix",
+        let source: CIImage
+        if isDark {
+            let brightness: CGFloat
+            let contrast: CGFloat
+            switch role {
+            case .outer:
+                brightness = -0.44
+                contrast = 1.24
+            case .inner:
+                brightness = -0.18
+                contrast = 1.10
+            }
+            source = input.applyingFilter(
+                "CIColorControls",
                 parameters: [
-                    "inputRVector": CIVector(x: rgb.redComponent, y: 0, z: 0, w: 0),
-                    "inputGVector": CIVector(x: 0, y: rgb.greenComponent, z: 0, w: 0),
-                    "inputBVector": CIVector(x: 0, y: 0, z: rgb.blueComponent, w: 0),
-                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: rgb.alphaComponent),
+                    kCIInputSaturationKey: 0.0,
+                    kCIInputContrastKey: contrast,
+                    kCIInputBrightnessKey: brightness,
                 ]
             )
         } else {
-            // Light Mode: paint dark strokes with tint color, keep light areas light (no inversion)
-            // Formula: Out = Src * (1 - Tint) + Tint
-            tinted = input.applyingFilter(
-                "CIColorMatrix",
-                parameters: [
-                    "inputRVector": CIVector(x: 1.0 - rgb.redComponent, y: 0, z: 0, w: 0),
-                    "inputGVector": CIVector(x: 0, y: 1.0 - rgb.greenComponent, z: 0, w: 0),
-                    "inputBVector": CIVector(x: 0, y: 0, z: 1.0 - rgb.blueComponent, w: 0),
-                    "inputAVector": CIVector(x: 0, y: 0, z: 0, w: rgb.alphaComponent),
-                    "inputBiasVector": CIVector(x: rgb.redComponent, y: rgb.greenComponent, z: rgb.blueComponent, w: 0)
-                ]
-            )
+            source = input
         }
-        
+
+        let tinted = source.applyingFilter(
+            "CIColorMatrix",
+            parameters: [
+                "inputRVector": CIVector(x: 1.0 - rgb.redComponent, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: 1.0 - rgb.greenComponent, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: 1.0 - rgb.blueComponent, w: 0),
+                "inputAVector": CIVector(x: 0, y: 0, z: 0, w: rgb.alphaComponent),
+                "inputBiasVector": CIVector(x: rgb.redComponent, y: rgb.greenComponent, z: rgb.blueComponent, w: 0),
+            ]
+        )
+
         let outputSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         let rendered = circleTintContext.createCGImage(
             tinted,
@@ -1844,7 +1864,7 @@ private final class BKArtBackgroundLayerView: NSView {
                 let shapes = assets.shapes(maxPixel: budget.shape)
                 let fullscreenCircleImages = shouldLoadFullscreenCircleImages
                     ? assets.fullscreenCircleImages(maxPixel: budget.background)
-                    : []
+                    : BKThemeAssets.FullscreenCircleLoadResult()
                 let maskFrames: [CGImage]
                 if includeMasks {
                     maskFrames = assets.maskFrames(maxPixel: budget.mask)
@@ -2109,15 +2129,27 @@ private final class BKArtBackgroundLayerView: NSView {
         CATransaction.setDisableActions(true)
         slot.cellBig?.fillColor = slot.color
         slot.cellSmall?.fillColor = slot.color
-        if let layer = slot.circleImageLayer,
-           let source = slot.circleImageSource,
+        if let layer = slot.circleOuterImageLayer,
+           let source = slot.circleOuterImageSource,
            let tinted = Self.tintedCircleImage(
                from: source,
                tint: withAlpha,
-               invertLuminance: harmonized.isDark
+               role: .outer,
+               isDark: harmonized.isDark
            ) {
             layer.contents = tinted
-            layer.opacity = harmonized.isDark ? 0.68 : 0.75
+            layer.opacity = harmonized.isDark ? 0.76 : 0.75
+        }
+        if let layer = slot.circleInnerImageLayer,
+           let source = slot.circleInnerImageSource,
+           let tinted = Self.tintedCircleImage(
+               from: source,
+               tint: withAlpha,
+               role: .inner,
+               isDark: harmonized.isDark
+           ) {
+            layer.contents = tinted
+            layer.opacity = harmonized.isDark ? 0.82 : 0.72
         }
         CATransaction.commit()
     }
@@ -2930,7 +2962,10 @@ private final class BKArtBackgroundLayerView: NSView {
         if shapeBudgetChanged || loadedShapes.images.isEmpty {
             loadedShapes = assets.shapes(maxPixel: budget.shape)
         }
-        if dotRenderStyle == .solidCircles, circleBudgetChanged || loadedFullscreenCircleImages.isEmpty {
+        if dotRenderStyle == .solidCircles,
+           circleBudgetChanged
+            || loadedFullscreenCircleImages.outerImages.isEmpty
+            || loadedFullscreenCircleImages.innerImages.isEmpty {
             loadedFullscreenCircleImages = assets.fullscreenCircleImages(maxPixel: budget.background)
             loadedFullscreenCircleMaxPixel = budget.background
         }
@@ -3092,7 +3127,7 @@ private final class BKArtBackgroundLayerView: NSView {
         loadedBackgrounds.removeAll(keepingCapacity: false)
         loadedBackgroundSourceIndices.removeAll(keepingCapacity: false)
         loadedShapes = BKThemeAssets.ShapeLoadResult(images: [], scaleByIndex: [:], edgePinnedIndices: [])
-        loadedFullscreenCircleImages.removeAll(keepingCapacity: false)
+        loadedFullscreenCircleImages = BKThemeAssets.FullscreenCircleLoadResult()
         loadedFullscreenCircleMaxPixel = 0
         loadedMaskFrames.removeAll(keepingCapacity: false)
         loadedBudget = BKThemeAssets.PixelBudget(background: 0, shape: 0, mask: 0)
@@ -3168,8 +3203,10 @@ private final class BKArtBackgroundLayerView: NSView {
             slot.cellSmall = nil
             slot.maskBig = nil
             slot.maskSmall = nil
-            slot.circleImageLayer = nil
-            slot.circleImageSource = nil
+            slot.circleOuterImageLayer = nil
+            slot.circleInnerImageLayer = nil
+            slot.circleOuterImageSource = nil
+            slot.circleInnerImageSource = nil
             slot.rootLayer.removeAllAnimations()
             slot.rootLayer.sublayers?.forEach { sublayer in
                 sublayer.removeAllAnimations()
@@ -3315,30 +3352,48 @@ private final class BKArtBackgroundLayerView: NSView {
         slot.radiusSmall = CGFloat(rng.next(in: 3.0...4.0))
         slot.maskBaseRadiusBig = max(1, dotBaseRadius * 0.75)
         slot.maskBaseRadiusSmall = max(1, dotBaseRadius)
-        slot.rotationBaseAngle = CGFloat(rng.next(in: 0...(Double.pi * 2)))
-        let rotationDirection: CGFloat = rng.next(in: 0.0...1.0) >= 0.5 ? 1 : -1
-        slot.rotationTravelAngle = rotationDirection * CGFloat(rng.next(in: (Double.pi * 0.45)...(Double.pi * 0.95)))
+        slot.outerRotationBaseAngle = CGFloat(rng.next(in: 0...(Double.pi * 2)))
+        let outerRotationDirection: CGFloat = rng.next(in: 0.0...1.0) >= 0.5 ? 1 : -1
+        slot.outerRotationTravelAngle =
+            outerRotationDirection * CGFloat(rng.next(in: (Double.pi * 0.12)...(Double.pi * 0.50)))
+        slot.innerRotationBaseAngle = CGFloat(rng.next(in: 0...(Double.pi * 2)))
+        let innerRotationDirection: CGFloat = rng.next(in: 0.0...1.0) >= 0.5 ? 1 : -1
+        slot.innerRotationTravelAngle =
+            innerRotationDirection * CGFloat(rng.next(in: (Double.pi * 0.82)...(Double.pi * 1.85)))
 
         slot.rootLayer.frame = root.bounds
 
         // 3. Build Layer Tree for this Slot
         if dotRenderStyle == .solidCircles {
             let circleImages = fullscreenCircleImagesForSolidCircle()
-            if !circleImages.isEmpty {
-                let imageIndex = Int(rng.nextUInt64() % UInt64(circleImages.count))
-                let source = circleImages[imageIndex]
-                let imageLayer = makeCircleImageLayer(
-                    image: source,
-                    side: slot.maskBaseRadiusSmall * 2,
+            if !circleImages.outerImages.isEmpty, !circleImages.innerImages.isEmpty {
+                let outerIndex = Int(rng.nextUInt64() % UInt64(circleImages.outerImages.count))
+                let innerIndex = Int(rng.nextUInt64() % UInt64(circleImages.innerImages.count))
+                let outerSource = circleImages.outerImages[outerIndex]
+                let innerSource = circleImages.innerImages[innerIndex]
+                let side = slot.maskBaseRadiusSmall * 2
+                let outerLayer = makeCircleImageLayer(
+                    image: outerSource,
+                    side: side,
                     position: anim.start,
-                    opacity: 0.68,
+                    opacity: 0.75,
                     zPosition: 0
                 )
-                imageLayer.setAffineTransform(CGAffineTransform(rotationAngle: slot.rotationBaseAngle))
-                slot.rootLayer.addSublayer(imageLayer)
-                slot.circleImageLayer = imageLayer
-                slot.circleImageSource = source
-                slot.maskSmall = imageLayer
+                let innerLayer = makeCircleImageLayer(
+                    image: innerSource,
+                    side: side,
+                    position: anim.start,
+                    opacity: 0.72,
+                    zPosition: 1
+                )
+                outerLayer.setAffineTransform(CGAffineTransform(rotationAngle: slot.outerRotationBaseAngle))
+                innerLayer.setAffineTransform(CGAffineTransform(rotationAngle: slot.innerRotationBaseAngle))
+                slot.rootLayer.addSublayer(outerLayer)
+                slot.rootLayer.addSublayer(innerLayer)
+                slot.circleOuterImageLayer = outerLayer
+                slot.circleInnerImageLayer = innerLayer
+                slot.circleOuterImageSource = outerSource
+                slot.circleInnerImageSource = innerSource
             } else {
                 let solid1 = CAShapeLayer()
                 solid1.bounds = CGRect(
@@ -3687,7 +3742,27 @@ private final class BKArtBackgroundLayerView: NSView {
                 CATransaction.begin()
                 CATransaction.setDisableActions(true)
 
-                if let mask0 = slot.maskBig {
+                if slot.circleOuterImageLayer != nil || slot.circleInnerImageLayer != nil {
+                    let targetR = max(1, currentR)
+                    let imageScale = targetR / max(1, slot.maskBaseRadiusSmall)
+                    let rotationT = Self.circleRotationProgress(at: min(1.0, max(0.0, nextT)))
+                    if let outerLayer = slot.circleOuterImageLayer {
+                        let angle = slot.outerRotationBaseAngle
+                            + slot.outerRotationTravelAngle * CGFloat(rotationT)
+                        outerLayer.position = pos
+                        outerLayer.setAffineTransform(
+                            CGAffineTransform(rotationAngle: angle).scaledBy(x: imageScale, y: imageScale)
+                        )
+                    }
+                    if let innerLayer = slot.circleInnerImageLayer {
+                        let angle = slot.innerRotationBaseAngle
+                            + slot.innerRotationTravelAngle * CGFloat(rotationT)
+                        innerLayer.position = pos
+                        innerLayer.setAffineTransform(
+                            CGAffineTransform(rotationAngle: angle).scaledBy(x: imageScale, y: imageScale)
+                        )
+                    }
+                } else if let mask0 = slot.maskBig {
                     let targetR0 = max(1, currentR * 0.75)
                     let scale0 = targetR0 / max(1, slot.maskBaseRadiusBig)
                     mask0.position = pos
@@ -3697,15 +3772,7 @@ private final class BKArtBackgroundLayerView: NSView {
                     let targetR1 = max(1, currentR)
                     let scale1 = targetR1 / max(1, slot.maskBaseRadiusSmall)
                     mask1.position = pos
-                    if slot.circleImageLayer === mask1 {
-                        let rotationT = Self.circleRotationProgress(at: min(1.0, max(0.0, nextT)))
-                        let angle = slot.rotationBaseAngle + slot.rotationTravelAngle * CGFloat(rotationT)
-                        mask1.setAffineTransform(
-                            CGAffineTransform(rotationAngle: angle).scaledBy(x: scale1, y: scale1)
-                        )
-                    } else {
-                        mask1.setAffineTransform(CGAffineTransform(scaleX: scale1, y: scale1))
-                    }
+                    mask1.setAffineTransform(CGAffineTransform(scaleX: scale1, y: scale1))
                 }
 
                 CATransaction.commit()
