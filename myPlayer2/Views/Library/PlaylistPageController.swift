@@ -1690,6 +1690,7 @@ final class PlaylistPageController {
                     title: track.title,
                     artist: track.artist,
                     lyricSnippetLine: searchHits[track.id]?.lyricSnippetLine,
+                    lyricSnippetStartTime: searchHits[track.id]?.lyricSnippetStartTime,
                     lyricHighlightRanges: searchHits[track.id]?.lyricHighlightRanges ?? [],
                     durationText: formatDuration(track.duration),
                     artworkIdentity: PlaylistArtworkPipeline.rowSourceIdentity(

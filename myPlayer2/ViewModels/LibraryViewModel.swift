@@ -433,7 +433,6 @@ final class LibraryViewModel {
             self?.handleRepositoryChange(change)
         }
         setupLibraryLocationObserver()
-        print("[Lifecycle] LibraryViewModel.init, id: \(ObjectIdentifier(self))")
         Log.debug("LibraryViewModel initialized", category: .library)
     }
 
@@ -443,7 +442,7 @@ final class LibraryViewModel {
             self?.cancelCurrentLoad()
             self?.removeLibraryLocationObserver()
         }
-        print("[Lifecycle] LibraryViewModel.deinit, id: \(ObjectIdentifier(self))")
+        Log.debug("LibraryViewModel deinitialized", category: .library)
     }
 
     private func handleRepositoryChange(_ change: LibraryRepositoryChange) {

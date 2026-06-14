@@ -62,7 +62,7 @@ final class LyricsWebViewStore: NSObject {
             let parsedValue = Int(rawValue),
             parsedValue > 0
         else {
-            return 10
+            return 0
         }
         return parsedValue
     }()
@@ -793,7 +793,7 @@ final class LyricsWebViewStore: NSObject {
 
         // Deduplication: skip if same TTML
         if ttml == lastTTML && ttml.count > 0 {
-            Log.info(
+            Log.debug(
                 "[LyricsWebViewStore] setLyricsTTML skipped duplicate role=\(role), len=\(ttml.count), objectID=\(webViewObjectID)",
                 category: .webview
             )
@@ -1459,43 +1459,33 @@ final class LyricsWebViewStore: NSObject {
         applyTrackGeneration &+= 1
         let generation = applyTrackGeneration
 
-        // Step 1: Clear previous lyrics state to free memory
-        clearLyricsState(
-            trackID: trackID,
-            nextTTMLLength: ttml?.count ?? 0
-        ) { [weak self] in
-            guard let self else { return }
-            guard generation == self.applyTrackGeneration else {
-                Log.debug(
-                    "applyTrack skipped stale completion: generation=\(generation), current=\(self.applyTrackGeneration), objectID=\(self.webViewObjectID)",
-                    category: .webview
-                )
-                return
-            }
-
-            // Step 2: Pause
-            self.setPlaying(false)
-
-            // Step 3: Set lyrics
-            self.setLyricsTTML(ttml ?? "")
-
-            // Step 4: Set time
-            self.setCurrentTime(currentTime)
-
-            // Step 5: Resume playing state
-            self.setPlaying(isPlaying)
-            self.scheduleTrackDiagnostics(
-                stage: "afterTrackApply",
-                trackID: trackID,
-                ttmlLength: ttml?.count ?? 0,
-                delay: 0.35
+        guard generation == applyTrackGeneration else {
+            Log.debug(
+                "applyTrack skipped stale inline apply: generation=\(generation), current=\(applyTrackGeneration), objectID=\(webViewObjectID)",
+                category: .webview
             )
-            if let activeProfileSessionID {
-                self.scheduleTrackProfileCollection(
-                    sessionID: activeProfileSessionID,
-                    trackID: trackID
-                )
-            }
+            return
+        }
+
+        // Keep the WKWebView and WebContent layer tree stable during normal
+        // track switches. The JS adapter's setLyrics path already clears the
+        // previous renderer state before replacing lines, so a native pre-clear
+        // would only create an extra empty-DOM/layer invalidation window.
+        setPlaying(false)
+        setLyricsTTML(ttml ?? "")
+        setCurrentTime(currentTime)
+        setPlaying(isPlaying)
+        scheduleTrackDiagnostics(
+            stage: "afterTrackApply",
+            trackID: trackID,
+            ttmlLength: ttml?.count ?? 0,
+            delay: 0.35
+        )
+        if let activeProfileSessionID {
+            scheduleTrackProfileCollection(
+                sessionID: activeProfileSessionID,
+                trackID: trackID
+            )
         }
     }
 
@@ -1532,7 +1522,7 @@ final class LyricsWebViewStore: NSObject {
         isTimeSyncInFlight = false
         lastDeliveredTime = nil
 
-        guard let webView = retainedWebView else {
+        guard retainedWebView != nil else {
             completion?()
             return
         }
@@ -1561,8 +1551,6 @@ final class LyricsWebViewStore: NSObject {
             completion?()
         }
 
-        // Force a layout flush to release any pending layer operations
-        webView.setNeedsDisplay(webView.bounds)
         scheduleTrackDiagnostics(
             stage: "clearLyricsState.afterJS",
             trackID: trackID,
@@ -1957,7 +1945,15 @@ final class LyricsWebViewStore: NSObject {
         let text = String(describing: body)
         let message = "[AMLLWeb:\(role)] \(text)"
 
-        if text.contains("[ERROR]")
+        if Self.isKnownResizeObserverLoopMessage(text) {
+            if LogConfig.webViewDebugEnabled {
+                Log.debug(message, category: .webview)
+            }
+        } else if Self.isKnownAMLLDowngradeMessage(text) {
+            if LogConfig.webViewDebugEnabled {
+                Log.debug(message, category: .webview)
+            }
+        } else if text.contains("[ERROR]")
             || text.contains("[AMLL-BOOT][window.onerror]")
             || text.contains("[AMLL-BOOT][unhandledrejection]")
         {
@@ -1982,6 +1978,22 @@ final class LyricsWebViewStore: NSObject {
                 Log.trace(message, category: .webview)
             }
         }
+    }
+
+    private static func isKnownAMLLDowngradeMessage(_ text: String) -> Bool {
+        text.contains("[AMLL-UPGRADE-DOWNGRADE]")
+            && (
+                text.contains("setLyricAdvanceLeadInMs is not available in upstream core")
+                    || text.contains("setLyricNearSwitchGapMs is not available in upstream core")
+            )
+    }
+
+    private static func isKnownResizeObserverLoopMessage(_ text: String) -> Bool {
+        text.contains("[AMLL-BOOT][window.onerror")
+            && (
+                text.contains("ResizeObserver loop completed with undelivered notifications.")
+                    || text.contains("ResizeObserver loop limit exceeded")
+            )
     }
 
     private func ensureWebView() -> WKWebView {
@@ -2018,7 +2030,7 @@ final class LyricsWebViewStore: NSObject {
         applyMouseInteractionSuppression(reason: "ensureWebView")
         applyBackingScaleForRenderQuality(reason: "ensureWebView")
         registerMessageHandlers()
-        print("[LyricsStore:\(role)] Created WebView instance: objectID=\(webViewObjectID)")
+        Log.debug("[LyricsStore:\(role)] Created WebView instance: objectID=\(webViewObjectID)", category: .webview)
         loadAMLLContent()
         FirstUseHitchDiagnostics.end(token, detail: "objectID=\(webViewObjectID)")
         return webView

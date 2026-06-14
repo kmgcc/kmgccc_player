@@ -12,11 +12,11 @@ import Observation
 import SwiftUI
 
 @MainActor
-final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarItemValidation, NSMenuDelegate, NSTextFieldDelegate {
+final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarItemValidation, NSMenuDelegate, NSSearchFieldDelegate {
     private enum FeatureTips {
         static let shiftRangeSelectionKey = "playlist.shiftRangeSelection"
-        static let shiftRangeSelectionIntroducedBuild = AppBuild(1)
-        static let shiftRangeSelectionMaxDisplayCount = 4
+        static let shiftRangeSelectionIntroducedBuild = AppBuild(7)
+        static let shiftRangeSelectionMaxDisplayCount = 2
     }
 
     enum Identifier {
@@ -1364,7 +1364,7 @@ private struct ShiftRangeSelectionTipView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text("连续选择")
+                Text("多选排序")
                     .font(.headline)
                 Spacer(minLength: 8)
                 Button(action: onClose) {
@@ -1376,7 +1376,7 @@ private struct ShiftRangeSelectionTipView: View {
                 .accessibilityLabel("关闭")
             }
 
-            Text("按住 Shift 点击歌曲，可以一次选择一段连续歌曲")
+            Text("多选歌曲后，按住歌曲条目并拖动，可以对歌曲进行排序。")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

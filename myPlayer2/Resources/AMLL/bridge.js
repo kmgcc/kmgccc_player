@@ -53,10 +53,26 @@
         postLogToSwift(msg);
     };
 
+    const isKnownResizeObserverLoopNotification = function(message) {
+        return message === 'ResizeObserver loop completed with undelivered notifications.'
+            || message === 'ResizeObserver loop limit exceeded';
+    };
+
     window.addEventListener('error', function(event) {
+        const message = event.message || 'unknown error';
+        if (isKnownResizeObserverLoopNotification(message)) {
+            console.log(
+                '[AMLL-BOOT][window.onerror:ignored-resize-observer]',
+                message,
+                event.filename || '',
+                event.lineno || 0,
+                event.colno || 0
+            );
+            return;
+        }
         console.error(
             '[AMLL-BOOT][window.onerror]',
-            event.message || 'unknown error',
+            message,
             event.filename || '',
             event.lineno || 0,
             event.colno || 0,

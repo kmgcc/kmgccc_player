@@ -144,6 +144,7 @@ actor LibrarySearchIndex {
                     trackID: document.trackID,
                     score: ranking.score,
                     lyricSnippetLine: ranking.lyricSnippet?.line,
+                    lyricSnippetStartTime: ranking.lyricSnippet?.startTime,
                     lyricHighlightRanges: ranking.lyricSnippet?.highlightRanges ?? [],
                     matchedLyrics: ranking.matchedLyrics
                 )
@@ -184,6 +185,7 @@ actor LibrarySearchIndex {
                 combined_norm TEXT NOT NULL,
                 lyrics_raw TEXT NOT NULL,
                 lyrics_norm TEXT NOT NULL,
+                lyrics_line_starts TEXT,
                 lyrics_path TEXT,
                 lyrics_mtime REAL,
                 lyrics_size INTEGER,
@@ -195,6 +197,7 @@ actor LibrarySearchIndex {
             )
             """
         )
+        try migrateDocumentSchemaIfNeeded()
         try execute(
             """
             CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(
@@ -223,6 +226,25 @@ actor LibrarySearchIndex {
         try execute("CREATE INDEX IF NOT EXISTS idx_search_grams_track ON grams(track_id)")
 
         schemaReady = true
+    }
+
+    private func migrateDocumentSchemaIfNeeded() throws {
+        let columns = try documentColumnNames()
+        guard !columns.contains("lyrics_line_starts") else { return }
+        try execute("ALTER TABLE documents ADD COLUMN lyrics_line_starts TEXT")
+    }
+
+    private func documentColumnNames() throws -> Set<String> {
+        let statement = try prepare("PRAGMA table_info(documents)")
+        defer { sqlite3_finalize(statement) }
+
+        var columns = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let name = columnText(statement, 1) {
+                columns.insert(name)
+            }
+        }
+        return columns
     }
 
     private func database() throws -> OpaquePointer {
@@ -268,6 +290,7 @@ actor LibrarySearchIndex {
             titleArtistCombinedNormalized: combinedNormalized,
             lyricsPlainTextRaw: lyrics.raw,
             lyricsPlainTextNormalized: LibrarySearchTextNormalizer.normalize(lyrics.raw),
+            lyricLineStartTimes: lyrics.lineStartTimes,
             lyricsFilePath: lyrics.path,
             lyricsFileModifiedAt: lyrics.modifiedAt,
             lyricsFileSize: lyrics.fileSize,
@@ -292,9 +315,9 @@ actor LibrarySearchIndex {
             INSERT INTO documents (
                 track_id, title_raw, title_norm, artist_raw, artist_norm,
                 album_raw, album_norm, combined_norm, lyrics_raw, lyrics_norm,
-                lyrics_path, lyrics_mtime, lyrics_size, lyrics_hash,
+                lyrics_line_starts, lyrics_path, lyrics_mtime, lyrics_size, lyrics_hash,
                 play_count, preference_score, last_played_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
         let statement = try prepare(sql)
         defer { sqlite3_finalize(statement) }
@@ -309,14 +332,15 @@ actor LibrarySearchIndex {
         bindText(document.titleArtistCombinedNormalized, to: statement, at: 8)
         bindText(document.lyricsPlainTextRaw, to: statement, at: 9)
         bindText(document.lyricsPlainTextNormalized, to: statement, at: 10)
-        bindOptionalText(document.lyricsFilePath, to: statement, at: 11)
-        bindOptionalDouble(document.lyricsFileModifiedAt, to: statement, at: 12)
-        bindOptionalInt64(document.lyricsFileSize, to: statement, at: 13)
-        bindOptionalText(document.lyricsHash, to: statement, at: 14)
-        sqlite3_bind_int(statement, 15, Int32(document.playCount))
-        sqlite3_bind_double(statement, 16, document.preferenceScore)
-        bindOptionalDouble(document.lastPlayedAt?.timeIntervalSince1970, to: statement, at: 17)
-        sqlite3_bind_double(statement, 18, document.updatedAt.timeIntervalSince1970)
+        bindText(encodeLyricLineStartTimes(document.lyricLineStartTimes), to: statement, at: 11)
+        bindOptionalText(document.lyricsFilePath, to: statement, at: 12)
+        bindOptionalDouble(document.lyricsFileModifiedAt, to: statement, at: 13)
+        bindOptionalInt64(document.lyricsFileSize, to: statement, at: 14)
+        bindOptionalText(document.lyricsHash, to: statement, at: 15)
+        sqlite3_bind_int(statement, 16, Int32(document.playCount))
+        sqlite3_bind_double(statement, 17, document.preferenceScore)
+        bindOptionalDouble(document.lastPlayedAt?.timeIntervalSince1970, to: statement, at: 18)
+        sqlite3_bind_double(statement, 19, document.updatedAt.timeIntervalSince1970)
 
         try stepDone(statement)
     }
@@ -382,6 +406,7 @@ actor LibrarySearchIndex {
 
     private struct LyricsPayload {
         let raw: String
+        let lineStartTimes: [Double?]
         let path: String?
         let modifiedAt: Double?
         let fileSize: Int64?
@@ -395,15 +420,27 @@ actor LibrarySearchIndex {
         if let inlineTTML = source.inlineTTMLText?.trimmingCharacters(in: .whitespacesAndNewlines),
            !inlineTTML.isEmpty {
             let data = Data(inlineTTML.utf8)
-            let raw = TTMLPlainTextExtractor.extractPlainText(from: inlineTTML, sourceDescription: source.trackID.uuidString)
-            return LyricsPayload(raw: raw, path: nil, modifiedAt: nil, fileSize: Int64(data.count), hash: Self.sha256Hex(data))
+            let extraction = TTMLPlainTextExtractor.extractTimedPlainText(
+                from: inlineTTML,
+                sourceDescription: source.trackID.uuidString
+            )
+            return LyricsPayload(
+                raw: extraction.plainText,
+                lineStartTimes: extraction.lineStartTimes,
+                path: nil,
+                modifiedAt: nil,
+                fileSize: Int64(data.count),
+                hash: Self.sha256Hex(data)
+            )
         }
 
         if let inlinePlain = source.inlinePlainLyricsText?.trimmingCharacters(in: .whitespacesAndNewlines),
            !inlinePlain.isEmpty {
             let data = Data(inlinePlain.utf8)
+            let extraction = TTMLPlainTextExtractor.extractTimedPlainLyrics(from: inlinePlain)
             return LyricsPayload(
-                raw: TTMLPlainTextExtractor.normalizeExtractedText(inlinePlain),
+                raw: extraction.plainText,
+                lineStartTimes: extraction.lineStartTimes,
                 path: nil,
                 modifiedAt: nil,
                 fileSize: Int64(data.count),
@@ -431,7 +468,7 @@ actor LibrarySearchIndex {
             )
         }
 
-        return LyricsPayload(raw: "", path: nil, modifiedAt: nil, fileSize: nil, hash: nil)
+        return LyricsPayload(raw: "", lineStartTimes: [], path: nil, modifiedAt: nil, fileSize: nil, hash: nil)
     }
 
     private func resolveDiskLyrics(
@@ -447,9 +484,11 @@ actor LibrarySearchIndex {
         if let existing,
            existing.lyricsFilePath == url.path,
            existing.lyricsFileModifiedAt == modifiedAt,
-           existing.lyricsFileSize == fileSize {
+           existing.lyricsFileSize == fileSize,
+           (!isTTML || !existing.lyricsPlainTextRaw.isEmpty && !existing.lyricLineStartTimes.isEmpty) {
             return LyricsPayload(
                 raw: existing.lyricsPlainTextRaw,
+                lineStartTimes: existing.lyricLineStartTimes,
                 path: existing.lyricsFilePath,
                 modifiedAt: existing.lyricsFileModifiedAt,
                 fileSize: existing.lyricsFileSize,
@@ -459,12 +498,16 @@ actor LibrarySearchIndex {
 
         let data = try Data(contentsOf: url)
         let text = String(decoding: data, as: UTF8.self)
-        let raw = isTTML
-            ? TTMLPlainTextExtractor.extractPlainText(from: text, sourceDescription: "\(trackID.uuidString):\(url.lastPathComponent)")
-            : TTMLPlainTextExtractor.normalizeExtractedText(text)
+        let extraction = isTTML
+            ? TTMLPlainTextExtractor.extractTimedPlainText(
+                from: text,
+                sourceDescription: "\(trackID.uuidString):\(url.lastPathComponent)"
+            )
+            : TTMLPlainTextExtractor.extractTimedPlainLyrics(from: text)
 
         return LyricsPayload(
-            raw: raw,
+            raw: extraction.plainText,
+            lineStartTimes: extraction.lineStartTimes,
             path: url.path,
             modifiedAt: modifiedAt,
             fileSize: fileSize,
@@ -570,6 +613,7 @@ actor LibrarySearchIndex {
 
     private struct LyricSnippetResult {
         let line: String
+        let startTime: Double?
         let highlightRanges: [SearchHighlightRange]
     }
 
@@ -638,7 +682,11 @@ actor LibrarySearchIndex {
         }
 
         let lyricSnippet = lyricsScore > 0
-            ? lyricSnippet(in: document.lyricsPlainTextRaw, query: query)
+            ? lyricSnippet(
+                in: document.lyricsPlainTextRaw,
+                lineStartTimes: document.lyricLineStartTimes,
+                query: query
+            )
             : nil
 
         return RankingResult(
@@ -762,7 +810,11 @@ actor LibrarySearchIndex {
         return score
     }
 
-    private func lyricSnippet(in rawLyrics: String, query: SearchQuery) -> LyricSnippetResult? {
+    private func lyricSnippet(
+        in rawLyrics: String,
+        lineStartTimes: [Double?],
+        query: SearchQuery
+    ) -> LyricSnippetResult? {
         guard !rawLyrics.isEmpty, query.compact.count > 1 else { return nil }
         let lines = rawLyrics
             .components(separatedBy: .newlines)
@@ -772,13 +824,18 @@ actor LibrarySearchIndex {
         var bestResult: LyricSnippetResult?
         var bestScore = 0.0
 
-        for line in lines {
+        for (index, line) in lines.enumerated() {
             let result = lyricSnippetResult(for: line, query: query)
             guard let result else { continue }
             let score = lyricLineScore(line: line, result: result, query: query)
             if score > bestScore {
                 bestScore = score
-                bestResult = result
+                let startTime = index < lineStartTimes.count ? lineStartTimes[index] : nil
+                bestResult = LyricSnippetResult(
+                    line: result.line,
+                    startTime: startTime,
+                    highlightRanges: result.highlightRanges
+                )
             }
         }
 
@@ -823,7 +880,7 @@ actor LibrarySearchIndex {
 
         let merged = mergeHighlightRanges(ranges)
         guard !merged.isEmpty else { return nil }
-        return LyricSnippetResult(line: line, highlightRanges: merged)
+        return LyricSnippetResult(line: line, startTime: nil, highlightRanges: merged)
     }
 
     private func originalRanges(
@@ -914,7 +971,7 @@ actor LibrarySearchIndex {
             """
             SELECT track_id, title_raw, title_norm, artist_raw, artist_norm,
                    album_raw, album_norm, combined_norm, lyrics_raw, lyrics_norm,
-                   lyrics_path, lyrics_mtime, lyrics_size, lyrics_hash,
+                   lyrics_line_starts, lyrics_path, lyrics_mtime, lyrics_size, lyrics_hash,
                    play_count, preference_score, last_played_at, updated_at
             FROM documents
             WHERE track_id IN (\(placeholders))
@@ -932,30 +989,87 @@ actor LibrarySearchIndex {
                   let trackID = UUID(uuidString: idText)
             else { continue }
 
-            documents.append(
-                SearchIndexedDocument(
-                    trackID: trackID,
-                    titleRaw: columnText(statement, 1) ?? "",
-                    titleNormalized: columnText(statement, 2) ?? "",
-                    artistRaw: columnText(statement, 3) ?? "",
-                    artistNormalized: columnText(statement, 4) ?? "",
-                    albumRaw: columnText(statement, 5) ?? "",
-                    albumNormalized: columnText(statement, 6) ?? "",
-                    titleArtistCombinedNormalized: columnText(statement, 7) ?? "",
-                    lyricsPlainTextRaw: columnText(statement, 8) ?? "",
-                    lyricsPlainTextNormalized: columnText(statement, 9) ?? "",
-                    lyricsFilePath: columnText(statement, 10),
-                    lyricsFileModifiedAt: optionalDouble(statement, 11),
-                    lyricsFileSize: optionalInt64(statement, 12),
-                    lyricsHash: columnText(statement, 13),
-                    playCount: Int(sqlite3_column_int(statement, 14)),
-                    preferenceScore: sqlite3_column_double(statement, 15),
-                    lastPlayedAt: optionalDouble(statement, 16).map(Date.init(timeIntervalSince1970:)),
-                    updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 17))
-                )
+            let document = SearchIndexedDocument(
+                trackID: trackID,
+                titleRaw: columnText(statement, 1) ?? "",
+                titleNormalized: columnText(statement, 2) ?? "",
+                artistRaw: columnText(statement, 3) ?? "",
+                artistNormalized: columnText(statement, 4) ?? "",
+                albumRaw: columnText(statement, 5) ?? "",
+                albumNormalized: columnText(statement, 6) ?? "",
+                titleArtistCombinedNormalized: columnText(statement, 7) ?? "",
+                lyricsPlainTextRaw: columnText(statement, 8) ?? "",
+                lyricsPlainTextNormalized: columnText(statement, 9) ?? "",
+                lyricLineStartTimes: decodeLyricLineStartTimes(columnText(statement, 10)),
+                lyricsFilePath: columnText(statement, 11),
+                lyricsFileModifiedAt: optionalDouble(statement, 12),
+                lyricsFileSize: optionalInt64(statement, 13),
+                lyricsHash: columnText(statement, 14),
+                playCount: Int(sqlite3_column_int(statement, 15)),
+                preferenceScore: sqlite3_column_double(statement, 16),
+                lastPlayedAt: optionalDouble(statement, 17).map(Date.init(timeIntervalSince1970:)),
+                updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 18))
             )
+            documents.append(hydrateLegacyLineStartTimesIfNeeded(document))
         }
         return documents
+    }
+
+    private func hydrateLegacyLineStartTimesIfNeeded(
+        _ document: SearchIndexedDocument
+    ) -> SearchIndexedDocument {
+        guard document.lyricLineStartTimes.isEmpty,
+              let path = document.lyricsFilePath,
+              FileManager.default.fileExists(atPath: path)
+        else { return document }
+
+        let url = URL(fileURLWithPath: path)
+        let pathExtension = url.pathExtension.lowercased()
+        guard pathExtension == "ttml" || pathExtension == "lrc" else { return document }
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return document }
+
+        let extraction = pathExtension == "ttml"
+            ? TTMLPlainTextExtractor.extractTimedPlainText(from: text)
+            : TTMLPlainTextExtractor.extractTimedPlainLyrics(from: text)
+        guard !extraction.lineStartTimes.isEmpty else { return document }
+
+        return SearchIndexedDocument(
+            trackID: document.trackID,
+            titleRaw: document.titleRaw,
+            titleNormalized: document.titleNormalized,
+            artistRaw: document.artistRaw,
+            artistNormalized: document.artistNormalized,
+            albumRaw: document.albumRaw,
+            albumNormalized: document.albumNormalized,
+            titleArtistCombinedNormalized: document.titleArtistCombinedNormalized,
+            lyricsPlainTextRaw: document.lyricsPlainTextRaw,
+            lyricsPlainTextNormalized: document.lyricsPlainTextNormalized,
+            lyricLineStartTimes: extraction.lineStartTimes,
+            lyricsFilePath: document.lyricsFilePath,
+            lyricsFileModifiedAt: document.lyricsFileModifiedAt,
+            lyricsFileSize: document.lyricsFileSize,
+            lyricsHash: document.lyricsHash,
+            playCount: document.playCount,
+            preferenceScore: document.preferenceScore,
+            lastPlayedAt: document.lastPlayedAt,
+            updatedAt: document.updatedAt
+        )
+    }
+
+    private func encodeLyricLineStartTimes(_ values: [Double?]) -> String {
+        values.map { value in
+            guard let value, value.isFinite else { return "" }
+            return String(value)
+        }
+        .joined(separator: "\n")
+    }
+
+    private func decodeLyricLineStartTimes(_ value: String?) -> [Double?] {
+        guard let value, !value.isEmpty else { return [] }
+        return value.components(separatedBy: "\n").map { component in
+            let trimmed = component.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : Double(trimmed)
+        }
     }
 
     // MARK: - SQLite Helpers

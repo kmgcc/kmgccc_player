@@ -11,8 +11,7 @@ enum FeatureTipCatalog {
     static let enabledFeatureKeys: Set<String> = [
         "fullscreen.playbackModeRetap",
         "playbackSource.externalAppPlayback",
-        "playlist.shiftRangeSelection",
-        "settings.v2DataManagement"
+        "playlist.shiftRangeSelection"
     ]
 
     static func isEnabled(featureKey: String) -> Bool {
@@ -84,8 +83,18 @@ final class AppVersionGate {
             return
         }
 
-        previousInstalledBuild = storedLatest ?? previousInstalledBuild ?? lastSeenWhatsNewBuild ?? .legacyBaseline
+        let previous = storedLatest ?? previousInstalledBuild ?? lastSeenWhatsNewBuild ?? .legacyBaseline
+        previousInstalledBuild = previous
         latestInstalledBuild = currentBuild
+
+        // If upgrading from a build below 7, reset the shiftRangeSelection key's state
+        // because we are changing this feature tip from "Shift select" to "Drag to sort"
+        // and want all upgrading users to see it up to 2 times.
+        if previous < AppBuild(7) && currentBuild >= AppBuild(7) {
+            defaults.removeObject(forKey: dismissedFeatureTipKey("playlist.shiftRangeSelection"))
+            defaults.removeObject(forKey: featureTipDisplayCountKey("playlist.shiftRangeSelection"))
+            Log.debug("[AppVersionGate] Reset playlist.shiftRangeSelection state for upgrade from Build \(previous.rawValue) to Build \(currentBuild.rawValue)", category: .ui)
+        }
     }
 
     func wasUpgradedFromBuildBelow(_ buildNumber: Int) -> Bool {

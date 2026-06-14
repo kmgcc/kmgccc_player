@@ -13,6 +13,7 @@ struct PlaylistPageRowRecord: Sendable, Equatable {
     let title: String
     let artist: String
     let lyricSnippetLine: String?
+    let lyricSnippetStartTime: Double?
     let lyricHighlightRanges: [SearchHighlightRange]
     let durationText: String
     let artworkIdentity: String
@@ -25,6 +26,7 @@ struct PlaylistPageRowModel: Identifiable, Equatable {
     let title: String
     let artist: String
     let lyricSnippetLine: String?
+    let lyricSnippetStartTime: Double?
     let lyricHighlightRanges: [SearchHighlightRange]
     let durationText: String
     let artworkData: Data?
@@ -37,6 +39,7 @@ struct PlaylistPageRowModel: Identifiable, Equatable {
         title: String,
         artist: String,
         lyricSnippetLine: String? = nil,
+        lyricSnippetStartTime: Double? = nil,
         lyricHighlightRanges: [SearchHighlightRange] = [],
         durationText: String,
         artworkData: Data?,
@@ -48,6 +51,7 @@ struct PlaylistPageRowModel: Identifiable, Equatable {
         self.title = title
         self.artist = artist
         self.lyricSnippetLine = lyricSnippetLine
+        self.lyricSnippetStartTime = lyricSnippetStartTime
         self.lyricHighlightRanges = lyricHighlightRanges
         self.durationText = durationText
         self.artworkData = artworkData
@@ -62,6 +66,7 @@ struct PlaylistPageRowModel: Identifiable, Equatable {
             title: record.title,
             artist: record.artist,
             lyricSnippetLine: record.lyricSnippetLine,
+            lyricSnippetStartTime: record.lyricSnippetStartTime,
             lyricHighlightRanges: record.lyricHighlightRanges,
             durationText: record.durationText,
             artworkData: artworkData,
@@ -77,6 +82,7 @@ struct PlaylistPageRowModel: Identifiable, Equatable {
             title: title,
             artist: artist,
             lyricSnippetLine: lyricSnippetLine,
+            lyricSnippetStartTime: lyricSnippetStartTime,
             lyricHighlightRanges: lyricHighlightRanges,
             durationText: durationText,
             artworkData: artworkData,

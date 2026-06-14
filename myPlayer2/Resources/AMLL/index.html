@@ -1183,6 +1183,17 @@
         // ResizeObserver wrapper — never hits a TDZ during boot.
         const RAF_IDLE_SETTLE_MS = 1500;
         let rafKeepAliveUntil = 0;
+        let pendingResizeObserverWakeRaf = 0;
+        const scheduleResizeObserverWake = () => {
+            if (pendingResizeObserverWakeRaf) return;
+            pendingResizeObserverWakeRaf = requestAnimationFrame(() => {
+                pendingResizeObserverWakeRaf = 0;
+                // Coalesce resize-driven renderer wakeups outside the native
+                // ResizeObserver delivery phase to avoid resize -> mutation ->
+                // resize feedback loops during track reload layout.
+                rendererRuntime.wakeRenderer?.();
+            });
+        };
         const NativeResizeObserver = window.ResizeObserver;
         if (
             typeof NativeResizeObserver === "function"
@@ -1198,8 +1209,9 @@
                                 : 0;
                         }
                         callback(entries, observer);
-                        // Idle-CPU: a relayout on resize must re-arm the render loop.
-                        rendererRuntime.wakeRenderer?.();
+                        // Idle-CPU: a relayout on resize must re-arm the render loop,
+                        // but never synchronously inside ResizeObserver delivery.
+                        scheduleResizeObserverWake();
                     });
                 }
             };

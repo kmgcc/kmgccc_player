@@ -1634,7 +1634,7 @@ final class LocalLibraryService {
     }
 
     private func debugArtworkPersistence(_ message: String) {
-        print("🎨 [HeaderArtworkPersistence] \(message)")
+        Log.debug("[HeaderArtworkPersistence] \(message)", category: .library)
     }
 
     // MARK: - Artist/Album Sidecars
@@ -2061,7 +2061,7 @@ final class LocalLibraryService {
                     Log.debug("Ignored self-induced monitor event in \(name)", category: .library)
                     return
                 }
-                print("📝 Detected change in \(name) folder")
+                Log.debug("Detected change in \(name) folder", category: .library)
                 self.scheduleAvailabilitySync(repository: repository)
             }
 
@@ -2072,7 +2072,7 @@ final class LocalLibraryService {
             source.resume()
             monitors[name] = source
             monitorFDs[name] = fd
-            print("👀 Started monitoring \(name) at \(path)")
+            Log.debug("Started monitoring \(name) at \(path)", category: .library)
         }
     }
 

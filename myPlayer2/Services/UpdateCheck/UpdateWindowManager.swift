@@ -26,47 +26,43 @@ final class UpdateWindowManager: NSObject, NSWindowDelegate, ObservableObject {
     }
     
     func checkAndShowIfNeeded() async {
-        print("[UpdateWindowManager] Starting update check...")
+        Log.debug("[UpdateWindowManager] Starting update check", category: .ui)
         
         await UpdateChecker.shared.checkForUpdates()
         
         let localVersion = UpdateChecker.shared.localVersion
         let remoteVersion = UpdateChecker.shared.remoteInfo?.latestVersion ?? "N/A"
         
-        print("[UpdateWindowManager] Version check result:")
-        print("  - Local version: \(localVersion)")
-        print("  - Remote version: \(remoteVersion)")
-        
         let shouldShow = UpdateChecker.shared.shouldShowUpdate(forceShow: forceShowForTesting)
-        print("  - Should show update: \(shouldShow)")
+        Log.debug("[UpdateWindowManager] Version check local=\(localVersion) remote=\(remoteVersion) shouldShow=\(shouldShow)", category: .ui)
         
         if shouldShow {
-            print("[UpdateWindowManager] Showing update alert (remote > local)")
+            Log.info("[UpdateWindowManager] Showing update alert", category: .ui)
             showUpdateWindow(kind: .updateAvailable)
         } else {
             if UpdateChecker.shared.error != nil {
-                print("[UpdateWindowManager] Not showing update: request or parse failed")
+                Log.debug("[UpdateWindowManager] Not showing update: request or parse failed", category: .ui)
             } else if UpdateChecker.shared.remoteInfo == nil {
-                print("[UpdateWindowManager] Not showing update: no remote info available")
+                Log.debug("[UpdateWindowManager] Not showing update: no remote info available", category: .ui)
             } else {
-                print("[UpdateWindowManager] Not showing update: already up to date or remote <= local")
+                Log.debug("[UpdateWindowManager] Not showing update: already up to date or remote <= local", category: .ui)
             }
         }
     }
 
     func checkManuallyAndShowResult() async {
-        print("[UpdateWindowManager] Starting manual update check...")
+        Log.debug("[UpdateWindowManager] Starting manual update check", category: .ui)
 
         await UpdateChecker.shared.checkForUpdates()
 
         if UpdateChecker.shared.error != nil || UpdateChecker.shared.remoteInfo == nil {
-            print("[UpdateWindowManager] Manual check failed; showing failure alert")
+            Log.debug("[UpdateWindowManager] Manual check failed; showing failure alert", category: .ui)
             showUpdateWindow(kind: .failed)
         } else if UpdateChecker.shared.shouldShowUpdate(forceShow: forceShowForTesting) {
-            print("[UpdateWindowManager] Manual check found update")
+            Log.debug("[UpdateWindowManager] Manual check found update", category: .ui)
             showUpdateWindow(kind: .updateAvailable)
         } else {
-            print("[UpdateWindowManager] Manual check found app is up to date")
+            Log.debug("[UpdateWindowManager] Manual check found app is up to date", category: .ui)
             showUpdateWindow(kind: .upToDate)
         }
     }
@@ -156,7 +152,7 @@ final class UpdateWindowManager: NSObject, NSWindowDelegate, ObservableObject {
             panel.animator().alphaValue = 1
         }
         
-        print("[UpdateWindowManager] Update alert window shown")
+        Log.debug("[UpdateWindowManager] Update alert window shown", category: .ui)
     }
     
     private func downloadUpdatePackage() {

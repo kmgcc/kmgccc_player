@@ -440,7 +440,7 @@ final class ThemeStore: ObservableObject {
         // developer can verify warm/cool/nearMono tinting is actually varying.
         // Remove or gate behind an env flag once the tint effect is confirmed.
         #if DEBUG
-        do {
+        if LogConfig.themeColorVerbose {
             let fgPri = semantic.appForeground.primary
             let fgSec = semantic.appForeground.secondary
             if let lchPri = OKColor.nsColorToOKLCH(fgPri),

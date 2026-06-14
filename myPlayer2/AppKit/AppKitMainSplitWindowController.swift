@@ -315,7 +315,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
     private func scheduleExternalPlaybackTipIfNeeded() {
         guard !isClosingMainWindow else {
-            print("[FeatureTip:externalPlayback] skip – window is closing")
+            Log.debug("[FeatureTip:externalPlayback] skip - window is closing", category: .ui)
             return
         }
 
@@ -327,14 +327,14 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         let dismissed = AppVersionGate.shared.isFeatureTipDismissed(featureKey: FeatureTips.externalPlaybackKey)
         let count = AppVersionGate.shared.featureTipDisplayCount(featureKey: FeatureTips.externalPlaybackKey)
         let upgraded = AppVersionGate.shared.wasUpgradedFromBuildBelow(FeatureTips.externalPlaybackIntroducedBuild)
-        print("[FeatureTip:externalPlayback] gate result=\(gateResult) dismissed=\(dismissed) displayCount=\(count) upgraded=\(upgraded)")
+        Log.debug("[FeatureTip:externalPlayback] gate result=\(gateResult) dismissed=\(dismissed) displayCount=\(count) upgraded=\(upgraded)", category: .ui)
 
         guard gateResult else {
-            print("[FeatureTip:externalPlayback] skip – gate returned false")
+            Log.debug("[FeatureTip:externalPlayback] skip - gate returned false", category: .ui)
             return
         }
         guard AppSettings.shared.showPlaybackSourceSwitcher else {
-            print("[FeatureTip:externalPlayback] skip – showPlaybackSourceSwitcher is false")
+            Log.debug("[FeatureTip:externalPlayback] skip - showPlaybackSourceSwitcher is false", category: .ui)
             return
         }
 
@@ -345,42 +345,42 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
     private func tryShowExternalPlaybackTip(retryDelay: TimeInterval) {
         guard pendingTipDisplay, !isClosingMainWindow else {
-            print("[FeatureTip:externalPlayback] tryShow skip – pending=\(pendingTipDisplay) closing=\(isClosingMainWindow)")
+            Log.debug("[FeatureTip:externalPlayback] tryShow skip - pending=\(pendingTipDisplay) closing=\(isClosingMainWindow)", category: .ui)
             return
         }
         guard externalPlaybackTipPopover?.isShown != true else {
-            print("[FeatureTip:externalPlayback] tryShow skip – popover already shown")
+            Log.debug("[FeatureTip:externalPlayback] tryShow skip - popover already shown", category: .ui)
             return
         }
 
-        print("[FeatureTip:externalPlayback] attempt findSourceSwitchAnchor (retryDelay=\(String(format: "%.2f", retryDelay))s)")
+        Log.debug("[FeatureTip:externalPlayback] attempt findSourceSwitchAnchor (retryDelay=\(String(format: "%.2f", retryDelay))s)", category: .ui)
 
         if let anchor = findSourceSwitchAnchor() {
-            print("[FeatureTip:externalPlayback] anchor found – view=\(type(of: anchor.view)) bounds=\(NSStringFromRect(anchor.view.bounds)) rect=\(NSStringFromRect(anchor.rect))")
+            Log.debug("[FeatureTip:externalPlayback] anchor found - view=\(type(of: anchor.view)) bounds=\(NSStringFromRect(anchor.view.bounds)) rect=\(NSStringFromRect(anchor.rect))", category: .ui)
             showExternalPlaybackTipPopover(anchor: anchor)
             pendingTipDisplay = false
         } else if retryDelay < 5.0 {
-            print("[FeatureTip:externalPlayback] anchor not found – retry in \(String(format: "%.2f", retryDelay))s")
+            Log.debug("[FeatureTip:externalPlayback] anchor not found - retry in \(String(format: "%.2f", retryDelay))s", category: .ui)
             DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay) { [weak self] in
                 self?.tryShowExternalPlaybackTip(retryDelay: retryDelay * 1.5)
             }
         } else {
-            print("[FeatureTip:externalPlayback] giving up after retries – anchor never appeared")
+            Log.debug("[FeatureTip:externalPlayback] giving up after retries - anchor never appeared", category: .ui)
             pendingTipDisplay = false
         }
     }
 
     private func findSourceSwitchAnchor() -> (view: NSView, rect: NSRect)? {
         guard let switchView = Self.sourceSwitchAnchorView else {
-            print("[FeatureTip:externalPlayback] findAnchor – sourceSwitchAnchorView is nil")
+            Log.debug("[FeatureTip:externalPlayback] findAnchor - sourceSwitchAnchorView is nil", category: .ui)
             return nil
         }
         guard switchView.window != nil else {
-            print("[FeatureTip:externalPlayback] findAnchor – anchor view has no window")
+            Log.debug("[FeatureTip:externalPlayback] findAnchor - anchor view has no window", category: .ui)
             return nil
         }
         guard switchView.bounds.width > 0, switchView.bounds.height > 0 else {
-            print("[FeatureTip:externalPlayback] findAnchor – anchor bounds zero: \(NSStringFromRect(switchView.bounds))")
+            Log.debug("[FeatureTip:externalPlayback] findAnchor - anchor bounds zero: \(NSStringFromRect(switchView.bounds))", category: .ui)
             return nil
         }
 

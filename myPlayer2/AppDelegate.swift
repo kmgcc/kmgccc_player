@@ -27,12 +27,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("[AppDelegate] didFinishLaunching")
+        Log.debug("[AppDelegate] didFinishLaunching", category: .ui)
         disableWindowTabbing()
         configureMainMenu()
         dockController.installDockTile()
         DispatchQueue.main.async {
-            print("[AppDelegate] launchMainWindowHandler.invoke")
+            Log.debug("[AppDelegate] launchMainWindowHandler.invoke", category: .ui)
             Self.showMainWindow()
         }
     }

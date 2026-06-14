@@ -50,7 +50,7 @@ final class AppSessionHost: ObservableObject {
         guard !hasSetupDependencies else { return }
         hasSetupDependencies = true
 
-        print("[Lifecycle] AppSessionHost initial setup")
+        Log.debug("[Lifecycle] AppSessionHost initial setup", category: .ui)
         mainThreadStallMonitor.start()
         setupDependencies()
         await restorePlaybackMemoryIfNeeded()
@@ -61,14 +61,14 @@ final class AppSessionHost: ObservableObject {
             LegacyCacheCleanupDialogPresenter.present()
         }
         WhatsNewWindowManager.shared.showIfNeeded()
-        print("[Lifecycle] WhatsNew window check completed")
+        Log.debug("[Lifecycle] WhatsNew window check completed", category: .ui)
 
         if UpdateCheckPreferences.checkForUpdatesOnLaunch {
             Task {
                 await UpdateWindowManager.shared.checkAndShowIfNeeded()
             }
         } else {
-            print("[UpdateWindowManager] Skipping launch update check by user preference")
+            Log.debug("[UpdateWindowManager] Skipping launch update check by user preference", category: .ui)
         }
     }
 
