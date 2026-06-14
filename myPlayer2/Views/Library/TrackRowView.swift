@@ -14,6 +14,7 @@ struct TrackRowModel: Identifiable, Equatable {
     let title: String
     let artist: String
     let lyricSnippetLine: String?
+    let lyricSnippetStartTime: Double?
     let lyricHighlightRanges: [SearchHighlightRange]
     let durationText: String
     let artworkData: Data?
@@ -26,6 +27,7 @@ struct TrackRowModel: Identifiable, Equatable {
             && lhs.title == rhs.title
             && lhs.artist == rhs.artist
             && lhs.lyricSnippetLine == rhs.lyricSnippetLine
+            && lhs.lyricSnippetStartTime == rhs.lyricSnippetStartTime
             && lhs.lyricHighlightRanges == rhs.lyricHighlightRanges
             && lhs.durationText == rhs.durationText
             && lhs.artworkIdentity == rhs.artworkIdentity
@@ -53,6 +55,7 @@ struct TrackRowView<MenuContent: View>: View {
     let enableSecondaryInteractions: Bool
     let enableArtworkLoading: Bool
     let onTap: (_ isShiftPressed: Bool) -> Void
+    let onLyricSnippetTap: (() -> Void)?
     let onRowAppear: (() -> Void)?
     /// Optional palette override from parent. Defaults to system colors so
     /// callers that have no ThemeStore access still work correctly.
@@ -79,6 +82,7 @@ struct TrackRowView<MenuContent: View>: View {
         enableSecondaryInteractions: Bool = true,
         enableArtworkLoading: Bool = true,
         onTap: @escaping (_ isShiftPressed: Bool) -> Void,
+        onLyricSnippetTap: (() -> Void)? = nil,
         onRowAppear: (() -> Void)? = nil,
         rowPrimaryColor: Color = ColorTokens.textPrimary,
         rowSecondaryColor: Color = ColorTokens.textSecondary,
@@ -93,6 +97,7 @@ struct TrackRowView<MenuContent: View>: View {
         self.enableSecondaryInteractions = enableSecondaryInteractions
         self.enableArtworkLoading = enableArtworkLoading
         self.onTap = onTap
+        self.onLyricSnippetTap = onLyricSnippetTap
         self.onRowAppear = onRowAppear
         self.rowPrimaryColor = rowPrimaryColor
         self.rowSecondaryColor = rowSecondaryColor
@@ -118,8 +123,8 @@ struct TrackRowView<MenuContent: View>: View {
         HStack(spacing: Constants.Layout.TrackRow.horizontalSpacing) {
             artworkView
 
-            VStack(alignment: .leading, spacing: Constants.Layout.TrackRow.textVerticalSpacing) {
-                HStack(spacing: Constants.Layout.TrackRow.textColumnSpacing) {
+            HStack(alignment: .center, spacing: Constants.Layout.TrackRow.textColumnSpacing) {
+                VStack(alignment: .leading, spacing: Constants.Layout.TrackRow.textVerticalSpacing) {
                     SeamlessMarqueeText(
                         text: model.title,
                         fontSize: Constants.Layout.TrackRow.titleFontSize,
@@ -130,25 +135,18 @@ struct TrackRowView<MenuContent: View>: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .layoutPriority(1)
 
-                    SeamlessMarqueeText(
-                        text: artistText,
-                        fontSize: Constants.Layout.TrackRow.subtitleFontSize,
-                        fontWeight: .regular,
-                        color: textSecondaryColor,
-                        shouldAnimate: isPlaying || isHovering
-                    )
-                    .frame(width: artistColumnWidth, alignment: .leading)
+                    lyricSnippetView
                 }
-                .frame(height: Constants.Layout.TrackRow.titleLineHeight)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                if let lyricSnippetAttributedString {
-                    Text(lyricSnippetAttributedString)
-                        .font(.system(size: Constants.Layout.TrackRow.lyricSnippetFontSize))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityLabel(lyricSnippetPlainText)
-                }
+                SeamlessMarqueeText(
+                    text: artistText,
+                    fontSize: Constants.Layout.TrackRow.subtitleFontSize,
+                    fontWeight: .regular,
+                    color: textSecondaryColor,
+                    shouldAnimate: isPlaying || isHovering
+                )
+                .frame(width: artistColumnWidth, alignment: .leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -245,8 +243,39 @@ struct TrackRowView<MenuContent: View>: View {
         !lyricSnippetPlainText.isEmpty
     }
 
+    private var canJumpToLyricSnippet: Bool {
+        onLyricSnippetTap != nil && model.lyricSnippetStartTime != nil
+    }
+
     private var lyricSnippetPlainText: String {
         model.lyricSnippetLine?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    @ViewBuilder
+    private var lyricSnippetView: some View {
+        if let lyricSnippetAttributedString {
+            if canJumpToLyricSnippet {
+                Button {
+                    onLyricSnippetTap?()
+                } label: {
+                    lyricSnippetText(lyricSnippetAttributedString)
+                }
+                .buttonStyle(.plain)
+                .help("从这句歌词开始播放")
+            } else {
+                lyricSnippetText(lyricSnippetAttributedString)
+            }
+        }
+    }
+
+    private func lyricSnippetText(_ attributedString: AttributedString) -> some View {
+        Text(attributedString)
+            .font(.system(size: Constants.Layout.TrackRow.lyricSnippetFontSize))
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .accessibilityLabel(lyricSnippetPlainText)
     }
 
     private var lyricSnippetAttributedString: AttributedString? {
@@ -477,6 +506,7 @@ extension TrackRowView: Equatable where MenuContent: View {
             && lhs.showsSelectionBackground == rhs.showsSelectionBackground
             && lhs.enableSecondaryInteractions == rhs.enableSecondaryInteractions
             && lhs.enableArtworkLoading == rhs.enableArtworkLoading
+            && (lhs.onLyricSnippetTap == nil) == (rhs.onLyricSnippetTap == nil)
             && lhs.rowPrimaryColor == rhs.rowPrimaryColor
             && lhs.rowSecondaryColor == rhs.rowSecondaryColor
             && lhs.rowTertiaryColor == rhs.rowTertiaryColor
@@ -493,6 +523,7 @@ extension TrackRowView: Equatable where MenuContent: View {
                 title: "Blinding Lights",
                 artist: "The Weeknd",
                 lyricSnippetLine: "I said, ooh, I'm blinded by the lights",
+                lyricSnippetStartTime: 42.1,
                 lyricHighlightRanges: [SearchHighlightRange(location: 18, length: 7)],
                 durationText: "3:23",
                 artworkData: nil,
@@ -515,6 +546,7 @@ extension TrackRowView: Equatable where MenuContent: View {
                 title: "Missing Track",
                 artist: "Unknown Artist",
                 lyricSnippetLine: nil,
+                lyricSnippetStartTime: nil,
                 lyricHighlightRanges: [],
                 durationText: "0:00",
                 artworkData: nil,

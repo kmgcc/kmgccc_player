@@ -266,7 +266,11 @@ extension LyricsBridge: WKScriptMessageHandler {
 
         case "log":
             let text = String(describing: body)
-            if text.contains("[ERROR]") {
+            if Self.isKnownAMLLDowngradeMessage(text) {
+                if LogConfig.webViewDebugEnabled {
+                    Log.debug("AMLLWeb: \(text)", category: .webview)
+                }
+            } else if text.contains("[ERROR]") {
                 Log.error("AMLLWeb: \(text)", category: .webview)
             } else if text.contains("[WARN]") {
                 Log.warning("AMLLWeb: \(text)", category: .webview)
@@ -285,6 +289,14 @@ extension LyricsBridge: WKScriptMessageHandler {
         default:
             Log.warning("Unknown message: \(name)", category: .webview)
         }
+    }
+
+    private static func isKnownAMLLDowngradeMessage(_ text: String) -> Bool {
+        text.contains("[AMLL-UPGRADE-DOWNGRADE]")
+            && (
+                text.contains("setLyricAdvanceLeadInMs is not available in upstream core")
+                    || text.contains("setLyricNearSwitchGapMs is not available in upstream core")
+            )
     }
 
     private func handleOnReady(_ body: Any) {

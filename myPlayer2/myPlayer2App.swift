@@ -114,10 +114,10 @@ struct KmgcccPlayerApp: App {
         )
         _appSession = StateObject(wrappedValue: appSessionHost)
         AppDelegate.launchMainWindowHandler = { @MainActor in
-            print("[AppLaunch] mainWindowHandler.begin")
+            Log.debug("[AppLaunch] mainWindowHandler.begin", category: .ui)
             Task { @MainActor in
                 await appSessionHost.setupIfNeeded()
-                print("[AppLaunch] mainWindowHandler.setupComplete")
+                Log.debug("[AppLaunch] mainWindowHandler.setupComplete", category: .ui)
                 _ = AppKitMainSplitWindowController.show(appSession: appSessionHost)
             }
         }

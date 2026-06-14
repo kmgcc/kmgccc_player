@@ -77,6 +77,7 @@ struct FullscreenPlayerView: View {
     private let coverBlurLegacyLyricsColumnLeftNudge: CGFloat = 80
     private let coverBlurLegacyLyricsRightShift: CGFloat = 30
     private let coverBlurLegacyLeftExpansion: CGFloat = 80
+    private let duplicateLyricsReloadCoalesceInterval: TimeInterval = 0.75
 
     private struct FullscreenHorizontalSplitLayout {
         let artworkWidth: CGFloat
@@ -213,6 +214,8 @@ struct FullscreenPlayerView: View {
     @State private var pendingFullscreenLyricsHostDetach: DispatchWorkItem?
     @State private var pendingFullscreenTrackRefresh: DispatchWorkItem?
     @State private var pendingFullscreenThemeReapply: DispatchWorkItem?
+    @State private var lastFullscreenLyricsReloadSignature: FullscreenLyricsReloadSignature?
+    @State private var lastFullscreenLyricsReloadAt: TimeInterval = 0
     /// Last fully decoded artwork committed to the skin layer. Track metadata
     /// can advance ahead of artwork decoding, so this remains stable until a
     /// complete image for the current display track is ready.
@@ -2464,10 +2467,12 @@ struct FullscreenPlayerView: View {
             preferredLocalTrack: preferredLocalTrack,
             forceLocalLyricsReload: forceLyricsReload || forceLocalLyricsReload
         )
-        Log.info(
-            "[FullscreenLyricsReload] reload reason=\(reason), forceLyricsReload=\(forceLyricsReload), trackID=\(playbackPayload.trackID?.uuidString.prefix(8) ?? "nil"), ttmlLen=\(playbackPayload.ttml?.count ?? 0), ttmlHash=\(playbackPayload.ttml?.hashValue ?? 0), time=\(String(format: "%.3f", playbackPayload.currentTime)), playing=\(playbackPayload.isPlaying), host=\(hostContext.rawValue)",
-            category: .webview
-        )
+        let reloadLogMessage = "[FullscreenLyricsReload] reload reason=\(reason), forceLyricsReload=\(forceLyricsReload), trackID=\(playbackPayload.trackID?.uuidString.prefix(8) ?? "nil"), ttmlLen=\(playbackPayload.ttml?.count ?? 0), ttmlHash=\(playbackPayload.ttml?.hashValue ?? 0), time=\(String(format: "%.3f", playbackPayload.currentTime)), playing=\(playbackPayload.isPlaying), host=\(hostContext.rawValue)"
+        if LogConfig.webviewVerbose {
+            Log.info(reloadLogMessage, category: .webview)
+        } else {
+            Log.debug(reloadLogMessage, category: .webview)
+        }
         syncFullscreenLyricsAvailability(with: playbackPayload)
         if hostContext == .embeddedWindow && !embeddedInitialThemeUnlocked {
             Log.info(
@@ -2479,6 +2484,33 @@ struct FullscreenPlayerView: View {
 
         // Apply to fullscreen store directly
         let store = fullscreenStore
+        let reloadSignature = FullscreenLyricsReloadSignature(
+            payload: playbackPayload,
+            hostContext: hostContext,
+            coverBlurHighlightOverlay: shouldRenderCoverBlurHighlightOverlay
+        )
+        let now = ProcessInfo.processInfo.systemUptime
+        if !forceWebReload,
+           !reason.lowercased().contains("theme"),
+           reloadSignature == lastFullscreenLyricsReloadSignature,
+           now - lastFullscreenLyricsReloadAt < duplicateLyricsReloadCoalesceInterval
+        {
+            Log.debug(
+                "[FullscreenLyricsReload] coalesced duplicate payload reason=\(reason), trackID=\(playbackPayload.trackID?.uuidString.prefix(8) ?? "nil"), ttmlLen=\(playbackPayload.ttml?.count ?? 0), host=\(hostContext.rawValue)",
+                category: .webview
+            )
+            store.setCurrentTime(playbackPayload.currentTime)
+            store.setPlaying(playbackPayload.isPlaying)
+            if shouldRenderCoverBlurHighlightOverlay {
+                let highlightStore = coverBlurHighlightStore
+                highlightStore.setCurrentTime(playbackPayload.currentTime)
+                highlightStore.setPlaying(playbackPayload.isPlaying)
+            }
+            return
+        }
+        lastFullscreenLyricsReloadSignature = reloadSignature
+        lastFullscreenLyricsReloadAt = now
+
         if forceWebReload {
             store.forceReload(recreateWebView: recreateWebViewOnForceReload)
         }
@@ -2515,6 +2547,26 @@ struct FullscreenPlayerView: View {
 
         var hasDisplayableLyrics: Bool {
             ttml?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        }
+    }
+
+    private struct FullscreenLyricsReloadSignature: Equatable {
+        let trackID: UUID?
+        let ttmlLength: Int
+        let ttmlHash: Int
+        let hostContext: HostContext
+        let coverBlurHighlightOverlay: Bool
+
+        init(
+            payload: FullscreenPlaybackPayload,
+            hostContext: HostContext,
+            coverBlurHighlightOverlay: Bool
+        ) {
+            self.trackID = payload.trackID
+            self.ttmlLength = payload.ttml?.count ?? 0
+            self.ttmlHash = payload.ttml?.hashValue ?? 0
+            self.hostContext = hostContext
+            self.coverBlurHighlightOverlay = coverBlurHighlightOverlay
         }
     }
 

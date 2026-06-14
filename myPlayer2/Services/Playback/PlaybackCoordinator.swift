@@ -31,6 +31,7 @@ final class PlaybackCoordinator {
     private var sidecarHydratingTrackID: UUID?
     private var trackArtworkWarmupTask: Task<Void, Never>?
     private var trackArtworkWarmupSignature: String?
+    private let lyricSnippetSeekLeadInSeconds: Double = 0.8
 
     private(set) var activeSource: PlaybackSource
     private(set) var presentation: NowPlayingPresentation = .emptyLocal
@@ -274,6 +275,23 @@ final class PlaybackCoordinator {
         NowPlayingService.shared.updateNowPlaying(force: true)
     }
 
+    func playTracks(
+        _ tracks: [Track],
+        startingAt index: Int = 0,
+        seekTo seconds: Double,
+        libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil,
+        startPolicy: PlaybackStartPolicy = .useSavedMode
+    ) {
+        guard index >= 0, index < tracks.count else { return }
+        playTracks(
+            tracks,
+            startingAt: index,
+            libraryQueueSource: libraryQueueSource,
+            startPolicy: startPolicy
+        )
+        scheduleSeekAfterLocalTrackLoad(trackID: tracks[index].id, seconds: seconds)
+    }
+
     func playRandomTracks(_ tracks: [Track], libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil) {
         let queue = Self.availableUniqueTracks(from: tracks)
         guard !queue.isEmpty else { return }
@@ -300,6 +318,44 @@ final class PlaybackCoordinator {
             startingAt: startIndex,
             libraryQueueSource: libraryQueueSource
         )
+    }
+
+    func playTrack(
+        _ track: Track,
+        inQueueFrom tracks: [Track],
+        seekTo seconds: Double,
+        libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil
+    ) {
+        let queue = Self.availableUniqueTracks(from: tracks)
+        guard !queue.isEmpty else { return }
+        let startIndex = queue.firstIndex(where: { $0.id == track.id }) ?? 0
+        playTracks(
+            queue,
+            startingAt: startIndex,
+            seekTo: seconds,
+            libraryQueueSource: libraryQueueSource
+        )
+    }
+
+    private func scheduleSeekAfterLocalTrackLoad(trackID: UUID, seconds: Double) {
+        let targetTime = max(0, seconds - lyricSnippetSeekLeadInSeconds)
+        Task { @MainActor [weak self] in
+            for _ in 0..<80 {
+                guard let self else { return }
+                guard self.activeSource == .local else { return }
+                guard self.playerVM.currentTrack?.id == trackID else {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    continue
+                }
+                guard self.playerVM.isPlaying else {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    continue
+                }
+
+                self.seek(to: targetTime)
+                return
+            }
+        }
     }
 
     func play(track: Track) {

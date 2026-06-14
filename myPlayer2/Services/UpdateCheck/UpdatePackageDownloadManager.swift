@@ -268,7 +268,7 @@ final class UpdatePackageDownloadManager: ObservableObject {
             .lowercased() ?? ""
 
         guard !trimmedExpected.isEmpty else {
-            print("[UpdatePackageDownloadManager] ⚠️ Remote did not provide package_sha256; skipping integrity check")
+            Log.warning("[UpdatePackageDownloadManager] Remote did not provide package_sha256; skipping integrity check", category: .ui)
             return
         }
 
@@ -278,18 +278,18 @@ final class UpdatePackageDownloadManager: ObservableObject {
         } catch {
             // Could not read/hash the downloaded file — treat as a verification
             // failure rather than silently installing an unverified package.
-            print("[UpdatePackageDownloadManager] ❌ Failed to compute SHA256: \(error)")
+            Log.error("[UpdatePackageDownloadManager] Failed to compute SHA256: \(error)", category: .ui)
             try? FileManager.default.removeItem(at: fileURL)
             throw UpdatePackageDownloadError.checksumMismatch
         }
 
         guard actual == trimmedExpected else {
-            print("[UpdatePackageDownloadManager] ❌ SHA256 mismatch — expected \(trimmedExpected), got \(actual)")
+            Log.error("[UpdatePackageDownloadManager] SHA256 mismatch - expected \(trimmedExpected), got \(actual)", category: .ui)
             try? FileManager.default.removeItem(at: fileURL)
             throw UpdatePackageDownloadError.checksumMismatch
         }
 
-        print("[UpdatePackageDownloadManager] ✅ SHA256 verified")
+        Log.debug("[UpdatePackageDownloadManager] SHA256 verified", category: .ui)
     }
 
     private nonisolated static func sha256Hex(of fileURL: URL) throws -> String {

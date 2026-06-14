@@ -92,24 +92,22 @@ final class UpdateChecker: ObservableObject {
             self.remoteInfo = info
             
             if decodeResult.usedSanitizedJSON {
-                print("[UpdateChecker] ⚠️ Remote version.json was malformed; recovered by escaping raw control characters in strings")
+                Log.warning("[UpdateChecker] Remote version.json was malformed; recovered by escaping raw control characters in strings", category: .ui)
             }
 
             if info.buildNumber == nil {
-                print("[UpdateChecker] ⚠️ Remote version info is missing buildNumber")
+                Log.warning("[UpdateChecker] Remote version info is missing buildNumber", category: .ui)
             }
 
             if info.downloadURL == nil {
-                print("[UpdateChecker] ⚠️ Remote version info is missing downloadURL")
+                Log.warning("[UpdateChecker] Remote version info is missing downloadURL", category: .ui)
             }
             
             // Log for debugging
-            print("[UpdateChecker] ✅ Remote version fetched:")
-            print("  - latestVersion: \(info.latestVersion)")
-            print("  - buildNumber: \(info.buildNumber.map(String.init) ?? "nil")")
-            print("  - releaseURL: \(info.releaseURL)")
-            print("  - notes: \(info.notes)")
-            print("  - localVersion: \(localVersion) (build \(localBuildNumber.map(String.init) ?? "nil"))")
+            Log.debug(
+                "[UpdateChecker] remote version fetched latestVersion=\(info.latestVersion) buildNumber=\(info.buildNumber.map(String.init) ?? "nil") releaseURL=\(info.releaseURL) localVersion=\(localVersion) localBuild=\(localBuildNumber.map(String.init) ?? "nil")",
+                category: .ui
+            )
 
             // Perform update decision and log result
             let decision = UpdateAvailability.decide(
@@ -118,14 +116,14 @@ final class UpdateChecker: ObservableObject {
             )
             switch decision.reason {
             case .buildNumber(let local, let remote):
-                print("[UpdateChecker] \(decision.isUpdateAvailable ? "⬆️ New build available" : "✓ Up to date") by build: \(local) → \(remote)")
+                Log.debug("[UpdateChecker] \(decision.isUpdateAvailable ? "New build available" : "Up to date") by build: \(local) -> \(remote)", category: .ui)
             case .missingBuildNumber(let local, let remote):
-                print("[UpdateChecker] ⚠️ Skipping update prompt because build number is missing: local=\(local.map(String.init) ?? "nil"), remote=\(remote.map(String.init) ?? "nil")")
+                Log.warning("[UpdateChecker] Skipping update prompt because build number is missing: local=\(local.map(String.init) ?? "nil"), remote=\(remote.map(String.init) ?? "nil")", category: .ui)
             }
 
         } catch {
             self.error = error
-            print("[UpdateChecker] ❌ Failed to fetch version: \(error)")
+            Log.warning("[UpdateChecker] Failed to fetch version: \(error)", category: .ui)
         }
         
         isChecking = false
@@ -134,16 +132,16 @@ final class UpdateChecker: ObservableObject {
     private func fetchVersionInfo() async throws -> RemoteVersionInfoDecodeResult {
         do {
             let result = try await fetchVersionInfo(from: primaryVersionURL, cacheBust: false)
-            print("[UpdateChecker] ✅ Primary update endpoint succeeded")
+            Log.debug("[UpdateChecker] Primary update endpoint succeeded", category: .ui)
             return result
         } catch {
-            print("[UpdateChecker] ⚠️ Primary update endpoint failed, falling back to GitHub Pages: \(error)")
+            Log.debug("[UpdateChecker] Primary update endpoint failed, falling back to GitHub Pages: \(error)", category: .ui)
             do {
                 let result = try await fetchVersionInfo(from: fallbackVersionURL, cacheBust: true)
-                print("[UpdateChecker] ✅ GitHub Pages fallback succeeded")
+                Log.debug("[UpdateChecker] GitHub Pages fallback succeeded", category: .ui)
                 return result
             } catch {
-                print("[UpdateChecker] ❌ GitHub Pages fallback failed: \(error)")
+                Log.warning("[UpdateChecker] GitHub Pages fallback failed: \(error)", category: .ui)
                 throw error
             }
         }

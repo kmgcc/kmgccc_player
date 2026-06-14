@@ -159,6 +159,7 @@ final class AppleMusicPlaybackAdapter {
     private let temporaryUnavailableThreshold = 2
     private let disconnectedFailureThreshold = 8
     private let processMissingDisconnectThreshold = 3
+    private let repeatedPollFailureWarningInterval: TimeInterval = 30
 
     private var pollTimer: Timer?
     private var isPollInFlight = false
@@ -190,6 +191,8 @@ final class AppleMusicPlaybackAdapter {
     private var consecutiveFailureCount = 0
     private var consecutiveProcessMissingCount = 0
     private var lastPollFailureReason: PollFailureReason?
+    private var lastPollFailureWarningAt: Date = .distantPast
+    private var lastPollFailureWarningSignature: String?
 
     private(set) var presentation: NowPlayingPresentation = .emptyAppleMusic
 
@@ -398,6 +401,7 @@ final class AppleMusicPlaybackAdapter {
                 consecutiveFailureCount = 0
                 consecutiveProcessMissingCount = 0
                 lastPollFailureReason = nil
+                lastPollFailureWarningSignature = nil
                 transitionConnectionState(to: .runningHasData, reason: "valid now playing data")
                 handlePolledInfo(info)
             } else {
@@ -433,10 +437,7 @@ final class AppleMusicPlaybackAdapter {
         }
         lastPollFailureReason = reason
 
-        Log.warning(
-            "[AMAdapter] poll failure reason=\(reason.logDescription) consecutiveFailures=\(consecutiveFailureCount) consecutiveProcessMissing=\(consecutiveProcessMissingCount)",
-            category: .playback
-        )
+        logPollFailure(reason)
 
         if shouldTransitionToDisconnected(for: reason) {
             handleDisconnectedPoll(reason: reason)
@@ -447,6 +448,39 @@ final class AppleMusicPlaybackAdapter {
             transitionConnectionState(to: .runningTemporarilyUnavailable, reason: reason.logDescription)
         }
         preserveLastKnownPresentationDuringFailure(reason: reason, snapshot: snapshot)
+    }
+
+    private func logPollFailure(_ reason: PollFailureReason) {
+        let message = "[AMAdapter] poll failure reason=\(reason.logDescription) consecutiveFailures=\(consecutiveFailureCount) consecutiveProcessMissing=\(consecutiveProcessMissingCount)"
+
+        if reason == .noNowPlayingData {
+            // Music.app can be running with no active item on launch or after playback stops.
+            // Treat that as an idle state; per-second warnings drown out real failures.
+            if LogConfig.playbackStatsVerbose {
+                Log.debug(message, category: .playback)
+            }
+            return
+        }
+
+        let now = Date()
+        let signature = reason.diagnosticCode
+        let reasonChanged = lastPollFailureWarningSignature != signature
+        let reachedTemporaryThreshold = consecutiveFailureCount == temporaryUnavailableThreshold
+        let reachedDisconnectedThreshold: Bool
+        if reason == .processNotRunning {
+            reachedDisconnectedThreshold = consecutiveProcessMissingCount == processMissingDisconnectThreshold
+        } else {
+            reachedDisconnectedThreshold = consecutiveFailureCount == disconnectedFailureThreshold
+        }
+        let repeatWindowElapsed = now.timeIntervalSince(lastPollFailureWarningAt) >= repeatedPollFailureWarningInterval
+
+        if reasonChanged || reachedTemporaryThreshold || reachedDisconnectedThreshold || repeatWindowElapsed {
+            lastPollFailureWarningAt = now
+            lastPollFailureWarningSignature = signature
+            Log.warning(message, category: .playback)
+        } else if LogConfig.playbackStatsVerbose {
+            Log.debug(message, category: .playback)
+        }
     }
 
     private func shouldTransitionToTemporaryUnavailable() -> Bool {

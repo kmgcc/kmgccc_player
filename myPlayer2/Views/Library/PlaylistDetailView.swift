@@ -1191,6 +1191,28 @@ private struct PlaylistTrackRowsSection: View {
                     )
                 }
             },
+            onLyricSnippetTap: {
+                guard let startTime = row.lyricSnippetStartTime,
+                      let track = pageController.latestTrackFromLibrary(trackID: row.id)
+                else { return }
+                if case .album = selection {
+                    let startIndex = pageController.queueStartIndex(for: row.id)
+                    playbackCoordinator.playTracks(
+                        queueTracks,
+                        startingAt: startIndex,
+                        seekTo: startTime,
+                        libraryQueueSource: .librarySelection(selectionIdentity),
+                        startPolicy: .forceSequentialTemporary
+                    )
+                    return
+                }
+                playbackCoordinator.playTrack(
+                    track,
+                    inQueueFrom: queueTracks,
+                    seekTo: startTime,
+                    libraryQueueSource: .librarySelection(selectionIdentity)
+                )
+            },
             onRowAppear: {
                 pageController.prefetchAroundTrackID(row.id)
             },

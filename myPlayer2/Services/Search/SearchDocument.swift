@@ -34,6 +34,7 @@ nonisolated struct SearchIndexedDocument: Sendable {
     let titleArtistCombinedNormalized: String
     let lyricsPlainTextRaw: String
     let lyricsPlainTextNormalized: String
+    let lyricLineStartTimes: [Double?]
     let lyricsFilePath: String?
     let lyricsFileModifiedAt: Double?
     let lyricsFileSize: Int64?
@@ -58,6 +59,7 @@ nonisolated struct LibrarySearchHit: Sendable, Equatable {
     let trackID: UUID
     let score: Double
     let lyricSnippetLine: String?
+    let lyricSnippetStartTime: Double?
     let lyricHighlightRanges: [SearchHighlightRange]
     let matchedLyrics: Bool
 }

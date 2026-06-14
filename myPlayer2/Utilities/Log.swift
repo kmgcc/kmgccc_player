@@ -73,11 +73,35 @@ private nonisolated(unsafe) var _logDebugEnabledCategories: Set<LogCategory> = [
 enum LogConfig {
     
     nonisolated static var minimumLevel: LogLevel {
-        #if DEBUG
-        return .info
-        #else
+        if let configuredLevel {
+            return configuredLevel
+        }
         return .warning
-        #endif
+    }
+
+    private nonisolated static var configuredLevel: LogLevel? {
+        guard let rawValue = ProcessInfo.processInfo.environment["KMGCCC_LOG_LEVEL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+            !rawValue.isEmpty
+        else {
+            return nil
+        }
+
+        switch rawValue {
+        case "error":
+            return .error
+        case "warn", "warning":
+            return .warning
+        case "info":
+            return .info
+        case "debug":
+            return .debug
+        case "trace":
+            return .trace
+        default:
+            return nil
+        }
     }
 
     nonisolated static var webViewDebugEnabled: Bool {
@@ -341,11 +365,10 @@ nonisolated private func _log(
     message: String,
     category: LogCategory
 ) {
-    guard level.rawValue <= LogConfig.minimumLevel.rawValue else { return }
-    
-    if level.rawValue >= LogLevel.debug.rawValue {
-        guard LogConfig.isCategoryEnabled(category) else { return }
-    }
+    let passesMinimumLevel = level.rawValue <= LogConfig.minimumLevel.rawValue
+    let passesExplicitDebugCategory = level.rawValue >= LogLevel.debug.rawValue
+        && LogConfig.isCategoryEnabled(category)
+    guard passesMinimumLevel || passesExplicitDebugCategory else { return }
     
     let prefix = "\(level.emoji)[\(category.rawValue)]"
     let formattedMessage = "\(prefix) \(message)"

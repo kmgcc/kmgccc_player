@@ -435,8 +435,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         scheduledGraphGeneration = nil
         graphState = .ready
         currentGraphOperation = "idle"
+        let operationStackSuffix = LogConfig.perfDebugEnabled
+            ? " operationStack=\(FirstUseHitchDiagnostics.currentOperationStack())"
+            : ""
         Log.info(
-            "[PlaybackPipeline] graph ready generation=\(graphGeneration) operation=\(operation) topology=\(activeLookaheadEnabled ? "player->playbackMixer->delay->mainMixer" : "player->playbackMixer->mainMixer") delaySeconds=\(String(format: "%.3f", lookaheadSeconds)) engineRunning=\(engine.isRunning) operationStack=\(FirstUseHitchDiagnostics.currentOperationStack())",
+            "[PlaybackPipeline] graph ready generation=\(graphGeneration) operation=\(operation) topology=\(activeLookaheadEnabled ? "player->playbackMixer->delay->mainMixer" : "player->playbackMixer->mainMixer") delaySeconds=\(String(format: "%.3f", lookaheadSeconds)) engineRunning=\(engine.isRunning)\(operationStackSuffix)",
             category: .audio
         )
     }
