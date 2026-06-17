@@ -214,6 +214,8 @@ struct FullscreenPlayerView: View {
     @State private var pendingFullscreenLyricsHostDetach: DispatchWorkItem?
     @State private var pendingFullscreenTrackRefresh: DispatchWorkItem?
     @State private var pendingFullscreenThemeReapply: DispatchWorkItem?
+    @State private var pendingEmbeddedStartupRetry: DispatchWorkItem?
+    @State private var embeddedStartupRetryCount = 0
     @State private var lastFullscreenLyricsReloadSignature: FullscreenLyricsReloadSignature?
     @State private var lastFullscreenLyricsReloadAt: TimeInterval = 0
     /// Last fully decoded artwork committed to the skin layer. Track metadata
@@ -544,6 +546,9 @@ struct FullscreenPlayerView: View {
         pendingFullscreenTrackRefresh = nil
         pendingFullscreenThemeReapply?.cancel()
         pendingFullscreenThemeReapply = nil
+        pendingEmbeddedStartupRetry?.cancel()
+        pendingEmbeddedStartupRetry = nil
+        embeddedStartupRetryCount = 0
         deferredTrackUpdateDeadline = nil
         suppressFullscreenLyricsViewport = false
         fullscreenLyricsHostMounted = false
@@ -1871,15 +1876,17 @@ struct FullscreenPlayerView: View {
             fullscreenScale: scale  // Pass scale for crisp rendering
         )
 
+        let artworkScale = isCoverBlurFullscreenSkin ? 1.0 : settings.fullscreenArtworkScale
+
         ZStack {
             // Main artwork - using user configurable scale
             selectedSkin.makeArtwork(context: context)
-                .scaleEffect(settings.fullscreenArtworkScale)
+                .scaleEffect(artworkScale)
 
             // Overlay if any
             if let overlay = selectedSkin.makeOverlay(context: context) {
                 overlay
-                    .scaleEffect(settings.fullscreenArtworkScale)
+                    .scaleEffect(artworkScale)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -3285,10 +3292,15 @@ struct FullscreenPlayerView: View {
                         fullscreenViewportSize = fallbackSize
                         currentFullscreenScale = fallbackScale
                         beginEmbeddedFullscreenStartupIfNeeded(reason: "embedded-first-valid-window-size")
+                        return
                     }
                 }
+                scheduleEmbeddedFullscreenStartupRetry(reason: reason)
                 return
             }
+            pendingEmbeddedStartupRetry?.cancel()
+            pendingEmbeddedStartupRetry = nil
+            embeddedStartupRetryCount = 0
             beginEmbeddedFullscreenStartupIfNeeded(reason: "embedded-first-valid-geometry")
             return
         }
@@ -3330,6 +3342,11 @@ struct FullscreenPlayerView: View {
             return
         }
 
+        pendingEmbeddedStartupRetry?.cancel()
+        pendingEmbeddedStartupRetry = nil
+        embeddedStartupRetryCount = 0
+        syncFullscreenLyricsHostMount()
+
         syncCoverBlurHighlightActivation()
         resetFullscreenLyricsBackgroundSnapshot()
         scheduleFullscreenLyricsBackgroundCapture()
@@ -3341,6 +3358,23 @@ struct FullscreenPlayerView: View {
 
         embeddedInitialThemeUnlocked = true
         startFullscreenLyricsSurface(reason: reason)
+    }
+
+    private func scheduleEmbeddedFullscreenStartupRetry(reason: String) {
+        guard embeddedStartupRetryCount < 20 else { return }
+        pendingEmbeddedStartupRetry?.cancel()
+        embeddedStartupRetryCount += 1
+
+        let workItem = DispatchWorkItem {
+            pendingEmbeddedStartupRetry = nil
+            if let fallbackSize = currentEmbeddedHostWindowContentSize() {
+                handleEmbeddedFullscreenViewportChange(fallbackSize, reason: "\(reason)-retry")
+            } else {
+                beginEmbeddedFullscreenStartupIfNeeded(reason: "\(reason)-retry")
+            }
+        }
+        pendingEmbeddedStartupRetry = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: workItem)
     }
 
     private func isValidEmbeddedFullscreenGeometry(_ size: CGSize, scale: CGFloat) -> Bool {

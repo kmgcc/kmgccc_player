@@ -78,6 +78,8 @@ struct ClassicCoverArtworkView: View {
     /// Applied via scaleEffect inside the scaled canvas, so it is
     /// resolution-stable (proportional to the base canvas, not screen pixels).
     private let fullscreenCoverScaleEffect: CGFloat = 1.2
+    /// Window-only boost for the complete cover/effect stack.
+    private let windowCoverScaleEffect: CGFloat = 1.08
 
     var body: some View {
         let contentSize = context.contentSize
@@ -128,7 +130,7 @@ struct ClassicCoverArtworkView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .scaleEffect(usesFullscreenLayout ? fullscreenCoverScaleEffect : 1.0)
+        .scaleEffect(usesFullscreenLayout ? fullscreenCoverScaleEffect : windowCoverScaleEffect)
         .offset(x: leftShift, y: yOffset)
     }
 

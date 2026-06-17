@@ -131,6 +131,26 @@ final class AppSessionHost: ObservableObject {
         lyricsVM.setPlaybackSourceProvider { [weak playbackCoordinator] in
             playbackCoordinator?.activeSource ?? .local
         }
+        LyricsSurfaceManager.shared.setMainSurfaceSnapshotRefreshHandler {
+            [weak lyricsVM, weak playbackCoordinator] reason in
+            guard let lyricsVM, let playbackCoordinator else { return }
+            let presentation = playbackCoordinator.presentation
+            switch presentation.source {
+            case .local:
+                lyricsVM.ensureAMLLLoaded(
+                    track: presentation.localTrack,
+                    currentTime: presentation.lyricsCurrentTime,
+                    isPlaying: presentation.isPlaying,
+                    reason: reason
+                )
+            case .appleMusic, .systemNowPlaying:
+                lyricsVM.ensureExternalAMLLLoaded(
+                    presentation: presentation,
+                    reason: reason
+                )
+            }
+            lyricsVM.refreshConfigFromSettings()
+        }
 
         playbackCoordinator.onActiveSourceChanged = { [weak ledMeterProvider, weak lyricsVM] source in
             ledMeterProvider?.playbackSource = source

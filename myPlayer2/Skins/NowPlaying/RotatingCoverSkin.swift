@@ -944,6 +944,8 @@ private struct RotatingCoverArtwork: View {
     @StateObject private var rotation = RotatingCoverRotation()
     @StateObject private var cdMotionBlurCache = RotatingCoverCDMotionBlurCache()
 
+    private let windowCoverScaleEffect: CGFloat = 1.08
+
     @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = false
     @AppStorage("skin.rotatingCover.visualizerMode") private var normalVisualizerMode: String = "off"
     @AppStorage("skin.rotatingCover.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "led"
@@ -1013,6 +1015,7 @@ private struct RotatingCoverArtwork: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .scaleEffect(usesFullscreenLayout ? 1.0 : windowCoverScaleEffect)
         .offset(x: layout.xOffset, y: layout.yOffset)
         .onAppear {
             lastTrackID = context.track?.id
