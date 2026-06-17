@@ -2531,6 +2531,10 @@ const EXIT_HIGHLIGHT_MAX_CATCH_UP_MS = 280;
 const makeEmpEasing = (mid) => {
 	return (x) => x < mid ? bezIn(beginNum(x)) : 1 - bezOut(endNum(x));
 };
+const isFloatAnimation = (animation) => {
+	const id = typeof animation.id === "string" ? animation.id : "";
+	return id === "float-word" || id.includes("emphasize-word-float");
+};
 function generateFadeGradient(width, padding = 0, bright = "rgba(0,0,0,var(--bright-mask-alpha, 1.0))", dark = "rgba(0,0,0,var(--dark-mask-alpha, 1.0))") {
 	const totalAspect = 2 + width + padding;
 	const widthInTotal = width / totalAspect;
@@ -2678,7 +2682,7 @@ var LyricLineEl = class extends LyricLineBase {
 		const keepHighlightDuringExit = this.startExitHighlightCatchUp(isSeek);
 		if (!keepHighlightDuringExit) this.renderMode = LyricLineRenderMode.SOLID;
 		for (const word of this.splittedWords) {
-			for (const a of word.elementAnimations) if (a.id === "float-word" || a.id.includes("emphasize-word-float-only")) {
+			for (const a of word.elementAnimations) if (isFloatAnimation(a)) {
 				a.playbackRate = -1;
 				a.play();
 			}

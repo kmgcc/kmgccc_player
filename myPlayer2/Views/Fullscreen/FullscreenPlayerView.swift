@@ -72,6 +72,7 @@ struct FullscreenPlayerView: View {
     private let fullscreenBackgroundLyricsAvoidanceTopInset: CGFloat = 36
     private let fullscreenBackgroundLyricsAvoidanceBottomInset: CGFloat = 60
     private let fullscreenLyricsAlignPosition: Double = 0.18  // Current line higher in viewport (was 0.28)
+    private let fullscreenLyricsAutoHideTrailingGap: TimeInterval = 5.0
     private let coverBlurLegacyTopContentLeftShift: CGFloat = 44
     private let coverBlurLegacyArtworkLyricsColumnSpacing: CGFloat = -58
     private let coverBlurLegacyLyricsColumnLeftNudge: CGFloat = 80
@@ -225,6 +226,9 @@ struct FullscreenPlayerView: View {
     @State private var coverBlurLyricsTheme: FullscreenCoverBlurLyricsTheme?
     @State private var deferredTrackUpdateDeadline: Date?
     @State private var autoHiddenFullscreenLyricsForEmptyContent = false
+    @State private var autoHiddenFullscreenLyricsAfterEnding = false
+    @State private var autoHideFullscreenLyricsTrackID: UUID?
+    @State private var fullscreenLyricsLastEndTime: TimeInterval?
     @State private var suppressFullscreenLyricsViewport = false
     @State private var fullscreenLyricsHostMounted = false
     @State private var isLeftActionsExpanded = false
@@ -552,6 +556,9 @@ struct FullscreenPlayerView: View {
         deferredTrackUpdateDeadline = nil
         suppressFullscreenLyricsViewport = false
         fullscreenLyricsHostMounted = false
+        autoHiddenFullscreenLyricsAfterEnding = false
+        autoHideFullscreenLyricsTrackID = nil
+        fullscreenLyricsLastEndTime = nil
         embeddedInitialThemeUnlocked = false
         isQuickAppearancePanelPresented = false
         isFullscreenBottomControlsAppearancePanelHovered = false
@@ -2292,6 +2299,7 @@ struct FullscreenPlayerView: View {
     private func syncFullscreenLyricsAvailability(with payload: FullscreenPlaybackPayload) {
         guard currentDisplayContext.hasTrack else {
             autoHiddenFullscreenLyricsForEmptyContent = false
+            resetFullscreenLyricsEndingAutoHide(restoreIfNeeded: false)
             return
         }
 
@@ -2307,6 +2315,82 @@ struct FullscreenPlayerView: View {
         guard rightPanelDisplayState == .lyrics else { return }
         handleLyricsButtonTap()
         autoHiddenFullscreenLyricsForEmptyContent = true
+    }
+
+    private func syncFullscreenLyricsAutoHideTiming(with payload: FullscreenPlaybackPayload) {
+        let trackChanged = autoHideFullscreenLyricsTrackID != payload.trackID
+        if trackChanged {
+            resetFullscreenLyricsEndingAutoHide(restoreIfNeeded: true)
+            autoHideFullscreenLyricsTrackID = payload.trackID
+        }
+
+        guard payload.hasDisplayableLyrics, let ttml = payload.ttml else {
+            fullscreenLyricsLastEndTime = nil
+            return
+        }
+
+        fullscreenLyricsLastEndTime = FullscreenTTMLTimingExtractor
+            .lastMainLineEndTime(in: ttml)
+            .map { max(0, $0 + fullscreenLyricsVisualOffsetSeconds()) }
+
+        evaluateFullscreenLyricsAutoHide(
+            currentTime: payload.currentTime,
+            duration: playbackCoordinator.presentation.duration,
+            isPlaying: payload.isPlaying
+        )
+    }
+
+    private func evaluateFullscreenLyricsAutoHide(
+        currentTime: TimeInterval,
+        duration: TimeInterval,
+        isPlaying: Bool
+    ) {
+        guard isPlaying else { return }
+        guard rightPanelDisplayState == .lyrics else { return }
+        guard !autoHiddenFullscreenLyricsAfterEnding else { return }
+        guard let lastEnd = fullscreenLyricsLastEndTime, lastEnd.isFinite else { return }
+        guard currentTime.isFinite, duration.isFinite, duration > 0 else { return }
+        guard duration - lastEnd > fullscreenLyricsAutoHideTrailingGap else { return }
+        guard currentTime >= lastEnd else { return }
+
+        autoHiddenFullscreenLyricsAfterEnding = true
+        Log.debug(
+            "[FullscreenLyricsAutoHide] hiding lyrics after final line gap=\(String(format: "%.2f", duration - lastEnd))s track=\(autoHideFullscreenLyricsTrackID?.uuidString.prefix(8) ?? "nil")",
+            category: .webview
+        )
+        handleLyricsButtonTap()
+    }
+
+    private func resetFullscreenLyricsEndingAutoHide(restoreIfNeeded: Bool) {
+        if restoreIfNeeded,
+           autoHiddenFullscreenLyricsAfterEnding,
+           rightPanelDisplayState == .hidden,
+           currentDisplayContext.hasTrack
+        {
+            handleLyricsButtonTap()
+        }
+        autoHiddenFullscreenLyricsAfterEnding = false
+        fullscreenLyricsLastEndTime = nil
+    }
+
+    private func fullscreenLyricsVisualOffsetSeconds() -> TimeInterval {
+        let presentation = playbackCoordinator.presentation
+        let overlayContext: LyricsRuntimePresentationContext =
+            hostContext == .embeddedWindow ? .fullscreenEmbedded : .fullscreenSystem
+        let overlay = LyricsRuntimeOverlayResolver.overlay(
+            context: overlayContext,
+            playbackSource: presentation.source
+        )
+        let trackOffsetMs = max(
+            -15000,
+            min(15000, presentation.localTrack?.lyricsTimeOffsetMs ?? 0)
+        )
+        let effectiveGlobalAdvanceMs = max(
+            -5000,
+            min(5000, settings.lyricsGlobalAdvanceMs + overlay.globalAdvanceDeltaMs)
+        )
+        let combinedOffsetMs = max(-20000, min(20000, trackOffsetMs - effectiveGlobalAdvanceMs))
+        return TimeInterval(combinedOffsetMs) / 1000.0
     }
 
     private func handlePlaybackModeChange(_ tappedMode: PlaybackOrderMode) {
@@ -2374,6 +2458,11 @@ struct FullscreenPlayerView: View {
         guard playbackCoordinator.presentation.source == .local else { return }
         let lyricsTime = playerVM.lyricsCurrentTime
         LyricsSurfaceManager.shared.updatePlaybackTime(lyricsTime)
+        evaluateFullscreenLyricsAutoHide(
+            currentTime: lyricsTime,
+            duration: playerVM.duration,
+            isPlaying: playerVM.isPlaying
+        )
         guard allowsDirectEmbeddedSurfaceUpdates else { return }
         fullscreenStore.setCurrentTime(lyricsTime)
         if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
@@ -2381,6 +2470,7 @@ struct FullscreenPlayerView: View {
         }
 
         if oldTime > 1.0, newTime < 0.2 {
+            resetFullscreenLyricsEndingAutoHide(restoreIfNeeded: false)
             reloadLyricsSurface(reason: "fullscreen playback restarted", forceLyricsReload: true)
         }
     }
@@ -2401,6 +2491,11 @@ struct FullscreenPlayerView: View {
         guard playbackCoordinator.presentation.source.isExternal else { return }
         let lyricsTime = playbackCoordinator.presentation.lyricsCurrentTime
         LyricsSurfaceManager.shared.updatePlaybackTime(lyricsTime)
+        evaluateFullscreenLyricsAutoHide(
+            currentTime: lyricsTime,
+            duration: playbackCoordinator.presentation.duration,
+            isPlaying: playbackCoordinator.presentation.isPlaying
+        )
         guard allowsDirectEmbeddedSurfaceUpdates else { return }
         fullscreenStore.setCurrentTime(lyricsTime)
         if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
@@ -2408,6 +2503,7 @@ struct FullscreenPlayerView: View {
         }
 
         if oldTime > 1.0, newTime < 0.2 {
+            resetFullscreenLyricsEndingAutoHide(restoreIfNeeded: false)
             reloadLyricsSurface(reason: "fullscreen external playback restarted", forceLyricsReload: true)
         }
     }
@@ -2481,6 +2577,7 @@ struct FullscreenPlayerView: View {
             Log.debug(reloadLogMessage, category: .webview)
         }
         syncFullscreenLyricsAvailability(with: playbackPayload)
+        syncFullscreenLyricsAutoHideTiming(with: playbackPayload)
         if hostContext == .embeddedWindow && !embeddedInitialThemeUnlocked {
             Log.info(
                 "[FullscreenLyricsReload] skipped embedded startup gate reason=\(reason), trackID=\(playbackPayload.trackID?.uuidString.prefix(8) ?? "nil")",
@@ -4008,6 +4105,97 @@ private final class FullscreenPointerOcclusionMonitor {
         guard nextValue != isOccluded else { return }
         isOccluded = nextValue
         onOcclusionChanged?(nextValue)
+    }
+}
+
+private enum FullscreenTTMLTimingExtractor {
+    static func lastMainLineEndTime(in ttml: String) -> TimeInterval? {
+        guard let data = ttml.data(using: .utf8) else { return nil }
+        let delegate = FullscreenTTMLTimingParser()
+        let parser = XMLParser(data: data)
+        parser.delegate = delegate
+        parser.shouldProcessNamespaces = false
+        parser.shouldReportNamespacePrefixes = true
+        guard parser.parse() else { return nil }
+        return delegate.lastMainLineEndTime
+    }
+}
+
+private final class FullscreenTTMLTimingParser: NSObject, XMLParserDelegate {
+    private(set) var lastMainLineEndTime: TimeInterval?
+
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
+        let name = Self.localName(qName ?? elementName)
+        guard name == "p" else { return }
+        guard !Self.isBackgroundLine(attributeDict) else { return }
+
+        let begin = Self.timeValue(forLocalName: "begin", in: attributeDict)
+        let explicitEnd = Self.timeValue(forLocalName: "end", in: attributeDict)
+        let duration = Self.timeValue(forLocalName: "dur", in: attributeDict)
+        let endTime = explicitEnd ?? begin.flatMap { start in duration.map { start + $0 } }
+        guard let endTime, endTime.isFinite, endTime >= 0 else { return }
+        lastMainLineEndTime = max(lastMainLineEndTime ?? 0, endTime)
+    }
+
+    private static func isBackgroundLine(_ attributes: [String: String]) -> Bool {
+        attributes.contains { key, value in
+            localName(key) == "role" && value.lowercased().contains("x-bg")
+        }
+    }
+
+    private static func timeValue(
+        forLocalName targetName: String,
+        in attributes: [String: String]
+    ) -> TimeInterval? {
+        guard let raw = attributes.first(where: { localName($0.key) == targetName })?.value else {
+            return nil
+        }
+        return parseTimeExpression(raw)
+    }
+
+    private static func localName(_ name: String) -> String {
+        String(name.split(separator: ":").last ?? Substring(name)).lowercased()
+    }
+
+    private static func parseTimeExpression(_ raw: String) -> TimeInterval? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")
+            .lowercased()
+        guard !value.isEmpty else { return nil }
+
+        if value.hasSuffix("ms"),
+           let milliseconds = Double(value.dropLast(2)) {
+            return milliseconds / 1000.0
+        }
+        if value.hasSuffix("s"),
+           let seconds = Double(value.dropLast()) {
+            return seconds
+        }
+        if value.hasSuffix("m"),
+           let minutes = Double(value.dropLast()) {
+            return minutes * 60.0
+        }
+        if value.hasSuffix("h"),
+           let hours = Double(value.dropLast()) {
+            return hours * 3600.0
+        }
+
+        let parts = value.split(separator: ":").map(String.init)
+        if parts.count == 2 || parts.count == 3 {
+            guard let seconds = Double(parts[parts.count - 1]) else { return nil }
+            guard let minutes = Double(parts[parts.count - 2]) else { return nil }
+            let hours = parts.count == 3 ? (Double(parts[0]) ?? .nan) : 0
+            guard hours.isFinite, minutes.isFinite, seconds.isFinite else { return nil }
+            return hours * 3600.0 + minutes * 60.0 + seconds
+        }
+
+        return Double(value)
     }
 }
 
