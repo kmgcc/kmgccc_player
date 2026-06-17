@@ -103,7 +103,7 @@ struct FullscreenSkinTabView: View {
                         detailColor: presentationStyle.secondaryTextColor
                     )
 
-                    if settings.fullscreen.skinID != "fullscreen.coverGradientBlur" {
+                    if supportsArtworkScaleControl(for: settings.fullscreen.skinID) {
                         artworkScaleSection
                     }
 
@@ -227,6 +227,10 @@ struct FullscreenSkinTabView: View {
         return 0.9...maxVal
     }
 
+    private func supportsArtworkScaleControl(for skinID: String) -> Bool {
+        skinID != "fullscreen.coverGradientBlur"
+    }
+
     private var currentArtworkScaleRange: ClosedRange<Double> {
         artworkScaleRange(for: settings.fullscreen.skinID)
     }
@@ -238,8 +242,7 @@ struct FullscreenSkinTabView: View {
                     .font(presentationStyle.rowLabelFont)
                     .foregroundStyle(presentationStyle.primaryTextColor)
                 Spacer()
-                let displayValue = fullscreenArtworkScale - 0.1
-                Text(String(format: "%.2f", displayValue))
+                Text(String(format: "%.2f", fullscreenArtworkScale))
                     .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
                     .font(presentationStyle.rowValueFont)
             }

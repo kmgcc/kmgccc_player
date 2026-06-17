@@ -1043,10 +1043,12 @@ public final class AppSettings {
             return 1.25
         case "rotatingCover":
             return 1.1
-        case "appleStyle":
+        case AppleStyleSkin.skinID:
             return 1.1
         case "coverLed":
             return 1.1
+        case "fullscreen.coverGradientBlur":
+            return 1.0
         default:
             return 1.1
         }
@@ -1056,10 +1058,12 @@ public final class AppSettings {
         switch skinID {
         case "coverLed":
             return 1.35
-        case "appleStyle":
+        case AppleStyleSkin.skinID:
             return 1.45
         case "rotatingCover":
             return 1.35
+        case "fullscreen.coverGradientBlur":
+            return 1.0
         default:
             return 1.6
         }

@@ -85,6 +85,7 @@ final class LyricsSurfaceManager {
 
     /// Callback when a switch completes
     private var onSwitchComplete: ((TargetMode, Int) -> Void)?
+    private var mainSurfaceSnapshotRefreshHandler: ((String) -> Void)?
 
     private init() {}
 
@@ -179,6 +180,10 @@ final class LyricsSurfaceManager {
         guard generation == switchGeneration else {
             Log.warning("LyricsSurfaceManager: stale replay before completeSwitch, gen=\(generation) != current=\(switchGeneration)", category: .webview)
             return
+        }
+
+        if targetRole == .main {
+            mainSurfaceSnapshotRefreshHandler?("surface switch to main: \(reason)")
         }
 
         replayCurrentSnapshot(
@@ -303,6 +308,10 @@ final class LyricsSurfaceManager {
         Log.debug("LyricsSurfaceManager: store ready for \(role), triggering ready handler", category: .webview)
         handler(store)
         return true
+    }
+
+    func setMainSurfaceSnapshotRefreshHandler(_ handler: ((String) -> Void)?) {
+        mainSurfaceSnapshotRefreshHandler = handler
     }
 
     /// Get or create a WebView store for the given role.
