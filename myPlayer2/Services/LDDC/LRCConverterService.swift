@@ -463,15 +463,22 @@ actor LRCConverterService {
     private func isLikelyIntroTitleCreditLine(_ lineData: LyricLine, lineIndex: Int) -> Bool {
         guard lineIndex < 3, lineData.segments.count >= 3 else { return false }
         let combined = lineData.segments.map(\.text).joined(separator: " ")
-        guard combined.contains("-") || combined.contains("—") || combined.contains("–") else {
+        guard let separator = ["-", "—", "–"].first(where: { combined.contains($0) }) else {
             return false
         }
+        guard combined.components(separatedBy: separator).count == 2 else { return false }
 
         let lyricWords = ["can", "we", "the", "let", "all", "of", "my", "your", "and", "is", "are", "i", "you"]
         let lowercased = combined.lowercased()
         if lyricWords.contains(where: { lowercased.split(separator: " ").contains(Substring($0)) }) {
             return false
         }
+
+        let parts = combined
+            .components(separatedBy: separator)
+            .map { compactInfoText($0) }
+            .filter { !$0.isEmpty }
+        guard parts.count == 2, parts[0] != parts[1] else { return false }
 
         return lineData.segments.allSatisfy { segment in
             let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -645,7 +652,7 @@ actor LRCConverterService {
         var usedLineIndexes: Set<Int> = []
 
         for translation in translations {
-            let candidates = translationTargetIndexes(
+            let candidates = translationTargetCandidates(
                 for: translation.time,
                 lyricsData: lyricsData,
                 earlyTolerance: earlyTolerance,
@@ -653,24 +660,24 @@ actor LRCConverterService {
                 extendedEarlyTolerance: extendedEarlyTolerance
             )
 
-            guard let targetIndex = candidates.first(where: { !usedLineIndexes.contains($0) }) else {
+            guard let candidate = candidates.first(where: { !usedLineIndexes.contains($0.index) }) else {
                 continue
             }
 
-            matches[targetIndex] = translation.text
-            usedLineIndexes.insert(targetIndex)
+            matches[candidate.index] = translation.text
+            usedLineIndexes.insert(candidate.index)
         }
 
         return matches
     }
 
-    private func translationTargetIndexes(
+    private func translationTargetCandidates(
         for translationTime: Double,
         lyricsData: [LyricLine],
         earlyTolerance: Double,
         fallbackTolerance: Double,
         extendedEarlyTolerance: Double
-    ) -> [Int] {
+    ) -> [(index: Int, score: Double)] {
         lyricsData.indices
             .compactMap { index -> (index: Int, score: Double)? in
                 guard let lineStart = lyricsData[index].segments.first?.time else { return nil }
@@ -679,6 +686,7 @@ actor LRCConverterService {
                 let lead = lineStart - translationTime
                 let isInsideLineWindow = translationTime >= lineStart
                     && (nextStart.map { translationTime < $0 } ?? true)
+                let insideLineTolerance = max(fallbackTolerance, 2.5)
 
                 if distance <= 0.02 {
                     return (index, distance)
@@ -688,8 +696,8 @@ actor LRCConverterService {
                     return (index, 10 + lead)
                 }
 
-                if isInsideLineWindow {
-                    return (index, 20 + min(distance, fallbackTolerance))
+                if isInsideLineWindow, distance <= insideLineTolerance {
+                    return (index, 20 + distance)
                 }
 
                 if distance <= fallbackTolerance {
@@ -708,7 +716,6 @@ actor LRCConverterService {
                 }
                 return $0.score < $1.score
             }
-            .map(\.index)
     }
 
     private func nextLineStart(after index: Int, in lyricsData: [LyricLine]) -> Double? {
