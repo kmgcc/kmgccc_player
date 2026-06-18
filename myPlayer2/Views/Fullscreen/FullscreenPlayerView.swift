@@ -2308,7 +2308,10 @@ struct FullscreenPlayerView: View {
     private func syncFullscreenLyricsAvailability(with payload: FullscreenPlaybackPayload) {
         guard currentDisplayContext.hasTrack else {
             autoHiddenFullscreenLyricsForEmptyContent = false
-            resetFullscreenLyricsEndingAutoHide(restoreIfNeeded: false)
+            resetFullscreenLyricsEndingAutoHide(
+                restoreIfNeeded: false,
+                preserveRestoreEligibility: shouldPreserveFullscreenLyricsEndingAutoHideRestore()
+            )
             return
         }
 
@@ -2329,6 +2332,10 @@ struct FullscreenPlayerView: View {
     private func syncFullscreenLyricsAutoHideTiming(with payload: FullscreenPlaybackPayload) {
         let trackChanged = autoHideFullscreenLyricsTrackID != payload.trackID
         if trackChanged {
+            if payload.trackID == nil, shouldPreserveFullscreenLyricsEndingAutoHideRestore() {
+                fullscreenLyricsLastEndTime = nil
+                return
+            }
             resetFullscreenLyricsEndingAutoHide(
                 restoreIfNeeded: true,
                 nextTrackHasDisplayableLyrics: payload.hasDisplayableLyrics
@@ -2380,7 +2387,8 @@ struct FullscreenPlayerView: View {
 
     private func resetFullscreenLyricsEndingAutoHide(
         restoreIfNeeded: Bool,
-        nextTrackHasDisplayableLyrics: Bool = false
+        nextTrackHasDisplayableLyrics: Bool = false,
+        preserveRestoreEligibility: Bool = false
     ) {
         if restoreIfNeeded,
            autoHiddenFullscreenLyricsAfterEnding,
@@ -2394,10 +2402,20 @@ struct FullscreenPlayerView: View {
                 autoHiddenFullscreenLyricsForEmptyContent = true
             }
         }
+        if preserveRestoreEligibility {
+            fullscreenLyricsLastEndTime = nil
+            return
+        }
         autoHiddenFullscreenLyricsAfterEnding = false
         autoHiddenFullscreenLyricsAfterEndingCanRestore = false
         fullscreenLyricsLastEndTime = nil
         fullscreenLyricsEndingAutoHideSuppressedTrackID = nil
+    }
+
+    private func shouldPreserveFullscreenLyricsEndingAutoHideRestore() -> Bool {
+        autoHiddenFullscreenLyricsAfterEnding
+            && autoHiddenFullscreenLyricsAfterEndingCanRestore
+            && rightPanelDisplayState == .hidden
     }
 
     private func fullscreenLyricsVisualOffsetSeconds() -> TimeInterval {
@@ -2497,7 +2515,10 @@ struct FullscreenPlayerView: View {
         }
 
         if oldTime > 1.0, newTime < 0.2 {
-            resetFullscreenLyricsEndingAutoHide(restoreIfNeeded: false)
+            resetFullscreenLyricsEndingAutoHide(
+                restoreIfNeeded: false,
+                preserveRestoreEligibility: shouldPreserveFullscreenLyricsEndingAutoHideRestore()
+            )
             reloadLyricsSurface(reason: "fullscreen playback restarted", forceLyricsReload: true)
         }
     }
@@ -2530,7 +2551,10 @@ struct FullscreenPlayerView: View {
         }
 
         if oldTime > 1.0, newTime < 0.2 {
-            resetFullscreenLyricsEndingAutoHide(restoreIfNeeded: false)
+            resetFullscreenLyricsEndingAutoHide(
+                restoreIfNeeded: false,
+                preserveRestoreEligibility: shouldPreserveFullscreenLyricsEndingAutoHideRestore()
+            )
             reloadLyricsSurface(reason: "fullscreen external playback restarted", forceLyricsReload: true)
         }
     }
