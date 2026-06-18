@@ -16,6 +16,7 @@ struct LRCConverterServiceRegressionTests {
         try await testNearbyTranslationsAreKept()
         try await testEarlyTranslationOffsetFallback()
         try await testIntroCreditsAreStripped()
+        try await testHyphenatedIntroAdlibsDoNotShiftTranslations()
         print("LRCConverterServiceRegressionTests passed")
     }
 
@@ -111,10 +112,60 @@ struct LRCConverterServiceRegressionTests {
         expect(ttml.contains(">天</span>"), "Expected real lyric content to remain")
     }
 
+    private static func testHyphenatedIntroAdlibsDoNotShiftTranslations() async throws {
+        let original = """
+        [00:02.190]Noo[00:02.310]-[00:02.340]nah[00:02.670]-[00:02.730]nah[00:04.740]
+        [00:06.360]Yeah[00:07.260]-[00:07.320]yeah[00:08.850]
+        [00:08.850]Noo[00:10.470]-[00:10.560]nah[00:12.720]-[00:12.810]nah[00:13.200]
+        [00:14.130]Yeah[00:15.780]
+        [00:15.810]My [00:16.080]mama [00:16.500]called[00:17.760], [00:17.760]seen [00:18.180]you [00:18.330]on [00:18.480]TV[00:19.440], [00:19.440]son[00:19.740]
+        [00:19.740]Said [00:20.070]*[00:20.070]*[00:20.070]*[00:20.070]*[00:20.070]*[00:20.070]*[00:20.070]*[00:20.070]t [00:20.220]done [00:20.460]changed [00:22.080]ever [00:22.290]since [00:22.740]we [00:22.920]was [00:23.520]on[00:23.730]
+        [00:23.730]I [00:23.880]dreamed [00:24.270]it [00:24.480]all [00:25.920]ever [00:26.220]since [00:26.670]I [00:26.850]was [00:27.360]young[00:27.600]
+        """
+        let translation = """
+        [00:02.560]孬 呐呐
+        [00:06.750]耶耶
+        [00:10.400]孬 呐呐
+        [00:14.550]耶
+        [00:16.260]老妈来电话说在电视上看见你了儿子
+        [00:20.110]她说在电视上看见你们觉得你们变了许多
+        [00:24.010]我小时候就梦想着这一切
+        """
+
+        let ttml = try await LRCConverterService.shared.convertToTTMLWithTranslation(
+            origContent: original,
+            transContent: translation,
+            stripMetadata: true
+        )
+
+        expect(paragraph(containing: "Noo", in: ttml)?.contains("孬 呐呐") == true,
+               "Expected hyphenated Noo-nah intro line to be kept with its translation")
+        expect(ttml.components(separatedBy: "孬 呐呐").count - 1 == 2,
+               "Expected both Noo-nah intro translations to be preserved")
+        expect(paragraph(containing: "mama", in: ttml)?.contains("老妈来电话说在电视上看见你了儿子") == true,
+               "Expected My mama line to keep its own translation")
+        expect(paragraph(containing: "Said", in: ttml)?.contains("她说在电视上看见你们觉得你们变了许多") == true,
+               "Expected Said line to keep its own translation")
+    }
+
     private static func expect(_ condition: Bool, _ message: String) {
         if !condition {
             fputs("FAIL: \(message)\n", stderr)
             Foundation.exit(1)
         }
+    }
+
+    private static func paragraph(containing text: String, in ttml: String) -> String? {
+        var searchStart = ttml.startIndex
+        while let openRange = ttml.range(of: "<p", range: searchStart..<ttml.endIndex),
+              let closeRange = ttml.range(of: "</p>", range: openRange.lowerBound..<ttml.endIndex) {
+            let paragraphRange = openRange.lowerBound..<closeRange.upperBound
+            let candidate = String(ttml[paragraphRange])
+            if candidate.contains(text) {
+                return candidate
+            }
+            searchStart = closeRange.upperBound
+        }
+        return nil
     }
 }

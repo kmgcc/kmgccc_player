@@ -228,8 +228,10 @@ struct FullscreenPlayerView: View {
     @State private var deferredTrackUpdateDeadline: Date?
     @State private var autoHiddenFullscreenLyricsForEmptyContent = false
     @State private var autoHiddenFullscreenLyricsAfterEnding = false
+    @State private var autoHiddenFullscreenLyricsAfterEndingCanRestore = false
     @State private var autoHideFullscreenLyricsTrackID: UUID?
     @State private var fullscreenLyricsLastEndTime: TimeInterval?
+    @State private var fullscreenLyricsEndingAutoHideSuppressedTrackID: UUID?
     @State private var suppressFullscreenLyricsViewport = false
     @State private var fullscreenLyricsHostMounted = false
     @State private var isLeftActionsExpanded = false
@@ -558,8 +560,10 @@ struct FullscreenPlayerView: View {
         suppressFullscreenLyricsViewport = false
         fullscreenLyricsHostMounted = false
         autoHiddenFullscreenLyricsAfterEnding = false
+        autoHiddenFullscreenLyricsAfterEndingCanRestore = false
         autoHideFullscreenLyricsTrackID = nil
         fullscreenLyricsLastEndTime = nil
+        fullscreenLyricsEndingAutoHideSuppressedTrackID = nil
         embeddedInitialThemeUnlocked = false
         isQuickAppearancePanelPresented = false
         isFullscreenBottomControlsAppearancePanelHovered = false
@@ -2282,8 +2286,12 @@ struct FullscreenPlayerView: View {
         }
     }
 
-    private func handleLyricsButtonTap() {
+    private func handleLyricsButtonTap(isAutomatic: Bool = false) {
         autoHiddenFullscreenLyricsForEmptyContent = false
+        if !isAutomatic {
+            autoHiddenFullscreenLyricsAfterEndingCanRestore = false
+            fullscreenLyricsEndingAutoHideSuppressedTrackID = currentDisplayContext.trackID
+        }
 
         let nextState: RightPanelDisplayState
         switch rightPanelDisplayState {
@@ -2306,7 +2314,7 @@ struct FullscreenPlayerView: View {
 
         if payload.hasDisplayableLyrics {
             if autoHiddenFullscreenLyricsForEmptyContent && rightPanelDisplayState == .hidden {
-                handleLyricsButtonTap()
+                handleLyricsButtonTap(isAutomatic: true)
             } else {
                 autoHiddenFullscreenLyricsForEmptyContent = false
             }
@@ -2314,14 +2322,17 @@ struct FullscreenPlayerView: View {
         }
 
         guard rightPanelDisplayState == .lyrics else { return }
-        handleLyricsButtonTap()
+        handleLyricsButtonTap(isAutomatic: true)
         autoHiddenFullscreenLyricsForEmptyContent = true
     }
 
     private func syncFullscreenLyricsAutoHideTiming(with payload: FullscreenPlaybackPayload) {
         let trackChanged = autoHideFullscreenLyricsTrackID != payload.trackID
         if trackChanged {
-            resetFullscreenLyricsEndingAutoHide(restoreIfNeeded: true)
+            resetFullscreenLyricsEndingAutoHide(
+                restoreIfNeeded: true,
+                nextTrackHasDisplayableLyrics: payload.hasDisplayableLyrics
+            )
             autoHideFullscreenLyricsTrackID = payload.trackID
         }
 
@@ -2349,6 +2360,9 @@ struct FullscreenPlayerView: View {
         guard isPlaying else { return }
         guard rightPanelDisplayState == .lyrics else { return }
         guard !autoHiddenFullscreenLyricsAfterEnding else { return }
+        guard fullscreenLyricsEndingAutoHideSuppressedTrackID != currentDisplayContext.trackID else {
+            return
+        }
         guard let lastEnd = fullscreenLyricsLastEndTime, lastEnd.isFinite else { return }
         guard currentTime.isFinite, duration.isFinite, duration > 0 else { return }
         guard duration - lastEnd > fullscreenLyricsAutoHideTrailingGap else { return }
@@ -2356,23 +2370,34 @@ struct FullscreenPlayerView: View {
         guard currentTime >= hideTime else { return }
 
         autoHiddenFullscreenLyricsAfterEnding = true
+        autoHiddenFullscreenLyricsAfterEndingCanRestore = true
         Log.debug(
             "[FullscreenLyricsAutoHide] hiding lyrics after final line gap=\(String(format: "%.2f", duration - lastEnd))s delay=\(String(format: "%.2f", fullscreenLyricsAutoHideDelayAfterFinalLine))s track=\(autoHideFullscreenLyricsTrackID?.uuidString.prefix(8) ?? "nil")",
             category: .webview
         )
-        handleLyricsButtonTap()
+        handleLyricsButtonTap(isAutomatic: true)
     }
 
-    private func resetFullscreenLyricsEndingAutoHide(restoreIfNeeded: Bool) {
+    private func resetFullscreenLyricsEndingAutoHide(
+        restoreIfNeeded: Bool,
+        nextTrackHasDisplayableLyrics: Bool = false
+    ) {
         if restoreIfNeeded,
            autoHiddenFullscreenLyricsAfterEnding,
+           autoHiddenFullscreenLyricsAfterEndingCanRestore,
            rightPanelDisplayState == .hidden,
            currentDisplayContext.hasTrack
         {
-            handleLyricsButtonTap()
+            if nextTrackHasDisplayableLyrics {
+                handleLyricsButtonTap(isAutomatic: true)
+            } else {
+                autoHiddenFullscreenLyricsForEmptyContent = true
+            }
         }
         autoHiddenFullscreenLyricsAfterEnding = false
+        autoHiddenFullscreenLyricsAfterEndingCanRestore = false
         fullscreenLyricsLastEndTime = nil
+        fullscreenLyricsEndingAutoHideSuppressedTrackID = nil
     }
 
     private func fullscreenLyricsVisualOffsetSeconds() -> TimeInterval {
