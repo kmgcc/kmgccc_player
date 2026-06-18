@@ -71,8 +71,9 @@ actor LRCConverterService {
         "作词:", "作曲:", "编曲:", "制作:", "录音:", "混音:",
         "发行:", "出品:", "母带:", "监制:", "制作人:", "和声:",
         "统筹:", "企划:", "封面:", "SP:", "OP:",
-        "Lyrics:", "Music:", "Arrangement:", "Producer:",
-        "Recording:", "Mixing:", "Mastering:",
+        "Lyrics:", "Music:", "Composer:", "Arrangement:", "Arranger:", "Producer:",
+        "Recording:", "Mixing:", "Mastering:", "Engineer:", "Publisher:",
+        "Promotion:", "Coordinator:", "Supervisor:", "Commissioner:",
         "版权", "未经许可", "不得翻唱", "不得使用",
         "文曲大模型", "歌词翻译由", "翻译由",
         "TME", "QQ音乐", "网易云音乐", "酷狗", "酷我", "LDDC", "lddc", "tool:",
@@ -91,11 +92,19 @@ actor LRCConverterService {
     ]
 
     private let infoFieldNames: [String] = [
-        "Dario", "吉他", "出品", "制作", "发行", "OP", "SP", "词", "曲",
-        "作词", "作曲", "编曲", "录音", "混音", "母带", "监制", "制作人",
-        "和声", "统筹", "企划", "封面", "Lyrics", "Music", "Arrangement",
-        "Producer", "Recording", "Mixing", "Mastering", "Studio", "Label", "Records",
-        "Lyrics by", "Composed by"
+        "Dario", "吉他", "钢弦吉他", "贝斯", "出品", "制作", "发行", "OP", "SP", "词", "曲",
+        "作词", "作曲", "编曲", "录音", "录音室", "录音工程师", "配唱", "混音", "母带",
+        "监制", "总监制", "制作人", "和声", "和声编写", "统筹", "企划", "封面", "封面视觉",
+        "推广", "总策划", "出品人", "弦乐", "弦乐编写", "弦乐团", "第一小提琴", "第二小提琴",
+        "中提琴", "大提琴", "童声", "童声编写", "音频编辑", "无缝播放",
+        "Lyrics", "Music", "Composer", "Composition", "Arrangement", "Arranger",
+        "Producer", "Recording", "Recording Studios", "Recording Engineers",
+        "Mixing", "Mastering", "Engineer", "Publisher", "Studio", "Label", "Records",
+        "Steel Guitar", "Bass Guitar", "Strings", "First Violin", "Second Violin",
+        "Viola", "Cello", "Choir", "Vocal Production", "Background Vocals",
+        "Background Vocal Arrangement", "Additional Engineering", "Gapless Playback",
+        "Cover Visual", "Associate Producer", "Commissioner", "Promotion",
+        "Coordinator", "Supervisor", "Lyrics by", "Composed by"
     ]
 
     private let strictInfoSymbols: [String] = ["@", "Studio", "Records", "Label", "Copyright", "©"]
@@ -289,18 +298,17 @@ actor LRCConverterService {
     }
 
     private func isStrictSongInfoLine(_ trimmedText: String, allowShortSymbolOnly: Bool = true) -> Bool {
-        if trimmedText.hasPrefix("*") { return true }
         if allowShortSymbolOnly && isShortSymbolOnlyLine(trimmedText) { return true }
         if matchesCompactedInfoFieldLine(trimmedText) { return true }
 
         for keyword in strictSongInfoKeywords {
-            if trimmedText.localizedCaseInsensitiveContains(keyword) { return true }
+            if containsInfoKeyword(keyword, in: trimmedText) { return true }
         }
 
         if matchesInfoFieldLine(trimmedText) { return true }
 
         for symbol in strictInfoSymbols {
-            if trimmedText.localizedCaseInsensitiveContains(symbol) { return true }
+            if containsInfoKeyword(symbol, in: trimmedText) { return true }
         }
 
         if trimmedText.allSatisfy({ $0.isASCII }) && trimmedText.count < 15 {
@@ -323,7 +331,7 @@ actor LRCConverterService {
 
     private func isConservativeSongInfoLine(_ trimmedText: String) -> Bool {
         for keyword in conservativeSongInfoKeywords {
-            if trimmedText.localizedCaseInsensitiveContains(keyword) { return true }
+            if containsInfoKeyword(keyword, in: trimmedText) { return true }
         }
 
         if bareConservativeInfoFields.contains(trimmedText) {
@@ -333,7 +341,29 @@ actor LRCConverterService {
         return matchesInfoFieldLine(trimmedText)
     }
 
+    private func containsInfoKeyword(_ keyword: String, in text: String) -> Bool {
+        let trimmedKeyword = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKeyword.isEmpty else { return false }
+
+        let isASCIIWord = trimmedKeyword.unicodeScalars.allSatisfy {
+            $0.value < 128 && CharacterSet.alphanumerics.contains($0)
+        }
+
+        guard isASCIIWord else {
+            return text.localizedCaseInsensitiveContains(trimmedKeyword)
+        }
+
+        let escapedKeyword = NSRegularExpression.escapedPattern(for: trimmedKeyword)
+        let pattern = "(?i)(?<![A-Z0-9])\(escapedKeyword)(?![A-Z0-9])"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return false
+        }
+
+        return regex.firstMatch(in: text, options: [], range: NSRange(text.startIndex..., in: text)) != nil
+    }
+
     private func matchesInfoFieldLine(_ trimmedText: String) -> Bool {
+        let normalizedText = trimmedText.replacingOccurrences(of: "：", with: ":")
         let escapedFields = infoFieldNames.map { NSRegularExpression.escapedPattern(for: $0) }
         let fieldAlternation = escapedFields.joined(separator: "|")
         let colonPatterns = [
@@ -343,9 +373,65 @@ actor LRCConverterService {
 
         for pattern in colonPatterns {
             if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
-               regex.firstMatch(in: trimmedText, options: [], range: NSRange(trimmedText.startIndex..., in: trimmedText)) != nil {
+               regex.firstMatch(in: normalizedText, options: [], range: NSRange(normalizedText.startIndex..., in: normalizedText)) != nil {
                 return true
             }
+        }
+
+        guard let colonIndex = normalizedText.firstIndex(of: ":") else {
+            return false
+        }
+
+        let compactPrefix = compactInfoText(String(normalizedText[..<colonIndex]))
+        if compactPrefix.isEmpty { return false }
+
+        let compactFields = infoFieldNames
+            .map(compactInfoText)
+            .filter { !$0.isEmpty }
+
+        if compactFields.contains(where: { field in
+            guard field.count > 1 else { return false }
+            return compactPrefix == field || compactPrefix.contains(field)
+        }) {
+            return true
+        }
+
+        return ["op", "sp", "词", "曲"].contains(compactPrefix)
+    }
+
+    private func compactInfoText(_ text: String) -> String {
+        text
+            .precomposedStringWithCompatibilityMapping
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+    }
+
+    private func normalizedLineText(_ lineData: LyricLine, separator: String = "") -> String {
+        lineData.segments
+            .map(\.text)
+            .joined(separator: separator)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func isWholeLineSongInfo(_ lineData: LyricLine, lineIndex: Int) -> Bool {
+        let compactText = normalizedLineText(lineData)
+        let spacedText = normalizedLineText(lineData, separator: " ")
+        guard !compactText.isEmpty || !spacedText.isEmpty else { return false }
+
+        if lineIndex < 10 {
+            if isStrictSongInfoLine(spacedText) || isStrictSongInfoLine(compactText) {
+                return true
+            }
+        }
+
+        if isConservativeSongInfoLine(spacedText) || isConservativeSongInfoLine(compactText) {
+            return true
+        }
+
+        if lineData.segments.count == 1,
+           let segmentText = lineData.segments.first?.text.trimmingCharacters(in: .whitespacesAndNewlines),
+           isSongInfoLine(segmentText, lineIndex: lineIndex) {
+            return true
         }
 
         return false
@@ -395,9 +481,7 @@ actor LRCConverterService {
     
     private func filterSongInfoLines(_ lyricsData: [LyricLine]) -> [LyricLine] {
         lyricsData.enumerated().compactMap { index, lineData in
-            let combinedText = lineData.segments.map(\.text).joined()
-            if index < 10,
-               isStrictSongInfoLine(combinedText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            if isWholeLineSongInfo(lineData, lineIndex: index) {
                 return nil
             }
 
@@ -405,10 +489,7 @@ actor LRCConverterService {
                 return nil
             }
 
-            let hasSongInfo = lineData.segments.contains {
-                isSongInfoLine($0.text, lineIndex: index, allowShortSymbolOnly: false)
-            }
-            return hasSongInfo ? nil : lineData
+            return lineData
         }
     }
 
@@ -504,6 +585,7 @@ actor LRCConverterService {
     private func parseTranslationLRC(_ content: String, stripMetadata: Bool) throws -> [TranslationLine] {
         var translations: [TranslationLine] = []
         let lines = content.components(separatedBy: .newlines)
+        let timestampPattern = "\\[(\\d+:\\d{1,2}(?:[\\.,]\\d{1,3})?)\\]"
         
         for (sourceLineIndex, line) in lines.enumerated() {
             let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -514,19 +596,23 @@ actor LRCConverterService {
             }
             if isMetadataLine { continue }
             
-            let pattern = "^\\[(\\d+:\\d{1,2}(?:[\\.,]\\d{1,3})?)\\](.+)$"
-            guard let regex = try? NSRegularExpression(pattern: pattern, options: []),
-                  let match = regex.firstMatch(in: trimmedLine, options: [], range: NSRange(trimmedLine.startIndex..., in: trimmedLine)) else {
+            guard let regex = try? NSRegularExpression(pattern: timestampPattern, options: []) else {
                 continue
             }
-            
-            let timeRange = Range(match.range(at: 1), in: trimmedLine)!
-            let textRange = Range(match.range(at: 2), in: trimmedLine)!
-            
-            let timeStr = String(trimmedLine[timeRange])
-            let text = String(trimmedLine[textRange]).trimmingCharacters(in: .whitespaces)
 
-            if text.contains("//") {
+            let matches = regex.matches(in: trimmedLine, options: [], range: NSRange(trimmedLine.startIndex..., in: trimmedLine))
+            guard let firstMatch = matches.first,
+                  let firstMatchRange = Range(firstMatch.range, in: trimmedLine),
+                  firstMatchRange.lowerBound == trimmedLine.startIndex,
+                  let lastMatch = matches.last,
+                  let lastMatchRange = Range(lastMatch.range, in: trimmedLine) else {
+                continue
+            }
+
+            let text = String(trimmedLine[lastMatchRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+            if text.isEmpty { continue }
+
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("//") {
                 continue
             }
             
@@ -534,8 +620,13 @@ actor LRCConverterService {
                 continue
             }
             
-            guard let startTime = parseTimeToSeconds(timeStr) else { continue }
-            translations.append(TranslationLine(time: startTime, text: text))
+            for match in matches {
+                guard let timeRange = Range(match.range(at: 1), in: trimmedLine),
+                      let startTime = parseTimeToSeconds(String(trimmedLine[timeRange])) else {
+                    continue
+                }
+                translations.append(TranslationLine(time: startTime, text: text))
+            }
         }
         
         return translations
@@ -545,78 +636,79 @@ actor LRCConverterService {
         lyricsData: [LyricLine],
         translations: [TranslationLine],
         earlyTolerance: Double = 0.8,
-        fallbackTolerance: Double = 1.2
+        fallbackTolerance: Double = 1.2,
+        extendedEarlyTolerance: Double = 8.0
     ) -> [Int: String] {
         guard !lyricsData.isEmpty, !translations.isEmpty else { return [:] }
 
-        var matches: [Int: (translation: TranslationLine, distance: Double)] = [:]
+        var matches: [Int: String] = [:]
+        var usedLineIndexes: Set<Int> = []
 
         for translation in translations {
-            guard let targetIndex = translationTargetIndex(
+            let candidates = translationTargetIndexes(
                 for: translation.time,
                 lyricsData: lyricsData,
                 earlyTolerance: earlyTolerance,
-                fallbackTolerance: fallbackTolerance
-            ), let lineStart = lyricsData[targetIndex].segments.first?.time else {
+                fallbackTolerance: fallbackTolerance,
+                extendedEarlyTolerance: extendedEarlyTolerance
+            )
+
+            guard let targetIndex = candidates.first(where: { !usedLineIndexes.contains($0) }) else {
                 continue
             }
 
-            let distance = abs(translation.time - lineStart)
-            if let existing = matches[targetIndex] {
-                if distance < existing.distance {
-                    matches[targetIndex] = (translation, distance)
-                }
-            } else {
-                matches[targetIndex] = (translation, distance)
-            }
+            matches[targetIndex] = translation.text
+            usedLineIndexes.insert(targetIndex)
         }
 
-        return matches.mapValues { $0.translation.text }
+        return matches
     }
 
-    private func translationTargetIndex(
+    private func translationTargetIndexes(
         for translationTime: Double,
         lyricsData: [LyricLine],
         earlyTolerance: Double,
-        fallbackTolerance: Double
-    ) -> Int? {
-        if let earlyStartMatch = lyricsData.indices
-            .compactMap({ index -> (index: Int, lead: Double)? in
+        fallbackTolerance: Double,
+        extendedEarlyTolerance: Double
+    ) -> [Int] {
+        lyricsData.indices
+            .compactMap { index -> (index: Int, score: Double)? in
                 guard let lineStart = lyricsData[index].segments.first?.time else { return nil }
+                let nextStart = nextLineStart(after: index, in: lyricsData)
+                let distance = abs(translationTime - lineStart)
                 let lead = lineStart - translationTime
-                guard lead > 0, lead <= earlyTolerance else { return nil }
-                return (index, lead)
-            })
-            .min(by: { $0.lead < $1.lead }) {
-            return earlyStartMatch.index
-        }
+                let isInsideLineWindow = translationTime >= lineStart
+                    && (nextStart.map { translationTime < $0 } ?? true)
 
-        for index in lyricsData.indices {
-            guard let lineStart = lyricsData[index].segments.first?.time else { continue }
-            let nextLineStart = nextLineStart(after: index, in: lyricsData)
-            if translationTime >= lineStart,
-               nextLineStart.map({ translationTime < $0 }) ?? true {
-                return index
-            }
-        }
+                if distance <= 0.02 {
+                    return (index, distance)
+                }
 
-        for index in lyricsData.indices {
-            guard let lineStart = lyricsData[index].segments.first?.time else { continue }
-            let nextLineStart = nextLineStart(after: index, in: lyricsData)
-            if translationTime >= lineStart - earlyTolerance,
-               nextLineStart.map({ translationTime < $0 }) ?? true {
-                return index
-            }
-        }
+                if lead > 0, lead <= earlyTolerance {
+                    return (index, 10 + lead)
+                }
 
-        return lyricsData.indices
-            .compactMap { index -> (index: Int, distance: Double)? in
-                guard let lineStart = lyricsData[index].segments.first?.time else { return nil }
-                return (index, abs(translationTime - lineStart))
+                if isInsideLineWindow {
+                    return (index, 20 + min(distance, fallbackTolerance))
+                }
+
+                if distance <= fallbackTolerance {
+                    return (index, 30 + distance)
+                }
+
+                if lead > earlyTolerance, lead <= extendedEarlyTolerance {
+                    return (index, 70 + lead)
+                }
+
+                return nil
             }
-            .filter { $0.distance <= fallbackTolerance }
-            .min { $0.distance < $1.distance }?
-            .index
+            .sorted {
+                if $0.score == $1.score {
+                    return $0.index < $1.index
+                }
+                return $0.score < $1.score
+            }
+            .map(\.index)
     }
 
     private func nextLineStart(after index: Int, in lyricsData: [LyricLine]) -> Double? {
