@@ -38,6 +38,7 @@ final class PlaybackCoordinator {
 
     var onActiveSourceChanged: ((PlaybackSource) -> Void)?
     var onTelemetryPlaybackStateChanged: ((PlaybackSource, Bool) -> Void)?
+    var onPresentationChanged: (@MainActor (NowPlayingPresentation, NowPlayingPresentation) -> Void)?
 
     init(
         playerVM: PlayerViewModel,
@@ -404,8 +405,10 @@ final class PlaybackCoordinator {
         notifyTelemetryIfNeeded(source: activeSource, isPlaying: isPlaying)
         scheduleTrackArtworkWarmupIfNeeded(for: newPresentation)
 
-        guard !newPresentation.isEffectivelyEqual(to: presentation) else { return }
+        let previousPresentation = presentation
+        guard !newPresentation.isEffectivelyEqual(to: previousPresentation) else { return }
         presentation = newPresentation
+        onPresentationChanged?(previousPresentation, newPresentation)
     }
 
     private var activeExternalProvider: (any ExternalPlaybackProvider)? {

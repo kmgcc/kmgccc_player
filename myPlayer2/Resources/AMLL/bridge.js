@@ -161,7 +161,7 @@
     // AMLL namespace
     window.AMLL = {
         version: '1.0.0',
-        capabilities: ['ttml', 'lrc', 'seek', 'clearState', 'destroy', 'diagnostics', 'trackProfile', 'existingLyricsReveal'],
+        capabilities: ['ttml', 'lrc', 'seek', 'clearState', 'destroy', 'diagnostics', 'trackProfile', 'existingLyricsReveal', 'displayHealth', 'applyTrackState'],
 
         /**
          * Set TTML lyrics text
@@ -186,6 +186,48 @@
             } catch (e) {
                 console.error("[Bridge-Crash] setLyricsTTML:", e);
                 // Report back to native if possible
+                if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.log) {
+                    window.webkit.messageHandlers.log.postMessage("Bridge-Crash: " + e.toString());
+                }
+            }
+        },
+
+        applyTrackState: function(payload) {
+            try {
+                const state = payload || {};
+                const ttmlText = typeof state.ttmlText === 'string' ? state.ttmlText : '';
+                if (window.updateDebugTTML) window.updateDebugTTML(ttmlText ? ttmlText.length : 0);
+                logTTMLDiagnostics(ttmlText, 'applyTrackState');
+
+                if (!isReady) {
+                    pendingCalls.push({ method: 'applyTrackState', args: [state] });
+                    return;
+                }
+
+                console.log("[Bridge] applyTrackState, length:", ttmlText ? ttmlText.length : 0);
+                if (window.LyricsRenderer && typeof window.LyricsRenderer.applyTrackState === 'function') {
+                    return window.LyricsRenderer.applyTrackState(state);
+                }
+
+                if (window.LyricsRenderer && typeof window.LyricsRenderer.setLyrics === 'function') {
+                    window.LyricsRenderer.setLyrics(ttmlText);
+                }
+                if (
+                    Number.isFinite(state.currentTime)
+                    && window.LyricsRenderer
+                    && typeof window.LyricsRenderer.setCurrentTime === 'function'
+                ) {
+                    window.LyricsRenderer.setCurrentTime(state.currentTime);
+                }
+                if (
+                    typeof state.isPlaying === 'boolean'
+                    && window.LyricsRenderer
+                    && typeof window.LyricsRenderer.setPlaying === 'function'
+                ) {
+                    window.LyricsRenderer.setPlaying(state.isPlaying);
+                }
+            } catch (e) {
+                console.error("[Bridge-Crash] applyTrackState:", e);
                 if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.log) {
                     window.webkit.messageHandlers.log.postMessage("Bridge-Crash: " + e.toString());
                 }
@@ -300,6 +342,29 @@
             };
             console.log("[Bridge] collectDiagnostics", bridgeDiagnostics);
             return bridgeDiagnostics;
+        },
+
+        collectDisplayHealth: function(label) {
+            try {
+                const rendererHealth =
+                    window.LyricsRenderer && typeof window.LyricsRenderer.collectDisplayHealth === 'function'
+                        ? window.LyricsRenderer.collectDisplayHealth(label)
+                        : null;
+                return {
+                    label: label || '',
+                    bridgeReady: isReady,
+                    pendingBridgeCalls: pendingCalls.length,
+                    rendererHealth,
+                };
+            } catch (e) {
+                console.error("[Bridge-Crash] collectDisplayHealth:", e);
+                return {
+                    label: label || '',
+                    bridgeReady: isReady,
+                    pendingBridgeCalls: pendingCalls.length,
+                    error: e?.message || String(e),
+                };
+            }
         },
 
         beginTrackProfileSession: function(session) {

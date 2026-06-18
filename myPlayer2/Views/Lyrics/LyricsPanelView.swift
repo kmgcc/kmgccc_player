@@ -32,7 +32,8 @@ struct LyricsPanelView: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     private let hostContainer: HostContainer
-    @State private var attachAnimationToken = 0
+    @State private var shouldHostLyricsWebView = false
+    @State private var pendingWebViewUnmount: DispatchWorkItem?
 
     init(hostContainer: HostContainer = .swiftUIDetailColumn) {
         self.hostContainer = hostContainer
@@ -56,10 +57,9 @@ struct LyricsPanelView: View {
                 LyricsSurfaceManager.shared.reportMainVisible(true)
 
                 setupSeekCallback()
-                reloadLyricsSurface(
-                    reason: "lyrics panel appear",
-                    forceWebReload: false,
-                    forceLyricsReload: false
+                updateLyricsWebViewHosting(
+                    hasTrack: playbackCoordinator.presentation.hasTrack,
+                    reason: "lyrics panel appear"
                 )
                 lyricsVM.revealExistingLyrics(reason: "lyrics panel appear")
                 FirstUseHitchDiagnostics.end(token)
@@ -72,26 +72,27 @@ struct LyricsPanelView: View {
                 Log.info("LyricsPanelView disappeared", category: .webview)
                 // Report visibility to manager - manager will debounce/handle transient states
                 LyricsSurfaceManager.shared.reportMainVisible(false)
+                pendingWebViewUnmount?.cancel()
+                pendingWebViewUnmount = nil
                 FirstUseHitchDiagnostics.end(token)
             }
             .onChange(of: playbackCoordinator.presentation.lyricsIdentity, handleTrackIdentityChange)
+            .onChange(of: playbackCoordinator.presentation.hasTrack) { _, hasTrack in
+                updateLyricsWebViewHosting(
+                    hasTrack: hasTrack,
+                    reason: "presentation hasTrack changed"
+                )
+                guard hasTrack else { return }
+                LyricsSurfaceManager.shared.reportMainVisible(true)
+            }
             .onChange(of: uiState.lyricsVisible) { _, isVisible in
                 guard isVisible else { return }
-                attachAnimationToken &+= 1
-                LyricsSurfaceManager.shared.reportMainVisible(true)
-                reloadLyricsSurface(
-                    reason: "lyrics inspector expanded",
-                    forceWebReload: false,
-                    forceLyricsReload: false
+                updateLyricsWebViewHosting(
+                    hasTrack: playbackCoordinator.presentation.hasTrack,
+                    reason: "lyrics inspector expanded"
                 )
+                LyricsSurfaceManager.shared.reportMainVisible(true)
                 lyricsVM.revealExistingLyrics(reason: "lyrics inspector expanded")
-            }
-            .onChange(of: playbackCoordinator.presentation.lyricsText) { _, _ in
-                guard playbackCoordinator.presentation.source.isExternal else { return }
-                reloadLyricsSurface(reason: "external lyrics updated", forceLyricsReload: true)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
-                reloadLyricsSurface(reason: "playback track notification", forceLyricsReload: true)
             }
             .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
                 guard
@@ -171,13 +172,12 @@ struct LyricsPanelView: View {
     @ViewBuilder
     private var panelContent: some View {
         ZStack {
-            if !playbackCoordinator.presentation.hasTrack {
+            if !playbackCoordinator.presentation.hasTrack && !shouldHostLyricsWebView {
                 emptyStateView
             }
 
-            if playbackCoordinator.presentation.hasTrack {
-                AMLLWebView(store: lyricsVM.webViewStore, animatesAttachment: true)
-                    .id(attachAnimationToken)
+            if shouldHostLyricsWebView {
+                AMLLWebView(store: lyricsVM.webViewStore, animatesAttachment: false)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, 24)
             }
@@ -195,6 +195,27 @@ struct LyricsPanelView: View {
         lyricsVM.onSeekRequest = { seconds in
             playbackCoordinator.seek(to: seconds)
         }
+    }
+
+    private func updateLyricsWebViewHosting(hasTrack: Bool, reason: String) {
+        pendingWebViewUnmount?.cancel()
+        pendingWebViewUnmount = nil
+
+        if hasTrack {
+            if !shouldHostLyricsWebView {
+                Log.debug("LyricsPanelView host WebView: true, reason=\(reason)", category: .webview)
+            }
+            shouldHostLyricsWebView = true
+            return
+        }
+
+        let workItem = DispatchWorkItem {
+            Log.debug("LyricsPanelView host WebView: false, reason=\(reason)", category: .webview)
+            shouldHostLyricsWebView = false
+            pendingWebViewUnmount = nil
+        }
+        pendingWebViewUnmount = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(900), execute: workItem)
     }
 
     private func handleTrackIdentityChange(_ oldId: String?, _ newId: String?) {
@@ -215,7 +236,6 @@ struct LyricsPanelView: View {
         print(
             "[LyricsPanelView] Track changed: \(oldId?.prefix(8) ?? "nil") -> \(newId?.prefix(8) ?? "nil")"
         )
-        reloadLyricsSurface(reason: "track changed", forceLyricsReload: true)
     }
 
     private func reloadLyricsSurface(
