@@ -47,6 +47,15 @@ final class LyricsWebViewStore: NSObject {
         let role: String
     }
 
+    private struct DisplayHealthExpectation {
+        let generation: Int
+        let trackID: UUID?
+        let ttml: String
+        let currentTime: Double
+        let isPlaying: Bool
+        let reason: String
+    }
+
     // MARK: - Singleton
 
     static let shared = LyricsWebViewStore()
@@ -140,8 +149,11 @@ final class LyricsWebViewStore: NSObject {
     private var pendingVisibleLayerProbe: DispatchWorkItem?
     private var pendingTrackDiagnosticsProbe: DispatchWorkItem?
     private var pendingTrackProfileCollection: DispatchWorkItem?
+    private var pendingDisplayHealthProbe: DispatchWorkItem?
     private let applyTrackDebounceMs: Int = 50
     private var applyTrackGeneration: Int = 0
+    private var displayHealthGeneration: Int = 0
+    private let maxDisplayHealthRetries = 4
     private var didRegisterMessageHandlers = false
     private var isShutDown = false
     private var isMouseInteractionSuppressed = false
@@ -626,10 +638,13 @@ final class LyricsWebViewStore: NSObject {
         pendingApplyTrack = nil
         pendingVisibleLayerProbe?.cancel()
         pendingVisibleLayerProbe = nil
+        displayHealthGeneration &+= 1
         pendingTrackDiagnosticsProbe?.cancel()
         pendingTrackDiagnosticsProbe = nil
         pendingTrackProfileCollection?.cancel()
         pendingTrackProfileCollection = nil
+        pendingDisplayHealthProbe?.cancel()
+        pendingDisplayHealthProbe = nil
         pendingLayoutResyncWorkItem?.cancel()
         pendingLayoutResyncWorkItem = nil
         pendingLayoutResyncReason = nil
@@ -656,6 +671,7 @@ final class LyricsWebViewStore: NSObject {
         isTimeSyncInFlight = false
         contentLoadRevision = 0
         trackSwitchesSinceLastWebViewRecycle = 0
+        displayHealthGeneration = 0
         didRegisterMessageHandlers = false
         lastAppliedBackingScale = nil
         lastAppliedLayoutSignature = nil
@@ -709,6 +725,7 @@ final class LyricsWebViewStore: NSObject {
         _ = ensureWebView()
         if isAttached, let existingID = activeAttachmentID {
             Log.debug("Attach (already attached): attachmentID=\(existingID.uuidString.prefix(8)), objectID=\(webViewObjectID)", category: .webview)
+            scheduleDisplayHealthCheckAfterAttachIfNeeded()
             return existingID
         }
 
@@ -716,6 +733,7 @@ final class LyricsWebViewStore: NSObject {
         activeAttachmentID = attachmentID
         isAttached = true
         Log.debug("Attach (new): attachmentID=\(attachmentID.uuidString.prefix(8)), objectID=\(webViewObjectID)", category: .webview)
+        scheduleDisplayHealthCheckAfterAttachIfNeeded()
         return attachmentID
     }
 
@@ -741,10 +759,13 @@ final class LyricsWebViewStore: NSObject {
     func releasePreparedWebViewPreservingSnapshot(reason: String) {
         pendingVisibleLayerProbe?.cancel()
         pendingVisibleLayerProbe = nil
+        displayHealthGeneration &+= 1
         pendingTrackDiagnosticsProbe?.cancel()
         pendingTrackDiagnosticsProbe = nil
         pendingTrackProfileCollection?.cancel()
         pendingTrackProfileCollection = nil
+        pendingDisplayHealthProbe?.cancel()
+        pendingDisplayHealthProbe = nil
         pendingLayoutResyncWorkItem?.cancel()
         pendingLayoutResyncWorkItem = nil
         pendingLayoutResyncReason = nil
@@ -788,11 +809,11 @@ final class LyricsWebViewStore: NSObject {
 
     // MARK: - JS Calls (Queued + Snapshot Preserved)
 
-    func setLyricsTTML(_ ttml: String) {
+    func setLyricsTTML(_ ttml: String, force: Bool = false) {
         guard !isShutDown else { return }
 
         // Deduplication: skip if same TTML
-        if ttml == lastTTML && ttml.count > 0 {
+        if !force && ttml == lastTTML && ttml.count > 0 {
             Log.debug(
                 "[LyricsWebViewStore] setLyricsTTML skipped duplicate role=\(role), len=\(ttml.count), objectID=\(webViewObjectID)",
                 category: .webview
@@ -810,26 +831,59 @@ final class LyricsWebViewStore: NSObject {
         )
     }
 
-    func setCurrentTime(_ seconds: Double) {
+    private func applyRendererTrackState(
+        ttml: String,
+        currentTime: Double,
+        isPlaying: Bool
+    ) {
+        guard !isShutDown else { return }
+        let safeCurrentTime = currentTime.isFinite ? currentTime : 0
+
+        lastTTML = ttml
+        lastTime = safeCurrentTime
+        lastIsPlaying = isPlaying
+        queuedTimeSync = nil
+        isTimeSyncInFlight = false
+        lastDeliveredTime = safeCurrentTime
+
+        Log.debug(
+            "applyRendererTrackState: len=\(ttml.count), time=\(safeCurrentTime), playing=\(isPlaying), objectID=\(webViewObjectID), isReady=\(isReady)",
+            category: .webview
+        )
+        logTTMLDiagnostics(ttml, stage: "applyRendererTrackState")
+        callJSFunction(
+            body: "return window.AMLL.applyTrackState(payload);",
+            arguments: [
+                "payload": [
+                    "ttmlText": ttml,
+                    "currentTime": safeCurrentTime,
+                    "isPlaying": isPlaying,
+                ]
+            ],
+            debugDescription: "window.AMLL.applyTrackState(setLyricsTTML,setPlaying,len=\(ttml.count))"
+        )
+    }
+
+    func setCurrentTime(_ seconds: Double, force: Bool = false) {
         guard !isShutDown else { return }
         guard seconds.isFinite else { return }
 
         // Deduplication: skip if time hasn't changed meaningfully
-        if let last = lastTime, abs(seconds - last) < 0.01 {
+        if !force, let last = lastTime, abs(seconds - last) < 0.01 {
             return
         }
 
         lastTime = seconds
         // Time updates are not queued (too frequent), only sent if ready
         guard isReady else { return }
-        scheduleTimeSync(seconds)
+        scheduleTimeSync(seconds, force: force)
     }
 
-    func setPlaying(_ isPlaying: Bool) {
+    func setPlaying(_ isPlaying: Bool, force: Bool = false) {
         guard !isShutDown else { return }
 
         // Deduplication: skip if same state
-        if isPlaying == lastIsPlaying {
+        if !force && isPlaying == lastIsPlaying {
             return
         }
 
@@ -1184,28 +1238,39 @@ final class LyricsWebViewStore: NSObject {
             webView.evaluateJavaScript(themeCSS, completionHandler: nil)
         }
 
-        // Step 2: TTML
+        // Step 2: TTML/time/playing
         if let ttml = lastTTML {
             logTTMLDiagnostics(ttml, stage: "replayStateSnapshot")
-            callJSFunction(
-                body: "window.AMLL.setLyricsTTML(ttmlText)",
-                arguments: ["ttmlText": ttml],
-                debugDescription: "window.AMLL.setLyricsTTML(replay,len=\(ttml.count))"
+            applyRendererTrackState(
+                ttml: ttml,
+                currentTime: lastTime ?? 0,
+                isPlaying: lastIsPlaying ?? false
             )
-        }
-
-        // Step 3: Playing
-        if let playing = lastIsPlaying {
+        } else if let playing = lastIsPlaying {
             let js = "window.AMLL.setPlaying(\(playing ? "true" : "false"))"
             webView.evaluateJavaScript(js, completionHandler: nil)
-        }
-
-        // Step 4: Time
-        if let time = lastTime {
+            if let time = lastTime {
+                queuedTimeSync = nil
+                isTimeSyncInFlight = false
+                lastDeliveredTime = nil
+                dispatchTimeSync(time)
+            }
+        } else if let time = lastTime {
             queuedTimeSync = nil
             isTimeSyncInFlight = false
             lastDeliveredTime = nil
             dispatchTimeSync(time)
+        }
+
+        if let ttml = lastTTML,
+           !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            scheduleDisplayHealthCheck(
+                trackID: lastTrackID,
+                ttml: ttml,
+                currentTime: lastTime ?? 0,
+                isPlaying: lastIsPlaying ?? false,
+                reason: "replayStateSnapshot"
+            )
         }
 
         Log.debug("Replay complete, objectID=\(webViewObjectID)", category: .webview)
@@ -1321,6 +1386,9 @@ final class LyricsWebViewStore: NSObject {
     func forceReload(recreateWebView: Bool = false) {
         guard !isShutDown else { return }
         isReady = false
+        displayHealthGeneration &+= 1
+        pendingDisplayHealthProbe?.cancel()
+        pendingDisplayHealthProbe = nil
         pendingLayoutResyncWorkItem?.cancel()
         pendingLayoutResyncWorkItem = nil
         pendingLayoutResyncReason = nil
@@ -1345,7 +1413,8 @@ final class LyricsWebViewStore: NSObject {
         trackID: UUID? = nil,
         ttml: String?,
         currentTime: Double,
-        isPlaying: Bool
+        isPlaying: Bool,
+        forceLyricsReload: Bool = false
     ) {
         // Cancel any pending apply
         pendingApplyTrack?.cancel()
@@ -1357,7 +1426,8 @@ final class LyricsWebViewStore: NSObject {
                     trackID: trackID,
                     ttml: ttml,
                     currentTime: currentTime,
-                    isPlaying: isPlaying
+                    isPlaying: isPlaying,
+                    forceLyricsReload: forceLyricsReload
                 )
             }
             pendingApplyTrack = workItem
@@ -1370,7 +1440,8 @@ final class LyricsWebViewStore: NSObject {
                 trackID: trackID,
                 ttml: ttml,
                 currentTime: currentTime,
-                isPlaying: isPlaying
+                isPlaying: isPlaying,
+                forceLyricsReload: forceLyricsReload
             )
         }
     }
@@ -1379,10 +1450,12 @@ final class LyricsWebViewStore: NSObject {
         trackID: UUID?,
         ttml: String?,
         currentTime: Double,
-        isPlaying: Bool
+        isPlaying: Bool,
+        forceLyricsReload: Bool
     ) {
         let previousTrackID = lastTrackID
-        if let concreteTTML = ttml,
+        if !forceLyricsReload,
+            let concreteTTML = ttml,
             trackID == previousTrackID,
             concreteTTML == lastTTML
         {
@@ -1468,18 +1541,26 @@ final class LyricsWebViewStore: NSObject {
         }
 
         // Keep the WKWebView and WebContent layer tree stable during normal
-        // track switches. The JS adapter's setLyrics path already clears the
-        // previous renderer state before replacing lines, so a native pre-clear
-        // would only create an extra empty-DOM/layer invalidation window.
-        setPlaying(false)
-        setLyricsTTML(ttml ?? "")
-        setCurrentTime(currentTime)
-        setPlaying(isPlaying)
+        // track switches. TTML, target time, and playback state must enter the
+        // renderer atomically; otherwise the window surface can paint the new
+        // lyrics at 0s/old time before the follow-up time sync lands.
+        applyRendererTrackState(
+            ttml: ttml ?? "",
+            currentTime: currentTime,
+            isPlaying: isPlaying
+        )
         scheduleTrackDiagnostics(
             stage: "afterTrackApply",
             trackID: trackID,
             ttmlLength: ttml?.count ?? 0,
             delay: 0.35
+        )
+        scheduleDisplayHealthCheck(
+            trackID: trackID,
+            ttml: ttml ?? "",
+            currentTime: currentTime,
+            isPlaying: isPlaying,
+            reason: forceLyricsReload ? "forced-apply" : "applyTrack"
         )
         if let activeProfileSessionID {
             scheduleTrackProfileCollection(
@@ -1514,6 +1595,9 @@ final class LyricsWebViewStore: NSObject {
         )
 
         // Clear Swift-side state
+        displayHealthGeneration &+= 1
+        pendingDisplayHealthProbe?.cancel()
+        pendingDisplayHealthProbe = nil
         lastTTML = nil
         lastTrackID = trackID
         lastTime = nil
@@ -1559,6 +1643,226 @@ final class LyricsWebViewStore: NSObject {
         )
     }
 
+    private func scheduleDisplayHealthCheckAfterAttachIfNeeded() {
+        guard let ttml = lastTTML,
+              !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return }
+        scheduleDisplayHealthCheck(
+            trackID: lastTrackID,
+            ttml: ttml,
+            currentTime: lastTime ?? 0,
+            isPlaying: lastIsPlaying ?? false,
+            reason: "attach"
+        )
+    }
+
+    private func scheduleDisplayHealthCheck(
+        trackID: UUID?,
+        ttml: String,
+        currentTime: Double,
+        isPlaying: Bool,
+        reason: String,
+        attempt: Int = 0,
+        generation: Int? = nil
+    ) {
+        guard !isShutDown else { return }
+        guard !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            pendingDisplayHealthProbe?.cancel()
+            pendingDisplayHealthProbe = nil
+            return
+        }
+
+        let probeGeneration: Int
+        if let generation {
+            probeGeneration = generation
+        } else {
+            displayHealthGeneration &+= 1
+            probeGeneration = displayHealthGeneration
+        }
+
+        pendingDisplayHealthProbe?.cancel()
+        let delay = displayHealthProbeDelay(for: attempt)
+        let expectation = DisplayHealthExpectation(
+            generation: probeGeneration,
+            trackID: trackID,
+            ttml: ttml,
+            currentTime: currentTime,
+            isPlaying: isPlaying,
+            reason: reason
+        )
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.runDisplayHealthCheck(expectation: expectation, attempt: attempt)
+        }
+        pendingDisplayHealthProbe = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func displayHealthProbeDelay(for attempt: Int) -> TimeInterval {
+        switch attempt {
+        case 0: return 0.35
+        case 1: return 0.7
+        case 2: return 1.2
+        default: return 1.8
+        }
+    }
+
+    private func runDisplayHealthCheck(
+        expectation: DisplayHealthExpectation,
+        attempt: Int
+    ) {
+        guard !isShutDown else { return }
+        guard expectation.generation == displayHealthGeneration else { return }
+        guard lastTrackID == expectation.trackID, lastTTML == expectation.ttml else { return }
+
+        guard isAttached else {
+            Log.debug(
+                "AMLL display health deferred role=\(role), track=\(expectation.trackID?.uuidString.prefix(8) ?? "nil"), cause=not-attached, reason=\(expectation.reason)",
+                category: .webview
+            )
+            return
+        }
+
+        guard isReady, retainedWebView != nil else {
+            retryDisplayHealthCheck(
+                expectation: expectation,
+                attempt: attempt,
+                cause: "not-ready",
+                shouldReplay: false
+            )
+            return
+        }
+
+        let label = "\(role).\(expectation.trackID?.uuidString.prefix(8) ?? "nil").\(attempt)"
+        let call = PendingJavaScriptCall(
+            debugDescription: "window.AMLL.collectDisplayHealth(\(label))",
+            call: .function(
+                body: "return window.AMLL.collectDisplayHealth(label);",
+                arguments: ["label": label]
+            )
+        )
+
+        executeJavaScriptCall(call) { [weak self] result, error in
+            guard let self else { return }
+            if let error {
+                self.retryDisplayHealthCheck(
+                    expectation: expectation,
+                    attempt: attempt,
+                    cause: "probe-error:\(error.localizedDescription)",
+                    shouldReplay: true
+                )
+                return
+            }
+
+            let payload = self.normalizedDisplayHealthPayload(result)
+            let rendererHealth = payload["rendererHealth"] as? [String: Any]
+            let bridgeReady = self.healthBool(payload["bridgeReady"])
+            let renderedLength = self.healthInt(rendererHealth?["ttmlLength"], defaultValue: -1)
+            let parsedLineCount = self.healthInt(rendererHealth?["parsedLineCount"])
+            let lineObjects = self.healthInt(rendererHealth?["lineObjects"])
+            let lyricMainLines = self.healthInt(rendererHealth?["lyricMainLines"])
+            let hasRenderableContent = self.healthBool(rendererHealth?["hasRenderableContent"])
+            let hasVisibleContent = self.healthBool(rendererHealth?["hasVisibleContent"])
+            let visibleMainLines = self.healthInt(rendererHealth?["visibleMainLines"])
+            let visibleInterludeDots = self.healthInt(rendererHealth?["visibleInterludeDots"])
+            let initialLayoutFinished = self.healthBool(rendererHealth?["initialLayoutFinished"])
+            let expectedTTMLLoaded = renderedLength == expectation.ttml.count
+            let rendererHasContent = hasRenderableContent
+                || hasVisibleContent
+                || parsedLineCount > 0
+                || lineObjects > 0
+                || lyricMainLines > 0
+                || visibleMainLines > 0
+                || visibleInterludeDots > 0
+            let isHealthy = bridgeReady
+                && expectedTTMLLoaded
+                && rendererHasContent
+                && initialLayoutFinished
+
+            if isHealthy {
+                Log.debug(
+                    "AMLL display health OK role=\(self.role), track=\(expectation.trackID?.uuidString.prefix(8) ?? "nil"), attempt=\(attempt), parsedLines=\(parsedLineCount), lineObjects=\(lineObjects), visibleLines=\(visibleMainLines), visibleDots=\(visibleInterludeDots), reason=\(expectation.reason)",
+                    category: .webview
+                )
+                return
+            }
+
+            let shouldReplay = !bridgeReady
+                || !expectedTTMLLoaded
+                || (attempt >= 2 && (!rendererHasContent || !initialLayoutFinished))
+            let cause = "unhealthy bridge=\(bridgeReady) len=\(renderedLength)/\(expectation.ttml.count) parsedLines=\(parsedLineCount) lineObjects=\(lineObjects) mainLines=\(lyricMainLines) renderable=\(hasRenderableContent) visible=\(hasVisibleContent) layout=\(initialLayoutFinished) visibleLines=\(visibleMainLines) visibleDots=\(visibleInterludeDots)"
+            self.retryDisplayHealthCheck(
+                expectation: expectation,
+                attempt: attempt,
+                cause: cause,
+                shouldReplay: shouldReplay
+            )
+        }
+    }
+
+    private func retryDisplayHealthCheck(
+        expectation: DisplayHealthExpectation,
+        attempt: Int,
+        cause: String,
+        shouldReplay: Bool
+    ) {
+        guard attempt < maxDisplayHealthRetries else {
+            Log.warning(
+                "AMLL display health failed role=\(role), track=\(expectation.trackID?.uuidString.prefix(8) ?? "nil"), attempts=\(attempt + 1), cause=\(cause), reason=\(expectation.reason)",
+                category: .webview
+            )
+            return
+        }
+
+        Log.info(
+            "AMLL display health retry role=\(role), track=\(expectation.trackID?.uuidString.prefix(8) ?? "nil"), attempt=\(attempt + 1), cause=\(cause), replay=\(shouldReplay), reason=\(expectation.reason)",
+            category: .webview
+        )
+
+        if shouldReplay {
+            applyRendererTrackState(
+                ttml: expectation.ttml,
+                currentTime: expectation.currentTime,
+                isPlaying: expectation.isPlaying
+            )
+            requestLayoutResync(reason: "displayHealthRetry")
+        }
+
+        scheduleDisplayHealthCheck(
+            trackID: expectation.trackID,
+            ttml: expectation.ttml,
+            currentTime: expectation.currentTime,
+            isPlaying: expectation.isPlaying,
+            reason: expectation.reason,
+            attempt: attempt + 1,
+            generation: expectation.generation
+        )
+    }
+
+    private func normalizedDisplayHealthPayload(_ result: Any?) -> [String: Any] {
+        if let payload = result as? [String: Any] {
+            return payload
+        }
+        if let payloadString = result as? String,
+           let data = payloadString.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return object
+        }
+        return [:]
+    }
+
+    private func healthBool(_ value: Any?) -> Bool {
+        if let bool = value as? Bool { return bool }
+        if let number = value as? NSNumber { return number.boolValue }
+        return false
+    }
+
+    private func healthInt(_ value: Any?, defaultValue: Int = 0) -> Int {
+        if let int = value as? Int { return int }
+        if let number = value as? NSNumber { return number.intValue }
+        if let double = value as? Double { return Int(double) }
+        return defaultValue
+    }
+
     /// Performs full teardown of this WebView instance.
     /// Called when the surface is no longer needed (e.g., exiting fullscreen).
     func teardown() {
@@ -1569,10 +1873,13 @@ final class LyricsWebViewStore: NSObject {
         pendingApplyTrack = nil
         pendingVisibleLayerProbe?.cancel()
         pendingVisibleLayerProbe = nil
+        displayHealthGeneration &+= 1
         pendingTrackDiagnosticsProbe?.cancel()
         pendingTrackDiagnosticsProbe = nil
         pendingTrackProfileCollection?.cancel()
         pendingTrackProfileCollection = nil
+        pendingDisplayHealthProbe?.cancel()
+        pendingDisplayHealthProbe = nil
         pendingLayoutResyncWorkItem?.cancel()
         pendingLayoutResyncWorkItem = nil
         pendingLayoutResyncReason = nil
@@ -2125,17 +2432,17 @@ final class LyricsWebViewStore: NSObject {
         lastDeliveredTime = nil
     }
 
-    private func scheduleTimeSync(_ seconds: Double) {
+    private func scheduleTimeSync(_ seconds: Double, force: Bool = false) {
         if isTimeSyncInFlight {
             queuedTimeSync = seconds
             return
         }
-        dispatchTimeSync(seconds)
+        dispatchTimeSync(seconds, force: force)
     }
 
-    private func dispatchTimeSync(_ seconds: Double) {
+    private func dispatchTimeSync(_ seconds: Double, force: Bool = false) {
         guard isReady else { return }
-        if let lastDeliveredTime, abs(seconds - lastDeliveredTime) < 0.01 {
+        if !force, let lastDeliveredTime, abs(seconds - lastDeliveredTime) < 0.01 {
             return
         }
 

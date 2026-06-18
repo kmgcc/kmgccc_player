@@ -78,7 +78,12 @@ final class LyricsViewModel {
     // MARK: - Track Management
 
     /// Apply a new track with correct sequence (Task F).
-    func applyTrack(_ track: Track?, currentTime: TimeInterval = 0, isPlaying: Bool = false) {
+    func applyTrack(
+        _ track: Track?,
+        currentTime: TimeInterval = 0,
+        isPlaying: Bool = false,
+        forceLyricsReload: Bool = false
+    ) {
         rebindSeekCallback()
         currentTrack = track
         lastAppliedTrackId = track?.id
@@ -105,7 +110,8 @@ final class LyricsViewModel {
             trackID: track?.id,
             ttml: ttmlForStore,
             currentTime: currentTime,
-            isPlaying: isPlaying)
+            isPlaying: isPlaying,
+            forceLyricsReload: forceLyricsReload)
         rebindSeekCallback()
     }
 
@@ -145,7 +151,12 @@ final class LyricsViewModel {
         rebindSeekCallback()
 
         if shouldApplyTrack(track, forceLyricsReload: forceLyricsReload) {
-            applyTrack(track, currentTime: currentTime, isPlaying: isPlaying)
+            applyTrack(
+                track,
+                currentTime: currentTime,
+                isPlaying: isPlaying,
+                forceLyricsReload: forceLyricsReload
+            )
         } else {
             // Re-sync theme even if track hasn't changed (ensure latest palette)
             if let palette = ThemeStore.shared.palette {
@@ -200,7 +211,8 @@ final class LyricsViewModel {
                 trackID: trackID,
                 ttml: lyricsText,
                 currentTime: presentation.currentTime,
-                isPlaying: presentation.isPlaying
+                isPlaying: presentation.isPlaying,
+                forceLyricsReload: forceLyricsReload
             )
             rebindSeekCallback()
         } else {
@@ -271,7 +283,12 @@ final class LyricsViewModel {
                 track.lyricsText = nil
                 track.lyricsFileName = nil
                 if self.currentTrack?.id == trackID {
-                    self.applyTrack(track, currentTime: currentTime, isPlaying: isPlaying)
+                    self.applyTrack(
+                        track,
+                        currentTime: currentTime,
+                        isPlaying: isPlaying,
+                        forceLyricsReload: true
+                    )
                 }
             } catch {
                 Log.warning("[LyricsVM] Legacy LRC conversion failed: \(error.localizedDescription)", category: .lyrics)

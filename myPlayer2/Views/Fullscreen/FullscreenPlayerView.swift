@@ -73,6 +73,7 @@ struct FullscreenPlayerView: View {
     private let fullscreenBackgroundLyricsAvoidanceBottomInset: CGFloat = 60
     private let fullscreenLyricsAlignPosition: Double = 0.18  // Current line higher in viewport (was 0.28)
     private let fullscreenLyricsAutoHideTrailingGap: TimeInterval = 5.0
+    private let fullscreenLyricsAutoHideDelayAfterFinalLine: TimeInterval = 2.0
     private let coverBlurLegacyTopContentLeftShift: CGFloat = 44
     private let coverBlurLegacyArtworkLyricsColumnSpacing: CGFloat = -58
     private let coverBlurLegacyLyricsColumnLeftNudge: CGFloat = 80
@@ -2351,11 +2352,12 @@ struct FullscreenPlayerView: View {
         guard let lastEnd = fullscreenLyricsLastEndTime, lastEnd.isFinite else { return }
         guard currentTime.isFinite, duration.isFinite, duration > 0 else { return }
         guard duration - lastEnd > fullscreenLyricsAutoHideTrailingGap else { return }
-        guard currentTime >= lastEnd else { return }
+        let hideTime = lastEnd + fullscreenLyricsAutoHideDelayAfterFinalLine
+        guard currentTime >= hideTime else { return }
 
         autoHiddenFullscreenLyricsAfterEnding = true
         Log.debug(
-            "[FullscreenLyricsAutoHide] hiding lyrics after final line gap=\(String(format: "%.2f", duration - lastEnd))s track=\(autoHideFullscreenLyricsTrackID?.uuidString.prefix(8) ?? "nil")",
+            "[FullscreenLyricsAutoHide] hiding lyrics after final line gap=\(String(format: "%.2f", duration - lastEnd))s delay=\(String(format: "%.2f", fullscreenLyricsAutoHideDelayAfterFinalLine))s track=\(autoHideFullscreenLyricsTrackID?.uuidString.prefix(8) ?? "nil")",
             category: .webview
         )
         handleLyricsButtonTap()
@@ -2624,7 +2626,8 @@ struct FullscreenPlayerView: View {
             trackID: playbackPayload.trackID,
             ttml: playbackPayload.ttml,
             currentTime: playbackPayload.currentTime,
-            isPlaying: playbackPayload.isPlaying
+            isPlaying: playbackPayload.isPlaying,
+            forceLyricsReload: forceLyricsReload || forceWebReload
         )
         setupSeekCallback()
 
@@ -2779,7 +2782,8 @@ struct FullscreenPlayerView: View {
             trackID: payload.trackID,
             ttml: payload.ttml,
             currentTime: payload.currentTime,
-            isPlaying: payload.isPlaying
+            isPlaying: payload.isPlaying,
+            forceLyricsReload: forceWebReload
         )
     }
 

@@ -34,6 +34,7 @@ final class AppSessionHost: ObservableObject {
     private var playbackMemoryTimer: Timer?
     private let mainThreadStallMonitor = MainThreadStallMonitor()
     private var firstUsePrewarmTask: Task<Void, Never>?
+    private var lyricsPlaybackPipeline: LyricsPlaybackPipeline?
     private var didAttemptPlaybackMemoryRestore = false
 
     init(
@@ -131,26 +132,19 @@ final class AppSessionHost: ObservableObject {
         lyricsVM.setPlaybackSourceProvider { [weak playbackCoordinator] in
             playbackCoordinator?.activeSource ?? .local
         }
+        let lyricsPlaybackPipeline = LyricsPlaybackPipeline(
+            lyricsVM: lyricsVM,
+            playbackCoordinator: playbackCoordinator
+        )
+        self.lyricsPlaybackPipeline = lyricsPlaybackPipeline
         LyricsSurfaceManager.shared.setMainSurfaceSnapshotRefreshHandler {
-            [weak lyricsVM, weak playbackCoordinator] reason in
-            guard let lyricsVM, let playbackCoordinator else { return }
-            let presentation = playbackCoordinator.presentation
-            switch presentation.source {
-            case .local:
-                lyricsVM.ensureAMLLLoaded(
-                    track: presentation.localTrack,
-                    currentTime: presentation.lyricsCurrentTime,
-                    isPlaying: presentation.isPlaying,
-                    reason: reason
-                )
-            case .appleMusic, .systemNowPlaying:
-                lyricsVM.ensureExternalAMLLLoaded(
-                    presentation: presentation,
-                    reason: reason
-                )
-            }
-            lyricsVM.refreshConfigFromSettings()
+            [weak lyricsPlaybackPipeline] reason in
+            lyricsPlaybackPipeline?.refreshCurrent(
+                reason: "surface snapshot refresh: \(reason)",
+                forceLyricsReload: true
+            )
         }
+        lyricsPlaybackPipeline.start()
 
         playbackCoordinator.onActiveSourceChanged = { [weak ledMeterProvider, weak lyricsVM] source in
             ledMeterProvider?.playbackSource = source
@@ -481,6 +475,11 @@ final class AppSessionHost: ObservableObject {
             restoredQueue,
             startingAt: startIndex,
             positionSeconds: restorableTime
+        )
+        playbackCoordinator?.refreshPresentation()
+        lyricsPlaybackPipeline?.refreshCurrent(
+            reason: "playback memory restored",
+            forceLyricsReload: true
         )
     }
 

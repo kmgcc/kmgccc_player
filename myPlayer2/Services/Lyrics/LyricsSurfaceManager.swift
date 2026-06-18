@@ -441,14 +441,21 @@ final class LyricsSurfaceManager {
     }
 
     /// Apply track to all active surfaces.
-    func applyTrack(trackID: UUID? = nil, ttml: String?, currentTime: Double, isPlaying: Bool) {
+    func applyTrack(
+        trackID: UUID? = nil,
+        ttml: String?,
+        currentTime: Double,
+        isPlaying: Bool,
+        forceLyricsReload: Bool = false
+    ) {
         for role in activeRoles {
             guard let store = stores[role] else { continue }
             store.applyTrack(
                 trackID: trackID,
                 ttml: ttml,
                 currentTime: currentTime,
-                isPlaying: isPlaying
+                isPlaying: isPlaying,
+                forceLyricsReload: forceLyricsReload
             )
         }
     }
@@ -557,7 +564,8 @@ final class LyricsSurfaceManager {
             trackID: currentPlaybackSnapshot.trackID,
             ttml: currentPlaybackSnapshot.lyricsTTML,
             currentTime: currentPlaybackSnapshot.currentTime,
-            isPlaying: currentPlaybackSnapshot.isPlaying
+            isPlaying: currentPlaybackSnapshot.isPlaying,
+            forceLyricsReload: true
         )
         store.scheduleDebugVisibleLayerProbe(label: "\(role.rawValue)-snapshot-replay", delay: 0.75)
     }

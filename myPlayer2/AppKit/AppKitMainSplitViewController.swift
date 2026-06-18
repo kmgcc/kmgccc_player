@@ -649,12 +649,11 @@ final class CenterPanePassthroughViewController: NSViewController {
 
 // MARK: - Flat AppKit lyrics inspector pane
 
-/// Lyrics inspector pane for the `lyrics.debug.windowUseFlatAppKitHost` diagnostic.
-/// Replaces the production `NSHostingController(rootView: AppKitMainLyricsPaneRoot(...))` with:
-///   - a plain `NSView` that hosts the WKWebView directly (no SwiftUI inspector hierarchy), and
-///   - a zero-sized `NSHostingController` child providing the same LyricsViewModel
-///     lifecycle that `LyricsPanelView` normally provides (seek callback, time sync,
-///     track-change handling).
+/// Production lyrics inspector pane.
+/// Hosts the WKWebView directly in AppKit so normal track switches do not
+/// re-wrap the WebView in the SwiftUI inspector hierarchy. A zero-sized
+/// `NSHostingController` child keeps the non-visual LyricsViewModel bindings
+/// alive (seek callback, time sync, settings observation).
 ///
 /// Why the previous implementation showed blank lyrics:
 ///   LyricsViewModel.ensureAMLLLoaded is never called without the SwiftUI driver,

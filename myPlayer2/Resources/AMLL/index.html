@@ -5380,6 +5380,7 @@
             lastSeekAt = 0;
             lastSeekSeconds = null;
             seekLineStartTimesMs = [];
+            lastParsedLineCount = 0;
             lineTimingOnlyMode = false;
             lyricPlayer.isNonDynamic = false;
             patchFullscreenLastProcessedTime = -1;
@@ -5434,6 +5435,62 @@
             return summary;
         };
 
+        const prepareRendererStateForLyricsReplace = (reason = "setLyrics-replace") => {
+            const clearStart = performance.now();
+            stopFirstVisibleLineProbe();
+            if (activeTrackProfileSession) {
+                activeTrackProfileSession.clearRendererStateCount += 1;
+                activeTrackProfileSession.clearReasons[reason] =
+                    (activeTrackProfileSession.clearReasons[reason] || 0) + 1;
+            }
+
+            const before = collectRendererDiagnostics(`${reason}-before`);
+            const teardown = teardownCurrentLyricObjects();
+            patchFullscreenLastProcessedTime = -1;
+            lastCoverBlurBlendSignature = "";
+            clearFullscreenCompletedHighlightState();
+            clearParallelEmphasisDiagnostics();
+            fullscreenPackedAnimationTargetMap = new WeakMap();
+            coverBlurPackedAnimationTargetMap = new WeakMap();
+            lyricPlayer.getElement().classList.remove("fs-line-timing-only");
+
+            rendererRuntime.trackTeardownCount += 1;
+            rendererRuntime.lastTeardownSummary = {
+                reason,
+                teardown,
+                preservesCurrentTime: true,
+                skipsEmptyLyricState: true,
+            };
+            rendererRuntime.skipNextReplaceClear = false;
+
+            const after = collectRendererDiagnostics(`${reason}-after`);
+            const summary = {
+                reason,
+                teardown,
+                before: {
+                    ttmlLength: before.ttmlLength,
+                    lineObjects: before.renderer.currentLyricLineObjects,
+                    splitWords: before.dom.splitWords,
+                    playerAnimations: before.animations.playerSubtree.total,
+                    documentAnimations: before.animations.document.total,
+                    pendingParallelPairs: before.caches.parallelPairs,
+                },
+                after: {
+                    ttmlLength: after.ttmlLength,
+                    lineObjects: after.renderer.currentLyricLineObjects,
+                    splitWords: after.dom.splitWords,
+                    playerAnimations: after.animations.playerSubtree.total,
+                    documentAnimations: after.animations.document.total,
+                    pendingParallelPairs: after.caches.parallelPairs,
+                },
+            };
+            console.log(`[LyricsRenderer][ReplacePrepare] ${JSON.stringify(summary)}`);
+            if (activeTrackProfileSession) {
+                activeTrackProfileSession.clearRendererStateDurationMs += performance.now() - clearStart;
+            }
+            return summary;
+        };
+
         const destroyRendererState = () => {
             const summary = clearRendererState("destroy");
             rendererRuntime.destroyed = true;
@@ -5446,7 +5503,7 @@
 	        
 	            const updateFullscreenParallelHighlightState = () => {
 	            if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
-	            
+
 	            // Skip entirely for line-timing-only mode (逐行皮肤):
 	            // line highlight lifetime already follows the root active color path.
 	            if (lineTimingOnlyMode === true) {
@@ -5535,6 +5592,7 @@
 	        let seekTimeOffsetMs = 0;
 	        let seekLineStartTimesMs = [];
 	        let lastTTML = "";
+	        let lastParsedLineCount = 0;
 	        let lineTimingOnlyMode = false;
 	        const hasEffectiveWordTiming = (line) => {
 	            if (!line || !Array.isArray(line.words) || line.words.length < 2) return false;
@@ -5823,6 +5881,47 @@
             window.AMLL.debugDumpVisibleLayers = debugDumpVisibleLayers;
         }
 
+        const collectDisplayHealth = (label = "") => {
+            const playerElement = lyricPlayer.getElement();
+            const countVisible = (selector) => Array.from(
+                playerElement.querySelectorAll(selector)
+            ).filter((element) => isProbeVisibleElement(element)).length;
+            const lineObjects = Array.isArray(lyricPlayer.currentLyricLineObjects)
+                ? lyricPlayer.currentLyricLineObjects
+                : [];
+            const visibleMainLines = countVisible('[class*="lyricMainLine"]');
+            const visibleInterludeDots = countVisible('[class*="interludeDots"] > *');
+            const lyricMainLines = playerElement.querySelectorAll('[class*="lyricMainLine"]').length;
+            const interludeDots = playerElement.querySelectorAll('[class*="interludeDots"] > *').length;
+            const activeHighlight = collectActiveHighlightState(`display-health:${label}`);
+            const hasRenderableContent =
+                lastParsedLineCount > 0
+                || lineObjects.length > 0
+                || lyricMainLines > 0
+                || (lastTTML.length > 0 && interludeDots > 0);
+
+            return {
+                label,
+                role: surfaceRole,
+                bundleVersion: AMLL_BUNDLE_VERSION,
+                ttmlLength: lastTTML.length,
+                parsedLineCount: lastParsedLineCount,
+                currentTimeMs: Number.isFinite(lastKnownTimeMs) ? lastKnownTimeMs : null,
+                externalTimeMs: Number.isFinite(externalTimeMs) ? externalTimeMs : null,
+                externalIsPlaying,
+                initialLayoutFinished: lyricPlayer.initialLayoutFinished === true,
+                lineObjects: lineObjects.length,
+                lyricMainLines,
+                visibleMainLines,
+                interludeDots,
+                visibleInterludeDots,
+                hasRenderableContent,
+                hasVisibleContent: visibleMainLines > 0 || visibleInterludeDots > 0,
+                rafActive: rendererRuntime.animationFrameRequestId ? 1 : 0,
+                activeHighlight,
+            };
+        };
+
         const triggerExistingLinePositionSpringReveal = async (options = {}) => {
             const reason = typeof options.reason === "string"
                 ? options.reason
@@ -5946,10 +6045,10 @@
 
         // Define the Renderer Implementation for Bridge
         window.LyricsRenderer = {
-            setLyrics: (ttml) => {
-                const setLyricsStart = performance.now();
-                // Idle-CPU: new lyrics must render even if paused/idle.
-                wakeRenderer();
+	            setLyrics: (ttml, options = {}) => {
+	                const setLyricsStart = performance.now();
+	                // Idle-CPU: new lyrics must render even if paused/idle.
+	                wakeRenderer();
                 if (activeTrackProfileSession) {
                     activeTrackProfileSession.setLyricsCount += 1;
                 }
@@ -5961,82 +6060,119 @@
                     }
                     console.log("[LyricsRenderer] Cleared lyrics");
                     return;
-                }
-	                try {
+	                }
+		            try {
+                        const targetTimeMs = Number.isFinite(options?.currentTimeMs)
+                            ? Math.max(0, Math.floor(options.currentTimeMs))
+                            : (Number.isFinite(options?.currentTime)
+                                ? Math.max(0, Math.floor(options.currentTime * 1000))
+                                : null);
                         const shouldSkipReplaceClear = rendererRuntime.skipNextReplaceClear === true;
                         rendererRuntime.skipNextReplaceClear = false;
                         const hasExistingLyricObjects =
                             Array.isArray(lyricPlayer.currentLyricLineObjects)
                             && lyricPlayer.currentLyricLineObjects.length > 0;
-                        if (!shouldSkipReplaceClear && (lastTTML || hasExistingLyricObjects)) {
-                            clearRendererState("setLyrics-replace");
+
+                        console.log("[AMLL-BOOT] setLyrics parseTTML start", { length: ttml.length });
+			            const result = parseTTML(ttml);
+                        console.log("[AMLL-BOOT] setLyrics parseTTML done", {
+                            lineCount: Array.isArray(result?.lines) ? result.lines.length : -1,
+                        });
+			            const lines = result.lines.map(mapTTMLLyric);
+			            const nextSeekLineStartTimesMs = lines.map((line) => {
+			                const start = Number.isFinite(line?.startTime) ? line.startTime : NaN;
+			                return Number.isFinite(start)
+			                    ? Math.max(0, start + seekTimeOffsetMs)
+			                    : NaN;
+			            });
+			            lines.forEach(applyTimeOffset);
+			            const nextLineTimingOnlyMode = normalizeMainLinesForLineTimingMode(lines);
+                        const timingPreprocessSummary = applyAppTimingPreprocessing(lines);
+			            const nextParallelSourceLines = structuredClone(lines);
+			            const nextParallelPairs = buildParallelEmphasisDiagnosticPairs(
+			                nextParallelSourceLines
+			            );
+
+                        const shouldReplaceExistingRendererState =
+                            !shouldSkipReplaceClear && (lastTTML || hasExistingLyricObjects);
+
+                        if (shouldReplaceExistingRendererState) {
+                            prepareRendererStateForLyricsReplace("setLyrics-replace");
                         }
-		                    lastTTML = ttml;
-                                console.log("[AMLL-BOOT] setLyrics parseTTML start", { length: ttml.length });
-			                    const result = parseTTML(ttml);
-                                console.log("[AMLL-BOOT] setLyrics parseTTML done", {
-                                    lineCount: Array.isArray(result?.lines) ? result.lines.length : -1,
-                                });
-			                    const lines = result.lines.map(mapTTMLLyric);
-			                    seekLineStartTimesMs = lines.map((line) => {
-			                        const start = Number.isFinite(line?.startTime) ? line.startTime : NaN;
-			                        return Number.isFinite(start)
-			                            ? Math.max(0, start + seekTimeOffsetMs)
-			                            : NaN;
-			                    });
-			                    lines.forEach(applyTimeOffset);
-			                    lineTimingOnlyMode = normalizeMainLinesForLineTimingMode(lines);
-                                const timingPreprocessSummary = applyAppTimingPreprocessing(lines);
-			                    parallelEmphasisDiagnosticsSourceLines = structuredClone(lines);
-			                    parallelEmphasisDiagnosticPairs = buildParallelEmphasisDiagnosticPairs(
-			                        parallelEmphasisDiagnosticsSourceLines
-			                    );
-			                    lastParallelEmphasisLineState.clear();
-			                    lastParallelEmphasisPairState.clear();
-			                    console.log(`[LyricsRenderer] lineTimingOnlyMode=${lineTimingOnlyMode}`);
-                                console.log(
-                                    `${AMLL_UPGRADE_LOG_PREFIX} timingAdapter leadInMs=${leadInMs} nearSwitchGapMs=${nearSwitchGapMs} changedLines=${timingPreprocessSummary.changedLines} nearSwitches=${timingPreprocessSummary.nearSwitches}`
-                                );
-                                lyricPlayer.isNonDynamic = lineTimingOnlyMode === true;
-                                lyricPlayer.getElement().classList.toggle(
-                                    "fs-line-timing-only",
-                                    lineTimingOnlyMode === true
-                                );
-		                    console.log("[AMLL-BOOT] setLyrics setLyricLines start", { lineCount: lines.length });
-		                    lyricPlayer.setLyricLines(lines);
-                                console.log("[AMLL-BOOT] setLyrics setLyricLines done", { lineCount: lines.length });
-		                    emitParallelEmphasisNormalizationTrace();
-		                    installWindowEmphasisGlowLifecycleHooks();
-		                    syncWindowEmphasisGlowForCurrentScheme("setLyrics");
-		                    if (fullscreenOpaqueLyricsMode) {
-		                        enforceFullscreenNormalCompositing();
-		                        patchFullscreenLineOpacityBehavior();
-	                    } else if (fullscreenCoverBlurMode) {
-	                        syncCoverBlurRootState();
-	                        patchCoverBlurLineBehavior();
-	                    }
-		                    const currentMs = Number.isFinite(lastKnownTimeMs)
+
+		                lastTTML = ttml;
+                        lastParsedLineCount = lines.length;
+			            seekLineStartTimesMs = nextSeekLineStartTimesMs;
+			            lineTimingOnlyMode = nextLineTimingOnlyMode;
+			            parallelEmphasisDiagnosticsSourceLines = nextParallelSourceLines;
+			            parallelEmphasisDiagnosticPairs = nextParallelPairs;
+			            lastParallelEmphasisLineState.clear();
+			            lastParallelEmphasisPairState.clear();
+			            console.log(`[LyricsRenderer] lineTimingOnlyMode=${lineTimingOnlyMode}`);
+                        console.log(
+                            `${AMLL_UPGRADE_LOG_PREFIX} timingAdapter leadInMs=${leadInMs} nearSwitchGapMs=${nearSwitchGapMs} changedLines=${timingPreprocessSummary.changedLines} nearSwitches=${timingPreprocessSummary.nearSwitches}`
+                        );
+                        lyricPlayer.isNonDynamic = lineTimingOnlyMode === true;
+                        lyricPlayer.getElement().classList.toggle(
+                            "fs-line-timing-only",
+                            lineTimingOnlyMode === true
+                        );
+		                const currentMs = Number.isFinite(targetTimeMs)
+		                    ? targetTimeMs
+		                    : (Number.isFinite(lastKnownTimeMs)
 		                        ? lastKnownTimeMs
-		                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0);
-		                    originalSetCurrentTime(currentMs, true);
-		                    externalTimeMs = currentMs;
-		                    externalTimeAnchorPerfMs = performance.now();
-                            captureFirstVisibleLine("setLyrics");
-                            restartFirstVisibleLineProbe();
-                            if (activeTrackProfileSession) {
-                                activeTrackProfileSession.setLyricsDurationMs += performance.now() - setLyricsStart;
-                            }
-		                    console.log("[LyricsRenderer] Loaded lines:", lines.length);
-                } catch (e) {
+		                        : (lyricPlayer.getCurrentTime ? lyricPlayer.getCurrentTime() : 0));
+                        lastKnownTimeMs = currentMs;
+		                console.log("[AMLL-BOOT] setLyrics setLyricLines start", { lineCount: lines.length, currentMs });
+		                lyricPlayer.setLyricLines(lines, currentMs);
+                        console.log("[AMLL-BOOT] setLyrics setLyricLines done", { lineCount: lines.length });
+		                emitParallelEmphasisNormalizationTrace();
+		                installWindowEmphasisGlowLifecycleHooks();
+		                syncWindowEmphasisGlowForCurrentScheme("setLyrics");
+		                if (fullscreenOpaqueLyricsMode) {
+		                    enforceFullscreenNormalCompositing();
+		                    patchFullscreenLineOpacityBehavior();
+	                } else if (fullscreenCoverBlurMode) {
+	                    syncCoverBlurRootState();
+	                    patchCoverBlurLineBehavior();
+	                }
+		                originalSetCurrentTime(currentMs, true);
+		                externalTimeMs = currentMs;
+                        externalTimeAnchorPerfMs = performance.now();
+                        captureFirstVisibleLine("setLyrics");
+                        restartFirstVisibleLineProbe();
+                        if (activeTrackProfileSession) {
+                            activeTrackProfileSession.setLyricsDurationMs += performance.now() - setLyricsStart;
+                        }
+		                console.log("[LyricsRenderer] Loaded lines:", lines.length);
+	                } catch (e) {
                     console.error("[LyricsRenderer] TTML Parse Error:", e);
                     clearRendererState("setLyrics-parse-error");
                     if (activeTrackProfileSession) {
                         activeTrackProfileSession.setLyricsDurationMs += performance.now() - setLyricsStart;
                     }
                     console.log("[LyricsRenderer] Cleared lyrics due to parse error");
-                }
-            },
-            
+	                }
+	            },
+
+                applyTrackState: (payload = {}) => {
+                    const ttmlText = typeof payload?.ttmlText === "string" ? payload.ttmlText : "";
+                    const seconds = Number(payload?.currentTime);
+                    const currentTimeMs = Number.isFinite(seconds)
+                        ? Math.max(0, Math.floor(seconds * 1000))
+                        : null;
+                    window.LyricsRenderer.setLyrics(ttmlText, { currentTimeMs });
+                    if (typeof payload?.isPlaying === "boolean") {
+                        window.LyricsRenderer.setPlaying(payload.isPlaying);
+                    }
+                    return {
+                        role: surfaceRole,
+                        ttmlLength: ttmlText.length,
+                        currentTimeMs,
+                        isPlaying: payload?.isPlaying === true,
+                    };
+                },
+
 	            setCurrentTime: (seconds) => {
 	                const timeInMs = Math.max(0, Math.floor(seconds * 1000));
 	                // If AMLL hasn't finished its first layout yet, non-forced setCurrentTime is ignored.
@@ -6620,6 +6756,8 @@
                 console.log(`[LyricsRenderer][Diagnostics] ${label} ${JSON.stringify(diagnostics)}`);
                 return diagnostics;
             },
+
+            collectDisplayHealth,
         };
 
         // Animation Loop

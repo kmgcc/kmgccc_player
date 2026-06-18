@@ -699,10 +699,9 @@ struct FlatLyricsBackgroundView: View {
 
 // MARK: - Flat AppKit lyrics driver view
 
-/// Zero-sized SwiftUI driver for the `lyrics.debug.windowUseFlatAppKitHost` diagnostic.
-/// Provides the same LyricsViewModel observation/lifecycle as LyricsPanelView
-/// with no visual content. Embedded as a zero-sized child NSHostingController
-/// inside LyricsFlatAppKitHostViewController.
+/// Zero-sized SwiftUI driver for the flat AppKit lyrics host.
+/// Provides the non-visual LyricsViewModel observation/lifecycle with no
+/// SwiftUI view wrapping the WKWebView itself.
 struct LyricsFlatDriverView: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryViewModel.self) private var libraryVM
@@ -717,28 +716,25 @@ struct LyricsFlatDriverView: View {
         Color.clear
             .frame(width: 0, height: 0)
             .onAppear {
+                LyricsSurfaceManager.shared.reportMainVisible(true)
                 setupSeekCallback()
-                reloadLyrics(reason: "flat driver appear")
+                lyricsVM.revealExistingLyrics(reason: "flat driver appear")
             }
             .onDisappear {
                 LyricsSurfaceManager.shared.reportMainVisible(false)
             }
             .onChange(of: playbackCoordinator.presentation.lyricsIdentity) { oldId, newId in
                 guard oldId != newId else { return }
-                reloadLyrics(reason: "track changed", forceLyricsReload: true)
+                LyricsRuntimeProfile.increment("LyricsFlatDriverView.trackIDChange")
+            }
+            .onChange(of: playbackCoordinator.presentation.hasTrack) { _, hasTrack in
+                guard hasTrack else { return }
+                LyricsSurfaceManager.shared.reportMainVisible(true)
             }
             .onChange(of: uiState.lyricsVisible) { _, isVisible in
                 guard isVisible else { return }
                 LyricsSurfaceManager.shared.reportMainVisible(true)
-                reloadLyrics(reason: "lyrics expanded", forceLyricsReload: false)
                 lyricsVM.revealExistingLyrics(reason: "flat lyrics expanded")
-            }
-            .onChange(of: playbackCoordinator.presentation.lyricsText) { _, _ in
-                guard playbackCoordinator.presentation.source.isExternal else { return }
-                reloadLyrics(reason: "external lyrics updated", forceLyricsReload: true)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
-                reloadLyrics(reason: "playback track notification", forceLyricsReload: true)
             }
             .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
                 guard
