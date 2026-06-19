@@ -84,7 +84,7 @@ struct ExternalPlaybackSettingsView: View {
                     SettingsSwitchRow(title: "启用其他播放器（beta）", isOn: $enableSystemNowPlaying)
 
                     permissionRow(
-                        title: "系统正在播放",
+                        title: "读取系统正在播放内容权限",
                         state: systemNowPlayingPermission,
                         buttonTitle: permissionButtonTitle(for: systemNowPlayingPermission)
                     ) {

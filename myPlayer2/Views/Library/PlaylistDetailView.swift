@@ -500,7 +500,7 @@ struct PlaylistDetailView: View {
 
             Button {
                 Task {
-                    await libraryVM.importToCurrentPlaylist()
+                    await libraryVM.importToCurrentContext(contentMode: uiState.contentMode)
                 }
             } label: {
                 Label(

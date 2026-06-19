@@ -884,8 +884,9 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     @objc
     private func handleImportToPlaylist(_ sender: NSToolbarItem) {
         guard let libraryVM = currentLibraryVM else { return }
+        let contentMode = appSession?.uiState.contentMode ?? .library
         Task { @MainActor in
-            await libraryVM.importToCurrentPlaylist()
+            await libraryVM.importToCurrentContext(contentMode: contentMode)
         }
     }
 

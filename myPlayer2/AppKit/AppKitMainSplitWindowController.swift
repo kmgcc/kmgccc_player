@@ -16,6 +16,8 @@
 //                                    hosting view so a transparent Home
 //                                    placeholder forwards hits to the
 //                                    full-window host below).
+//      4. fileDropOverlayHost      – visual-only import affordance; hit-test
+//                                    passthrough, drag handling lives on root.
 //
 
 import AppKit
@@ -466,6 +468,7 @@ private final class AppKitMainRootViewController: NSViewController {
     private let splitViewController: AppKitMainSplitViewController
     private let backgroundController: NSHostingController<AppKitMainWindowArtBackgroundLayer>
     private let homeFullWindowHost: PassthroughHostingView<HomeFullWindowRoot>
+    private let fileDropOverlayHost: PassthroughHostingView<AppDialogDropImportOverlay>
     private var didApplyPaneGlassBlendingMode = false
 
     init(appSession: AppSessionHost, splitViewController: AppKitMainSplitViewController) {
@@ -485,6 +488,11 @@ private final class AppKitMainRootViewController: NSViewController {
             HomeWindowLayoutState.shared.allowsHomeInteraction
         }
         self.homeFullWindowHost = homeFullWindowHost
+        let fileDropOverlayHost = PassthroughHostingView(
+            rootView: AppDialogDropImportOverlay(isVisible: false)
+        )
+        fileDropOverlayHost.shouldAcceptHitTest = { false }
+        self.fileDropOverlayHost = fileDropOverlayHost
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -518,6 +526,7 @@ private final class AppKitMainRootViewController: NSViewController {
         backgroundView.translatesAutoresizingMaskIntoConstraints = true
         splitView.translatesAutoresizingMaskIntoConstraints = true
         homeFullWindowHost.translatesAutoresizingMaskIntoConstraints = true
+        fileDropOverlayHost.translatesAutoresizingMaskIntoConstraints = true
 
         backgroundView.wantsLayer = true
         backgroundView.layer?.backgroundColor = NSColor.clear.cgColor
@@ -527,8 +536,10 @@ private final class AppKitMainRootViewController: NSViewController {
         splitViewController.splitView.layer?.backgroundColor = NSColor.clear.cgColor
         homeFullWindowHost.wantsLayer = true
         homeFullWindowHost.layer?.backgroundColor = NSColor.clear.cgColor
+        fileDropOverlayHost.wantsLayer = true
+        fileDropOverlayHost.layer?.backgroundColor = NSColor.clear.cgColor
 
-        // Z-order: art background → full-window Home host → split view.
+        // Z-order: art background → full-window Home host → split view → drop overlay.
         // The Home host sits BELOW the split view in subview order so that
         // sidebar / inspector glass (rendered inside the split view) blur
         // Home content beneath them.
@@ -543,18 +554,27 @@ private final class AppKitMainRootViewController: NSViewController {
         view.addSubview(backgroundView)
         view.addSubview(homeFullWindowHost)
         view.addSubview(splitView)
+        view.addSubview(fileDropOverlayHost)
 
         if let routingRoot = view as? HomeRoutingRootView {
             routingRoot.splitViewRef = splitView
             routingRoot.homeHostRef = homeFullWindowHost
+            routingRoot.onImportFileDragStateChange = { [weak self] isActive in
+                self?.setFileDropOverlayVisible(isActive)
+            }
+            routingRoot.onImportFileDrop = { [weak self] urls in
+                self?.importDroppedFileURLs(urls)
+            }
         }
 
         backgroundView.frame = view.bounds
         homeFullWindowHost.frame = view.bounds
         splitView.frame = view.bounds
+        fileDropOverlayHost.frame = view.bounds
         backgroundView.autoresizingMask = [.width, .height]
         homeFullWindowHost.autoresizingMask = [.width, .height]
         splitView.autoresizingMask = [.width, .height]
+        fileDropOverlayHost.autoresizingMask = [.width, .height]
     }
 
     override func viewDidLayout() {
@@ -562,6 +582,7 @@ private final class AppKitMainRootViewController: NSViewController {
         backgroundController.view.frame = view.bounds
         homeFullWindowHost.frame = view.bounds
         splitViewController.view.frame = view.bounds
+        fileDropOverlayHost.frame = view.bounds
 
         splitViewController.publishHomeLayoutGeometry(windowSize: view.bounds.size)
 
@@ -597,6 +618,21 @@ private final class AppKitMainRootViewController: NSViewController {
             }
         }
         return foundEffectView
+    }
+
+    private func setFileDropOverlayVisible(_ isVisible: Bool) {
+        fileDropOverlayHost.rootView = AppDialogDropImportOverlay(isVisible: isVisible)
+    }
+
+    private func importDroppedFileURLs(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        let contentMode = appSession.uiState.contentMode
+        Task { @MainActor in
+            await appSession.libraryVM?.importDroppedURLsToCurrentContext(
+                urls,
+                contentMode: contentMode
+            )
+        }
     }
 }
 
@@ -716,6 +752,8 @@ final class PassthroughHostingController<Content: View>: NSHostingController<Con
 final class HomeRoutingRootView: NSView {
     weak var splitViewRef: NSView?
     weak var homeHostRef: NSView?
+    var onImportFileDragStateChange: ((Bool) -> Void)?
+    var onImportFileDrop: (([URL]) -> Void)?
 
     /// Small inset around the published Mini Player frame, in points. Acts as
     /// a tiny safety cushion (e.g. for hover-grow overshoot at the visible
@@ -723,6 +761,17 @@ final class HomeRoutingRootView: NSView {
     /// strip that would block Home content. The Mini Player owns hit-testing
     /// inside (frame ∪ this margin); Home owns everything outside it.
     private let miniPlayerHitMargin: CGFloat = 6
+    private var isImportFileDragActive = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes([.fileURL, .URL])
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        registerForDraggedTypes([.fileURL, .URL])
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let layoutState = HomeWindowLayoutState.shared
@@ -784,6 +833,92 @@ final class HomeRoutingRootView: NSView {
         }
 
         return appkitRect.insetBy(dx: -miniPlayerHitMargin, dy: -miniPlayerHitMargin).contains(point)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        importDragOperation(for: sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        importDragOperation(for: sender)
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        setImportFileDragActive(false)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        setImportFileDragActive(false)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        !importableFileURLs(from: sender.draggingPasteboard).isEmpty
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = importableFileURLs(from: sender.draggingPasteboard)
+        guard !urls.isEmpty else {
+            setImportFileDragActive(false)
+            return false
+        }
+        setImportFileDragActive(false)
+        onImportFileDrop?(urls)
+        return true
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        setImportFileDragActive(false)
+    }
+
+    private func importDragOperation(for sender: NSDraggingInfo) -> NSDragOperation {
+        let acceptsDrop = !importableFileURLs(from: sender.draggingPasteboard).isEmpty
+        setImportFileDragActive(acceptsDrop)
+        return acceptsDrop ? .copy : []
+    }
+
+    private func setImportFileDragActive(_ isActive: Bool) {
+        guard isImportFileDragActive != isActive else { return }
+        isImportFileDragActive = isActive
+        onImportFileDragStateChange?(isActive)
+    }
+
+    private func importableFileURLs(from pasteboard: NSPasteboard) -> [URL] {
+        fileURLs(from: pasteboard).filter(Self.isPotentialImportURL)
+    }
+
+    private func fileURLs(from pasteboard: NSPasteboard) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true
+        ]
+        let objects = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: options
+        ) ?? []
+        var seenPaths = Set<String>()
+        return objects.compactMap { object in
+            let url: URL?
+            if let swiftURL = object as? URL {
+                url = swiftURL
+            } else if let nsURL = object as? NSURL {
+                url = nsURL as URL
+            } else {
+                url = nil
+            }
+
+            guard let fileURL = url?.standardizedFileURL, fileURL.isFileURL else {
+                return nil
+            }
+            return seenPaths.insert(fileURL.path).inserted ? fileURL : nil
+        }
+    }
+
+    private static func isPotentialImportURL(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+           isDirectory.boolValue {
+            return true
+        }
+        return AudioFormatSupport.isImportable(url)
     }
 }
 

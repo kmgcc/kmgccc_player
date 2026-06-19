@@ -63,6 +63,12 @@ enum AppDialogTokens {
     static let confirmHeaderVerticalPadding: CGFloat = 24
     static let confirmHeaderSpacing: CGFloat = 12
     static let confirmTitleBodySpacing: CGFloat = 4
+
+    // MARK: Drag import overlay
+    static let dropImportCardWidth: CGFloat = 268
+    static let dropImportCardHeight: CGFloat = 184
+    static let dropImportIconSize: CGFloat = 58
+    static let dropImportSpacing: CGFloat = 14
 }
 
 // MARK: - NSPanel Factory
@@ -189,6 +195,62 @@ struct AppDialogConfirmHeader: View {
         .padding(.vertical, AppDialogTokens.confirmHeaderVerticalPadding)
         .frame(maxWidth: .infinity)
         .background(.thinMaterial)
+    }
+}
+
+// MARK: - Drag Import Overlay
+// Reuses the dialog chrome language for in-window file-drop affordances.
+
+struct AppDialogDropImportOverlay: View {
+    let isVisible: Bool
+
+    @StateObject private var themeStore = ThemeStore.shared
+
+    var body: some View {
+        ZStack {
+            Color.clear
+
+            if isVisible {
+                VStack(spacing: AppDialogTokens.dropImportSpacing) {
+                    Image(systemName: "tray.and.arrow.down.fill")
+                        .font(.system(size: AppDialogTokens.dropImportIconSize, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(themeStore.accentColor)
+
+                    Text("释放以导入")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.primary)
+                }
+                .frame(
+                    width: AppDialogTokens.dropImportCardWidth,
+                    height: AppDialogTokens.dropImportCardHeight
+                )
+                .background(
+                    .regularMaterial,
+                    in: RoundedRectangle(
+                        cornerRadius: AppDialogTokens.windowCornerRadius,
+                        style: .continuous
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(
+                        cornerRadius: AppDialogTokens.windowCornerRadius,
+                        style: .continuous
+                    )
+                    .strokeBorder(GlassStyleTokens.glassBorderColor, lineWidth: 0.75)
+                )
+                .shadow(
+                    color: GlassStyleTokens.subtleShadowColor,
+                    radius: GlassStyleTokens.subtleShadowRadius,
+                    x: 0,
+                    y: 10
+                )
+                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .allowsHitTesting(false)
+        .animation(.easeOut(duration: 0.16), value: isVisible)
     }
 }
 
