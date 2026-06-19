@@ -252,7 +252,7 @@ struct FullscreenSkinTabView: View {
                 step: 0.05
             )
             .frame(height: presentationStyle.tabHeight)
-            Text("调整全屏模式下歌曲封面的显示大小")
+            Text("调整歌曲封面的显示大小")
                 .settingsDescriptionStyle()
         }
     }
@@ -274,7 +274,7 @@ struct FullscreenSkinTabView: View {
                 step: 0.05
             )
             .frame(height: presentationStyle.tabHeight)
-            Text("调整全屏模式下背景压暗程度，提高可读性")
+            Text("调整背景压暗程度，提高可读性")
                 .settingsDescriptionStyle()
         }
     }

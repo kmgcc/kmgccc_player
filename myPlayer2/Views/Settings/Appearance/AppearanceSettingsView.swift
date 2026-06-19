@@ -60,19 +60,18 @@ struct AppearanceSettingsView: View {
                     SettingsSwitchRow(
                         title: "全局取色",
                         isOn: $globalArtworkTintEnabled,
-                        detail: "开启后重点色跟随当前歌曲封面，关闭后使用默认主题色。"
+                        detail: "重点色跟随当前歌曲封面变化"
                     )
 
                     SettingsSwitchRow(
-                        title: "Dock 播放进度",
+                        title: "托盘播放进度",
                         isOn: $dockProgressVisible,
-                        detail: "开启后 Dock 图标底部显示当前歌曲进度"
+                        detail: "在 Dock 中的 app 图标底部显示当前歌曲进度"
                     )
 
                     SettingsSwitchRow(
                         title: "深色/浅色跟随系统",
                         isOn: $followSystemAppearance,
-                        detail: "开启后跟随系统深浅色，关闭后可用侧边栏按钮手动切换深/浅。"
                     )
 
                     Divider()

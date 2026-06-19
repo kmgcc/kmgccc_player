@@ -2772,9 +2772,13 @@ final class FileImportService: FileImportServiceProtocol {
 
     /// Import selected files/folders into a specific playlist.
     @discardableResult
-    func importSelectedURLs(_ selectedURLs: [URL], to playlist: Playlist) async -> Int {
+    func importSelectedURLs(
+        _ selectedURLs: [URL],
+        to playlist: Playlist,
+        metadataOverride: ImportMetadataOverride? = nil
+    ) async -> Int {
         Log.debug(
-            "importSelectedURLs called for playlist: '\(playlist.name)' (id=\(playlist.id)) count=\(selectedURLs.count)",
+            "importSelectedURLs called for playlist: '\(playlist.name)' (id=\(playlist.id)) count=\(selectedURLs.count) override=\(String(describing: metadataOverride))",
             category: .import
         )
 
@@ -2992,6 +2996,7 @@ final class FileImportService: FileImportServiceProtocol {
         let preparedCandidates = await prepareImportCandidates(
             files: resolvedFiles,
             existingMatches: existingSnapshots,
+            metadataOverride: metadataOverride,
             progressController: progressController,
             cancellationToken: cancellationToken
         )
@@ -3672,6 +3677,7 @@ final class FileImportService: FileImportServiceProtocol {
     private func prepareImportCandidates(
         files: [ResolvedImportFile],
         existingMatches: [String: ExistingTrackMatchSnapshot],
+        metadataOverride: ImportMetadataOverride?,
         progressController: BatchImportProgressDialogController,
         cancellationToken: ImportCancellationToken
     ) async -> (unique: [ImportCandidate], duplicates: [DuplicatePairRow]) {
@@ -3704,6 +3710,7 @@ final class FileImportService: FileImportServiceProtocol {
                         index: index,
                         file: file,
                         existingMatches: existingMatches,
+                        metadataOverride: metadataOverride,
                         cancellationToken: cancellationToken
                     )
                 }
@@ -3753,6 +3760,7 @@ final class FileImportService: FileImportServiceProtocol {
                             index: index,
                             file: file,
                             existingMatches: existingMatches,
+                            metadataOverride: metadataOverride,
                             cancellationToken: cancellationToken
                         )
                     }
@@ -3778,6 +3786,7 @@ final class FileImportService: FileImportServiceProtocol {
         index: Int,
         file: ResolvedImportFile,
         existingMatches: [String: ExistingTrackMatchSnapshot],
+        metadataOverride: ImportMetadataOverride?,
         cancellationToken: ImportCancellationToken
     ) async -> CandidatePreparationResult {
         if (try? await cancellationToken.checkCancellation()) == nil {
@@ -3852,15 +3861,16 @@ final class FileImportService: FileImportServiceProtocol {
             )
         }
 
+        let effectivePreview = applyingMetadataOverride(metadataOverride, to: preview)
         let candidate = ImportCandidate(
             progressID: file.progressID,
             displayName: file.displayName,
             fileURL: file.fileURL,
-            metadata: preview
+            metadata: effectivePreview
         )
         let dedupKey = LibraryNormalization.normalizedDedupKey(
-            title: preview.title,
-            artist: preview.artist
+            title: effectivePreview.title,
+            artist: effectivePreview.artist
         )
 
         guard let existingMatch = existingMatches[dedupKey], existingMatch.count > 0 else {
@@ -3870,7 +3880,7 @@ final class FileImportService: FileImportServiceProtocol {
         let duplicateRow = DuplicatePairRow(
             id: file.progressID,
             fileURL: file.fileURL,
-            incoming: preview,
+            incoming: effectivePreview,
             existing: existingMatch.preview,
             existingCount: existingMatch.count,
             dedupKey: dedupKey
@@ -3879,6 +3889,41 @@ final class FileImportService: FileImportServiceProtocol {
             index: index,
             candidate: candidate,
             duplicateRow: duplicateRow
+        )
+    }
+
+    nonisolated private static func applyingMetadataOverride(
+        _ metadataOverride: ImportMetadataOverride?,
+        to preview: ImportPreview
+    ) -> ImportPreview {
+        guard let metadataOverride, !metadataOverride.isEmpty else { return preview }
+
+        let artistOverride = metadataOverride.artist?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let albumOverride = metadataOverride.album?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveArtist: String
+        let effectiveAlbumArtist: String?
+        if let artistOverride, !artistOverride.isEmpty {
+            effectiveArtist = artistOverride
+            effectiveAlbumArtist = artistOverride
+        } else {
+            effectiveArtist = preview.artist
+            effectiveAlbumArtist = preview.albumArtist
+        }
+        let effectiveAlbum: String
+        if let albumOverride, !albumOverride.isEmpty {
+            effectiveAlbum = albumOverride
+        } else {
+            effectiveAlbum = preview.album
+        }
+
+        return ImportPreview(
+            title: preview.title,
+            artist: effectiveArtist,
+            album: effectiveAlbum,
+            albumArtist: effectiveAlbumArtist,
+            duration: preview.duration,
+            lyrics: preview.lyrics,
+            artworkData: preview.artworkData
         )
     }
 

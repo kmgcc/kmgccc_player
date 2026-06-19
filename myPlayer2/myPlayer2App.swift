@@ -138,7 +138,8 @@ struct KmgcccPlayerApp: App {
                 Button(NSLocalizedString("menu.import_music", comment: "Import Music")) {
                     Task { @MainActor in
                         await appSession.setupIfNeeded()
-                        await appSession.libraryVM?.importToCurrentPlaylist()
+                        let contentMode = appSession.uiState.contentMode
+                        await appSession.libraryVM?.importToCurrentContext(contentMode: contentMode)
                     }
                 }
                 .keyboardShortcut("o", modifiers: .command)

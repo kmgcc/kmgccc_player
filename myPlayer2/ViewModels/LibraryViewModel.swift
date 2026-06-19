@@ -954,11 +954,18 @@ final class LibraryViewModel {
 
     // MARK: - Import (Per-Playlist)
 
-    /// Import music files to the currently selected playlist.
-    /// If no playlist is selected, imports to the most recently selected playlist (if any),
-    /// otherwise the first available playlist. Only creates a playlist if none exist.
-    func importToCurrentPlaylist() async {
+    /// Import music files using the currently visible page as context.
+    /// Playlist pages import to that playlist. Artist/album pages override the
+    /// corresponding metadata and otherwise use the first displayed playlist.
+    /// Other pages import to the first displayed playlist.
+    private struct ResolvedImportTarget {
+        let playlist: Playlist
+        let metadataOverride: ImportMetadataOverride?
+    }
+
+    func importToCurrentContext(contentMode: ContentMode) async {
         let clickTimestamp = Date()
+        let selection = importSelection(for: contentMode)
 
         guard let service = importService else {
             Log.warning("Import service not available", category: .import)
@@ -969,44 +976,111 @@ final class LibraryViewModel {
             return
         }
 
-        // Resolve target playlist
-        let targetPlaylist: Playlist
-        if let selected = selectedPlaylist {
-            targetPlaylist = selected
-        } else {
-            if playlists.isEmpty {
-                targetPlaylist = await repository.createPlaylist(
-                    name: String(
-                        format: NSLocalizedString("library.imported_playlist_name", comment: ""),
-                        formattedDate))
-                playlists = await repository.fetchPlaylists()
-                selectedPlaylistId = targetPlaylist.id
-            } else if let lastId = UserDefaults.standard.string(forKey: "lastSelectedPlaylistId"),
-                let uuid = UUID(uuidString: lastId),
-                let last = playlists.first(where: { $0.id == uuid })
-            {
-                targetPlaylist = last
-                selectedPlaylistId = last.id
-            } else {
-                let fallback = sortedPlaylistsForDisplay().first ?? playlists[0]
-                targetPlaylist = fallback
-                selectedPlaylistId = fallback.id
-            }
+        await importURLs(selectedURLs, using: selection)
+    }
+
+    func importDroppedURLsToCurrentContext(_ urls: [URL], contentMode: ContentMode) async {
+        await importURLs(urls, using: importSelection(for: contentMode))
+    }
+
+    func importToCurrentPlaylist() async {
+        await importToCurrentContext(contentMode: .library)
+    }
+
+    private func importURLs(_ selectedURLs: [URL], using selection: LibrarySelection) async {
+        guard !selectedURLs.isEmpty else { return }
+        guard let service = importService else {
+            Log.warning("Import service not available", category: .import)
+            return
         }
 
-        let previousTrackCount = targetPlaylist.trackCount
-
-        // Perform import
-        let count = await service.importSelectedURLs(selectedURLs, to: targetPlaylist)
+        let target = await resolvedImportTarget(for: selection)
+        let previousTrackCount = target.playlist.trackCount
+        let count = await service.importSelectedURLs(
+            selectedURLs,
+            to: target.playlist,
+            metadataOverride: target.metadataOverride
+        )
 
         // Only refresh if tracks were actually imported
         if count > 0 {
             await syncVisibleStateFromRepositoryAfterImport()
             await refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
-                playlistID: targetPlaylist.id,
+                playlistID: target.playlist.id,
                 previousTrackCount: previousTrackCount
             )
         }
+    }
+
+    private func importSelection(for contentMode: ContentMode) -> LibrarySelection {
+        contentMode == .library ? currentSelection : .home
+    }
+
+    private func resolvedImportTarget(for selection: LibrarySelection) async -> ResolvedImportTarget {
+        let targetPlaylist: Playlist
+        if case .playlist(let id) = selection,
+           let selected = playlists.first(where: { $0.id == id }) {
+            targetPlaylist = selected
+        } else {
+            targetPlaylist = await firstPlaylistForContextImport()
+        }
+
+        return ResolvedImportTarget(
+            playlist: targetPlaylist,
+            metadataOverride: metadataOverride(for: selection)
+        )
+    }
+
+    private func firstPlaylistForContextImport() async -> Playlist {
+        if let first = sortedPlaylistsForDisplay().first {
+            return first
+        }
+
+        let playlist = await repository.createPlaylist(
+            name: String(
+                format: NSLocalizedString("library.imported_playlist_name", comment: ""),
+                formattedDate
+            )
+        )
+        playlists = await repository.fetchPlaylists()
+        refreshTrigger += 1
+        return playlists.first(where: { $0.id == playlist.id }) ?? playlist
+    }
+
+    private func metadataOverride(for selection: LibrarySelection) -> ImportMetadataOverride? {
+        switch selection {
+        case .artist(let key):
+            guard let artist = artistDisplayName(for: key) else { return nil }
+            return ImportMetadataOverride(artist: artist, album: nil)
+        case .album(let key):
+            guard let album = albumDisplayName(for: key) else { return nil }
+            return ImportMetadataOverride(artist: nil, album: album)
+        default:
+            return nil
+        }
+    }
+
+    private func artistDisplayName(for key: String) -> String? {
+        trimmedNonEmpty(
+            artistEntries.first { $0.canonicalName == key }?.displayName
+                ?? runtimeArtists.first { $0.key == key }?.name
+                ?? LibraryNormalization.displayArtist(key)
+        )
+    }
+
+    private func albumDisplayName(for key: String) -> String? {
+        let selectedName = selectedAlbumKey == key ? selectedAlbumName : nil
+        return trimmedNonEmpty(
+            selectedName
+                ?? albumEntries.first { $0.canonicalKey == key }?.displayTitle
+                ?? runtimeAlbums.first { $0.key == key }?.name
+                ?? LibraryNormalization.displayAlbum(key)
+        )
+    }
+
+    private func trimmedNonEmpty(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     /// Import to a specific playlist.

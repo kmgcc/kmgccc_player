@@ -37,7 +37,7 @@ struct DataManagementSettingsView: View {
                             get: { settings.deferImportEnrichment },
                             set: { settings.deferImportEnrichment = $0 }
                         ),
-                        detail: "开启后导入会先完成文件复制，再在后台补全歌词和封面，以提高导入速度"
+                        detail: "导入时先完成文件复制，在后台补全歌词和封面"
                     )
                 }
             }
@@ -53,7 +53,7 @@ struct DataManagementSettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .clipShape(Capsule())
 
-                    Text("自动联网补全本地曲库中缺失的歌曲信息、封面和歌词，已有内容会保留")
+                    Text("自动联网补全本地曲库中缺失的歌曲信息、封面和歌词")
                         .settingsDescriptionStyle()
                 }
             }
@@ -67,7 +67,7 @@ struct DataManagementSettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .clipShape(Capsule())
 
-                    Text("清除 UserDefaults 中的应用偏好、窗口与播放状态，不会删除音乐资料库文件")
+                    Text("清除 app 设置项，恢复默认值")
                         .settingsDescriptionStyle()
                 }
             }
@@ -167,7 +167,7 @@ struct DataManagementSettingsView: View {
                 .buttonStyle(.bordered)
                 .clipShape(Capsule())
 
-                Text("重新建立音乐资料库的索引，供 app 内显示使用，不会影响资料库歌曲文件")
+                Text("重新建立音乐资料库的索引，供 app 内显示使用")
                     .settingsDescriptionStyle()
             }
 
