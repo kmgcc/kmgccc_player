@@ -895,7 +895,15 @@ private final class BKArtBackgroundLayerView: NSView {
         extractedPaletteForSwatches = converted
         currentAnalysis = analysis
         let colorSignature = Self.paletteSignature(for: converted.map(\.cgColor))
-        let signature = "\(colorSignature)|dark:\(isDark ? 1 : 0)"
+        let nearFlag = analysis?.isNearMonochrome == true ? 1 : 0
+        let trustedFlag = analysis?.hasTrustedHueCandidate == true ? 1 : 0
+        let ultraFlag = analysis?.isUltraDark == true ? 1 : 0
+        let displaySignature = analysis.map {
+            Self.paletteSignature(for: $0.displayPalette.map(\.cgColor))
+        } ?? "nil"
+        let analysisSignature =
+            "near:\(nearFlag)|trusted:\(trustedFlag)|ultra:\(ultraFlag)|display:\(displaySignature)"
+        let signature = "\(colorSignature)|dark:\(isDark ? 1 : 0)|\(analysisSignature)"
         guard signature != paletteSignature else { return }
 
         harmonized = BKColorEngine.make(
@@ -1355,6 +1363,14 @@ private final class BKArtBackgroundLayerView: NSView {
             return color
         }
 
+        if harmonized.usesStrictNeutralRendering {
+            guard var lch = OKColor.nsColorToOKLCH(nsColor) else { return color }
+            lch.l = min(max(lch.l, 0.50), 0.78)
+            lch.c = 0
+            lch.h = 0
+            return OKColor.okLCHToNSColor(lch, alpha: nsColor.alphaComponent).cgColor
+        }
+
         var h: CGFloat = 0
         var s: CGFloat = 0
         var b: CGFloat = 0
@@ -1364,8 +1380,12 @@ private final class BKArtBackgroundLayerView: NSView {
         let minS: CGFloat
         let maxS: CGFloat
         if harmonized.isGrayscaleCover {
-            minS = 0.12
-            maxS = 0.24
+            minS = 0.0
+            maxS = 0.0
+        } else if harmonized.chromaticClusterCount <= 1 {
+            let vividSingleHue = harmonized.coverAvgS >= 0.30
+            minS = vividSingleHue ? 0.20 : 0.12
+            maxS = vividSingleHue ? 0.42 : 0.30
         } else if harmonized.isNearGray || harmonized.complexity == .low {
             minS = 0.22
             maxS = 0.38
@@ -2123,7 +2143,17 @@ private final class BKArtBackgroundLayerView: NSView {
             if let nsColor = NSColor(cgColor: finalColor),
                var lch = OKColor.nsColorToOKLCH(nsColor) {
                 let targetAlpha: CGFloat
-                if harmonized.isDark {
+                if harmonized.usesStrictNeutralRendering {
+                    if harmonized.isDark {
+                        lch.l = min(max(lch.l * 0.88, 0.22), 0.48)
+                        targetAlpha = 0.78
+                    } else {
+                        lch.l = min(max(lch.l, 0.58), 0.70)
+                        targetAlpha = 0.86
+                    }
+                    lch.c = 0
+                    lch.h = 0
+                } else if harmonized.isDark {
                     lch.l = lch.l * 0.50
                     lch.c = lch.c * 0.70
                     targetAlpha = 0.80
@@ -3657,6 +3687,9 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func dotJitterBudget() -> JitterBudget {
+        if harmonized.usesStrictNeutralRendering {
+            return JitterBudget(hue: 0...0, saturation: 0...0, brightness: -0.025...0.025)
+        }
         if harmonized.isGrayscaleCover {
             return JitterBudget(hue: -6...6, saturation: -0.02...0.02, brightness: -0.02...0.02)
         }

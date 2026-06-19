@@ -114,6 +114,10 @@ nonisolated enum ColorSystemSelfCheck {
         checkFaithfulTrueGreyCoverStaysAchromatic(&report)
         checkFaithfulBlackTealCoverAvoidsPink(&report)
         checkFaithfulWarmCoverLEDStaysWarm(&report)
+        checkFaithfulGreyBKShapeSwatchesStayNeutralLayered(&report)
+        checkFaithfulBlackYellowBKShapeSwatchesKeepYellow(&report)
+        checkFaithfulSingleRedBKShapeSwatchesStayLowRichness(&report)
+        checkFaithfulMutedWarmBKBackgroundKeepsTint(&report)
 
         report.section("Phase 3 hotfix — consumer projection")
         checkSpectrumNearMonoNeutralised(&report)
@@ -2180,6 +2184,163 @@ nonisolated enum ColorSystemSelfCheck {
         )
     }
 
+    private static func checkFaithfulGreyBKShapeSwatchesStayNeutralLayered(
+        _ report: inout CheckReport
+    ) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.54, (5, 5, 5, 255)),
+            (0.30, (232, 232, 232, 255)),
+            (0.16, (92, 92, 92, 255))
+        ]) else {
+            report.record("Faithful BK: grey shape swatches stay neutral layered", false, "analysis nil")
+            return
+        }
+        let pseudoColors = [
+            NSColor(deviceRed: 0.95, green: 0.10, blue: 0.12, alpha: 1),
+            NSColor(deviceRed: 0.10, green: 0.75, blue: 0.18, alpha: 1),
+            NSColor(deviceRed: 0.12, green: 0.20, blue: 0.95, alpha: 1),
+        ]
+        let swatches = BKColorEngine.makeShapeSwatches(
+            seed: 0x669A_3609,
+            extracted: pseudoColors,
+            fallback: pseudoColors,
+            isDark: false,
+            analysis: analysis
+        )
+        let palette = BKColorEngine.make(
+            extracted: pseudoColors,
+            fallback: pseudoColors,
+            isDark: false,
+            analysis: analysis
+        )
+        let stabilized = swatches.colors.map {
+            BKColorEngine.stabilize(
+                color: $0,
+                kind: .shape,
+                palette: palette,
+                saturationJitter: 0.03,
+                brightnessJitter: 0.02
+            )
+        }
+        let lchs = stabilized.compactMap(cgColorToOKLCH(_:))
+        let maxC = lchs.map(\.c).max() ?? .infinity
+        let lValues = lchs.map(\.l)
+        let lSpread = (lValues.max() ?? 0) - (lValues.min() ?? 0)
+        let bgMaxC = (palette.bgStops + palette.bgVariants.flatMap { $0 } + [palette.dotBase])
+            .compactMap { cgColorToOKLCH($0)?.c }
+            .max() ?? .infinity
+        let ok = analysis.lacksTrustedHue
+            && palette.usesStrictNeutralRendering
+            && swatches.diagnostics.chromaticClusterCount == 0
+            && maxC <= 0.008
+            && bgMaxC <= 0.010
+            && lSpread >= 0.12
+        report.record(
+            "Faithful BK: grey shape swatches stay neutral layered",
+            ok,
+            "trusted=\(analysis.hasTrustedHueCandidate) strict=\(palette.usesStrictNeutralRendering) swatches=\(swatches.diagnostics.swatchCount) maxC=\(format(maxC)) bgMaxC=\(format(bgMaxC)) lSpread=\(format(lSpread))"
+        )
+    }
+
+    private static func checkFaithfulBlackYellowBKShapeSwatchesKeepYellow(
+        _ report: inout CheckReport
+    ) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.95, (0, 0, 0, 255)),
+            (0.05, (255, 235, 0, 255))
+        ]) else {
+            report.record("Faithful BK: black yellow shape swatches keep yellow", false, "analysis nil")
+            return
+        }
+        let swatches = BKColorEngine.makeShapeSwatches(
+            seed: 0x8657_39F0,
+            extracted: analysis.displayPalette,
+            fallback: [analysis.averageColor],
+            isDark: false,
+            analysis: analysis
+        )
+        let lchs = swatches.colors.compactMap(cgColorToOKLCH(_:))
+        let maxC = lchs.map(\.c).max() ?? 0
+        let hasYellow = lchs.contains { $0.h >= 0.16 && $0.h <= 0.32 && $0.c >= 0.055 }
+        let ok = analysis.hasTrustedHueCandidate
+            && !analysis.isNearMonochrome
+            && swatches.diagnostics.chromaticClusterCount == 1
+            && swatches.diagnostics.swatchCount <= 3
+            && hasYellow
+        report.record(
+            "Faithful BK: black yellow shape swatches keep yellow",
+            ok,
+            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) clusters=\(swatches.diagnostics.chromaticClusterCount) count=\(swatches.diagnostics.swatchCount) maxC=\(format(maxC))"
+        )
+    }
+
+    private static func checkFaithfulSingleRedBKShapeSwatchesStayLowRichness(
+        _ report: inout CheckReport
+    ) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.66, (218, 78, 72, 255)),
+            (0.18, (10, 10, 10, 255)),
+            (0.16, (246, 238, 232, 255))
+        ]) else {
+            report.record("Faithful BK: single red shape swatches stay low richness", false, "analysis nil")
+            return
+        }
+        let swatches = BKColorEngine.makeShapeSwatches(
+            seed: 0x939A_3984,
+            extracted: analysis.displayPalette,
+            fallback: [analysis.averageColor],
+            isDark: false,
+            analysis: analysis
+        )
+        let hues = swatches.colors.compactMap(cgColorHue(_:))
+        let distinct = countDistinctHues(hues, gap: 0.08)
+        let maxC = swatches.colors.compactMap { cgColorToOKLCH($0)?.c }.max() ?? 0
+        let ok = analysis.hasTrustedHueCandidate
+            && swatches.diagnostics.chromaticClusterCount == 1
+            && swatches.diagnostics.swatchCount <= 3
+            && distinct == 1
+            && maxC >= 0.045
+        report.record(
+            "Faithful BK: single red shape swatches stay low richness",
+            ok,
+            "clusters=\(swatches.diagnostics.chromaticClusterCount) count=\(swatches.diagnostics.swatchCount) distinct=\(distinct) maxC=\(format(maxC))"
+        )
+    }
+
+    private static func checkFaithfulMutedWarmBKBackgroundKeepsTint(
+        _ report: inout CheckReport
+    ) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.62, (190, 181, 156, 255)),
+            (0.24, (22, 22, 20, 255)),
+            (0.14, (126, 118, 96, 255))
+        ]) else {
+            report.record("Faithful BK: muted warm background keeps tint", false, "analysis nil")
+            return
+        }
+        let palette = BKColorEngine.make(
+            extracted: analysis.displayPalette,
+            fallback: [analysis.averageColor],
+            isDark: false,
+            analysis: analysis
+        )
+        let bgS = palette.bgStops.compactMap(cgColorSaturation(_:))
+        let avgBgS = bgS.isEmpty ? 0 : bgS.reduce(0, +) / CGFloat(bgS.count)
+        let bgC = (palette.bgStops + palette.bgVariants.flatMap { $0 })
+            .compactMap { cgColorToOKLCH($0)?.c }
+        let maxBgC = bgC.max() ?? 0
+        let ok = analysis.hasTrustedHueCandidate
+            && !analysis.lacksTrustedHue
+            && !palette.usesStrictNeutralRendering
+            && avgBgS >= 0.075
+            && maxBgC >= 0.010
+        report.record(
+            "Faithful BK: muted warm background keeps tint",
+            ok,
+            "trusted=\(analysis.hasTrustedHueCandidate) strict=\(palette.usesStrictNeutralRendering) avgBgS=\(format(avgBgS)) maxBgC=\(format(maxBgC)) colorfulness=\(format(analysis.colorfulness))"
+        )
+    }
+
     // MARK: - Phase 6.3 scenarios
 
     /// Phase 6.3 token-coupled tier-range fixture mirroring
@@ -3051,6 +3212,24 @@ nonisolated enum ColorSystemSelfCheck {
             return nil
         }
         return OKColor.nsColorToOKLCH(ns)
+    }
+
+    private static func cgColorHue(_ color: CGColor) -> CGFloat? {
+        guard let ns = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) else {
+            return nil
+        }
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        ns.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        return h
+    }
+
+    private static func cgColorSaturation(_ color: CGColor) -> CGFloat? {
+        guard let ns = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) else {
+            return nil
+        }
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        ns.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        return s
     }
 
     private static func worstChroma(in colors: [(NSColor, String)]) -> (String, CGFloat) {
