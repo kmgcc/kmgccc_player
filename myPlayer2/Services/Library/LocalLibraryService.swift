@@ -1521,6 +1521,11 @@ final class LocalLibraryService {
             let data = try encoder.encode(updated)
             let url = LocalLibraryPaths.playlistURL(for: playlistID)
             try data.write(to: url, options: .atomic)
+            NotificationCenter.default.post(
+                name: .playlistArtworkDidChange,
+                object: nil,
+                userInfo: ["playlistID": playlistID]
+            )
             return true
         } catch {
             Log.error("Failed to update playlist artwork metadata: \(error)", category: .library)

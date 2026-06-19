@@ -352,10 +352,7 @@ struct TrackRowView<MenuContent: View>: View {
     }
 
     private static var isShiftPressed: Bool {
-        if let currentEvent = NSApp.currentEvent {
-            return currentEvent.modifierFlags.contains(.shift)
-        }
-        return NSEvent.modifierFlags.contains(.shift)
+        LibraryRowInput.isShiftPressed
     }
 
     @ViewBuilder

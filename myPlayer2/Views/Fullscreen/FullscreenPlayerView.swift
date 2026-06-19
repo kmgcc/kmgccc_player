@@ -232,6 +232,7 @@ struct FullscreenPlayerView: View {
     @State private var autoHideFullscreenLyricsTrackID: UUID?
     @State private var fullscreenLyricsLastEndTime: TimeInterval?
     @State private var fullscreenLyricsEndingAutoHideSuppressedTrackID: UUID?
+    @State private var fullscreenLyricsRestoreInitialZeroTrackID: UUID?
     @State private var suppressFullscreenLyricsViewport = false
     @State private var fullscreenLyricsHostMounted = false
     @State private var isLeftActionsExpanded = false
@@ -564,6 +565,7 @@ struct FullscreenPlayerView: View {
         autoHideFullscreenLyricsTrackID = nil
         fullscreenLyricsLastEndTime = nil
         fullscreenLyricsEndingAutoHideSuppressedTrackID = nil
+        fullscreenLyricsRestoreInitialZeroTrackID = nil
         embeddedInitialThemeUnlocked = false
         isQuickAppearancePanelPresented = false
         isFullscreenBottomControlsAppearancePanelHovered = false
@@ -2244,10 +2246,19 @@ struct FullscreenPlayerView: View {
 
     private func revealFullscreenExistingLyrics(reason: String) {
         let targetStore = fullscreenStore
-        let currentTime = playbackCoordinator.presentation.lyricsCurrentTime
+        let currentTime = fullscreenLyricsRevealCurrentTime()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
             targetStore.revealExistingLyrics(reason: reason, currentTime: currentTime)
         }
+    }
+
+    private func fullscreenLyricsRevealCurrentTime() -> TimeInterval {
+        if let trackID = currentDisplayContext.trackID,
+           fullscreenLyricsRestoreInitialZeroTrackID == trackID
+        {
+            return 0
+        }
+        return playbackCoordinator.presentation.lyricsCurrentTime
     }
 
     private func isLedEnabledForFullscreenSkin() -> Bool {
@@ -2291,6 +2302,7 @@ struct FullscreenPlayerView: View {
         if !isAutomatic {
             autoHiddenFullscreenLyricsAfterEndingCanRestore = false
             fullscreenLyricsEndingAutoHideSuppressedTrackID = currentDisplayContext.trackID
+            fullscreenLyricsRestoreInitialZeroTrackID = nil
         }
 
         let nextState: RightPanelDisplayState
@@ -2338,7 +2350,8 @@ struct FullscreenPlayerView: View {
             }
             resetFullscreenLyricsEndingAutoHide(
                 restoreIfNeeded: true,
-                nextTrackHasDisplayableLyrics: payload.hasDisplayableLyrics
+                nextTrackHasDisplayableLyrics: payload.hasDisplayableLyrics,
+                nextTrackID: payload.trackID
             )
             autoHideFullscreenLyricsTrackID = payload.trackID
         }
@@ -2388,6 +2401,7 @@ struct FullscreenPlayerView: View {
     private func resetFullscreenLyricsEndingAutoHide(
         restoreIfNeeded: Bool,
         nextTrackHasDisplayableLyrics: Bool = false,
+        nextTrackID: UUID? = nil,
         preserveRestoreEligibility: Bool = false
     ) {
         if restoreIfNeeded,
@@ -2397,6 +2411,7 @@ struct FullscreenPlayerView: View {
            currentDisplayContext.hasTrack
         {
             if nextTrackHasDisplayableLyrics {
+                fullscreenLyricsRestoreInitialZeroTrackID = nextTrackID
                 handleLyricsButtonTap(isAutomatic: true)
             } else {
                 autoHiddenFullscreenLyricsForEmptyContent = true
@@ -2410,6 +2425,26 @@ struct FullscreenPlayerView: View {
         autoHiddenFullscreenLyricsAfterEndingCanRestore = false
         fullscreenLyricsLastEndTime = nil
         fullscreenLyricsEndingAutoHideSuppressedTrackID = nil
+    }
+
+    private func shouldStartFullscreenLyricsAtZero(for payload: FullscreenPlaybackPayload) -> Bool {
+        guard payload.hasDisplayableLyrics,
+              let trackID = payload.trackID,
+              fullscreenLyricsRestoreInitialZeroTrackID == trackID
+        else { return false }
+        return payload.currentTime > 0.5
+    }
+
+    private func clearFullscreenLyricsInitialZeroIfPlaybackReachedStart(
+        trackID: UUID?,
+        currentTime: TimeInterval
+    ) {
+        guard let trackID,
+              fullscreenLyricsRestoreInitialZeroTrackID == trackID,
+              currentTime.isFinite,
+              currentTime <= 0.5
+        else { return }
+        fullscreenLyricsRestoreInitialZeroTrackID = nil
     }
 
     private func shouldPreserveFullscreenLyricsEndingAutoHideRestore() -> Bool {
@@ -2508,6 +2543,10 @@ struct FullscreenPlayerView: View {
             duration: playerVM.duration,
             isPlaying: playerVM.isPlaying
         )
+        clearFullscreenLyricsInitialZeroIfPlaybackReachedStart(
+            trackID: playerVM.currentTrack?.id,
+            currentTime: lyricsTime
+        )
         guard allowsDirectEmbeddedSurfaceUpdates else { return }
         fullscreenStore.setCurrentTime(lyricsTime)
         if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
@@ -2543,6 +2582,10 @@ struct FullscreenPlayerView: View {
             currentTime: lyricsTime,
             duration: playbackCoordinator.presentation.duration,
             isPlaying: playbackCoordinator.presentation.isPlaying
+        )
+        clearFullscreenLyricsInitialZeroIfPlaybackReachedStart(
+            trackID: playbackCoordinator.presentation.displayTrackID,
+            currentTime: lyricsTime
         )
         guard allowsDirectEmbeddedSurfaceUpdates else { return }
         fullscreenStore.setCurrentTime(lyricsTime)
@@ -2617,7 +2660,7 @@ struct FullscreenPlayerView: View {
     ) {
         syncCoverBlurHighlightActivation()
 
-        let playbackPayload = updateFullscreenPlaybackSnapshot(
+        var playbackPayload = updateFullscreenPlaybackSnapshot(
             preferredLocalTrack: preferredLocalTrack,
             forceLocalLyricsReload: forceLyricsReload || forceLocalLyricsReload
         )
@@ -2629,6 +2672,20 @@ struct FullscreenPlayerView: View {
         }
         syncFullscreenLyricsAvailability(with: playbackPayload)
         syncFullscreenLyricsAutoHideTiming(with: playbackPayload)
+        if shouldStartFullscreenLyricsAtZero(for: playbackPayload) {
+            playbackPayload = FullscreenPlaybackPayload(
+                trackID: playbackPayload.trackID,
+                ttml: playbackPayload.ttml,
+                currentTime: 0,
+                isPlaying: playbackPayload.isPlaying
+            )
+            LyricsSurfaceManager.shared.updatePlaybackSnapshot(
+                trackID: playbackPayload.trackID,
+                lyricsTTML: playbackPayload.ttml ?? "",
+                currentTime: playbackPayload.currentTime,
+                isPlaying: playbackPayload.isPlaying
+            )
+        }
         if hostContext == .embeddedWindow && !embeddedInitialThemeUnlocked {
             Log.info(
                 "[FullscreenLyricsReload] skipped embedded startup gate reason=\(reason), trackID=\(playbackPayload.trackID?.uuidString.prefix(8) ?? "nil")",

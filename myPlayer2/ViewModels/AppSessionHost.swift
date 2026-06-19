@@ -663,6 +663,9 @@ final class AppSessionHost: ObservableObject {
             case .allSongs:
                 selectionLabel = "allSongs"
                 hasHeader = false
+            case .allPlaylists:
+                selectionLabel = "allPlaylists"
+                hasHeader = false
             case .allAlbums:
                 selectionLabel = "allAlbums"
                 hasHeader = false

@@ -1,59 +1,48 @@
 //
-//  AllArtistsView.swift
+//  AllPlaylistsView.swift
 //  myPlayer2
 //
-//  Full Artists page reached from Home → Artists → "查看全部".
-//  Lives in the main content area; reuses existing artistEntries,
-//  deleteArtist, and ArtistArtworkGenerator pipelines.
-//
-//  Search and sort are driven by the existing top toolbar, not by any
-//  page-level controls. Toolbar search writes into
-//  `PlaylistPageController.searchText`; toolbar sort writes into
-//  `LibraryViewModel.artistSortKey` / `trackSortOrder`. This view simply
-//  reads those values to filter and order its rows.
+//  Full Playlists page reached from Home -> Playlists -> "查看全部".
 //
 
 import AppKit
 import SwiftUI
 
-// MARK: - Deletion Request
-
-private struct ArtistDeletionRequest: Identifiable {
-    let entry: ArtistEntry
-    let trackCount: Int
-    var id: String { entry.id.uuidString }
+private struct PlaylistDeletionRequest: Identifiable {
+    let playlist: Playlist
+    var id: UUID { playlist.id }
 }
 
-// MARK: - View
-
-struct AllArtistsView: View {
+struct AllPlaylistsView: View {
     let pageController: PlaylistPageController
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @EnvironmentObject private var themeStore: ThemeStore
 
-    @State private var deletionRequest: ArtistDeletionRequest?
-    @State private var editingArtist: ArtistEntry?
+    @State private var deletionRequest: PlaylistDeletionRequest?
 
     var body: some View {
-        // Single ThemeStore subscription; rows get plain Color params.
         let palette = themeStore.appForegroundPalette
         let primary = Color(nsColor: palette.primary)
         let secondary = Color(nsColor: palette.secondary)
-        let artists = filteredArtists
-        let visibleIDs = artists.map(\.id)
-        let customSourceIDs = customOrderSourceArtists.map(\.id)
+        let tertiary = Color(nsColor: palette.tertiary)
+        let playlists = filteredPlaylists
+        let visibleIDs = playlists.map(\.id)
+        let customSourceIDs = customOrderSourcePlaylists.map(\.id)
+
         return list(
-            artists,
+            playlists,
             primary: primary,
-            secondary: secondary
+            secondary: secondary,
+            tertiary: tertiary
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onAppear {
             let token = FirstUseHitchDiagnostics.begin(
-                "AllArtistsView.onAppear",
-                detail: "artists=\(libraryVM.artistEntries.count), tracks=\(libraryVM.allTracks.count)"
+                "AllPlaylistsView.onAppear",
+                detail: "playlists=\(libraryVM.playlists.count)"
             )
             FirstUseHitchDiagnostics.end(token)
             pageController.bindCollectionList(libraryVM: libraryVM, uiState: uiState)
@@ -85,10 +74,10 @@ struct AllArtistsView: View {
             )
         }
         .onDisappear {
-            pageController.unregisterCollectionList(selection: .allArtists)
+            pageController.unregisterCollectionList(selection: .allPlaylists)
         }
         .alert(
-            NSLocalizedString("sidebar.delete_artist_confirm_title", comment: ""),
+            NSLocalizedString("edit.playlist.delete_confirm_title", comment: ""),
             isPresented: Binding(
                 get: { deletionRequest != nil },
                 set: { if !$0 { deletionRequest = nil } }
@@ -96,47 +85,36 @@ struct AllArtistsView: View {
             presenting: deletionRequest
         ) { request in
             Button(
-                NSLocalizedString("sidebar.delete_artist", comment: ""),
+                NSLocalizedString("edit.playlist.delete_confirm", comment: ""),
                 role: .destructive
             ) {
-                let entry = request.entry
+                let playlist = request.playlist
                 deletionRequest = nil
-                Task { await libraryVM.deleteArtist(entry) }
+                Task { await libraryVM.deletePlaylist(playlist) }
             }
             Button(
                 NSLocalizedString("edit.track.cancel", comment: ""),
                 role: .cancel
             ) { deletionRequest = nil }
-        } message: { request in
-            Text(
-                String(
-                    format: NSLocalizedString("sidebar.delete_artist_confirm_message", comment: ""),
-                    request.entry.displayName,
-                    request.trackCount
-                )
-            )
-        }
-        .sheet(item: $editingArtist) { entry in
-            ArtistInfoEditSheet(entry: entry) {}
-                .presentationSizing(.page)
+        } message: { _ in
+            Text(NSLocalizedString("edit.playlist.delete_desc", comment: ""))
         }
     }
 
-    // MARK: List
-
     private func list(
-        _ artists: [ArtistEntry],
+        _ playlists: [Playlist],
         primary: Color,
-        secondary: Color
+        secondary: Color,
+        tertiary: Color
     ) -> some View {
         ScrollView(.vertical) {
             ReorderableMultiselectRowsSection(
-                rows: artists,
+                rows: playlists,
                 isMultiselectMode: pageController.isMultiselectMode,
                 selectedIDs: pageController.selectedTrackIDs,
                 canReorder: pageController.canManuallyReorderCurrentCollection,
                 isSearchFiltering: isFiltering,
-                coordinateSpaceName: "artistCollectionReorderSpace",
+                coordinateSpaceName: "playlistCollectionReorderSpace",
                 rowCornerRadius: 12,
                 bottomSpacerHeight: 120,
                 badgeText: { "\($0)" },
@@ -153,31 +131,29 @@ struct AllArtistsView: View {
                 onCommitOrder: { orderedIDs in
                     pageController.commitManualCollectionOrder(
                         orderedItemIDs: orderedIDs,
-                        reason: "manual-artist-reorder"
+                        reason: "manual-playlist-reorder"
                     )
                 },
-                rowContent: { artist, _, _ in
-                    ArtistListRow(
-                        artist: artist,
-                        trackCount: trackCount(for: artist),
-                        albumCount: albumCount(for: artist),
+                rowContent: { playlist, _, _ in
+                    PlaylistListRow(
+                        playlist: playlist,
                         titleColor: primary,
                         subtitleColor: secondary,
-                        onOpen: { handleRowTap(artist) },
-                        onEdit: { editingArtist = artist },
-                        onDelete: { requestDelete(artist) }
+                        metaColor: tertiary,
+                        onOpen: { handleRowTap(playlist) },
+                        onPlay: { play(playlist) },
+                        onDelete: { deletionRequest = PlaylistDeletionRequest(playlist: playlist) }
                     )
                 },
-                floatingContent: { artist in
-                    ArtistListRow(
-                        artist: artist,
-                        trackCount: trackCount(for: artist),
-                        albumCount: albumCount(for: artist),
+                floatingContent: { playlist in
+                    PlaylistListRow(
+                        playlist: playlist,
                         titleColor: primary,
                         subtitleColor: secondary,
+                        metaColor: tertiary,
                         enableSecondaryInteractions: false,
                         onOpen: {},
-                        onEdit: {},
+                        onPlay: {},
                         onDelete: {}
                     )
                 }
@@ -187,29 +163,22 @@ struct AllArtistsView: View {
         }
     }
 
-    // MARK: Data
-
-    private var filteredArtists: [ArtistEntry] {
-        let token = FirstUseHitchDiagnostics.begin(
-            "AllArtistsView.filteredArtists",
-            detail: "artists=\(libraryVM.artistEntries.count)"
-        )
-        defer { FirstUseHitchDiagnostics.end(token) }
-
+    private var filteredPlaylists: [Playlist] {
         let trimmed = normalizedSearchText
-        let base: [ArtistEntry]
+        let base: [Playlist]
         if trimmed.isEmpty {
-            base = libraryVM.artistEntries
+            base = libraryVM.playlists
         } else {
-            base = libraryVM.artistEntries.filter {
-                $0.displayName.lowercased().contains(trimmed)
+            base = libraryVM.playlists.filter {
+                $0.name.lowercased().contains(trimmed)
+                    || $0.userDescription.lowercased().contains(trimmed)
             }
         }
-        return libraryVM.sortedArtistEntriesForDisplay(base)
+        return libraryVM.sortedPlaylistsForDisplay(base)
     }
 
-    private var customOrderSourceArtists: [ArtistEntry] {
-        libraryVM.sortedArtistEntriesForDisplay(libraryVM.artistEntries)
+    private var customOrderSourcePlaylists: [Playlist] {
+        libraryVM.sortedPlaylistsForDisplay(libraryVM.playlists)
     }
 
     private var normalizedSearchText: String {
@@ -228,95 +197,55 @@ struct AllArtistsView: View {
         isFiltering: Bool
     ) {
         pageController.registerCollectionList(
-            selection: .allArtists,
+            selection: .allPlaylists,
             visibleItemIDs: visibleIDs,
             customOrderSourceItemIDs: customSourceIDs,
             isFiltering: isFiltering
         )
     }
 
-    private func trackCount(for artist: ArtistEntry) -> Int {
-        if artist.trackCount > 0 { return artist.trackCount }
-        let canonical = artist.canonicalName
-        return libraryVM.allTracks.lazy
-            .filter { LibraryNormalization.containsArtist(canonical, in: $0.artist) }
-            .count
+    private func handleRowTap(_ playlist: Playlist) {
+        if pageController.isMultiselectMode {
+            pageController.handleMultiselectItemTap(
+                itemID: playlist.id,
+                extendingRange: LibraryRowInput.isShiftPressed
+            )
+        } else {
+            open(playlist)
+        }
     }
 
-    private func albumCount(for artist: ArtistEntry) -> Int {
-        if artist.albumCount > 0 { return artist.albumCount }
-        let canonical = artist.canonicalName
-        let albums = libraryVM.allTracks.lazy
-            .filter { LibraryNormalization.containsArtist(canonical, in: $0.artist) }
-            .compactMap { $0.albumGroupKey }
-        return Set(albums).count
-    }
-
-    private func open(_ artist: ArtistEntry) {
+    private func open(_ playlist: Playlist) {
         uiState.pushSelectionInHomeContext(
-            .artist(artist.canonicalName),
+            .playlist(playlist.id),
             libraryVM: libraryVM
         )
     }
 
-    private func handleRowTap(_ artist: ArtistEntry) {
-        if pageController.isMultiselectMode {
-            pageController.handleMultiselectItemTap(
-                itemID: artist.id,
-                extendingRange: LibraryRowInput.isShiftPressed
-            )
-        } else {
-            open(artist)
-        }
-    }
-
-    private func requestDelete(_ artist: ArtistEntry) {
-        deletionRequest = ArtistDeletionRequest(
-            entry: artist,
-            trackCount: trackCount(for: artist)
+    private func play(_ playlist: Playlist) {
+        playbackCoordinator.playRandomTracks(
+            playlist.tracks,
+            libraryQueueSource: .librarySelection("all-playlists-\(playlist.id.uuidString)")
         )
-    }
-
-    private func compareInt(_ a: Int, _ b: Int) -> ComparisonResult {
-        a == b ? .orderedSame : (a < b ? .orderedAscending : .orderedDescending)
-    }
-    private func compareDouble(_ a: Double, _ b: Double) -> ComparisonResult {
-        a == b ? .orderedSame : (a < b ? .orderedAscending : .orderedDescending)
-    }
-    private func compareDate(_ a: Date, _ b: Date) -> ComparisonResult {
-        a == b ? .orderedSame : (a < b ? .orderedAscending : .orderedDescending)
-    }
-
-    private func compareAggregateMetric(
-        _ lhs: LibraryAggregateStats.Metric,
-        _ rhs: LibraryAggregateStats.Metric
-    ) -> ComparisonResult {
-        if lhs.hasData != rhs.hasData {
-            return lhs.hasData ? .orderedDescending : .orderedAscending
-        }
-        return compareDouble(lhs.value, rhs.value)
     }
 }
 
-// MARK: - Row
-
-private struct ArtistListRow: View {
-    let artist: ArtistEntry
-    let trackCount: Int
-    let albumCount: Int
+private struct PlaylistListRow: View {
+    let playlist: Playlist
     var titleColor: Color = .primary
     var subtitleColor: Color = .secondary
+    var metaColor: Color = Color.secondary.opacity(0.7)
     var enableSecondaryInteractions = true
     let onOpen: () -> Void
-    let onEdit: () -> Void
+    let onPlay: () -> Void
     let onDelete: () -> Void
 
-    @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(\.colorScheme) private var colorScheme
     @State private var image: NSImage?
     @State private var isHovering = false
 
     private let artworkSize: CGFloat = 60
+    private let cornerRadius: CGFloat = 10
 
     var body: some View {
         HStack(spacing: 14) {
@@ -343,18 +272,20 @@ private struct ArtistListRow: View {
         .contextMenu {
             if enableSecondaryInteractions {
                 Button(action: onOpen) {
-                    Label("打开艺人", systemImage: "person.crop.circle")
+                    Label("打开播放列表", systemImage: "music.note.list")
                 }
-                Button(action: onEdit) {
-                    Label("编辑艺人", systemImage: "info.circle")
+                Button(action: onPlay) {
+                    Label("播放该播放列表", systemImage: "play.fill")
                 }
                 Divider()
                 Button(role: .destructive, action: onDelete) {
-                    Label("删除艺人", systemImage: "trash")
+                    Label(NSLocalizedString("edit.playlist.delete", comment: ""), systemImage: "trash")
                 }
             }
         }
-        .task { await loadArtwork() }
+        .task(id: artworkIdentity) {
+            await loadArtwork()
+        }
     }
 
     private var artworkView: some View {
@@ -366,15 +297,15 @@ private struct ArtistListRow: View {
             } else {
                 ArtworkPlaceholderView(
                     size: artworkSize,
-                    cornerRadius: artworkSize / 2,
-                    clipShape: .circle,
+                    cornerRadius: cornerRadius,
+                    clipShape: .continuous,
                     iconSize: 22,
                     iconOpacity: 0.4
                 )
             }
         }
         .frame(width: artworkSize, height: artworkSize)
-        .clipShape(Circle())
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .shadow(
             color: .black.opacity(colorScheme == .dark ? 0.3 : 0.1),
             radius: 4, y: 2
@@ -383,23 +314,25 @@ private struct ArtistListRow: View {
 
     private var textBlock: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(artist.displayName)
+            Text(playlist.name)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(titleColor)
                 .lineLimit(1)
+            if !playlist.userDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(playlist.userDescription)
+                    .font(.system(size: 12))
+                    .foregroundStyle(subtitleColor)
+                    .lineLimit(1)
+            }
             HStack(spacing: 6) {
-                Text("\(trackCount) 首歌曲")
-                if albumCount > 0 {
+                Text("\(playlist.trackCount) 首歌曲")
+                if playlist.totalDuration > 0 {
                     Text("·")
-                    Text("\(albumCount) 张专辑")
-                }
-                if artist.totalDuration > 0 {
-                    Text("·")
-                    Text(formattedDuration(artist.totalDuration))
+                    Text(formattedDuration(playlist.totalDuration))
                 }
             }
-            .font(.system(size: 12))
-            .foregroundStyle(subtitleColor)
+            .font(.system(size: 11))
+            .foregroundStyle(metaColor)
             .lineLimit(1)
         }
     }
@@ -407,14 +340,14 @@ private struct ArtistListRow: View {
     private var trailingActions: some View {
         Menu {
             Button(action: onOpen) {
-                Label("打开艺人", systemImage: "person.crop.circle")
+                Label("打开播放列表", systemImage: "music.note.list")
             }
-            Button(action: onEdit) {
-                Label("编辑艺人", systemImage: "info.circle")
+            Button(action: onPlay) {
+                Label("播放该播放列表", systemImage: "play.fill")
             }
             Divider()
             Button(role: .destructive, action: onDelete) {
-                Label("删除艺人", systemImage: "trash")
+                Label(NSLocalizedString("edit.playlist.delete", comment: ""), systemImage: "trash")
             }
         } label: {
             Image(systemName: "ellipsis")
@@ -431,37 +364,49 @@ private struct ArtistListRow: View {
         .allowsHitTesting(enableSecondaryInteractions)
     }
 
+    private var artworkIdentity: String {
+        let selectionIdentity = "playlist-\(playlist.id.uuidString)"
+        if let revision = LocalLibraryService.shared.playlistArtworkRevision(playlistID: playlist.id),
+           !revision.isEmpty
+        {
+            return "\(selectionIdentity)-artwork-\(revision)"
+        }
+        let signature = PlaylistArtworkGenerator.contentSignature(tracks: playlist.tracks)
+        return "\(selectionIdentity)-unresolved-\(signature)"
+    }
+
+    private func loadArtwork() async {
+        let request = DetailHeaderArtworkRequest.playlist(
+            selectionIdentity: "playlist-\(playlist.id.uuidString)",
+            playlistID: playlist.id,
+            tracks: playlist.tracks
+        )
+        let immediate = DetailHeaderArtworkResolver.shared.resolveImmediately(for: request)
+        if let image = await loadHeaderImage(from: immediate) {
+            self.image = image
+        }
+
+        let resolved = await DetailHeaderArtworkResolver.shared.resolveDeferredArtwork(for: request)
+        if let image = await loadHeaderImage(from: resolved ?? immediate) {
+            self.image = image
+        }
+    }
+
+    private func loadHeaderImage(from resolved: ResolvedHeaderArtwork?) async -> NSImage? {
+        guard let resolved else { return nil }
+        let request = PlaylistArtworkPipeline.headerRequest(
+            artworkIdentity: artworkIdentity,
+            artworkData: resolved.image?.tiffRepresentation,
+            fileURL: resolved.fileURL
+        )
+        return await PlaylistArtworkPipeline.shared.load(request) ?? resolved.image
+    }
+
     private func formattedDuration(_ seconds: Double) -> String {
         let total = Int(seconds)
         let h = total / 3600
         let m = (total % 3600) / 60
         if h > 0 { return "\(h) 小时 \(m) 分" }
         return "\(m) 分"
-    }
-
-    private func loadArtwork() async {
-        if let data = artist.artworkData, !data.isEmpty {
-            let checksum = ArtworkLoader.checksum(for: data)
-            let key = ArtworkLoader.cacheKey(
-                trackID: artist.id,
-                checksum: checksum,
-                targetPixelSize: CGSize(width: 132, height: 132)
-            )
-            image = await ArtworkLoader.loadImage(
-                artworkData: data,
-                cacheKey: key,
-                targetPixelSize: CGSize(width: 132, height: 132)
-            )
-            return
-        }
-        let canonical = artist.canonicalName
-        let tracks = libraryVM.allTracks.filter {
-            LibraryNormalization.containsArtist(canonical, in: $0.artist)
-        }
-        let trackSources = tracks.map { $0.artistArtworkSource() }
-        image = await ArtistArtworkGenerator.shared.generateArtwork(
-            artistName: artist.displayName,
-            trackSources: trackSources
-        )
     }
 }

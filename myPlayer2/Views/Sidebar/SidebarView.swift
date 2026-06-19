@@ -108,12 +108,15 @@ struct SidebarView: View {
             // Playlists List
             List {
                 Section {
-                    ForEach(libraryVM.playlists) { playlist in
+                    ForEach(libraryVM.sortedPlaylistsForDisplay()) { playlist in
                         Button {
                             handleSelection(.playlist(playlist.id))
                         } label: {
                             HStack(spacing: 9) {
-                                SidebarPlaylistThumbnail(playlistID: playlist.id)
+                                SidebarPlaylistThumbnail(
+                                    playlistID: playlist.id,
+                                    refreshToken: libraryVM.refreshTrigger
+                                )
                                 Text(playlist.name)
                                     .lineLimit(1)
                                 Spacer()
@@ -640,6 +643,9 @@ struct SidebarView: View {
             libraryVM.selectOrResetCurrentSelection(.home)
         case .allSongs:
             libraryVM.selectOrResetCurrentSelection(.allSongs)
+        case .allPlaylists:
+            uiState.pushSelectionInHomeContext(.allPlaylists, libraryVM: libraryVM)
+            return
         case .allAlbums:
             uiState.pushSelectionInHomeContext(.allAlbums, libraryVM: libraryVM)
             return
@@ -661,6 +667,8 @@ struct SidebarView: View {
         switch libraryVM.currentSelection {
         case .home:
             return .home
+        case .allPlaylists:
+            return .allPlaylists
         case .allAlbums:
             return .allAlbums
         case .allArtists:
@@ -715,6 +723,7 @@ struct SidebarView: View {
 private enum SidebarSelection: Hashable {
     case home
     case allSongs
+    case allPlaylists
     case allAlbums
     case allArtists
     case playlist(UUID)
@@ -724,8 +733,10 @@ private enum SidebarSelection: Hashable {
 
 private struct SidebarPlaylistThumbnail: View {
     let playlistID: UUID
+    let refreshToken: Int
 
     @State private var image: NSImage?
+    @State private var artworkChangeNonce = 0
 
     private let side: CGFloat = 24
     private var pixelSide: CGFloat {
@@ -747,9 +758,20 @@ private struct SidebarPlaylistThumbnail: View {
             }
         }
         .frame(width: side, height: side)
-        .task(id: playlistID) {
+        .task(id: taskIdentity) {
             await loadArtwork()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .playlistArtworkDidChange)) { notification in
+            guard let changedID = notification.userInfo?["playlistID"] as? UUID,
+                  changedID == playlistID
+            else { return }
+            artworkChangeNonce += 1
+        }
+    }
+
+    private var taskIdentity: String {
+        let revision = Self.currentArtworkRevision(playlistID: playlistID) ?? "none"
+        return "\(playlistID.uuidString)-\(refreshToken)-\(artworkChangeNonce)-\(revision)"
     }
 
     private func loadArtwork() async {
@@ -798,6 +820,10 @@ private struct SidebarPlaylistThumbnail: View {
             fileURL: fileURL,
             pixelSize: CGSize(width: pixelSide, height: pixelSide)
         )
+    }
+
+    private nonisolated static func currentArtworkRevision(playlistID: UUID) -> String? {
+        loadPlaylistSidecar(playlistID: playlistID)?.artworkRevision
     }
 
     private nonisolated static func loadPlaylistSidecar(playlistID: UUID) -> PlaylistSidecar? {

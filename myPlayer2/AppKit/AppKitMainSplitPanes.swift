@@ -132,6 +132,10 @@ struct AppKitMainContentPaneRoot: View {
                                 .allowsHitTesting(false)
                                 .id("appkit-main-home")
                         }
+                    case .allPlaylists:
+                        AllPlaylistsView(pageController: pageController)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .id("appkit-main-all-playlists")
                     case .allAlbums:
                         AllAlbumsView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -528,7 +532,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         let selection = appSession.libraryVM?.currentSelection ?? .allSongs
         let isPlaylistContext: Bool
         switch selection {
-        case .home, .allAlbums, .allArtists:
+        case .home, .allPlaylists, .allAlbums, .allArtists:
             isPlaylistContext = false
         case .allSongs, .playlist, .artist, .album:
             isPlaylistContext = true
