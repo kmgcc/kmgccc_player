@@ -48,6 +48,8 @@ struct HarmonizedPalette {
     let accentHue: CGFloat?
     let accentStrength: CGFloat
     let accentEnabled: Bool
+    let usesStrictNeutralRendering: Bool
+    let chromaticClusterCount: Int
 
     // Background (low sat)
     let bgStops: [CGColor]
@@ -88,6 +90,7 @@ struct BKColorEngine {
         let avgS: CGFloat
         let hueSpread: CGFloat
         let swatchCount: Int
+        let chromaticClusterCount: Int
         let swatchHSB: [String]
         let nearestCandidateHueDiff: [CGFloat]
     }
@@ -138,47 +141,48 @@ struct BKColorEngine {
         let lumaKShape: CGFloat = isDark ? 0.55 : lumaBlendK(coverKind: stats.coverKind)
         let lumaKDot: CGFloat = isDark ? 0.45 : lumaBlendK(coverKind: stats.coverKind)
 
-        if stats.coverKind == .grayscaleTrue {
+        if stats.coverKind == .grayscaleTrue && (analysis?.lacksTrustedHue ?? true) {
             var triggered = Set<RiskFlag>()
             let grayscalePalette = makeGrayscalePalette(
                 stats: stats, isDark: isDark, triggered: &triggered)
-            let neutraliseShapes =
-                (analysis?.isNearMonochrome ?? false)
-                && !analysisHasTrustedHueCandidate(analysis)
-            let finalPalette: HarmonizedPalette
-            if neutraliseShapes {
-                finalPalette = HarmonizedPalette(
-                    primaryHue: grayscalePalette.primaryHue,
-                    imageHue: grayscalePalette.imageHue,
-                    isDark: grayscalePalette.isDark,
-                    complexity: grayscalePalette.complexity,
-                    grayScore: grayscalePalette.grayScore,
-                    isGrayscaleCover: grayscalePalette.isGrayscaleCover,
-                    isNearGray: grayscalePalette.isNearGray,
-                    coverLuma: grayscalePalette.coverLuma,
-                    imageCoverLuma: grayscalePalette.imageCoverLuma,
-                    coverAvgS: grayscalePalette.coverAvgS,
-                    areaDominantS: grayscalePalette.areaDominantS,
-                    areaDominantB: grayscalePalette.areaDominantB,
-                    accentHue: grayscalePalette.accentHue,
-                    accentStrength: grayscalePalette.accentStrength,
-                    accentEnabled: grayscalePalette.accentEnabled,
-                    bgStops: grayscalePalette.bgStops.map { neutraliseCGColor($0) },
-                    bgVariants: grayscalePalette.bgVariants.map { $0.map { neutraliseCGColor($0) } },
-                    shapePool: Array(nearMonoShapePreset.indices.map {
-                        nearMonoShapePreset[$0 % nearMonoShapePreset.count]
-                    }),
-                    dotBase: neutraliseCGColor(grayscalePalette.dotBase),
-                    bgBRange: grayscalePalette.bgBRange,
-                    fgBRange: grayscalePalette.fgBRange,
-                    dotBRange: grayscalePalette.dotBRange,
-                    bgSRange: grayscalePalette.bgSRange,
-                    fgSRange: grayscalePalette.fgSRange,
-                    dotSRange: grayscalePalette.dotSRange
-                )
-            } else {
-                finalPalette = grayscalePalette
-            }
+            let finalPalette = HarmonizedPalette(
+                primaryHue: grayscalePalette.primaryHue,
+                imageHue: grayscalePalette.imageHue,
+                isDark: grayscalePalette.isDark,
+                complexity: grayscalePalette.complexity,
+                grayScore: grayscalePalette.grayScore,
+                isGrayscaleCover: grayscalePalette.isGrayscaleCover,
+                isNearGray: grayscalePalette.isNearGray,
+                coverLuma: grayscalePalette.coverLuma,
+                imageCoverLuma: grayscalePalette.imageCoverLuma,
+                coverAvgS: grayscalePalette.coverAvgS,
+                areaDominantS: grayscalePalette.areaDominantS,
+                areaDominantB: grayscalePalette.areaDominantB,
+                accentHue: grayscalePalette.accentHue,
+                accentStrength: grayscalePalette.accentStrength,
+                accentEnabled: grayscalePalette.accentEnabled,
+                usesStrictNeutralRendering: true,
+                chromaticClusterCount: 0,
+                bgStops: grayscalePalette.bgStops.map {
+                    neutraliseCGColor($0, lightnessScale: isDark ? 1.0 : 0.965)
+                },
+                bgVariants: grayscalePalette.bgVariants.map {
+                    $0.map { neutraliseCGColor($0, lightnessScale: isDark ? 1.0 : 0.965) }
+                },
+                shapePool: Array(nearMonoShapePreset.indices.map {
+                    nearMonoShapePreset[$0 % nearMonoShapePreset.count]
+                }),
+                dotBase: neutraliseCGColor(
+                    grayscalePalette.dotBase,
+                    lightnessScale: isDark ? 1.0 : 0.945
+                ),
+                bgBRange: grayscalePalette.bgBRange,
+                fgBRange: grayscalePalette.fgBRange,
+                dotBRange: grayscalePalette.dotBRange,
+                bgSRange: grayscalePalette.bgSRange,
+                fgSRange: grayscalePalette.fgSRange,
+                dotSRange: grayscalePalette.dotSRange
+            )
             logPalette(
                 primaryBefore: finalPalette.primaryHue,
                 primaryAfter: finalPalette.primaryHue,
@@ -383,6 +387,8 @@ struct BKColorEngine {
         let neutraliseShapes =
             (analysis?.isNearMonochrome ?? false)
             && !analysisHasTrustedHueCandidate(analysis)
+        let neutralBgLightnessScale: CGFloat = isDark ? 1.0 : 0.965
+        let neutralDotLightnessScale: CGFloat = isDark ? 1.0 : 0.945
 
         let finalBgStops = bgStopsHSB.map(toCGColor(_:))
         let finalShapePool = shapePoolHSB.map(toCGColor(_:))
@@ -394,12 +400,19 @@ struct BKColorEngine {
         let dotBaseOut: CGColor
         let bgVariantsOut: [[CGColor]]
         if neutraliseShapes {
-            bgStopsOut = finalBgStops.map { neutraliseCGColor($0) }
+            bgStopsOut = finalBgStops.map {
+                neutraliseCGColor($0, lightnessScale: neutralBgLightnessScale)
+            }
             shapePoolOut = Array(finalShapePool.indices.map {
                 nearMonoShapePreset[$0 % nearMonoShapePreset.count]
             })
-            dotBaseOut = neutraliseCGColor(finalDotBase)
-            bgVariantsOut = finalBgVariants.map { $0.map { neutraliseCGColor($0) } }
+            dotBaseOut = neutraliseCGColor(
+                finalDotBase,
+                lightnessScale: neutralDotLightnessScale
+            )
+            bgVariantsOut = finalBgVariants.map {
+                $0.map { neutraliseCGColor($0, lightnessScale: neutralBgLightnessScale) }
+            }
         } else {
             bgStopsOut = finalBgStops
             shapePoolOut = finalShapePool
@@ -423,6 +436,8 @@ struct BKColorEngine {
             accentHue: stats.accentHue,
             accentStrength: stats.accentStrength,
             accentEnabled: stats.accentEnabled,
+            usesStrictNeutralRendering: neutraliseShapes,
+            chromaticClusterCount: neutraliseShapes ? 0 : stats.clusterCount,
             bgStops: bgStopsOut,
             bgVariants: bgVariantsOut,
             shapePool: shapePoolOut,
@@ -458,7 +473,7 @@ struct BKColorEngine {
         isDark: Bool,
         analysis: ArtworkColorAnalysis? = nil
     ) -> ShapeSwatchResult {
-        if analysis?.isNearMonochrome == true {
+        func neutralResult() -> ShapeSwatchResult {
             return ShapeSwatchResult(
                 colors: Array(nearMonoShapePreset.indices.map {
                     nearMonoShapePreset[$0 % nearMonoShapePreset.count]
@@ -467,11 +482,35 @@ struct BKColorEngine {
                     avgS: 0.02,
                     hueSpread: 0,
                     swatchCount: nearMonoShapePreset.count,
+                    chromaticClusterCount: 0,
                     swatchHSB: nearMonoShapePreset.compactMap(hsb(from:)).map(hsbString(_:)),
                     nearestCandidateHueDiff: [0]
                 )
             )
         }
+
+        if analysis?.lacksTrustedHue == true {
+            return neutralResult()
+        }
+
+        let sourceColors: [NSColor] = {
+            guard let analysis else {
+                return extracted.isEmpty ? fallback : extracted
+            }
+            var colors: [NSColor] = []
+            if let primary = analysis.primaryHueSourceColor {
+                colors.append(primary)
+            }
+            colors += analysis.displayPalette
+            colors += analysis.salientHighlightPalette
+            colors += analysis.topPalette
+            colors += analysis.richPalette
+            if colors.isEmpty {
+                colors = extracted.isEmpty ? fallback : extracted
+            }
+            return dedupedNSColors(colors)
+        }()
+
         let input = (extracted.isEmpty ? fallback : extracted)
             .compactMap(hsb(from:))
             .map(normalizeCandidateColor(_:))
@@ -483,6 +522,7 @@ struct BKColorEngine {
                     avgS: 0,
                     hueSpread: 0,
                     swatchCount: 1,
+                    chromaticClusterCount: 0,
                     swatchHSB: [hsbString(fallbackHSB)],
                     nearestCandidateHueDiff: [0]
                 )
@@ -493,87 +533,107 @@ struct BKColorEngine {
             let index: Int
             let color: HSBColor
             let score: CGFloat
+            let oklchChroma: CGFloat
         }
 
-        let shares = inferredShares(count: input.count)
-        let avgS = input.map(\.s).reduce(0, +) / CGFloat(input.count)
-        let hues = input.map(\.h)
+        struct SwatchCluster {
+            var center: HueCluster
+            var score: CGFloat
+            var candidates: [Candidate]
+
+            var hue: CGFloat { center.centerHue }
+            var best: Candidate { candidates.max(by: { $0.score < $1.score }) ?? candidates[0] }
+        }
+
+        let sourceShares = inferredShares(count: max(1, sourceColors.count))
+        var candidates: [Candidate] = []
+        candidates.reserveCapacity(sourceColors.count)
+        for (idx, color) in sourceColors.enumerated() {
+            guard ArtworkHueTrust.isUsableHueSource(color) else { continue }
+            guard let hsb = hsb(from: color) else { continue }
+            let lchChroma = OKColor.nsColorToOKLCH(color)?.c ?? 0
+            let rankWeight = idx < sourceShares.count ? sourceShares[idx] : sourceShares.last ?? 0.02
+            let midBBoost = clamp(1 - abs(hsb.b - 0.55) / 0.55, min: 0, max: 1)
+            let chromaBoost = clamp(lchChroma / 0.14, min: 0, max: 1)
+            let saliency = pow(hsb.s, 1.12) * (0.58 + 0.24 * midBBoost + 0.18 * chromaBoost)
+            let score = rankWeight * (1 + 1.35 * saliency)
+            candidates.append(
+                Candidate(index: idx, color: hsb, score: score, oklchChroma: lchChroma)
+            )
+        }
+
+        if candidates.isEmpty {
+            if analysis?.hasTrustedHueCandidate == false || analysis?.isNearMonochrome == true {
+                return neutralResult()
+            }
+
+            let inputShares = inferredShares(count: input.count)
+            for (idx, color) in input.enumerated() {
+                guard color.s >= 0.18 else { continue }
+                let rankWeight = idx < inputShares.count ? inputShares[idx] : inputShares.last ?? 0.02
+                let score = rankWeight * (1 + 1.1 * saliencyScore(color))
+                candidates.append(Candidate(index: idx, color: color, score: score, oklchChroma: 0))
+            }
+        }
+
+        guard !candidates.isEmpty else {
+            return neutralResult()
+        }
+
+        let totalCandidateWeight = max(0.0001, candidates.map(\.score).reduce(0, +))
+        let avgS = candidates.reduce(CGFloat(0)) { partial, candidate in
+            partial + candidate.color.s * (candidate.score / totalCandidateWeight)
+        }
+        let hues = candidates.map { $0.color.h }
         let hueSpread = maxHueSpread(hues)
-        let coverRichness = clamp((avgS / 0.55) * 0.6 + (hueSpread / 120) * 0.4, min: 0, max: 1)
 
-        let swatchCount: Int
-        if avgS < 0.16 {
-            swatchCount = 1 + (coverRichness > 0.35 ? 1 : 0)
-        } else if avgS < 0.42 {
-            swatchCount = 3
-        } else {
-            swatchCount = max(4, min(6, 4 + Int(round(2 * coverRichness))))
-        }
-
-        var candidates: [Candidate] = input.enumerated().map { idx, color in
-            let midBBoost = clamp(1 - abs(color.b - 0.55) / 0.55, min: 0, max: 1)
-            let saliency = pow(color.s, 1.25) * (0.55 + 0.45 * midBBoost)
-            let rankWeight = shares[idx]
-            let score = rankWeight * (1 + 1.6 * saliency)
-            return Candidate(index: idx, color: color, score: score)
-        }
-        candidates.sort { $0.score > $1.score }
-
-        let targetCount = max(1, min(swatchCount, 6))
-        var selected: [Candidate] = []
-        if let primary = candidates.first {
-            selected.append(primary)
-        }
-
-        if avgS >= 0.16, targetCount >= 3, let primary = selected.first {
-            if let accent = candidates.first(where: {
-                $0.index != primary.index && hueDistance($0.color.h, primary.color.h) >= 45
-            }) {
-                selected.append(accent)
-            } else if let accent = candidates.first(where: {
-                $0.index != primary.index && hueDistance($0.color.h, primary.color.h) >= 30
-            }) {
-                selected.append(accent)
-            }
-        }
-
-        let maxScore = max(0.0001, candidates.first?.score ?? 0.0001)
-        while selected.count < min(targetCount, candidates.count) {
-            var picked: Candidate?
-            var pickedComposite: CGFloat = -CGFloat.greatestFiniteMagnitude
-
-            for candidate in candidates
-            where !selected.contains(where: { $0.index == candidate.index }) {
-                let minDistance =
-                    selected.map { hueDistance(candidate.color.h, $0.color.h) }.min() ?? 180
-                guard minDistance >= 18 else { continue }
-                let scoreNorm = candidate.score / maxScore
-                let composite = (minDistance / 180) * 0.65 + scoreNorm * 0.35
-                if composite > pickedComposite {
-                    pickedComposite = composite
-                    picked = candidate
-                }
-            }
-
-            if let picked {
-                selected.append(picked)
-            } else if let fallbackPick = candidates.first(where: { candidate in
-                !selected.contains(where: { $0.index == candidate.index })
-            }) {
-                selected.append(fallbackPick)
+        var clusters: [SwatchCluster] = []
+        for candidate in candidates.sorted(by: { $0.score > $1.score }) {
+            if let nearest = nearestClusterIndex(for: candidate.color.h, in: clusters.map(\.center)),
+               hueDistance(clusters[nearest].hue, candidate.color.h) <= 24 {
+                clusters[nearest].center.add(hue: candidate.color.h, weight: candidate.score)
+                clusters[nearest].score += candidate.score
+                clusters[nearest].candidates.append(candidate)
             } else {
-                break
+                clusters.append(
+                    SwatchCluster(
+                        center: HueCluster(hue: candidate.color.h, weight: candidate.score),
+                        score: candidate.score,
+                        candidates: [candidate]
+                    )
+                )
             }
         }
 
-        if selected.isEmpty, let first = candidates.first {
-            selected = [first]
+        clusters.sort { lhs, rhs in
+            if abs(lhs.score - rhs.score) > 0.0001 {
+                return lhs.score > rhs.score
+            }
+            return lhs.best.oklchChroma > rhs.best.oklchChroma
         }
+        let clusterCount = clusters.count
+        let richness = clamp(
+            (CGFloat(max(0, clusterCount - 1)) / 3.0) * 0.62
+                + (hueSpread / 150.0) * 0.22
+                + (avgS / 0.70) * 0.16,
+            min: 0,
+            max: 1
+        )
 
-        while selected.count < targetCount {
-            guard let first = selected.first else { break }
-            selected.append(first)
+        let targetCount: Int
+        switch clusterCount {
+        case 0:
+            targetCount = nearMonoShapePreset.count
+        case 1:
+            targetCount = avgS >= 0.42 ? 3 : 2
+        case 2:
+            targetCount = 4
+        case 3:
+            targetCount = 5
+        default:
+            targetCount = max(5, min(6, 5 + Int(round(richness))))
         }
+        let safeTargetCount = max(1, min(targetCount, 6))
 
         var state: UInt64 = seed == 0 ? 0xD1B5_4A32_9C7E_44F1 : seed
         func nextUnit(_ state: inout UInt64) -> CGFloat {
@@ -588,36 +648,56 @@ struct BKColorEngine {
             (nextUnit(&state) * 2 - 1) * magnitude
         }
 
-        let briJitterMax: CGFloat = isDark ? 0.035 : 0.03
-        let satJitterMax: CGFloat = 0.03
+        let hueJitterMax: CGFloat
+        let satJitterMax: CGFloat
+        let briJitterMax: CGFloat
+        if clusterCount <= 1 {
+            hueJitterMax = 2.0
+            satJitterMax = 0.012
+            briJitterMax = isDark ? 0.050 : 0.045
+        } else if clusterCount == 2 {
+            hueJitterMax = 3.5
+            satJitterMax = 0.018
+            briJitterMax = isDark ? 0.045 : 0.040
+        } else {
+            hueJitterMax = min(7.0, 3.5 + richness * 4.0)
+            satJitterMax = 0.026
+            briJitterMax = isDark ? 0.038 : 0.034
+        }
+        let tonalOffsets: [CGFloat] = clusterCount <= 1
+            ? [-0.045, 0.030, 0.065]
+            : [-0.035, 0.025, 0.055, -0.010, 0.040, -0.055]
 
         var swatches: [HSBColor] = []
-        swatches.reserveCapacity(targetCount)
+        swatches.reserveCapacity(safeTargetCount)
         var nearestDiffs: [CGFloat] = []
-        nearestDiffs.reserveCapacity(targetCount)
+        nearestDiffs.reserveCapacity(safeTargetCount)
         let candidateHues = candidates.map { normalizeHue($0.color.h) }
 
-        for index in 0..<targetCount {
-            let candidate = selected[index % selected.count]
+        for index in 0..<safeTargetCount {
+            let cluster = clusters[index % max(1, min(clusters.count, safeTargetCount))]
+            let candidate = cluster.best
             let base = candidate.color
-            let hueJitterMax: CGFloat
-            if base.b < 0.18 {
-                hueJitterMax = 2
-            } else if base.s < 0.25 {
-                hueJitterMax = 4
-            } else if base.s < 0.45 {
-                hueJitterMax = 8
-            } else {
-                hueJitterMax = 12
-            }
 
             let hue = clampHueDistance(
                 normalizeHue(base.h + jittered(hueJitterMax, &state)),
                 around: base.h,
-                maxDistance: 18
+                maxDistance: max(2.5, hueJitterMax + 1.0)
             )
-            let sat = clamp(base.s + jittered(satJitterMax, &state), min: 0.01, max: 0.95)
-            let bri = clamp(base.b + jittered(briJitterMax, &state), min: 0.10, max: 0.96)
+            let satCeiling = min(
+                0.92,
+                max(base.s + 0.015, base.s * (clusterCount <= 1 ? 1.12 : 1.22) + 0.025)
+            )
+            let satFloor = max(0.035, min(base.s, base.s * 0.72))
+            let sat = clamp(base.s + jittered(satJitterMax, &state), min: satFloor, max: satCeiling)
+            let tonal = tonalOffsets[index % tonalOffsets.count]
+            let briUpper: CGFloat = isDark ? 0.92 : 0.965
+            let briLower: CGFloat = isDark ? 0.16 : 0.18
+            let bri = clamp(
+                base.b + tonal + jittered(briJitterMax, &state),
+                min: briLower,
+                max: briUpper
+            )
             let swatch = HSBColor(h: hue, s: sat, b: bri, a: 1)
             swatches.append(swatch)
 
@@ -630,7 +710,8 @@ struct BKColorEngine {
             diagnostics: ShapeSwatchDiagnostics(
                 avgS: avgS,
                 hueSpread: hueSpread,
-                swatchCount: targetCount,
+                swatchCount: safeTargetCount,
+                chromaticClusterCount: clusterCount,
                 swatchHSB: swatches.map(hsbString(_:)),
                 nearestCandidateHueDiff: nearestDiffs
             )
@@ -645,6 +726,15 @@ struct BKColorEngine {
         saturationJitter: CGFloat = 0,
         brightnessJitter: CGFloat = 0
     ) -> CGColor {
+        if palette.usesStrictNeutralRendering {
+            return neutralShapeColor(
+                color,
+                brightnessJitter: brightnessJitter,
+                kind: kind,
+                palette: palette
+            )
+        }
+
         guard var hsb = hsb(from: color) else { return color }
         let effectiveHueJitter: CGFloat
         if hsb.b < 0.18 {
@@ -669,6 +759,49 @@ struct BKColorEngine {
             triggered: &triggered
         )
         return toCGColor(safe)
+    }
+
+    fileprivate nonisolated static func neutralShapeColor(
+        _ color: CGColor,
+        brightnessJitter: CGFloat,
+        kind: ElementKind,
+        palette: HarmonizedPalette
+    ) -> CGColor {
+        guard let ns = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) else {
+            return color
+        }
+        let fallbackB: CGFloat
+        switch kind {
+        case .background:
+            fallbackB = midpoint(palette.bgBRange)
+        case .shape:
+            fallbackB = midpoint(palette.fgBRange)
+        case .dot:
+            fallbackB = midpoint(palette.dotBRange)
+        }
+        let lch = OKColor.nsColorToOKLCH(ns)
+        let sourceL = lch?.l ?? fallbackB
+        let minL: CGFloat
+        let maxL: CGFloat
+        switch kind {
+        case .background:
+            minL = palette.isDark ? 0.12 : 0.82
+            maxL = palette.isDark ? 0.42 : 0.955
+        case .shape:
+            minL = palette.isDark ? 0.36 : 0.50
+            maxL = palette.isDark ? 0.76 : 0.78
+        case .dot:
+            minL = palette.isDark ? 0.42 : 0.58
+            maxL = palette.isDark ? 0.82 : 0.75
+        }
+        let l = clamp(
+            sourceL + brightnessJitter,
+            min: minL,
+            max: maxL
+        )
+        let neutral = OKColor.OKLCH(l: l, c: 0, h: 0)
+        let nsNeutral = OKColor.okLCHToNSColor(neutral, alpha: ns.alphaComponent)
+        return (nsNeutral.usingColorSpace(.deviceRGB) ?? nsNeutral).cgColor
     }
 
     static func hsbDebugString(for color: CGColor) -> String {
@@ -845,7 +978,7 @@ extension BKColorEngine {
         for index in colors.indices {
             let c = colors[index]
             let w = shares[index]
-            let chroma = c.s * min(c.b, 1 - c.b)
+            let chroma = chromaProxy(c)
             // Suppress fake vivid noise from near-black/near-white buckets.
             let matched = clamp(chroma * 2.2, min: 0, max: 1)
             matchedSatNumerator += matched * w
@@ -874,14 +1007,19 @@ extension BKColorEngine {
             let rankWeight = shares[index]
 
             if c.b < 0.12 { wBlack += rankWeight }
-            if c.b > 0.90 { wWhite += rankWeight }
-            if c.s > 0.22 && c.b >= 0.12 && c.b <= 0.90 { wColor += rankWeight }
+            if c.b > 0.90 && c.s < 0.24 { wWhite += rankWeight }
+            if c.s > 0.22 && c.b >= 0.12 && (c.b <= 0.90 || c.s >= 0.42) {
+                wColor += rankWeight
+            }
 
-            let isNeutral = c.s < 0.14 || c.b < 0.12 || c.b > 0.90
+            let isNeutral = c.s < 0.14 || c.b < 0.12 || (c.b > 0.92 && c.s < 0.24)
             if isNeutral { neutralCandidateIndices.insert(index) }
 
-            let chroma = c.s * min(c.b, 1 - c.b)
-            if c.s >= 0.18 && c.b > 0.10 && c.b < 0.92 && chroma >= 0.08 {
+            let chroma = chromaProxy(c)
+            if c.s >= 0.18
+                && c.b > 0.10
+                && (c.b < 0.94 || c.s >= 0.42)
+                && chroma >= 0.08 {
                 let midBBoost = clamp(1 - abs(c.b - 0.55) / 0.55, min: 0, max: 1)
                 let saliency = pow(c.s, 1.35) * (0.65 + 0.35 * midBBoost)
                 let score = rankWeight * (1 + 2.2 * saliency)
@@ -935,9 +1073,9 @@ extension BKColorEngine {
         var totalWeight: CGFloat = 0
         for index in colors.indices {
             let c = colors[index]
-            let chroma = c.s * min(c.b, 1 - c.b)
+            let chroma = chromaProxy(c)
             let grayLike = c.s < 0.14 || chroma < 0.06
-            let extreme = c.b < 0.12 || c.b > 0.92
+            let extreme = c.b < 0.12 || (c.b > 0.92 && c.s < 0.24)
             let weight: CGFloat = (extreme ? 1.8 : 1.0) * shares[index]
             totalWeight += weight
             if grayLike { grayWeightSum += weight }
@@ -1209,6 +1347,15 @@ extension BKColorEngine {
         return pow(color.s, 1.2) * (0.6 + 0.4 * midBBoost)
     }
 
+    fileprivate nonisolated static func chromaProxy(_ color: HSBColor) -> CGFloat {
+        let midTone = min(color.b, 1 - color.b)
+        let brightChromaticFloor: CGFloat =
+            (color.b > 0.90 && color.s >= 0.42)
+            ? 0.11 * clamp((color.s - 0.42) / 0.58, min: 0, max: 1)
+            : 0
+        return color.s * max(midTone, brightChromaticFloor)
+    }
+
     fileprivate nonisolated static func entropyNormalized(_ probabilities: [CGFloat]) -> CGFloat {
         let positive = probabilities.filter { $0 > 0.0001 }
         guard positive.count > 1 else { return 0 }
@@ -1361,8 +1508,9 @@ extension BKColorEngine {
         return TierRanges(bgB: bgB, fgB: fgB, dotB: dotB, bgS: bgS, fgS: fgS, dotS: dotS)
     }
 
-    /// Intersects the engine's existing background-saturation range with an
-    /// analysis-derived ceiling/floor.  Only ever narrows — never widens.
+    /// Reconciles the engine's background-saturation range with analysis
+    /// evidence. True neutral covers narrow to grey; muted-but-trusted covers
+    /// get a small saturation floor so BK1/BK2 do not collapse to black-white.
     fileprivate nonisolated static func applyAnalysisBgSGating(
         _ existing: ClosedRange<CGFloat>,
         analysis: ArtworkColorAnalysis?,
@@ -1372,11 +1520,17 @@ extension BKColorEngine {
         let isMono = analysis?.isMonochrome ?? false
         let confidence = analysis?.dominantHueConfidence ?? 0.5
         let trusted = analysisHasTrustedHueCandidate(analysis)
+        let strictMono = isMono && !trusted
         let hue = analysis?.dominantHue ?? 0
         let warmRed = hue <= 0.12 || hue >= 0.92
+        let primaryChroma = analysis?.primaryHueSourceColor.flatMap(OKColor.nsColorToOKLCH(_:))?.c ?? 0
+        let mutedTrusted =
+            trusted
+            && !strictMono
+            && primaryChroma >= ColorSystemTokens.NearMonochromeProfile.mutedTrustedHueChromaFloor
 
-        let ceiling: CGFloat
-        if isMono {
+        var ceiling: CGFloat
+        if strictMono {
             ceiling = 0.10
         } else if isDark && trusted && warmRed && colorfulness < 0.24 {
             ceiling = 0.44
@@ -1387,18 +1541,28 @@ extension BKColorEngine {
         } else {
             ceiling = 0.78
         }
-        let floor: CGFloat = isMono ? 0.0 : (isDark && trusted && warmRed ? 0.14 : 0.06)
+        var floor: CGFloat = strictMono ? 0.0 : (isDark && trusted && warmRed ? 0.14 : 0.06)
 
-        // Intersect: never widen the engine's own range.
-        let intersectedLower = max(existing.lowerBound, floor)
-        let intersectedUpper = min(existing.upperBound, ceiling)
-        var result = existing
-        if intersectedLower <= intersectedUpper {
-            result = intersectedLower...intersectedUpper
+        if mutedTrusted && colorfulness < 0.30 {
+            floor = max(floor, isDark ? 0.13 : 0.075)
+            ceiling = max(ceiling, isDark ? 0.38 : 0.24)
         }
 
-        // Low dominant-hue confidence → further narrow by 40% to avoid muddy mixes.
-        if confidence < 0.20 {
+        var result = makeRange(
+            lower: max(existing.lowerBound, floor),
+            upper: max(min(existing.upperBound, ceiling), min(ceiling, max(existing.upperBound, floor)))
+        )
+
+        if mutedTrusted && colorfulness < 0.30 {
+            let liftedUpper = min(ceiling, max(result.upperBound, isDark ? 0.34 : 0.22))
+            let liftedLower = min(liftedUpper, max(result.lowerBound, floor))
+            result = makeRange(lower: liftedLower, upper: liftedUpper)
+        }
+
+        // Low dominant-hue confidence narrows only when no primary chroma can
+        // explain the hue. Muted coherent covers often have low confidence but
+        // still need their gentle tint preserved.
+        if confidence < 0.20 && !mutedTrusted {
             let span = result.upperBound - result.lowerBound
             if span > 0 {
                 let narrowed = span * 0.6
@@ -1550,6 +1714,8 @@ extension BKColorEngine {
             accentHue: nil,
             accentStrength: 0,
             accentEnabled: false,
+            usesStrictNeutralRendering: true,
+            chromaticClusterCount: 0,
             bgStops: bgStops.map(toCGColor(_:)),
             bgVariants: [bgStops.map(toCGColor(_:))],
             shapePool: shapePool.map(toCGColor(_:)),
@@ -3092,7 +3258,10 @@ extension BKColorEngine {
     /// Crush a CGColor's OKLCH chroma to zero for true nearMono covers.
     /// The old cool-neutral hue rotation solved pink leakage by replacing it
     /// with blue/green leakage; true black-and-white artwork now stays grey.
-    fileprivate nonisolated static func neutraliseCGColor(_ color: CGColor) -> CGColor {
+    fileprivate nonisolated static func neutraliseCGColor(
+        _ color: CGColor,
+        lightnessScale: CGFloat = 1.0
+    ) -> CGColor {
         guard let ns = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) else {
             return color
         }
@@ -3100,12 +3269,30 @@ extension BKColorEngine {
             return color
         }
         let crushed = OKColor.OKLCH(
-            l: lch.l,
+            l: clamp(lch.l * lightnessScale, min: 0, max: 1),
             c: 0,
             h: 0
         )
         let nsCrushed = OKColor.okLCHToNSColor(crushed, alpha: 1.0)
         return (nsCrushed.usingColorSpace(.deviceRGB) ?? nsCrushed).cgColor
+    }
+
+    fileprivate nonisolated static func dedupedNSColors(_ colors: [NSColor]) -> [NSColor] {
+        var output: [NSColor] = []
+        for color in colors {
+            guard let rgb = color.usingColorSpace(.deviceRGB) else { continue }
+            let duplicate = output.contains { existing in
+                guard let ex = existing.usingColorSpace(.deviceRGB) else { return false }
+                let dr = rgb.redComponent - ex.redComponent
+                let dg = rgb.greenComponent - ex.greenComponent
+                let db = rgb.blueComponent - ex.blueComponent
+                return sqrt(dr * dr + dg * dg + db * db) < 0.018
+            }
+            if !duplicate {
+                output.append(rgb)
+            }
+        }
+        return output
     }
 
     fileprivate nonisolated static func hsb(from color: NSColor) -> HSBColor? {

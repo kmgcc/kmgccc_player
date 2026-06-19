@@ -16,7 +16,7 @@ public nonisolated enum ArtworkColorExtractor {
     /// output (`ArtworkAssetStore` snapshots, `ThemeStore.dominantColorCache`)
     /// fold this into their keys, so previous-version entries cannot bleed
     /// into a new algorithm.
-    public nonisolated static let cacheVersion: String = "faithful-hue-source-v5"
+    public nonisolated static let cacheVersion: String = "shape-richness-v6"
 
     struct TextPalette {
         let primary: NSColor
