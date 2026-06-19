@@ -110,6 +110,11 @@ nonisolated enum ColorSystemSelfCheck {
         checkDisplayPaletteNearMonoRestraint(&report)
         checkDisplayPaletteSalientPriorityUnderContention(&report)
 
+        report.section("Faithful hue source — cover regressions")
+        checkFaithfulTrueGreyCoverStaysAchromatic(&report)
+        checkFaithfulBlackTealCoverAvoidsPink(&report)
+        checkFaithfulWarmCoverLEDStaysWarm(&report)
+
         report.section("Phase 3 hotfix — consumer projection")
         checkSpectrumNearMonoNeutralised(&report)
         checkSpectrumLowSaturationNotAmplified(&report)
@@ -177,7 +182,7 @@ nonisolated enum ColorSystemSelfCheck {
 
         report.section("Phase 6.3 — artistic colour stabilization")
         checkSeedFocusFiresOnBlackPlusBrightYellow(&report)
-        checkArtisticSeedUsesDisplayHighlightBeforeDominant(&report)
+        checkArtisticSeedUsesTrustedHueBeforeBlackDominant(&report)
         checkSeedFocusFiresOnBluePlusOrange(&report)
         checkSeedFocusSuppressedOn70Brown30Blue(&report)
         checkSeedFocusSuppressedOnTinyNoise(&report)
@@ -1573,13 +1578,15 @@ nonisolated enum ColorSystemSelfCheck {
         let prepared = SpectrumPaletteSelfCheck.prepare(inputs, analysis: analysis)
         let sourceChromas: [CGFloat] = inputs.compactMap { OKColor.nsColorToOKLCH($0)?.c }
         let outChromas: [CGFloat] = prepared.compactMap { OKColor.nsColorToOKLCH($0)?.c }
+        let sourceMax = sourceChromas.max() ?? 0
+        let outMax = outChromas.max() ?? 0
         var worstAmp: CGFloat = 1
         if sourceChromas.count == outChromas.count, !sourceChromas.isEmpty {
             for i in 0..<sourceChromas.count {
                 let src = sourceChromas[i]
                 let out = outChromas[i]
                 let amp: CGFloat
-                if src > 0 {
+                if src > 0.001 {
                     amp = out / src
                 } else {
                     amp = out > 0.01 ? 99 : 1
@@ -1589,12 +1596,16 @@ nonisolated enum ColorSystemSelfCheck {
         } else {
             worstAmp = 99
         }
-        // Soft shoulder; we accept up to ~1.05× source chroma. Anything
-        // above means the tuner is fabricating colour.
-        let ok = worstAmp <= 1.05
+        // Soft shoulder; for muted chromatic input we accept up to ~1.05×
+        // source chroma. If the faithful-hue gate has correctly collapsed a
+        // no-trust low-sat sample to grey, the absolute chroma ceiling is the
+        // useful invariant instead of a ratio between two near-zero numbers.
+        let ok = sourceMax <= 0.006
+            ? outMax <= 0.010
+            : worstAmp <= 1.05
         report.record(
             "Spectrum: low-sat not amplified", ok,
-            "worstChromaAmp=\(format(worstAmp)) src=\(sourceChromas.map(format)) out=\(outChromas.map(format))"
+            "worstChromaAmp=\(format(worstAmp)) srcMax=\(format(sourceMax)) outMax=\(format(outMax)) src=\(sourceChromas.map(format)) out=\(outChromas.map(format))"
         )
     }
 
@@ -2035,6 +2046,140 @@ nonisolated enum ColorSystemSelfCheck {
         )
     }
 
+    // MARK: - Faithful hue source scenarios
+
+    private static func checkFaithfulTrueGreyCoverStaysAchromatic(_ report: inout CheckReport) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.45, (18, 18, 18, 255)),
+            (0.35, (220, 220, 218, 255)),
+            (0.20, (96, 96, 94, 255))
+        ]) else {
+            report.record("Faithful hue: true grey cover stays achromatic", false, "analysis nil")
+            return
+        }
+        let palette = SemanticPaletteFactory.make(
+            from: analysis,
+            scheme: .light,
+            userFallbackAccent: NSColor.systemBlue,
+            useArtworkTint: true
+        )
+        let displayMaxC = analysis.displayPalette
+            .compactMap { OKColor.nsColorToOKLCH($0)?.c }
+            .max() ?? 0
+        let accentC = OKColor.nsColorToOKLCH(palette.globalAccent)?.c ?? 1
+        let lyricC = OKColor.nsColorToOKLCH(palette.lyrics.fullscreen.mainActive)?.c ?? 1
+        let ok = analysis.isNearMonochrome
+            && analysis.lacksTrustedHue
+            && analysis.primaryHueSourceColor == nil
+            && displayMaxC <= 0.006
+            && accentC <= 0.006
+            && lyricC <= 0.006
+        report.record(
+            "Faithful hue: true grey cover stays achromatic", ok,
+            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) displayMaxC=\(format(displayMaxC)) accentC=\(format(accentC)) lyricC=\(format(lyricC))"
+        )
+    }
+
+    private static func checkFaithfulBlackTealCoverAvoidsPink(_ report: inout CheckReport) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.62, (3, 5, 5, 255)),
+            (0.24, (7, 92, 82, 255)),
+            (0.14, (0, 42, 38, 255))
+        ]) else {
+            report.record("Faithful hue: black teal cover avoids pink", false, "analysis nil")
+            return
+        }
+        guard
+            let source = analysis.primaryHueSourceColor,
+            let sourceLCH = OKColor.nsColorToOKLCH(source)
+        else {
+            report.record(
+                "Faithful hue: black teal cover avoids pink", false,
+                "missing primary hue source trusted=\(analysis.hasTrustedHueCandidate)"
+            )
+            return
+        }
+        let palette = SemanticPaletteFactory.make(
+            from: analysis,
+            scheme: .light,
+            userFallbackAccent: NSColor.systemBlue,
+            useArtworkTint: true
+        )
+        guard let accentLCH = OKColor.nsColorToOKLCH(palette.globalAccent) else {
+            report.record("Faithful hue: black teal cover avoids pink", false, "accent OKLCH nil")
+            return
+        }
+        let sourceIsTeal = sourceLCH.h >= 0.36 && sourceLCH.h <= 0.62
+        let accentTracksSource = circularHueDelta(accentLCH.h, sourceLCH.h) <= 0.070
+        let accentAvoidsPink = min(
+            circularHueDelta(accentLCH.h, 0.00),
+            circularHueDelta(accentLCH.h, 0.96)
+        ) >= 0.120
+        let ok = analysis.isUltraDark
+            && analysis.hasTrustedHueCandidate
+            && sourceLCH.c >= ColorSystemTokens.NearMonochromeProfile.mutedTrustedHueChromaFloor
+            && sourceIsTeal
+            && accentTracksSource
+            && accentAvoidsPink
+        report.record(
+            "Faithful hue: black teal cover avoids pink", ok,
+            "ultraDark=\(analysis.isUltraDark) source=\(describeLCH(sourceLCH)) accent=\(describeLCH(accentLCH))"
+        )
+    }
+
+    private static func checkFaithfulWarmCoverLEDStaysWarm(_ report: inout CheckReport) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.48, (188, 154, 58, 255)),
+            (0.24, (92, 70, 28, 255)),
+            (0.18, (32, 28, 18, 255)),
+            (0.10, (238, 222, 170, 255))
+        ]) else {
+            report.record("Faithful hue: warm cover LED stays warm", false, "analysis nil")
+            return
+        }
+        guard
+            let source = analysis.primaryHueSourceColor,
+            let sourceLCH = OKColor.nsColorToOKLCH(source)
+        else {
+            report.record(
+                "Faithful hue: warm cover LED stays warm", false,
+                "missing primary hue source trusted=\(analysis.hasTrustedHueCandidate)"
+            )
+            return
+        }
+        let palette = SemanticPaletteFactory.make(
+            from: analysis,
+            scheme: .dark,
+            userFallbackAccent: NSColor.systemYellow,
+            useArtworkTint: true
+        )
+        let centerColor = MainActor.assumeIsolated { () -> NSColor in
+            let resolver = LEDColorResolver(
+                accentColor: Color(nsColor: palette.globalAccent),
+                colorScheme: .dark,
+                brightnessLevels: 10,
+                palette: palette
+            )
+            return resolver.centerColor
+        }
+        guard let centerLCH = OKColor.nsColorToOKLCH(centerColor) else {
+            report.record("Faithful hue: warm cover LED stays warm", false, "center OKLCH nil")
+            return
+        }
+        let centerTracksSource = circularHueDelta(centerLCH.h, sourceLCH.h) <= 0.070
+        let centerIsWarm = centerLCH.h >= 0.07 && centerLCH.h <= 0.30
+        let centerAvoidsMint = circularHueDelta(centerLCH.h, 0.43) >= 0.100
+        let ok = analysis.hasTrustedHueCandidate
+            && sourceLCH.c >= ColorSystemTokens.NearMonochromeProfile.mutedTrustedHueChromaFloor
+            && centerTracksSource
+            && centerIsWarm
+            && centerAvoidsMint
+        report.record(
+            "Faithful hue: warm cover LED stays warm", ok,
+            "source=\(describeLCH(sourceLCH)) center=\(describeLCH(centerLCH)) colorfulness=\(format(analysis.colorfulness)) avgSat=\(format(analysis.avgSaturation))"
+        )
+    }
+
     // MARK: - Phase 6.3 scenarios
 
     /// Phase 6.3 token-coupled tier-range fixture mirroring
@@ -2084,15 +2229,15 @@ nonisolated enum ColorSystemSelfCheck {
     }
 
     /// Regression for the Artistic-only failure mode: the analyser has already
-    /// surfaced a tiny yellow mark in displayPalette, but the artistic seed path
-    /// must not bind lyrics back to the dominant black field.
-    private static func checkArtisticSeedUsesDisplayHighlightBeforeDominant(_ report: inout CheckReport) {
+    /// surfaced a usable yellow mark, but the artistic seed path must not bind
+    /// lyrics back to the arbitrary hue of the dominant black field.
+    private static func checkArtisticSeedUsesTrustedHueBeforeBlackDominant(_ report: inout CheckReport) {
         guard let base = analyseMix(side: 64, regions: [
             (0.50, (15, 15, 15, 255)),
             (0.45, (60, 60, 60, 255)),
             (0.05, (255, 200, 30, 255))
         ]) else {
-            report.record("Phase 6.3: artistic seed uses display highlight before dominant", false, "analysis nil")
+            report.record("Phase 6.3: artistic seed uses trusted hue before black dominant", false, "analysis nil")
             return
         }
         let analysis = ArtworkColorAnalysis(
@@ -2125,14 +2270,15 @@ nonisolated enum ColorSystemSelfCheck {
             displayPalette: base.displayPalette,
             bestTextSourceColor: base.dominantColor
         )
-        let yellowInDisplay = analysis.displayPalette.dropFirst().contains {
+        let yellowInDisplay = analysis.displayPalette.contains {
             isHueClose(of: $0, target: 0.13)
         }
-        guard yellowInDisplay else {
+        let yellowSource = analysis.primaryHueSourceColor.flatMap(OKColor.nsColorToOKLCH(_:))
+        guard yellowInDisplay || yellowSource != nil else {
             report.record(
-                "Phase 6.3: artistic seed uses display highlight before dominant",
+                "Phase 6.3: artistic seed uses trusted hue before black dominant",
                 false,
-                "yellow missing from displayPalette display.count=\(analysis.displayPalette.count)"
+                "yellow missing from displayPalette/source display.count=\(analysis.displayPalette.count)"
             )
             return
         }
@@ -2141,7 +2287,7 @@ nonisolated enum ColorSystemSelfCheck {
             averageBaseColor: analysis.averageColor,
             analysis: analysis
         ) else {
-            report.record("Phase 6.3: artistic seed uses display highlight before dominant", false, "seed nil")
+            report.record("Phase 6.3: artistic seed uses trusted hue before black dominant", false, "seed nil")
             return
         }
         let finalSet = SemanticPaletteSelfCheck.fullscreenLyricsColorSet(
@@ -2154,15 +2300,17 @@ nonisolated enum ColorSystemSelfCheck {
         )
         let dominant = OKColor.nsColorToOKLCH(analysis.dominantColor)
         let backgroundSeed = analysis.topPalette.first.flatMap(OKColor.nsColorToOKLCH(_:))
-        let displayHighlight = analysis.displayPalette.dropFirst().first.flatMap(OKColor.nsColorToOKLCH(_:))
+        let displayHighlight = analysis.displayPalette.first(where: {
+            isHueClose(of: $0, target: 0.13)
+        }).flatMap(OKColor.nsColorToOKLCH(_:))
         let active = OKColor.nsColorToOKLCH(finalSet.mainActive)
         let inactive = OKColor.nsColorToOKLCH(finalSet.mainInactive)
         let hueOK = seed.h > 0.18 && seed.h < 0.32
         let chromaOK = seed.c >= 0.10
         report.record(
-            "Phase 6.3: artistic seed uses display highlight before dominant",
+            "Phase 6.3: artistic seed uses trusted hue before black dominant",
             hueOK && chromaOK,
-            "dominant=\(describeLCH(dominant)) backgroundSeed=\(describeLCH(backgroundSeed)) salient.count=\(analysis.salientHighlightPalette.count) displayHighlight=\(describeLCH(displayHighlight)) seed=\(describeLCH(seed)) active=\(describeLCH(active)) inactive=\(describeLCH(inactive)) nearMono=\(analysis.isNearMonochrome) ultraDark=\(analysis.isUltraDark) trusted=\(analysis.hasTrustedHueCandidate) highSatMax=\(format(analysis.largestHighSaturationAreaShare))"
+            "dominant=\(describeLCH(dominant)) backgroundSeed=\(describeLCH(backgroundSeed)) salient.count=\(analysis.salientHighlightPalette.count) displayHighlight=\(describeLCH(displayHighlight)) primaryHueSource=\(describeLCH(yellowSource)) seed=\(describeLCH(seed)) active=\(describeLCH(active)) inactive=\(describeLCH(inactive)) nearMono=\(analysis.isNearMonochrome) ultraDark=\(analysis.isUltraDark) trusted=\(analysis.hasTrustedHueCandidate) highSatMax=\(format(analysis.largestHighSaturationAreaShare))"
         )
     }
 

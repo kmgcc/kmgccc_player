@@ -97,41 +97,12 @@ nonisolated enum ColorSystemTokens {
 
     // MARK: - Near-monochrome accent (SemanticPaletteFactory.nearMonochromeAccent)
     //
-    // Drives the accent on covers where `isNearMonochrome == true`.
-    // Output is a desaturated tone, hue chosen from the average (if any
-    // hue is usable) or a fixed neutral hue otherwise. This is the
-    // "anti-fake-color" path — it must not be relied on for ultra-dark
-    // protection (which is now a separate orthogonal axis).
+    // Drives the accent on covers where no trustworthy hue survives. Output
+    // is achromatic; these tokens only control the grey tone's lightness.
+    // This is the "anti-fake-color" path — it must not be relied on for
+    // ultra-dark protection (which is a separate orthogonal axis).
 
     enum NearMonochrome {
-
-        // Average-hue usability gates (need a tiny bit of colour to pick a
-        // hue from the average).
-        static let avgHueUsableSaturation: CGFloat = 0.055
-        static let avgHueUsableAvgSaturation: CGFloat = 0.055
-
-        // Neutral-hue choice when the average has no usable hue: cool
-        // charcoal under dark covers, warm paper otherwise.
-        static let neutralHueChoiceLightnessThreshold: CGFloat = 0.34
-        static let neutralCoolHue: CGFloat = 0.58
-        static let neutralWarmHue: CGFloat = 0.10
-
-        // Strict-mono gate (any one of these is enough). Used to pick the
-        // tighter saturation cap below.
-        static let strictMonoColorfulness: CGFloat = 0.055
-        static let strictMonoAvgSaturation: CGFloat = 0.085
-        static let strictMonoHighSatAreaShare: CGFloat = 0.06
-
-        // Output saturation cap (strict vs softer mono branch).
-        static let strictMonoSatCapDark: CGFloat = 0.08
-        static let strictMonoSatCapLight: CGFloat = 0.07
-        static let nearMonoSatCapDark: CGFloat = 0.14
-        static let nearMonoSatCapLight: CGFloat = 0.12
-
-        // Output saturation floor and scaling of the input average sat.
-        static let saturationFloorDark: CGFloat = 0.035
-        static let saturationFloorLight: CGFloat = 0.025
-        static let saturationScale: CGFloat = 0.72
 
         // Dark-mode tone-lift: dimmer cover → lift output L slightly.
         // (In the original code, the pivot doubled as the input-ramp range —

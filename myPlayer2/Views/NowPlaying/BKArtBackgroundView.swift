@@ -719,7 +719,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private var didPauseBackgroundTimerForTransition = false
     private var didPauseDotTimerForTransition = false
     private var rebuildDebounceTask: Task<Void, Never>?
-    private let ultraDarkOverlayOpacity: Float = 0.50
+    private let ultraDarkOverlayOpacity: Float = 0.36
     private var activeAvoidanceRect: CGRect?
     private var backgroundAssetMode: BackgroundAssetMode = .currentPhaseLowRes
     private var resourceProfile: BKArtBackgroundView.ResourceProfile = .standard
@@ -1713,14 +1713,27 @@ private final class BKArtBackgroundLayerView: NSView {
             source = input
         }
 
+        let componentCeiling: CGFloat = {
+            guard !isDark else { return 1.0 }
+            switch role {
+            case .outer:
+                return 0.955
+            case .inner:
+                return 0.965
+            }
+        }()
+        let tintR = isDark ? rgb.redComponent : min(rgb.redComponent, componentCeiling)
+        let tintG = isDark ? rgb.greenComponent : min(rgb.greenComponent, componentCeiling)
+        let tintB = isDark ? rgb.blueComponent : min(rgb.blueComponent, componentCeiling)
+
         let tinted = source.applyingFilter(
             "CIColorMatrix",
             parameters: [
-                "inputRVector": CIVector(x: 1.0 - rgb.redComponent, y: 0, z: 0, w: 0),
-                "inputGVector": CIVector(x: 0, y: 1.0 - rgb.greenComponent, z: 0, w: 0),
-                "inputBVector": CIVector(x: 0, y: 0, z: 1.0 - rgb.blueComponent, w: 0),
+                "inputRVector": CIVector(x: componentCeiling - tintR, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: componentCeiling - tintG, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: componentCeiling - tintB, w: 0),
                 "inputAVector": CIVector(x: 0, y: 0, z: 0, w: rgb.alphaComponent),
-                "inputBiasVector": CIVector(x: rgb.redComponent, y: rgb.greenComponent, z: rgb.blueComponent, w: 0),
+                "inputBiasVector": CIVector(x: tintR, y: tintG, z: tintB, w: 0),
             ]
         )
 
@@ -2115,7 +2128,7 @@ private final class BKArtBackgroundLayerView: NSView {
                     lch.c = lch.c * 0.70
                     targetAlpha = 0.80
                 } else {
-                    lch.l = min(max(lch.l, 0.70), 0.79)
+                    lch.l = min(max(lch.l, 0.68), 0.765)
                     lch.c = max(0.18, lch.c * 1.80)
                     targetAlpha = 0.90
                 }
@@ -2797,7 +2810,12 @@ private final class BKArtBackgroundLayerView: NSView {
                 minS = max(adaptive, min(0.32, harmonized.bgSRange.lowerBound + 0.03))
             }
         }
-        let minB: CGFloat = harmonized.isDark ? 0.10 : 0.22
+        let minB: CGFloat
+        if harmonized.isDark {
+            minB = isUltraDarkCover ? 0.14 : 0.10
+        } else {
+            minB = 0.22
+        }
         let clampedS = max(minS, min(1.0, s))
         let clampedB = max(minB, min(1.0, b))
         let hsbAdjusted = NSColor(deviceHue: h, saturation: clampedS, brightness: clampedB, alpha: a)

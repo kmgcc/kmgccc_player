@@ -39,8 +39,8 @@ struct FullscreenSkinTabView: View {
     private let fullscreenMiniPlayerGlassMaterialOptions:
         [(title: String, material: AppSettings.FullscreenMiniPlayerGlassMaterial)] = [
             ("透明", .clear),
-            ("正常", .normal),
-        ]
+            ("常规", .normal),
+        ] 
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.sectionSpacing) {

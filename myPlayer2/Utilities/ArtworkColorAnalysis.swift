@@ -125,9 +125,67 @@ nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
             isMonochrome: isMonochrome
         )
     }
+
+    var lacksTrustedHue: Bool {
+        !hasTrustedHueCandidate
+    }
+
+    /// First artwork colour whose hue is supported by actual chroma evidence.
+    ///
+    /// `dominantColor` can be nearly black / white, where AppKit still reports
+    /// an arbitrary HSB hue. Consumers that lift or saturate a seed should use
+    /// this instead of reading `dominantColor` directly.
+    var primaryHueSourceColor: NSColor? {
+        guard !lacksTrustedHue else { return nil }
+        return ArtworkHueTrust.firstUsableHueColor(
+            in: [dominantColor]
+                + displayPalette
+                + topPalette
+                + salientHighlightPalette
+                + richPalette
+                + [averageColor, bestTextSourceColor]
+        )
+    }
 }
 
 nonisolated enum ArtworkHueTrust {
+    static func isUsableHueSource(_ color: NSColor, allowMuted: Bool = true) -> Bool {
+        guard let lch = OKColor.nsColorToOKLCH(color) else { return false }
+        let T = ColorSystemTokens.NearMonochromeProfile.self
+        if lch.c >= T.trustedHueChromaFloor {
+            return true
+        }
+
+        guard allowMuted, lch.c >= T.mutedTrustedHueChromaFloor else {
+            return false
+        }
+        guard let rgb = color.usingColorSpace(.deviceRGB) else { return false }
+        var h: CGFloat = 0
+        var s: CGFloat = 0
+        var b: CGFloat = 0
+        var a: CGFloat = 0
+        rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        return s >= 0.10 && b >= 0.10 && b <= 0.94
+    }
+
+    static func firstUsableHueColor(in candidates: [NSColor]) -> NSColor? {
+        for candidate in candidates where isUsableHueSource(candidate) {
+            return candidate
+        }
+        return nil
+    }
+
+    static func neutralDisplayColor(_ color: NSColor) -> NSColor {
+        guard let lch = OKColor.nsColorToOKLCH(color) else {
+            let hsl = ColorMath.hsl(of: color)
+            return ColorMath.color(h: 0, s: 0, l: hsl.l, alpha: color.alphaComponent)
+        }
+        return OKColor.okLCHToNSColor(
+            OKColor.OKLCH(l: lch.l, c: 0, h: 0),
+            alpha: color.alphaComponent
+        )
+    }
+
     static func hasTrustedHueCandidate(
         dominant: OKColor.OKLCH?,
         top: [OKColor.OKLCH],
@@ -142,20 +200,29 @@ nonisolated enum ArtworkHueTrust {
         isMonochrome: Bool
     ) -> Bool {
         let T = ColorSystemTokens.NearMonochromeProfile.self
-        let paletteCandidates = top + rich + salient
-        if paletteCandidates.contains(where: { $0.c >= T.trustedHueChromaFloor }) {
-            return true
-        }
+        let paletteCandidates = top + rich
         let hasDominantSamplingSupport =
             !isMonochrome
             && (avgSaturation >= T.strictAvgSaturation
             || colorfulness >= T.strictColorfulness
             || dominantSaturation >= T.mutedTrustedDominantSaturationFloor
             || largestHighSaturationAreaShare >= T.mutedTrustedLargestHighSatAreaFloor)
+        if paletteCandidates.contains(where: { $0.c >= T.trustedHueChromaFloor }),
+           hasDominantSamplingSupport {
+            return true
+        }
         if let dominant,
            dominant.c >= T.trustedHueChromaFloor,
            hasDominantSamplingSupport {
             return true
+        }
+
+        for (index, candidate) in salient.enumerated()
+            where candidate.c >= T.trustedHueChromaFloor {
+            let share = index < salientAreaShares.count ? salientAreaShares[index] : 0
+            if share >= ColorSystemTokens.SalientHighlight.minAreaShare {
+                return true
+            }
         }
 
         for (index, candidate) in salient.enumerated()
@@ -180,7 +247,7 @@ nonisolated enum ArtworkHueTrust {
             return true
         }
 
-        let allCandidates = [dominant].compactMap { $0 } + paletteCandidates
+        let allCandidates = [dominant].compactMap { $0 } + paletteCandidates + salient
         let mutedCandidates = allCandidates.filter { $0.c >= T.mutedTrustedHueChromaFloor }
         guard mutedCandidates.count >= 2 else { return false }
 
@@ -503,7 +570,8 @@ extension ArtworkColorExtractor {
             top: topPalette,
             salient: salient,
             rich: richPalette,
-            isNearMonochrome: isNearMonochrome
+            isNearMonochrome: isNearMonochrome,
+            hasTrustedHueCandidate: hasTrustedHue
         )
 
         return ArtworkColorAnalysis(

@@ -16,7 +16,7 @@ public nonisolated enum ArtworkColorExtractor {
     /// output (`ArtworkAssetStore` snapshots, `ThemeStore.dominantColorCache`)
     /// fold this into their keys, so previous-version entries cannot bleed
     /// into a new algorithm.
-    public nonisolated static let cacheVersion: String = "orthogonal-decision-v4"
+    public nonisolated static let cacheVersion: String = "faithful-hue-source-v5"
 
     struct TextPalette {
         let primary: NSColor
@@ -112,7 +112,12 @@ public nonisolated enum ArtworkColorExtractor {
     /// Keeps color close to artwork dominant hue and slightly richer, while avoiding
     /// dead-black / near-white extremes.
     public nonisolated static func uiAccentColor(from data: Data) -> NSColor? {
-        uiThemePalette(from: data, maxColors: 3).first
+        if let analysis = analyze(from: data) {
+            return analysis.primaryHueSourceColor
+                ?? analysis.displayPalette.first
+                ?? analysis.averageColor
+        }
+        return uiThemePalette(from: data, maxColors: 3).first
     }
 
     /// Foreground palette for text and icon glyphs rendered over artwork-derived
@@ -987,30 +992,53 @@ extension ArtworkColorExtractor {
         top: [NSColor],
         salient: [NSColor],
         rich: [NSColor],
-        isNearMonochrome: Bool
+        isNearMonochrome: Bool,
+        hasTrustedHueCandidate: Bool = true
     ) -> [NSColor] {
         let cap = isNearMonochrome
             ? ColorSystemTokens.DisplayPalette.nearMonoMaxCount
             : ColorSystemTokens.DisplayPalette.maxCount
 
         var picked: [NSColor] = []
+        let lacksTrustedHue = !hasTrustedHueCandidate
+
+        func displayReady(_ color: NSColor) -> NSColor {
+            if lacksTrustedHue {
+                return ArtworkHueTrust.neutralDisplayColor(color)
+            }
+            if hasTrustedHueCandidate,
+               !ArtworkHueTrust.isUsableHueSource(color) {
+                return ArtworkHueTrust.neutralDisplayColor(color)
+            }
+            return color
+        }
 
         func add(_ color: NSColor) {
             if picked.count >= cap { return }
-            if picked.contains(color) { return }
-            let candidateHue = hueValue(of: color)
+            let ready = displayReady(color)
+            if picked.contains(ready) { return }
+            let candidateHue = hueValue(of: ready)
             let distinct = picked.allSatisfy { existing in
                 let hueGap = ColorMath.circularHueDistance(candidateHue, hueValue(of: existing))
-                let rgbGap = rgbDistance(color, existing)
+                let rgbGap = rgbDistance(ready, existing)
                 return hueGap >= ColorSystemTokens.DisplayPalette.hueDistinctGap
                     || rgbGap >= ColorSystemTokens.DisplayPalette.rgbDistinctGap
             }
             if distinct {
-                picked.append(color)
+                picked.append(ready)
             }
         }
 
-        if let primary = top.first { add(primary) }
+        let tailSources = salient + Array(top.dropFirst()) + rich
+        if hasTrustedHueCandidate,
+           let primary = top.first,
+           !ArtworkHueTrust.isUsableHueSource(primary),
+           let chromaticLead = ArtworkHueTrust.firstUsableHueColor(in: tailSources) {
+            add(chromaticLead)
+            add(primary)
+        } else if let primary = top.first {
+            add(primary)
+        }
         for color in salient { add(color) }
         for color in top.dropFirst() { add(color) }
         if isNearMonochrome { return picked }

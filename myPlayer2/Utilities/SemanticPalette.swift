@@ -460,8 +460,8 @@ nonisolated enum SemanticPaletteFactory {
         guard let lch = OKColor.nsColorToOKLCH(color) else { return color }
         let crushed = OKColor.OKLCH(
             l: lch.l,
-            c: Swift.min(lch.c, ColorSystemTokens.ReadabilityProfile.nearMonoChromaCeiling),
-            h: lch.h
+            c: 0,
+            h: 0
         )
         return OKColor.okLCHToNSColor(crushed, alpha: color.alphaComponent)
     }
@@ -714,6 +714,11 @@ nonisolated enum SemanticPaletteFactory {
         // arbitrary small regions.
         if let displayHighlight = pickDisplayHighlightLyricSeed(analysis: analysis) {
             return displayHighlight
+        }
+        if let sourceColor = analysis.primaryHueSourceColor,
+           let sourceLCH = OKColor.nsColorToOKLCH(sourceColor),
+           sourceLCH.c >= T.lyricsDominantSeedMinChroma {
+            return sourceLCH
         }
         if let averageSeed = averageDerivedLyricSeed(
             averageBaseColor: averageBaseColor,
@@ -1155,8 +1160,8 @@ nonisolated enum SemanticPaletteFactory {
         return OKColor.okLCHToNSColor(
             OKColor.OKLCH(
                 l: lch.l,
-                c: Swift.min(lch.c, ColorSystemTokens.Lyrics.nearMonoChromaCeiling),
-                h: lch.h
+                c: 0,
+                h: 0
             ),
             alpha: color.alphaComponent
         )
@@ -1177,7 +1182,7 @@ nonisolated enum SemanticPaletteFactory {
             return nearMonochromeAccent(for: scheme, analysis: analysis)
         }
 
-        let raw = analysis.dominantColor
+        let raw = analysis.primaryHueSourceColor ?? analysis.dominantColor
         let comp = ColorMath.hsl(of: raw)
         var h = comp.h, s = comp.s, l = comp.l
 
@@ -1294,51 +1299,13 @@ nonisolated enum SemanticPaletteFactory {
     }
 
     /// Anti-fake-color accent path. Triggered when `analysis.isNearMonochrome`
-    /// is true — the cover does not carry a hue we trust. Output is a heavily
-    /// desaturated tone, hue chosen from the average (if any tiny tint exists)
-    /// or a fixed neutral hue otherwise. Phase 2 explicitly removed
-    /// "ultra-dark protection" from this path's responsibility; that is now
-    /// `isUltraDark`'s job (consumed by future Phase 3+ branches).
+    /// is true and no trusted hue survives. Output is achromatic by contract:
+    /// black/white artwork should produce grey hierarchy, not blue, green, or
+    /// pink residue. UltraDark remains a separate lightness-only axis.
     fileprivate static func nearMonochromeAccent(
         for scheme: ColorScheme,
         analysis: ArtworkColorAnalysis
     ) -> NSColor {
-        let average = ColorMath.hsl(of: analysis.averageColor)
-        let hasUsableAverageHue =
-            average.s >= ColorSystemTokens.NearMonochrome.avgHueUsableSaturation
-            && analysis.avgSaturation >= ColorSystemTokens.NearMonochrome.avgHueUsableAvgSaturation
-        let neutralHue: CGFloat
-        if hasUsableAverageHue {
-            neutralHue = average.h
-        } else if analysis.avgHslLightness
-                    < ColorSystemTokens.NearMonochrome.neutralHueChoiceLightnessThreshold {
-            neutralHue = ColorSystemTokens.NearMonochrome.neutralCoolHue
-        } else {
-            neutralHue = ColorSystemTokens.NearMonochrome.neutralWarmHue
-        }
-
-        let strictMono =
-            analysis.isMonochrome
-            || analysis.colorfulness < ColorSystemTokens.NearMonochrome.strictMonoColorfulness
-            || analysis.avgSaturation < ColorSystemTokens.NearMonochrome.strictMonoAvgSaturation
-            || analysis.largestHighSaturationAreaShare
-                < ColorSystemTokens.NearMonochrome.strictMonoHighSatAreaShare
-        let saturationCeiling: CGFloat = strictMono
-            ? (scheme == .dark
-                ? ColorSystemTokens.NearMonochrome.strictMonoSatCapDark
-                : ColorSystemTokens.NearMonochrome.strictMonoSatCapLight)
-            : (scheme == .dark
-                ? ColorSystemTokens.NearMonochrome.nearMonoSatCapDark
-                : ColorSystemTokens.NearMonochrome.nearMonoSatCapLight)
-        let saturationFloor: CGFloat = scheme == .dark
-            ? ColorSystemTokens.NearMonochrome.saturationFloorDark
-            : ColorSystemTokens.NearMonochrome.saturationFloorLight
-        let saturation = ColorMath.clamp(
-            min(average.s * ColorSystemTokens.NearMonochrome.saturationScale, saturationCeiling),
-            saturationFloor,
-            saturationCeiling
-        )
-
         let lightness: CGFloat
         if scheme == .dark {
             let toneLift = ColorMath.clamp(
@@ -1366,7 +1333,7 @@ nonisolated enum SemanticPaletteFactory {
             )
         }
 
-        return ColorMath.color(h: neutralHue, s: saturation, l: lightness)
+        return ColorMath.color(h: 0, s: 0, l: lightness)
     }
 
     fileprivate static func ambientSurface(
@@ -1446,6 +1413,9 @@ nonisolated enum SemanticPaletteFactory {
         let T = ColorSystemTokens.ToneLadder.self
         if analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate {
             return neutraliseLyricIfNearMono(analysis.bestTextSourceColor, analysis: analysis)
+        }
+        if let source = analysis.primaryHueSourceColor {
+            return source
         }
         if let dominantLCH = OKColor.nsColorToOKLCH(analysis.dominantColor),
            dominantLCH.c >= T.lyricsDominantSeedMinChroma {
