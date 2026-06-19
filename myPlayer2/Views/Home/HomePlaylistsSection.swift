@@ -441,7 +441,26 @@ struct HomePlaylistsSection: View {
                 .font(.system(size: mode.sectionTitleFontSize, weight: .semibold))
                 .foregroundStyle(titleColor)
             Spacer()
+            viewAllButton
         }
+    }
+
+    private var viewAllButton: some View {
+        Button {
+            uiState.pushSelectionInHomeContext(
+                .allPlaylists,
+                libraryVM: libraryVM
+            )
+        } label: {
+            HStack(spacing: 2) {
+                Text("查看全部")
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(subtitleColor)
+        }
+        .buttonStyle(.plain)
     }
 }
 

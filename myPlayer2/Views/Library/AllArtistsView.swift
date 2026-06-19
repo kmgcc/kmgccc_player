@@ -42,6 +42,8 @@ struct AllArtistsView: View {
         let primary = Color(nsColor: palette.primary)
         let secondary = Color(nsColor: palette.secondary)
         let artists = filteredArtists
+        let visibleIDs = artists.map(\.id)
+        let customSourceIDs = customOrderSourceArtists.map(\.id)
         return list(
             artists,
             primary: primary,
@@ -54,6 +56,36 @@ struct AllArtistsView: View {
                 detail: "artists=\(libraryVM.artistEntries.count), tracks=\(libraryVM.allTracks.count)"
             )
             FirstUseHitchDiagnostics.end(token)
+            pageController.bindCollectionList(libraryVM: libraryVM, uiState: uiState)
+            registerCollectionList(
+                visibleIDs: visibleIDs,
+                customSourceIDs: customSourceIDs,
+                isFiltering: isFiltering
+            )
+        }
+        .onChange(of: visibleIDs) { _, newIDs in
+            registerCollectionList(
+                visibleIDs: newIDs,
+                customSourceIDs: customSourceIDs,
+                isFiltering: isFiltering
+            )
+        }
+        .onChange(of: customSourceIDs) { _, newIDs in
+            registerCollectionList(
+                visibleIDs: visibleIDs,
+                customSourceIDs: newIDs,
+                isFiltering: isFiltering
+            )
+        }
+        .onChange(of: isFiltering) { _, newValue in
+            registerCollectionList(
+                visibleIDs: visibleIDs,
+                customSourceIDs: customSourceIDs,
+                isFiltering: newValue
+            )
+        }
+        .onDisappear {
+            pageController.unregisterCollectionList(selection: .allArtists)
         }
         .alert(
             NSLocalizedString("sidebar.delete_artist_confirm_title", comment: ""),
@@ -98,21 +130,58 @@ struct AllArtistsView: View {
         secondary: Color
     ) -> some View {
         ScrollView(.vertical) {
-            LazyVStack(spacing: 2) {
-                ForEach(artists) { artist in
+            ReorderableMultiselectRowsSection(
+                rows: artists,
+                isMultiselectMode: pageController.isMultiselectMode,
+                selectedIDs: pageController.selectedTrackIDs,
+                canReorder: pageController.canManuallyReorderCurrentCollection,
+                isSearchFiltering: isFiltering,
+                coordinateSpaceName: "artistCollectionReorderSpace",
+                rowCornerRadius: 12,
+                bottomSpacerHeight: 120,
+                badgeText: { "\($0)" },
+                rowHeight: { _ in 76 },
+                onClearSelection: {
+                    pageController.clearMultiselectState()
+                },
+                onBeginReorder: {
+                    pageController.beginManualTrackReorderInteraction()
+                },
+                onEndReorder: {
+                    pageController.endManualTrackReorderInteraction()
+                },
+                onCommitOrder: { orderedIDs in
+                    pageController.commitManualCollectionOrder(
+                        orderedItemIDs: orderedIDs,
+                        reason: "manual-artist-reorder"
+                    )
+                },
+                rowContent: { artist, _, _ in
                     ArtistListRow(
                         artist: artist,
                         trackCount: trackCount(for: artist),
                         albumCount: albumCount(for: artist),
                         titleColor: primary,
                         subtitleColor: secondary,
-                        onOpen: { open(artist) },
+                        onOpen: { handleRowTap(artist) },
                         onEdit: { editingArtist = artist },
                         onDelete: { requestDelete(artist) }
                     )
+                },
+                floatingContent: { artist in
+                    ArtistListRow(
+                        artist: artist,
+                        trackCount: trackCount(for: artist),
+                        albumCount: albumCount(for: artist),
+                        titleColor: primary,
+                        subtitleColor: secondary,
+                        enableSecondaryInteractions: false,
+                        onOpen: {},
+                        onEdit: {},
+                        onDelete: {}
+                    )
                 }
-                Color.clear.frame(height: 120) // mini-player headroom
-            }
+            )
             .padding(.horizontal, 24)
             .padding(.top, 16)
         }
@@ -127,9 +196,7 @@ struct AllArtistsView: View {
         )
         defer { FirstUseHitchDiagnostics.end(token) }
 
-        let trimmed = pageController.searchText
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
+        let trimmed = normalizedSearchText
         let base: [ArtistEntry]
         if trimmed.isEmpty {
             base = libraryVM.artistEntries
@@ -138,51 +205,34 @@ struct AllArtistsView: View {
                 $0.displayName.lowercased().contains(trimmed)
             }
         }
-        let aggregateStats = LibraryAggregateStats(tracks: libraryVM.allTracks)
-        let ascending = (libraryVM.trackSortOrder == .ascending)
-        return base.sorted { lhs, rhs in
-            let result: ComparisonResult
-            let useNaturalDescending: Bool
-            switch libraryVM.artistSortKey {
-            case .name:
-                result = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
-                useNaturalDescending = false
-            case .trackCount:
-                result = compareInt(lhs.trackCount, rhs.trackCount)
-                useNaturalDescending = false
-            case .albumCount:
-                result = compareInt(lhs.albumCount, rhs.albumCount)
-                useNaturalDescending = false
-            case .playCountTotal:
-                result = compareAggregateMetric(
-                    aggregateStats.artistPlayCount(for: lhs),
-                    aggregateStats.artistPlayCount(for: rhs)
-                )
-                useNaturalDescending = true
-            case .preferenceTotal:
-                result = compareAggregateMetric(
-                    aggregateStats.artistPreferenceScore(for: lhs),
-                    aggregateStats.artistPreferenceScore(for: rhs)
-                )
-                useNaturalDescending = true
-            case .totalDuration:
-                result = compareDouble(lhs.totalDuration, rhs.totalDuration)
-                useNaturalDescending = false
-            case .updatedAt:
-                result = compareDate(lhs.updatedAt, rhs.updatedAt)
-                useNaturalDescending = false
-            }
-            if result == .orderedSame {
-                return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
-                    == .orderedAscending
-            }
-            if useNaturalDescending {
-                return result == .orderedDescending
-            }
-            return ascending
-                ? result == .orderedAscending
-                : result == .orderedDescending
-        }
+        return libraryVM.sortedArtistEntriesForDisplay(base)
+    }
+
+    private var customOrderSourceArtists: [ArtistEntry] {
+        libraryVM.sortedArtistEntriesForDisplay(libraryVM.artistEntries)
+    }
+
+    private var normalizedSearchText: String {
+        pageController.searchText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private var isFiltering: Bool {
+        !normalizedSearchText.isEmpty
+    }
+
+    private func registerCollectionList(
+        visibleIDs: [UUID],
+        customSourceIDs: [UUID],
+        isFiltering: Bool
+    ) {
+        pageController.registerCollectionList(
+            selection: .allArtists,
+            visibleItemIDs: visibleIDs,
+            customOrderSourceItemIDs: customSourceIDs,
+            isFiltering: isFiltering
+        )
     }
 
     private func trackCount(for artist: ArtistEntry) -> Int {
@@ -207,6 +257,17 @@ struct AllArtistsView: View {
             .artist(artist.canonicalName),
             libraryVM: libraryVM
         )
+    }
+
+    private func handleRowTap(_ artist: ArtistEntry) {
+        if pageController.isMultiselectMode {
+            pageController.handleMultiselectItemTap(
+                itemID: artist.id,
+                extendingRange: LibraryRowInput.isShiftPressed
+            )
+        } else {
+            open(artist)
+        }
     }
 
     private func requestDelete(_ artist: ArtistEntry) {
@@ -245,6 +306,7 @@ private struct ArtistListRow: View {
     let albumCount: Int
     var titleColor: Color = .primary
     var subtitleColor: Color = .secondary
+    var enableSecondaryInteractions = true
     let onOpen: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
@@ -273,18 +335,23 @@ private struct ArtistListRow: View {
                       : Color.clear)
         )
         .contentShape(Rectangle())
-        .onTapGesture(perform: onOpen)
-        .onHover { isHovering = $0 }
+        .onTapGesture {
+            guard enableSecondaryInteractions else { return }
+            onOpen()
+        }
+        .onHover { isHovering = enableSecondaryInteractions && $0 }
         .contextMenu {
-            Button(action: onOpen) {
-                Label("打开艺人", systemImage: "person.crop.circle")
-            }
-            Button(action: onEdit) {
-                Label("编辑艺人", systemImage: "info.circle")
-            }
-            Divider()
-            Button(role: .destructive, action: onDelete) {
-                Label("删除艺人", systemImage: "trash")
+            if enableSecondaryInteractions {
+                Button(action: onOpen) {
+                    Label("打开艺人", systemImage: "person.crop.circle")
+                }
+                Button(action: onEdit) {
+                    Label("编辑艺人", systemImage: "info.circle")
+                }
+                Divider()
+                Button(role: .destructive, action: onDelete) {
+                    Label("删除艺人", systemImage: "trash")
+                }
             }
         }
         .task { await loadArtwork() }
@@ -360,6 +427,8 @@ private struct ArtistListRow: View {
         .menuIndicator(.hidden)
         .frame(width: 24, height: 24)
         .opacity(isHovering ? 1 : 0.4)
+        .disabled(!enableSecondaryInteractions)
+        .allowsHitTesting(enableSecondaryInteractions)
     }
 
     private func formattedDuration(_ seconds: Double) -> String {

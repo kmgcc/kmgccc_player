@@ -79,6 +79,12 @@ struct HomeView: View {
         .onChange(of: libraryVM.albumSortKey) { _, _ in
             homeVM.refreshArtistAlbumSort(from: libraryVM)
         }
+        .onChange(of: libraryVM.playlistSortKey) { _, _ in
+            homeVM.refreshArtistAlbumSort(from: libraryVM)
+        }
+        .onChange(of: libraryVM.collectionSortRevision) { _, _ in
+            homeVM.refreshArtistAlbumSort(from: libraryVM)
+        }
         .onChange(of: libraryVM.trackSortOrder) { _, _ in
             homeVM.refreshArtistAlbumSort(from: libraryVM)
         }

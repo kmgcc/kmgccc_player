@@ -101,6 +101,10 @@ final class PlaylistPageController {
     var isMultiselectMode = false
     var selectedTrackIDs: Set<UUID> = []
     var selectionAnchorTrackID: UUID?
+    private(set) var collectionListSelection: LibrarySelection?
+    private(set) var collectionVisibleItemIDs: [UUID] = []
+    private(set) var collectionCustomOrderSourceItemIDs: [UUID] = []
+    private(set) var isCollectionListFiltering = false
     var rendersHeaderBackgroundInWindowLayer = false
     private(set) var isManualTrackReorderActive = false
 
@@ -153,6 +157,11 @@ final class PlaylistPageController {
         self.uiState = uiState
     }
 
+    func bindCollectionList(libraryVM: LibraryViewModel, uiState: UIStateViewModel) {
+        self.libraryVM = libraryVM
+        self.uiState = uiState
+    }
+
     func appear(token: UUID) {
         guard let libraryVM else { return }
         activeViewTokens.insert(token)
@@ -185,6 +194,12 @@ final class PlaylistPageController {
     }
 
     func handleSelectionChange(_ selection: LibrarySelection) {
+        if collectionListSelection != selection {
+            collectionListSelection = nil
+            collectionVisibleItemIDs = []
+            collectionCustomOrderSourceItemIDs = []
+            isCollectionListFiltering = false
+        }
         resetHeaderHeavyWorkDeferralBaseline()
         beginSelectionTransition(to: selection)
         scheduleRebuild(reason: "selection", restoreScroll: true)
@@ -245,10 +260,46 @@ final class PlaylistPageController {
         isManualTrackReorderActive = false
     }
 
+    func registerCollectionList(
+        selection: LibrarySelection,
+        visibleItemIDs: [UUID],
+        customOrderSourceItemIDs: [UUID],
+        isFiltering: Bool
+    ) {
+        if collectionListSelection != selection {
+            clearMultiselectState()
+        }
+        collectionListSelection = selection
+        collectionVisibleItemIDs = visibleItemIDs
+        collectionCustomOrderSourceItemIDs = customOrderSourceItemIDs
+        isCollectionListFiltering = isFiltering
+
+        let visibleSet = Set(visibleItemIDs)
+        if !selectedTrackIDs.isSubset(of: visibleSet) {
+            selectedTrackIDs.formIntersection(visibleSet)
+            if let anchor = selectionAnchorTrackID, !visibleSet.contains(anchor) {
+                selectionAnchorTrackID = selectedTrackIDs.first
+            }
+        }
+    }
+
+    func unregisterCollectionList(selection: LibrarySelection) {
+        guard collectionListSelection == selection else { return }
+        clearMultiselectState()
+        collectionListSelection = nil
+        collectionVisibleItemIDs = []
+        collectionCustomOrderSourceItemIDs = []
+        isCollectionListFiltering = false
+    }
+
     func releaseSelectionStateForTeardown() {
         isMultiselectMode = false
         selectedTrackIDs.removeAll()
         selectionAnchorTrackID = nil
+        collectionListSelection = nil
+        collectionVisibleItemIDs = []
+        collectionCustomOrderSourceItemIDs = []
+        isCollectionListFiltering = false
         listScrollPositionID = nil
         lastPrefetchBucket = nil
         isManualTrackReorderActive = false
@@ -256,7 +307,7 @@ final class PlaylistPageController {
 
     @discardableResult
     func toggleMultiselectModeIfAllowed() -> Bool {
-        if isSearchFilteringTracks {
+        if isSearchFilteringCurrentList || !hasMultiselectRowsForCurrentSelection {
             clearMultiselectState()
             return false
         }
@@ -275,6 +326,33 @@ final class PlaylistPageController {
         isMultiselectMode = true
         selectedTrackIDs.insert(trackID)
         selectionAnchorTrackID = trackID
+    }
+
+    func handleMultiselectItemTap(itemID: UUID, extendingRange: Bool) {
+        guard isMultiselectMode else { return }
+        guard !isSearchFilteringCurrentList else {
+            clearMultiselectState()
+            return
+        }
+
+        if extendingRange,
+           let anchorID = selectionAnchorTrackID,
+           let anchorIndex = collectionVisibleItemIDs.firstIndex(of: anchorID),
+           let currentIndex = collectionVisibleItemIDs.firstIndex(of: itemID)
+        {
+            let bounds = anchorIndex <= currentIndex
+                ? anchorIndex...currentIndex
+                : currentIndex...anchorIndex
+            selectedTrackIDs.formUnion(collectionVisibleItemIDs[bounds])
+            return
+        }
+
+        if selectedTrackIDs.contains(itemID) {
+            selectedTrackIDs.remove(itemID)
+        } else {
+            selectedTrackIDs.insert(itemID)
+        }
+        selectionAnchorTrackID = itemID
     }
 
     func handleMultiselectRowTap(trackID: UUID, extendingRange: Bool) {
@@ -397,6 +475,31 @@ final class PlaylistPageController {
         return libraryVM.supportsCustomTrackOrder(for: libraryVM.currentSelection)
     }
 
+    var canManuallyReorderCurrentCollection: Bool {
+        guard let libraryVM else { return false }
+        return libraryVM.supportsCustomCollectionOrder(for: libraryVM.currentSelection)
+    }
+
+    var hasMultiselectRowsForCurrentSelection: Bool {
+        if isCurrentSelectionCollectionList {
+            return !collectionVisibleItemIDs.isEmpty
+        }
+        return page?.rows.isEmpty == false
+    }
+
+    var isSearchFilteringCurrentList: Bool {
+        if isCurrentSelectionCollectionList {
+            return isCollectionListFiltering
+        }
+        return isSearchFilteringTracks
+    }
+
+    private var isCurrentSelectionCollectionList: Bool {
+        guard let libraryVM else { return false }
+        return collectionListSelection == libraryVM.currentSelection
+            && libraryVM.supportsCustomCollectionOrder(for: libraryVM.currentSelection)
+    }
+
     var isSearchFilteringTracks: Bool {
         !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
@@ -413,6 +516,10 @@ final class PlaylistPageController {
     }
 
     func activateCustomSortFromCurrentDisplay(reason: String) {
+        if activateCustomCollectionSortFromCurrentDisplay(reason: reason) {
+            return
+        }
+
         guard let libraryVM, canManuallyReorderCurrentTracks else { return }
         let visibleTrackIDs = isSearchFilteringTracks
             ? page?.queueTracks.map(\.id) ?? []
@@ -427,6 +534,31 @@ final class PlaylistPageController {
         scheduleRebuild(reason: reason)
     }
 
+    @discardableResult
+    private func activateCustomCollectionSortFromCurrentDisplay(reason: String) -> Bool {
+        guard
+            let libraryVM,
+            isCurrentSelectionCollectionList,
+            canManuallyReorderCurrentCollection
+        else {
+            return false
+        }
+
+        let sourceIDs = collectionCustomOrderSourceItemIDs.isEmpty
+            ? collectionVisibleItemIDs
+            : collectionCustomOrderSourceItemIDs
+        guard !sourceIDs.isEmpty else { return true }
+
+        let didSave = libraryVM.initializeCustomCollectionOrderForCurrentSelectionIfNeeded(
+            displayedItemIDs: sourceIDs
+        )
+        let didSwitchSort = libraryVM.activateCustomCollectionSortForCurrentSelection()
+        if didSave || didSwitchSort {
+            collectionCustomOrderSourceItemIDs = sourceIDs
+        }
+        return true
+    }
+
     func commitManualTrackOrder(orderedTrackIDs: [UUID], reason: String) {
         guard let libraryVM, canManuallyReorderCurrentTracks else { return }
         guard !orderedTrackIDs.isEmpty else { return }
@@ -439,6 +571,17 @@ final class PlaylistPageController {
 
         guard didSave || didSwitchSort else { return }
         scheduleRebuild(reason: reason)
+    }
+
+    func commitManualCollectionOrder(orderedItemIDs: [UUID], reason: String) {
+        guard let libraryVM, canManuallyReorderCurrentCollection else { return }
+        guard !orderedItemIDs.isEmpty else { return }
+
+        let didSave = libraryVM.saveCustomCollectionOrderForCurrentSelection(itemIDs: orderedItemIDs)
+        let didSwitchSort = libraryVM.activateCustomCollectionSortForCurrentSelection()
+        if didSave || didSwitchSort {
+            collectionCustomOrderSourceItemIDs = orderedItemIDs
+        }
     }
 
     private func beginSelectionTransition(to selection: LibrarySelection) {
@@ -1405,7 +1548,7 @@ final class PlaylistPageController {
 
         let config: DetailHeaderConfig?
         switch selection {
-        case .home, .allSongs, .allAlbums, .allArtists:
+        case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
             config = nil
         case .playlist(let id):
             guard let playlist = libraryVM.playlists.first(where: { $0.id == id }) else { return nil }
@@ -1504,7 +1647,7 @@ final class PlaylistPageController {
         libraryVM: LibraryViewModel
     ) -> [Track] {
         switch selection {
-        case .allAlbums, .allArtists:
+        case .allPlaylists, .allAlbums, .allArtists:
             return []
         case .home:
             return libraryVM.allTracks.filter { $0.availability != .missing }
@@ -1569,6 +1712,8 @@ final class PlaylistPageController {
             return "home"
         case .allSongs:
             return "allSongs"
+        case .allPlaylists:
+            return "allPlaylists"
         case .allAlbums:
             return "allAlbums"
         case .allArtists:

@@ -92,8 +92,7 @@ final class HomeViewModel {
         albums = topAlbums(from: libraryVM)
         artists = topArtists(from: libraryVM)
 
-        // Playlists
-        playlists = libraryVM.playlists
+        playlists = topPlaylists(from: libraryVM)
 
         // Stats from PreferenceStatsService
         let statsService = PreferenceStatsService.shared
@@ -215,7 +214,7 @@ final class HomeViewModel {
 
         let newPlaylistSignature = makePlaylistSignature(libraryVM.playlists)
         if newPlaylistSignature != playlistSignature {
-            playlists = libraryVM.playlists
+            playlists = topPlaylists(from: libraryVM)
             playlistSignature = newPlaylistSignature
         }
 
@@ -293,8 +292,10 @@ final class HomeViewModel {
     func refreshArtistAlbumSort(from libraryVM: LibraryViewModel) {
         artists = topArtists(from: libraryVM)
         albums = topAlbums(from: libraryVM)
+        playlists = topPlaylists(from: libraryVM)
         artistSignature = makeArtistSignature(libraryVM.artistEntries)
         albumSignature = makeAlbumSignature(libraryVM.albumEntries)
+        playlistSignature = makePlaylistSignature(libraryVM.playlists)
         lastAppliedRefreshSignature = nil
     }
 
@@ -362,20 +363,26 @@ final class HomeViewModel {
     }
 
     private func topAlbums(from libraryVM: LibraryViewModel) -> [AlbumEntry] {
-        let aggregateStats = LibraryAggregateStats(tracks: libraryVM.allTracks)
-        return libraryVM.albumEntries
+        libraryVM.sortedAlbumEntriesForDisplay(
+            libraryVM.albumEntries
             .filter { !$0.isOrphaned }
-            .sorted { compareAlbums($0, $1, libraryVM: libraryVM, aggregateStats: aggregateStats) }
+        )
             .prefix(20)
             .map { $0 }
     }
 
     private func topArtists(from libraryVM: LibraryViewModel) -> [ArtistEntry] {
-        let aggregateStats = LibraryAggregateStats(tracks: libraryVM.allTracks)
-        return libraryVM.artistEntries
+        libraryVM.sortedArtistEntriesForDisplay(
+            libraryVM.artistEntries
             .filter { !$0.isOrphaned }
-            .sorted { compareArtists($0, $1, libraryVM: libraryVM, aggregateStats: aggregateStats) }
+        )
             .prefix(15)
+            .map { $0 }
+    }
+
+    private func topPlaylists(from libraryVM: LibraryViewModel) -> [Playlist] {
+        libraryVM.sortedPlaylistsForDisplay(libraryVM.playlists)
+            .prefix(20)
             .map { $0 }
     }
 
@@ -415,6 +422,8 @@ final class HomeViewModel {
         case .updatedAt:
             result = compareDate(lhs.updatedAt, rhs.updatedAt)
             useNaturalDescending = false
+        case .custom:
+            return lhs.id.uuidString < rhs.id.uuidString
         }
         if result == .orderedSame {
             return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
@@ -464,6 +473,8 @@ final class HomeViewModel {
         case .updatedAt:
             result = compareDate(lhs.updatedAt, rhs.updatedAt)
             useNaturalDescending = false
+        case .custom:
+            return lhs.id.uuidString < rhs.id.uuidString
         }
         if result == .orderedSame {
             return lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle) == .orderedAscending
@@ -893,10 +904,14 @@ private struct HomeRefreshSignature: Equatable {
 
         hasher.combine(libraryVM.artistSortKey.rawValue)
         hasher.combine(libraryVM.albumSortKey.rawValue)
+        hasher.combine(libraryVM.playlistSortKey.rawValue)
         hasher.combine(libraryVM.trackSortOrder.rawValue)
+        hasher.combine(libraryVM.collectionSortRevision)
         stable.combine(libraryVM.artistSortKey.rawValue)
         stable.combine(libraryVM.albumSortKey.rawValue)
+        stable.combine(libraryVM.playlistSortKey.rawValue)
         stable.combine(libraryVM.trackSortOrder.rawValue)
+        stable.combine("\(libraryVM.collectionSortRevision)")
 
         for artist in libraryVM.artistEntries {
             hasher.combine(artist.id)

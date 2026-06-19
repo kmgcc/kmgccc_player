@@ -168,9 +168,11 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         let isHomeSelection = currentLibraryVM?.currentSelection == .home
 
         let queueTracks = currentPageController?.page?.queueTracks ?? []
-        let hasRows = (currentPageController?.page?.rows.isEmpty == false)
         let hasSelection = (currentPageController?.selectedTrackIDs.isEmpty == false)
-        let isSearching = currentPageController?.isSearchFilteringTracks == true
+        let isSearching = currentPageController?.isSearchFilteringCurrentList == true
+        let isCollectionSelection = currentLibraryVM.map {
+            $0.supportsCustomCollectionOrder(for: $0.currentSelection)
+        } ?? false
 
         switch item.itemIdentifier {
         case Identifier.sort:
@@ -178,13 +180,17 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         case Identifier.search:
             return isLibraryMode && hasLibrary
         case Identifier.multiselect:
-            return isLibraryMode && hasLibrary && !isHomeSelection && hasRows && !isSearching
+            return isLibraryMode
+                && hasLibrary
+                && !isHomeSelection
+                && currentPageController?.hasMultiselectRowsForCurrentSelection == true
+                && !isSearching
         case Identifier.play:
             if !(isLibraryMode && hasLibrary && hasPlayback) { return false }
             if isHomeSelection {
                 return !(currentLibraryVM?.allTracks.filter { $0.availability != .missing }.isEmpty ?? true)
             }
-            return !queueTracks.isEmpty || hasSelection
+            return !queueTracks.isEmpty || (hasSelection && !isCollectionSelection)
         case Identifier.import:
             return isLibraryMode && hasLibrary
         case Identifier.pillGroup:
@@ -475,10 +481,22 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         keyHeader.isEnabled = false
         sortMenu.addItem(keyHeader)
 
-        // Context-aware sort keys: All Albums and All Artists pages
+        // Context-aware sort keys: collection pages
         // expose their own sort dimensions (track count, album count, etc.),
         // while track-list selections continue to use TrackSortKey.
         switch libraryVM.currentSelection {
+        case .allPlaylists:
+            for key in PlaylistSortKey.allCases {
+                let item = NSMenuItem(
+                    title: key.title,
+                    action: #selector(handleSortKey(_:)),
+                    keyEquivalent: ""
+                )
+                item.representedObject = key.rawValue
+                item.state = (libraryVM.playlistSortKey == key) ? .on : .off
+                item.target = self
+                sortMenu.addItem(item)
+            }
         case .allAlbums:
             for key in AlbumSortKey.allCases {
                 let item = NSMenuItem(
@@ -523,8 +541,8 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
         let isCustomTrackSort: Bool = {
             switch libraryVM.currentSelection {
-            case .allAlbums, .allArtists:
-                return false
+            case .allPlaylists, .allAlbums, .allArtists:
+                return libraryVM.isCustomCollectionSortActive()
             default:
                 return libraryVM.trackSortKey == .custom
             }
@@ -548,13 +566,31 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
         // Dispatch the selected raw value into the right model property based
         // on the current selection. This lets the same toolbar menu item
-        // action serve TrackSortKey, AlbumSortKey, and ArtistSortKey.
+        // action serve TrackSortKey and collection sort keys.
         switch libraryVM.currentSelection {
+        case .allPlaylists:
+            guard let key = PlaylistSortKey(rawValue: raw) else { return }
+            if key == .custom {
+                currentPageController?.activateCustomSortFromCurrentDisplay(reason: "toolbar.customPlaylistSort")
+                validateCurrentToolbarVisibleItems()
+                return
+            }
+            libraryVM.playlistSortKey = key
         case .allAlbums:
             guard let key = AlbumSortKey(rawValue: raw) else { return }
+            if key == .custom {
+                currentPageController?.activateCustomSortFromCurrentDisplay(reason: "toolbar.customAlbumSort")
+                validateCurrentToolbarVisibleItems()
+                return
+            }
             libraryVM.albumSortKey = key
         case .allArtists:
             guard let key = ArtistSortKey(rawValue: raw) else { return }
+            if key == .custom {
+                currentPageController?.activateCustomSortFromCurrentDisplay(reason: "toolbar.customArtistSort")
+                validateCurrentToolbarVisibleItems()
+                return
+            }
             libraryVM.artistSortKey = key
         default:
             guard let key = TrackSortKey(rawValue: raw) else { return }
@@ -629,7 +665,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     @objc
     private func handleToggleMultiselect(_ sender: NSToolbarItem) {
         guard let pageController = currentPageController else { return }
-        guard let page = pageController.page, !page.rows.isEmpty else { return }
+        guard pageController.hasMultiselectRowsForCurrentSelection else { return }
         let didEnable = pageController.toggleMultiselectModeIfAllowed()
         if !didEnable {
             closeFeatureTipPopover()
@@ -780,6 +816,8 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                 return "home"
             case .allSongs:
                 return "allSongs"
+            case .allPlaylists:
+                return "allPlaylists"
             case .allAlbums:
                 return "allAlbums"
             case .allArtists:
@@ -803,7 +841,13 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             return
         }
 
-        if pageController.isMultiselectMode, !pageController.selectedTrackIDs.isEmpty {
+        let isCollectionSelection = libraryVM.supportsCustomCollectionOrder(
+            for: libraryVM.currentSelection
+        )
+
+        if !isCollectionSelection,
+           pageController.isMultiselectMode,
+           !pageController.selectedTrackIDs.isEmpty {
             let selectedTracks = selectedTracksForToolbar(pageController: pageController)
             guard !selectedTracks.isEmpty else { return }
             if case .album = libraryVM.currentSelection {
@@ -958,8 +1002,8 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         let symbol = isOn ? "checkmark.circle.fill" : "checkmark.circle"
         multiselectItem?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: multiselectItem?.label)
         multiselectItem?.isEnabled = currentLibraryVM?.currentSelection != .home
-            && pageController?.page?.rows.isEmpty == false
-            && pageController?.isSearchFilteringTracks != true
+            && pageController?.hasMultiselectRowsForCurrentSelection == true
+            && pageController?.isSearchFilteringCurrentList != true
     }
 
     private func syncSearchFieldFromModel() {
@@ -977,6 +1021,8 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         switch currentLibraryVM?.currentSelection {
         case .home, .allSongs:
             searchField.placeholderString = "在所有歌曲中搜索"
+        case .allPlaylists:
+            searchField.placeholderString = "在所有播放列表中搜索"
         case .playlist:
             searchField.placeholderString = "在播放列表中搜索"
         case .album:
@@ -1338,9 +1384,12 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             _ = pageController.page?.queueTracks.count
             _ = pageController.page?.selectionIdentity
             _ = pageController.phase
+            _ = pageController.hasMultiselectRowsForCurrentSelection
+            _ = pageController.isSearchFilteringCurrentList
         } onChange: {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isCurrentAttachment(generation) else { return }
+                self.syncMultiselectItemPresentation()
                 self.validateCurrentToolbarVisibleItems()
                 self.observeToolbarState()
             }

@@ -44,6 +44,8 @@ struct AllAlbumsView: View {
         let secondary = Color(nsColor: palette.secondary)
         let tertiary = Color(nsColor: palette.tertiary)
         let albums = filteredAlbums
+        let visibleIDs = albums.map(\.id)
+        let customSourceIDs = customOrderSourceAlbums.map(\.id)
         return list(
             albums,
             primary: primary,
@@ -57,6 +59,36 @@ struct AllAlbumsView: View {
                 detail: "albums=\(libraryVM.albumEntries.count), tracks=\(libraryVM.allTracks.count)"
             )
             FirstUseHitchDiagnostics.end(token)
+            pageController.bindCollectionList(libraryVM: libraryVM, uiState: uiState)
+            registerCollectionList(
+                visibleIDs: visibleIDs,
+                customSourceIDs: customSourceIDs,
+                isFiltering: isFiltering
+            )
+        }
+        .onChange(of: visibleIDs) { _, newIDs in
+            registerCollectionList(
+                visibleIDs: newIDs,
+                customSourceIDs: customSourceIDs,
+                isFiltering: isFiltering
+            )
+        }
+        .onChange(of: customSourceIDs) { _, newIDs in
+            registerCollectionList(
+                visibleIDs: visibleIDs,
+                customSourceIDs: newIDs,
+                isFiltering: isFiltering
+            )
+        }
+        .onChange(of: isFiltering) { _, newValue in
+            registerCollectionList(
+                visibleIDs: visibleIDs,
+                customSourceIDs: customSourceIDs,
+                isFiltering: newValue
+            )
+        }
+        .onDisappear {
+            pageController.unregisterCollectionList(selection: .allAlbums)
         }
         .alert(
             NSLocalizedString("sidebar.delete_album_confirm_title", comment: ""),
@@ -102,21 +134,58 @@ struct AllAlbumsView: View {
         tertiary: Color
     ) -> some View {
         ScrollView(.vertical) {
-            LazyVStack(spacing: 2) {
-                ForEach(albums) { album in
+            ReorderableMultiselectRowsSection(
+                rows: albums,
+                isMultiselectMode: pageController.isMultiselectMode,
+                selectedIDs: pageController.selectedTrackIDs,
+                canReorder: pageController.canManuallyReorderCurrentCollection,
+                isSearchFiltering: isFiltering,
+                coordinateSpaceName: "albumCollectionReorderSpace",
+                rowCornerRadius: 12,
+                bottomSpacerHeight: 120,
+                badgeText: { "\($0)" },
+                rowHeight: { _ in 76 },
+                onClearSelection: {
+                    pageController.clearMultiselectState()
+                },
+                onBeginReorder: {
+                    pageController.beginManualTrackReorderInteraction()
+                },
+                onEndReorder: {
+                    pageController.endManualTrackReorderInteraction()
+                },
+                onCommitOrder: { orderedIDs in
+                    pageController.commitManualCollectionOrder(
+                        orderedItemIDs: orderedIDs,
+                        reason: "manual-album-reorder"
+                    )
+                },
+                rowContent: { album, _, _ in
                     AlbumListRow(
                         album: album,
                         trackCount: trackCount(for: album),
                         titleColor: primary,
                         subtitleColor: secondary,
                         metaColor: tertiary,
-                        onOpen: { open(album) },
+                        onOpen: { handleRowTap(album) },
                         onEdit: { editingAlbum = album },
                         onDelete: { requestDelete(album) }
                     )
+                },
+                floatingContent: { album in
+                    AlbumListRow(
+                        album: album,
+                        trackCount: trackCount(for: album),
+                        titleColor: primary,
+                        subtitleColor: secondary,
+                        metaColor: tertiary,
+                        enableSecondaryInteractions: false,
+                        onOpen: {},
+                        onEdit: {},
+                        onDelete: {}
+                    )
                 }
-                Color.clear.frame(height: 120) // mini-player headroom
-            }
+            )
             .padding(.horizontal, 24)
             .padding(.top, 16)
         }
@@ -131,9 +200,7 @@ struct AllAlbumsView: View {
         )
         defer { FirstUseHitchDiagnostics.end(token) }
 
-        let trimmed = pageController.searchText
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
+        let trimmed = normalizedSearchText
         let base: [AlbumEntry]
         if trimmed.isEmpty {
             base = libraryVM.albumEntries
@@ -143,52 +210,34 @@ struct AllAlbumsView: View {
                 || $0.primaryArtistDisplayName.lowercased().contains(trimmed)
             }
         }
-        let aggregateStats = LibraryAggregateStats(tracks: libraryVM.allTracks)
-        let ascending = (libraryVM.trackSortOrder == .ascending)
-        return base.sorted { lhs, rhs in
-            let result: ComparisonResult
-            let useNaturalDescending: Bool
-            switch libraryVM.albumSortKey {
-            case .title:
-                result = lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle)
-                useNaturalDescending = false
-            case .artist:
-                result = lhs.primaryArtistDisplayName
-                    .localizedCaseInsensitiveCompare(rhs.primaryArtistDisplayName)
-                useNaturalDescending = false
-            case .trackCount:
-                result = compareInt(lhs.trackCount, rhs.trackCount)
-                useNaturalDescending = false
-            case .playCountTotal:
-                result = compareAggregateMetric(
-                    aggregateStats.albumPlayCount(for: lhs),
-                    aggregateStats.albumPlayCount(for: rhs)
-                )
-                useNaturalDescending = true
-            case .preferenceTotal:
-                result = compareAggregateMetric(
-                    aggregateStats.albumPreferenceScore(for: lhs),
-                    aggregateStats.albumPreferenceScore(for: rhs)
-                )
-                useNaturalDescending = true
-            case .totalDuration:
-                result = compareDouble(lhs.totalDuration, rhs.totalDuration)
-                useNaturalDescending = false
-            case .updatedAt:
-                result = compareDate(lhs.updatedAt, rhs.updatedAt)
-                useNaturalDescending = false
-            }
-            if result == .orderedSame {
-                return lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle)
-                    == .orderedAscending
-            }
-            if useNaturalDescending {
-                return result == .orderedDescending
-            }
-            return ascending
-                ? result == .orderedAscending
-                : result == .orderedDescending
-        }
+        return libraryVM.sortedAlbumEntriesForDisplay(base)
+    }
+
+    private var customOrderSourceAlbums: [AlbumEntry] {
+        libraryVM.sortedAlbumEntriesForDisplay(libraryVM.albumEntries)
+    }
+
+    private var normalizedSearchText: String {
+        pageController.searchText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private var isFiltering: Bool {
+        !normalizedSearchText.isEmpty
+    }
+
+    private func registerCollectionList(
+        visibleIDs: [UUID],
+        customSourceIDs: [UUID],
+        isFiltering: Bool
+    ) {
+        pageController.registerCollectionList(
+            selection: .allAlbums,
+            visibleItemIDs: visibleIDs,
+            customOrderSourceItemIDs: customSourceIDs,
+            isFiltering: isFiltering
+        )
     }
 
     private func trackCount(for album: AlbumEntry) -> Int {
@@ -206,6 +255,17 @@ struct AllAlbumsView: View {
             .album(album.canonicalKey),
             libraryVM: libraryVM
         )
+    }
+
+    private func handleRowTap(_ album: AlbumEntry) {
+        if pageController.isMultiselectMode {
+            pageController.handleMultiselectItemTap(
+                itemID: album.id,
+                extendingRange: LibraryRowInput.isShiftPressed
+            )
+        } else {
+            open(album)
+        }
     }
 
     private func requestDelete(_ album: AlbumEntry) {
@@ -244,6 +304,7 @@ private struct AlbumListRow: View {
     var titleColor: Color = .primary
     var subtitleColor: Color = .secondary
     var metaColor: Color = Color.secondary.opacity(0.7)
+    var enableSecondaryInteractions = true
     let onOpen: () -> Void
     let onEdit: () -> Void
     let onDelete: () -> Void
@@ -273,18 +334,23 @@ private struct AlbumListRow: View {
                       : Color.clear)
         )
         .contentShape(Rectangle())
-        .onTapGesture(perform: onOpen)
-        .onHover { isHovering = $0 }
+        .onTapGesture {
+            guard enableSecondaryInteractions else { return }
+            onOpen()
+        }
+        .onHover { isHovering = enableSecondaryInteractions && $0 }
         .contextMenu {
-            Button(action: onOpen) {
-                Label("打开专辑", systemImage: "square.stack")
-            }
-            Button(action: onEdit) {
-                Label("编辑专辑", systemImage: "info.circle")
-            }
-            Divider()
-            Button(role: .destructive, action: onDelete) {
-                Label("删除专辑", systemImage: "trash")
+            if enableSecondaryInteractions {
+                Button(action: onOpen) {
+                    Label("打开专辑", systemImage: "square.stack")
+                }
+                Button(action: onEdit) {
+                    Label("编辑专辑", systemImage: "info.circle")
+                }
+                Divider()
+                Button(role: .destructive, action: onDelete) {
+                    Label("删除专辑", systemImage: "trash")
+                }
             }
         }
         .task { await loadArtwork() }
@@ -364,6 +430,8 @@ private struct AlbumListRow: View {
         .menuIndicator(.hidden)
         .frame(width: 24, height: 24)
         .opacity(isHovering ? 1 : 0.4)
+        .disabled(!enableSecondaryInteractions)
+        .allowsHitTesting(enableSecondaryInteractions)
     }
 
     private func formattedDuration(_ seconds: Double) -> String {

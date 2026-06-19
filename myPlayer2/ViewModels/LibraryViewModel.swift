@@ -78,6 +78,7 @@ enum AlbumSortKey: String, CaseIterable, Identifiable {
     case preferenceTotal
     case totalDuration
     case updatedAt
+    case custom
 
     var id: String { rawValue }
 
@@ -90,6 +91,7 @@ enum AlbumSortKey: String, CaseIterable, Identifiable {
         case .preferenceTotal: return "偏好"
         case .totalDuration: return "总时长"
         case .updatedAt:     return "最近更新"
+        case .custom:        return NSLocalizedString("sort.custom", comment: "")
         }
     }
 }
@@ -104,6 +106,7 @@ enum ArtistSortKey: String, CaseIterable, Identifiable {
     case preferenceTotal
     case totalDuration
     case updatedAt
+    case custom
 
     var id: String { rawValue }
 
@@ -116,6 +119,32 @@ enum ArtistSortKey: String, CaseIterable, Identifiable {
         case .preferenceTotal: return "偏好"
         case .totalDuration: return "总时长"
         case .updatedAt:     return "最近更新"
+        case .custom:        return NSLocalizedString("sort.custom", comment: "")
+        }
+    }
+}
+
+/// Sort key for the All Playlists page and Sidebar playlist order.
+enum PlaylistSortKey: String, CaseIterable, Identifiable {
+    case name
+    case createdAt
+    case trackCount
+    case playCountTotal
+    case preferenceTotal
+    case totalDuration
+    case custom
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .name:           return "名称"
+        case .createdAt:      return "创建时间"
+        case .trackCount:     return "歌曲数"
+        case .playCountTotal: return "播放次数"
+        case .preferenceTotal: return "偏好"
+        case .totalDuration:  return "总时长"
+        case .custom:         return NSLocalizedString("sort.custom", comment: "")
         }
     }
 }
@@ -176,6 +205,7 @@ enum LibraryLoadingPhase: Equatable {
 enum LibrarySelection: Hashable {
     case home
     case allSongs
+    case allPlaylists
     case allAlbums
     case allArtists
     case playlist(UUID)
@@ -278,7 +308,7 @@ final class LibraryViewModel {
             }
             // Sync legacy properties for backward compatibility during transition
             switch currentSelection {
-            case .home, .allAlbums, .allArtists:
+            case .home, .allPlaylists, .allAlbums, .allArtists:
                 selectedPlaylistId = nil
                 selectedArtistKey = nil
                 selectedAlbumKey = nil
@@ -313,6 +343,7 @@ final class LibraryViewModel {
     /// Trigger for UI refresh.
     private(set) var refreshTrigger: Int = 0
     private(set) var trackUpdateEvent: TrackUpdateEvent?
+    private(set) var collectionSortRevision: Int = 0
 
     /// Trigger to reset search text and focus in the UI (incremented on sidebar selection).
     private(set) var searchResetTrigger: Int = 0
@@ -340,6 +371,19 @@ final class LibraryViewModel {
         didSet {
             if isApplyingSortPreference { return }
             persistSortPreferenceForCurrentSelection()
+        }
+    }
+
+    /// Sort key for the All Playlists page and Sidebar playlist section.
+    /// Sort order is shared with `trackSortOrder`.
+    var playlistSortKey: PlaylistSortKey {
+        didSet {
+            if playlistSortKey != oldValue {
+                UserDefaults.standard.set(
+                    playlistSortKey.rawValue,
+                    forKey: DefaultsKey.playlistSortKey
+                )
+            }
         }
     }
 
@@ -415,6 +459,12 @@ final class LibraryViewModel {
                     forKey: DefaultsKey.trackSortOrder
                 ) ?? ""
             ) ?? .descending
+        self.playlistSortKey =
+            PlaylistSortKey(
+                rawValue: UserDefaults.standard.string(
+                    forKey: DefaultsKey.playlistSortKey
+                ) ?? ""
+            ) ?? .name
         self.albumSortKey =
             AlbumSortKey(
                 rawValue: UserDefaults.standard.string(
@@ -550,11 +600,164 @@ final class LibraryViewModel {
         return tracks.sorted { sortTrack($0, $1) }
     }
 
+    func sortedPlaylistsForDisplay(_ source: [Playlist]? = nil) -> [Playlist] {
+        _ = collectionSortRevision
+        let playlistsToSort = source ?? playlists
+        let order = customCollectionOrderIDs(
+            for: .allPlaylists,
+            displayedItemIDs: playlistsToSort.map(\.id)
+        )
+        if playlistSortKey == .custom {
+            return sortByCustomCollectionOrder(playlistsToSort, customOrderIDs: order)
+        }
+
+        return playlistsToSort.sorted { lhs, rhs in
+            let result: ComparisonResult
+            let useNaturalDescending: Bool
+            switch playlistSortKey {
+            case .name:
+                result = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+                useNaturalDescending = false
+            case .createdAt:
+                result = compareDates(lhs.createdAt, rhs.createdAt)
+                useNaturalDescending = false
+            case .trackCount:
+                result = compareInts(lhs.trackCount, rhs.trackCount)
+                useNaturalDescending = false
+            case .playCountTotal:
+                result = compareAggregateMetric(
+                    playlistPlayCountMetric(lhs),
+                    playlistPlayCountMetric(rhs)
+                )
+                useNaturalDescending = true
+            case .preferenceTotal:
+                result = compareAggregateMetric(
+                    playlistPreferenceMetric(lhs),
+                    playlistPreferenceMetric(rhs)
+                )
+                useNaturalDescending = true
+            case .totalDuration:
+                result = compareDoubles(lhs.totalDuration, rhs.totalDuration)
+                useNaturalDescending = false
+            case .custom:
+                return compareCustomCollectionItems(lhs, rhs, customOrderIDs: order)
+            }
+            if result == .orderedSame {
+                let nameResult = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+                if nameResult != .orderedSame {
+                    return nameResult == .orderedAscending
+                }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+            if useNaturalDescending {
+                return result == .orderedDescending
+            }
+            return trackSortOrder == .ascending
+                ? result == .orderedAscending
+                : result == .orderedDescending
+        }
+    }
+
+    func sortedArtistEntriesForDisplay(_ source: [ArtistEntry]? = nil) -> [ArtistEntry] {
+        _ = collectionSortRevision
+        let artistsToSort = source ?? artistEntries
+        let order = customCollectionOrderIDs(
+            for: .allArtists,
+            displayedItemIDs: artistsToSort.map(\.id)
+        )
+        if artistSortKey == .custom {
+            return sortByCustomCollectionOrder(artistsToSort, customOrderIDs: order)
+        }
+
+        let aggregateStats = LibraryAggregateStats(tracks: allTracks)
+        return artistsToSort.sorted {
+            compareArtists($0, $1, aggregateStats: aggregateStats, customOrderIDs: order)
+        }
+    }
+
+    func sortedAlbumEntriesForDisplay(_ source: [AlbumEntry]? = nil) -> [AlbumEntry] {
+        _ = collectionSortRevision
+        let albumsToSort = source ?? albumEntries
+        let order = customCollectionOrderIDs(
+            for: .allAlbums,
+            displayedItemIDs: albumsToSort.map(\.id)
+        )
+        if albumSortKey == .custom {
+            return sortByCustomCollectionOrder(albumsToSort, customOrderIDs: order)
+        }
+
+        let aggregateStats = LibraryAggregateStats(tracks: allTracks)
+        return albumsToSort.sorted {
+            compareAlbums($0, $1, aggregateStats: aggregateStats, customOrderIDs: order)
+        }
+    }
+
     func supportsCustomTrackOrder(for selection: LibrarySelection? = nil) -> Bool {
         switch selection ?? currentSelection {
         case .playlist, .artist, .album:
             return true
-        case .home, .allSongs, .allAlbums, .allArtists:
+        case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
+            return false
+        }
+    }
+
+    func supportsCustomCollectionOrder(for selection: LibrarySelection? = nil) -> Bool {
+        switch selection ?? currentSelection {
+        case .allPlaylists, .allAlbums, .allArtists:
+            return true
+        case .home, .allSongs, .playlist, .artist, .album:
+            return false
+        }
+    }
+
+    func isCustomCollectionSortActive(for selection: LibrarySelection? = nil) -> Bool {
+        switch selection ?? currentSelection {
+        case .allPlaylists:
+            return playlistSortKey == .custom
+        case .allAlbums:
+            return albumSortKey == .custom
+        case .allArtists:
+            return artistSortKey == .custom
+        case .home, .allSongs, .playlist, .artist, .album:
+            return false
+        }
+    }
+
+    func customCollectionOrderIDsForCurrentSelection(displayedItemIDs: [UUID]) -> [UUID]? {
+        customCollectionOrderIDs(for: currentSelection, displayedItemIDs: displayedItemIDs)
+    }
+
+    @discardableResult
+    func initializeCustomCollectionOrderForCurrentSelectionIfNeeded(
+        displayedItemIDs: [UUID]
+    ) -> Bool {
+        guard supportsCustomCollectionOrder(), !displayedItemIDs.isEmpty else { return false }
+        guard customCollectionOrderIDs(for: currentSelection) == nil else { return false }
+        return saveCustomCollectionOrder(for: currentSelection, itemIDs: displayedItemIDs)
+    }
+
+    @discardableResult
+    func saveCustomCollectionOrderForCurrentSelection(itemIDs: [UUID]) -> Bool {
+        guard supportsCustomCollectionOrder(), !itemIDs.isEmpty else { return false }
+        return saveCustomCollectionOrder(for: currentSelection, itemIDs: itemIDs)
+    }
+
+    @discardableResult
+    func activateCustomCollectionSortForCurrentSelection() -> Bool {
+        switch currentSelection {
+        case .allPlaylists:
+            guard playlistSortKey != .custom else { return false }
+            playlistSortKey = .custom
+            return true
+        case .allAlbums:
+            guard albumSortKey != .custom else { return false }
+            albumSortKey = .custom
+            return true
+        case .allArtists:
+            guard artistSortKey != .custom else { return false }
+            artistSortKey = .custom
+            return true
+        case .home, .allSongs, .playlist, .artist, .album:
             return false
         }
     }
@@ -785,7 +988,7 @@ final class LibraryViewModel {
                 targetPlaylist = last
                 selectedPlaylistId = last.id
             } else {
-                let fallback = playlists[0]
+                let fallback = sortedPlaylistsForDisplay().first ?? playlists[0]
                 targetPlaylist = fallback
                 selectedPlaylistId = fallback.id
             }
@@ -838,6 +1041,7 @@ final class LibraryViewModel {
         let playlist = await repository.createPlaylist(name: name)
         playlists = await repository.fetchPlaylists()
         selectedPlaylistId = playlist.id
+        refreshTrigger += 1
         return playlist
     }
 
@@ -1745,6 +1949,8 @@ final class LibraryViewModel {
         static let trackSortPreferencesByPlaylist = "trackSortPreferencesByPlaylist"
         static let trackSortMigrationDone = "trackSortMigrationDone"
         static let customTrackOrderBySelection = "customTrackOrderBySelection"
+        static let customCollectionOrderBySelection = "customCollectionOrderBySelection"
+        static let playlistSortKey = "playlistSortKey"
         static let albumSortKey = "albumSortKey"
         static let artistSortKey = "artistSortKey"
     }
@@ -1767,7 +1973,7 @@ final class LibraryViewModel {
         )
 
         switch currentSelection {
-        case .home, .allAlbums, .allArtists:
+        case .home, .allPlaylists, .allAlbums, .allArtists:
             return
         case .playlist(let id):
             if !LocalLibraryService.shared.updatePlaylistSortPreference(
@@ -1794,7 +2000,7 @@ final class LibraryViewModel {
 
     private func applySortPreferenceForCurrentSelection() {
         switch currentSelection {
-        case .home, .allAlbums, .allArtists:
+        case .home, .allPlaylists, .allAlbums, .allArtists:
             return
         case .playlist(let id):
             let preferences = loadSortPreferencesMap()
@@ -1922,7 +2128,7 @@ final class LibraryViewModel {
         guard !deletedTrackIDs.isEmpty else { return }
 
         switch currentSelection {
-        case .home, .allSongs, .allAlbums, .allArtists:
+        case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
             return
         case .playlist:
             return
@@ -1967,7 +2173,7 @@ final class LibraryViewModel {
 
     private func reconcileSelectionAfterLoad() {
         switch currentSelection {
-        case .home, .allSongs, .allAlbums, .allArtists:
+        case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
             break
         case .playlist(let id):
             guard playlists.contains(where: { $0.id == id }) else {
@@ -1999,6 +2205,8 @@ final class LibraryViewModel {
             return "home"
         case .allSongs:
             return "allSongs"
+        case .allPlaylists:
+            return "allPlaylists"
         case .allAlbums:
             return "allAlbums"
         case .allArtists:
@@ -2010,6 +2218,184 @@ final class LibraryViewModel {
         case .album(let key):
             return "album-\(key)"
         }
+    }
+
+    private func compareArtists(
+        _ lhs: ArtistEntry,
+        _ rhs: ArtistEntry,
+        aggregateStats: LibraryAggregateStats,
+        customOrderIDs: [UUID]?
+    ) -> Bool {
+        let result: ComparisonResult
+        let useNaturalDescending: Bool
+        switch artistSortKey {
+        case .name:
+            result = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
+            useNaturalDescending = false
+        case .trackCount:
+            result = compareInts(lhs.trackCount, rhs.trackCount)
+            useNaturalDescending = false
+        case .albumCount:
+            result = compareInts(lhs.albumCount, rhs.albumCount)
+            useNaturalDescending = false
+        case .playCountTotal:
+            result = compareAggregateMetric(
+                aggregateStats.artistPlayCount(for: lhs),
+                aggregateStats.artistPlayCount(for: rhs)
+            )
+            useNaturalDescending = true
+        case .preferenceTotal:
+            result = compareAggregateMetric(
+                aggregateStats.artistPreferenceScore(for: lhs),
+                aggregateStats.artistPreferenceScore(for: rhs)
+            )
+            useNaturalDescending = true
+        case .totalDuration:
+            result = compareDoubles(lhs.totalDuration, rhs.totalDuration)
+            useNaturalDescending = false
+        case .updatedAt:
+            result = compareDates(lhs.updatedAt, rhs.updatedAt)
+            useNaturalDescending = false
+        case .custom:
+            return compareCustomCollectionItems(lhs, rhs, customOrderIDs: customOrderIDs)
+        }
+        if result == .orderedSame {
+            let nameResult = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
+            if nameResult != .orderedSame {
+                return nameResult == .orderedAscending
+            }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+        if useNaturalDescending {
+            return result == .orderedDescending
+        }
+        return trackSortOrder == .ascending
+            ? result == .orderedAscending
+            : result == .orderedDescending
+    }
+
+    private func compareAlbums(
+        _ lhs: AlbumEntry,
+        _ rhs: AlbumEntry,
+        aggregateStats: LibraryAggregateStats,
+        customOrderIDs: [UUID]?
+    ) -> Bool {
+        let result: ComparisonResult
+        let useNaturalDescending: Bool
+        switch albumSortKey {
+        case .title:
+            result = lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle)
+            useNaturalDescending = false
+        case .artist:
+            result = lhs.primaryArtistDisplayName
+                .localizedCaseInsensitiveCompare(rhs.primaryArtistDisplayName)
+            useNaturalDescending = false
+        case .trackCount:
+            result = compareInts(lhs.trackCount, rhs.trackCount)
+            useNaturalDescending = false
+        case .playCountTotal:
+            result = compareAggregateMetric(
+                aggregateStats.albumPlayCount(for: lhs),
+                aggregateStats.albumPlayCount(for: rhs)
+            )
+            useNaturalDescending = true
+        case .preferenceTotal:
+            result = compareAggregateMetric(
+                aggregateStats.albumPreferenceScore(for: lhs),
+                aggregateStats.albumPreferenceScore(for: rhs)
+            )
+            useNaturalDescending = true
+        case .totalDuration:
+            result = compareDoubles(lhs.totalDuration, rhs.totalDuration)
+            useNaturalDescending = false
+        case .updatedAt:
+            result = compareDates(lhs.updatedAt, rhs.updatedAt)
+            useNaturalDescending = false
+        case .custom:
+            return compareCustomCollectionItems(lhs, rhs, customOrderIDs: customOrderIDs)
+        }
+        if result == .orderedSame {
+            let titleResult = lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle)
+            if titleResult != .orderedSame {
+                return titleResult == .orderedAscending
+            }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+        if useNaturalDescending {
+            return result == .orderedDescending
+        }
+        return trackSortOrder == .ascending
+            ? result == .orderedAscending
+            : result == .orderedDescending
+    }
+
+    private func playlistPlayCountMetric(_ playlist: Playlist) -> LibraryAggregateStats.Metric {
+        var metric = LibraryAggregateStats.Metric()
+        for track in playlist.tracks {
+            let stats = PreferenceStatsService.shared.getStats(for: track.id)
+            metric.value += Double(max(stats.playCount, 0))
+            metric.hasData = metric.hasData || stats.playCount > 0
+        }
+        return metric
+    }
+
+    private func playlistPreferenceMetric(_ playlist: Playlist) -> LibraryAggregateStats.Metric {
+        var metric = LibraryAggregateStats.Metric()
+        for track in playlist.tracks {
+            let stats = PreferenceStatsService.shared.getStats(for: track.id)
+            let hasPreferenceData = stats.playCount > 0
+                || stats.preferenceScoreCache != 0
+                || stats.manualLikeState != .none
+            metric.value += stats.preferenceScoreCache.isFinite ? stats.preferenceScoreCache : 0
+            metric.hasData = metric.hasData || hasPreferenceData
+        }
+        return metric
+    }
+
+    private func compareAggregateMetric(
+        _ lhs: LibraryAggregateStats.Metric,
+        _ rhs: LibraryAggregateStats.Metric
+    ) -> ComparisonResult {
+        if lhs.hasData != rhs.hasData {
+            return lhs.hasData ? .orderedDescending : .orderedAscending
+        }
+        return compareDoubles(lhs.value, rhs.value)
+    }
+
+    private func sortByCustomCollectionOrder<Item: Identifiable>(
+        _ items: [Item],
+        customOrderIDs: [UUID]?
+    ) -> [Item] where Item.ID == UUID {
+        guard customOrderIDs != nil else { return items }
+        return items.sorted {
+            compareCustomCollectionItems($0, $1, customOrderIDs: customOrderIDs)
+        }
+    }
+
+    private func compareCustomCollectionItems<Item: Identifiable>(
+        _ lhs: Item,
+        _ rhs: Item,
+        customOrderIDs: [UUID]?
+    ) -> Bool where Item.ID == UUID {
+        guard let customOrderIDs else {
+            return false
+        }
+        let rank = Dictionary(uniqueKeysWithValues: customOrderIDs.enumerated().map {
+            ($0.element, $0.offset)
+        })
+        let lhsRank = rank[lhs.id]
+        let rhsRank = rank[rhs.id]
+        switch (lhsRank, rhsRank) {
+        case let (lhs?, rhs?):
+            if lhs != rhs { return lhs < rhs }
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        case (nil, nil):
+            break
+        }
+        return lhs.id.uuidString < rhs.id.uuidString
     }
 
     private func sortTrack(_ lhs: Track, _ rhs: Track) -> Bool {
@@ -2091,7 +2477,7 @@ final class LibraryViewModel {
                 return "album-\(entry.id.uuidString)"
             }
             return "album-\(key)"
-        case .home, .allSongs, .allAlbums, .allArtists:
+        case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
             return nil
         }
     }
@@ -2123,6 +2509,88 @@ final class LibraryViewModel {
             merged.append(id)
         }
         return merged
+    }
+
+    private func customCollectionOrderContextKey(for selection: LibrarySelection) -> String? {
+        switch selection {
+        case .allPlaylists:
+            return "allPlaylists"
+        case .allAlbums:
+            return "allAlbums"
+        case .allArtists:
+            return "allArtists"
+        case .home, .allSongs, .playlist, .artist, .album:
+            return nil
+        }
+    }
+
+    private func customCollectionOrderIDs(
+        for selection: LibrarySelection,
+        displayedItemIDs: [UUID]? = nil
+    ) -> [UUID]? {
+        guard
+            supportsCustomCollectionOrder(for: selection),
+            let key = customCollectionOrderContextKey(for: selection),
+            let rawIDs = loadCustomCollectionOrderMap()[key]
+        else {
+            return nil
+        }
+
+        var seen = Set<UUID>()
+        let persistedIDs = rawIDs.compactMap(UUID.init(uuidString:)).filter {
+            seen.insert($0).inserted
+        }
+        guard let displayedItemIDs else { return persistedIDs }
+
+        let available = Set(displayedItemIDs)
+        var merged: [UUID] = []
+        seen.removeAll(keepingCapacity: true)
+
+        for id in persistedIDs where available.contains(id) && seen.insert(id).inserted {
+            merged.append(id)
+        }
+        for id in displayedItemIDs where seen.insert(id).inserted {
+            merged.append(id)
+        }
+        return merged
+    }
+
+    private func loadCustomCollectionOrderMap() -> [String: [String]] {
+        guard
+            let data = UserDefaults.standard.data(
+                forKey: DefaultsKey.customCollectionOrderBySelection
+            )
+        else {
+            return [:]
+        }
+        return (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:]
+    }
+
+    private func saveCustomCollectionOrderMap(_ map: [String: [String]]) {
+        guard let data = try? JSONEncoder().encode(map) else { return }
+        UserDefaults.standard.set(data, forKey: DefaultsKey.customCollectionOrderBySelection)
+    }
+
+    @discardableResult
+    private func saveCustomCollectionOrder(
+        for selection: LibrarySelection,
+        itemIDs: [UUID]
+    ) -> Bool {
+        guard
+            supportsCustomCollectionOrder(for: selection),
+            let key = customCollectionOrderContextKey(for: selection)
+        else {
+            return false
+        }
+
+        var seen = Set<UUID>()
+        let normalized = itemIDs.filter { seen.insert($0).inserted }.map(\.uuidString)
+        var map = loadCustomCollectionOrderMap()
+        guard map[key] != normalized else { return false }
+        map[key] = normalized
+        saveCustomCollectionOrderMap(map)
+        collectionSortRevision += 1
+        return true
     }
 
     private func loadCustomTrackOrderMap() -> [String: [String]] {
