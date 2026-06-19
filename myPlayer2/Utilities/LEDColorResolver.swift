@@ -59,31 +59,28 @@ struct LEDColorResolver {
     }
 
     var centerColor: NSColor {
-        if let palette, shouldUseNeutralVolumeLED(for: palette) {
-            if hasClearMainColor(in: palette),
-               let lch = OKColor.nsColorToOKLCH(colorScheme == .dark ? palette.uiAccentOnDark : palette.uiAccentOnLight) {
-                return OKColor.okLCHToNSColor(optimizedLEDLCH(from: lch, preservesLowChromaHue: true), alpha: 1.0)
-            }
-            let source = nearNeutralVolumeSourceColor(for: palette.analysis)
-            guard let lch = OKColor.nsColorToOKLCH(source) else {
-                return OKColor.okLCHToNSColor(neutralLEDOKLCH, alpha: 1.0)
-            }
-            return OKColor.okLCHToNSColor(optimizedNearNeutralLEDLCH(from: lch), alpha: 1.0)
-        }
-
         guard let lch = OKColor.nsColorToOKLCH(volumeLEDSourceColor) else {
             return rawBase
         }
-
+        if let palette,
+           palette.analysis.primaryHueSourceColor == nil,
+           shouldUseNeutralVolumeLED(for: palette) {
+            return OKColor.okLCHToNSColor(optimizedNearNeutralLEDLCH(from: lch), alpha: 1.0)
+        }
         return OKColor.okLCHToNSColor(optimizedLEDLCH(from: lch, preservesLowChromaHue: true), alpha: 1.0)
     }
 
     private var volumeLEDSourceColor: NSColor {
-        if let palette, shouldUseNeutralVolumeLED(for: palette) {
-            if hasClearMainColor(in: palette) {
-                return colorScheme == .dark ? palette.uiAccentOnDark : palette.uiAccentOnLight
+        if let palette {
+            if palette.analysis.lacksTrustedHue {
+                return OKColor.okLCHToNSColor(neutralLEDOKLCH, alpha: 1.0)
             }
-            return nearNeutralVolumeSourceColor(for: palette.analysis)
+            if let source = palette.analysis.primaryHueSourceColor {
+                return source
+            }
+            if shouldUseNeutralVolumeLED(for: palette) {
+                return nearNeutralVolumeSourceColor(for: palette.analysis)
+            }
         }
         return rawBase
     }
@@ -97,6 +94,9 @@ struct LEDColorResolver {
     }
 
     private func nearNeutralVolumeSourceColor(for analysis: ArtworkColorAnalysis) -> NSColor {
+        if let source = analysis.primaryHueSourceColor {
+            return source
+        }
         guard !analysis.isMonochrome else {
             return OKColor.okLCHToNSColor(neutralLEDOKLCH, alpha: 1.0)
         }
@@ -185,28 +185,6 @@ struct LEDColorResolver {
         return stableWarmHue
     }
 
-    private func hasClearMainColor(in palette: SemanticPalette) -> Bool {
-        let analysis = palette.analysis
-        guard !analysis.isMonochrome else { return false }
-
-        let average = ColorMath.hsl(of: analysis.averageColor)
-        let dominant = ColorMath.hsl(of: analysis.dominantColor)
-        let averageHueUsable = average.s >= 0.105
-            && analysis.avgSaturation >= 0.095
-            && analysis.colorfulness >= 0.105
-            && isCoolMainHue(average.h)
-        let dominantHueUsable = dominant.s >= 0.150
-            && analysis.dominantHueConfidence >= 0.24
-            && analysis.largestHighSaturationAreaShare >= 0.14
-            && isCoolMainHue(dominant.h)
-        let analysisDominantHueUsable = analysis.dominantSaturation >= 0.150
-            && analysis.dominantHueConfidence >= 0.24
-            && analysis.largestHighSaturationAreaShare >= 0.14
-            && isCoolMainHue(analysis.dominantHue)
-
-        return averageHueUsable || dominantHueUsable || analysisDominantHueUsable
-    }
-
     private func shouldUseNeutralVolumeLED(for palette: SemanticPalette) -> Bool {
         let analysis = palette.analysis
         let nearNeutralArtwork = analysis.colorfulness < 0.18
@@ -214,10 +192,6 @@ struct LEDColorResolver {
             && analysis.dominantSaturation < 0.22
             && analysis.largestHighSaturationAreaShare < 0.18
         return analysis.isEffectivelyMonochrome || nearNeutralArtwork
-    }
-
-    private func isCoolMainHue(_ h: CGFloat) -> Bool {
-        (h >= 0.34 && h <= 0.72)
     }
 
     var edgeColor: NSColor {

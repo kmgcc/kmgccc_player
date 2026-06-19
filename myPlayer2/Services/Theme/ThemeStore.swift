@@ -377,8 +377,10 @@ final class ThemeStore: ObservableObject {
     private func extractDominantColor(from data: Data) async -> NSColor? {
         await withCheckedContinuation { continuation in
             extractionQueue.async {
-                let raw =
-                    ArtworkColorExtractor.uiAccentColor(from: data)
+                let analysis = ArtworkColorExtractor.analyze(from: data)
+                let raw = analysis?.primaryHueSourceColor
+                    ?? analysis?.displayPalette.first
+                    ?? ArtworkColorExtractor.uiAccentColor(from: data)
                     ?? ArtworkColorExtractor.averageColor(from: data)
                 continuation.resume(returning: raw)
             }

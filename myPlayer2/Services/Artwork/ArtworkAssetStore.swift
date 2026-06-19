@@ -231,22 +231,28 @@ actor ArtworkAssetStore {
 
         let thumbnailImage = downsampledImage(source: imageSource, maxPixelSize: 160)
         let analysisSample = ArtworkColorExtractor.sampledBitmap(from: artworkData, side: 72)
-        let palette =
-            analysisSample.map { ArtworkColorExtractor.uiThemePalette(from: $0, targetCount: 4) }
-            ?? []
-        let richPalette =
-            analysisSample.map { ArtworkColorExtractor.uiThemePaletteRich(from: $0, targetCount: 6) }
-            ?? []
         let analysis =
             analysisSample.flatMap {
                 ArtworkColorExtractor.analyzeSyntheticSample(pixels: $0.pixels, side: $0.side)
             }
             ?? ArtworkColorExtractor.analyze(from: artworkData)
+        let extractedPalette =
+            analysisSample.map { ArtworkColorExtractor.uiThemePalette(from: $0, targetCount: 4) }
+            ?? []
+        let extractedRichPalette =
+            analysisSample.map { ArtworkColorExtractor.uiThemePaletteRich(from: $0, targetCount: 6) }
+            ?? []
+        let palette = analysis?.displayPalette.isEmpty == false
+            ? (analysis?.displayPalette ?? extractedPalette)
+            : extractedPalette
+        let richPalette = analysis?.richPalette.isEmpty == false
+            ? (analysis?.richPalette ?? extractedRichPalette)
+            : extractedRichPalette
         let accentColor = palette.first
         let averageColor =
             analysisSample.flatMap { ArtworkColorExtractor.averageColor(from: $0) }
             ?? ArtworkColorExtractor.averageColor(from: artworkData)
-        let dominantColor = accentColor ?? averageColor
+        let dominantColor = analysis?.primaryHueSourceColor ?? accentColor ?? averageColor
 
         return ArtworkAssetSnapshot(
             trackID: trackID,
