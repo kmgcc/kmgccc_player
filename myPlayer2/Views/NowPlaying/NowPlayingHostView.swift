@@ -116,7 +116,14 @@ struct NowPlayingHostView: View {
                 artist: presentation.artist,
                 album: presentation.album ?? "",
                 duration: presentation.duration,
-                artworkChecksum: ArtworkDataFingerprint.sampledHash(for: presentation.artworkData),
+                // Source the checksum from the SAME committed snapshot as the
+                // image. `presentation.artworkData` advances the instant the
+                // track switches, but `artworkSnapshot` is held until the new
+                // full image decodes — keying skins off the presentation hash
+                // while the image is still the previous one makes them render
+                // the old cover under the new key and stick there. Snapshot-
+                // synced checksum keeps key and image atomic across the switch.
+                artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
                 artworkData: presentation.artworkData,
                 artworkImage: artworkSnapshot?.fullImage,
                 displayedArtworkID: artworkSnapshot?.trackID
