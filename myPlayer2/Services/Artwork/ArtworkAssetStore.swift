@@ -20,8 +20,11 @@ actor ArtworkAssetStore {
     }()
     private let fullImageCache: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
-        cache.countLimit = 2
-        cache.totalCostLimit = 24 * 1024 * 1024
+        // The playback preheat warms current + next2 + prev1 (4 hydrated full
+        // images); `countLimit = 2` evicted most of that window immediately, so
+        // the next track was usually cold again by the time it was displayed.
+        cache.countLimit = 6
+        cache.totalCostLimit = 64 * 1024 * 1024
         return cache
     }()
     private var inProgressKeys: Set<String> = []

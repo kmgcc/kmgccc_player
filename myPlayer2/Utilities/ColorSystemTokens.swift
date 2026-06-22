@@ -683,13 +683,19 @@ nonisolated enum ColorSystemTokens {
         // not be nearMono merely because no single candidate reaches the
         // strong floor above. The muted floor only counts with coherence /
         // area support in `ArtworkHueTrust`.
-        static let mutedTrustedHueChromaFloor: CGFloat = 0.024
-        static let mutedTrustedAvgSaturationFloor: CGFloat = 0.130
+        static let mutedTrustedHueChromaFloor: CGFloat = 0.018
+        static let mutedTrustedAvgSaturationFloor: CGFloat = 0.075
         static let mutedTrustedColorfulnessFloor: CGFloat = 0.080
-        static let mutedTrustedDominantSaturationFloor: CGFloat = 0.150
+        static let mutedTrustedDominantSaturationFloor: CGFloat = 0.110
         static let mutedTrustedDominantConfidenceFloor: CGFloat = 0.140
         static let mutedTrustedLargestHighSatAreaFloor: CGFloat = 0.035
         static let mutedTrustedCoherentHueGap: CGFloat = 0.100
+        static let mutedTrustedSurfaceChromaFloor: CGFloat = 0.022
+        // Surface candidates already come from area-aware material clustering.
+        // A slightly stronger one may be trusted on its own so an almost-black
+        // cover with a small real skin/paper patch does not collapse to BW.
+        static let mutedTrustedSurfaceStandaloneChromaFloor: CGFloat = 0.026
+        static let mutedTrustedSurfaceAreaFloor: CGFloat = 0.015
     }
 
     // MARK: - usesDarkForeground gate
@@ -732,6 +738,10 @@ nonisolated enum ColorSystemTokens {
         static let minAreaShare: CGFloat = 0.015
         static let maxAreaShare: CGFloat = 0.30
         static let noiseFloorAbsolute: CGFloat = 0.008
+        static let tinyNoiseFloorAbsolute: CGFloat = 0.0015
+        static let dimAccentMinSaturation: CGFloat = 0.72
+        static let dimAccentMinBrightness: CGFloat = 0.16
+        static let dimAccentMinAreaShare: CGFloat = 0.010
         static let satBonus: CGFloat = 0.50
         static let hueDedupGap: CGFloat = 0.05
         static let rgbDedupGap: CGFloat = 0.14
