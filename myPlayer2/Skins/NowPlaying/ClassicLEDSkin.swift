@@ -272,8 +272,9 @@ private enum ClassicArtworkFrameCoverTuning {
     ]
 
     static let fallbackFinalMaskedArtworkScale: CGFloat = 1.0
-    /// v3: mirrored extension band now carries a progressive edge blur.
-    static let rendererVersion = 3
+    /// v5: border de-fringe is now relative to interior content and walks
+    /// through multi-pixel fringes (catches pale/2-3px white & black edges).
+    static let rendererVersion = 5
 
     static func artworkScale(for frameIndex: Int) -> CGFloat {
         min(1.0, max(0.50, artworkScaleByFrameIndex[frameIndex] ?? fallbackArtworkScale))
@@ -335,30 +336,38 @@ private struct ArtworkFrameMaskedImageView: View {
     let displayScale: CGFloat
     @State private var extendedArtworkImage: NSImage?
     @State private var extendedArtworkKey: String?
+    // The artistic-edge mask and its final scale are committed TOGETHER with
+    // `extendedArtworkImage`, never from the incoming params directly. On a track
+    // switch the new mask would otherwise cut in immediately while the new cover
+    // is still rendering, so the new mask shape briefly framed the previous
+    // cover. Holding them here makes the mask wait and swap in a single step once
+    // its own cover is ready.
+    @State private var displayedMask: CGImage?
+    @State private var displayedFinalScale: CGFloat = 1.0
     @State private var processingTask: Task<Void, Never>?
 
     var body: some View {
         Group {
-            if let extendedArtworkImage {
+            if let extendedArtworkImage, let displayedMask {
                 Image(nsImage: extendedArtworkImage)
                     .resizable()
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fill)
+                    .frame(width: size, height: size)
+                    .clipped()
+                    .mask {
+                        Image(decorative: displayedMask, scale: max(1, displayScale), orientation: .up)
+                            .resizable()
+                            .interpolation(.high)
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: size, height: size)
+                            .clipped()
+                    }
+                    .scaleEffect(displayedFinalScale)
             } else {
                 Color.clear
             }
         }
-        .frame(width: size, height: size)
-        .clipped()
-        .mask {
-            Image(decorative: mask, scale: max(1, displayScale), orientation: .up)
-                .resizable()
-                .interpolation(.high)
-                .aspectRatio(contentMode: .fill)
-                .frame(width: size, height: size)
-                .clipped()
-        }
-        .scaleEffect(finalMaskedArtworkScale)
         .frame(width: size, height: size)
         .onAppear {
             scheduleExtendedArtworkProcessing()
@@ -402,17 +411,24 @@ private struct ArtworkFrameMaskedImageView: View {
         processingTask?.cancel()
         guard let sourceImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             extendedArtworkImage = nil
+            displayedMask = nil
             extendedArtworkKey = nil
             return
         }
 
         let outputPixel = targetPixel
         let scale = artworkScale
+        // Capture the mask + final scale that belong to THIS render so they swap
+        // in atomically with the finished cover (see `displayedMask`).
+        let committedMask = mask
+        let committedFinalScale = finalMaskedArtworkScale
         processingTask = Task(priority: .utility) {
             if let cached = await ClassicArtworkFrameExtendedArtworkCache.shared.image(for: key),
                !Task.isCancelled {
                 await MainActor.run {
                     extendedArtworkImage = cached
+                    displayedMask = committedMask
+                    displayedFinalScale = committedFinalScale
                     extendedArtworkKey = key
                     processingTask = nil
                 }
@@ -428,14 +444,16 @@ private struct ArtworkFrameMaskedImageView: View {
             }.value
 
             guard !Task.isCancelled, let rendered else { return }
-            let image = NSImage(
+            let renderedImage = NSImage(
                 cgImage: rendered,
                 size: NSSize(width: rendered.width, height: rendered.height)
             )
-            await ClassicArtworkFrameExtendedArtworkCache.shared.setImage(image, for: key)
+            await ClassicArtworkFrameExtendedArtworkCache.shared.setImage(renderedImage, for: key)
 
             await MainActor.run {
-                extendedArtworkImage = image
+                extendedArtworkImage = renderedImage
+                displayedMask = committedMask
+                displayedFinalScale = committedFinalScale
                 extendedArtworkKey = key
                 processingTask = nil
             }
@@ -492,7 +510,11 @@ private enum ClassicArtworkFrameExtendedArtworkRenderer {
         autoreleasepool {
             let outputPixel = max(1, outputPixel)
             let artworkScale = min(1.0, max(0.50, artworkScale))
-            guard let squareImage = squareCrop(sourceImage) else { return nil }
+            guard let croppedImage = squareCrop(sourceImage) else { return nil }
+            // Trim uniform white/black border fringes (compression artifacts)
+            // before mirror tiling, otherwise the seam between the fringe and the
+            // reflected content reads as an ugly hard line around the cover.
+            let squareImage = defringeUniformBorders(croppedImage) ?? croppedImage
             let colorSpace = sourceImage.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)
             guard let colorSpace,
                   let context = CGContext(
@@ -613,8 +635,9 @@ private enum ClassicArtworkFrameExtendedArtworkRenderer {
     /// mirrored extension band. The mask ramps this to 0 at the cover edge.
     private nonisolated static let edgeBlurMaxRadius: CGFloat = 64
     /// Ramp exponent (< 1 = concave = reaches heavy blur quickly just past the
-    /// cover edge). The extension band is narrow, so the progression is fast.
-    private nonisolated static let edgeBlurRampExponent: Double = 0.42
+    /// cover edge). The extension band is narrow, so the progression stays fast,
+    /// but eased back from 0.42 so the onset just past the cover is gentler.
+    private nonisolated static let edgeBlurRampExponent: Double = 0.55
 
     private nonisolated static let ciContext = CIContext(options: [
         .cacheIntermediates: false,
@@ -746,6 +769,190 @@ private enum ClassicArtworkFrameExtendedArtworkRenderer {
             height: CGFloat(side)
         )
         return image.cropping(to: rect) ?? image
+    }
+
+    // MARK: - Border Fringe Removal
+
+    /// How far inward (px) we search for the first clean line on an edge, and
+    /// the cap on how much a fringe may pull — so a misjudged or intentionally
+    /// uniform border is never stretched across real content.
+    private nonisolated static let defringeMaxDepth = 11
+    /// Max per-channel spread the OUTERMOST line may have and still trigger
+    /// detection (≈0.16). The fringe's outer line is flat; the deeper transition
+    /// lines it then walks through are judged by luminance alone, so a 2-3px
+    /// fringe with a blended inner line is still fully removed.
+    private nonisolated static let defringeUniformTolerance = 40
+    /// Max mean chroma for the outermost line to count as near-greyscale, so a
+    /// uniform saturated colour edge is not mistaken for a white/black fringe.
+    private nonisolated static let defringeChromaTolerance = 32
+    /// How much brighter / darker than the interior reference the edge must be
+    /// to count as a fringe. Relative detection catches pale fringes on pale art
+    /// (which absolute thresholds miss) while ignoring faint natural variation.
+    private nonisolated static let defringeRelativeMargin = 20
+    /// Absolute luminance floor for a white fringe / ceiling for a black fringe,
+    /// so a mid-grey edge is never called white or black purely on relative
+    /// grounds.
+    private nonisolated static let defringeWhiteFloor = 165
+    private nonisolated static let defringeBlackCeiling = 90
+    /// While walking inward, a line still belongs to the fringe until its
+    /// luminance returns within this margin of the interior reference.
+    private nonisolated static let defringeEndMargin = 12
+
+    /// Detects and removes a uniform near-white or near-black fringe on each of
+    /// the four edges independently (an edge without a fringe is left untouched).
+    /// For each fringed edge it walks inward up to `defringeMaxDepth`, finds the
+    /// first clean line, and replicates that line outward over the fringe — so
+    /// the subsequent mirror tiling reflects real content instead of a hard
+    /// white/black seam.
+    private nonisolated static func defringeUniformBorders(_ image: CGImage) -> CGImage? {
+        let width = image.width
+        let height = image.height
+        // Need enough rows/cols for the interior reference lines (depth ≤ 18).
+        guard width > 40, height > 40 else {
+            return image
+        }
+
+        let bytesPerRow = width * 4
+        let colorSpace = image.colorSpace.flatMap { $0.model == .rgb ? $0 : nil }
+            ?? CGColorSpace(name: CGColorSpace.sRGB)
+            ?? CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return image
+        }
+
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let raw = context.data else { return image }
+        let ptr = raw.bindMemory(to: UInt8.self, capacity: bytesPerRow * height)
+
+        // Left edge:  lines step right (+4),     positions step down a row.
+        defringeEdge(ptr, lineStart0: 0, lineStride: 4, posStride: bytesPerRow, posCount: height)
+        // Right edge: lines step left (-4),      positions step down a row.
+        defringeEdge(ptr, lineStart0: (width - 1) * 4, lineStride: -4, posStride: bytesPerRow, posCount: height)
+        // Bottom edge: lines step up a row,      positions step right (+4).
+        defringeEdge(ptr, lineStart0: 0, lineStride: bytesPerRow, posStride: 4, posCount: width)
+        // Top edge:   lines step down a row,     positions step right (+4).
+        defringeEdge(ptr, lineStart0: (height - 1) * bytesPerRow, lineStride: -bytesPerRow, posStride: 4, posCount: width)
+
+        return context.makeImage()
+    }
+
+    private nonisolated static func defringeEdge(
+        _ ptr: UnsafeMutablePointer<UInt8>,
+        lineStart0: Int,
+        lineStride: Int,
+        posStride: Int,
+        posCount: Int
+    ) {
+        let sampleStep = max(1, posCount / 64)
+
+        func luma(atLine line: Int) -> Int {
+            lineLuma(ptr, base: lineStart0 + line * lineStride, posStride: posStride, posCount: posCount, sampleStep: sampleStep)
+        }
+
+        // Interior reference: median luminance of a few lines well past any
+        // plausible fringe. Detection is RELATIVE to this, so a pale fringe on
+        // pale art is caught and a uniformly bright/dark image is not.
+        var refs = [luma(atLine: 12), luma(atLine: 14), luma(atLine: 16), luma(atLine: 18)]
+        refs.sort()
+        let interiorLuma = (refs[1] + refs[2]) / 2
+
+        // Trigger on the outermost line only: it must be flat, near-grey, and
+        // pulled toward white or black relative to the interior.
+        let edge = lineStats(ptr, base: lineStart0, posStride: posStride, posCount: posCount, sampleStep: sampleStep)
+        guard edge.spread <= defringeUniformTolerance, edge.chroma <= defringeChromaTolerance else { return }
+
+        let isWhite = edge.luma >= interiorLuma + defringeRelativeMargin && edge.luma >= defringeWhiteFloor
+        let isBlack = edge.luma <= interiorLuma - defringeRelativeMargin && edge.luma <= defringeBlackCeiling
+        guard isWhite || isBlack else { return }
+
+        // Walk inward (judging the transition lines by luminance only) until the
+        // line returns to the interior — that is the first clean content line.
+        var goodLine = 0
+        while goodLine < defringeMaxDepth {
+            let lineLuma = luma(atLine: goodLine)
+            let stillFringe = isWhite
+                ? lineLuma >= interiorLuma + defringeEndMargin
+                : lineLuma <= interiorLuma - defringeEndMargin
+            if stillFringe { goodLine += 1 } else { break }
+        }
+
+        // goodLine == defringeMaxDepth -> never returned to the interior within
+        // the cap (an intentional wide border, not a fringe) -> leave it alone.
+        guard goodLine > 0, goodLine < defringeMaxDepth else { return }
+
+        let goodBase = lineStart0 + goodLine * lineStride
+        for line in 0..<goodLine {
+            let dstBase = lineStart0 + line * lineStride
+            var p = 0
+            while p < posCount {
+                let src = goodBase + p * posStride
+                let dst = dstBase + p * posStride
+                ptr[dst] = ptr[src]
+                ptr[dst + 1] = ptr[src + 1]
+                ptr[dst + 2] = ptr[src + 2]
+                ptr[dst + 3] = ptr[src + 3]
+                p += 1
+            }
+        }
+    }
+
+    private nonisolated static func lineLuma(
+        _ ptr: UnsafeMutablePointer<UInt8>,
+        base: Int,
+        posStride: Int,
+        posCount: Int,
+        sampleStep: Int
+    ) -> Int {
+        var sum = 0, count = 0
+        var p = 0
+        while p < posCount {
+            let o = base + p * posStride
+            sum += Int(ptr[o]) * 299 + Int(ptr[o + 1]) * 587 + Int(ptr[o + 2]) * 114
+            count += 1
+            p += sampleStep
+        }
+        guard count > 0 else { return 0 }
+        return sum / (count * 1000)
+    }
+
+    private nonisolated static func lineStats(
+        _ ptr: UnsafeMutablePointer<UInt8>,
+        base: Int,
+        posStride: Int,
+        posCount: Int,
+        sampleStep: Int
+    ) -> (spread: Int, chroma: Int, luma: Int) {
+        var minR = 255, minG = 255, minB = 255
+        var maxR = 0, maxG = 0, maxB = 0
+        var sumR = 0, sumG = 0, sumB = 0
+        var count = 0
+
+        var p = 0
+        while p < posCount {
+            let o = base + p * posStride
+            let r = Int(ptr[o]), g = Int(ptr[o + 1]), b = Int(ptr[o + 2])
+            if r < minR { minR = r }; if r > maxR { maxR = r }
+            if g < minG { minG = g }; if g > maxG { maxG = g }
+            if b < minB { minB = b }; if b > maxB { maxB = b }
+            sumR += r; sumG += g; sumB += b
+            count += 1
+            p += sampleStep
+        }
+        guard count > 0 else { return (0, 0, 0) }
+
+        let spread = max(maxR - minR, max(maxG - minG, maxB - minB))
+        let meanR = sumR / count, meanG = sumG / count, meanB = sumB / count
+        let chroma = max(meanR, max(meanG, meanB)) - min(meanR, min(meanG, meanB))
+        let luma = (meanR * 299 + meanG * 587 + meanB * 114) / 1000
+        return (spread, chroma, luma)
     }
 }
 
