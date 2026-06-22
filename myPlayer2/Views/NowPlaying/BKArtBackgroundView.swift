@@ -303,8 +303,53 @@ struct BKArtBackgroundView: View {
         basePalette: [NSColor],
         richPalette: [NSColor]
     ) -> [NSColor] {
-        if let display = analysis?.displayPalette, !display.isEmpty {
-            return display
+        if let analysis {
+            var selected: [NSColor] = []
+
+            func rgbDistance(_ lhs: NSColor, _ rhs: NSColor) -> CGFloat {
+                let l = lhs.usingColorSpace(.deviceRGB) ?? lhs
+                let r = rhs.usingColorSpace(.deviceRGB) ?? rhs
+                let dr = l.redComponent - r.redComponent
+                let dg = l.greenComponent - r.greenComponent
+                let db = l.blueComponent - r.blueComponent
+                return sqrt(dr * dr + dg * dg + db * db)
+            }
+
+            func appendDistinct(_ color: NSColor) {
+                let ready = color.usingColorSpace(.deviceRGB) ?? color
+                guard selected.allSatisfy({ rgbDistance($0, ready) >= 0.050 }) else { return }
+                selected.append(ready)
+            }
+
+            func isVisibleSurfaceMaterial(_ color: NSColor) -> Bool {
+                guard let rgb = color.usingColorSpace(.deviceRGB),
+                      let lch = OKColor.nsColorToOKLCH(rgb)
+                else { return false }
+                var hue: CGFloat = 0
+                var saturation: CGFloat = 0
+                var brightness: CGFloat = 0
+                var alpha: CGFloat = 0
+                rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+                return lch.c >= 0.006
+                    && saturation >= 0.035
+                    && brightness >= 0.08
+                    && brightness <= 0.97
+            }
+
+            if analysis.hasTrustedHueCandidate {
+                for color in analysis.surfacePalette where isVisibleSurfaceMaterial(color) {
+                    appendDistinct(color)
+                }
+                for color in analysis.displayPalette
+                    where ArtworkHueTrust.isUsableHueSource(color) || isVisibleSurfaceMaterial(color) {
+                    appendDistinct(color)
+                }
+            } else {
+                for color in analysis.displayPalette { appendDistinct(color) }
+            }
+            if !selected.isEmpty {
+                return Array(selected.prefix(8))
+            }
         }
         if !richPalette.isEmpty {
             return richPalette
@@ -1365,7 +1410,7 @@ private final class BKArtBackgroundLayerView: NSView {
 
         if harmonized.usesStrictNeutralRendering {
             guard var lch = OKColor.nsColorToOKLCH(nsColor) else { return color }
-            lch.l = min(max(lch.l, 0.50), 0.78)
+            lch.l = min(max(lch.l, 0.44), 0.82)
             lch.c = 0
             lch.h = 0
             return OKColor.okLCHToNSColor(lch, alpha: nsColor.alphaComponent).cgColor
@@ -1395,7 +1440,20 @@ private final class BKArtBackgroundLayerView: NSView {
         }
 
         let liftedS = min(maxS, max(minS, s * 1.32 + 0.035))
-        let liftedB = min(1.0, max(0.985, b + 0.045))
+        let brightnessUpper: CGFloat
+        let brightnessLower: CGFloat
+        let coverLift = min(max((harmonized.imageCoverLuma - 0.18) / 0.72, 0), 1)
+        if harmonized.chromaticClusterCount <= 1 {
+            brightnessLower = lerp(0.56, 0.68, t: coverLift)
+            brightnessUpper = lerp(0.82, 0.90, t: coverLift)
+        } else if harmonized.isNearGray || harmonized.complexity == .low {
+            brightnessLower = lerp(0.58, 0.70, t: coverLift)
+            brightnessUpper = lerp(0.84, 0.90, t: coverLift)
+        } else {
+            brightnessLower = lerp(0.60, 0.72, t: coverLift)
+            brightnessUpper = lerp(0.86, 0.91, t: coverLift)
+        }
+        let liftedB = min(brightnessUpper, max(brightnessLower, b + 0.015))
         return NSColor(deviceHue: h, saturation: liftedS, brightness: liftedB, alpha: a).cgColor
     }
 
@@ -2115,7 +2173,23 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func dotGradientStops() -> [CGColor] {
-        harmonized.bgStops
+        guard harmonized.isDark,
+              !harmonized.isGrayscaleCover,
+              !harmonized.usesStrictNeutralRendering
+        else {
+            return harmonized.bgStops
+        }
+        return harmonized.bgStops.map { color in
+            guard let nsColor = NSColor(cgColor: color),
+                  var lch = OKColor.nsColorToOKLCH(nsColor),
+                  lch.c >= 0.010
+            else {
+                return color
+            }
+            lch.c = min(0.105, max(lch.c + 0.010, lch.c * 1.18))
+            lch.l = min(max(lch.l, 0.075), 0.32)
+            return OKColor.okLCHToNSColor(lch, alpha: nsColor.alphaComponent).cgColor
+        }
     }
 
     private var isUltraDarkCover: Bool {
@@ -2155,11 +2229,11 @@ private final class BKArtBackgroundLayerView: NSView {
                     lch.h = 0
                 } else if harmonized.isDark {
                     lch.l = lch.l * 0.50
-                    lch.c = lch.c * 0.70
+                    lch.c = min(0.105, lch.c * 0.58)
                     targetAlpha = 0.80
                 } else {
                     lch.l = min(max(lch.l, 0.68), 0.765)
-                    lch.c = max(0.18, lch.c * 1.80)
+                    lch.c = min(0.200, max(0.130, lch.c * 1.45))
                     targetAlpha = 0.90
                 }
                 let adjustedNS = OKColor.okLCHToNSColor(lch, alpha: 1.0)

@@ -116,8 +116,16 @@ nonisolated enum ColorSystemSelfCheck {
         checkFaithfulWarmCoverLEDStaysWarm(&report)
         checkFaithfulGreyBKShapeSwatchesStayNeutralLayered(&report)
         checkFaithfulBlackYellowBKShapeSwatchesKeepYellow(&report)
+        checkFaithfulTinyYellowAccentAvoidsNearMono(&report)
+        checkFaithfulMutedPastelCoverAvoidsNearMono(&report)
+        checkFaithfulWarmPaperCoverAvoidsNearMono(&report)
         checkFaithfulSingleRedBKShapeSwatchesStayLowRichness(&report)
+        checkFaithfulSingleHueBKShapeSwatchesKeepTonalDepth(&report)
         checkFaithfulMutedWarmBKBackgroundKeepsTint(&report)
+        checkFaithfulBlueWhiteGreenBKShapeCompanion(&report)
+        checkFaithfulMutedPinkBKBackgroundUsesSurfaceHue(&report)
+        checkFaithfulDarkSkinSurfaceAvoidsNearMono(&report)
+        checkFaithfulNeutralDisplayDoesNotLeakHueIntoBK(&report)
 
         report.section("Phase 3 hotfix — consumer projection")
         checkSpectrumNearMonoNeutralised(&report)
@@ -2267,10 +2275,99 @@ nonisolated enum ColorSystemSelfCheck {
             && swatches.diagnostics.chromaticClusterCount == 1
             && swatches.diagnostics.swatchCount <= 3
             && hasYellow
+        let swatchHSBText = swatches.diagnostics.swatchHSB.joined(separator: ";")
         report.record(
             "Faithful BK: black yellow shape swatches keep yellow",
             ok,
-            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) clusters=\(swatches.diagnostics.chromaticClusterCount) count=\(swatches.diagnostics.swatchCount) maxC=\(format(maxC))"
+            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) clusters=\(swatches.diagnostics.chromaticClusterCount) count=\(swatches.diagnostics.swatchCount) maxC=\(format(maxC)) hsb=\(swatchHSBText)"
+        )
+    }
+
+    private static func checkFaithfulTinyYellowAccentAvoidsNearMono(
+        _ report: inout CheckReport
+    ) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.985, (0, 0, 0, 255)),
+            (0.015, (58, 56, 8, 255))
+        ]) else {
+            report.record("Faithful BK: tiny yellow accent avoids nearMono", false, "analysis nil")
+            return
+        }
+        let swatches = BKColorEngine.makeShapeSwatches(
+            seed: 0x8657_39F0,
+            extracted: analysis.displayPalette,
+            fallback: [analysis.averageColor],
+            isDark: false,
+            analysis: analysis
+        )
+        let lchs = swatches.colors.compactMap(cgColorToOKLCH(_:))
+        let hasYellow = lchs.contains { $0.h >= 0.16 && $0.h <= 0.34 && $0.c >= 0.035 }
+        let ok = analysis.hasTrustedHueCandidate
+            && !analysis.isNearMonochrome
+            && swatches.diagnostics.chromaticClusterCount == 1
+            && hasYellow
+        report.record(
+            "Faithful BK: tiny yellow accent avoids nearMono",
+            ok,
+            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) salient=\(analysis.salientHighlightPalette.count) clusters=\(swatches.diagnostics.chromaticClusterCount)"
+        )
+    }
+
+    private static func checkFaithfulMutedPastelCoverAvoidsNearMono(
+        _ report: inout CheckReport
+    ) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.38, (238, 224, 228, 255)),
+            (0.22, (176, 218, 226, 255)),
+            (0.16, (232, 179, 192, 255)),
+            (0.10, (126, 158, 116, 255)),
+            (0.08, (238, 222, 150, 255)),
+            (0.06, (34, 32, 34, 255))
+        ]) else {
+            report.record("Faithful BK: muted pastel cover avoids nearMono", false, "analysis nil")
+            return
+        }
+        let palette = BKColorEngine.make(
+            extracted: analysis.displayPalette,
+            fallback: [analysis.averageColor],
+            isDark: false,
+            analysis: analysis
+        )
+        let ok = analysis.hasTrustedHueCandidate
+            && !analysis.isNearMonochrome
+            && !palette.usesStrictNeutralRendering
+        report.record(
+            "Faithful BK: muted pastel cover avoids nearMono",
+            ok,
+            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) strict=\(palette.usesStrictNeutralRendering) avgSat=\(format(analysis.avgSaturation)) colorfulness=\(format(analysis.colorfulness))"
+        )
+    }
+
+    private static func checkFaithfulWarmPaperCoverAvoidsNearMono(
+        _ report: inout CheckReport
+    ) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.58, (170, 158, 137, 255)),
+            (0.18, (92, 86, 76, 255)),
+            (0.14, (22, 22, 20, 255)),
+            (0.10, (206, 198, 176, 255))
+        ]) else {
+            report.record("Faithful BK: warm paper cover avoids nearMono", false, "analysis nil")
+            return
+        }
+        let palette = BKColorEngine.make(
+            extracted: analysis.displayPalette,
+            fallback: [analysis.averageColor],
+            isDark: false,
+            analysis: analysis
+        )
+        let ok = analysis.hasTrustedHueCandidate
+            && !analysis.isNearMonochrome
+            && !palette.usesStrictNeutralRendering
+        report.record(
+            "Faithful BK: warm paper cover avoids nearMono",
+            ok,
+            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) strict=\(palette.usesStrictNeutralRendering) avgSat=\(format(analysis.avgSaturation))"
         )
     }
 
@@ -2304,6 +2401,39 @@ nonisolated enum ColorSystemSelfCheck {
             "Faithful BK: single red shape swatches stay low richness",
             ok,
             "clusters=\(swatches.diagnostics.chromaticClusterCount) count=\(swatches.diagnostics.swatchCount) distinct=\(distinct) maxC=\(format(maxC))"
+        )
+    }
+
+    private static func checkFaithfulSingleHueBKShapeSwatchesKeepTonalDepth(
+        _ report: inout CheckReport
+    ) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.48, (204, 199, 174, 255)),
+            (0.20, (106, 92, 74, 255)),
+            (0.18, (242, 240, 234, 255)),
+            (0.14, (22, 20, 18, 255))
+        ]) else {
+            report.record("Faithful BK: single hue shape swatches keep tonal depth", false, "analysis nil")
+            return
+        }
+        let swatches = BKColorEngine.makeShapeSwatches(
+            seed: 0x356B_FBF2,
+            extracted: analysis.displayPalette,
+            fallback: [analysis.averageColor],
+            isDark: false,
+            analysis: analysis
+        )
+        let lValues = swatches.colors.compactMap { cgColorToOKLCH($0)?.l }
+        let lSpread = (lValues.max() ?? 0) - (lValues.min() ?? 0)
+        let ok = analysis.hasTrustedHueCandidate
+            && !analysis.isNearMonochrome
+            && swatches.diagnostics.chromaticClusterCount == 1
+            && swatches.diagnostics.swatchCount >= 3
+            && lSpread >= 0.12
+        report.record(
+            "Faithful BK: single hue shape swatches keep tonal depth",
+            ok,
+            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) clusters=\(swatches.diagnostics.chromaticClusterCount) count=\(swatches.diagnostics.swatchCount) lSpread=\(format(lSpread))"
         )
     }
 
@@ -2341,6 +2471,140 @@ nonisolated enum ColorSystemSelfCheck {
         )
     }
 
+    private static func checkFaithfulBlueWhiteGreenBKShapeCompanion(
+        _ report: inout CheckReport
+    ) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.58, (9, 162, 227, 255)),
+            (0.16, (198, 228, 247, 255)),
+            (0.12, (232, 243, 241, 255)),
+            (0.08, (4, 118, 187, 255)),
+            (0.06, (136, 197, 234, 255))
+        ]) else {
+            report.record("Faithful BK: blue-white-green shape companion", false, "analysis nil")
+            return
+        }
+        let swatches = BKColorEngine.makeShapeSwatches(
+            seed: 0x0EB5_760B,
+            extracted: bkExtractedPalette(for: analysis),
+            fallback: [analysis.averageColor],
+            isDark: false,
+            analysis: analysis
+        )
+        let hues = swatches.colors.compactMap(cgColorHue(_:))
+        let hasBlue = hues.contains { $0 >= 0.53 && $0 <= 0.60 }
+        let hasGreenCyan = hues.contains { $0 >= 0.47 && $0 < 0.53 }
+        let ok = analysis.hasTrustedHueCandidate
+            && swatches.diagnostics.chromaticClusterCount >= 1
+            && swatches.diagnostics.chromaticClusterCount <= 2
+            && swatches.diagnostics.swatchCount >= 4
+            && hasBlue
+            && hasGreenCyan
+        let hueSummary = hues.map { format($0) }.joined(separator: ",")
+        report.record(
+            "Faithful BK: blue-white-green shape companion",
+            ok,
+            "count=\(swatches.diagnostics.swatchCount) clusters=\(swatches.diagnostics.chromaticClusterCount) hues=\(hueSummary)"
+        )
+    }
+
+    private static func checkFaithfulMutedPinkBKBackgroundUsesSurfaceHue(
+        _ report: inout CheckReport
+    ) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.36, (235, 225, 228, 255)),
+            (0.20, (233, 217, 218, 255)),
+            (0.16, (198, 174, 177, 255)),
+            (0.10, (237, 212, 204, 255)),
+            (0.08, (193, 219, 229, 255)),
+            (0.10, (245, 238, 240, 255))
+        ]) else {
+            report.record("Faithful BK: muted pink background uses surface hue", false, "analysis nil")
+            return
+        }
+        let palette = BKColorEngine.make(
+            extracted: bkExtractedPalette(for: analysis),
+            fallback: [analysis.averageColor],
+            isDark: true,
+            analysis: analysis
+        )
+        let bgHues = palette.bgStops.compactMap(cgColorHue(_:))
+        let bgC = (palette.bgStops + palette.bgVariants.flatMap { $0 })
+            .compactMap { cgColorToOKLCH($0)?.c }
+        let hasPinkHue = bgHues.contains {
+            circularHueDelta($0, 0.95) <= 0.08 || circularHueDelta($0, 0.0) <= 0.08
+        }
+        let hasBlueBg = bgHues.contains { $0 >= 0.48 && $0 <= 0.62 }
+        let ok = analysis.hasTrustedHueCandidate
+            && !analysis.isNearMonochrome
+            && hasPinkHue
+            && !hasBlueBg
+            && (bgC.max() ?? 0) >= 0.010
+        let bgHueSummary = bgHues.map { format($0) }.joined(separator: ",")
+        report.record(
+            "Faithful BK: muted pink background uses surface hue",
+            ok,
+            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) bgHues=\(bgHueSummary) maxC=\(format(bgC.max() ?? 0))"
+        )
+    }
+
+    private static func checkFaithfulDarkSkinSurfaceAvoidsNearMono(
+        _ report: inout CheckReport
+    ) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.842, (5, 5, 5, 255)),
+            (0.140, (15, 13, 13, 255)),
+            (0.018, (82, 65, 58, 255))
+        ]) else {
+            report.record("Faithful BK: dark skin surface avoids nearMono", false, "analysis nil")
+            return
+        }
+        let source = analysis.primaryHueSourceColor.flatMap(OKColor.nsColorToOKLCH(_:))
+        let warmSource = source.map { $0.h <= 0.16 || $0.h >= 0.92 } ?? false
+        let ok = analysis.hasTrustedHueCandidate
+            && !analysis.isNearMonochrome
+            && warmSource
+            && (source?.c ?? 0) >= ColorSystemTokens.NearMonochromeProfile.mutedTrustedSurfaceChromaFloor
+        let sourceSummary = source.map { describeLCH($0) } ?? "nil"
+        report.record(
+            "Faithful BK: dark skin surface avoids nearMono",
+            ok,
+            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) source=\(sourceSummary) surface=\(analysis.surfacePalette.count)"
+        )
+    }
+
+    private static func checkFaithfulNeutralDisplayDoesNotLeakHueIntoBK(
+        _ report: inout CheckReport
+    ) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.842, (5, 5, 5, 255)),
+            (0.140, (15, 13, 13, 255)),
+            (0.018, (82, 65, 58, 255))
+        ]) else {
+            report.record("Faithful BK: neutral display does not leak hue", false, "analysis nil")
+            return
+        }
+        let palette = BKColorEngine.make(
+            extracted: bkExtractedPalette(for: analysis),
+            fallback: [analysis.averageColor],
+            isDark: true,
+            analysis: analysis
+        )
+        let hues = (palette.bgStops + palette.bgVariants.flatMap { $0 }).compactMap(cgColorHue(_:))
+        let hasWarm = hues.contains { circularHueDelta($0, 0.04) <= 0.10 }
+        let leaksGreen = hues.contains { $0 >= 0.20 && $0 <= 0.50 }
+        let ok = analysis.hasTrustedHueCandidate
+            && !palette.usesStrictNeutralRendering
+            && hasWarm
+            && !leaksGreen
+        let hueSummary = hues.map { format($0) }.joined(separator: ",")
+        report.record(
+            "Faithful BK: neutral display does not leak hue",
+            ok,
+            "strict=\(palette.usesStrictNeutralRendering) hues=\(hueSummary)"
+        )
+    }
+
     // MARK: - Phase 6.3 scenarios
 
     /// Phase 6.3 token-coupled tier-range fixture mirroring
@@ -2357,8 +2621,8 @@ nonisolated enum ColorSystemSelfCheck {
         let nightUltraDarkDotB: ClosedRange<CGFloat> = 0.22...0.38
         // Day (light, normal).
         let dayBgB: ClosedRange<CGFloat> = 0.990...1.000
-        let dayFgB: ClosedRange<CGFloat> = 0.955...0.995
-        let dayDotB: ClosedRange<CGFloat> = 0.920...0.980
+        let dayFgB: ClosedRange<CGFloat> = 0.620...0.880
+        let dayDotB: ClosedRange<CGFloat> = 0.860...0.940
     }
 
     /// 95% near-black + 5% bright yellow. The canonical Phase 6.3 focus-score
@@ -2429,6 +2693,8 @@ nonisolated enum ColorSystemSelfCheck {
             salientHighlightPalette: [],
             salientHighlightAreaShares: [],
             displayPalette: base.displayPalette,
+            surfacePalette: base.surfacePalette,
+            surfacePaletteAreaShares: base.surfacePaletteAreaShares,
             bestTextSourceColor: base.dominantColor
         )
         let yellowInDisplay = analysis.displayPalette.contains {
@@ -3112,10 +3378,12 @@ nonisolated enum ColorSystemSelfCheck {
     private static func checkPhase64DayArtBackgroundAiryBand(_ report: inout CheckReport) {
         let fixture = Phase63TierFixture()
         let ok = fixture.dayBgB.lowerBound >= 0.985
-            && fixture.dayFgB.lowerBound >= 0.950
-            && fixture.dayDotB.lowerBound >= 0.900
+            && fixture.dayFgB.lowerBound >= 0.580
+            && fixture.dayFgB.upperBound <= 0.900
+            && fixture.dayDotB.upperBound <= 0.950
+            && fixture.dayBgB.lowerBound - fixture.dayFgB.upperBound >= 0.080
         report.record(
-            "Phase 6.4: day art background uses airy high-B bands", ok,
+            "Phase 6.4: day art background keeps shapes below background", ok,
             "bg=\(format(fixture.dayBgB.lowerBound))...\(format(fixture.dayBgB.upperBound)) fg=\(format(fixture.dayFgB.lowerBound))...\(format(fixture.dayFgB.upperBound)) dot=\(format(fixture.dayDotB.lowerBound))...\(format(fixture.dayDotB.upperBound))"
         )
     }
@@ -3185,6 +3453,51 @@ nonisolated enum ColorSystemSelfCheck {
         var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
         return ColorMath.circularHueDistance(h, target) <= gap
+    }
+
+    private static func bkExtractedPalette(for analysis: ArtworkColorAnalysis) -> [NSColor] {
+        var selected: [NSColor] = []
+
+        func appendDistinct(_ color: NSColor) {
+            let ready = color.usingColorSpace(.deviceRGB) ?? color
+            let isDistinct = selected.allSatisfy { existing in
+                let e = existing.usingColorSpace(.deviceRGB) ?? existing
+                let dr = e.redComponent - ready.redComponent
+                let dg = e.greenComponent - ready.greenComponent
+                let db = e.blueComponent - ready.blueComponent
+                return sqrt(dr * dr + dg * dg + db * db) >= 0.050
+            }
+            if isDistinct { selected.append(ready) }
+        }
+
+        if analysis.hasTrustedHueCandidate {
+            for color in analysis.surfacePalette where isVisibleSurfaceMaterial(color) {
+                appendDistinct(color)
+            }
+            for color in analysis.displayPalette
+                where ArtworkHueTrust.isUsableHueSource(color) || isVisibleSurfaceMaterial(color) {
+                appendDistinct(color)
+            }
+        } else {
+            for color in analysis.displayPalette { appendDistinct(color) }
+        }
+
+        return selected.isEmpty ? analysis.displayPalette : Array(selected.prefix(8))
+    }
+
+    private static func isVisibleSurfaceMaterial(_ color: NSColor) -> Bool {
+        guard let rgb = color.usingColorSpace(.deviceRGB),
+              let lch = OKColor.nsColorToOKLCH(rgb)
+        else { return false }
+        var hue: CGFloat = 0
+        var saturation: CGFloat = 0
+        var brightness: CGFloat = 0
+        var alpha: CGFloat = 0
+        rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+        return lch.c >= 0.006
+            && saturation >= 0.035
+            && brightness >= 0.08
+            && brightness <= 0.97
     }
 
     private static func countDistinctHues(_ hues: [CGFloat], gap: CGFloat) -> Int {

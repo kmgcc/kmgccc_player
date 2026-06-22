@@ -219,14 +219,15 @@ struct CoverGradientBlurBackgroundView: View {
 
     @ViewBuilder
     private func rawImageLayer(geometry: GeometryProxy) -> some View {
-        if let cgImage = sourceCGImage {
-            Image(decorative: cgImage, scale: 1.0)
-                .resizable()
-                .frame(width: geometry.size.width, height: geometry.size.height)
-                .clipped()
-        } else {
-            fallbackBackground(geometry: geometry)
-        }
+        // Placeholder shown only before the first progressive-blur render exists
+        // for this surface. Deliberately the solid base colour — NOT the prepared
+        // artwork drawn `.resizable()` edge-to-edge. That stretched preview was
+        // the "水平拉伸" flash: on a cold track switch `visibleRenderedImage`
+        // animates false→true and, at the start of that crossfade, the stretched
+        // source was momentarily fully visible between the solid base and the
+        // final left-cover/right-blur render. A solid base crossfades cleanly
+        // into the final render with no intermediate stretched frame.
+        fallbackBackground(geometry: geometry)
     }
 
     @ViewBuilder
@@ -259,16 +260,29 @@ struct CoverGradientBlurBackgroundView: View {
         let key = renderKey
 
         guard key.isRenderable else {
-            updateSourceImage(nil, forKey: key)
-            updateRenderedImage(nil, forKey: key)
+            // Transient artwork gap on a cold track switch: the new track is
+            // selected before its lazily-loaded artwork data / checksum is in
+            // memory (Track.loadArtworkDataIfNeeded reads from disk), so the key
+            // is briefly non-renderable. HOLD the last good cover instead of
+            // clearing it — clearing here dropped the surface to the solid
+            // fallback on every switch, which read as the "纯色" colour flash
+            // before the new cover appeared. Only blank when there is no prior
+            // cover to hold (genuine first mount).
+            if renderedCGImage == nil {
+                updateSourceImage(nil, forKey: key)
+                updateRenderedImage(nil, forKey: key)
+            }
             return
         }
 
         if lastRenderKey == key, renderedCGImage != nil { return }
 
         guard artworkData != nil || artworkImage != nil else {
-            updateSourceImage(nil, forKey: key)
-            updateRenderedImage(nil, forKey: key)
+            // Same hold semantics as above for the artwork-bytes gap.
+            if renderedCGImage == nil {
+                updateSourceImage(nil, forKey: key)
+                updateRenderedImage(nil, forKey: key)
+            }
             return
         }
 
@@ -995,8 +1009,12 @@ private actor CoverGradientBlurRenderStore {
 
     private let cache: NSCache<NSString, CoverGradientBlurRenderedImageBox> = {
         let cache = NSCache<NSString, CoverGradientBlurRenderedImageBox>()
-        cache.countLimit = 2
-        cache.totalCostLimit = 32 * 1024 * 1024
+        // Retain a small window of recent renders so re-selecting a recently
+        // shown track swaps in instantly within a session. `2` evicted the
+        // previous render almost immediately, forcing a cold multi-pass
+        // CIMaskedVariableBlur re-render on nearly every switch.
+        cache.countLimit = 6
+        cache.totalCostLimit = 64 * 1024 * 1024
         return cache
     }()
     private var inFlightKeys: Set<String> = []

@@ -183,7 +183,12 @@ actor TrackArtworkCache {
         }
         guard !uniqueSources.isEmpty else { return nil }
 
-        return Task.detached(priority: .background) {
+        // `.utility` rather than `.background`: this warms the current track plus
+        // the upcoming queue window (full 1400px image + colour analysis). At
+        // `.background` QoS it can be starved long enough that the next track is
+        // still cold when playback advances or the user skips, which surfaces as
+        // a late cover / colour pop on the now-playing and fullscreen surfaces.
+        return Task.detached(priority: .utility) {
             for source in uniqueSources {
                 guard !Task.isCancelled else { return }
                 await self.preloadPlaybackArtwork(for: source, reason: reason)

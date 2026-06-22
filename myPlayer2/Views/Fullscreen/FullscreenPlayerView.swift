@@ -694,6 +694,17 @@ struct FullscreenPlayerView: View {
         let skinIdentity = "fullscreen_\(settings.fullscreen.skinID)_\(skinRevision)"
 
         ZStack {
+            // Embedded fullscreen is composited over the live main-window
+            // content (no opaque black NSWindow behind it, unlike the system
+            // fullscreen space). Without a guaranteed opaque base, any transient
+            // transparency in the layers above — `hasRenderableGeometry == false`
+            // moments, skin background first-frame/re-render gaps during a track
+            // switch — lets the window content underneath show through. Pin an
+            // opaque base (tinted to the current cover, black fallback) so the
+            // embedded surface is never see-through. System fullscreen is
+            // unaffected (its NSWindow already provides the opaque backing).
+            fullscreenEmbeddedOpaqueBase
+
             if hasRenderableGeometry {
                 fullscreenBackgroundLayer(selectedSkin: selectedSkin, scale: scale)
                     .id("\(skinIdentity)_bg")
@@ -750,6 +761,31 @@ struct FullscreenPlayerView: View {
         .onChange(of: miniPlayerOcclusionRegion) { _, newRegion in
             updateFullscreenMiniPlayerOcclusionRegion(newRegion)
         }
+    }
+
+    /// Opaque backing for embedded fullscreen so the surface is never
+    /// see-through during track-switch transients. No-op in the system
+    /// fullscreen space (its NSWindow already paints an opaque black backing).
+    @ViewBuilder
+    private var fullscreenEmbeddedOpaqueBase: some View {
+        if hostContext == .embeddedWindow {
+            Color(nsColor: fullscreenEmbeddedOpaqueBaseColor)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// Tint the embedded opaque base toward the current cover so a transient gap
+    /// blends with the artwork background instead of flashing black. Falls back
+    /// to black before any artwork snapshot exists. During a track-switch gap the
+    /// previous snapshot is still held, so the base matches the outgoing cover
+    /// until the new one resolves.
+    private var fullscreenEmbeddedOpaqueBaseColor: NSColor {
+        guard let color = artworkSnapshot?.averageColor
+            ?? artworkSnapshot?.dominantColor
+            ?? artworkSnapshot?.accentColor
+        else { return .black }
+        return (color.usingColorSpace(.deviceRGB) ?? color).withAlphaComponent(1)
     }
 
     @ViewBuilder

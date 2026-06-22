@@ -16,7 +16,7 @@ public nonisolated enum ArtworkColorExtractor {
     /// output (`ArtworkAssetStore` snapshots, `ThemeStore.dominantColorCache`)
     /// fold this into their keys, so previous-version entries cannot bleed
     /// into a new algorithm.
-    public nonisolated static let cacheVersion: String = "shape-richness-v6"
+    public nonisolated static let cacheVersion: String = "surface-material-v8"
 
     struct TextPalette {
         let primary: NSColor
@@ -873,6 +873,213 @@ extension ArtworkColorExtractor {
         let score: CGFloat
     }
 
+    nonisolated struct SurfacePaletteCandidate: Sendable {
+        let color: NSColor
+        let hue: CGFloat
+        let areaShare: CGFloat
+        let score: CGFloat
+    }
+
+    /// Area-first material palette for BKArt and other artwork-backed
+    /// surfaces. This deliberately differs from `displayPalette`: it keeps
+    /// low-chroma but visible surface colours and lightness strata instead of
+    /// optimizing for UI accents.
+    nonisolated static func computeSurfacePaletteCandidates(
+        from sample: ArtworkBitmapSample,
+        dominantColor: NSColor,
+        averageColor: NSColor,
+        maxCount: Int = 8
+    ) -> [SurfacePaletteCandidate] {
+        struct SurfaceBucket {
+            var weight: CGFloat
+            var area: CGFloat
+            var r: CGFloat
+            var g: CGFloat
+            var b: CGFloat
+
+            mutating func add(r: CGFloat, g: CGFloat, b: CGFloat, area: CGFloat, weight: CGFloat) {
+                self.weight += weight
+                self.area += area
+                self.r += r * weight
+                self.g += g * weight
+                self.b += b * weight
+            }
+        }
+
+        struct Candidate {
+            let color: NSColor
+            let hue: CGFloat
+            let areaShare: CGFloat
+            let score: CGFloat
+            let lightness: CGFloat
+            let brightness: CGFloat
+            let isPaperWhite: Bool
+            let isDeepDark: Bool
+        }
+
+        let hueBins = 36
+        let toneBins = 5
+        var buckets: [Int: SurfaceBucket] = [:]
+        var totalArea: CGFloat = 0
+
+        for i in stride(from: 0, to: sample.pixels.count, by: 4) {
+            let r = CGFloat(sample.pixels[i]) / 255.0
+            let g = CGFloat(sample.pixels[i + 1]) / 255.0
+            let b = CGFloat(sample.pixels[i + 2]) / 255.0
+            let a = CGFloat(sample.pixels[i + 3]) / 255.0
+            if a < 0.08 { continue }
+
+            let rgb = NSColor(deviceRed: r, green: g, blue: b, alpha: 1)
+                .usingColorSpace(.deviceRGB) ?? NSColor.gray
+            var hue: CGFloat = 0
+            var sat: CGFloat = 0
+            var bri: CGFloat = 0
+            var alpha: CGFloat = 0
+            rgb.getHue(&hue, saturation: &sat, brightness: &bri, alpha: &alpha)
+
+            let maxRGB = max(r, max(g, b))
+            let minRGB = min(r, min(g, b))
+            let rgbSpread = maxRGB - minRGB
+            let hslL = (maxRGB + minRGB) * 0.5
+            let toneBin = min(toneBins - 1, max(0, Int(floor(hslL * CGFloat(toneBins)))))
+            let neutralTone =
+                sat < 0.026
+                || (rgbSpread < 0.018 && (bri < 0.12 || sat < 0.08))
+            let hueBin = min(hueBins - 1, max(0, Int(floor(hue * CGFloat(hueBins)))))
+            let key = neutralTone ? (10_000 + toneBin) : (hueBin * toneBins + toneBin)
+            let midTone = max(0, 1 - abs(hslL - 0.52) / 0.52)
+            let weight = a * (0.90 + sat * 0.16) * (0.94 + midTone * 0.10)
+
+            totalArea += a
+            var bucket = buckets[key] ?? SurfaceBucket(weight: 0, area: 0, r: 0, g: 0, b: 0)
+            bucket.add(r: r, g: g, b: b, area: a, weight: weight)
+            buckets[key] = bucket
+        }
+
+        guard totalArea > 0 else { return [] }
+
+        func makeCandidate(
+            color: NSColor,
+            areaShare: CGFloat,
+            scoreMultiplier: CGFloat = 1.0
+        ) -> Candidate? {
+            guard let rgb = color.usingColorSpace(.deviceRGB),
+                  let lch = OKColor.nsColorToOKLCH(rgb)
+            else { return nil }
+            var hue: CGFloat = 0
+            var sat: CGFloat = 0
+            var bri: CGFloat = 0
+            var alpha: CGFloat = 0
+            rgb.getHue(&hue, saturation: &sat, brightness: &bri, alpha: &alpha)
+
+            let maxRGB = max(rgb.redComponent, max(rgb.greenComponent, rgb.blueComponent))
+            let minRGB = min(rgb.redComponent, min(rgb.greenComponent, rgb.blueComponent))
+            let rgbSpread = maxRGB - minRGB
+            let hslL = (maxRGB + minRGB) * 0.5
+            let chromaticMaterial =
+                lch.c >= 0.006
+                && sat >= 0.026
+                && bri >= 0.055
+                && bri <= 0.975
+            let paperWhite = bri >= 0.90 && sat < 0.040
+            let deepDark = bri <= 0.16
+            let tonalMaterial =
+                (paperWhite && areaShare >= 0.060)
+                || (deepDark && areaShare >= 0.060)
+                || (areaShare >= 0.035 && bri >= 0.045 && bri <= 0.965 && rgbSpread >= 0.014)
+
+            guard chromaticMaterial || tonalMaterial else { return nil }
+
+            let midTone = max(0, 1 - abs(hslL - 0.52) / 0.52)
+            let chromaBoost = ColorMath.clamp(lch.c / 0.050, 0, 1)
+            let satBoost = ColorMath.clamp(sat / 0.24, 0, 1)
+            var score = areaShare * (0.68 + midTone * 0.30 + chromaBoost * 0.46 + satBoost * 0.22)
+            if paperWhite { score *= 0.58 }
+            if deepDark { score *= 0.42 }
+            score *= scoreMultiplier
+
+            return Candidate(
+                color: rgb,
+                hue: hue,
+                areaShare: areaShare,
+                score: score,
+                lightness: lch.l,
+                brightness: bri,
+                isPaperWhite: paperWhite,
+                isDeepDark: deepDark
+            )
+        }
+
+        var candidates: [Candidate] = []
+        candidates.reserveCapacity(buckets.count + 2)
+
+        if let dominant = makeCandidate(
+            color: dominantColor,
+            areaShare: 0.18,
+            scoreMultiplier: 1.18
+        ) {
+            candidates.append(dominant)
+        }
+        if let average = makeCandidate(
+            color: averageColor,
+            areaShare: 0.14,
+            scoreMultiplier: 0.86
+        ) {
+            candidates.append(average)
+        }
+
+        for bucket in buckets.values where bucket.weight > 0 {
+            let inv = 1 / bucket.weight
+            let color = NSColor(
+                deviceRed: ColorMath.clamp(bucket.r * inv, 0, 1),
+                green: ColorMath.clamp(bucket.g * inv, 0, 1),
+                blue: ColorMath.clamp(bucket.b * inv, 0, 1),
+                alpha: 1
+            )
+            let areaShare = bucket.area / totalArea
+            let minArea: CGFloat = areaShare < 0.012 ? 0.012 : 0
+            if areaShare < minArea { continue }
+            if let candidate = makeCandidate(color: color, areaShare: areaShare) {
+                candidates.append(candidate)
+            }
+        }
+
+        candidates.sort { lhs, rhs in
+            if abs(lhs.score - rhs.score) > 0.0001 {
+                return lhs.score > rhs.score
+            }
+            return lhs.areaShare > rhs.areaShare
+        }
+
+        var picked: [Candidate] = []
+        var paperWhiteCount = 0
+        var deepDarkCount = 0
+        for candidate in candidates {
+            if candidate.isPaperWhite && paperWhiteCount >= 1 { continue }
+            if candidate.isDeepDark && deepDarkCount >= 1 { continue }
+            let distinct = picked.allSatisfy { existing in
+                let hueGap = ColorMath.circularHueDistance(candidate.hue, existing.hue)
+                let rgbGap = rgbDistance(candidate.color, existing.color)
+                let lGap = abs(candidate.lightness - existing.lightness)
+                return hueGap >= 0.040 || rgbGap >= 0.085 || lGap >= 0.110
+            }
+            guard distinct else { continue }
+            picked.append(candidate)
+            if candidate.isPaperWhite { paperWhiteCount += 1 }
+            if candidate.isDeepDark { deepDarkCount += 1 }
+            if picked.count >= maxCount { break }
+        }
+
+        return picked.map {
+            SurfacePaletteCandidate(
+                color: $0.color,
+                hue: $0.hue,
+                areaShare: $0.areaShare,
+                score: $0.score
+            )
+        }
+    }
+
     /// Mines the 48-hue bucket histogram for buckets that are visually
     /// striking despite occupying a small area share — the "designer
     /// accent" colours on a cover. The thresholds are configured by
@@ -909,9 +1116,10 @@ extension ArtworkColorExtractor {
         candidates.reserveCapacity(8)
 
         let noiseFloor = totalWeight * ColorSystemTokens.SalientHighlight.noiseFloorAbsolute
+        let tinyNoiseFloor = totalWeight * ColorSystemTokens.SalientHighlight.tinyNoiseFloorAbsolute
 
         for bucket in buckets {
-            guard bucket.weight > noiseFloor else { continue }
+            guard bucket.weight > tinyNoiseFloor else { continue }
             let inv = 1 / bucket.weight
             let color = NSColor(
                 deviceRed: ColorMath.clamp(bucket.r * inv, 0, 1),
@@ -926,11 +1134,17 @@ extension ArtworkColorExtractor {
             var a: CGFloat = 0
             rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
 
-            if s < ColorSystemTokens.SalientHighlight.minSaturation { continue }
-            if b < ColorSystemTokens.SalientHighlight.minBrightness { continue }
-
             let areaShare = bucket.weight / totalWeight
-            if areaShare < ColorSystemTokens.SalientHighlight.minAreaShare { continue }
+            let standardAccent =
+                bucket.weight > noiseFloor
+                && s >= ColorSystemTokens.SalientHighlight.minSaturation
+                && b >= ColorSystemTokens.SalientHighlight.minBrightness
+                && areaShare >= ColorSystemTokens.SalientHighlight.minAreaShare
+            let dimHighConfidenceAccent =
+                s >= ColorSystemTokens.SalientHighlight.dimAccentMinSaturation
+                && b >= ColorSystemTokens.SalientHighlight.dimAccentMinBrightness
+                && areaShare >= ColorSystemTokens.SalientHighlight.dimAccentMinAreaShare
+            if !standardAccent && !dimHighConfidenceAccent { continue }
             if areaShare > ColorSystemTokens.SalientHighlight.maxAreaShare { continue }
 
             let score = bucket.weight * (1 + s * ColorSystemTokens.SalientHighlight.satBonus)

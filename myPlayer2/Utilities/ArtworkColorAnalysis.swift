@@ -77,6 +77,12 @@ nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
     /// consumers (Phase 3: Home Shapes, BKArt, Spectrum). Narrowed on
     /// near-monochrome covers; never synthesised via hue rotation.
     let displayPalette: [NSColor]
+    /// Area-first material palette for artistic backgrounds. Unlike
+    /// `displayPalette`, this preserves visible low-chroma surface colours and
+    /// tonal layers (paper, skin, dark brown, pale green) so BKArt can stay
+    /// faithful without inventing hues.
+    let surfacePalette: [NSColor]
+    let surfacePaletteAreaShares: [CGFloat]
     let bestTextSourceColor: NSColor    // most colourful mid-tone bucket
 
     static let neutralFallback = ArtworkColorAnalysis(
@@ -107,6 +113,8 @@ nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
         salientHighlightPalette: [],
         salientHighlightAreaShares: [],
         displayPalette: [],
+        surfacePalette: [],
+        surfacePaletteAreaShares: [],
         bestTextSourceColor: NSColor(deviceRed: 0.20, green: 0.20, blue: 0.22, alpha: 1)
     )
 
@@ -117,6 +125,8 @@ nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
             rich: richPalette.compactMap { OKColor.nsColorToOKLCH($0) },
             salient: salientHighlightPalette.compactMap { OKColor.nsColorToOKLCH($0) },
             salientAreaShares: salientHighlightAreaShares,
+            surface: surfacePalette.compactMap { OKColor.nsColorToOKLCH($0) },
+            surfaceAreaShares: surfacePaletteAreaShares,
             avgSaturation: avgSaturation,
             colorfulness: colorfulness,
             dominantSaturation: dominantSaturation,
@@ -137,8 +147,22 @@ nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
     /// this instead of reading `dominantColor` directly.
     var primaryHueSourceColor: NSColor? {
         guard !lacksTrustedHue else { return nil }
+        let strongPriority = [dominantColor]
+            + displayPalette
+            + salientHighlightPalette
+            + topPalette
+            + richPalette
+            + surfacePalette
+            + [averageColor, bestTextSourceColor]
+        if let strong = ArtworkHueTrust.firstUsableHueColor(
+            in: strongPriority,
+            allowMuted: false
+        ) {
+            return strong
+        }
         return ArtworkHueTrust.firstUsableHueColor(
             in: [dominantColor]
+                + surfacePalette
                 + displayPalette
                 + topPalette
                 + salientHighlightPalette
@@ -168,8 +192,11 @@ nonisolated enum ArtworkHueTrust {
         return s >= 0.10 && b >= 0.10 && b <= 0.94
     }
 
-    static func firstUsableHueColor(in candidates: [NSColor]) -> NSColor? {
-        for candidate in candidates where isUsableHueSource(candidate) {
+    static func firstUsableHueColor(
+        in candidates: [NSColor],
+        allowMuted: Bool = true
+    ) -> NSColor? {
+        for candidate in candidates where isUsableHueSource(candidate, allowMuted: allowMuted) {
             return candidate
         }
         return nil
@@ -192,6 +219,8 @@ nonisolated enum ArtworkHueTrust {
         rich: [OKColor.OKLCH],
         salient: [OKColor.OKLCH],
         salientAreaShares: [CGFloat],
+        surface: [OKColor.OKLCH] = [],
+        surfaceAreaShares: [CGFloat] = [],
         avgSaturation: CGFloat,
         colorfulness: CGFloat,
         dominantSaturation: CGFloat,
@@ -217,10 +246,18 @@ nonisolated enum ArtworkHueTrust {
             return true
         }
 
+        func salientShareQualifies(_ candidate: OKColor.OKLCH, _ share: CGFloat) -> Bool {
+            if share >= ColorSystemTokens.SalientHighlight.minAreaShare {
+                return true
+            }
+            return candidate.c >= T.trustedHueChromaFloor
+                && share >= ColorSystemTokens.SalientHighlight.dimAccentMinAreaShare
+        }
+
         for (index, candidate) in salient.enumerated()
             where candidate.c >= T.trustedHueChromaFloor {
             let share = index < salientAreaShares.count ? salientAreaShares[index] : 0
-            if share >= ColorSystemTokens.SalientHighlight.minAreaShare {
+            if salientShareQualifies(candidate, share) {
                 return true
             }
         }
@@ -228,7 +265,16 @@ nonisolated enum ArtworkHueTrust {
         for (index, candidate) in salient.enumerated()
             where candidate.c >= T.mutedTrustedHueChromaFloor {
             let share = index < salientAreaShares.count ? salientAreaShares[index] : 0
-            if share >= ColorSystemTokens.SalientHighlight.minAreaShare {
+            if salientShareQualifies(candidate, share) {
+                return true
+            }
+        }
+
+        for (index, candidate) in surface.enumerated()
+            where candidate.c >= T.mutedTrustedSurfaceChromaFloor {
+            let share = index < surfaceAreaShares.count ? surfaceAreaShares[index] : 0
+            if share >= T.mutedTrustedSurfaceAreaFloor,
+               candidate.c >= T.mutedTrustedSurfaceStandaloneChromaFloor {
                 return true
             }
         }
@@ -240,6 +286,14 @@ nonisolated enum ArtworkHueTrust {
             || largestHighSaturationAreaShare >= T.mutedTrustedLargestHighSatAreaFloor
 
         guard hasChromaticSupport else { return false }
+
+        for (index, candidate) in surface.enumerated()
+            where candidate.c >= T.mutedTrustedSurfaceChromaFloor {
+            let share = index < surfaceAreaShares.count ? surfaceAreaShares[index] : 0
+            if share >= T.mutedTrustedSurfaceAreaFloor {
+                return true
+            }
+        }
 
         if let dominant,
            dominant.c >= T.mutedTrustedHueChromaFloor,
@@ -469,6 +523,12 @@ extension ArtworkColorExtractor {
         // prints, warm-tinted photos). Without this override the historical
         // 4-branch OR would grey-wash these covers — exactly the "明明有颜色
         // 但歌词变成灰白" report.
+        let averageColor = NSColor(
+            deviceRed: ColorMath.clamp(weightedR / totalWeight, 0, 1),
+            green: ColorMath.clamp(weightedG / totalWeight, 0, 1),
+            blue: ColorMath.clamp(weightedB / totalWeight, 0, 1),
+            alpha: 1
+        )
         let phase63TopPalette = uiThemePalette(from: sample, targetCount: 4)
         let phase63RichPalette = uiThemePaletteRich(from: sample, targetCount: 8)
         let phase63SalientCandidates = computeSalientHighlightCandidates(
@@ -476,10 +536,19 @@ extension ArtworkColorExtractor {
             totalWeight: totalWeight,
             dominantHue: dominantHue
         )
+        let phase65SurfaceCandidates = computeSurfacePaletteCandidates(
+            from: sample,
+            dominantColor: dominantColor,
+            averageColor: averageColor,
+            maxCount: 8
+        )
         let dominantLCH = OKColor.nsColorToOKLCH(dominantColor)
         let topLCHs: [OKColor.OKLCH] = phase63TopPalette.compactMap { OKColor.nsColorToOKLCH($0) }
         let richLCHs: [OKColor.OKLCH] = phase63RichPalette.compactMap { OKColor.nsColorToOKLCH($0) }
         let salientLCHs: [OKColor.OKLCH] = phase63SalientCandidates
+            .map(\.color)
+            .compactMap { OKColor.nsColorToOKLCH($0) }
+        let surfaceLCHs: [OKColor.OKLCH] = phase65SurfaceCandidates
             .map(\.color)
             .compactMap { OKColor.nsColorToOKLCH($0) }
         let isMono = colorfulness < ColorSystemTokens.NearMonochromeProfile.strictColorfulness
@@ -490,6 +559,8 @@ extension ArtworkColorExtractor {
             rich: richLCHs,
             salient: salientLCHs,
             salientAreaShares: phase63SalientCandidates.map(\.areaShare),
+            surface: surfaceLCHs,
+            surfaceAreaShares: phase65SurfaceCandidates.map(\.areaShare),
             avgSaturation: avgSat,
             colorfulness: colorfulness,
             dominantSaturation: dominantSaturation,
@@ -537,13 +608,6 @@ extension ArtworkColorExtractor {
 
         let usesDark = avgHslL >= ColorSystemTokens.ReadabilityForeground.usesDarkAvgHslL
 
-        let averageColor = NSColor(
-            deviceRed: ColorMath.clamp(weightedR / totalWeight, 0, 1),
-            green: ColorMath.clamp(weightedG / totalWeight, 0, 1),
-            blue: ColorMath.clamp(weightedB / totalWeight, 0, 1),
-            alpha: 1
-        )
-
         // Reuse existing palette helpers so dominantHue / topPalette stay in sync
         // with the rest of the system.
         let topPalette = phase63TopPalette
@@ -565,6 +629,8 @@ extension ArtworkColorExtractor {
         // doesn't gain a colour the cover doesn't really have.
         let salient = phase63SalientCandidates.map(\.color)
         let salientAreaShares = phase63SalientCandidates.map(\.areaShare)
+        let surfacePalette = phase65SurfaceCandidates.map(\.color)
+        let surfaceAreaShares = phase65SurfaceCandidates.map(\.areaShare)
 
         let displayPalette = computeDisplayPalette(
             top: topPalette,
@@ -602,6 +668,8 @@ extension ArtworkColorExtractor {
             salientHighlightPalette: salient,
             salientHighlightAreaShares: salientAreaShares,
             displayPalette: displayPalette,
+            surfacePalette: surfacePalette,
+            surfacePaletteAreaShares: surfaceAreaShares,
             bestTextSourceColor: bestText
         )
     }

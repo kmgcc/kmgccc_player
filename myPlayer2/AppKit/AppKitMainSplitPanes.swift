@@ -113,6 +113,16 @@ struct AppKitMainContentPaneRoot: View {
                 .allowsHitTesting(false)
 
             Group {
+              if fullscreenWindowManager.isWindowedFullscreenActive {
+                // Embedded fullscreen presents an opaque, full-pane overlay
+                // (see `FullscreenPlayerView` zIndex(1) below). The heavy detail
+                // content beneath it is fully occluded, so tear it down while
+                // embedded fullscreen is active: it saves the cost of keeping
+                // `PlaylistDetailView` / `NowPlayingHostView` live, and removes
+                // the layer that showed through during cover-switch transients.
+                // It is re-rendered automatically when embedded fullscreen exits.
+                Color.clear
+              } else {
                 switch uiState.contentMode {
                 case .library:
                     switch libraryVM.currentSelection {
@@ -162,6 +172,7 @@ struct AppKitMainContentPaneRoot: View {
                     .ignoresSafeArea(.container, edges: .top)
                     .id("appkit-main-nowplaying")
                 }
+              }
             }
 
             if !FullscreenWindowManager.shared.isWindowedFullscreenActive {
