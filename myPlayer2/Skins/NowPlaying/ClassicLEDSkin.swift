@@ -7,6 +7,7 @@
 
 import AppKit
 import CoreGraphics
+import CoreImage
 import SwiftUI
 
 struct ClassicLEDSkin: NowPlayingSkin {
@@ -271,7 +272,8 @@ private enum ClassicArtworkFrameCoverTuning {
     ]
 
     static let fallbackFinalMaskedArtworkScale: CGFloat = 1.0
-    static let rendererVersion = 2
+    /// v3: mirrored extension band now carries a progressive edge blur.
+    static let rendererVersion = 3
 
     static func artworkScale(for frameIndex: Int) -> CGFloat {
         min(1.0, max(0.50, artworkScaleByFrameIndex[frameIndex] ?? fallbackArtworkScale))
@@ -589,8 +591,125 @@ private enum ClassicArtworkFrameExtendedArtworkRenderer {
             }
 
             context.draw(squareImage, in: innerRect)
-            return context.makeImage()
+            guard let baseImage = context.makeImage() else { return nil }
+
+            // Keep the real cover (innerRect) razor-sharp and ramp the mirrored
+            // extension band from sharp at the cover edge to strongly blurred at
+            // the outer edge. The band is narrow, so the ramp is deliberately
+            // fast. When there is no extension band (insetPixel == 0) the base
+            // image is returned unchanged.
+            guard insetPixel > 0 else { return baseImage }
+            return progressiveEdgeBlur(
+                base: baseImage,
+                outputPixel: outputPixel,
+                insetPixel: insetPixel
+            ) ?? baseImage
         }
+    }
+
+    // MARK: - Progressive Edge Blur
+
+    /// Max blur radius (device px) applied at the outermost edge of the
+    /// mirrored extension band. The mask ramps this to 0 at the cover edge.
+    private nonisolated static let edgeBlurMaxRadius: CGFloat = 64
+    /// Ramp exponent (< 1 = concave = reaches heavy blur quickly just past the
+    /// cover edge). The extension band is narrow, so the progression is fast.
+    private nonisolated static let edgeBlurRampExponent: Double = 0.42
+
+    private nonisolated static let ciContext = CIContext(options: [
+        .cacheIntermediates: false,
+        .useSoftwareRenderer: false,
+    ])
+
+    /// Blurs only the mirrored extension band of an already-rendered extended
+    /// artwork, leaving the inner cover untouched.
+    private nonisolated static func progressiveEdgeBlur(
+        base: CGImage,
+        outputPixel: Int,
+        insetPixel: Int
+    ) -> CGImage? {
+        autoreleasepool {
+            guard insetPixel > 0,
+                  let mask = edgeBlurMask(outputPixel: outputPixel, insetPixel: insetPixel)
+            else {
+                return base
+            }
+
+            let canvasRect = CGRect(x: 0, y: 0, width: outputPixel, height: outputPixel)
+            let baseCI = CIImage(cgImage: base)
+
+            // Clamp so the variable blur samples extended edge pixels instead of
+            // transparent canvas at the outer boundary.
+            guard let clampFilter = CIFilter(name: "CIAffineClamp") else { return base }
+            clampFilter.setValue(baseCI, forKey: kCIInputImageKey)
+            clampFilter.setValue(CGAffineTransform.identity, forKey: kCIInputTransformKey)
+            guard let clamped = clampFilter.outputImage else { return base }
+
+            guard let blurFilter = CIFilter(name: "CIMaskedVariableBlur") else { return base }
+            let radius = min(edgeBlurMaxRadius, CGFloat(insetPixel) * 0.95)
+            blurFilter.setValue(clamped, forKey: kCIInputImageKey)
+            blurFilter.setValue(radius, forKey: kCIInputRadiusKey)
+            blurFilter.setValue(CIImage(cgImage: mask), forKey: "inputMask")
+
+            guard let output = blurFilter.outputImage?.cropped(to: canvasRect) else { return base }
+            defer { ciContext.clearCaches() }
+            return ciContext.createCGImage(output, from: canvasRect) ?? base
+        }
+    }
+
+    /// Straight-alpha RGBA ramp mask consumed by `CIMaskedVariableBlur`:
+    /// 0 (no blur) across the inner cover square, ramping to 1 (full blur)
+    /// toward the outer edge over the `insetPixel`-wide band on all four sides
+    /// and corners (box / Chebyshev distance from the inner rect). The
+    /// (t,t,t,t) straight-alpha encoding matches the gradient-blur masks.
+    private nonisolated static func edgeBlurMask(outputPixel: Int, insetPixel: Int) -> CGImage? {
+        let n = max(1, outputPixel)
+        let inset = max(1, insetPixel)
+        guard inset * 2 < n else { return nil }
+
+        // Band is narrow — precompute the ramp once per distance step.
+        var ramp = [UInt8](repeating: 0, count: inset + 1)
+        let invInset = 1.0 / Double(inset)
+        for d in 0...inset {
+            let t = min(1.0, Double(d) * invInset)
+            let v = pow(t, edgeBlurRampExponent)
+            ramp[d] = UInt8(max(0, min(255, (v * 255).rounded())))
+        }
+
+        let lowEdge = inset           // first inner column / row
+        let highEdge = n - 1 - inset  // last inner column / row
+        var pixels = [UInt8](repeating: 0, count: n * n * 4)
+        for y in 0..<n {
+            let dyOut = max(0, max(lowEdge - y, y - highEdge))
+            let rowBase = y * n * 4
+            for x in 0..<n {
+                let dxOut = max(0, max(lowEdge - x, x - highEdge))
+                let d = max(dxOut, dyOut)
+                guard d > 0 else { continue }  // inner cover stays sharp
+                let v = ramp[min(d, inset)]
+                let idx = rowBase + x * 4
+                pixels[idx] = v
+                pixels[idx + 1] = v
+                pixels[idx + 2] = v
+                pixels[idx + 3] = v
+            }
+        }
+
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData) else { return nil }
+        return CGImage(
+            width: n,
+            height: n,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: n * 4,
+            space: colorSpace,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )
     }
 
     private nonisolated static func drawReflected(

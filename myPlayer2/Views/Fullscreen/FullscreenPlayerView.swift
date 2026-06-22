@@ -3842,7 +3842,12 @@ struct FullscreenPlayerView: View {
                 artist: display.artist,
                 album: display.album ?? "",
                 duration: display.duration,
-                artworkChecksum: ArtworkDataFingerprint.sampledHash(for: display.artworkData),
+                // Keep the skin cache key atomic with the committed artwork
+                // image: both come from `artworkSnapshot`. The presentation's
+                // artworkData advances before the new full image decodes, so a
+                // presentation-derived checksum would let skins render the held
+                // previous cover under the next track's key and stay stuck on it.
+                artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
                 artworkData: display.artworkData,
                 artworkImage: artworkSnapshot?.fullImage,
                 displayedArtworkID: artworkSnapshot?.trackID
