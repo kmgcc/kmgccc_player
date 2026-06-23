@@ -40,7 +40,10 @@ struct FullscreenCoverGradientBlurSkin: NowPlayingSkin {
         let storedBlurRadius = UserDefaults.standard.double(forKey: "skin.coverGradientBlur.maxBlurRadius")
         let storedEdgeFillMode = UserDefaults.standard.string(forKey: "skin.coverGradientBlur.edgeFillMode")
 
-        let blurRadius: CGFloat = storedBlurRadius > 0 ? storedBlurRadius : 200.0
+        // Fall back to the slider's own default (1600) — not 200 — when the
+        // slider was never touched, so the rendered blur matches the value the
+        // settings UI shows and the far edge actually reaches several hundred px.
+        let blurRadius: CGFloat = storedBlurRadius > 0 ? storedBlurRadius : 1600.0
         // Fixed values
         let transitionWidth: CGFloat = 0.8
         let colorIntensity: CGFloat = 0.5
@@ -61,16 +64,26 @@ struct FullscreenCoverGradientBlurSkin: NowPlayingSkin {
             overlayOffsetRatio: 0.15,
             blurCurveGamma: 5.0,
             edgeFillMode: edgeFillMode,
-            // More back-loaded than the renderer default (0, 0.10, 0.34, 0.56):
-            // the cover interior stays clearer while the curve still reaches 1
-            // at the gradient end, so the hand-off into the extension region's
-            // blur is unchanged.
-            blurAlphaCoefficients: (0, 0.05, 0.18, 0.77),
-            // Lift the whole stretch extension to a moderate blur floor so the
-            // segment hugging the cover's right edge is clearly blurred. The
-            // floor mask is 0 inside the cover, so this does not increase the
-            // cover-interior blur.
-            extensionFloorStrength: 0.7
+            // Confine the in-cover blur to a narrow strip hugging the right edge
+            // (30% of the cover width, not the 0.48 default's ~half): the cover's
+            // left ~78% stays crisp and only a thin near-edge band ramps up.
+            // Smaller = narrower blurred strip (clearer cover) but the curve must
+            // be steeper to keep the edge value up; larger = wider soft band.
+            blurStartRatioFromEdge: 0.30,
+            // In-cover ramp across the narrow strip: ~0 at the start so the strip's
+            // inner side blends into the crisp cover, accelerating to a stronger
+            // edge value (~0.19 of the radius ≈ 28px) so the cover↔stretch junction
+            // is well masked and the fill has a high base for the linear floor to
+            // grow from. Raised from ~22px, which left the junction too sharp.
+            // Bigger quadratic term = bigger edge; the negative cubic keeps the
+            // curve ≤ 1 at the far right.
+            blurAlphaCoefficients: (0, 0, 1.8, -0.8),
+            // Adds a continuous blur ramp across the fill (pixel-stretch) region:
+            // 0 at the cover's right edge, easing up smoothly toward the right.
+            // The mask is 0 inside the cover, so the cover interior is untouched.
+            // This makes the fill connect to the cover at a low blur and increase
+            // continuously, with no hard seam at the cover→fill boundary.
+            extensionFloorStrength: 0.2
         )
     }
 }

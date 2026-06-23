@@ -127,36 +127,48 @@ private struct MiniPlayerSpectrumContainer: NSViewRepresentable {
     let spacing: CGFloat
     let pausedBehavior: MiniPlayerSpectrumPausedBehavior
 
-    func makeNSView(context: Context) -> MiniPlayerSpectrumHostView {
-        let view = MiniPlayerSpectrumHostView()
-        view.dotSize = dotSize
-        view.spacing = spacing
-        view.pausedBehavior = pausedBehavior
-        view.updateColors(
-            accentColor: accentColor,
-            artworkColors: artworkColors,
-            usesDarkForeground: usesDarkForeground
-        )
+    func makeNSView(context: Context) -> CapsuleSpectrumHostView {
+        let view = CapsuleSpectrumHostView(configuration: makeConfiguration())
+        applyColors(to: view)
         view.setActive(isActive)
         view.setPlayback(isPlaying: isPlaying)
         return view
     }
 
-    func updateNSView(_ nsView: MiniPlayerSpectrumHostView, context: Context) {
-        nsView.dotSize = dotSize
-        nsView.spacing = spacing
-        nsView.pausedBehavior = pausedBehavior
-        nsView.updateColors(
-            accentColor: accentColor,
-            artworkColors: artworkColors,
-            usesDarkForeground: usesDarkForeground
-        )
+    func updateNSView(_ nsView: CapsuleSpectrumHostView, context: Context) {
+        nsView.configure(makeConfiguration())
+        applyColors(to: nsView)
         nsView.setActive(isActive)
         nsView.setPlayback(isPlaying: isPlaying)
     }
 
-    static func dismantleNSView(_ nsView: MiniPlayerSpectrumHostView, coordinator: ()) {
+    static func dismantleNSView(_ nsView: CapsuleSpectrumHostView, coordinator: ()) {
         nsView.stop()
+    }
+
+    private func makeConfiguration() -> CapsuleSpectrumConfiguration {
+        .centeredBars(
+            capsuleWidth: dotSize,
+            capsuleSpacing: spacing,
+            strokeWidth: 0.5,
+            pausedBehavior: pausedBehavior == .minimalDots ? .collapseToDots : .idlePose
+        )
+    }
+
+    private func applyColors(to view: CapsuleSpectrumHostView) {
+        let signature = SpectrumColorResolver.colorSignature(
+            artworkColors: artworkColors,
+            accentColor: accentColor,
+            usesDarkForeground: usesDarkForeground
+        )
+        view.updateColors(signature: signature) {
+            let resolved = SpectrumColorResolver.resolveArtworkFaithfulColors(
+                from: artworkColors,
+                fallback: accentColor,
+                usesDarkForeground: usesDarkForeground
+            )
+            return (resolved.fillColors, resolved.strokeColors)
+        }
     }
 }
 
@@ -187,11 +199,18 @@ nonisolated enum SpectrumColorResolver {
     /// colour. This keeps the L→R gradient quietly informative rather than
     /// a flat strip while still being honest about what the artwork
     /// actually contains.
+    /// `lightModeDarkening` is the app *light* appearance (distinct from the
+    /// artwork-driven `usesDarkForeground`): it darkens the fill so the bars read
+    /// against a light glass, but gives the OUTLINE its own milder dark treatment
+    /// (the bright-artwork path was too dark for this case).
     static func resolveArtworkFaithfulColors(
         from artworkColors: [NSColor],
         fallback accentColor: NSColor,
-        usesDarkForeground: Bool
+        usesDarkForeground: Bool,
+        lightModeDarkening: Bool = false
     ) -> (fillColors: [CGColor], strokeColors: [CGColor]) {
+        // Both reasons to darken the fill share the same brightness treatment.
+        let darken = usesDarkForeground || lightModeDarkening
         let sources = Array(artworkColors.prefix(2))
         let leftSource = sources.first ?? accentColor
         let rightSource: NSColor = {
@@ -201,19 +220,19 @@ nonisolated enum SpectrumColorResolver {
             // Single-colour path: build a same-hue L variant of the lone real
             // colour. No hue rotation. Falls back to accent only when even
             // OKLCH conversion fails.
-            return makeTonalRightEndpoint(of: leftSource, usesDarkForeground: usesDarkForeground)
+            return makeTonalRightEndpoint(of: leftSource, usesDarkForeground: darken)
                 ?? accentColor
         }()
 
         guard
             let leftBase = adjustedSpectrumBase(
                 from: leftSource,
-                usesDarkForeground: usesDarkForeground,
+                usesDarkForeground: darken,
                 alpha: 0.86
             ),
             let rightBase = adjustedSpectrumBase(
                 from: rightSource,
-                usesDarkForeground: usesDarkForeground,
+                usesDarkForeground: darken,
                 alpha: 0.80
             )
         else {
@@ -238,11 +257,25 @@ nonisolated enum SpectrumColorResolver {
             var sh: CGFloat = 0, ss: CGFloat = 0, sb: CGFloat = 0, sa: CGFloat = 0
             strokeHSB.getHue(&sh, saturation: &ss, brightness: &sb, alpha: &sa)
 
-            let strokeBri = usesDarkForeground
-                ? min(0.36, max(0.12, sb - 0.05))
-                : min(1.0, max(0.58, sb + 0.08))
-            let strokeAlpha = usesDarkForeground ? 0.78 : 0.92
-            let strokeColor = NSColor(hue: sh, saturation: ss, brightness: strokeBri, alpha: strokeAlpha)
+            let strokeBri: CGFloat
+            let strokeAlpha: CGFloat
+            if lightModeDarkening {
+                // App light mode: darker than the fill but kept readable — the
+                // bright-artwork floor (0.12) was too dark for this case.
+                strokeBri = min(0.52, max(0.30, sb - 0.05))
+                strokeAlpha = 0.9
+            } else if usesDarkForeground {
+                // Bright artwork (e.g. big-cover MiniPlayer): unchanged.
+                strokeBri = min(0.36, max(0.12, sb - 0.05))
+                strokeAlpha = 0.78
+            } else {
+                strokeBri = min(1.0, max(0.58, sb + 0.08))
+                strokeAlpha = 0.92
+            }
+            // Outline reads clearly more saturated than the fill. Multiplicative
+            // so near-mono / grey covers stay neutral (no fabricated tint).
+            let strokeSat = min(1.0, ss * 1.6)
+            let strokeColor = NSColor(hue: sh, saturation: strokeSat, brightness: strokeBri, alpha: strokeAlpha)
 
             fillColors.append(fillColor.cgColor)
             strokeColors.append(strokeColor.cgColor)
@@ -322,6 +355,33 @@ nonisolated enum SpectrumColorResolver {
         )
     }
 
+    // MARK: - Palette signature
+
+    /// Stable hash of the artwork inputs so a host can skip the (OKLCH-heavy)
+    /// color resolve when nothing visible changed. Shared by every spectrum
+    /// surface that uses `resolveArtworkFaithfulColors`.
+    static func colorSignature(
+        artworkColors: [NSColor],
+        accentColor: NSColor,
+        usesDarkForeground: Bool,
+        lightModeDarkening: Bool = false
+    ) -> Int {
+        var hasher = Hasher()
+        hasher.combine(usesDarkForeground)
+        hasher.combine(lightModeDarkening)
+        for color in artworkColors.prefix(2) { appendColor(color, to: &hasher) }
+        appendColor(accentColor, to: &hasher)
+        return hasher.finalize()
+    }
+
+    private static func appendColor(_ color: NSColor, to hasher: inout Hasher) {
+        let resolved = color.usingColorSpace(.deviceRGB) ?? color
+        hasher.combine(Int(resolved.redComponent * 1_000))
+        hasher.combine(Int(resolved.greenComponent * 1_000))
+        hasher.combine(Int(resolved.blueComponent * 1_000))
+        hasher.combine(Int(resolved.alphaComponent * 1_000))
+    }
+
     // MARK: - Palette preparation
 
     static func prepareSpectrumColors(
@@ -355,265 +415,6 @@ nonisolated enum SpectrumColorResolver {
         let shouldered = OKColor.chromaSoftShoulder(lch, ceiling: 0.05, softness: 0.04)
         return OKColor.okLCHToNSColor(shouldered, alpha: 1)
     }
-}
-
-private final class MiniPlayerSpectrumHostView: NSView {
-    private let service = AudioVisualizationService.shared
-    private let rootLayer = CALayer()
-    private var capsuleLayers: [CALayer] = []
-    private var strokeLayers: [CAShapeLayer] = []
-    private var consumerID: UUID?
-
-    private var currentWave = Array(repeating: Float(0), count: 9)
-    private var frozenWave: [Float]? // Frozen wave values for pause animation
-    private var cachedColors: [CGColor] = []
-    private var cachedStrokeColors: [CGColor] = []
-    private var lastPlaybackState: Bool?
-    private var isActive = false
-    private var hasServiceLease = false
-    private var lastLayoutSize: CGSize = .zero
-    
-    // Pause behavior configuration
-    var pausedBehavior: MiniPlayerSpectrumPausedBehavior = .default
-    private var isCurrentlyPlaying: Bool = false
-    private var pauseTransitionProgress: CGFloat = 0.0
-    private var pauseTransitionTimer: Timer?
-
-    var dotSize: CGFloat = 6
-    var spacing: CGFloat = 5
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layer = CALayer()
-        layer?.masksToBounds = false
-
-        rootLayer.masksToBounds = false
-        layer?.addSublayer(rootLayer)
-        setupCapsuleLayers()
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    override func layout() {
-        super.layout()
-        guard bounds.size != lastLayoutSize else { return }
-        lastLayoutSize = bounds.size
-        layoutCapsules()
-    }
-
-    func setActive(_ active: Bool) {
-        guard isActive != active else { return }
-        isActive = active
-        if active {
-            start()
-        } else {
-            stop()
-        }
-    }
-
-    private func start() {
-        guard consumerID == nil else { return }
-        service.start()
-        hasServiceLease = true
-        consumerID = service.addConsumer { [weak self] wave in
-            self?.applyWave(wave)
-        }
-        service.updatePlaybackState(isPlaying: isCurrentlyPlaying)
-    }
-
-    func stop() {
-        if let consumerID {
-            service.removeConsumer(consumerID)
-            self.consumerID = nil
-        }
-        if hasServiceLease {
-            hasServiceLease = false
-            service.stop()
-        }
-        pauseTransitionTimer?.invalidate()
-        pauseTransitionTimer = nil
-        currentWave = Array(repeating: 0, count: 9)
-        layoutCapsules()
-    }
-
-    func setPlayback(isPlaying: Bool) {
-        let didChange = lastPlaybackState != isPlaying
-        lastPlaybackState = isPlaying
-        isCurrentlyPlaying = isPlaying
-        if hasServiceLease {
-            service.updatePlaybackState(isPlaying: isPlaying)
-        }
-
-        guard didChange else { return }
-        if pausedBehavior == .minimalDots {
-            if !isPlaying {
-                frozenWave = currentWave
-            } else {
-                frozenWave = nil
-            }
-            startPauseTransitionAnimation()
-        }
-    }
-    
-    /// Animates the transition between playing and paused states
-    private func startPauseTransitionAnimation() {
-        pauseTransitionTimer?.invalidate()
-        
-        let targetProgress: CGFloat = isCurrentlyPlaying ? 0.0 : 1.0
-        let step: CGFloat = 0.08 // Animation speed
-        
-        // Timer fires on main thread (scheduled on main RunLoop), safe to assume isolated
-        pauseTransitionTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            MainActor.assumeIsolated {
-                self.tickPauseTransition(targetProgress: targetProgress, step: step)
-            }
-        }
-    }
-    
-    @MainActor
-    private func tickPauseTransition(targetProgress: CGFloat, step: CGFloat) {
-        let diff = targetProgress - pauseTransitionProgress
-        if abs(diff) < 0.01 {
-            pauseTransitionProgress = targetProgress
-            layoutCapsules()
-            pauseTransitionTimer?.invalidate()
-            pauseTransitionTimer = nil
-        } else {
-            pauseTransitionProgress += diff * step
-            layoutCapsules()
-        }
-    }
-
-    func updateColors(
-        accentColor: NSColor,
-        artworkColors: [NSColor],
-        usesDarkForeground: Bool
-    ) {
-        // Use the artwork's two strongest colours for fullscreen mini player spectrum.
-        // The same foreground-mode decision as the rest of the Clear mini player
-        // decides whether the bars are darkened or lifted for readability.
-        let resolved = SpectrumColorResolver.resolveArtworkFaithfulColors(
-            from: artworkColors,
-            fallback: accentColor,
-            usesDarkForeground: usesDarkForeground
-        )
-        cachedColors = resolved.fillColors
-        cachedStrokeColors = resolved.strokeColors
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for (index, layer) in capsuleLayers.enumerated() where index < cachedColors.count {
-            layer.backgroundColor = cachedColors[index]
-        }
-        for (index, layer) in strokeLayers.enumerated() where index < cachedStrokeColors.count {
-            layer.strokeColor = cachedStrokeColors[index]
-        }
-        CATransaction.commit()
-    }
-
-    private func setupCapsuleLayers() {
-        capsuleLayers = (0..<9).map { _ in
-            let layer = CALayer()
-            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            layer.actions = [
-                "bounds": NSNull(),
-                "position": NSNull(),
-                "frame": NSNull(),
-                "backgroundColor": NSNull(),
-                "cornerRadius": NSNull(),
-            ]
-            rootLayer.addSublayer(layer)
-            return layer
-        }
-
-        strokeLayers = (0..<9).map { _ in
-            let layer = CAShapeLayer()
-            layer.fillColor = nil
-            layer.lineWidth = 0.5
-            layer.actions = [
-                "path": NSNull(),
-                "strokeColor": NSNull(),
-            ]
-            rootLayer.addSublayer(layer)
-            return layer
-        }
-    }
-
-    private func applyWave(_ wave: [Float]) {
-        guard isCurrentlyPlaying else { return }
-        
-        var normalized = Array(repeating: Float(0), count: 9)
-        for index in 0..<9 {
-            if index < wave.count {
-                normalized[index] = min(1, max(0, wave[index]))
-            }
-        }
-
-        let maxDelta = zip(currentWave, normalized).reduce(Float.zero) { partial, pair in
-            max(partial, abs(pair.0 - pair.1))
-        }
-        guard maxDelta >= 0.002 else { return }
-
-        currentWave = normalized
-        layoutCapsules()
-    }
-
-    private func layoutCapsules() {
-        guard bounds.width > 0, bounds.height > 0 else { return }
-
-        let width = bounds.width
-        let height = bounds.height
-        let capsuleCount = 9
-        let maxBarHeightRatio: CGFloat = 0.95
-
-        let barWidth = dotSize
-        let minHeight = barWidth
-        let maxBarHeight = height * maxBarHeightRatio
-        let barSpacing = spacing
-        let totalWidth = CGFloat(capsuleCount) * barWidth + CGFloat(capsuleCount - 1) * barSpacing
-
-        let originX = (width - totalWidth) * 0.5
-        let centerY = height * 0.5
-        let cornerRadius = barWidth * 0.5
-
-        rootLayer.frame = bounds
-
-        let sourceWave = frozenWave ?? currentWave
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for index in 0..<capsuleCount {
-            var value = CGFloat(sourceWave[index])
-            
-            if pausedBehavior == .minimalDots {
-                value = value * (1.0 - pauseTransitionProgress)
-            }
-            
-            let dynamicHeight = minHeight + (maxBarHeight - minHeight) * min(1, max(0, value))
-            let x = originX + CGFloat(index) * (barWidth + barSpacing) + barWidth * 0.5
-            let y = centerY
-
-            let frame = CGRect(
-                x: x - barWidth * 0.5,
-                y: y - dynamicHeight * 0.5,
-                width: barWidth,
-                height: dynamicHeight
-            )
-            let layer = capsuleLayers[index]
-            layer.frame = frame
-            layer.cornerRadius = cornerRadius
-
-            let strokeLayer = strokeLayers[index]
-            let path = NSBezierPath(roundedRect: frame, xRadius: cornerRadius, yRadius: cornerRadius)
-            strokeLayer.path = path.cgPath
-        }
-        CATransaction.commit()
-    }
-
 }
 
 private extension NSColor {

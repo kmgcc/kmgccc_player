@@ -10,7 +10,7 @@ import CoreImage
 import ImageIO
 import SwiftUI
 
-private let coverGradientBlurRendererCacheVersion = "smoothStretchV8"
+private let coverGradientBlurRendererCacheVersion = "smoothStretchV14"
 
 // MARK: - Edge Fill Mode
 
@@ -527,22 +527,30 @@ enum CoverGradientBlurRenderer {
             remaining -= r
         }
 
-        // Extension blur floor. The ramp masks (pass 0 + staggered) are all at
-        // or near 0 alpha exactly at the cover's right edge, so the segment
-        // hugging the cover was starved (~0.14 of one pass ≈ 21px) no matter
-        // how the ramps were reshaped — a curve anchored at 0 there cannot be
-        // non-zero there. This single masked-blur pass lifts the whole stretch
-        // extension to a moderate floor (mask 0 in the cover, full across the
-        // extension), so the start is already clearly blurred while the right
-        // side keeps increasing on top via pass 0 + the staggered passes. Gated
-        // by `extensionFloorStrength` so non-opted-in consumers are unchanged.
+        // Extension blur ramp. The cover-anchored masks (pass 0 + staggered)
+        // are at or near 0 alpha exactly at the cover's right edge, so on their
+        // own the fill region just past the cover is barely blurred and most of
+        // the growth is saved for the far right. This extra masked-blur pass is
+        // 0 across the cover (so the cover interior is untouched) and ramps up
+        // CONTINUOUSLY across the fill region — 0 at the cover edge, easing up
+        // to `floorRadius` toward the right — so blur builds up promptly after
+        // the edge while still connecting to the cover at a low value with no
+        // step. (The earlier version snapped to full in ~23px and then
+        // plateaued, which read as a hard blur seam right at the cover→fill
+        // boundary.) Gated by `extensionFloorStrength` so non-opted-in consumers
+        // are unchanged.
         if config.extensionFloorStrength > 0,
            artworkRightEdgePixel < canvasPixelWidth {
             let floorRadius = min(120, totalRadius * config.extensionFloorStrength)
             if floorRadius > 0,
                let floorMask = extensionFloorMask(
                    coverEdgeX: artworkRightEdgeX,
-                   rampSpan: max(12, visibleArtworkWidth * 0.025),
+                   // Linear rise from the cover edge: blur starts increasing at
+                   // the very left end of the fill (no smoothstep dwell, so the
+                   // wide stretch bands get buried from the start) and climbs
+                   // continuously. ~18% of the cover-edge→blurEnd distance to the
+                   // cap. Smaller = buries the bands faster; larger = gentler.
+                   rampSpan: max(12, (blurEndX - artworkRightEdgeX) * 0.18),
                    canvasRect: canvasRect,
                    canvasLogicalHeight: canvasLogicalHeight
                ),
@@ -746,21 +754,24 @@ enum CoverGradientBlurRenderer {
         return linearGradientFilter.outputImage?.cropped(to: canvasRect)
     }
 
-    /// Mask for the extension blur floor pass. Modeled on `extensionOnlyMask`:
-    /// alpha is 0 across the whole cover (left of `coverEdgeX`, where the
-    /// gradient clamps to color0) and rises to full just past the edge, then
-    /// stays full across the entire extension (right of the ramp, where it
-    /// clamps to color1). A `CISmoothLinearGradient` keeps the rise seam-free
-    /// so the cover→extension hand-off reads as a smooth transition, not a
-    /// fault. Because alpha is exactly 0 inside the cover, this pass never adds
-    /// blur to the cover interior.
+    /// Mask for the extension blur ramp pass. A LINEAR gradient (alpha 0→1) from
+    /// the cover's right edge over `rampSpan`. Linear — not smoothstep — because
+    /// the blur has to start INCREASING at the very left end of the fill:
+    /// smoothstep leaves 0 with zero slope, so the floor dwelt near 0 for the
+    /// first stretch of the fill (the wide stretch bands stayed fully visible) and
+    /// only ramped up some distance in, which read as "the blur suddenly kicks in
+    /// to the right of the start". A linear ramp rises immediately at a constant
+    /// rate, so blur grows continuously from the fill's left edge. The value is
+    /// still 0 exactly at the cover edge (alpha clamps to 0 to the left), so it
+    /// joins pass 0's raised edge value without a step — pass 0 supplies the base
+    /// blur at the junction while this climbs.
     private nonisolated static func extensionFloorMask(
         coverEdgeX: CGFloat,
         rampSpan: CGFloat,
         canvasRect: CGRect,
         canvasLogicalHeight: CGFloat
     ) -> CIImage? {
-        guard let gradientFilter = CIFilter(name: "CISmoothLinearGradient") else {
+        guard let gradientFilter = CIFilter(name: "CILinearGradient") else {
             return nil
         }
 
@@ -794,14 +805,20 @@ enum CoverGradientBlurRenderer {
             return nil
         }
 
-        // Onsets are mildly biased toward the cover edge (power curve) and
-        // each pass ramps over a fixed fraction of the extension width, so
-        // blur builds up early after the cover edge instead of saving most of
-        // its growth for the far right. The last onset (0.55) plus the ramp
-        // width (0.45) reaches full strength exactly at blurEndX.
-        let onsetSpanRatio: CGFloat = 0.55
+        // Onsets are spread EVENLY (exponent 1.0) from the cover's right edge
+        // out to `onsetSpanRatio` of the fill, so a new blur layer keeps turning
+        // on across the whole fill — including the right half — and the blur
+        // keeps climbing to several hundred px all the way to the right edge
+        // instead of saturating in the first half. (The earlier 0.55 span with a
+        // cover-edge-biased 1.4 exponent turned every extra layer on within the
+        // first ~55%, which read as "the right side stops getting blurrier".)
+        // The near-edge fast onset is handled by the extension floor pass, not
+        // here, so these onsets don't need to be biased toward the cover edge.
+        // Each pass ramps over `rampWidthRatio` of the fill; the latest onset's
+        // ramp is clamped to end at blurEndX so every pass reaches full there.
+        let onsetSpanRatio: CGFloat = 0.85
         let rampWidthRatio: CGFloat = 0.45
-        let onsetExponent: CGFloat = 1.4
+        let onsetExponent: CGFloat = 1.0
         let stretchWidth = max(1, blurEndX - coverEdgeX)
         let onsetFraction: CGFloat
         if featherPassCount <= 1 {
