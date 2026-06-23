@@ -931,243 +931,75 @@ private struct WaveformCapsulesRepresentable: NSViewRepresentable {
     let artworkPalette: [NSColor]
     let artworkAccentColor: NSColor
 
-    func makeNSView(context: Context) -> WaveformCapsulesHostView {
-        let view = WaveformCapsulesHostView()
-        view.updatePalette(artworkPalette, accentColor: artworkAccentColor, isDark: isDark)
+    func makeNSView(context: Context) -> CapsuleSpectrumHostView {
+        let view = CapsuleSpectrumHostView(configuration: makeConfiguration())
+        applyColors(to: view)
         view.start()
         view.setPlayback(isPlaying: isPlaying)
         return view
     }
 
-    func updateNSView(_ nsView: WaveformCapsulesHostView, context: Context) {
-        nsView.updatePalette(artworkPalette, accentColor: artworkAccentColor, isDark: isDark)
+    func updateNSView(_ nsView: CapsuleSpectrumHostView, context: Context) {
+        nsView.configure(makeConfiguration())
+        applyColors(to: nsView)
         nsView.setPlayback(isPlaying: isPlaying)
     }
 
-    static func dismantleNSView(_ nsView: WaveformCapsulesHostView, coordinator: ()) {
+    static func dismantleNSView(_ nsView: CapsuleSpectrumHostView, coordinator: ()) {
         nsView.stop()
-        nsView.teardownViewBacking()
+        nsView.teardownBacking()
+    }
+
+    private func makeConfiguration() -> CapsuleSpectrumConfiguration {
+        CapsuleSpectrumConfiguration(
+            capsuleCount: WaveformCapsulesConstants.capsuleCount,
+            dynamics: .standard,
+            pausedBehavior: .idlePose,
+            strokeWidth: 0,
+            heightBoost: WaveformCapsulesConstants.heightBoost,
+            // The cassette waveform is deliberately short (heightBoost lifts it);
+            // keep identity so the dynamic-range compression doesn't shrink it.
+            levelShaping: .identity
+        ) { bounds, count in
+            let barWidth = bounds.width * WaveformCapsulesConstants.capsuleWidthRatio
+            let spacing = bounds.width * WaveformCapsulesConstants.spacingRatio
+            let totalWidth = CGFloat(count) * barWidth
+                + CGFloat(max(0, count - 1)) * spacing
+            return CapsuleSpectrumMetrics(
+                barWidth: barWidth,
+                spacing: spacing,
+                minHeight: barWidth,
+                maxBarHeight: bounds.height * WaveformCapsulesConstants.maxBarHeightRatio,
+                originX: bounds.width * WaveformCapsulesConstants.cx - totalWidth * 0.5,
+                centerY: bounds.height * (1.0 - WaveformCapsulesConstants.cy),
+                cornerRadius: barWidth * 0.5
+            )
+        }
+    }
+
+    private func applyColors(to view: CapsuleSpectrumHostView) {
+        let signature = WaveformCapsulesPalette.signature(
+            palette: artworkPalette,
+            accentColor: artworkAccentColor,
+            isDark: isDark
+        )
+        view.updateColors(signature: signature) {
+            let colors = WaveformCapsulesPalette.colors(
+                palette: artworkPalette,
+                accentColor: artworkAccentColor,
+                isDark: isDark
+            )
+            return (colors, nil)
+        }
     }
 }
 
-@MainActor
-private final class WaveformCapsulesHostView: NSView {
-    #if DEBUG
-        private static var liveInstanceCount = 0
-        private static let lifecycleLoggingEnabled =
-            ProcessInfo.processInfo.environment["KMGCCC_DEBUG_NOWPLAYING_LIFECYCLE"] == "1"
-    #endif
+/// Cassette-specific bar colors: a two-stop interpolation across the artwork's
+/// dominant palette, tuned per appearance. Relocated out of the former host
+/// view so the shared CapsuleSpectrumHostView can drive the Cassette bars.
+private enum WaveformCapsulesPalette {
 
-    private let service = AudioVisualizationService.shared
-    private let rootLayer = CALayer()
-    private var capsuleLayers: [CALayer] = []
-    private var consumerID: UUID?
-
-    private var currentWave = Array(
-        repeating: Float(0),
-        count: WaveformCapsulesConstants.capsuleCount
-    )
-    private var cachedColors: [CGColor] = []
-    private var paletteSignature: Int = 0
-    private var lastPlaybackState: Bool?
-    private var lastLayoutSize: CGSize = .zero
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        ensureViewLayerIfNeeded()
-        logLifecycle("init")
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    deinit {
-        MainActor.assumeIsolated {
-            logLifecycle("deinit")
-        }
-    }
-
-    override func layout() {
-        super.layout()
-        ensureViewLayerIfNeeded()
-        guard bounds.size != lastLayoutSize else { return }
-        lastLayoutSize = bounds.size
-        layoutCapsules()
-    }
-
-    func start() {
-        guard consumerID == nil else { return }
-        ensureViewLayerIfNeeded()
-        service.start()
-        consumerID = service.addConsumer { [weak self] wave in
-            self?.applyWave(wave)
-        }
-    }
-
-    func stop() {
-        if let consumerID {
-            service.removeConsumer(consumerID)
-            self.consumerID = nil
-        }
-        service.stop()
-        currentWave = Array(repeating: 0, count: WaveformCapsulesConstants.capsuleCount)
-        teardownViewBacking()
-    }
-
-    func setPlayback(isPlaying: Bool) {
-        guard lastPlaybackState != isPlaying else { return }
-        lastPlaybackState = isPlaying
-        service.updatePlaybackState(isPlaying: isPlaying)
-    }
-
-    func updatePalette(_ palette: [NSColor], accentColor: NSColor, isDark: Bool) {
-        let signature = Self.paletteSignature(
-            palette: palette,
-            accentColor: accentColor,
-            isDark: isDark
-        )
-        guard signature != paletteSignature else { return }
-
-        paletteSignature = signature
-        cachedColors = Self.makeCapsuleColors(
-            palette: palette,
-            accentColor: accentColor,
-            isDark: isDark
-        )
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for (index, layer) in capsuleLayers.enumerated() where index < cachedColors.count {
-            layer.backgroundColor = cachedColors[index]
-        }
-        CATransaction.commit()
-    }
-
-    private func setupCapsuleLayers() {
-        guard capsuleLayers.isEmpty else { return }
-        capsuleLayers = (0..<WaveformCapsulesConstants.capsuleCount).map { _ in
-            let layer = CALayer()
-            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            layer.actions = [
-                "bounds": NSNull(),
-                "position": NSNull(),
-                "frame": NSNull(),
-                "backgroundColor": NSNull(),
-                "cornerRadius": NSNull(),
-            ]
-            rootLayer.addSublayer(layer)
-            return layer
-        }
-    }
-
-    func teardownViewBacking() {
-        lastLayoutSize = .zero
-        paletteSignature = 0
-        cachedColors.removeAll(keepingCapacity: false)
-        layer?.removeAllAnimations()
-        rootLayer.removeAllAnimations()
-        rootLayer.sublayers?.forEach { sublayer in
-            sublayer.removeAllAnimations()
-            sublayer.mask = nil
-            sublayer.contents = nil
-            sublayer.removeFromSuperlayer()
-        }
-        rootLayer.sublayers = nil
-        rootLayer.contents = nil
-        rootLayer.removeFromSuperlayer()
-        capsuleLayers.removeAll(keepingCapacity: false)
-        layer?.mask = nil
-        layer?.contents = nil
-        layer?.sublayers = nil
-        layer = nil
-        wantsLayer = false
-    }
-
-    private func logLifecycle(_ event: String) {
-        #if DEBUG
-            guard Self.lifecycleLoggingEnabled else { return }
-            switch event {
-            case "init":
-                Self.liveInstanceCount += 1
-            case "deinit":
-                Self.liveInstanceCount = max(0, Self.liveInstanceCount - 1)
-            default:
-                break
-            }
-            Log.info(
-                "[WaveformCapsulesHostView] \(event) live=\(Self.liveInstanceCount)",
-                category: .perf
-            )
-        #endif
-    }
-
-    private func ensureViewLayerIfNeeded() {
-        if !wantsLayer {
-            wantsLayer = true
-        }
-        if layer == nil {
-            let hostLayer = CALayer()
-            hostLayer.masksToBounds = false
-            layer = hostLayer
-        }
-        if rootLayer.superlayer == nil {
-            rootLayer.masksToBounds = false
-            layer?.addSublayer(rootLayer)
-        }
-        setupCapsuleLayers()
-    }
-
-    private func applyWave(_ wave: [Float]) {
-        var normalized = Array(repeating: Float(0), count: WaveformCapsulesConstants.capsuleCount)
-        for index in 0..<WaveformCapsulesConstants.capsuleCount {
-            if index < wave.count {
-                normalized[index] = min(1, max(0, wave[index]))
-            }
-        }
-
-        let maxDelta = zip(currentWave, normalized).reduce(Float.zero) { partial, pair in
-            max(partial, abs(pair.0 - pair.1))
-        }
-        guard maxDelta >= 0.002 else { return }
-
-        currentWave = normalized
-        layoutCapsules()
-    }
-
-    private func layoutCapsules() {
-        guard bounds.width > 0, bounds.height > 0 else { return }
-
-        let width = bounds.width
-        let height = bounds.height
-        let barWidth = width * WaveformCapsulesConstants.capsuleWidthRatio
-        let minHeight = barWidth
-        let maxBarHeight = height * WaveformCapsulesConstants.maxBarHeightRatio
-        let spacing = width * WaveformCapsulesConstants.spacingRatio
-        let totalWidth =
-            (CGFloat(WaveformCapsulesConstants.capsuleCount) * barWidth)
-            + (CGFloat(WaveformCapsulesConstants.capsuleCount - 1) * spacing)
-        let originX = (width * WaveformCapsulesConstants.cx) - (totalWidth * 0.5)
-        let centerY = height * (1.0 - WaveformCapsulesConstants.cy)
-
-        rootLayer.frame = bounds
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for index in 0..<WaveformCapsulesConstants.capsuleCount {
-            let value = CGFloat(currentWave[index]) * WaveformCapsulesConstants.heightBoost
-            let dynamicHeight = minHeight + (maxBarHeight - minHeight) * min(1, max(0, value))
-            let x = originX + CGFloat(index) * (barWidth + spacing)
-            let y = centerY - (dynamicHeight * 0.5)
-
-            let layer = capsuleLayers[index]
-            layer.frame = CGRect(x: x, y: y, width: barWidth, height: dynamicHeight)
-            layer.cornerRadius = barWidth * 0.5
-        }
-        CATransaction.commit()
-    }
-
-    private static func paletteSignature(palette: [NSColor], accentColor: NSColor, isDark: Bool) -> Int {
+    static func signature(palette: [NSColor], accentColor: NSColor, isDark: Bool) -> Int {
         var hasher = Hasher()
         hasher.combine(isDark)
         for color in palette.prefix(2) {
@@ -1177,19 +1009,7 @@ private final class WaveformCapsulesHostView: NSView {
         return hasher.finalize()
     }
 
-    private static func append(color: NSColor, to hasher: inout Hasher) {
-        let resolved = color.usingColorSpace(.deviceRGB) ?? color
-        hasher.combine(Int(resolved.redComponent * 1_000))
-        hasher.combine(Int(resolved.greenComponent * 1_000))
-        hasher.combine(Int(resolved.blueComponent * 1_000))
-        hasher.combine(Int(resolved.alphaComponent * 1_000))
-    }
-
-    private static func makeCapsuleColors(
-        palette: [NSColor],
-        accentColor: NSColor,
-        isDark: Bool
-    ) -> [CGColor] {
+    static func colors(palette: [NSColor], accentColor: NSColor, isDark: Bool) -> [CGColor] {
         let colors: [NSColor]
         if palette.count >= 2 {
             colors = Array(palette.prefix(2))
@@ -1210,6 +1030,14 @@ private final class WaveformCapsulesHostView: NSView {
                 isDark: isDark
             ).cgColor
         }
+    }
+
+    private static func append(color: NSColor, to hasher: inout Hasher) {
+        let resolved = color.usingColorSpace(.deviceRGB) ?? color
+        hasher.combine(Int(resolved.redComponent * 1_000))
+        hasher.combine(Int(resolved.greenComponent * 1_000))
+        hasher.combine(Int(resolved.blueComponent * 1_000))
+        hasher.combine(Int(resolved.alphaComponent * 1_000))
     }
 
     private static func makeInterpolatedColor(
@@ -1261,7 +1089,6 @@ private final class WaveformCapsulesHostView: NSView {
             alpha: targetAlpha
         )
     }
-
 }
 
 // MARK: - Physics Engine

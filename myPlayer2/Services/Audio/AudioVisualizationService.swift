@@ -21,7 +21,9 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         static let staleRestartThreshold: TimeInterval = 0.80
         static let restartCooldown: TimeInterval = 1.20
         static let stopGracePeriod: TimeInterval = 0.35
-        static let publishEpsilon: Float = 0.015
+        // Low so quiet passages still publish at ~30Hz instead of dropping to the
+        // 0.25s forced cadence (which made low-volume bars lurch / look granular).
+        static let publishEpsilon: Float = 0.003
         static let forcePublishInterval: TimeInterval = 0.25
         /// After this long paused, the idle pose has fully settled; stop ticking.
         static let idleSuspendSeconds: TimeInterval = 0.8
@@ -421,7 +423,12 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         static let lowBoost: Float = 1.28  // Boost sensitivity for low-level signals
         static let knee: Float = 0.68 // Knee point for transition to compression
         static let hard: Float = 0.33  // Compression strength for high-level signals
-        static let cubicPower: Float = 3.0
+        // Lowered from 3.0: cubed crushed quiet signals below the band gates so
+        // low-volume bars flickered 0↔tiny (coarse/granular). 2.0 keeps quiet
+        // detail above the gate while still expanding loud transients. Shared
+        // with the mesh background (wave[0..1]); it reshapes/caps its own input
+        // so a slightly stronger bass pulse is tolerated.
+        static let cubicPower: Float = 2.0
         // Faster rise so bars track transients with less lag; release unchanged
         // to preserve the existing smooth fall / anti-flicker feel.
         static let attack: Float = 0.6
