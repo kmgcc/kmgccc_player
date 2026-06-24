@@ -514,8 +514,8 @@ public final class AppSettings {
 
     static let lyricSpringDurationRange: ClosedRange<Double> = 0.30...1.20
     static let lyricSpringBounceRange: ClosedRange<Double> = -0.25...3.25
-    static let defaultLyricSpringDuration: Double = 0.65
-    static let defaultLyricSpringBounce: Double = 0.25
+    static let defaultLyricSpringDuration: Double = 0.5
+    static let defaultLyricSpringBounce: Double = 0.3
 
     private static func clampLyricSpringDuration(_ value: Double) -> Double {
         guard value.isFinite else { return defaultLyricSpringDuration }
@@ -680,10 +680,10 @@ public final class AppSettings {
     /// When enabled, real audio output is delayed by the fixed 180ms playback
     /// graph delay so the
     /// inherent latency of the LED / spectrum / lyrics visual pipeline lines up
-    /// with what the user hears. Default OFF — never delay audio without the
-    /// user opting in. When OFF the output chain is physically delay-free.
+    /// with what the user hears. Default ON — improve visual sync out-of-the-box.
+    /// When OFF the output chain is physically delay-free.
     @ObservationIgnored
-    @AppStorage("audioLookaheadEnabled") var audioLookaheadEnabled: Bool = false
+    @AppStorage("audioLookaheadEnabled") var audioLookaheadEnabled: Bool = true
 
     /// Legacy lookahead delay preference. The current playback graph uses a
     /// fixed 180ms target; this stored value is preserved for compatibility and
