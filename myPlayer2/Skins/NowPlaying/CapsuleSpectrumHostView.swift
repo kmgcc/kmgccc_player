@@ -46,7 +46,7 @@ struct CapsuleSpectrumDynamics: Equatable {
     var dampingFraction: CGFloat
 
     /// Agile and elastic: a fast spring with a lively, controlled bounce.
-    static let standard = CapsuleSpectrumDynamics(response: 0.07 , dampingFraction: 0.52)
+    static let standard = CapsuleSpectrumDynamics(response: 0.05 , dampingFraction: 0.52)
     /// Tighter, less bounce — quick and composed.
     static let tight = CapsuleSpectrumDynamics(response: 0.10, dampingFraction: 0.80)
     /// Looser and bouncier — bigger overshoot.

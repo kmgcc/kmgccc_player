@@ -83,8 +83,16 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
         private var webView: WKWebView?
         private var isReady = false
         private var lastConfiguration: Configuration?
-        private var lastArtworkChecksum: UInt64?
+        // Gate the album push on a fingerprint of the actual artwork bytes we
+        // send, not the host-supplied `artworkChecksum`. In fullscreen that
+        // checksum is snapshot-synced and can lag `artworkData`, which used to
+        // strand the background on the previous cover after a track switch.
+        private var lastAppliedArtworkFingerprint: UInt64?
         private var lowFreqConsumerID: UUID?
+        // Eased low-frequency volume. The AMLL mesh shader reacts to the raw
+        // pushed value (its internal smoothedVolume is computed but unused), so
+        // we smooth here to keep the background breathing instead of twitching.
+        private var smoothedLowFreq: Float = 0
         private let spectrumService = AudioVisualizationService.shared
 
         func attach(to hostView: NSView) {
@@ -121,7 +129,7 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
             hostView = nil
             isReady = false
             lastConfiguration = nil
-            lastArtworkChecksum = nil
+            lastAppliedArtworkFingerprint = nil
         }
 
         func userContentController(
@@ -211,9 +219,19 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
         }
 
         private func applyArtworkIfNeeded(_ configuration: Configuration, force: Bool = false) {
-            guard force || lastArtworkChecksum != configuration.artworkChecksum else { return }
-            lastArtworkChecksum = configuration.artworkChecksum
-            guard let data = configuration.artworkData, !data.isEmpty else { return }
+            // Fingerprint the bytes we actually push so the gate stays atomic
+            // with the cover being displayed. The host-supplied checksum can
+            // lag `artworkData` in fullscreen (snapshot- vs presentation-synced);
+            // keying off it let a stale gate skip the new cover and stick on the
+            // previous track's colors.
+            let fingerprint = ArtworkDataFingerprint.sampledHash(for: configuration.artworkData)
+            guard force || lastAppliedArtworkFingerprint != fingerprint else { return }
+            guard let data = configuration.artworkData, !data.isEmpty else {
+                // Bytes not ready yet: do NOT record the fingerprint, so a later
+                // update carrying the real artwork still passes this gate.
+                return
+            }
+            lastAppliedArtworkFingerprint = fingerprint
             let mime = imageMIMEType(for: data)
             let dataURL = "data:\(mime);base64,\(data.base64EncodedString())"
             callFunction(
@@ -262,6 +280,7 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
                 lowFreqConsumerID = nil
                 spectrumService.stop()
             }
+            smoothedLowFreq = 0
         }
 
         private func publishLowFrequencyVolume(from wave: [Float]) {
@@ -269,10 +288,22 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
             let sub = wave.indices.contains(0) ? wave[0] : 0
             let bass = wave.indices.contains(1) ? wave[1] : sub
             let raw = max(0, min(1, sub * 0.72 + bass * 0.28))
-            let shaped = min(0.55, pow(raw, 0.82) * 0.65)
+            // Slightly less sensitive: compress quiet passages (exponent ≥ 1)
+            // and trim gain/cap so steady music no longer pumps the background.
+            let target = min(0.50, pow(raw, 0.92) * 0.60)
+
+            // Ease toward the target. The consumer fires at ~30Hz
+            // (AudioVisualizationService uiUpdateHz); a faster attack keeps kicks
+            // legible while a slow release lets the background settle, lowering
+            // the visible pulse frequency.
+            let attack: Float = 0.30
+            let release: Float = 0.11
+            let alpha = target > smoothedLowFreq ? attack : release
+            smoothedLowFreq += (target - smoothedLowFreq) * alpha
+
             callFunction(
                 "window.AMLLBackground?.setLowFreqVolume",
-                arguments: [Double(shaped)],
+                arguments: [Double(smoothedLowFreq)],
                 label: "setLowFreqVolume"
             )
         }

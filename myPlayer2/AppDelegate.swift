@@ -20,6 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private let dockController = DockController()
+    private weak var playbackCoordinator: PlaybackCoordinator?
+    private var spacebarMonitor: Any?
 
     override init() {
         super.init()
@@ -30,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.debug("[AppDelegate] didFinishLaunching", category: .ui)
         disableWindowTabbing()
         configureMainMenu()
+        installSpacebarPlayPauseMonitor()
         dockController.installDockTile()
         DispatchQueue.main.async {
             Log.debug("[AppDelegate] launchMainWindowHandler.invoke", category: .ui)
@@ -43,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func configureDockPlayback(playbackCoordinator: PlaybackCoordinator) {
+        self.playbackCoordinator = playbackCoordinator
         dockController.configure(playbackCoordinator: playbackCoordinator)
     }
 
@@ -56,6 +60,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func disableWindowTabbing() {
         NSWindow.allowsAutomaticWindowTabbing = false
+    }
+
+    // MARK: - Spacebar play/pause monitor
+
+    /// Intercepts bare-spacebar keyDown events app-wide so that play/pause
+    /// works even when an `NSTableView` (backing SwiftUI `List`) has keyboard
+    /// focus. Without this, `NSTableView.keyDown` consumes the space key
+    /// for page-scroll before the menu bar shortcut can fire.
+    private func installSpacebarPlayPauseMonitor() {
+        spacebarMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            // Only intercept bare spacebar (keyCode 49, no significant modifiers).
+            guard event.keyCode == 49 else { return event }
+            let dominated = event.modifierFlags.intersection([.command, .option, .control, .shift])
+            guard dominated.isEmpty else { return event }
+
+            // Don't intercept when a text input is the first responder — the
+            // user is typing a space character.
+            if let responder = event.window?.firstResponder {
+                if responder is NSTextView || responder is NSTextField {
+                    return event
+                }
+                if String(describing: type(of: responder)).contains("FieldEditor") {
+                    return event
+                }
+            }
+
+            // Forward to playback coordinator.
+            self?.playbackCoordinator?.playPause()
+            return nil // consume the event
+        }
     }
 
     private func configureMainMenu() {
