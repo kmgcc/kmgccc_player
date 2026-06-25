@@ -712,6 +712,15 @@ struct BKColorEngine {
             && primarySwatchHue >= 182
             && primarySwatchHue <= 214
             && hasCoolSideEvidence
+        let tinyAccentOnDarkField: Bool = {
+            guard let analysis,
+                  !analysis.salientHighlightPalette.isEmpty,
+                  let largestSalient = analysis.salientHighlightAreaShares.max()
+            else { return false }
+            return analysis.dominantBrightness < 0.12
+                && analysis.weightedLuma < 0.08
+                && largestSalient <= 0.050
+        }()
         let richness = clamp(
             (CGFloat(max(0, clusterCount - 1)) / 3.0) * 0.62
                 + (hueSpread / 150.0) * 0.22
@@ -784,11 +793,14 @@ struct BKColorEngine {
                     continue
                 }
                 var adjusted = tone
-                let toneHue = tone.s >= 0.12
+                let keepNeutralTone = tinyAccentOnDarkField && tone.s < 0.10
+                let toneHue = keepNeutralTone ? tone.h : tone.s >= 0.12
                     ? clampHueDistance(tone.h, around: primaryHue, maxDistance: 18)
                     : primaryHue
                 adjusted.h = toneHue
-                if tone.s < 0.10 {
+                if keepNeutralTone {
+                    adjusted.s = min(tone.s, isDark ? 0.080 : 0.060)
+                } else if tone.s < 0.10 {
                     adjusted.s = clamp(primaryS * 0.62, min: 0.055, max: 0.16)
                 } else {
                     adjusted.s = clamp(
@@ -1643,7 +1655,7 @@ extension BKColorEngine {
         if ultraLowSatCover {
             bgS = makeRange(
                 lower: max(bgS.lowerBound, isDark ? 0.04 : 0.03),
-                upper: min(bgS.upperBound, isDark ? 0.16 : 0.12)
+                upper: min(bgS.upperBound, isDark ? 0.24 : 0.14)
             )
             fgS = makeRange(
                 lower: max(fgS.lowerBound, isDark ? 0.10 : 0.08),
@@ -1700,8 +1712,9 @@ extension BKColorEngine {
         var floor: CGFloat = strictMono ? 0.0 : (isDark && trusted && warmRed ? 0.14 : 0.06)
 
         if mutedTrusted && colorfulness < 0.30 {
-            floor = max(floor, isDark ? 0.16 : 0.090)
-            ceiling = max(ceiling, isDark ? 0.42 : 0.27)
+            let mutedDarkFloor: CGFloat = colorfulness < 0.18 ? 0.22 : 0.18
+            floor = max(floor, isDark ? mutedDarkFloor : 0.090)
+            ceiling = max(ceiling, isDark ? 0.46 : 0.27)
         }
 
         var result = makeRange(
@@ -1710,7 +1723,7 @@ extension BKColorEngine {
         )
 
         if mutedTrusted && colorfulness < 0.30 {
-            let liftedUpper = min(ceiling, max(result.upperBound, isDark ? 0.38 : 0.25))
+            let liftedUpper = min(ceiling, max(result.upperBound, isDark ? 0.40 : 0.25))
             let liftedLower = min(liftedUpper, max(result.lowerBound, floor))
             result = makeRange(lower: liftedLower, upper: liftedUpper)
         }
@@ -2619,10 +2632,31 @@ extension BKColorEngine {
         let bgFloor: CGFloat
 
         if ultraLow {
-            bgCap = min(tier.bgS.upperBound, isDark ? 0.10 : 0.08)
-            shapeCap = min(tier.fgS.upperBound, isDark ? 0.16 : 0.14)
-            dotCap = min(tier.dotS.upperBound, isDark ? 0.18 : 0.16)
-            bgFloor = max(tier.bgS.lowerBound, isDark ? 0.01 : 0.00)
+            let trustedMutedColor = !isNearGray && complexity != .monochrome
+            bgCap = min(
+                tier.bgS.upperBound,
+                isDark
+                    ? (trustedMutedColor ? 0.30 : 0.10)
+                    : (trustedMutedColor ? 0.13 : 0.08)
+            )
+            shapeCap = min(
+                tier.fgS.upperBound,
+                isDark
+                    ? (trustedMutedColor ? 0.24 : 0.16)
+                    : (trustedMutedColor ? 0.22 : 0.14)
+            )
+            dotCap = min(
+                tier.dotS.upperBound,
+                isDark
+                    ? (trustedMutedColor ? 0.26 : 0.18)
+                    : (trustedMutedColor ? 0.24 : 0.16)
+            )
+            bgFloor = max(
+                tier.bgS.lowerBound,
+                isDark
+                    ? (trustedMutedColor ? 0.22 : 0.01)
+                    : (trustedMutedColor ? 0.06 : 0.00)
+            )
         } else {
             bgCap = min(tier.bgS.upperBound, isDark ? 0.32 : 0.27)
             shapeCap = min(tier.fgS.upperBound, isDark ? 0.30 : 0.28)

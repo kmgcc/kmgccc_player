@@ -116,6 +116,7 @@ nonisolated enum ColorSystemSelfCheck {
         checkFaithfulWarmCoverLEDStaysWarm(&report)
         checkFaithfulGreyBKShapeSwatchesStayNeutralLayered(&report)
         checkFaithfulBlackYellowBKShapeSwatchesKeepYellow(&report)
+        checkFaithfulMicroYellowAccentAvoidsNearMono(&report)
         checkFaithfulTinyYellowAccentAvoidsNearMono(&report)
         checkFaithfulMutedPastelCoverAvoidsNearMono(&report)
         checkFaithfulWarmPaperCoverAvoidsNearMono(&report)
@@ -1886,10 +1887,10 @@ nonisolated enum ColorSystemSelfCheck {
     // MARK: - Salient highlight scenarios
 
     private static func checkSalientYellowOnBlack(_ report: inout CheckReport) {
-        // 95% near-black + 5% bright yellow. Cover is technically near-
-        // monochrome (low avg sat / colorfulness) — the yellow MUST still
-        // surface in `salientHighlightPalette`, and MUST surface in
-        // `displayPalette` even though near-mono caps richPalette.
+        // 95% near-black + 5% bright yellow. The yellow MUST surface in
+        // `salientHighlightPalette` / `displayPalette` and it must keep the
+        // cover out of the true near-mono regime so lyrics, LED, BKArt and
+        // other shared consumers can use the accent.
         guard let a = analyseMix(side: 64, regions: [
             (0.95, (15, 15, 15, 255)),
             (0.05, (255, 200, 30, 255))
@@ -1899,7 +1900,11 @@ nonisolated enum ColorSystemSelfCheck {
         }
         let foundYellow = a.salientHighlightPalette.contains { isHueClose(of: $0, target: 0.13) }
         let inDisplay = a.displayPalette.contains { isHueClose(of: $0, target: 0.13) }
-        let ok = !a.salientHighlightPalette.isEmpty && foundYellow && inDisplay
+        let ok = !a.isNearMonochrome
+            && a.hasTrustedHueCandidate
+            && !a.salientHighlightPalette.isEmpty
+            && foundYellow
+            && inDisplay
         report.record(
             "Salient: 95% black + 5% yellow", ok,
             "salient.count=\(a.salientHighlightPalette.count) foundYellow=\(foundYellow) display.contains=\(inDisplay) nearMono=\(a.isNearMonochrome)"
@@ -2280,6 +2285,40 @@ nonisolated enum ColorSystemSelfCheck {
             "Faithful BK: black yellow shape swatches keep yellow",
             ok,
             "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) clusters=\(swatches.diagnostics.chromaticClusterCount) count=\(swatches.diagnostics.swatchCount) maxC=\(format(maxC)) hsb=\(swatchHSBText)"
+        )
+    }
+
+    private static func checkFaithfulMicroYellowAccentAvoidsNearMono(
+        _ report: inout CheckReport
+    ) {
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.992, (0, 0, 0, 255)),
+            (0.008, (255, 210, 16, 255))
+        ]) else {
+            report.record("Faithful BK: micro yellow accent avoids nearMono", false, "analysis nil")
+            return
+        }
+        let swatches = BKColorEngine.makeShapeSwatches(
+            seed: 0x8657_39F0,
+            extracted: bkExtractedPalette(for: analysis),
+            fallback: [analysis.averageColor],
+            isDark: false,
+            analysis: analysis
+        )
+        let lchs = swatches.colors.compactMap(cgColorToOKLCH(_:))
+        let hasYellow = lchs.contains { $0.h >= 0.16 && $0.h <= 0.34 && $0.c >= 0.055 }
+        let salientYellow = analysis.salientHighlightPalette.contains {
+            isHueClose(of: $0, target: 0.13)
+        }
+        let ok = analysis.hasTrustedHueCandidate
+            && !analysis.isNearMonochrome
+            && salientYellow
+            && swatches.diagnostics.chromaticClusterCount >= 1
+            && hasYellow
+        report.record(
+            "Faithful BK: micro yellow accent avoids nearMono",
+            ok,
+            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) salient=\(analysis.salientHighlightPalette.count) largestHighSat=\(format(analysis.largestHighSaturationAreaShare)) clusters=\(swatches.diagnostics.chromaticClusterCount)"
         )
     }
 
@@ -3470,13 +3509,77 @@ nonisolated enum ColorSystemSelfCheck {
             if isDistinct { selected.append(ready) }
         }
 
-        if analysis.hasTrustedHueCandidate {
-            for color in analysis.surfacePalette where isVisibleSurfaceMaterial(color) {
-                appendDistinct(color)
+        func rgbDistance(_ lhs: NSColor, _ rhs: NSColor) -> CGFloat {
+            let l = lhs.usingColorSpace(.deviceRGB) ?? lhs
+            let r = rhs.usingColorSpace(.deviceRGB) ?? rhs
+            let dr = l.redComponent - r.redComponent
+            let dg = l.greenComponent - r.greenComponent
+            let db = l.blueComponent - r.blueComponent
+            return sqrt(dr * dr + dg * dg + db * db)
+        }
+
+        func appendBackgroundMaterial(_ color: NSColor, areaShare: CGFloat? = nil) {
+            guard isUsefulBackgroundMaterial(color, areaShare: areaShare) else { return }
+            appendDistinct(color)
+        }
+
+        func isSmallSalientVariant(_ color: NSColor) -> Bool {
+            guard let rgb = color.usingColorSpace(.deviceRGB) else { return false }
+            var hue: CGFloat = 0
+            var saturation: CGFloat = 0
+            var brightness: CGFloat = 0
+            var alpha: CGFloat = 0
+            rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+
+            for (index, salient) in analysis.salientHighlightPalette.enumerated() {
+                let share = index < analysis.salientHighlightAreaShares.count
+                    ? analysis.salientHighlightAreaShares[index]
+                    : 1
+                guard share <= 0.080,
+                      let salientRGB = salient.usingColorSpace(.deviceRGB)
+                else { continue }
+                var sh: CGFloat = 0
+                var ss: CGFloat = 0
+                var sb: CGFloat = 0
+                var sa: CGFloat = 0
+                salientRGB.getHue(&sh, saturation: &ss, brightness: &sb, alpha: &sa)
+                if rgbDistance(rgb, salientRGB) < 0.12 {
+                    return true
+                }
+                if saturation >= 0.18,
+                   ColorMath.circularHueDistance(hue, sh) <= 0.055 {
+                    return true
+                }
             }
-            for color in analysis.displayPalette
-                where ArtworkHueTrust.isUsableHueSource(color) || isVisibleSurfaceMaterial(color) {
-                appendDistinct(color)
+            return false
+        }
+
+        if analysis.hasTrustedHueCandidate {
+            for (index, color) in analysis.surfacePalette.enumerated() {
+                let share = index < analysis.surfacePaletteAreaShares.count
+                    ? analysis.surfacePaletteAreaShares[index]
+                    : nil
+                appendBackgroundMaterial(color, areaShare: share)
+            }
+            for color in analysis.topPalette where isVisibleSurfaceMaterial(color) {
+                guard !isSmallSalientVariant(color) else { continue }
+                appendBackgroundMaterial(color)
+            }
+            for color in analysis.displayPalette where !isSmallSalientVariant(color) {
+                appendBackgroundMaterial(color)
+            }
+
+            if selected.count == 1,
+               let only = selected.first,
+               let onlyRGB = only.usingColorSpace(.deviceRGB) {
+                var hue: CGFloat = 0
+                var saturation: CGFloat = 0
+                var brightness: CGFloat = 0
+                var alpha: CGFloat = 0
+                onlyRGB.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+                if brightness < 0.08, !analysis.salientHighlightPalette.isEmpty {
+                    appendDistinct(analysis.averageColor)
+                }
             }
         } else {
             for color in analysis.displayPalette { appendDistinct(color) }
@@ -3498,6 +3601,34 @@ nonisolated enum ColorSystemSelfCheck {
             && saturation >= 0.035
             && brightness >= 0.08
             && brightness <= 0.97
+    }
+
+    private static func isUsefulBackgroundMaterial(
+        _ color: NSColor,
+        areaShare: CGFloat?
+    ) -> Bool {
+        guard let rgb = color.usingColorSpace(.deviceRGB),
+              let lch = OKColor.nsColorToOKLCH(rgb)
+        else { return false }
+        var hue: CGFloat = 0
+        var saturation: CGFloat = 0
+        var brightness: CGFloat = 0
+        var alpha: CGFloat = 0
+        rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+
+        let share = areaShare ?? 0
+        let dominantTonalField = share >= 0.18
+            && (brightness <= 0.22 || (brightness >= 0.78 && saturation <= 0.18))
+        let visibleMaterial = lch.c >= 0.006
+            && saturation >= 0.030
+            && brightness >= 0.08
+            && brightness <= 0.97
+        let mutedAreaColor = share >= 0.012
+            && lch.c >= 0.010
+            && saturation >= 0.030
+            && brightness >= 0.05
+            && brightness <= 0.98
+        return dominantTonalField || visibleMaterial || mutedAreaColor
     }
 
     private static func countDistinctHues(_ hues: [CGFloat], gap: CGFloat) -> Int {

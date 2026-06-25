@@ -336,13 +336,98 @@ struct BKArtBackgroundView: View {
                     && brightness <= 0.97
             }
 
-            if analysis.hasTrustedHueCandidate {
-                for color in analysis.surfacePalette where isVisibleSurfaceMaterial(color) {
-                    appendDistinct(color)
+            func isUsefulBackgroundMaterial(_ color: NSColor, areaShare: CGFloat?) -> Bool {
+                guard let rgb = color.usingColorSpace(.deviceRGB),
+                      let lch = OKColor.nsColorToOKLCH(rgb)
+                else { return false }
+                var hue: CGFloat = 0
+                var saturation: CGFloat = 0
+                var brightness: CGFloat = 0
+                var alpha: CGFloat = 0
+                rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+
+                let share = areaShare ?? 0
+                let dominantTonalField = share >= 0.18
+                    && (brightness <= 0.22 || (brightness >= 0.78 && saturation <= 0.18))
+                let visibleMaterial = lch.c >= 0.006
+                    && saturation >= 0.030
+                    && brightness >= 0.08
+                    && brightness <= 0.97
+                let mutedAreaColor = share >= 0.012
+                    && lch.c >= 0.010
+                    && saturation >= 0.030
+                    && brightness >= 0.05
+                    && brightness <= 0.98
+                return dominantTonalField || visibleMaterial || mutedAreaColor
+            }
+
+            func appendBackgroundMaterial(_ color: NSColor, areaShare: CGFloat? = nil) {
+                guard isUsefulBackgroundMaterial(color, areaShare: areaShare) else { return }
+                appendDistinct(color)
+            }
+
+            func isSmallSalientVariant(_ color: NSColor) -> Bool {
+                guard let rgb = color.usingColorSpace(.deviceRGB) else { return false }
+                var hue: CGFloat = 0
+                var saturation: CGFloat = 0
+                var brightness: CGFloat = 0
+                var alpha: CGFloat = 0
+                rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+
+                for (index, salient) in analysis.salientHighlightPalette.enumerated() {
+                    let share = index < analysis.salientHighlightAreaShares.count
+                        ? analysis.salientHighlightAreaShares[index]
+                        : 1
+                    guard share <= 0.080,
+                          let salientRGB = salient.usingColorSpace(.deviceRGB)
+                    else { continue }
+                    var sh: CGFloat = 0
+                    var ss: CGFloat = 0
+                    var sb: CGFloat = 0
+                    var sa: CGFloat = 0
+                    salientRGB.getHue(&sh, saturation: &ss, brightness: &sb, alpha: &sa)
+                    if rgbDistance(rgb, salientRGB) < 0.12 {
+                        return true
+                    }
+                    if saturation >= 0.18,
+                       ColorMath.circularHueDistance(hue, sh) <= 0.055 {
+                        return true
+                    }
                 }
-                for color in analysis.displayPalette
-                    where ArtworkHueTrust.isUsableHueSource(color) || isVisibleSurfaceMaterial(color) {
-                    appendDistinct(color)
+                return false
+            }
+
+            if analysis.hasTrustedHueCandidate {
+                for (index, color) in analysis.surfacePalette.enumerated() {
+                    let share = index < analysis.surfacePaletteAreaShares.count
+                        ? analysis.surfacePaletteAreaShares[index]
+                        : nil
+                    appendBackgroundMaterial(color, areaShare: share)
+                }
+                for color in analysis.topPalette where isVisibleSurfaceMaterial(color) {
+                    guard !isSmallSalientVariant(color) else { continue }
+                    appendBackgroundMaterial(color)
+                }
+                for color in analysis.displayPalette where !isSmallSalientVariant(color) {
+                    appendBackgroundMaterial(color)
+                }
+
+                if selected.count == 1,
+                   let only = selected.first,
+                   let onlyRGB = only.usingColorSpace(.deviceRGB) {
+                    var hue: CGFloat = 0
+                    var saturation: CGFloat = 0
+                    var brightness: CGFloat = 0
+                    var alpha: CGFloat = 0
+                    onlyRGB.getHue(
+                        &hue,
+                        saturation: &saturation,
+                        brightness: &brightness,
+                        alpha: &alpha
+                    )
+                    if brightness < 0.08, !analysis.salientHighlightPalette.isEmpty {
+                        appendDistinct(analysis.averageColor)
+                    }
                 }
             } else {
                 for color in analysis.displayPalette { appendDistinct(color) }
@@ -1399,10 +1484,10 @@ private final class BKArtBackgroundLayerView: NSView {
             saturationJitter: CGFloat(rng.next(in: satRange)),
             brightnessJitter: CGFloat(rng.next(in: briRange))
         )
-        return energizedLightShapeTint(stabilized)
+        return energizedLightShapeTint(stabilized, source: base)
     }
 
-    private func energizedLightShapeTint(_ color: CGColor) -> CGColor {
+    private func energizedLightShapeTint(_ color: CGColor, source: CGColor? = nil) -> CGColor {
         guard !harmonized.isDark else { return color }
         guard let nsColor = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) else {
             return color
@@ -1410,7 +1495,7 @@ private final class BKArtBackgroundLayerView: NSView {
 
         if harmonized.usesStrictNeutralRendering {
             guard var lch = OKColor.nsColorToOKLCH(nsColor) else { return color }
-            lch.l = min(max(lch.l, 0.44), 0.82)
+            lch.l = min(max(lch.l + 0.045, 0.60), 0.90)
             lch.c = 0
             lch.h = 0
             return OKColor.okLCHToNSColor(lch, alpha: nsColor.alphaComponent).cgColor
@@ -1424,37 +1509,107 @@ private final class BKArtBackgroundLayerView: NSView {
 
         let minS: CGFloat
         let maxS: CGFloat
-        if harmonized.isGrayscaleCover {
+        let hasTrustedArtworkTint =
+            currentAnalysis?.hasTrustedHueCandidate
+            ?? !harmonized.isGrayscaleCover
+        if harmonized.isGrayscaleCover && !hasTrustedArtworkTint {
             minS = 0.0
             maxS = 0.0
         } else if harmonized.chromaticClusterCount <= 1 {
-            let vividSingleHue = harmonized.coverAvgS >= 0.30
-            minS = vividSingleHue ? 0.20 : 0.12
-            maxS = vividSingleHue ? 0.42 : 0.30
+            let colorEvidence = max(
+                harmonized.coverAvgS,
+                currentAnalysis?.avgSaturation ?? 0,
+                currentAnalysis?.colorfulness ?? 0
+            )
+            let vividSingleHue = colorEvidence >= 0.30
+            minS = vividSingleHue ? 0.38 : 0.34
+            maxS = vividSingleHue ? 0.64 : 0.58
         } else if harmonized.isNearGray || harmonized.complexity == .low {
-            minS = 0.22
-            maxS = 0.38
-        } else {
             minS = 0.34
-            maxS = 0.48
+            maxS = 0.60
+        } else {
+            minS = 0.40
+            maxS = 0.66
         }
 
-        let liftedS = min(maxS, max(minS, s * 1.32 + 0.035))
-        let brightnessUpper: CGFloat
-        let brightnessLower: CGFloat
-        let coverLift = min(max((harmonized.imageCoverLuma - 0.18) / 0.72, 0), 1)
-        if harmonized.chromaticClusterCount <= 1 {
-            brightnessLower = lerp(0.56, 0.68, t: coverLift)
-            brightnessUpper = lerp(0.82, 0.90, t: coverLift)
-        } else if harmonized.isNearGray || harmonized.complexity == .low {
-            brightnessLower = lerp(0.58, 0.70, t: coverLift)
-            brightnessUpper = lerp(0.84, 0.90, t: coverLift)
-        } else {
-            brightnessLower = lerp(0.60, 0.72, t: coverLift)
-            brightnessUpper = lerp(0.86, 0.91, t: coverLift)
+        let sourceComponents: (s: CGFloat, b: CGFloat) = {
+            guard let source,
+                  let sourceNS = NSColor(cgColor: source)?.usingColorSpace(.deviceRGB)
+            else { return (s, b) }
+            var sh: CGFloat = 0
+            var ss: CGFloat = 0
+            var sb: CGFloat = 0
+            var sa: CGFloat = 0
+            sourceNS.getHue(&sh, saturation: &ss, brightness: &sb, alpha: &sa)
+            return (ss, sb)
+        }()
+        let neutralToneFromDarkField = hasTinyAccentOnDarkField
+            && sourceComponents.s < 0.08
+            && sourceComponents.b < 0.42
+        let liftedS = neutralToneFromDarkField
+            ? min(0.080, max(0.018, s))
+            : min(maxS, max(minS, s * 1.65 + 0.090))
+        let bgBrightnesses = harmonized.bgStops.compactMap { stop -> CGFloat? in
+            guard let ns = NSColor(cgColor: stop)?.usingColorSpace(.deviceRGB) else {
+                return nil
+            }
+            var sh: CGFloat = 0
+            var ss: CGFloat = 0
+            var sb: CGFloat = 0
+            var sa: CGFloat = 0
+            ns.getHue(&sh, saturation: &ss, brightness: &sb, alpha: &sa)
+            return sb
         }
-        let liftedB = min(brightnessUpper, max(brightnessLower, b + 0.015))
-        return NSColor(deviceHue: h, saturation: liftedS, brightness: liftedB, alpha: a).cgColor
+        let bgLightnesses = harmonized.bgStops.compactMap { stop -> CGFloat? in
+            guard let ns = NSColor(cgColor: stop)?.usingColorSpace(.deviceRGB),
+                  let lch = OKColor.nsColorToOKLCH(ns)
+            else { return nil }
+            return lch.l
+        }
+        let backgroundB = bgBrightnesses.isEmpty
+            ? max(0.88, harmonized.imageCoverLuma)
+            : bgBrightnesses.reduce(0, +) / CGFloat(bgBrightnesses.count)
+        let backgroundL = bgLightnesses.isEmpty
+            ? 0.94
+            : bgLightnesses.reduce(0, +) / CGFloat(bgLightnesses.count)
+        let darkAccent = sourceComponents.b < 0.40
+        let brightnessLower: CGFloat
+        let brightnessUpper: CGFloat
+        if neutralToneFromDarkField {
+            brightnessLower = min(max(backgroundB - 0.12, 0.84), 0.90)
+            brightnessUpper = min(max(backgroundB - 0.035, 0.91), 0.97)
+        } else if darkAccent {
+            brightnessLower = min(max(backgroundB - 0.09, 0.88), 0.93)
+            brightnessUpper = min(max(backgroundB - 0.010, 0.94), 0.985)
+        } else {
+            brightnessLower = min(max(backgroundB - 0.025, 0.93), 0.975)
+            brightnessUpper = min(max(backgroundB + 0.015, 0.975), 0.998)
+        }
+        let liftedB = min(brightnessUpper, max(brightnessLower, b + 0.10))
+        let hsbLifted = NSColor(deviceHue: h, saturation: liftedS, brightness: liftedB, alpha: a)
+        guard var lch = OKColor.nsColorToOKLCH(hsbLifted) else {
+            return hsbLifted.cgColor
+        }
+        let lightnessFloor: CGFloat
+        if neutralToneFromDarkField {
+            lightnessFloor = min(max(backgroundL - 0.10, 0.84), 0.91)
+        } else if darkAccent {
+            lightnessFloor = min(max(backgroundL - 0.09, 0.86), 0.93)
+        } else {
+            lightnessFloor = min(max(backgroundL - 0.035, 0.90), 0.965)
+        }
+        lch.l = min(max(lch.l, lightnessFloor), min(0.985, max(lightnessFloor, backgroundL + 0.015)))
+        return OKColor.okLCHToNSColor(lch, alpha: a).cgColor
+    }
+
+    private var hasTinyAccentOnDarkField: Bool {
+        guard let analysis = currentAnalysis,
+              !analysis.salientHighlightPalette.isEmpty,
+              let largestSalient = analysis.salientHighlightAreaShares.max()
+        else { return false }
+        return analysis.dominantBrightness < 0.12
+            && analysis.weightedLuma < 0.08
+            && largestSalient <= 0.050
     }
 
     private func makeShapeTintPlan(
