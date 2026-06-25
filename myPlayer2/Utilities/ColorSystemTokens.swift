@@ -742,6 +742,12 @@ nonisolated enum ColorSystemTokens {
         static let dimAccentMinSaturation: CGFloat = 0.72
         static let dimAccentMinBrightness: CGFloat = 0.16
         static let dimAccentMinAreaShare: CGFloat = 0.010
+        static let microAccentMinSaturation: CGFloat = 0.70
+        static let microAccentMinBrightness: CGFloat = 0.34
+        static let microAccentMinAreaShare: CGFloat = 0.00075
+        static let microAccentMinSupportedAreaShare: CGFloat = 0.0010
+        static let microAccentMinLargestHighSatAreaShare: CGFloat = 0.006
+        static let microAccentMaxAreaShare: CGFloat = 0.040
         static let satBonus: CGFloat = 0.50
         static let hueDedupGap: CGFloat = 0.05
         static let rgbDedupGap: CGFloat = 0.14

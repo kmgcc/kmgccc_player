@@ -16,7 +16,7 @@ public nonisolated enum ArtworkColorExtractor {
     /// output (`ArtworkAssetStore` snapshots, `ThemeStore.dominantColorCache`)
     /// fold this into their keys, so previous-version entries cannot bleed
     /// into a new algorithm.
-    public nonisolated static let cacheVersion: String = "surface-material-v8"
+    public nonisolated static let cacheVersion: String = "material-accent-split-v10"
 
     struct TextPalette {
         let primary: NSColor
@@ -1177,6 +1177,207 @@ extension ArtworkColorExtractor {
 
         _ = dominantHue  // currently unused: retained as a hook for the
                         // Phase 3 "true accent against dominant" filter.
+        return picked
+    }
+
+    /// High-resolution pass for tiny, deliberate accent marks that are lost
+    /// when the 64px analysis sample averages them into a black or grey
+    /// bucket. It only admits high-saturation, bright, area-supported clusters;
+    /// true black-and-white covers therefore still produce no candidates.
+    nonisolated static func computeMicroAccentCandidates(
+        from sample: ArtworkBitmapSample
+    ) -> [SalientHighlightCandidate] {
+        let T = ColorSystemTokens.SalientHighlight.self
+        let bucketCount = 48
+        var buckets = [HueBucket](repeating: .zero, count: bucketCount)
+        var areaByBucket = [CGFloat](repeating: 0, count: bucketCount)
+        var totalArea: CGFloat = 0
+
+        for i in stride(from: 0, to: sample.pixels.count, by: 4) {
+            let r = CGFloat(sample.pixels[i]) / 255.0
+            let g = CGFloat(sample.pixels[i + 1]) / 255.0
+            let b = CGFloat(sample.pixels[i + 2]) / 255.0
+            let a = CGFloat(sample.pixels[i + 3]) / 255.0
+            if a < 0.08 { continue }
+            totalArea += a
+
+            let rgb = NSColor(deviceRed: r, green: g, blue: b, alpha: 1)
+                .usingColorSpace(.deviceRGB) ?? NSColor.gray
+            var hue: CGFloat = 0
+            var sat: CGFloat = 0
+            var bri: CGFloat = 0
+            var alpha: CGFloat = 0
+            rgb.getHue(&hue, saturation: &sat, brightness: &bri, alpha: &alpha)
+
+            guard sat >= T.microAccentMinSaturation,
+                  bri >= T.microAccentMinBrightness
+            else { continue }
+
+            let idx = min(bucketCount - 1, max(0, Int(floor(hue * CGFloat(bucketCount)))))
+            let weight = a * pow(sat, 1.35) * pow(max(0.08, bri), 0.70)
+            buckets[idx].weight += weight
+            buckets[idx].r += r * weight
+            buckets[idx].g += g * weight
+            buckets[idx].b += b * weight
+            areaByBucket[idx] += a
+        }
+
+        guard totalArea > 0 else { return [] }
+
+        var candidates: [SalientHighlightCandidate] = []
+        for index in buckets.indices {
+            let bucket = buckets[index]
+            guard bucket.weight > 0 else { continue }
+            let areaShare = areaByBucket[index] / totalArea
+            guard areaShare >= T.microAccentMinAreaShare,
+                  areaShare <= T.microAccentMaxAreaShare
+            else { continue }
+
+            let inv = 1 / bucket.weight
+            let color = NSColor(
+                deviceRed: ColorMath.clamp(bucket.r * inv, 0, 1),
+                green: ColorMath.clamp(bucket.g * inv, 0, 1),
+                blue: ColorMath.clamp(bucket.b * inv, 0, 1),
+                alpha: 1
+            )
+            guard let rgb = color.usingColorSpace(.deviceRGB),
+                  let lch = OKColor.nsColorToOKLCH(rgb)
+            else { continue }
+            var hue: CGFloat = 0
+            var sat: CGFloat = 0
+            var bri: CGFloat = 0
+            var alpha: CGFloat = 0
+            rgb.getHue(&hue, saturation: &sat, brightness: &bri, alpha: &alpha)
+            guard sat >= T.microAccentMinSaturation,
+                  bri >= T.microAccentMinBrightness,
+                  lch.c >= ColorSystemTokens.NearMonochromeProfile.trustedHueChromaFloor
+            else { continue }
+
+            let score = areaShare * (1 + sat * T.satBonus) * (1 + min(0.35, lch.c))
+            candidates.append(SalientHighlightCandidate(
+                color: rgb,
+                hue: hue,
+                areaShare: areaShare,
+                score: score
+            ))
+        }
+
+        return mergeSalientHighlightCandidates(
+            mergeCoherentMicroAccentCandidates(candidates)
+        )
+    }
+
+    nonisolated static func mergeCoherentMicroAccentCandidates(
+        _ candidates: [SalientHighlightCandidate]
+    ) -> [SalientHighlightCandidate] {
+        guard !candidates.isEmpty else { return [] }
+
+        struct Cluster {
+            var sumX: CGFloat
+            var sumY: CGFloat
+            var area: CGFloat
+            var score: CGFloat
+            var r: CGFloat
+            var g: CGFloat
+            var b: CGFloat
+
+            var hue: CGFloat {
+                let radians = atan2(sumY, sumX)
+                let unit = radians / (2 * .pi)
+                return unit < 0 ? unit + 1 : unit
+            }
+
+            init(_ candidate: SalientHighlightCandidate) {
+                let rgb = candidate.color.usingColorSpace(.deviceRGB) ?? candidate.color
+                let weight = max(candidate.areaShare, 0.000_001)
+                let radians = candidate.hue * 2 * .pi
+                sumX = cos(radians) * weight
+                sumY = sin(radians) * weight
+                area = candidate.areaShare
+                score = candidate.score
+                r = rgb.redComponent * weight
+                g = rgb.greenComponent * weight
+                b = rgb.blueComponent * weight
+            }
+
+            mutating func add(_ candidate: SalientHighlightCandidate) {
+                let rgb = candidate.color.usingColorSpace(.deviceRGB) ?? candidate.color
+                let weight = max(candidate.areaShare, 0.000_001)
+                let radians = candidate.hue * 2 * .pi
+                sumX += cos(radians) * weight
+                sumY += sin(radians) * weight
+                area += candidate.areaShare
+                score += candidate.score
+                r += rgb.redComponent * weight
+                g += rgb.greenComponent * weight
+                b += rgb.blueComponent * weight
+            }
+
+            func candidate() -> SalientHighlightCandidate {
+                let inv = 1 / max(area, 0.000_001)
+                let color = NSColor(
+                    deviceRed: ColorMath.clamp(r * inv, 0, 1),
+                    green: ColorMath.clamp(g * inv, 0, 1),
+                    blue: ColorMath.clamp(b * inv, 0, 1),
+                    alpha: 1
+                )
+                return SalientHighlightCandidate(
+                    color: color,
+                    hue: hue,
+                    areaShare: area,
+                    score: score
+                )
+            }
+        }
+
+        var clusters: [Cluster] = []
+        for candidate in candidates.sorted(by: { $0.score > $1.score }) {
+            if let nearest = clusters.indices.min(by: {
+                ColorMath.circularHueDistance(candidate.hue, clusters[$0].hue)
+                    < ColorMath.circularHueDistance(candidate.hue, clusters[$1].hue)
+            }),
+               ColorMath.circularHueDistance(candidate.hue, clusters[nearest].hue)
+                <= ColorSystemTokens.SalientHighlight.hueDedupGap {
+                clusters[nearest].add(candidate)
+            } else {
+                clusters.append(Cluster(candidate))
+            }
+        }
+
+        return clusters.map { $0.candidate() }
+    }
+
+    nonisolated static func mergeSalientHighlightCandidates(
+        _ candidates: [SalientHighlightCandidate]
+    ) -> [SalientHighlightCandidate] {
+        guard !candidates.isEmpty else { return [] }
+
+        var sorted = candidates.sorted { lhs, rhs in
+            if abs(lhs.score - rhs.score) > 0.000_001 {
+                return lhs.score > rhs.score
+            }
+            return lhs.areaShare > rhs.areaShare
+        }
+
+        var picked: [SalientHighlightCandidate] = []
+        while !sorted.isEmpty {
+            let candidate = sorted.removeFirst()
+            let distinct = picked.allSatisfy { existing in
+                let hueGap = ColorMath.circularHueDistance(
+                    candidate.hue,
+                    existing.hue
+                )
+                let rgbGap = rgbDistance(candidate.color, existing.color)
+                return hueGap >= ColorSystemTokens.SalientHighlight.hueDedupGap
+                    || rgbGap >= ColorSystemTokens.SalientHighlight.rgbDedupGap
+            }
+            if distinct {
+                picked.append(candidate)
+            }
+            if picked.count >= ColorSystemTokens.SalientHighlight.maxCount {
+                break
+            }
+        }
         return picked
     }
 

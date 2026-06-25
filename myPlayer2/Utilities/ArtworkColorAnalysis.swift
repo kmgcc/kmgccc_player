@@ -250,6 +250,10 @@ nonisolated enum ArtworkHueTrust {
             if share >= ColorSystemTokens.SalientHighlight.minAreaShare {
                 return true
             }
+            if candidate.c >= T.trustedHueChromaFloor,
+               share >= ColorSystemTokens.SalientHighlight.microAccentMinAreaShare {
+                return true
+            }
             return candidate.c >= T.trustedHueChromaFloor
                 && share >= ColorSystemTokens.SalientHighlight.dimAccentMinAreaShare
         }
@@ -325,7 +329,9 @@ extension ArtworkColorExtractor {
     /// surface (BKColorEngine, HomeHero, CoverGradientBlur, lyrics).
     nonisolated static func analyze(from data: Data) -> ArtworkColorAnalysis? {
         guard let sample = sampledBitmap(from: data, side: 64) else { return nil }
-        return analyzeInternal(sample: sample)
+        let microAccentCandidates = sampledBitmap(from: data, side: 192)
+            .map { computeMicroAccentCandidates(from: $0) } ?? []
+        return analyzeInternal(sample: sample, microAccentCandidates: microAccentCandidates)
     }
 
     /// Test / self-check entry point. Accepts a synthetic RGBA pixel buffer
@@ -337,11 +343,15 @@ extension ArtworkColorExtractor {
         side: Int
     ) -> ArtworkColorAnalysis? {
         let sample = ArtworkBitmapSample(pixels: pixels, side: side)
-        return analyzeInternal(sample: sample)
+        return analyzeInternal(
+            sample: sample,
+            microAccentCandidates: computeMicroAccentCandidates(from: sample)
+        )
     }
 
     fileprivate nonisolated static func analyzeInternal(
-        sample: ArtworkBitmapSample
+        sample: ArtworkBitmapSample,
+        microAccentCandidates: [SalientHighlightCandidate] = []
     ) -> ArtworkColorAnalysis? {
         let pixels = sample.pixels
         guard !pixels.isEmpty else { return nil }
@@ -531,10 +541,20 @@ extension ArtworkColorExtractor {
         )
         let phase63TopPalette = uiThemePalette(from: sample, targetCount: 4)
         let phase63RichPalette = uiThemePaletteRich(from: sample, targetCount: 8)
-        let phase63SalientCandidates = computeSalientHighlightCandidates(
-            buckets: buckets,
-            totalWeight: totalWeight,
-            dominantHue: dominantHue
+        let supportedMicroAccentCandidates = microAccentCandidates.count == 1
+            && (microAccentCandidates.first?.areaShare ?? 0)
+                >= ColorSystemTokens.SalientHighlight.microAccentMinSupportedAreaShare
+            && largestHighSaturationAreaShare
+                >= ColorSystemTokens.SalientHighlight.microAccentMinLargestHighSatAreaShare
+            ? microAccentCandidates
+            : []
+        let phase63SalientCandidates = mergeSalientHighlightCandidates(
+            computeSalientHighlightCandidates(
+                buckets: buckets,
+                totalWeight: totalWeight,
+                dominantHue: dominantHue
+            )
+            + supportedMicroAccentCandidates
         )
         let phase65SurfaceCandidates = computeSurfacePaletteCandidates(
             from: sample,
