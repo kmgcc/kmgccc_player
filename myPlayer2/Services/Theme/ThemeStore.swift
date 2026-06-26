@@ -54,10 +54,10 @@ final class ThemeStore: ObservableObject {
 
     let defaultBlue: Color
 
-    /// Phase 4.5 — convenience accessor for the tinted-neutral foreground
-    /// palette. Views that already have `@EnvironmentObject themeStore`
-    /// can read `themeStore.appForegroundPalette.primary` etc. without
-    /// deep-coupling to `semanticPalette`.
+    /// Convenience accessor for the tinted-neutral foreground palette. Views
+    /// that already have `@EnvironmentObject themeStore` can read
+    /// `themeStore.appForegroundPalette.primary` etc. without deep-coupling to
+    /// `semanticPalette`.
     var appForegroundPalette: AppForegroundPalette {
         semanticPalette.appForeground
     }
@@ -214,11 +214,12 @@ final class ThemeStore: ObservableObject {
 
         guard let data, data.isEmpty == false else {
             if sourceChanged {
-                // Phase 6.6 — do not flash neutralFallback during a track transition.
-                // The previous track's theme is a better visual than a sudden reset.
-                // Hold it until real artwork data arrives, then extraction will
-                // replace it naturally. If the new track truly has no artwork,
-                // the neutral fallback will persist from the init default.
+                // Do not flash neutralFallback during a track transition. The
+                // previous track's theme is a better visual than a sudden
+                // reset. Hold it until real artwork data arrives, then
+                // extraction will replace it naturally. If the new track truly
+                // has no artwork, the neutral fallback will persist from the
+                // init default.
                 Log.debug(
                     "No artwork data during source change, holding previous theme",
                     category: .theme
@@ -306,28 +307,29 @@ final class ThemeStore: ObservableObject {
             category: .theme
         )
 
-        // Phase 6.3: do not publish the quick sample by itself. It has no
-        // trusted nearMono/salient context and was the visible default-color
-        // flash during track changes. Keep the previous semantic palette until
-        // the full analysis is ready, then publish once.
+        // Do not publish a quick sample by itself. It has no trusted
+        // nearMono/salient context and was the visible default-color flash
+        // during track changes. Keep the previous semantic palette until the
+        // full analysis is ready, then publish once.
         async let cachedArtworkSnapshot: ArtworkAssetSnapshot? = {
             guard let assetTrackID else { return nil }
             return await ArtworkAssetStore.shared.snapshotMetadata(trackID: assetTrackID, artworkData: data)
         }()
 
-        // Then apply full extraction
+        // Then apply full extraction.
         let artworkSnapshot = await cachedArtworkSnapshot
-        let extractedColor: NSColor?
-        if let snapshotColor = artworkSnapshot?.accentColor ?? artworkSnapshot?.dominantColor {
-            extractedColor = snapshotColor
-        } else {
-            extractedColor = await extractDominantColor(from: data)
-        }
+        let snapshotColor = artworkSnapshot?.accentColor ?? artworkSnapshot?.dominantColor
         let extractedAnalysis: ArtworkColorAnalysis?
         if let snapshotAnalysis = artworkSnapshot?.analysis {
             extractedAnalysis = snapshotAnalysis
         } else {
             extractedAnalysis = await extractAnalysis(from: data)
+        }
+        let extractedColor: NSColor?
+        if let snapshotColor {
+            extractedColor = snapshotColor
+        } else {
+            extractedColor = await resolvedDominantColor(from: data, analysis: extractedAnalysis)
         }
 
         guard isCurrentExtraction(
@@ -374,31 +376,30 @@ final class ThemeStore: ObservableObject {
         await refreshPalette(reason: "track_artwork_extracted")
     }
 
-    private func extractDominantColor(from data: Data) async -> NSColor? {
-        await withCheckedContinuation { continuation in
-            extractionQueue.async {
-                let analysis = ArtworkColorExtractor.analyze(from: data)
-                let raw = analysis?.primaryHueSourceColor
-                    ?? analysis?.displayPalette.first
-                    ?? ArtworkColorExtractor.uiAccentColor(from: data)
-                    ?? ArtworkColorExtractor.averageColor(from: data)
-                continuation.resume(returning: raw)
-            }
-        }
-    }
-
-    private func extractQuickColor(from data: Data) async -> NSColor? {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(returning: ArtworkColorExtractor.quickAccentSample(from: data))
-            }
-        }
-    }
-
     private func extractAverageColor(from data: Data) async -> NSColor? {
         await withCheckedContinuation { continuation in
             extractionQueue.async {
                 continuation.resume(returning: ArtworkColorExtractor.averageColor(from: data))
+            }
+        }
+    }
+
+    private func resolvedDominantColor(
+        from data: Data,
+        analysis: ArtworkColorAnalysis?
+    ) async -> NSColor? {
+        if let analysis {
+            return analysis.primaryHueSourceColor
+                ?? analysis.displayPalette.first
+                ?? analysis.averageColor
+        }
+
+        return await withCheckedContinuation { continuation in
+            extractionQueue.async {
+                continuation.resume(returning:
+                    ArtworkColorExtractor.uiAccentColor(from: data)
+                        ?? ArtworkColorExtractor.averageColor(from: data)
+                )
             }
         }
     }
@@ -438,9 +439,8 @@ final class ThemeStore: ObservableObject {
             "semantic accent resolved reason=\(reason), scheme=\(schemeState), h=\(Self.format01(accentHSL.h)), s=\(Self.format01(accentHSL.s)), l=\(Self.format01(accentHSL.l)), mono=\(analysis.isMonochrome), effectiveMono=\(analysis.isEffectivelyMonochrome), colorfulness=\(Self.format01(analysis.colorfulness)), avgS=\(Self.format01(analysis.avgSaturation)), domS=\(Self.format01(analysis.dominantSaturation)), highSatMaxShare=\(Self.format01(analysis.largestHighSaturationAreaShare)), nearMonoClamp=\(analysis.isEffectivelyMonochrome)",
             category: .theme
         )
-        // Phase 4.5 retrofit: print appForeground live-path values so the
-        // developer can verify warm/cool/nearMono tinting is actually varying.
-        // Remove or gate behind an env flag once the tint effect is confirmed.
+        // Debug trace: print appForeground live-path values so the developer
+        // can verify warm/cool/nearMono tinting is actually varying.
         #if DEBUG
         if LogConfig.themeColorVerbose {
             let fgPri = semantic.appForeground.primary
@@ -467,10 +467,9 @@ final class ThemeStore: ObservableObject {
             artworkBaseNSColor = rawDominantColor
             selectionFill = Color(nsColor: resolvedAccentNS).opacity(fillAlpha)
         }
-        // Phase 6.9: semanticPalette must snap instantly. Animating it causes
-        // MiniPlayer controls that compute Color(nsColor:) inside body to get
-        // trapped in a stuck intermediate state when combined with
-        // .compositingGroup().blendMode(...).
+        // semanticPalette must snap instantly. Animating it causes MiniPlayer
+        // controls that compute Color(nsColor:) inside body to get trapped in
+        // a stuck intermediate state when combined with compositing/blend mode.
         semanticPalette = semantic
 
         // Default fallbacks

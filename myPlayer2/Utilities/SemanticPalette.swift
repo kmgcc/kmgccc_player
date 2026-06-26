@@ -3,9 +3,7 @@
 //  myPlayer2
 //
 //  Per-role colours derived from a single ArtworkColorAnalysis. UI surfaces
-//  read these instead of running their own extraction. Phase 2 wires up the
-//  factory with placeholder behaviour that exactly mirrors today's output;
-//  later phases harden each role.
+//  read these instead of running their own extraction.
 //
 
 import AppKit
@@ -35,32 +33,30 @@ struct SemanticPalette: Equatable, Sendable {
     let coverGradientDominant: NSColor
     let coverGradientText: NSColor
 
-    /// Phase 4 — unified "compress UI on top of artwork" semantic. Owned
-    /// by the palette so HomeHero / Library header / Fullscreen MiniPlayer
-    /// / Cover Gradient Blur overlays can share one near-mono-aware
-    /// foreground decision instead of each reinventing usesDarkForeground.
+    /// Unified "compress UI on top of artwork" semantic. Owned by the palette
+    /// so HomeHero / Library header / Fullscreen MiniPlayer / Cover Gradient
+    /// Blur overlays can share one near-mono-aware foreground decision instead
+    /// of each reinventing usesDarkForeground.
     let readabilityProfile: ArtworkReadabilityProfile
 
-    /// Phase 4 — control colour for the fullscreen mini player on chrome
-    /// surfaces (default liquid-glass pill). When the mini player sits
-    /// directly on artwork (Cover Gradient Blur "clear" material), the
-    /// view consumes `readabilityProfile.foregroundPrimary` instead. The
-    /// palette is OKLCH-lifted and crushes near-mono hue so the controls
-    /// never read as faint pastels under grey covers.
+    /// Control colour for the fullscreen mini player on chrome surfaces
+    /// (default liquid-glass pill). When the mini player sits directly on
+    /// artwork (Cover Gradient Blur "clear" material), the view consumes
+    /// `readabilityProfile.foregroundPrimary` instead. The palette is
+    /// OKLCH-lifted and crushes near-mono hue so the controls never read as
+    /// faint pastels under grey covers.
     let miniPlayerControl: MiniPlayerControlPalette
 
-    /// Phase 4.5 — tinted-neutral foreground palette for ordinary App
-    /// UI (sidebar text, library lists, settings labels, Home captions).
-    /// Each role is derived from `globalAccent` hue at very low OKLCH
-    /// chroma, crushing to achromatic on near-mono artwork. Replaces
-    /// SwiftUI `.primary` / `.secondary` / `.tertiary` in non-artwork
-    /// surfaces during Phase 4.5 first-batch migration.
+    /// Tinted-neutral foreground palette for ordinary App UI (sidebar text,
+    /// library lists, settings labels, Home captions). Each role is derived
+    /// from `globalAccent` hue at very low OKLCH chroma, crushing to
+    /// achromatic on near-mono artwork.
     let appForeground: AppForegroundPalette
 
-    /// Phase 5 — centralized lyric colour decisions. Swift owns the
-    /// artwork-driven hue / lightness / near-mono policy; the Web layer
-    /// only receives concrete colours and keeps rendering mechanics
-    /// (opacity, blend mode, masks, shadows).
+    /// Centralized lyric colour decisions. Swift owns the artwork-driven hue /
+    /// lightness / near-mono policy; the Web layer only receives concrete
+    /// colours and keeps rendering mechanics (opacity, blend mode, masks,
+    /// shadows).
     let lyrics: LyricsColorPalette
 }
 
@@ -101,8 +97,8 @@ struct LyricsColorPalette: Equatable, Sendable {
 /// cover or its blur. The profile bakes in near-mono neutralisation so
 /// downstream views never see a tinted output on a grey artwork.
 ///
-/// Phase 4 invariant: when `analysis.isNearMonochrome == true`, every
-/// foreground colour exposed here has OKLCH chroma ≤
+/// Invariant: when `analysis.isNearMonochrome == true`, every foreground
+/// colour exposed here has OKLCH chroma ≤
 /// `ColorSystemTokens.ReadabilityProfile.nearMonoChromaCeiling`.
 /// `ColorSystemSelfCheck.checkReadabilityProfileNearMonoNeutral`
 /// asserts this with a small numerical slack.
@@ -134,7 +130,7 @@ struct ArtworkReadabilityProfile: Equatable, Sendable {
     let foregroundQuaternary: NSColor
 
     /// Icon-tier foreground. Same as primary today; named distinctly so
-    /// later phases can dial in a different chroma cap for SF Symbol
+    /// a future refactor can dial in a different chroma cap for SF Symbol
     /// rendering without touching text consumers.
     let iconForeground: NSColor
 }
@@ -150,8 +146,8 @@ struct ArtworkReadabilityProfile: Equatable, Sendable {
 /// normal grey/white/black at a glance yet carries a barely-perceptible
 /// theme tint on close inspection.
 ///
-/// Phase 4.5 invariant: when `analysis.isNearMonochrome == true`, all
-/// roles have OKLCH chroma = 0 (fully achromatic). When artwork is
+/// Invariant: when `analysis.isNearMonochrome == true`, all roles have
+/// OKLCH chroma = 0 (fully achromatic). When artwork is
 /// colourful, primary chroma ≤
 /// `ColorSystemTokens.AppForeground.chromaCeiling`.
 struct AppForegroundPalette: Equatable, Sendable {
@@ -182,8 +178,8 @@ struct AppForegroundPalette: Equatable, Sendable {
 /// achromatic warm white so transport controls do not appear faintly
 /// tinted on grey artwork.
 ///
-/// Phase 4 invariant: when `analysis.isNearMonochrome == true`, `primary`
-/// has OKLCH chroma ≤ `ColorSystemTokens.MiniPlayerControl.nearMonoChromaAssertion`.
+/// Invariant: when `analysis.isNearMonochrome == true`, `primary` has OKLCH
+/// chroma ≤ `ColorSystemTokens.MiniPlayerControl.nearMonoChromaAssertion`.
 struct MiniPlayerControlPalette: Equatable, Sendable {
     /// Primary control colour for icons, transport buttons, and the
     /// playback-mode capsule on chrome surfaces. Alpha 1.0; views apply
@@ -210,9 +206,11 @@ nonisolated enum SemanticPaletteFactory {
         useArtworkTint: Bool
     ) -> SemanticPalette {
         let isDark = scheme == .dark
+        let artworkAccentOnDark = optimizedAccent(for: .dark, analysis: analysis)
+        let artworkAccentOnLight = optimizedAccent(for: .light, analysis: analysis)
         let globalAccent: NSColor
         if useArtworkTint {
-            globalAccent = optimizedAccent(for: scheme, analysis: analysis)
+            globalAccent = isDark ? artworkAccentOnDark : artworkAccentOnLight
         } else {
             globalAccent = isDark
                 ? ColorMath.clampLightness(
@@ -260,8 +258,8 @@ nonisolated enum SemanticPaletteFactory {
             scheme: scheme,
             analysis: analysis,
             globalAccent: globalAccent,
-            uiAccentOnDark: optimizedAccent(for: .dark, analysis: analysis),
-            uiAccentOnLight: optimizedAccent(for: .light, analysis: analysis),
+            uiAccentOnDark: artworkAccentOnDark,
+            uiAccentOnLight: artworkAccentOnLight,
             ambientSurface: ambientSurface(analysis: analysis, isDark: isDark),
             artBackgroundPrimary: artBackgroundPrimary(analysis: analysis, isDark: isDark),
             artBackgroundSecondary: artBackgroundSecondary(analysis: analysis, isDark: isDark),
@@ -280,7 +278,7 @@ nonisolated enum SemanticPaletteFactory {
         )
     }
 
-    // MARK: - Phase 4 readability + MiniPlayer control
+    // MARK: - Readability and MiniPlayer control
 
     /// Owner of the "compress UI on top of artwork" readability decision.
     /// Wraps the legacy `readableTextOnArtwork` HSL derivation in an OKLCH
@@ -317,11 +315,8 @@ nonisolated enum SemanticPaletteFactory {
     /// based on whether its surface is the artwork itself.
     ///
     /// On near-mono artworks the colour collapses to a perceptually
-    /// achromatic warm white (OKLCH L≈0.94, C=0). This is the explicit
-    /// Phase 4 fix for the "淡蓝/淡黄" leak users saw on grey covers —
-    /// the legacy `resolveControlAccentColor` lifted HSL saturation to
-    /// ≥0.88, which amplified the near-mono accent's residual hue into a
-    /// visible pastel.
+    /// achromatic warm white (OKLCH L≈0.94, C=0), preventing the legacy HSL
+    /// control lift from amplifying residual hue into a visible pastel.
     nonisolated fileprivate static func miniPlayerControl(
         analysis: ArtworkColorAnalysis,
         globalAccent: NSColor
@@ -348,7 +343,7 @@ nonisolated enum SemanticPaletteFactory {
         )
     }
 
-    /// Phase 4.5 — tinted-neutral foreground palette for ordinary App UI.
+    /// Tinted-neutral foreground palette for ordinary App UI.
     ///
     /// Hue is taken from `globalAccent` in OKLCH; chroma scales linearly
     /// with artwork `colorfulness` up to `colorfulnessSaturationPoint`
@@ -466,7 +461,7 @@ nonisolated enum SemanticPaletteFactory {
         return OKColor.okLCHToNSColor(crushed, alpha: color.alphaComponent)
     }
 
-    // MARK: - Phase 5 lyric colour palette
+    // MARK: - Lyric colour palette
 
     nonisolated static func lyricsPalette(
         analysis: ArtworkColorAnalysis,
@@ -615,14 +610,14 @@ nonisolated enum SemanticPaletteFactory {
         return neutraliseLyricsSurfaceIfNearMono(set, analysis: analysis)
     }
 
-    /// Phase 6.1 single-seed artistic fullscreen lyrics ladder.
+    /// Single-seed artistic fullscreen lyrics ladder.
     ///
     /// All six roles derive from ONE seed (the active highlight). The
     /// inactive parameter carries the average-derived lyrics base used by
     /// the non-artistic fullscreen/window paths; it is only consulted as a
     /// small-highlight fallback before dominant can win.
     ///
-    /// Seed selection (Phase 6.1):
+    /// Seed selection:
     ///   1. nearMono → keep the preferred neutralised seed (no fabrication).
     ///   2. Conservative salient override: if the cover field is uniform
     ///      AND a salient highlight clears chroma + hue-gap thresholds,
@@ -682,7 +677,7 @@ nonisolated enum SemanticPaletteFactory {
         return neutraliseLyricsSurfaceIfNearMono(set, analysis: analysis)
     }
 
-    /// Phase 6.3 seed selection. Public for SelfCheck regression coverage.
+    /// Artistic lyric seed selection. Public for SelfCheck regression coverage.
     nonisolated static func artisticLyricsSingleSeed(
         preferred: NSColor,
         averageBaseColor: NSColor? = nil,
@@ -701,13 +696,13 @@ nonisolated enum SemanticPaletteFactory {
             )
         }
 
-        // Step 2 — subjective salient override. Dominant is still the default;
+        // Subjective salient override. Dominant is still the default;
         // a highlight only wins when it looks like an intentional focal mark.
         if let salient = pickSalientLyricSeed(analysis: analysis) {
             return salient
         }
 
-        // Step 3 — reuse the analyser's display palette ordering before
+        // Reuse the analyser's display palette ordering before
         // falling back to area-dominant. This preserves the existing
         // window / cover-blur "black field + tiny yellow mark reads yellow"
         // behaviour without letting ordinary multi-colour artwork jump to
@@ -727,13 +722,13 @@ nonisolated enum SemanticPaletteFactory {
             return averageSeed
         }
 
-        // Step 4 — area-dominant first.
+        // Area-dominant fallback.
         if let dominantLCH = OKColor.nsColorToOKLCH(analysis.dominantColor),
            dominantLCH.c >= T.lyricsDominantSeedMinChroma {
             return dominantLCH
         }
 
-        // Step 5 — fall through. Prefer the chromatically-strongest candidate
+        // Final fallthrough. Prefer the chromatically-strongest candidate
         // from {topPalette.first, bestTextSourceColor, preferred}; this is the
         // safety net for covers whose dominant bucket is genuinely grey.
         var candidates: [NSColor] = []
@@ -750,8 +745,8 @@ nonisolated enum SemanticPaletteFactory {
         return best
     }
 
-    /// Phase 6.3 — subjective focus score for the salient-vs-dominant
-    /// decision. Returns 0..1; salient wins when score >= threshold.
+    /// Subjective focus score for the salient-vs-dominant decision. Returns
+    /// 0..1; salient wins when score >= threshold.
     ///
     /// This models the human read of "mostly one field, one strong accent"
     /// rather than treating total high-saturation area as the accent size.
@@ -862,9 +857,9 @@ nonisolated enum SemanticPaletteFactory {
         return false
     }
 
-    /// Phase 6.3 — focus-score gate. Returns a salient seed only when its
-    /// score clears `lyricsSeedFocusScoreThreshold`. Dominant remains the
-    /// default; salient only wins on designed-focal covers.
+    /// Focus-score gate. Returns a salient seed only when its score clears
+    /// `lyricsSeedFocusScoreThreshold`. Dominant remains the default; salient
+    /// only wins on designed-focal covers.
     nonisolated private static func pickSalientLyricSeed(
         analysis: ArtworkColorAnalysis
     ) -> OKColor.OKLCH? {
@@ -1167,7 +1162,7 @@ nonisolated enum SemanticPaletteFactory {
         )
     }
 
-    // MARK: - Role derivations (Phase 2 placeholders)
+    // MARK: - Role derivations
 
     fileprivate static func optimizedAccent(
         for scheme: ColorScheme,
@@ -1176,8 +1171,8 @@ nonisolated enum SemanticPaletteFactory {
         // The branch below is the "anti-fake-color" path — covers without a
         // trustworthy hue (greyscale, near-white sleeves, dim duo-tones).
         // It is NOT an ultra-dark protector: dark-but-colourful covers such
-        // as deep violet / midnight teal now correctly fall through to
-        // optimizedAccent and keep their hue (Phase 2 K.2).
+        // as deep violet / midnight teal fall through to optimizedAccent and
+        // keep their hue.
         if analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate {
             return nearMonochromeAccent(for: scheme, analysis: analysis)
         }
@@ -1407,9 +1402,9 @@ nonisolated enum SemanticPaletteFactory {
     }
 
     nonisolated fileprivate static func fullscreenLyricBase(analysis: ArtworkColorAnalysis) -> NSColor {
-        // Phase 6.3: dominant-first when the dominant centroid carries
-        // a trustworthy hue; fall through to topPalette → bestTextSource
-        // only when the dominant is genuinely grey.
+        // Dominant-first when the dominant centroid carries a trustworthy hue;
+        // fall through to topPalette → bestTextSource only when the dominant
+        // is genuinely grey.
         let T = ColorSystemTokens.ToneLadder.self
         if analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate {
             return neutraliseLyricIfNearMono(analysis.bestTextSourceColor, analysis: analysis)
@@ -1489,9 +1484,8 @@ nonisolated private func f3(_ value: CGFloat) -> String {
 }
 
 #if DEBUG
-/// Debug-only bridge that exposes the Phase 4–4.5 nonisolated factory helpers
-/// to `ColorSystemSelfCheck` without requiring a full palette construction.
-/// Pattern mirrors `SpectrumPaletteSelfCheck` from Phase 3.
+/// Debug-only bridge that exposes nonisolated factory helpers to
+/// `ColorSystemSelfCheck` without requiring a full palette construction.
 nonisolated enum SemanticPaletteSelfCheck {
     nonisolated static func readabilityProfile(
         _ analysis: ArtworkColorAnalysis
@@ -1561,9 +1555,9 @@ nonisolated enum SemanticPaletteSelfCheck {
         )
     }
 
-    /// Phase 6.1 — surface the seed-selection decision so regression checks
-    /// can verify the dominant-first + conservative-salient gate behaviour
-    /// without having to build a full surface set.
+    /// Surfaces the seed-selection decision so regression checks can verify
+    /// the dominant-first + conservative-salient gate behaviour without having
+    /// to build a full surface set.
     nonisolated static func artisticLyricsSingleSeed(
         preferred: NSColor,
         averageBaseColor: NSColor? = nil,

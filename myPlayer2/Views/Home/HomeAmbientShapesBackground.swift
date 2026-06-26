@@ -773,11 +773,10 @@ enum HomeAmbientPalette {
         analysis: ArtworkColorAnalysis?,
         colorScheme: ColorScheme
     ) -> [NSColor] {
-        // Phase 3 primary path: project the artwork's quality-controlled
-        // displayPalette (top.first → salient → top.tail → rich) into Home
-        // background tier through OKLCH per-mode tinting. No hue rotation —
-        // every shape colour traces back to a real artwork bucket or to a
-        // same-hue tonal variant of one.
+        // Project the artwork's quality-controlled displayPalette (top.first →
+        // salient → top.tail → rich) into the Home background tier through
+        // OKLCH per-mode tinting. No hue rotation: every shape colour traces
+        // back to a real artwork bucket or to a same-hue tonal variant of one.
         if let analysis,
            let palette = makePaletteFromDisplay(
                analysis: analysis,
@@ -915,19 +914,15 @@ enum HomeAmbientPalette {
     ) -> AmbientTuning {
         if isDark {
             if isUltraDark {
-                // Phase 3 hotfix: ultra-dark covers must read as visibly
-                // darker than ordinary dark covers. The previous band
-                // (0.10–0.26) overlapped the normal dark band (0.18–0.34)
-                // by 8 percentage points of L, which made Home shapes look
-                // identical between "dark" and "ultra dark" artwork while
-                // BKArt was clearly darker. Crush the band to 0.05–0.18 so
-                // shapes track BKArt's UltraDark impression.
+                // Ultra-dark covers must read as visibly darker than ordinary
+                // dark covers, so this band stays below the normal dark band
+                // and tracks BKArt's UltraDark impression.
                 return AmbientTuning(
                     lMin: 0.05, lMax: 0.18,
                     lScale: 0.32, lOffset: 0.04,
-                    // Phase 3 hotfix: a near-mono ultraDark cover must
-                    // stay perceptually grey. 0.030 was still loud enough
-                    // for a salient micro-spot to show as pink.
+                    // A near-mono ultraDark cover must stay perceptually grey.
+                    // 0.030 was still loud enough for a salient micro-spot to
+                    // show as pink.
                     chromaCeiling: isLowColor ? 0.010 : 0.070,
                     chromaScale: isLowColor ? 0.18 : 0.56
                 )
@@ -936,9 +931,9 @@ enum HomeAmbientPalette {
                 lMin: isLowColor ? 0.16 : 0.18,
                 lMax: isLowColor ? 0.28 : 0.34,
                 lScale: 0.52, lOffset: 0.08,
-                // Phase 3 hotfix: near-mono dark needs a much lower ceiling.
-                // 0.038 with chromaScale 0.46 let salient highlights surface
-                // as visible pink/yellow on perceptually grey artwork.
+                // Near-mono dark needs a much lower ceiling; otherwise salient
+                // highlights can surface as visible pink/yellow on perceptually
+                // grey artwork.
                 chromaCeiling: isLowColor ? 0.012 : 0.115,
                 chromaScale: isLowColor ? 0.22 : 0.72
             )
@@ -949,7 +944,7 @@ enum HomeAmbientPalette {
             lMin: isLowColor ? 0.78 : 0.74,
             lMax: isLowColor ? 0.90 : 0.86,
             lScale: 0.16, lOffset: 0.74,
-            // Phase 3 hotfix: near-mono light mode same neutralisation.
+            // Near-mono light mode uses the same neutralisation.
             chromaCeiling: isLowColor ? 0.008 : 0.058,
             chromaScale: isLowColor ? 0.18 : 0.46
         )
@@ -1882,8 +1877,8 @@ nonisolated private func clamp(_ value: CGFloat, min lower: CGFloat, max upper: 
 
 #if DEBUG
 /// Debug-only bridge exposing the Home ambient palette projection to
-/// `ColorSystemSelfCheck`. Lets the self-check verify the Phase 3 hotfix
-/// invariants (near-mono → low-chroma output; ultraDark → low-L output)
+/// `ColorSystemSelfCheck`. Lets the self-check verify the invariants
+/// (near-mono → low-chroma output; ultraDark → low-L output)
 /// without leaking `HomeAmbientPalette` itself across files.
 nonisolated enum HomeAmbientPaletteSelfCheck {
     nonisolated static func project(

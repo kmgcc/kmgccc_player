@@ -377,13 +377,10 @@ struct BKColorEngine {
             triggered: &globalTriggers
         )
 
-        // Phase 6.3 — anti-pink under true nearMono. When the cover has no
-        // trustworthy hue (dominant / top / salient OKLCH chroma all below
-        // `trustedHueChromaFloor`), the floating shapes, moving circle, and
-        // BK1/BK2 variants must NOT carry residual warm tint from the
-        // HSB-based shape resolver. Crush chroma in OKLCH so L is preserved
-        // but no hue leaks. Mirrors the existing
-        // `FullscreenMiniPlayerView.neutralizeForNearMono` pass on Spectrum.
+        // Anti-pink under true nearMono. When the cover has no trustworthy hue,
+        // the floating shapes, moving circle, and BK1/BK2 variants must not
+        // carry residual tint from the HSB-based shape resolver. Crush chroma
+        // in OKLCH so L is preserved but no hue leaks.
         let neutraliseShapes =
             (analysis?.isNearMonochrome ?? false)
             && !analysisHasTrustedHueCandidate(analysis)
@@ -1572,7 +1569,7 @@ extension BKColorEngine {
         var dotS: ClosedRange<CGFloat>
 
         if isDark {
-            // Phase 6.3 dark-mode tuning:
+            // Dark-mode tuning:
             //   * background B is capped lower so bright artwork cannot lift
             //     BK1/BK2 into a washed night surface;
             //   * saturation floors are higher for normal chromatic covers so
