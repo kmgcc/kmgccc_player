@@ -99,6 +99,13 @@ nonisolated enum ColorSystemSelfCheck {
         checkOKColorHueWrap(&report)
         checkOKColorSoftShoulder(&report)
 
+        report.section("ColorRenderingAdapter")
+        checkColorRenderingAdapterNeutralHueIgnored(&report)
+        checkColorRenderingAdapterP3PreservesChroma(&report)
+        checkColorRenderingAdapterLinearP3Boundary(&report)
+        checkColorRenderingAdapterPlatformColorSpaces(&report)
+        checkColorRenderingAdapterCSSFallback(&report)
+
         report.section("Salient highlight palette")
         checkSalientYellowOnBlack(&report)
         checkSalientOrangeOnNavy(&report)
@@ -1881,6 +1888,100 @@ nonisolated enum ColorSystemSelfCheck {
         report.record(
             "OKColor.chromaSoftShoulder", ok,
             "under=\(format(underCeiling.c)) over=\(format(overCeiling.c))"
+        )
+    }
+
+    private static func checkColorRenderingAdapterNeutralHueIgnored(_ report: inout CheckReport) {
+        let withNoiseHue = OKLCHColor(lightness: 0.62, chroma: 0.0001, hue: 0.72, alpha: 1)
+        let withoutHue = OKLCHColor(lightness: 0.62, chroma: 0.0001, hue: nil, alpha: 1)
+        let a = ColorRenderingAdapter.resolve(withNoiseHue, target: .sRGB)
+        let b = ColorRenderingAdapter.resolve(withoutHue, target: .sRGB)
+        let worstDelta = max(abs(a.red - b.red), abs(a.green - b.green), abs(a.blue - b.blue))
+        let ok = a.resolvedChroma == 0
+            && b.resolvedChroma == 0
+            && worstDelta < 0.0001
+            && !a.wasGamutMapped
+            && !b.wasGamutMapped
+        report.record(
+            "ColorRenderingAdapter.neutralHueIgnored", ok,
+            "resolvedC=\(format(a.resolvedChroma))/\(format(b.resolvedChroma)) worstRGBDelta=\(format(worstDelta))"
+        )
+    }
+
+    private static func checkColorRenderingAdapterP3PreservesChroma(_ report: inout CheckReport) {
+        let saturatedGreen = OKLCHColor(lightness: 0.72, chroma: 0.30, hue: 0.40, alpha: 1)
+        let srgb = ColorRenderingAdapter.resolve(saturatedGreen, target: .sRGB)
+        let p3 = ColorRenderingAdapter.resolve(saturatedGreen, target: .displayP3)
+        let ok = srgb.wasGamutMapped
+            && p3.resolvedChroma > srgb.resolvedChroma + 0.01
+            && p3.resolvedChroma <= p3.requestedChroma + 0.00001
+        report.record(
+            "ColorRenderingAdapter.P3PreservesChroma", ok,
+            "requestedC=\(format(srgb.requestedChroma)) sRGB.C=\(format(srgb.resolvedChroma)) P3.C=\(format(p3.resolvedChroma))"
+        )
+    }
+
+    private static func checkColorRenderingAdapterLinearP3Boundary(_ report: inout CheckReport) {
+        let color = OKLCHColor(lightness: 0.58, chroma: 0.16, hue: 0.04, alpha: 0.42)
+        let gammaP3 = ColorRenderingAdapter.resolve(color, target: .displayP3)
+        let linearP3 = ColorRenderingAdapter.resolve(color, target: .linearDisplayP3)
+        let componentsInUnitRange = [linearP3.red, linearP3.green, linearP3.blue, linearP3.alpha].allSatisfy {
+            $0 >= 0 && $0 <= 1
+        }
+        let hasDifferentEncoding = max(
+            abs(gammaP3.red - linearP3.red),
+            abs(gammaP3.green - linearP3.green),
+            abs(gammaP3.blue - linearP3.blue)
+        ) > 0.01
+        let ok = !gammaP3.isLinear
+            && linearP3.isLinear
+            && linearP3.target == .linearDisplayP3
+            && abs(linearP3.alpha - 0.42) < 0.00001
+            && componentsInUnitRange
+            && hasDifferentEncoding
+        report.record(
+            "ColorRenderingAdapter.linearP3Boundary", ok,
+            "gamma=\(format(gammaP3.red))/\(format(gammaP3.green))/\(format(gammaP3.blue)) linear=\(format(linearP3.red))/\(format(linearP3.green))/\(format(linearP3.blue))"
+        )
+    }
+
+    private static func checkColorRenderingAdapterPlatformColorSpaces(_ report: inout CheckReport) {
+        let color = OKLCHColor(lightness: 0.66, chroma: 0.15, hue: 0.78, alpha: 0.88)
+        _ = ColorRenderingAdapter.makeSwiftUIColor(color, target: .displayP3)
+        let nsP3 = ColorRenderingAdapter.makeNSColor(color, target: .displayP3)
+        let nsSRGB = ColorRenderingAdapter.makeNSColor(color, target: .sRGB)
+        let cgP3 = ColorRenderingAdapter.makeCGColor(color, target: .displayP3)
+        let cgSRGB = ColorRenderingAdapter.makeCGColor(color, target: .sRGB)
+        let cgLinearP3 = ColorRenderingAdapter.makeCGColor(color, target: .linearDisplayP3)
+        let metal = ColorRenderingAdapter.makeMetalColor(color)
+        let ok = nsP3.cgColor.colorSpace?.name == CGColorSpace.displayP3
+            && nsSRGB.cgColor.colorSpace?.name == CGColorSpace.sRGB
+            && cgP3.colorSpace?.name == CGColorSpace.displayP3
+            && cgSRGB.colorSpace?.name == CGColorSpace.sRGB
+            && cgLinearP3.colorSpace?.name == CGColorSpace.extendedLinearDisplayP3
+            && metal.x >= 0 && metal.x <= 1
+            && metal.y >= 0 && metal.y <= 1
+            && metal.z >= 0 && metal.z <= 1
+            && abs(Double(metal.w) - 0.88) < 0.0001
+        report.record(
+            "ColorRenderingAdapter.platformColorSpaces", ok,
+            "nsP3=\(String(describing: nsP3.cgColor.colorSpace?.name)) cgLinear=\(String(describing: cgLinearP3.colorSpace?.name)) metalA=\(format(metal.w))"
+        )
+    }
+
+    private static func checkColorRenderingAdapterCSSFallback(_ report: inout CheckReport) {
+        let color = OKLCHColor(lightness: 0.70, chroma: 0.18, hue: 0.12, alpha: 0.75)
+        let fallback = ColorRenderingAdapter.makeCSSSRGBFallback(color)
+        let p3 = ColorRenderingAdapter.makeCSSColor(color, target: .displayP3)
+        let declaration = ColorRenderingAdapter.makeCSSColorDeclaration(property: "color", color: color)
+        let ok = fallback.hasPrefix("rgb(")
+            && p3.hasPrefix("color(display-p3 ")
+            && declaration.contains("color: rgb(")
+            && declaration.contains("@supports (color: color(display-p3 1 0 0))")
+            && declaration.contains("color: color(display-p3 ")
+        report.record(
+            "ColorRenderingAdapter.cssFallback", ok,
+            "fallback=\(fallback) p3=\(p3)"
         )
     }
 
@@ -3703,6 +3804,14 @@ nonisolated enum ColorSystemSelfCheck {
 
     private static func format(_ value: CGFloat) -> String {
         String(format: "%.3f", Double(value))
+    }
+
+    private static func format(_ value: Double) -> String {
+        format(CGFloat(value))
+    }
+
+    private static func format(_ value: Float) -> String {
+        format(CGFloat(value))
     }
 }
 #endif

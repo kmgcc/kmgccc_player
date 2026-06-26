@@ -23,6 +23,7 @@ xcrun --sdk macosx swiftc \
   "${SCRIPT_DIR}/Sources/ColorGoldenMasterMain.swift" \
   "myPlayer2/Utilities/ColorMath.swift" \
   "myPlayer2/Utilities/OKColor.swift" \
+  "myPlayer2/Utilities/ColorRenderingAdapter.swift" \
   "myPlayer2/Utilities/ColorSystemTokens.swift" \
   "myPlayer2/Utilities/ArtworkColorAnalysis.swift" \
   "myPlayer2/Utilities/ArtworkColorExtractor.swift" \
