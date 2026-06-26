@@ -3,18 +3,14 @@
 //  myPlayer2
 //
 //  Central registry for colour-decision thresholds, clamps, ceilings, and
-//  fixed targets used by the palette / theme system. Phase 1 lifted magic
-//  numbers from `SemanticPaletteFactory` (and the `isEffectivelyMonochrome`
-//  gate that drives it) into named constants. Phase 2 splits the old
-//  `EffectiveMonochrome` gate into two orthogonal axes — `UltraDark`
-//  (lightness only) and `NearMonochromeProfile` (chromatic confidence only) —
-//  and adds tokens for the new structured outputs (`SalientHighlight`,
-//  `DisplayPalette`).
+//  fixed targets used by the palette / theme system. The old monochrome gate
+//  is represented as two orthogonal axes: `UltraDark` (lightness only) and
+//  `NearMonochromeProfile` (chromatic confidence only). Structured palette
+//  outputs are covered by `SalientHighlight` and `DisplayPalette`.
 //
 //  Naming reflects semantic intent (`Accent.darkMinLByHueViolet`,
-//  `NearMonochromeProfile.strictColorfulness`) so future phases can swap
-//  the underlying expression — e.g., OKLCH equivalents — without touching
-//  call sites.
+//  `NearMonochromeProfile.strictColorfulness`) so future refactors can swap
+//  the underlying expression without touching call sites.
 //
 
 import AppKit
@@ -81,7 +77,7 @@ nonisolated enum ColorSystemTokens {
 
         // Saturation safety nets for low-colour covers. Three increasingly
         // strict tiers, activated by different colorfulness/avgSaturation
-        // levels (kept here so Phase 2 can re-orthogonalise them).
+        // levels.
         static let strictMonoSatCapDark: CGFloat = 0.18
         static let strictMonoSatCapLight: CGFloat = 0.14
         static let nearMonoSatCapDark: CGFloat = 0.26
@@ -104,10 +100,8 @@ nonisolated enum ColorSystemTokens {
 
     enum NearMonochrome {
 
-        // Dark-mode tone-lift: dimmer cover → lift output L slightly.
-        // (In the original code, the pivot doubled as the input-ramp range —
-        // i.e., `(pivot - avgHslL) / pivot`. Phase 1 keeps that coupling but
-        // surfaces the range under its own name.)
+        // Dark-mode tone-lift: dimmer cover → lift output L slightly. The
+        // pivot doubles as the input-ramp range: `(pivot - avgHslL) / pivot`.
         static let darkBaseLightness: CGFloat = 0.66
         static let darkLiftPivot: CGFloat = 0.42        // avgHslL at which lift = 0
         static let darkLiftRange: CGFloat = 0.42        // input ramp denominator
@@ -140,8 +134,7 @@ nonisolated enum ColorSystemTokens {
     //
     // Produces a desaturated tone variant of `bestTextSourceColor`, biased
     // toward either the dark or light end depending on `usesDarkForeground`.
-    // Phase 4 will unify the readability profile across surfaces; for now
-    // these are the established clamps.
+    // These are the established clamps for the readable text role.
 
     enum ReadableText {
 
@@ -205,13 +198,12 @@ nonisolated enum ColorSystemTokens {
         static let inactiveAlpha: CGFloat = 0.35
     }
 
-    // MARK: - Lyrics (Phase 5)
+    // MARK: - Lyrics
     //
-    // Centralized Swift-side lyric colour policy. These values are the
-    // pre-Phase-5 fullscreen/window tuning lifted out of
-    // `FullscreenPlayerView`, plus the new near-mono OKLCH chroma ceiling
-    // that prevents grey / black / white artwork from acquiring visible
-    // pink, blue, or yellow residue in either window or fullscreen lyrics.
+    // Centralized Swift-side lyric colour policy. These values preserve the
+    // fullscreen/window tuning and add the near-mono OKLCH chroma ceiling that
+    // prevents grey / black / white artwork from acquiring visible pink, blue,
+    // or yellow residue in either window or fullscreen lyrics.
 
     enum Lyrics {
         static let nearMonoChromaCeiling: CGFloat = 0.004
@@ -371,7 +363,7 @@ nonisolated enum ColorSystemTokens {
         static let coverBlurDarkerLineTimingSubLightnessTrim: CGFloat = 0.01
     }
 
-    // MARK: - ToneLadder (Phase 6 v2)
+    // MARK: - ToneLadder
     //
     // Shared OKLCH tone ladder used by surfaces that need perceptual colour
     // steps rather than "same hue + opacity". v2 reframes the ladder around
@@ -424,20 +416,20 @@ nonisolated enum ColorSystemTokens {
         // Outputs are opaque (alpha = 1.0); the Web layer continues to own
         // opacity / blend / masks / shadow.
         //
-        // Phase 6.1 (dark mode): active L lifted further (`要再调高一点`),
-        // sub-active climbs proportionally so the active-line pair stays the
-        // most luminous tier, inactive sinks a touch (`更沉`), and
-        // translation / sub-inactive tracks main-inactive within ~0.005 so
-        // the proximity assertion (0.020) holds and the user's "translation
-        // 与 inactive 同明度" requirement is enforced numerically. Strict
-        // descending order is still required by `checkToneLadderBasicHierarchy`:
+        // Dark mode: active L is high (`要再调高一点`), sub-active climbs
+        // proportionally so the active-line pair stays the most luminous tier,
+        // inactive sits lower (`更沉`), and translation / sub-inactive tracks
+        // main-inactive within ~0.005 so the proximity assertion (0.020) holds
+        // and the user's "translation 与 inactive 同明度" requirement is
+        // enforced numerically. Strict descending order is required by
+        // `checkToneLadderBasicHierarchy`:
         //   mainActive > subActive > mainInactive > subInactive
         //               > lineTimingMainInactive > lineTimingSubInactive.
-        // Phase 6.3 night retune:
-        //   * Active line gets a clearer high-L, high-C identity.
+        // Night tuning:
+        //   * Active line gets a clear high-L, high-C identity.
         //   * Inactive roles stay lower and less saturated on high-C seeds.
-        //   * UltraDark inactive trim deepens again so night covers do not
-        //     float grey text above the artwork layer.
+        //   * UltraDark inactive trim keeps night covers from floating grey
+        //     text above the artwork layer.
         static let lyricsMainActiveL: CGFloat = 0.935
         static let lyricsSubActiveL: CGFloat = 0.875
         static let lyricsMainInactiveL: CGFloat = 0.555
@@ -449,21 +441,21 @@ nonisolated enum ColorSystemTokens {
         static let lyricsUltraDarkSubActiveTrim: CGFloat = 0.040
         static let lyricsUltraDarkInactiveTrim: CGFloat = 0.125
 
-        // Phase 6.3 light mode (artistic background only): lyric inversion.
-        // Light-mode artistic backgrounds are lifted into a high-L band
-        // (see `BKColorEngine.tierRanges`), so lyrics flip to a dark
-        // ladder. `active` lives at the lowest L (most contrast), inactive
-        // and translation occupy a mid-low band. Strict ASCENDING order is
-        // required in light mode — opposite of dark — so the same
-        // hierarchy check parameterises by scheme:
+        // Light mode (artistic background only): lyric inversion. Light-mode
+        // artistic backgrounds are lifted into a high-L band (see
+        // `BKColorEngine.tierRanges`), so lyrics flip to a dark ladder.
+        // `active` lives at the lowest L (most contrast), inactive and
+        // translation occupy a mid-low band. Strict ASCENDING order is required
+        // in light mode — opposite of dark — so the same hierarchy check
+        // parameterises by scheme:
         //   mainActive < subActive < mainInactive < subInactive
         //               < lineTimingMainInactive < lineTimingSubInactive.
         // Translation (subInactive) sits within ~0.005 of main-inactive so
         // the proximity assertion holds in both schemes.
         //
-        // Phase 6.4 retune: the day background is now an independent airy
-        // light design, so the dark lyric ladder can be lifted away from
-        // dead black while staying unmistakably below the background.
+        // The day background is an independent airy light design, so the dark
+        // lyric ladder can be lifted away from dead black while staying below
+        // the background.
         static let lyricsLightMainActiveL: CGFloat = 0.335
         static let lyricsLightSubActiveL: CGFloat = 0.450
         static let lyricsLightMainInactiveL: CGFloat = 0.650
@@ -471,10 +463,10 @@ nonisolated enum ColorSystemTokens {
         static let lyricsLightLineTimingMainInactiveL: CGFloat = 0.680
         static let lyricsLightLineTimingSubInactiveL: CGFloat = 0.698
 
-        // Phase 6.1 chroma soft-shoulder for high-chroma seeds. The v3 hard
-        // cap (~0.110…0.140 by hue) compressed high-C seeds to a fixed
-        // value, which the user reported as "高饱和封面歌词刺眼". A soft
-        // shoulder smoothly approaches an asymptote of
+        // Chroma soft-shoulder for high-chroma seeds. The older hard cap
+        // (~0.110…0.140 by hue) compressed high-C seeds to a fixed value,
+        // which the user reported as "高饱和封面歌词刺眼". A soft shoulder
+        // smoothly approaches an asymptote of
         // `lyricsChromaShoulderCeiling + lyricsChromaShoulderSoftness`
         // instead of jumping to the cap. Mid-C seeds (< ceiling) are
         // untouched.
@@ -485,7 +477,7 @@ nonisolated enum ColorSystemTokens {
         static let lyricsLightChromaShoulderCeiling: CGFloat = 0.072
         static let lyricsLightChromaShoulderSoftness: CGFloat = 0.030
 
-        // Phase 6.1 seed-selection. Drives `fullscreenLyricBase` /
+        // Seed selection. Drives `fullscreenLyricBase` /
         // `artisticLyricsSingleSeed`: area-dominant first, salient highlight
         // only as a conservative override.
         static let lyricsDominantSeedMinChroma: CGFloat = 0.025
@@ -499,7 +491,7 @@ nonisolated enum ColorSystemTokens {
         static let lyricsSalientSeedDominantConfidenceMin: CGFloat = 0.42
         static let lyricsSalientSeedMaxLargestHighSatArea: CGFloat = 0.22
 
-        // MARK: Phase 6.3 — Subjective focus-score seed selector.
+        // MARK: Subjective focus-score seed selector.
         //
         // The selector models "mostly one field, one intentional accent"
         // with perceptual contrast, salient chroma, dominant-field confidence,
@@ -532,18 +524,11 @@ nonisolated enum ColorSystemTokens {
         // longer "designed focal" — penalise.
         static let lyricsSeedFocusCompetingPenalty: CGFloat = 0.25
 
-        // Phase 6.3 — high-chroma shoulder trigger.
+        // High-chroma shoulder trigger.
         //
-        // Phase 6.1 applied the soft chroma shoulder unconditionally. Users
-        // reported mid-chroma covers still felt "soft-ceilinged". 6.2 only
-        // engages the shoulder when the scaled chroma exceeds this trigger.
+        // The soft shoulder engages only when the scaled chroma exceeds this
+        // trigger, so moderate seeds pass straight through.
         static let lyricsHighChromaShoulderTrigger: CGFloat = 0.085
-
-        // Phase 6.3 — night + day retune values have been promoted into the
-        // canonical `lyrics*L` / `lyricsUltraDark*Trim` / `lyricsLight*L`
-        // tokens above (see Task 5 + Task 8 sections). The "Phase62" alias
-        // staging set has been removed now that the canonical names hold
-        // the Phase 6.3 values.
 
         // SelfCheck token: day-mode invariant "lyric L < background L".
         // `BKColorEngine.tierRanges` is asserted to produce bg L floor
@@ -556,9 +541,9 @@ nonisolated enum ColorSystemTokens {
         // shoulder near white; mid-L roles can mildly exceed 1.0 so they
         // don't read as desaturated.
         //
-        // Phase 6.3: active stays chromatic, while inactive/translation/line
-        // timing use lower chroma scales so saturated covers no longer make
-        // inactive text feel hot.
+        // Active stays chromatic, while inactive/translation/line timing use
+        // lower chroma scales so saturated covers no longer make inactive text
+        // feel hot.
         static let lyricsMainActiveChromaScale: CGFloat = 1.00
         static let lyricsSubActiveChromaScale: CGFloat = 0.96
         static let lyricsMainInactiveChromaScale: CGFloat = 0.90
@@ -568,14 +553,13 @@ nonisolated enum ColorSystemTokens {
         static let lyricsColorfulMinimumChroma: CGFloat = 0.050
         static let lyricsSeedChromaPreferred: CGFloat = 0.045
 
-        // Self-check thresholds (Phase 6.1 hardened).
+        // Self-check thresholds.
         // Active↔inactive L gap is asserted as a magnitude (works for both
         // descending dark-mode order and ascending light-mode order).
         static let lyricsActiveInactiveLightnessGapAssertion: CGFloat = 0.22
         static let lyricsSecondaryInactiveLightnessGapAssertion: CGFloat = 0.15
-        // Phase 6.1: tightened to 0.020 — translation MUST sit on the same
-        // perceptual L tier as main-inactive (the user's "和 inactive 普通
-        // 歌词行明度一样" requirement).
+        // Translation MUST sit on the same perceptual L tier as main-inactive
+        // (the user's "和 inactive 普通歌词行明度一样" requirement).
         static let lyricsSubInactiveLightnessProximityAssertion: CGFloat = 0.020
         static let lyricsInactiveChromaRatioAssertion: CGFloat = 0.85
         static let lyricsHueIdentityAssertion: CGFloat = 0.025
@@ -588,15 +572,13 @@ nonisolated enum ColorSystemTokens {
         static let lyricsNearMonoSeedTrustChromaAssertion: CGFloat = 0.040
     }
 
-    // MARK: - UltraDark profile (Phase 2)
+    // MARK: - UltraDark profile
     //
     // Tone / Darkness axis — describes "the cover is so dark we should
     // respect its night feel" independently of whether it has usable hue.
-    // Phase 2 introduces this as a standalone bool on ArtworkColorAnalysis
-    // so future phases can:
-    //   - relax the `darkMinL` accent floor on (UltraDark=T, NearMono=F)
-    //     covers (deep violet, dark teal, midnight red);
-    //   - keep `nearMonochromeAccent` strictly chromatic.
+    // Exposed as a standalone bool on ArtworkColorAnalysis so dark covers with
+    // usable hue can keep their chromatic identity while still receiving
+    // darkness-preserving treatment.
     //
     // Inputs: avgHslLightness, weighted relativeLuminance, brightest-bucket
     // brightness. All thresholds are conservative — we want to capture
@@ -625,7 +607,7 @@ nonisolated enum ColorSystemTokens {
         static let dominantBrightnessCeiling: CGFloat = 0.60
     }
 
-    // MARK: - NearMonochromeProfile (Phase 2 — replaces EffectiveMonochrome)
+    // MARK: - NearMonochromeProfile
     //
     // Chromatic confidence axis — describes "the cover does not carry a
     // trustworthy hue" independently of lightness. The four branches below
@@ -670,19 +652,18 @@ nonisolated enum ColorSystemTokens {
         static let dominantBucketColorfulness: CGFloat = 0.16
         static let dominantBucketAvgSaturation: CGFloat = 0.18
 
-        // Phase 6.3 — trust threshold. nearMono should NOT trigger merely
-        // because the average saturation is low. A cover where the
-        // dominant-bucket centroid (or any displayPalette / salient
-        // candidate) has OKLCH chroma >= this floor still has a trustworthy
-        // hue, and lyrics must keep that hue rather than grey-washing.
+        // Trust threshold. nearMono should NOT trigger merely because the
+        // average saturation is low. A cover where the dominant-bucket centroid
+        // (or any displayPalette / salient candidate) has OKLCH chroma >= this
+        // floor still has a trustworthy hue.
         static let trustedHueChromaFloor: CGFloat = 0.045
 
-        // Phase 6.5 — muted-but-real hue evidence. Many real covers have a
-        // coherent low-chroma palette whose average saturation stays low
-        // (paper scans, vintage photos, compressed album art). They should
-        // not be nearMono merely because no single candidate reaches the
-        // strong floor above. The muted floor only counts with coherence /
-        // area support in `ArtworkHueTrust`.
+        // Muted-but-real hue evidence. Many real covers have a coherent
+        // low-chroma palette whose average saturation stays low (paper scans,
+        // vintage photos, compressed album art). They should not be nearMono
+        // merely because no single candidate reaches the strong floor above.
+        // The muted floor only counts with coherence / area support in
+        // `ArtworkHueTrust`.
         static let mutedTrustedHueChromaFloor: CGFloat = 0.018
         static let mutedTrustedAvgSaturationFloor: CGFloat = 0.075
         static let mutedTrustedColorfulnessFloor: CGFloat = 0.080
@@ -703,14 +684,14 @@ nonisolated enum ColorSystemTokens {
     // The `avgHslL` cut-off used by `ArtworkColorAnalysis` for choosing
     // whether text-over-cover should default to dark ink or light ink.
     // Identical to the old `EffectiveMonochrome.usesDarkForegroundAvgHslL`
-    // value — Phase 2 just gives it its own namespace so the orthogonal
-    // axes don't pretend to own it.
+    // value; it has its own namespace so the orthogonal axes don't pretend to
+    // own it.
 
     enum ReadabilityForeground {
         static let usesDarkAvgHslL: CGFloat = 0.58
     }
 
-    // MARK: - SalientHighlight (Phase 2)
+    // MARK: - SalientHighlight
     //
     // Structured output of small-area, high-visual-impact colours — the
     // "accent" colours a designer would point to on a cover even if they
@@ -754,12 +735,11 @@ nonisolated enum ColorSystemTokens {
         static let maxCount: Int = 4
     }
 
-    // MARK: - DisplayPalette (Phase 2)
+    // MARK: - DisplayPalette
     //
     // Quality-controlled merge of topPalette + salientHighlightPalette +
     // a curated slice of richPalette. Intended for downstream UI surfaces
-    // (Home Shapes, BKArt, Spectrum) to consume in Phase 3 — Phase 2 only
-    // *produces* it; no UI surface reads it yet.
+    // (Home Shapes, BKArt, Spectrum).
     //
     // Key guarantees:
     //   - On `isNearMonochrome` covers, do NOT fabricate multi-colour. The
@@ -776,7 +756,7 @@ nonisolated enum ColorSystemTokens {
         static let rgbDistinctGap: CGFloat = 0.14
     }
 
-    // MARK: - ReadabilityProfile (Phase 4)
+    // MARK: - ReadabilityProfile
     //
     // Alpha tiers and OKLCH neutralisation thresholds used by the
     // `ArtworkReadabilityProfile` semantic — the unified "compress UI on
@@ -806,7 +786,7 @@ nonisolated enum ColorSystemTokens {
         static let nearMonoChromaAssertion: CGFloat = 0.005
     }
 
-    // MARK: - MiniPlayerControl (Phase 4)
+    // MARK: - MiniPlayerControl
     //
     // OKLCH-lifted control palette consumed by `FullscreenMiniPlayerView`
     // when the mini player surface is chrome (default liquid-glass pill).
@@ -837,12 +817,12 @@ nonisolated enum ColorSystemTokens {
         static let nearMonoChromaAssertion: CGFloat = 0.005
     }
 
-    // MARK: - AppForeground (Phase 4.5)
+    // MARK: - AppForeground
     //
     // OKLCH tinted-neutral foreground palette for ordinary App UI — sidebar
     // navigation text, library list text, settings labels, Home section
     // captions, empty-state copy. These are NOT for use over artwork; that
-    // job belongs to `ArtworkReadabilityProfile` (Phase 4).
+    // job belongs to `ArtworkReadabilityProfile`.
     //
     // Design goal: foreground that carries a subtly detectable artwork-derived
     // hue tint while reading as "mostly neutral" text at a glance.
@@ -854,7 +834,7 @@ nonisolated enum ColorSystemTokens {
     // unnaturally at the same chroma as warm-white text). On `isNearMonochrome`
     // covers the chroma is forced to 0 — all tiers are perceptually achromatic.
     //
-    // Phase 4.5 recalibration (2026-05 v2):
+    // Recalibration notes (2026-05 v2):
     //   • Secondary/tertiary dark-mode caps tightened — ratio to primary ~0.60
     //     and ~0.37 respectively, so grey-tier text does not appear chromatic.
     //   • Dark-mode cool-hue reduction added: blue/cyan hues get 0.65× factor,
@@ -942,19 +922,4 @@ nonisolated enum ColorSystemTokens {
         static let darkTertiaryToSecondaryRatioCap: CGFloat = 0.70
     }
 
-    // MARK: - EffectiveMonochrome (Phase 1 — deprecated namespace)
-    //
-    // Phase 2 splits these branches into `UltraDark` (lightness) and
-    // `NearMonochromeProfile` (chromatic). The old namespace is retained
-    // only so external references (debug log strings, future grep
-    // archeology) still resolve — every NUMERIC threshold has been moved.
-    //
-    // No production code path reads from this namespace anymore.
-
-    @available(*, deprecated, message: "Phase 2: use UltraDark or NearMonochromeProfile.")
-    enum EffectiveMonochrome {
-        static let strictColorfulness: CGFloat = NearMonochromeProfile.strictColorfulness
-        static let strictAvgSaturation: CGFloat = NearMonochromeProfile.strictAvgSaturation
-        static let usesDarkForegroundAvgHslL: CGFloat = ReadabilityForeground.usesDarkAvgHslL
-    }
 }

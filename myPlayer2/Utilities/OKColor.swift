@@ -4,8 +4,8 @@
 //
 //  Public OKLab/OKLCH colour math layer. Conversions, clamping, hue
 //  normalisation, chroma soft-shoulder, OKLab interpolation, and gamut-safe
-//  sRGB output. Used by `LEDColorResolver` today and by the wider colour
-//  system (Phase 2 onwards) as the OKLCH math primitives.
+//  sRGB output. Used by `LEDColorResolver` and the wider colour system as the
+//  OKLCH math primitives.
 //
 //  No callers should reach into perceptual colour math via ad-hoc HSL/RGB
 //  computations; route through this layer instead.
@@ -149,7 +149,7 @@ nonisolated enum OKColor {
         )
     }
 
-    // MARK: - Public primitives (Phase 1 math layer)
+    // MARK: - Public primitives
 
     /// Wraps a hue into the `[0, 1)` range.
     static func normalizedHue(_ value: CGFloat) -> CGFloat {
@@ -209,12 +209,9 @@ nonisolated enum OKColor {
         Swift.min(hi, Swift.max(lo, value))
     }
 
-    /// Phase 6.2 — neutralise a colour by crushing its OKLCH chroma to a
-    /// ceiling while preserving lightness. Used by the artistic-background
-    /// shape resolver under true nearMono to eliminate residual hue tint
-    /// (e.g. the historical "shapes are slightly pink even on grey covers"
-    /// regression). Mirrors the inline helper in
-    /// `FullscreenMiniPlayerView.neutralizeForNearMono`.
+    /// Neutralises a colour by crushing its OKLCH chroma to a ceiling while
+    /// preserving lightness. Used under true nearMono to eliminate residual
+    /// hue tint.
     static func neutralise(_ color: NSColor, chromaCeiling: CGFloat) -> NSColor {
         guard let lch = nsColorToOKLCH(color) else { return color }
         let crushed = OKLCH(l: lch.l, c: Swift.min(lch.c, chromaCeiling), h: lch.h)
@@ -222,7 +219,7 @@ nonisolated enum OKColor {
     }
 }
 
-// MARK: - Phase 6 perceptual tone ladder (v2)
+// MARK: - Perceptual tone ladder
 //
 // v2 redesign vs v1 (commit 8b6404a):
 //   * LED L band narrows to the upper register (dark 0.78..0.92, light
@@ -323,11 +320,10 @@ nonisolated enum PerceptualToneLadder {
     /// MUST pass the same seed for every role; the ladder owns the L / C /
     /// hue split. Mixing seeds across roles was the v1 grey-wash regression.
     ///
-    /// Phase 6.1 adds `scheme`: in `.dark` the ladder produces light text
-    /// on a dark artistic background (the historical path); in `.light`
-    /// the ladder inverts and produces dark text on the lifted-L bright
-    /// artistic background. Light-mode order is ascending — see
-    /// `ColorSystemTokens.ToneLadder.lyricsLight*L`.
+    /// In `.dark` the ladder produces light text on a dark artistic
+    /// background; in `.light` the ladder inverts and produces dark text on the
+    /// lifted-L bright artistic background. Light-mode order is ascending —
+    /// see `ColorSystemTokens.ToneLadder.lyricsLight*L`.
     static func artisticLyricsTone(
         base: OKColor.OKLCH,
         role: LyricsRole,
@@ -392,12 +388,9 @@ nonisolated enum PerceptualToneLadder {
         if isNearMonochrome && !seedHasVisibleChroma {
             c = min(base.c * chromaScale, T.nearMonoChromaCeiling)
         } else {
-            // Phase 6.2: the chroma soft shoulder is now GATED. Phase 6.1
-            // applied it unconditionally and the user reported mid-chroma
-            // covers still felt "soft-ceilinged". The shoulder only fires
-            // when `scaled >= lyricsHighChromaShoulderTrigger`; mid-chroma
-            // seeds pass straight through and the hue-family cap is the
-            // only ceiling.
+            // The chroma soft shoulder only fires when
+            // `scaled >= lyricsHighChromaShoulderTrigger`; mid-chroma seeds
+            // pass straight through and the hue-family cap is the only ceiling.
             let scaled = base.c * chromaScale
             let appliesShoulder = scaled >= T.lyricsHighChromaShoulderTrigger
             let resolvedC: CGFloat
@@ -512,9 +505,9 @@ nonisolated enum PerceptualToneLadder {
         case .led:
             return scheme == .dark ? baseCap * 1.10 : baseCap * 0.92
         case .lyrics:
-            // Phase 6.1: light-mode lyrics are dark text — push the cap
-            // down ~30 % so saturated artwork does not produce glowing
-            // tinted text on a bright artistic background.
+            // Light-mode lyrics are dark text; push the cap down so saturated
+            // artwork does not produce glowing tinted text on a bright
+            // artistic background.
             return scheme == .dark ? baseCap : baseCap * 0.72
         }
     }

@@ -192,13 +192,11 @@ nonisolated enum SpectrumColorResolver {
     /// Fullscreen mini player spectrum colors that faithfully represent artwork palette.
     /// Preserves artwork hue/chroma with minimal adjustment for visibility against glass background.
     ///
-    /// Phase 3: callers now pass `analysis.displayPalette.prefix(2)`. When the
-    /// artwork is colour-thin (displayPalette has only 1 entry), avoid the
-    /// hue-rotate fabricate path that older builds used; instead derive the
-    /// right endpoint as a same-hue OKLCH tonal variant of the single real
-    /// colour. This keeps the L→R gradient quietly informative rather than
-    /// a flat strip while still being honest about what the artwork
-    /// actually contains.
+    /// Callers pass `analysis.displayPalette.prefix(2)`. When the artwork is
+    /// colour-thin (displayPalette has only 1 entry), avoid hue-rotated
+    /// fabrication; instead derive the right endpoint as a same-hue OKLCH tonal
+    /// variant of the single real colour. This keeps the L→R gradient quietly
+    /// informative while staying honest about what the artwork contains.
     /// `lightModeDarkening` is the app *light* appearance (distinct from the
     /// artwork-driven `usesDarkForeground`): it darkens the fill so the bars read
     /// against a light glass, but gives the OUTLINE its own milder dark treatment
@@ -320,17 +318,15 @@ nonisolated enum SpectrumColorResolver {
         } else if s > 0.55 {
             tunedSaturation = s * 0.94
         } else if s < 0.06 {
-            // Phase 3 hotfix: near-mono input must pass through. The legacy
-            // `max(0.18, s * 1.08)` floor amplified residual hue from grey
-            // artwork into visible pink/yellow tint. Caller has already
-            // OKLCH-neutralised near-mono colours, but enforce the floor
-            // removal here too as a defence-in-depth so any future spectrum
-            // consumer keeps the contract.
+            // Near-mono input must pass through. The legacy `max(0.18, s * 1.08)`
+            // floor amplified residual hue from grey artwork into visible
+            // pink/yellow tint. Caller has already OKLCH-neutralised near-mono
+            // colours, but enforce the floor removal here too as defence in depth.
             tunedSaturation = s
         } else if s < 0.22 {
-            // Phase 3 hotfix: low-saturation but not near-mono. Preserve
-            // the artwork's muted impression instead of lifting toward
-            // 0.18+ (which read as "more colourful than the cover").
+            // Low-saturation but not near-mono: preserve the artwork's muted
+            // impression instead of lifting toward 0.18+ (which read as "more
+            // colourful than the cover").
             tunedSaturation = min(0.30, s * 1.04)
         } else {
             tunedSaturation = min(0.70, max(0.18, s * 1.08))

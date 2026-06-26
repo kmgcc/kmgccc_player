@@ -505,13 +505,11 @@ struct FullscreenMiniPlayerView: View {
             || resolvedForegroundProfile.role == .coverBlurLightForeground
         else { return [] }
         let analysis = themeStore.semanticPalette.analysis
-        // Phase 3: switch the spectrum source from raw topPalette to the
-        // Phase-2 displayPalette. displayPalette is ordered
-        // `top.first → salient → top.tail → rich`, so when an artwork has
-        // a small-area but visually striking accent (5% bright yellow over
-        // a 95% black canvas), that salient highlight naturally lands as
-        // the second colour — which is exactly the "peak / high-band"
-        // endpoint of the L→R gradient drawn across 9 capsules.
+        // Use displayPalette rather than raw topPalette. displayPalette is
+        // ordered `top.first → salient → top.tail → rich`, so when an artwork
+        // has a small-area but visually striking accent (5% bright yellow over
+        // a 95% black canvas), that salient highlight naturally lands as the
+        // second colour: the "peak / high-band" endpoint of the L→R gradient.
         let primary: [NSColor]
         if !analysis.displayPalette.isEmpty {
             primary = analysis.displayPalette
@@ -524,15 +522,12 @@ struct FullscreenMiniPlayerView: View {
             ]
         }
         let chosen = Array(primary.prefix(2))
-        // Phase 3 hotfix: when the artwork is near-monochrome, the
-        // displayPalette ordering still surfaces the salient highlight as
-        // the second colour. That salient slot legitimately carries a
-        // small-area but visibly hued micro-spot (e.g. a 3% pink reflection
-        // on a black-and-white photograph). Letting it through unchanged
-        // makes the spectrum read as "pink" even when the cover is
-        // perceptually grey. Project to neutral via OKLCH chroma clamp so
-        // the spectrum stays faithful to the grey impression. Low-but-not-
-        // near-mono covers are preserved with a soft chroma shoulder so we
+        // When the artwork is near-monochrome, displayPalette ordering can
+        // still surface a small-area hued micro-spot as the second colour.
+        // Letting it through unchanged makes the spectrum read as "pink" even
+        // when the cover is perceptually grey. Project to neutral via OKLCH
+        // chroma clamp so the spectrum stays faithful to the grey impression.
+        // Low-but-not-near-mono covers are preserved with a soft chroma shoulder so we
         // don't over-saturate; honest colour artworks pass through.
         let prepared = SpectrumColorResolver.prepareSpectrumColors(chosen, analysis: analysis)
         Self.logSpectrumColors(prepared, analysis: analysis)
@@ -584,9 +579,9 @@ struct FullscreenMiniPlayerView: View {
     /// artwork (Cover Gradient Blur clear material). `analysis.usesDarkForeground`
     /// flips at HSL L≥0.58; over a blur we want a more conservative
     /// threshold so a moderately bright cover still keeps light text.
-    /// Phase 4 keeps this in the view layer because the gate is specific
-    /// to the over-blur surface — the rest of the readability semantic
-    /// lives on `ArtworkReadabilityProfile`.
+    /// This stays in the view layer because the gate is specific to the
+    /// over-blur surface; the rest of the readability semantic lives on
+    /// `ArtworkReadabilityProfile`.
     static func shouldUseDarkArtworkForeground(for analysis: ArtworkColorAnalysis) -> Bool {
         FullscreenMiniPlayerForegroundStrategy.shouldUseDarkArtworkForeground(for: analysis)
     }
@@ -866,8 +861,8 @@ private nonisolated enum MiniPlayerFGDiagnostics {
 
 #if DEBUG
 /// Debug-only bridge exposing the Spectrum colour preparation step to
-/// `ColorSystemSelfCheck`. Verifies the Phase 3 hotfix invariant that
-/// near-monochrome cover inputs leave the spectrum source with effectively
+/// `ColorSystemSelfCheck`. Verifies the invariant that near-monochrome cover
+/// inputs leave the spectrum source with effectively
 /// zero chroma, and that low-saturation covers don't get amplified.
 nonisolated enum SpectrumPaletteSelfCheck {
     nonisolated static func prepare(
