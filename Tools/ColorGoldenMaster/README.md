@@ -118,10 +118,14 @@ Tools/ColorGoldenMaster/run.sh refresh-extended-corpus \
 | `lyrics_surface.*.cover_blur_*` | `SemanticPaletteFactory.coverBlurLyricsColorSet(...)`. | Formatting only. |
 | `lyrics_surface.*.artistic_seed` | `SemanticPaletteFactory.artisticLyricsSingleSeed(...)`. | Formatting only. |
 | `led.*` | Production `LEDColorResolver` properties and methods: `centerColor`, `edgeColor`, `statusLightColor`, `statusLightStrokeColor`, `volumeLEDColor`, `volumeLEDStrokeColor`. | Formatting only. |
-| `bk.selected_extracted_palette` | Production `BKExtractedPalettePolicy.select(analysis:basePalette:richPalette:fallbackPalette:)`, the same non-UI policy used by `BKArtBackgroundView`. | Formatting only; the CLI supplies `analysis.topPalette` / `analysis.richPalette` as the stable non-UI base/rich inputs. |
-| `bk.*` engine fields | Production `BKColorEngine.make(extracted:fallback:isDark:analysis:)`. | Uses the shared production selected extracted palette as input; records returned fields directly. |
+| `bk.selected_extracted_palette` | Production `BKExtractedPalettePolicy.select(analysis:basePalette:richPalette:fallbackPalette:)`. | Uses `analysis.topPalette` as `basePalette` (cache-miss/direct-analysis path). |
+| `bk.*` engine fields | Production `BKColorEngine.make(extracted:fallback:isDark:analysis:)`. | Uses the cache-miss selected extracted palette as input; records returned fields directly. |
 | `bk.*.shape_swatches.*` | Production `BKColorEngine.makeShapeSwatches(...)`; diagnostics are the returned production diagnostics. | Uses fixed deterministic seed per sample/scheme. |
 | `bk.*.stabilized_shape_jitter_*` | Production `BKColorEngine.stabilize(color:kind:palette:saturationJitter:brightnessJitter:)`. | Fixed jitter values and formatting only. |
+| `bk.hit.selected_extracted_palette` | Same production `BKExtractedPalettePolicy.select(...)`. | Uses `analysis.displayPalette` as `basePalette` (cache-hit/snapshot path, mirroring `ArtworkAssetStore` snapshot construction). |
+| `bk.hit.*` engine fields | Same production `BKColorEngine.make(...)`. | Uses the cache-hit selected extracted palette as input. |
+| `bk.hit.*.shape_swatches.*` | Same production `BKColorEngine.makeShapeSwatches(...)`. | Uses fixed deterministic seed (distinct from cache-miss seed). |
+| `bk.hit.*.stabilized_shape_jitter_*` | Same production `BKColorEngine.stabilize(...)`. | Fixed jitter values and formatting only. |
 
 Call chain for real artwork:
 
@@ -135,13 +139,10 @@ artwork.jpg
 ```
 
 BK palette selection, engine output, shape swatches, diagnostics, and stabilize
-are real production calls. The SwiftUI/AppKit `BKArtBackgroundView` lifecycle,
-layer layout, animation state, and controller side effects are not covered.
-
-The approved baseline file still contains its original `bk_note` header text
-from the mirror-era snapshot. That line is intentionally frozen so A-class
-refactors keep the baseline byte-for-byte identical. Treat this README and the
-refactor log as the current authenticity boundary.
+are real production calls exercised for both cache-hit (`bk.hit.*`) and
+cache-miss (`bk.*`) input paths. The SwiftUI/AppKit `BKArtBackgroundView`
+lifecycle, layer layout, animation state, and controller side effects are not
+covered.
 
 ## Stability Rules
 
@@ -188,8 +189,9 @@ The baseline records:
 - readability, app foreground, mini-player control, and lyrics palettes
 - standard fullscreen, artistic fullscreen, and CoverBlur lyric color sets
 - LED center/edge/status/volume colors for dark and light schemes
-- BK selected extracted palette policy, `BKColorEngine.make`, BK shape swatches,
-  diagnostics, and fixed-jitter stabilized shape colors
+- BK selected extracted palette policy for both cache-hit and cache-miss input
+  paths, `BKColorEngine.make`, BK shape swatches, diagnostics, and fixed-jitter
+  stabilized shape colors
 
 Not covered yet:
 

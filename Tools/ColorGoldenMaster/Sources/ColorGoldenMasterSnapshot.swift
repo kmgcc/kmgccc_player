@@ -25,7 +25,7 @@ enum ColorGoldenMasterSnapshot {
         lines.append("color_space: deviceRGB components; OKLCH derived from deviceRGB")
         lines.append("precision: fixed decimal 4")
         lines.append("hue_note: hue_reliable=false means OKLCH hue is recorded numerically but should not be treated as semantic")
-        lines.append("bk_note: bk.selected_extracted_palette is a tool-side mirror of BKArtBackgroundView.selectedExtractedPalette; BKColorEngine.make, makeShapeSwatches, and stabilize are production calls")
+        lines.append("bk_note: bk.* keys use analysis.topPalette as basePalette (cache-miss/direct-analysis path); bk.hit.* keys use analysis.displayPalette as basePalette (cache-hit/snapshot path); both call production BKExtractedPalettePolicy.select, BKColorEngine.make, makeShapeSwatches, and stabilize")
         lines.append("")
 
         for section in sections {
@@ -62,6 +62,7 @@ enum ColorGoldenMasterSnapshot {
         appendSemantic(analysis, sampleID: sample.id, to: &lines)
         appendLED(analysis, to: &lines)
         appendBK(analysis, sampleID: sample.id, to: &lines)
+        appendBKHitPath(analysis, sampleID: sample.id, to: &lines)
     }
 
     private static func appendAnalysis(_ analysis: ArtworkColorAnalysis, to lines: inout [String]) {
@@ -281,6 +282,100 @@ enum ColorGoldenMasterSnapshot {
                 )
             }
             appendCGColorArray("bk.\(schemeName).shape_swatches.stabilized_shape_jitter_s003_b002", Array(stabilized), to: &lines)
+        }
+    }
+
+    /// Cache-hit path: when BKArtBackgroundView reads from ArtworkAssetStore,
+    /// snapshot.palette = displayPalette (when non-empty) rather than
+    /// topPalette. This block exercises BKExtractedPalettePolicy.select and
+    /// BKColorEngine with the cache-hit basePalette input.
+    private static func appendBKHitPath(
+        _ analysis: ArtworkColorAnalysis,
+        sampleID: String,
+        to lines: inout [String]
+    ) {
+        // Mirror the cache-hit basePalette resolution from ArtworkAssetStore
+        // (ArtworkAssetStore.swift lines 248-250):
+        //   let palette = analysis.displayPalette.isEmpty == false
+        //       ? (analysis.displayPalette ?? extractedPalette)
+        //       : extractedPalette
+        // Since we don't have the sample-based extractedPalette in the CLI,
+        // and displayPalette is always non-empty when analysis exists, we use
+        // displayPalette directly. When displayPalette is empty, we fall back
+        // to topPalette (same as the cache-miss path), making the hit block
+        // identical to the miss block — which is the correct production
+        // behavior for that edge case.
+        let hitBasePalette = analysis.displayPalette.isEmpty
+            ? analysis.topPalette
+            : analysis.displayPalette
+        let extracted = BKExtractedPalettePolicy.select(
+            analysis: analysis,
+            basePalette: hitBasePalette,
+            richPalette: analysis.richPalette,
+            fallbackPalette: ColorGoldenMasterSupport.bkFallbackPalette
+        )
+        appendColorArray("bk.hit.selected_extracted_palette", extracted, to: &lines)
+        for isDark in [true, false] {
+            let schemeName = isDark ? "dark" : "light"
+            let palette = BKColorEngine.make(
+                extracted: extracted,
+                fallback: ColorGoldenMasterSupport.bkFallbackPalette,
+                isDark: isDark,
+                analysis: analysis
+            )
+            lines.append("bk.hit.\(schemeName).primary_hue_degrees: \(ColorGoldenMasterSupport.f(palette.primaryHue))")
+            lines.append("bk.hit.\(schemeName).image_hue_degrees: \(ColorGoldenMasterSupport.f(palette.imageHue))")
+            lines.append("bk.hit.\(schemeName).complexity: \(palette.complexity.rawValue)")
+            lines.append("bk.hit.\(schemeName).gray_score: \(ColorGoldenMasterSupport.f(palette.grayScore))")
+            lines.append("bk.hit.\(schemeName).is_grayscale_cover: \(ColorGoldenMasterSupport.bool(palette.isGrayscaleCover))")
+            lines.append("bk.hit.\(schemeName).is_near_gray: \(ColorGoldenMasterSupport.bool(palette.isNearGray))")
+            lines.append("bk.hit.\(schemeName).cover_luma: \(ColorGoldenMasterSupport.f(palette.coverLuma))")
+            lines.append("bk.hit.\(schemeName).image_cover_luma: \(ColorGoldenMasterSupport.f(palette.imageCoverLuma))")
+            lines.append("bk.hit.\(schemeName).cover_avg_s: \(ColorGoldenMasterSupport.f(palette.coverAvgS))")
+            lines.append("bk.hit.\(schemeName).area_dominant_s: \(ColorGoldenMasterSupport.f(palette.areaDominantS))")
+            lines.append("bk.hit.\(schemeName).area_dominant_b: \(ColorGoldenMasterSupport.f(palette.areaDominantB))")
+            lines.append("bk.hit.\(schemeName).accent_hue_degrees: \(palette.accentHue.map(ColorGoldenMasterSupport.f) ?? "nil")")
+            lines.append("bk.hit.\(schemeName).accent_strength: \(ColorGoldenMasterSupport.f(palette.accentStrength))")
+            lines.append("bk.hit.\(schemeName).accent_enabled: \(ColorGoldenMasterSupport.bool(palette.accentEnabled))")
+            lines.append("bk.hit.\(schemeName).uses_strict_neutral_rendering: \(ColorGoldenMasterSupport.bool(palette.usesStrictNeutralRendering))")
+            lines.append("bk.hit.\(schemeName).chromatic_cluster_count: \(palette.chromaticClusterCount)")
+            lines.append("bk.hit.\(schemeName).bg_b_range: \(ColorGoldenMasterSupport.range(palette.bgBRange))")
+            lines.append("bk.hit.\(schemeName).fg_b_range: \(ColorGoldenMasterSupport.range(palette.fgBRange))")
+            lines.append("bk.hit.\(schemeName).dot_b_range: \(ColorGoldenMasterSupport.range(palette.dotBRange))")
+            lines.append("bk.hit.\(schemeName).bg_s_range: \(ColorGoldenMasterSupport.range(palette.bgSRange))")
+            lines.append("bk.hit.\(schemeName).fg_s_range: \(ColorGoldenMasterSupport.range(palette.fgSRange))")
+            lines.append("bk.hit.\(schemeName).dot_s_range: \(ColorGoldenMasterSupport.range(palette.dotSRange))")
+            appendCGColorArray("bk.hit.\(schemeName).bg_stops", palette.bgStops, to: &lines)
+            for (index, variant) in palette.bgVariants.enumerated() {
+                appendCGColorArray("bk.hit.\(schemeName).bg_variants[\(index)]", variant, to: &lines)
+            }
+            appendCGColorArray("bk.hit.\(schemeName).shape_pool", palette.shapePool, to: &lines)
+            lines.append("bk.hit.\(schemeName).dot_base: \(ColorGoldenMasterSupport.colorDescription(ColorGoldenMasterSupport.nsColor(from: palette.dotBase)))")
+
+            let swatches = BKColorEngine.makeShapeSwatches(
+                seed: ColorGoldenMasterSupport.stableSeed(for: sampleID, salt: "hit_\(schemeName)"),
+                extracted: extracted,
+                fallback: ColorGoldenMasterSupport.bkFallbackPalette,
+                isDark: isDark,
+                analysis: analysis
+            )
+            lines.append("bk.hit.\(schemeName).shape_swatches.diagnostics.avg_s: \(ColorGoldenMasterSupport.f(swatches.diagnostics.avgS))")
+            lines.append("bk.hit.\(schemeName).shape_swatches.diagnostics.hue_spread: \(ColorGoldenMasterSupport.f(swatches.diagnostics.hueSpread))")
+            lines.append("bk.hit.\(schemeName).shape_swatches.diagnostics.swatch_count: \(swatches.diagnostics.swatchCount)")
+            lines.append("bk.hit.\(schemeName).shape_swatches.diagnostics.chromatic_cluster_count: \(swatches.diagnostics.chromaticClusterCount)")
+            lines.append("bk.hit.\(schemeName).shape_swatches.diagnostics.swatch_hsb: \(swatches.diagnostics.swatchHSB.joined(separator: " | "))")
+            lines.append("bk.hit.\(schemeName).shape_swatches.diagnostics.nearest_candidate_hue_diff: \(swatches.diagnostics.nearestCandidateHueDiff.map(ColorGoldenMasterSupport.f).joined(separator: ","))")
+            appendCGColorArray("bk.hit.\(schemeName).shape_swatches.colors", swatches.colors, to: &lines)
+            let stabilized = swatches.colors.prefix(4).map {
+                BKColorEngine.stabilize(
+                    color: $0,
+                    kind: .shape,
+                    palette: palette,
+                    saturationJitter: 0.03,
+                    brightnessJitter: 0.02
+                )
+            }
+            appendCGColorArray("bk.hit.\(schemeName).shape_swatches.stabilized_shape_jitter_s003_b002", Array(stabilized), to: &lines)
         }
     }
 
