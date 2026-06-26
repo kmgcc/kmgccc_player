@@ -261,18 +261,11 @@ struct BKArtBackgroundView: View {
         cachedRichPalette = richPalette
         lastArtworkSignature = signature
 
-        // Phase 3: when an analysis is available, feed BKColorEngine the
-        // Phase-2 displayPalette (top.first → salient → top.tail → rich).
-        // This is the quality-controlled multi-colour set: salient
-        // highlight enters the engine as an extracted candidate so it can
-        // surface on the decoration / shape tier without inflating the
-        // background. For cached snapshot reads (analysis == nil) we keep
-        // the existing rich+top fallback — snapshots do not yet carry
-        // displayPalette.
-        let resolvedPalette = Self.selectedExtractedPalette(
+        let resolvedPalette = BKExtractedPalettePolicy.select(
             analysis: analysis,
             basePalette: basePalette,
-            richPalette: richPalette
+            richPalette: richPalette,
+            fallbackPalette: Self.fallbackPalette
         )
         controller.setCurrentSurfaceBackgroundColor(nil, for: trackID)
         palette = resolvedPalette
@@ -293,156 +286,6 @@ struct BKArtBackgroundView: View {
         )
         controller.markLyricsColorSampleReady(for: trackID)
         Self.logExtracted(resolvedPalette, analysis: analysis)
-    }
-
-    /// Phase 3 palette source resolution. Prefers `analysis.displayPalette`
-    /// when available (the Phase-2 quality-controlled merge of
-    /// top + salient + rich), falls back to rich → base → engine fallback.
-    private static func selectedExtractedPalette(
-        analysis: ArtworkColorAnalysis?,
-        basePalette: [NSColor],
-        richPalette: [NSColor]
-    ) -> [NSColor] {
-        if let analysis {
-            var selected: [NSColor] = []
-
-            func rgbDistance(_ lhs: NSColor, _ rhs: NSColor) -> CGFloat {
-                let l = lhs.usingColorSpace(.deviceRGB) ?? lhs
-                let r = rhs.usingColorSpace(.deviceRGB) ?? rhs
-                let dr = l.redComponent - r.redComponent
-                let dg = l.greenComponent - r.greenComponent
-                let db = l.blueComponent - r.blueComponent
-                return sqrt(dr * dr + dg * dg + db * db)
-            }
-
-            func appendDistinct(_ color: NSColor) {
-                let ready = color.usingColorSpace(.deviceRGB) ?? color
-                guard selected.allSatisfy({ rgbDistance($0, ready) >= 0.050 }) else { return }
-                selected.append(ready)
-            }
-
-            func isVisibleSurfaceMaterial(_ color: NSColor) -> Bool {
-                guard let rgb = color.usingColorSpace(.deviceRGB),
-                      let lch = OKColor.nsColorToOKLCH(rgb)
-                else { return false }
-                var hue: CGFloat = 0
-                var saturation: CGFloat = 0
-                var brightness: CGFloat = 0
-                var alpha: CGFloat = 0
-                rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-                return lch.c >= 0.006
-                    && saturation >= 0.035
-                    && brightness >= 0.08
-                    && brightness <= 0.97
-            }
-
-            func isUsefulBackgroundMaterial(_ color: NSColor, areaShare: CGFloat?) -> Bool {
-                guard let rgb = color.usingColorSpace(.deviceRGB),
-                      let lch = OKColor.nsColorToOKLCH(rgb)
-                else { return false }
-                var hue: CGFloat = 0
-                var saturation: CGFloat = 0
-                var brightness: CGFloat = 0
-                var alpha: CGFloat = 0
-                rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-
-                let share = areaShare ?? 0
-                let dominantTonalField = share >= 0.18
-                    && (brightness <= 0.22 || (brightness >= 0.78 && saturation <= 0.18))
-                let visibleMaterial = lch.c >= 0.006
-                    && saturation >= 0.030
-                    && brightness >= 0.08
-                    && brightness <= 0.97
-                let mutedAreaColor = share >= 0.012
-                    && lch.c >= 0.010
-                    && saturation >= 0.030
-                    && brightness >= 0.05
-                    && brightness <= 0.98
-                return dominantTonalField || visibleMaterial || mutedAreaColor
-            }
-
-            func appendBackgroundMaterial(_ color: NSColor, areaShare: CGFloat? = nil) {
-                guard isUsefulBackgroundMaterial(color, areaShare: areaShare) else { return }
-                appendDistinct(color)
-            }
-
-            func isSmallSalientVariant(_ color: NSColor) -> Bool {
-                guard let rgb = color.usingColorSpace(.deviceRGB) else { return false }
-                var hue: CGFloat = 0
-                var saturation: CGFloat = 0
-                var brightness: CGFloat = 0
-                var alpha: CGFloat = 0
-                rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-
-                for (index, salient) in analysis.salientHighlightPalette.enumerated() {
-                    let share = index < analysis.salientHighlightAreaShares.count
-                        ? analysis.salientHighlightAreaShares[index]
-                        : 1
-                    guard share <= 0.080,
-                          let salientRGB = salient.usingColorSpace(.deviceRGB)
-                    else { continue }
-                    var sh: CGFloat = 0
-                    var ss: CGFloat = 0
-                    var sb: CGFloat = 0
-                    var sa: CGFloat = 0
-                    salientRGB.getHue(&sh, saturation: &ss, brightness: &sb, alpha: &sa)
-                    if rgbDistance(rgb, salientRGB) < 0.12 {
-                        return true
-                    }
-                    if saturation >= 0.18,
-                       ColorMath.circularHueDistance(hue, sh) <= 0.055 {
-                        return true
-                    }
-                }
-                return false
-            }
-
-            if analysis.hasTrustedHueCandidate {
-                for (index, color) in analysis.surfacePalette.enumerated() {
-                    let share = index < analysis.surfacePaletteAreaShares.count
-                        ? analysis.surfacePaletteAreaShares[index]
-                        : nil
-                    appendBackgroundMaterial(color, areaShare: share)
-                }
-                for color in analysis.topPalette where isVisibleSurfaceMaterial(color) {
-                    guard !isSmallSalientVariant(color) else { continue }
-                    appendBackgroundMaterial(color)
-                }
-                for color in analysis.displayPalette where !isSmallSalientVariant(color) {
-                    appendBackgroundMaterial(color)
-                }
-
-                if selected.count == 1,
-                   let only = selected.first,
-                   let onlyRGB = only.usingColorSpace(.deviceRGB) {
-                    var hue: CGFloat = 0
-                    var saturation: CGFloat = 0
-                    var brightness: CGFloat = 0
-                    var alpha: CGFloat = 0
-                    onlyRGB.getHue(
-                        &hue,
-                        saturation: &saturation,
-                        brightness: &brightness,
-                        alpha: &alpha
-                    )
-                    if brightness < 0.08, !analysis.salientHighlightPalette.isEmpty {
-                        appendDistinct(analysis.averageColor)
-                    }
-                }
-            } else {
-                for color in analysis.displayPalette { appendDistinct(color) }
-            }
-            if !selected.isEmpty {
-                return Array(selected.prefix(8))
-            }
-        }
-        if !richPalette.isEmpty {
-            return richPalette
-        }
-        if !basePalette.isEmpty {
-            return basePalette
-        }
-        return Self.fallbackPalette
     }
 
     private static func logExtracted(_ palette: [NSColor], analysis: ArtworkColorAnalysis?) {
@@ -512,12 +355,12 @@ struct BKArtBackgroundView: View {
         _ harmonized: HarmonizedPalette,
         analysis: ArtworkColorAnalysis? = nil
     ) -> Bool {
-        // Phase 3: prefer the orthogonal analysis flag introduced in Phase 2.
-        // It separates the lightness regime from the chromatic regime, which
-        // means deep-but-coloured covers (deep navy, dark crimson, midnight
-        // teal) trigger the same darkness-preserving UltraDark protection
-        // path as truly grayscale covers, while still letting the engine
-        // expose their hue through the multi-colour shape tier.
+        // Prefer the orthogonal analysis flag. It separates the lightness
+        // regime from the chromatic regime, which means deep-but-coloured
+        // covers (deep navy, dark crimson, midnight teal) trigger the same
+        // darkness-preserving UltraDark protection path as truly grayscale
+        // covers, while still letting the engine expose their hue through the
+        // multi-colour shape tier.
         if let analysis, analysis.isUltraDark {
             return true
         }
@@ -526,11 +369,9 @@ struct BKArtBackgroundView: View {
             || (luma < 0.30 && harmonized.grayScore > 0.70)
     }
 
-    fileprivate static var fallbackPalette: [NSColor] { [
-        NSColor(calibratedRed: 0.50, green: 0.62, blue: 0.76, alpha: 1.0),
-        NSColor(calibratedRed: 0.76, green: 0.54, blue: 0.52, alpha: 1.0),
-        NSColor(calibratedRed: 0.56, green: 0.72, blue: 0.46, alpha: 1.0),
-    ] }
+    fileprivate static var fallbackPalette: [NSColor] {
+        BKExtractedPalettePolicy.fallbackPalette
+    }
 }
 
 private struct BKArtBackgroundRepresentable: NSViewRepresentable {
