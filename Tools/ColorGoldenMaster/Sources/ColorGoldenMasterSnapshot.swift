@@ -63,6 +63,7 @@ enum ColorGoldenMasterSnapshot {
         appendLED(analysis, to: &lines)
         appendBK(analysis, sampleID: sample.id, to: &lines)
         appendBKHitPath(analysis, sampleID: sample.id, to: &lines)
+        appendBKHitMissComparison(analysis, sampleID: sample.id, to: &lines)
     }
 
     private static func appendAnalysis(_ analysis: ArtworkColorAnalysis, to lines: inout [String]) {
@@ -214,6 +215,7 @@ enum ColorGoldenMasterSnapshot {
         sampleID: String,
         to lines: inout [String]
     ) {
+        appendColorArray("bk.base_palette", analysis.topPalette, to: &lines)
         let extracted = BKExtractedPalettePolicy.select(
             analysis: analysis,
             basePalette: analysis.topPalette,
@@ -308,6 +310,7 @@ enum ColorGoldenMasterSnapshot {
         let hitBasePalette = analysis.displayPalette.isEmpty
             ? analysis.topPalette
             : analysis.displayPalette
+        appendColorArray("bk.hit.base_palette", hitBasePalette, to: &lines)
         let extracted = BKExtractedPalettePolicy.select(
             analysis: analysis,
             basePalette: hitBasePalette,
@@ -376,6 +379,86 @@ enum ColorGoldenMasterSnapshot {
                 )
             }
             appendCGColorArray("bk.hit.\(schemeName).shape_swatches.stabilized_shape_jitter_s003_b002", Array(stabilized), to: &lines)
+        }
+    }
+
+    private static func appendBKHitMissComparison(
+        _ analysis: ArtworkColorAnalysis,
+        sampleID: String,
+        to lines: inout [String]
+    ) {
+        let missBasePalette = analysis.topPalette
+        let hitBasePalette = analysis.displayPalette.isEmpty
+            ? analysis.topPalette
+            : analysis.displayPalette
+        let missExtracted = BKExtractedPalettePolicy.select(
+            analysis: analysis,
+            basePalette: missBasePalette,
+            richPalette: analysis.richPalette,
+            fallbackPalette: ColorGoldenMasterSupport.bkFallbackPalette
+        )
+        let hitExtracted = BKExtractedPalettePolicy.select(
+            analysis: analysis,
+            basePalette: hitBasePalette,
+            richPalette: analysis.richPalette,
+            fallbackPalette: ColorGoldenMasterSupport.bkFallbackPalette
+        )
+
+        lines.append("bk.hit_miss.base_palette_differs: \(ColorGoldenMasterSupport.bool(!sameColorArray(missBasePalette, hitBasePalette)))")
+        lines.append("bk.hit_miss.selected_extracted_palette_differs: \(ColorGoldenMasterSupport.bool(!sameColorArray(missExtracted, hitExtracted)))")
+
+        for isDark in [true, false] {
+            let schemeName = isDark ? "dark" : "light"
+            let missPalette = BKColorEngine.make(
+                extracted: missExtracted,
+                fallback: ColorGoldenMasterSupport.bkFallbackPalette,
+                isDark: isDark,
+                analysis: analysis
+            )
+            let hitPalette = BKColorEngine.make(
+                extracted: hitExtracted,
+                fallback: ColorGoldenMasterSupport.bkFallbackPalette,
+                isDark: isDark,
+                analysis: analysis
+            )
+            lines.append("bk.hit_miss.\(schemeName).engine_output_differs: \(ColorGoldenMasterSupport.bool(harmonizedPaletteSignature(missPalette) != harmonizedPaletteSignature(hitPalette)))")
+
+            let seed = ColorGoldenMasterSupport.stableSeed(for: sampleID, salt: "hit_miss_\(schemeName)")
+            let missSwatches = BKColorEngine.makeShapeSwatches(
+                seed: seed,
+                extracted: missExtracted,
+                fallback: ColorGoldenMasterSupport.bkFallbackPalette,
+                isDark: isDark,
+                analysis: analysis
+            )
+            let hitSwatches = BKColorEngine.makeShapeSwatches(
+                seed: seed,
+                extracted: hitExtracted,
+                fallback: ColorGoldenMasterSupport.bkFallbackPalette,
+                isDark: isDark,
+                analysis: analysis
+            )
+            lines.append("bk.hit_miss.\(schemeName).shape_swatches_same_seed_differs: \(ColorGoldenMasterSupport.bool(shapeSwatchSignature(missSwatches) != shapeSwatchSignature(hitSwatches)))")
+
+            let missStabilized = missSwatches.colors.prefix(4).map {
+                BKColorEngine.stabilize(
+                    color: $0,
+                    kind: .shape,
+                    palette: missPalette,
+                    saturationJitter: 0.03,
+                    brightnessJitter: 0.02
+                )
+            }
+            let hitStabilized = hitSwatches.colors.prefix(4).map {
+                BKColorEngine.stabilize(
+                    color: $0,
+                    kind: .shape,
+                    palette: hitPalette,
+                    saturationJitter: 0.03,
+                    brightnessJitter: 0.02
+                )
+            }
+            lines.append("bk.hit_miss.\(schemeName).stabilized_shape_jitter_s003_b002_same_seed_differs: \(ColorGoldenMasterSupport.bool(cgColorArraySignature(Array(missStabilized)) != cgColorArraySignature(Array(hitStabilized))))")
         }
     }
 
@@ -467,5 +550,67 @@ enum ColorGoldenMasterSnapshot {
             let hsb = BKColorEngine.hsbDebugString(for: color)
             lines.append("\(prefix)[\(index)]: \(ColorGoldenMasterSupport.colorDescription(nsColor)) hsb=(\(hsb))")
         }
+    }
+
+    private static func sameColorArray(_ lhs: [NSColor], _ rhs: [NSColor]) -> Bool {
+        colorArraySignature(lhs) == colorArraySignature(rhs)
+    }
+
+    private static func colorArraySignature(_ colors: [NSColor]) -> [String] {
+        colors.map(ColorGoldenMasterSupport.colorDescription)
+    }
+
+    private static func cgColorArraySignature(_ colors: [CGColor]) -> [String] {
+        colors.map { color in
+            let nsColor = ColorGoldenMasterSupport.nsColor(from: color)
+            let hsb = BKColorEngine.hsbDebugString(for: color)
+            return "\(ColorGoldenMasterSupport.colorDescription(nsColor)) hsb=(\(hsb))"
+        }
+    }
+
+    private static func harmonizedPaletteSignature(_ palette: HarmonizedPalette) -> [String] {
+        var signature = [
+            ColorGoldenMasterSupport.f(palette.primaryHue),
+            ColorGoldenMasterSupport.f(palette.imageHue),
+            "\(palette.isDark)",
+            palette.complexity.rawValue,
+            ColorGoldenMasterSupport.f(palette.grayScore),
+            ColorGoldenMasterSupport.bool(palette.isGrayscaleCover),
+            ColorGoldenMasterSupport.bool(palette.isNearGray),
+            ColorGoldenMasterSupport.f(palette.coverLuma),
+            ColorGoldenMasterSupport.f(palette.imageCoverLuma),
+            ColorGoldenMasterSupport.f(palette.coverAvgS),
+            ColorGoldenMasterSupport.f(palette.areaDominantS),
+            ColorGoldenMasterSupport.f(palette.areaDominantB),
+            palette.accentHue.map(ColorGoldenMasterSupport.f) ?? "nil",
+            ColorGoldenMasterSupport.f(palette.accentStrength),
+            ColorGoldenMasterSupport.bool(palette.accentEnabled),
+            ColorGoldenMasterSupport.bool(palette.usesStrictNeutralRendering),
+            "\(palette.chromaticClusterCount)",
+            ColorGoldenMasterSupport.range(palette.bgBRange),
+            ColorGoldenMasterSupport.range(palette.fgBRange),
+            ColorGoldenMasterSupport.range(palette.dotBRange),
+            ColorGoldenMasterSupport.range(palette.bgSRange),
+            ColorGoldenMasterSupport.range(palette.fgSRange),
+            ColorGoldenMasterSupport.range(palette.dotSRange)
+        ]
+        signature += cgColorArraySignature(palette.bgStops)
+        for variant in palette.bgVariants {
+            signature += cgColorArraySignature(variant)
+        }
+        signature += cgColorArraySignature(palette.shapePool)
+        signature += cgColorArraySignature([palette.dotBase])
+        return signature
+    }
+
+    private static func shapeSwatchSignature(_ swatches: BKColorEngine.ShapeSwatchResult) -> [String] {
+        [
+            ColorGoldenMasterSupport.f(swatches.diagnostics.avgS),
+            ColorGoldenMasterSupport.f(swatches.diagnostics.hueSpread),
+            "\(swatches.diagnostics.swatchCount)",
+            "\(swatches.diagnostics.chromaticClusterCount)",
+            swatches.diagnostics.swatchHSB.joined(separator: "|"),
+            swatches.diagnostics.nearestCandidateHueDiff.map(ColorGoldenMasterSupport.f).joined(separator: ",")
+        ] + cgColorArraySignature(swatches.colors)
     }
 }

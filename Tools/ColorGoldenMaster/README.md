@@ -118,14 +118,17 @@ Tools/ColorGoldenMaster/run.sh refresh-extended-corpus \
 | `lyrics_surface.*.cover_blur_*` | `SemanticPaletteFactory.coverBlurLyricsColorSet(...)`. | Formatting only. |
 | `lyrics_surface.*.artistic_seed` | `SemanticPaletteFactory.artisticLyricsSingleSeed(...)`. | Formatting only. |
 | `led.*` | Production `LEDColorResolver` properties and methods: `centerColor`, `edgeColor`, `statusLightColor`, `statusLightStrokeColor`, `volumeLEDColor`, `volumeLEDStrokeColor`. | Formatting only. |
+| `bk.base_palette` | Production cache-miss/direct-analysis base palette input. | Records `analysis.topPalette` before selection. |
 | `bk.selected_extracted_palette` | Production `BKExtractedPalettePolicy.select(analysis:basePalette:richPalette:fallbackPalette:)`. | Uses `analysis.topPalette` as `basePalette` (cache-miss/direct-analysis path). |
 | `bk.*` engine fields | Production `BKColorEngine.make(extracted:fallback:isDark:analysis:)`. | Uses the cache-miss selected extracted palette as input; records returned fields directly. |
 | `bk.*.shape_swatches.*` | Production `BKColorEngine.makeShapeSwatches(...)`; diagnostics are the returned production diagnostics. | Uses fixed deterministic seed per sample/scheme. |
 | `bk.*.stabilized_shape_jitter_*` | Production `BKColorEngine.stabilize(color:kind:palette:saturationJitter:brightnessJitter:)`. | Fixed jitter values and formatting only. |
+| `bk.hit.base_palette` | Production cache-hit/snapshot base palette input. | Records `analysis.displayPalette` when present, otherwise `analysis.topPalette`, matching the snapshot path. |
 | `bk.hit.selected_extracted_palette` | Same production `BKExtractedPalettePolicy.select(...)`. | Uses `analysis.displayPalette` as `basePalette` (cache-hit/snapshot path, mirroring `ArtworkAssetStore` snapshot construction). |
 | `bk.hit.*` engine fields | Same production `BKColorEngine.make(...)`. | Uses the cache-hit selected extracted palette as input. |
 | `bk.hit.*.shape_swatches.*` | Same production `BKColorEngine.makeShapeSwatches(...)`. | Uses fixed deterministic seed (distinct from cache-miss seed). |
 | `bk.hit.*.stabilized_shape_jitter_*` | Same production `BKColorEngine.stabilize(...)`. | Fixed jitter values and formatting only. |
+| `bk.hit_miss.*_differs` | Same production BK selection, engine, shape swatch, and stabilize calls for both paths. | Boolean comparison fields only; swatch/stabilize comparison uses a shared deterministic seed so randomness cannot create a false path diff. |
 
 Call chain for real artwork:
 
@@ -142,7 +145,10 @@ BK palette selection, engine output, shape swatches, diagnostics, and stabilize
 are real production calls exercised for both cache-hit (`bk.hit.*`) and
 cache-miss (`bk.*`) input paths. The SwiftUI/AppKit `BKArtBackgroundView`
 lifecycle, layer layout, animation state, and controller side effects are not
-covered.
+covered. The `bk.hit_miss.*_differs` lines are review aids: they make it
+explicit whether the two input paths differ at the base palette, selected
+palette, engine output, same-seed shape swatch, or same-seed stabilized shape
+level.
 
 ## Stability Rules
 
@@ -192,6 +198,9 @@ The baseline records:
 - BK selected extracted palette policy for both cache-hit and cache-miss input
   paths, `BKColorEngine.make`, BK shape swatches, diagnostics, and fixed-jitter
   stabilized shape colors
+- BK cache-hit/cache-miss comparison booleans for base palette, selected
+  palette, engine output, same-seed shape swatches, and same-seed stabilized
+  shape colors
 
 Not covered yet:
 
