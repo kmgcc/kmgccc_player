@@ -118,8 +118,8 @@ Tools/ColorGoldenMaster/run.sh refresh-extended-corpus \
 | `lyrics_surface.*.cover_blur_*` | `SemanticPaletteFactory.coverBlurLyricsColorSet(...)`. | Formatting only. |
 | `lyrics_surface.*.artistic_seed` | `SemanticPaletteFactory.artisticLyricsSingleSeed(...)`. | Formatting only. |
 | `led.*` | Production `LEDColorResolver` properties and methods: `centerColor`, `edgeColor`, `statusLightColor`, `statusLightStrokeColor`, `volumeLEDColor`, `volumeLEDStrokeColor`. | Formatting only. |
-| `bk.selected_extracted_palette` | Mirrors private production logic from `BKArtBackgroundView.selectedExtractedPalette(...)`. | This is a calculation mirror for the BK engine input. It can affect the following BK engine output and is explicitly labeled as mirror coverage. |
-| `bk.*` engine fields | Production `BKColorEngine.make(extracted:fallback:isDark:analysis:)`. | Uses the mirrored selected extracted palette as input; records returned fields directly. |
+| `bk.selected_extracted_palette` | Production `BKExtractedPalettePolicy.select(analysis:basePalette:richPalette:fallbackPalette:)`, the same non-UI policy used by `BKArtBackgroundView`. | Formatting only; the CLI supplies `analysis.topPalette` / `analysis.richPalette` as the stable non-UI base/rich inputs. |
+| `bk.*` engine fields | Production `BKColorEngine.make(extracted:fallback:isDark:analysis:)`. | Uses the shared production selected extracted palette as input; records returned fields directly. |
 | `bk.*.shape_swatches.*` | Production `BKColorEngine.makeShapeSwatches(...)`; diagnostics are the returned production diagnostics. | Uses fixed deterministic seed per sample/scheme. |
 | `bk.*.stabilized_shape_jitter_*` | Production `BKColorEngine.stabilize(color:kind:palette:saturationJitter:brightnessJitter:)`. | Fixed jitter values and formatting only. |
 
@@ -134,9 +134,14 @@ artwork.jpg
   -> stable text snapshot
 ```
 
-BK engine coverage is real for `BKColorEngine.make`, shape swatches,
-diagnostics, and stabilize. The SwiftUI/AppKit `BKArtBackgroundView` lifecycle,
+BK palette selection, engine output, shape swatches, diagnostics, and stabilize
+are real production calls. The SwiftUI/AppKit `BKArtBackgroundView` lifecycle,
 layer layout, animation state, and controller side effects are not covered.
+
+The approved baseline file still contains its original `bk_note` header text
+from the mirror-era snapshot. That line is intentionally frozen so A-class
+refactors keep the baseline byte-for-byte identical. Treat this README and the
+refactor log as the current authenticity boundary.
 
 ## Stability Rules
 
@@ -183,14 +188,12 @@ The baseline records:
 - readability, app foreground, mini-player control, and lyrics palettes
 - standard fullscreen, artistic fullscreen, and CoverBlur lyric color sets
 - LED center/edge/status/volume colors for dark and light schemes
-- BK selected extracted palette mirror, `BKColorEngine.make`, BK shape swatches,
+- BK selected extracted palette policy, `BKColorEngine.make`, BK shape swatches,
   diagnostics, and fixed-jitter stabilized shape colors
 
 Not covered yet:
 
 - live SwiftUI/AppKit rendering
-- real `BKArtBackgroundView.selectedExtractedPalette(...)` invocation through
-  the private view method
 - animated BK layer state, layout-dependent variants, and NSView lifecycle
   output
 - WebView/AMLL CSS variable application

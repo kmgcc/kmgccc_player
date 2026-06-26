@@ -213,7 +213,12 @@ enum ColorGoldenMasterSnapshot {
         sampleID: String,
         to lines: inout [String]
     ) {
-        let extracted = ColorGoldenMasterSupport.selectedBKExtractedPalette(for: analysis)
+        let extracted = BKExtractedPalettePolicy.select(
+            analysis: analysis,
+            basePalette: analysis.topPalette,
+            richPalette: analysis.richPalette,
+            fallbackPalette: ColorGoldenMasterSupport.bkFallbackPalette
+        )
         appendColorArray("bk.selected_extracted_palette", extracted, to: &lines)
         for isDark in [true, false] {
             let schemeName = isDark ? "dark" : "light"

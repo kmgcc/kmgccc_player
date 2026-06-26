@@ -28,6 +28,7 @@ xcrun --sdk macosx swiftc \
   "myPlayer2/Utilities/ArtworkColorExtractor.swift" \
   "myPlayer2/Utilities/SemanticPalette.swift" \
   "myPlayer2/Utilities/LEDColorResolver.swift" \
+  "myPlayer2/Views/NowPlaying/BKExtractedPalettePolicy.swift" \
   "myPlayer2/Views/NowPlaying/BKColorEngine.swift" \
   -o "${BIN}"
 
