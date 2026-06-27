@@ -23,7 +23,7 @@ struct MetadataCandidateStripView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("选择元数据候选 (QQ音乐)")
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                 .padding(.horizontal, 4)
 
             HorizontalFadeScrollContainer(
@@ -47,8 +47,8 @@ struct MetadataCandidateStripView: View {
     @ViewBuilder
     private func candidateCard(for candidate: QQMusicArtworkCandidate) -> some View {
         let isSelected = selectedSongMid == candidate.songMid
-        let appFgSecondary = Color(nsColor: themeStore.appForegroundPalette.secondary)
-        let appFgTertiary = Color(nsColor: themeStore.appForegroundPalette.tertiary)
+        let appFgSecondary = themeStore.appForegroundPalette.secondaryColor
+        let appFgTertiary = themeStore.appForegroundPalette.tertiaryColor
 
         Button {
             onSelect(candidate)

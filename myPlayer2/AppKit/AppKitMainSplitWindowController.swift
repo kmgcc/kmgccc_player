@@ -208,6 +208,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         super.init(window: window)
 
         window.title = "kmgccc_player"
+        ColorRenderingAdapter.configureNativeWindowForDisplayP3(window)
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         // Important: avoid allowing the split content area (including dividers) to move the window.

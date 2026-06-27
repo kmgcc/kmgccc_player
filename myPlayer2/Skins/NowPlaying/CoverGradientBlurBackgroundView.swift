@@ -243,7 +243,7 @@ struct CoverGradientBlurBackgroundView: View {
     @ViewBuilder
     private func fallbackBackground(geometry: GeometryProxy) -> some View {
         if let dominantColor {
-            Color(nsColor: dominantColor)
+            ColorRenderingAdapter.makeSwiftUIColor(dominantColor)
         } else {
             LinearGradient(
                 colors: [
@@ -615,7 +615,7 @@ enum CoverGradientBlurRenderer {
 
         let overlayColor: CIColor
         if let dominant = dominantColor {
-            overlayColor = CIColor(cgColor: dominant.cgColor)
+            overlayColor = CIColor(cgColor: ColorRenderingAdapter.makeCGColor(dominant))
         } else {
             overlayColor = CIColor(red: 0.15, green: 0.15, blue: 0.15)
         }

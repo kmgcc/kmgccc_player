@@ -185,6 +185,16 @@ enum ColorGoldenMasterSupport {
         NSColor(cgColor: cgColor)?.usingColorSpace(.deviceRGB)
     }
 
+    static func ledOpacity(for level: Int, maxLevel: Int, scheme: ColorScheme) -> CGFloat {
+        guard level > 0, maxLevel > 0 else { return 0 }
+        let t = CGFloat(level) / CGFloat(maxLevel)
+        if scheme == .dark {
+            return 0.08 + pow(t, 1.55) * 0.92
+        } else {
+            return 0.06 + pow(t, 1.65) * 0.94
+        }
+    }
+
     static func f(_ value: Double) -> String {
         String(format: "%.4f", locale: Locale(identifier: "en_US_POSIX"), value)
     }

@@ -180,7 +180,7 @@ final class HomeAmbientRootView: NSView {
             from: nil,
             analysis: nil,
             colorScheme: .light
-        ).homeAmbientDeviceRGBCGColor
+        ).homeAmbientCGColor
         layer?.addSublayer(baseLayer)
     }
 
@@ -303,7 +303,7 @@ final class HomeAmbientRootView: NSView {
         )
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        baseLayer.backgroundColor = baseColor.homeAmbientDeviceRGBCGColor
+        baseLayer.backgroundColor = baseColor.homeAmbientCGColor
         CATransaction.commit()
     }
 
@@ -609,7 +609,7 @@ final class HomeAmbientRootView: NSView {
             let pair = layerPair(for: presentation, in: rootLayer)
             let bounds = CGRect(x: 0, y: 0, width: presentation.side, height: presentation.side)
             pair.container.contentsScale = backingScale
-            pair.container.backgroundColor = presentation.color.homeAmbientDeviceRGBCGColor
+            pair.container.backgroundColor = presentation.color.homeAmbientCGColor
             pair.container.bounds = bounds
             pair.mask.contentsScale = backingScale
             pair.mask.contents = presentation.image
@@ -1135,8 +1135,8 @@ enum HomeAmbientPalette {
 }
 
 private extension NSColor {
-    var homeAmbientDeviceRGBCGColor: CGColor {
-        (usingColorSpace(.deviceRGB) ?? self).cgColor
+    var homeAmbientCGColor: CGColor {
+        ColorRenderingAdapter.makeCGColor(self)
     }
 }
 

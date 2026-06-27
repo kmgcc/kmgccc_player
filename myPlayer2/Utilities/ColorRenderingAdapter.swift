@@ -110,6 +110,14 @@ nonisolated enum ColorRenderingAdapter {
         }
     }
 
+    static func resolve(
+        _ color: NSColor,
+        target: ColorRenderTarget
+    ) -> ResolvedRGBColor? {
+        guard let oklch = makeOKLCHColor(from: color) else { return nil }
+        return resolve(oklch, target: target)
+    }
+
     static func makeSwiftUIColor(
         _ color: OKLCHColor,
         target: ColorRenderTarget = .displayP3
@@ -144,6 +152,16 @@ nonisolated enum ColorRenderingAdapter {
         }
     }
 
+    static func makeSwiftUIColor(
+        _ color: NSColor,
+        target: ColorRenderTarget = .displayP3
+    ) -> Color {
+        guard let oklch = makeOKLCHColor(from: color) else {
+            return Color(nsColor: color)
+        }
+        return makeSwiftUIColor(oklch, target: target)
+    }
+
     static func makeNSColor(
         _ color: OKLCHColor,
         target: ColorRenderTarget = .displayP3
@@ -175,6 +193,14 @@ nonisolated enum ColorRenderingAdapter {
         }
     }
 
+    static func makeNSColor(
+        _ color: NSColor,
+        target: ColorRenderTarget = .displayP3
+    ) -> NSColor {
+        guard let oklch = makeOKLCHColor(from: color) else { return color }
+        return makeNSColor(oklch, target: target)
+    }
+
     static func makeCGColor(
         _ color: OKLCHColor,
         target: ColorRenderTarget = .displayP3
@@ -200,6 +226,16 @@ nonisolated enum ColorRenderingAdapter {
         ) ?? makeNSColor(color, target: target).cgColor
     }
 
+    static func makeCGColor(
+        _ color: NSColor,
+        target: ColorRenderTarget = .displayP3
+    ) -> CGColor {
+        guard let oklch = makeOKLCHColor(from: color) else {
+            return color.cgColor
+        }
+        return makeCGColor(oklch, target: target)
+    }
+
     static func makeMetalColor(_ color: OKLCHColor) -> SIMD4<Float> {
         let resolved = resolve(color, target: .linearDisplayP3)
         return SIMD4<Float>(
@@ -208,6 +244,11 @@ nonisolated enum ColorRenderingAdapter {
             Float(resolved.blue),
             Float(resolved.alpha)
         )
+    }
+
+    static func makeMetalColor(_ color: NSColor) -> SIMD4<Float>? {
+        guard let oklch = makeOKLCHColor(from: color) else { return nil }
+        return makeMetalColor(oklch)
     }
 
     static func makeCSSColor(
@@ -226,6 +267,14 @@ nonisolated enum ColorRenderingAdapter {
         }
     }
 
+    static func makeCSSColor(
+        _ color: NSColor,
+        target: ColorRenderTarget = .displayP3
+    ) -> String? {
+        guard let oklch = makeOKLCHColor(from: color) else { return nil }
+        return makeCSSColor(oklch, target: target)
+    }
+
     static func makeCSSSRGBFallback(_ color: OKLCHColor) -> String {
         let resolved = resolve(color, target: .sRGB)
         let r = Int((resolved.red * 255).rounded())
@@ -235,6 +284,11 @@ nonisolated enum ColorRenderingAdapter {
             return "rgb(\(r) \(g) \(b))"
         }
         return "rgb(\(r) \(g) \(b) / \(cssNumber(resolved.alpha)))"
+    }
+
+    static func makeCSSSRGBFallback(_ color: NSColor) -> String? {
+        guard let oklch = makeOKLCHColor(from: color) else { return nil }
+        return makeCSSSRGBFallback(oklch)
     }
 
     static func makeCSSColorDeclaration(
@@ -249,6 +303,35 @@ nonisolated enum ColorRenderingAdapter {
           \(property): \(p3);
         }
         """
+    }
+
+    static func makeCSSColorDeclaration(
+        property: String,
+        color: NSColor
+    ) -> String? {
+        guard let oklch = makeOKLCHColor(from: color) else { return nil }
+        return makeCSSColorDeclaration(property: property, color: oklch)
+    }
+
+    @MainActor
+    static func configureNativeWindowForDisplayP3(_ window: NSWindow) {
+        window.colorSpace = .displayP3
+    }
+
+    static func makeOKLCHColor(
+        from color: NSColor,
+        alpha overrideAlpha: Double? = nil
+    ) -> OKLCHColor? {
+        guard let lch = OKColor.nsColorToOKLCH(color) else { return nil }
+        let rgb = color.usingColorSpace(.deviceRGB) ?? color
+        let alpha = overrideAlpha ?? Double(rgb.alphaComponent)
+        let chroma = Double(lch.c)
+        return OKLCHColor(
+            lightness: Double(lch.l),
+            chroma: chroma,
+            hue: chroma > achromaticChromaEpsilon ? Double(lch.h) : nil,
+            alpha: alpha
+        )
     }
 
     private static func mappedOKLCH(

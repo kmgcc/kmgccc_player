@@ -68,9 +68,9 @@ struct SettingsView: View {
         // overlay panel), which keep the high-contrast white hierarchy.
         let palette = themeStore.appForegroundPalette
         let appColors = SettingsAppForegroundColors(
-            primary: Color(nsColor: palette.primary),
-            secondary: Color(nsColor: palette.secondary),
-            tertiary: Color(nsColor: palette.tertiary)
+            primary: palette.primaryColor,
+            secondary: palette.secondaryColor,
+            tertiary: palette.tertiaryColor
         )
         return ScrollView {
             VStack(alignment: .leading, spacing: 24) {

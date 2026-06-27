@@ -40,9 +40,9 @@ struct AllAlbumsView: View {
         // Resolve once per ThemeStore tick so AlbumListRow receives plain
         // Color params and doesn't need its own ThemeStore subscription.
         let palette = themeStore.appForegroundPalette
-        let primary = Color(nsColor: palette.primary)
-        let secondary = Color(nsColor: palette.secondary)
-        let tertiary = Color(nsColor: palette.tertiary)
+        let primary = palette.primaryColor
+        let secondary = palette.secondaryColor
+        let tertiary = palette.tertiaryColor
         let albums = filteredAlbums
         let visibleIDs = albums.map(\.id)
         let customSourceIDs = customOrderSourceAlbums.map(\.id)

@@ -196,15 +196,23 @@ enum ColorGoldenMasterSnapshot {
             lines.append("led.\(schemeName).center: \(ColorGoldenMasterSupport.colorDescription(resolver.centerColor))")
             lines.append("led.\(schemeName).edge: \(ColorGoldenMasterSupport.colorDescription(resolver.edgeColor))")
             for level in [0, 1, 5, 9] {
-                let status = ColorGoldenMasterSupport.nsColor(from: resolver.statusLightColor(level: level))
+                let status = resolver.statusLightNSColor(level: level).withAlphaComponent(
+                    ColorGoldenMasterSupport.ledOpacity(for: level, maxLevel: 9, scheme: scheme)
+                )
                 lines.append("led.\(schemeName).status.level_\(level): \(ColorGoldenMasterSupport.colorDescription(status))")
-                let stroke = ColorGoldenMasterSupport.nsColor(from: resolver.statusLightStrokeColor(level: level))
+                let stroke = resolver.statusLightStrokeNSColor(level: level).withAlphaComponent(
+                    min(0.50, ColorGoldenMasterSupport.ledOpacity(for: level, maxLevel: 9, scheme: scheme) * 0.55)
+                )
                 lines.append("led.\(schemeName).status_stroke.level_\(level): \(ColorGoldenMasterSupport.colorDescription(stroke))")
             }
             for index in [0, 4, 9] {
-                let volume = ColorGoldenMasterSupport.nsColor(from: resolver.volumeLEDColor(index: index, count: 10, level: 5))
+                let volume = resolver.volumeLEDNSColor(index: index, count: 10, level: 5).withAlphaComponent(
+                    ColorGoldenMasterSupport.ledOpacity(for: 5, maxLevel: 9, scheme: scheme)
+                )
                 lines.append("led.\(schemeName).volume.index_\(index).level_5: \(ColorGoldenMasterSupport.colorDescription(volume))")
-                let stroke = ColorGoldenMasterSupport.nsColor(from: resolver.volumeLEDStrokeColor(index: index, count: 10, level: 5))
+                let stroke = resolver.volumeLEDStrokeNSColor(index: index, count: 10, level: 5).withAlphaComponent(
+                    min(0.50, ColorGoldenMasterSupport.ledOpacity(for: 5, maxLevel: 9, scheme: scheme) * 0.55)
+                )
                 lines.append("led.\(schemeName).volume_stroke.index_\(index).level_5: \(ColorGoldenMasterSupport.colorDescription(stroke))")
             }
         }

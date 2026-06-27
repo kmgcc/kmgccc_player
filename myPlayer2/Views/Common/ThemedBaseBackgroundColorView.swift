@@ -18,7 +18,7 @@ struct ThemedBaseBackgroundColorView: View {
             analysis: themeStore.semanticPalette.analysis,
             colorScheme: themeStore.colorScheme
         )
-        Color(nsColor: baseColor)
+        ColorRenderingAdapter.makeSwiftUIColor(baseColor)
             .ignoresSafeArea()
             .animation(.easeInOut(duration: 0.20), value: baseColor)
     }

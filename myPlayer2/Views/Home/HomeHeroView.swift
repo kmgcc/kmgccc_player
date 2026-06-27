@@ -72,11 +72,11 @@ struct HomeHeroView: View {
     }
 
     private var artworkTextPrimary: Color {
-        Color(nsColor: heroPalette.readabilityProfile.foregroundPrimary)
+        heroPalette.readabilityProfile.foregroundPrimaryColor
     }
 
     private var artworkTextSecondary: Color {
-        Color(nsColor: heroPalette.readabilityProfile.foregroundSecondary)
+        heroPalette.readabilityProfile.foregroundSecondaryColor
     }
 
     private var artworkDominantColor: NSColor {
@@ -315,7 +315,10 @@ struct HomeHeroView: View {
             }
         } else {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color(nsColor: artworkDominantColor).opacity(colorScheme == .dark ? 0.42 : 0.26))
+                .fill(
+                    ColorRenderingAdapter.makeSwiftUIColor(artworkDominantColor)
+                        .opacity(colorScheme == .dark ? 0.42 : 0.26)
+                )
                 .overlay(
                     LinearGradient(
                         colors: [

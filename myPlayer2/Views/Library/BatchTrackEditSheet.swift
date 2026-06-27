@@ -92,9 +92,9 @@ struct BatchTrackEditSheet: View {
     private let ttmlToolURL = URL(string: "https://amll-ttml-tool.stevexmh.net/")!
 
     // Phase 4.5: ordinary-text foregrounds tinted from the active ThemeStore palette.
-    private var appFgPrimary: Color { Color(nsColor: themeStore.appForegroundPalette.primary) }
-    private var appFgSecondary: Color { Color(nsColor: themeStore.appForegroundPalette.secondary) }
-    private var appFgTertiary: Color { Color(nsColor: themeStore.appForegroundPalette.tertiary) }
+    private var appFgPrimary: Color { themeStore.appForegroundPalette.primaryColor }
+    private var appFgSecondary: Color { themeStore.appForegroundPalette.secondaryColor }
+    private var appFgTertiary: Color { themeStore.appForegroundPalette.tertiaryColor }
 
     init(tracks: [Track]) {
         self.tracks = tracks
@@ -1611,7 +1611,7 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
     }
 
     var body: some View {
-        let appFgSecondary = Color(nsColor: secondaryTextColor)
+        let appFgSecondary = ColorRenderingAdapter.makeSwiftUIColor(secondaryTextColor)
         return VStack(alignment: .leading, spacing: 10) {
             Text("歌词预览")
                 .font(.headline)
