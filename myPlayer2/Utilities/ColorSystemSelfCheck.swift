@@ -1912,12 +1912,14 @@ nonisolated enum ColorSystemSelfCheck {
         let saturatedGreen = OKLCHColor(lightness: 0.72, chroma: 0.30, hue: 0.40, alpha: 1)
         let srgb = ColorRenderingAdapter.resolve(saturatedGreen, target: .sRGB)
         let p3 = ColorRenderingAdapter.resolve(saturatedGreen, target: .displayP3)
+        let p3PreservedRatio = p3.resolvedChroma / max(0.0001, p3.requestedChroma)
         let ok = srgb.wasGamutMapped
+            && p3PreservedRatio >= 0.995
             && p3.resolvedChroma > srgb.resolvedChroma + 0.01
             && p3.resolvedChroma <= p3.requestedChroma + 0.00001
         report.record(
             "ColorRenderingAdapter.P3PreservesChroma", ok,
-            "requestedC=\(format(srgb.requestedChroma)) sRGB.C=\(format(srgb.resolvedChroma)) P3.C=\(format(p3.resolvedChroma))"
+            "requestedC=\(format(srgb.requestedChroma)) sRGB.C=\(format(srgb.resolvedChroma)) P3.C=\(format(p3.resolvedChroma)) P3ratio=\(format(p3PreservedRatio))"
         )
     }
 
@@ -1953,12 +1955,20 @@ nonisolated enum ColorSystemSelfCheck {
         let cgP3 = ColorRenderingAdapter.makeCGColor(color, target: .displayP3)
         let cgSRGB = ColorRenderingAdapter.makeCGColor(color, target: .sRGB)
         let cgLinearP3 = ColorRenderingAdapter.makeCGColor(color, target: .linearDisplayP3)
+        let legacyDecisionNSColor = OKColor.okLCHToNSColor(
+            OKColor.OKLCH(l: 0.66, c: 0.12, h: 0.78),
+            alpha: 0.88
+        )
+        let renderedLegacyNS = ColorRenderingAdapter.makeNSColor(legacyDecisionNSColor)
+        let renderedLegacyCG = ColorRenderingAdapter.makeCGColor(legacyDecisionNSColor)
         let metal = ColorRenderingAdapter.makeMetalColor(color)
         let ok = nsP3.cgColor.colorSpace?.name == CGColorSpace.displayP3
             && nsSRGB.cgColor.colorSpace?.name == CGColorSpace.sRGB
             && cgP3.colorSpace?.name == CGColorSpace.displayP3
             && cgSRGB.colorSpace?.name == CGColorSpace.sRGB
             && cgLinearP3.colorSpace?.name == CGColorSpace.extendedLinearDisplayP3
+            && renderedLegacyNS.cgColor.colorSpace?.name == CGColorSpace.displayP3
+            && renderedLegacyCG.colorSpace?.name == CGColorSpace.displayP3
             && metal.x >= 0 && metal.x <= 1
             && metal.y >= 0 && metal.y <= 1
             && metal.z >= 0 && metal.z <= 1
@@ -2273,7 +2283,7 @@ nonisolated enum ColorSystemSelfCheck {
         )
         let centerColor = MainActor.assumeIsolated { () -> NSColor in
             let resolver = LEDColorResolver(
-                accentColor: Color(nsColor: palette.globalAccent),
+                accentColor: ColorRenderingAdapter.makeSwiftUIColor(palette.globalAccent),
                 colorScheme: .dark,
                 brightnessLevels: 10,
                 palette: palette

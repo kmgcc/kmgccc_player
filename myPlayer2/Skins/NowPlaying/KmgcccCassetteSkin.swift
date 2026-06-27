@@ -1023,12 +1023,13 @@ private enum WaveformCapsulesPalette {
 
         return (0..<WaveformCapsulesConstants.capsuleCount).map { index in
             let t = CGFloat(index) / CGFloat(total)
-            return makeInterpolatedColor(
+            let color = makeInterpolatedColor(
                 leftBase: leftBase,
                 rightBase: rightBase,
                 t: t,
                 isDark: isDark
-            ).cgColor
+            )
+            return ColorRenderingAdapter.makeCGColor(color)
         }
     }
 

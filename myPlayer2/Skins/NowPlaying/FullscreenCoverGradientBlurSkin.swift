@@ -197,8 +197,8 @@ private struct CoverGradientBlurArtwork: View {
                 .fill(
                     LinearGradient(
                         colors: [
-                            Color(nsColor: accentNSColor).opacity(0.6),
-                            Color(nsColor: accentNSColor).opacity(0.3)
+                            ColorRenderingAdapter.makeSwiftUIColor(accentNSColor).opacity(0.6),
+                            ColorRenderingAdapter.makeSwiftUIColor(accentNSColor).opacity(0.3)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing

@@ -198,6 +198,58 @@ struct MiniPlayerControlPalette: Equatable, Sendable {
     let progressTrack: NSColor
 }
 
+extension SemanticPalette {
+    var globalAccentColor: Color { ColorRenderingAdapter.makeSwiftUIColor(globalAccent) }
+    var globalAccentDisplayP3NSColor: NSColor { ColorRenderingAdapter.makeNSColor(globalAccent) }
+    var uiAccentOnDarkColor: Color { ColorRenderingAdapter.makeSwiftUIColor(uiAccentOnDark) }
+    var uiAccentOnLightColor: Color { ColorRenderingAdapter.makeSwiftUIColor(uiAccentOnLight) }
+    var ambientSurfaceColor: Color { ColorRenderingAdapter.makeSwiftUIColor(ambientSurface) }
+    var ambientSurfaceCGColor: CGColor { ColorRenderingAdapter.makeCGColor(ambientSurface) }
+    var artBackgroundPrimaryDisplayP3NSColor: NSColor { ColorRenderingAdapter.makeNSColor(artBackgroundPrimary) }
+    var artBackgroundSecondaryDisplayP3NSColor: NSColor { ColorRenderingAdapter.makeNSColor(artBackgroundSecondary) }
+    var coverGradientDominantDisplayP3NSColor: NSColor { ColorRenderingAdapter.makeNSColor(coverGradientDominant) }
+    var coverGradientTextColor: Color { ColorRenderingAdapter.makeSwiftUIColor(coverGradientText) }
+}
+
+extension LyricsSurfaceColorSet {
+    var mainActiveColor: Color { ColorRenderingAdapter.makeSwiftUIColor(mainActive) }
+    var mainInactiveColor: Color { ColorRenderingAdapter.makeSwiftUIColor(mainInactive) }
+    var lineTimingMainInactiveColor: Color { ColorRenderingAdapter.makeSwiftUIColor(lineTimingMainInactive) }
+    var subActiveColor: Color { ColorRenderingAdapter.makeSwiftUIColor(subActive) }
+    var subInactiveColor: Color { ColorRenderingAdapter.makeSwiftUIColor(subInactive) }
+    var lineTimingSubInactiveColor: Color { ColorRenderingAdapter.makeSwiftUIColor(lineTimingSubInactive) }
+}
+
+extension LyricsColorPalette {
+    var windowActiveColor: Color { ColorRenderingAdapter.makeSwiftUIColor(windowActive) }
+    var windowInactiveColor: Color { ColorRenderingAdapter.makeSwiftUIColor(windowInactive) }
+    var fullscreenBaseColor: Color { ColorRenderingAdapter.makeSwiftUIColor(fullscreenBase) }
+    var fullscreenInactiveBaseColor: Color { ColorRenderingAdapter.makeSwiftUIColor(fullscreenInactiveBase) }
+}
+
+extension ArtworkReadabilityProfile {
+    var foregroundPrimaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(foregroundPrimary) }
+    var foregroundSecondaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(foregroundSecondary) }
+    var foregroundTertiaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(foregroundTertiary) }
+    var foregroundQuaternaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(foregroundQuaternary) }
+    var iconForegroundColor: Color { ColorRenderingAdapter.makeSwiftUIColor(iconForeground) }
+}
+
+extension AppForegroundPalette {
+    var primaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(primary) }
+    var secondaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(secondary) }
+    var tertiaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(tertiary) }
+    var quaternaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(quaternary) }
+    var disabledColor: Color { ColorRenderingAdapter.makeSwiftUIColor(disabled) }
+}
+
+extension MiniPlayerControlPalette {
+    var primaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(primary) }
+    var secondaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(secondary) }
+    var progressFillColor: Color { ColorRenderingAdapter.makeSwiftUIColor(progressFill) }
+    var progressTrackColor: Color { ColorRenderingAdapter.makeSwiftUIColor(progressTrack) }
+}
+
 nonisolated enum SemanticPaletteFactory {
     static func make(
         from analysis: ArtworkColorAnalysis,

@@ -169,7 +169,9 @@ struct NowPlayingHostView: View {
             meshColorBoost: AppSettings.shared.nowPlayingMeshColorBoost,
             meshContrast: AppSettings.shared.nowPlayingMeshContrast,
             meshBassImpact: AppSettings.shared.nowPlayingMeshBassImpact,
-            artworkAccentColor: artworkSnapshot?.accentColor.map { Color(nsColor: $0) },
+            artworkAccentColor: artworkSnapshot?.accentColor.map {
+                ColorRenderingAdapter.makeSwiftUIColor($0)
+            },
             artworkPalette: artworkSnapshot?.palette ?? [],
             artworkRichPalette: artworkSnapshot?.richPalette ?? [],
             artworkAverageColor: artworkSnapshot?.averageColor,

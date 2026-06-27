@@ -300,27 +300,43 @@ struct LEDColorResolver {
 
     // MARK: - Status Light
 
+    func statusLightNSColor(level: Int) -> NSColor {
+        oklchColorForLevel(base: statusLightBaseColor, level: level)
+    }
+
+    func statusLightStrokeNSColor(level: Int) -> NSColor {
+        oklchColorForLevel(base: statusLightBaseColor, level: level, isStroke: true)
+    }
+
     func statusLightColor(level: Int) -> Color {
-        Color(nsColor: oklchColorForLevel(base: statusLightBaseColor, level: level))
+        ColorRenderingAdapter.makeSwiftUIColor(statusLightNSColor(level: level))
             .opacity(opacityForLevel(level: level))
     }
 
     func statusLightStrokeColor(level: Int) -> Color {
-        Color(nsColor: oklchColorForLevel(base: statusLightBaseColor, level: level, isStroke: true))
+        ColorRenderingAdapter.makeSwiftUIColor(statusLightStrokeNSColor(level: level))
             .opacity(min(0.50, opacityForLevel(level: level) * 0.55))
     }
 
     // MARK: - Volume LED
 
-    func volumeLEDColor(index: Int, count: Int, level: Int) -> Color {
+    func volumeLEDNSColor(index: Int, count: Int, level: Int) -> NSColor {
         let base = baseColorForIndex(index: index, count: count)
-        return Color(nsColor: oklchColorForLevel(base: base, level: level))
+        return oklchColorForLevel(base: base, level: level)
+    }
+
+    func volumeLEDStrokeNSColor(index: Int, count: Int, level: Int) -> NSColor {
+        let base = baseColorForIndex(index: index, count: count)
+        return oklchColorForLevel(base: base, level: level, isStroke: true)
+    }
+
+    func volumeLEDColor(index: Int, count: Int, level: Int) -> Color {
+        ColorRenderingAdapter.makeSwiftUIColor(volumeLEDNSColor(index: index, count: count, level: level))
             .opacity(opacityForLevel(level: level))
     }
 
     func volumeLEDStrokeColor(index: Int, count: Int, level: Int) -> Color {
-        let base = baseColorForIndex(index: index, count: count)
-        return Color(nsColor: oklchColorForLevel(base: base, level: level, isStroke: true))
+        ColorRenderingAdapter.makeSwiftUIColor(volumeLEDStrokeNSColor(index: index, count: count, level: level))
             .opacity(min(0.50, opacityForLevel(level: level) * 0.55))
     }
 }

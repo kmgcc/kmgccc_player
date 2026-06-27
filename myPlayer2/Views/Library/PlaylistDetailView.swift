@@ -259,9 +259,9 @@ struct PlaylistDetailView: View {
             currentTrackID: playerVM.currentTrack?.id,
             pageController: pageController,
             menuBuilder: erasedTrackMenu(trackID:),
-            rowPrimaryColor: Color(nsColor: themeStore.appForegroundPalette.primary),
-            rowSecondaryColor: Color(nsColor: themeStore.appForegroundPalette.secondary),
-            rowTertiaryColor: Color(nsColor: themeStore.appForegroundPalette.tertiary)
+            rowPrimaryColor: themeStore.appForegroundPalette.primaryColor,
+            rowSecondaryColor: themeStore.appForegroundPalette.secondaryColor,
+            rowTertiaryColor: themeStore.appForegroundPalette.tertiaryColor
         )
     }
 

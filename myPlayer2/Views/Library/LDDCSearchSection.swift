@@ -87,9 +87,9 @@ struct LDDCSearchSection: View {
     private let visibleLDDCSources: [LDDCSource] = [.QM, .KG, .NE]
 
     // Phase 4.5: ordinary-text foregrounds tinted from the active palette.
-    private var appFgPrimary: Color { Color(nsColor: themeStore.appForegroundPalette.primary) }
-    private var appFgSecondary: Color { Color(nsColor: themeStore.appForegroundPalette.secondary) }
-    private var appFgTertiary: Color { Color(nsColor: themeStore.appForegroundPalette.tertiary) }
+    private var appFgPrimary: Color { themeStore.appForegroundPalette.primaryColor }
+    private var appFgSecondary: Color { themeStore.appForegroundPalette.secondaryColor }
+    private var appFgTertiary: Color { themeStore.appForegroundPalette.tertiaryColor }
     
     init(
         track: Track,

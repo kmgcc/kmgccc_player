@@ -70,7 +70,7 @@ struct SidebarView: View {
                     Label("主页", systemImage: "house")
                     Spacer()
                 }
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
+                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .background(
@@ -93,7 +93,7 @@ struct SidebarView: View {
                         systemImage: "music.note.list")
                     Spacer()
                 }
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
+                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .background(
@@ -121,7 +121,7 @@ struct SidebarView: View {
                                     .lineLimit(1)
                                 Spacer()
                             }
-                            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
+                            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
                             .background(
@@ -148,7 +148,7 @@ struct SidebarView: View {
                     HStack {
                         Text("sidebar.playlists")
                             .font(.caption.bold())
-                            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                            .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                         Spacer()
 
                         Button {
@@ -156,7 +156,7 @@ struct SidebarView: View {
                         } label: {
                             Image(systemName: "plus")
                                 .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                                 .frame(width: 18, height: 18)
                                 .background(.secondary.opacity(0.1))
                                 .clipShape(Circle())
@@ -183,7 +183,7 @@ struct SidebarView: View {
                                     .lineLimit(1)
                                 Spacer()
                             }
-                            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
+                            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
                             .background(
@@ -203,7 +203,7 @@ struct SidebarView: View {
                                     Text(artist.name)
                                     Spacer()
                                 }
-                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
+                                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
                                 .background(
@@ -247,11 +247,11 @@ struct SidebarView: View {
                         HStack {
                             Text("sidebar.artists")
                                 .font(.caption.bold())
-                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                             Spacer()
                             Image(systemName: "chevron.right")
                                 .font(.caption2.bold())
-                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                                 .rotationEffect(.degrees(isArtistsExpanded ? 90 : 0))
                                 .opacity(isHoveringArtists ? 1 : 0)
                         }
@@ -277,7 +277,7 @@ struct SidebarView: View {
                                     .lineLimit(1)
                                 Spacer()
                             }
-                            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
+                            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
                             .background(
@@ -297,7 +297,7 @@ struct SidebarView: View {
                                     Text(album.name)
                                     Spacer()
                                 }
-                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
+                                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 6)
                                 .background(
@@ -341,11 +341,11 @@ struct SidebarView: View {
                         HStack {
                             Text("sidebar.albums")
                                 .font(.caption.bold())
-                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                             Spacer()
                             Image(systemName: "chevron.right")
                                 .font(.caption2.bold())
-                                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                                 .rotationEffect(.degrees(isAlbumsExpanded ? 90 : 0))
                                 .opacity(isHoveringAlbums ? 1 : 0)
                         }
@@ -853,7 +853,7 @@ private struct SidebarTaskProgressView: View {
 
                 Text(progress.title)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
+                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                     .lineLimit(1)
 
                 Spacer(minLength: 0)
@@ -861,7 +861,7 @@ private struct SidebarTaskProgressView: View {
                 if let percentageText = progress.percentageText {
                     Text(percentageText)
                         .font(.caption.monospacedDigit())
-                        .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                        .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                 }
 
                 if let onDismiss {
@@ -872,7 +872,7 @@ private struct SidebarTaskProgressView: View {
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                     .help("关闭")
                 }
             }
@@ -886,18 +886,18 @@ private struct SidebarTaskProgressView: View {
 
             Text(progress.detail)
                 .font(.caption)
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                 .lineLimit(2)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color(nsColor: themeStore.appForegroundPalette.primary).opacity(0.055))
+                .fill(themeStore.appForegroundPalette.primaryColor.opacity(0.055))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color(nsColor: themeStore.appForegroundPalette.secondary).opacity(0.12), lineWidth: 0.5)
+                .strokeBorder(themeStore.appForegroundPalette.secondaryColor.opacity(0.12), lineWidth: 0.5)
         )
     }
 

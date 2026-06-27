@@ -275,8 +275,8 @@ nonisolated enum SpectrumColorResolver {
             let strokeSat = min(1.0, ss * 1.6)
             let strokeColor = NSColor(hue: sh, saturation: strokeSat, brightness: strokeBri, alpha: strokeAlpha)
 
-            fillColors.append(fillColor.cgColor)
-            strokeColors.append(strokeColor.cgColor)
+            fillColors.append(ColorRenderingAdapter.makeCGColor(fillColor))
+            strokeColors.append(ColorRenderingAdapter.makeCGColor(strokeColor))
         }
 
         return (fillColors, strokeColors)

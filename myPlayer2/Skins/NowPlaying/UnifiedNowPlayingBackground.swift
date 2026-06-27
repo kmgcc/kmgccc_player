@@ -90,7 +90,7 @@ struct UnifiedNowPlayingBackground: View {
             ].map { style($0, darkMode: darkMode) }
             result.append(contentsOf: fallback)
         }
-        return Array(result.prefix(4)).map { Color(nsColor: $0) }
+        return Array(result.prefix(4)).map { ColorRenderingAdapter.makeSwiftUIColor($0) }
     }
 
     private func style(_ color: NSColor, darkMode: Bool) -> NSColor {
@@ -117,7 +117,9 @@ struct UnifiedNowPlayingBackground: View {
         let r = ca.redComponent + (cb.redComponent - ca.redComponent) * tt
         let g = ca.greenComponent + (cb.greenComponent - ca.greenComponent) * tt
         let bl = ca.blueComponent + (cb.blueComponent - ca.blueComponent) * tt
-        return Color(nsColor: NSColor(calibratedRed: r, green: g, blue: bl, alpha: 1.0))
+        return ColorRenderingAdapter.makeSwiftUIColor(
+            NSColor(calibratedRed: r, green: g, blue: bl, alpha: 1.0)
+        )
     }
 
     private func clamp(_ value: CGFloat, min minValue: CGFloat, max maxValue: CGFloat) -> CGFloat {

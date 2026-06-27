@@ -254,9 +254,9 @@ struct HomeView: View {
         // here is free and lets `HomeInsightsSection` / `HomeRankRow` /
         // `HomeListeningHeatmapView` opt out of the store entirely.
         let accentColor = themeStore.accentColor
-        let appFgPrimary   = Color(nsColor: themeStore.appForegroundPalette.primary)
-        let appFgSecondary = Color(nsColor: themeStore.appForegroundPalette.secondary)
-        let appFgTertiary  = Color(nsColor: themeStore.appForegroundPalette.tertiary)
+        let appFgPrimary   = themeStore.appForegroundPalette.primaryColor
+        let appFgSecondary = themeStore.appForegroundPalette.secondaryColor
+        let appFgTertiary  = themeStore.appForegroundPalette.tertiaryColor
 
         return ScrollView(.vertical, showsIndicators: true) {
             // `LazyVStack` defers body evaluation and layout for sections
@@ -431,13 +431,13 @@ struct HomeView: View {
         VStack(spacing: 12) {
             Image(systemName: "music.note.house")
                 .font(.system(size: 48, weight: .light))
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
             Text("你的音乐库是空的")
                 .font(.title3)
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
             Text("导入一些音乐来开始吧")
                 .font(.callout)
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
+                .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -446,15 +446,15 @@ struct HomeView: View {
         VStack(spacing: 8) {
             Text("\u{201C}Where words fail, music speaks.\u{201D}")
                 .font(.system(size: 20, weight: .ultraLight))
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.secondary))
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
             Text("\u{8A00}\u{6240}\u{4E0D}\u{53CA}\u{5904}\u{FF0C}\u{7B19}\u{7BAB}\u{76F8}\u{7EE7}\u{3002}")
                 .font(.system(.callout, weight: .ultraLight))
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.tertiary))
+                .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
             Text("— Hans Christian Andersen")
                 .font(.system(.caption2, weight: .ultraLight))
                 .textCase(.uppercase)
                 .tracking(0.8)
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.quaternary))
+                .foregroundStyle(themeStore.appForegroundPalette.quaternaryColor)
                 .padding(.top, 4)
         }
         .padding(.top, 36)

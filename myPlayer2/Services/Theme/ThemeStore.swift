@@ -93,12 +93,12 @@ final class ThemeStore: ObservableObject {
         )
         self.defaultBlueNS = fallback
         self.rawDominantColor = fallback
-        self.defaultBlue = Color(nsColor: fallback)
-        self.baseColor = Color(nsColor: fallback)
-        self.accentColor = Color(nsColor: fallback)
-        self.accentNSColor = fallback
-        self.artworkBaseNSColor = fallback
-        self.selectionFill = Color(nsColor: fallback).opacity(0.14)
+        self.defaultBlue = ColorRenderingAdapter.makeSwiftUIColor(fallback)
+        self.baseColor = ColorRenderingAdapter.makeSwiftUIColor(fallback)
+        self.accentColor = ColorRenderingAdapter.makeSwiftUIColor(fallback)
+        self.accentNSColor = ColorRenderingAdapter.makeNSColor(fallback)
+        self.artworkBaseNSColor = ColorRenderingAdapter.makeNSColor(fallback)
+        self.selectionFill = ColorRenderingAdapter.makeSwiftUIColor(fallback).opacity(0.14)
         self.semanticPalette = SemanticPaletteFactory.make(
             from: .neutralFallback,
             scheme: .dark,
@@ -460,12 +460,14 @@ final class ThemeStore: ObservableObject {
         }
         #endif
         let fillAlpha = colorScheme == .dark ? 0.20 : 0.14
+        let renderedDominant = ColorRenderingAdapter.makeNSColor(rawDominantColor)
+        let renderedAccent = ColorRenderingAdapter.makeNSColor(resolvedAccentNS)
         withAnimation(.easeInOut(duration: 0.20)) {
-            baseColor = Color(nsColor: rawDominantColor)
-            accentColor = Color(nsColor: resolvedAccentNS)
-            accentNSColor = resolvedAccentNS
-            artworkBaseNSColor = rawDominantColor
-            selectionFill = Color(nsColor: resolvedAccentNS).opacity(fillAlpha)
+            baseColor = ColorRenderingAdapter.makeSwiftUIColor(rawDominantColor)
+            accentColor = ColorRenderingAdapter.makeSwiftUIColor(resolvedAccentNS)
+            accentNSColor = renderedAccent
+            artworkBaseNSColor = renderedDominant
+            selectionFill = ColorRenderingAdapter.makeSwiftUIColor(resolvedAccentNS).opacity(fillAlpha)
         }
         // semanticPalette must snap instantly. Animating it causes MiniPlayer
         // controls that compute Color(nsColor:) inside body to get trapped in

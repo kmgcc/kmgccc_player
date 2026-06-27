@@ -25,9 +25,9 @@ struct AllPlaylistsView: View {
 
     var body: some View {
         let palette = themeStore.appForegroundPalette
-        let primary = Color(nsColor: palette.primary)
-        let secondary = Color(nsColor: palette.secondary)
-        let tertiary = Color(nsColor: palette.tertiary)
+        let primary = palette.primaryColor
+        let secondary = palette.secondaryColor
+        let tertiary = palette.tertiaryColor
         let playlists = filteredPlaylists
         let visibleIDs = playlists.map(\.id)
         let customSourceIDs = customOrderSourcePlaylists.map(\.id)

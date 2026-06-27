@@ -202,6 +202,11 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
 }
 
 extension FullscreenMiniPlayerForegroundProfile {
+    var primaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(primary) }
+    var secondaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(secondary) }
+    var disabledColor: Color { ColorRenderingAdapter.makeSwiftUIColor(disabled) }
+    var pillTintColor: Color { ColorRenderingAdapter.makeSwiftUIColor(pillTint) }
+
     var isDarkForeground: Bool {
         switch role {
         case .coverBlurDarkForeground, .artisticDayDarkForeground, .chromeDarkForeground:

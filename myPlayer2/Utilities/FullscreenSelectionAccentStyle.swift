@@ -23,13 +23,13 @@ enum FullscreenSelectionAccentStyle {
     }
 
     static func adjustedAccentColor(from color: NSColor) -> Color {
-        Color(nsColor: adjustedAccent(from: color))
+        ColorRenderingAdapter.makeSwiftUIColor(adjustedAccent(from: color))
     }
 
     /// Returns the accent color with HSL lightness reduced (darker), keeping hue/saturation stable.
     /// Used for improving visibility of selection knobs on light ultra-thin materials.
     static func dimmedAccentColor(from color: NSColor, lightnessDelta: CGFloat = defaultDimLightnessDelta) -> Color {
-        Color(nsColor: dimmedAccent(from: color, lightnessDelta: lightnessDelta))
+        ColorRenderingAdapter.makeSwiftUIColor(dimmedAccent(from: color, lightnessDelta: lightnessDelta))
     }
 
     static func dimmedAccent(from color: NSColor, lightnessDelta: CGFloat = defaultDimLightnessDelta) -> NSColor {

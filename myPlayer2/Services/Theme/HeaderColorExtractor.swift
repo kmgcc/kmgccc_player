@@ -56,7 +56,7 @@ final class HeaderColorExtractor {
         if let cached = cache.object(forKey: cacheKey), cached.checksum == checksum {
             Log.trace("HeaderColor cache hit for \(shortIdentity(artworkIdentity))", category: .theme)
             return (
-                Color(nsColor: cached.accentColor),
+                ColorRenderingAdapter.makeSwiftUIColor(cached.accentColor),
                 cached.semanticPalette
             )
         }
@@ -87,7 +87,7 @@ final class HeaderColorExtractor {
             category: .theme
         )
 
-        return (Color(nsColor: accentNS), palette)
+        return (ColorRenderingAdapter.makeSwiftUIColor(accentNS), palette)
     }
 
     /// Reset the active token to cancel any in-flight extraction.

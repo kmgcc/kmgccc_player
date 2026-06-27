@@ -769,7 +769,7 @@ struct FullscreenPlayerView: View {
     @ViewBuilder
     private var fullscreenEmbeddedOpaqueBase: some View {
         if hostContext == .embeddedWindow {
-            Color(nsColor: fullscreenEmbeddedOpaqueBaseColor)
+            ColorRenderingAdapter.makeSwiftUIColor(fullscreenEmbeddedOpaqueBaseColor)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
         }
@@ -2177,7 +2177,7 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenMiniPlayerPrimaryColor: Color {
-        Color(nsColor: fullscreenMiniPlayerPrimaryNSColor).opacity(0.96)
+        fullscreenMiniPlayerForegroundProfile.primaryColor.opacity(0.96)
     }
 
     private var fullscreenMiniPlayerPrimaryNSColor: NSColor {
@@ -3899,7 +3899,9 @@ struct FullscreenPlayerView: View {
             meshColorBoost: AppSettings.shared.nowPlayingMeshColorBoost,
             meshContrast: AppSettings.shared.nowPlayingMeshContrast,
             meshBassImpact: AppSettings.shared.nowPlayingMeshBassImpact,
-            artworkAccentColor: artworkSnapshot?.accentColor.map { Color(nsColor: $0) },
+            artworkAccentColor: artworkSnapshot?.accentColor.map {
+                ColorRenderingAdapter.makeSwiftUIColor($0)
+            },
             artworkPalette: artworkSnapshot?.palette ?? [],
             artworkRichPalette: artworkSnapshot?.richPalette ?? [],
             artworkAverageColor: artworkSnapshot?.averageColor,

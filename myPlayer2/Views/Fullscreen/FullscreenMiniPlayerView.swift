@@ -459,11 +459,11 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var controlSecondaryColor: Color {
-        Color(nsColor: resolvedForegroundProfile.secondary).opacity(0.96)
+        resolvedForegroundProfile.secondaryColor.opacity(0.96)
     }
 
     private var controlPrimaryColor: Color {
-        Color(nsColor: controlPrimaryNSColor).opacity(0.96)
+        resolvedForegroundProfile.primaryColor.opacity(0.96)
     }
 
     private var controlDisabledColor: Color {
@@ -471,7 +471,7 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var fullscreenControlPillTintColor: Color? {
-        Color(nsColor: resolvedForegroundProfile.pillTint).opacity(0.96)
+        resolvedForegroundProfile.pillTintColor.opacity(0.96)
     }
 
     private var controlPrimaryNSColor: NSColor {

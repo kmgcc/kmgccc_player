@@ -18,7 +18,7 @@ struct SettingsSidebarView: View {
             Text("设置")
                 .font(.title)
                 .fontWeight(.bold)
-                .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
+                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 20)
                 .padding(.top, 24)
@@ -35,12 +35,12 @@ struct SettingsSidebarView: View {
                             .foregroundStyle(
                                 selection == category
                                     ? themeStore.accentColor
-                                    : Color(nsColor: themeStore.appForegroundPalette.primary))
+                                    : themeStore.appForegroundPalette.primaryColor)
 
                         Text(category.title)
                             .font(.body)
                             .fontWeight(selection == category ? .medium : .regular)
-                            .foregroundStyle(Color(nsColor: themeStore.appForegroundPalette.primary))
+                            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
 
                         Spacer()
                     }

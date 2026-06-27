@@ -249,14 +249,14 @@ struct MiniPlayerProgressSpectrumRow: View {
 
     private var resolvedForegroundColor: Color {
         if let foregroundProfile {
-            return Color(nsColor: foregroundProfile.primary).opacity(0.96)
+            return foregroundProfile.primaryColor.opacity(0.96)
         }
         return foregroundColor ?? accentColor ?? Color.primary
     }
 
     private var spectrumFallbackColor: Color? {
         if let foregroundProfile {
-            return Color(nsColor: foregroundProfile.primary)
+            return foregroundProfile.primaryColor
         }
         return foregroundColor ?? accentColor
     }
@@ -277,7 +277,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         let targetL = max(hsl.l, minLightness)
         if targetL <= hsl.l + 0.000_001 { return color }
         let adjustedNSColor = rgbColorFromHsl(h: hsl.h, s: hsl.s, l: targetL)
-        return Color(nsColor: adjustedNSColor)
+        return ColorRenderingAdapter.makeSwiftUIColor(adjustedNSColor)
     }
 
     private func hslComponents(from color: NSColor) -> (h: CGFloat, s: CGFloat, l: CGFloat)? {

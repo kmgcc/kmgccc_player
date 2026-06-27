@@ -150,7 +150,7 @@ struct ExpandableVolumeControl: View {
     }
 
     private var controlPrimaryColor: Color {
-        Color(nsColor: controlPrimaryNSColor).opacity(0.96)
+        ColorRenderingAdapter.makeSwiftUIColor(controlPrimaryNSColor).opacity(0.96)
     }
 
     private var controlPrimaryNSColor: NSColor {

@@ -39,8 +39,8 @@ struct AllArtistsView: View {
     var body: some View {
         // Single ThemeStore subscription; rows get plain Color params.
         let palette = themeStore.appForegroundPalette
-        let primary = Color(nsColor: palette.primary)
-        let secondary = Color(nsColor: palette.secondary)
+        let primary = palette.primaryColor
+        let secondary = palette.secondaryColor
         let artists = filteredArtists
         let visibleIDs = artists.map(\.id)
         let customSourceIDs = customOrderSourceArtists.map(\.id)

@@ -448,7 +448,7 @@ struct MiniPlayerView: View {
         } else {
             tuned = Self.enforceMaximumHslLightness(base, maximumLightness: 0.45)
         }
-        return Color(nsColor: tuned).opacity(colorScheme == .dark ? 0.98 : 0.92)
+        return ColorRenderingAdapter.makeSwiftUIColor(tuned).opacity(colorScheme == .dark ? 0.98 : 0.92)
     }
 
     private var controlDisabledColor: Color {
