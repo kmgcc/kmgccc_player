@@ -19,6 +19,10 @@ enum ColorGoldenMasterCLI {
         .appendingPathComponent("Baselines/color-golden-master.txt")
     static let generatedURL = toolDirectory
         .appendingPathComponent(".generated/color-golden-master.current.txt")
+    static let accentParityURL = toolDirectory
+        .appendingPathComponent(".generated/accent-parity-report.txt")
+    static let accentReviewURL = toolDirectory
+        .appendingPathComponent(".generated/accent-parity-review.html")
 
     static func run(arguments: [String]) -> Int {
         let command = arguments.first ?? "help"
@@ -51,6 +55,22 @@ enum ColorGoldenMasterCLI {
             case "snapshot":
                 let snapshot = try stableSnapshot()
                 print(snapshot, terminator: "")
+                return 0
+
+            case "accent-parity":
+                let report = try ColorGoldenMasterAccentParity.render()
+                try write(report.text, to: accentParityURL)
+                print("accent parity report: \(accentParityURL.path)")
+                print("summary: \(report.summary.statusLine)")
+                if report.summary.blocker > 0 {
+                    return 1
+                }
+                return 0
+
+            case "accent-review":
+                let html = try ColorGoldenMasterAccentParity.renderHTML()
+                try write(html, to: accentReviewURL)
+                print("accent review artifact: \(accentReviewURL.path)")
                 return 0
 
             case "refresh-extended-corpus":
@@ -153,6 +173,8 @@ enum ColorGoldenMasterCLI {
           generate   Generate and approve Tools/ColorGoldenMaster/Baselines/color-golden-master.txt
           verify     Generate current output and compare it with the approved baseline
           snapshot   Print current stable snapshot to stdout
+          accent-parity
+                     Write controlled legacy/candidate accent diff report
           refresh-extended-corpus --seed <seed> [--target 130]
                      Rebuild the frozen extended real-cover manifest
           help       Show this help
