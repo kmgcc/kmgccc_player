@@ -123,7 +123,11 @@ nonisolated enum AccentColorPolicy {
                 : darkAccentLightnessFloor(for: h, sourceChroma: source.c)
             let maxL = lowColor ? 0.805 : darkAccentLightnessCeiling(for: h)
             let floorC = lowColor ? 0.020 : darkAccentChromaFloor(for: h, sourceChroma: source.c)
-            let capC = lowColor ? 0.064 : darkAccentChromaCap(for: h, source: source)
+            let capC = lowColor ? 0.064 : darkAccentChromaCap(
+                for: h,
+                source: source,
+                analysis: analysis
+            )
             let baseC = max(source.c * 1.08, floorC)
             let c = min(baseC, capC)
             target = OKColor.OKLCH(
@@ -199,7 +203,8 @@ nonisolated enum AccentColorPolicy {
         if sourceChroma >= 0.110 {
             switch h {
             case 0.10..<0.18: return 0.760
-            case 0.18..<0.44: return 0.880
+            case 0.34..<0.44: return 0.825
+            case 0.18..<0.44: return 0.860
             case 0.44..<0.67: return 0.810
             case 0.67..<0.72: return 0.780
             case 0.72..<0.88: return 0.720
@@ -242,7 +247,33 @@ nonisolated enum AccentColorPolicy {
         }
     }
 
-    private static func darkAccentChromaCap(for h: CGFloat, source: OKColor.OKLCH) -> CGFloat {
+    private static func darkAccentChromaCap(
+        for h: CGFloat,
+        source: OKColor.OKLCH,
+        analysis: ArtworkColorAnalysis
+    ) -> CGFloat {
+        if analysis.isUltraDark {
+            switch h {
+            case 0.00..<0.13, 0.88..<1.00: return 0.112
+            case 0.13..<0.32:              return 0.126
+            default: break
+            }
+        }
+        if source.c >= 0.090 {
+            switch h {
+            case 0.00..<0.03, 0.88..<1.00: return 0.098
+            case 0.03..<0.10:              return 0.112
+            case 0.10..<0.18:              return 0.128
+            default: break
+            }
+        }
+        if source.c >= 0.160 {
+            switch h {
+            case 0.34..<0.44: return 0.098
+            case 0.30..<0.50: return 0.112
+            default: break
+            }
+        }
         if source.l >= 0.650 {
             switch h {
             case 0.50..<0.72: return 0.096
@@ -289,6 +320,7 @@ nonisolated enum AccentColorPolicy {
         }
         let scale: CGFloat = {
             switch h {
+            case 0.03..<0.10: return 0.78
             case 0.10..<0.18: return 0.74
             case 0.18..<0.29: return 0.80
             case 0.29..<0.34: return source.c >= 0.100 ? 1.00 : 0.84
@@ -336,7 +368,7 @@ nonisolated enum AccentColorPolicy {
         case 0.44..<0.72: return 0.052
         case 0.72..<0.86: return 0.120
         case 0.86..<1.00, 0.00..<0.03: return 0.120
-        case 0.03..<0.10: return 0.110
+        case 0.03..<0.10: return 0.096
         default:          return 0.056
         }
     }
@@ -348,8 +380,8 @@ nonisolated enum AccentColorPolicy {
         case 0.30..<0.50:              return 0.145
         case 0.50..<0.65:              return 0.135
         case 0.65..<0.72:              return 0.115
-        case 0.03..<0.10:              return 0.180
-        case 0.10..<0.20:              return 0.170
+        case 0.03..<0.10:              return 0.105
+        case 0.10..<0.20:              return 0.135
         case 0.20..<0.30:              return 0.145
         default:                       return 0.140
         }
@@ -363,7 +395,20 @@ nonisolated enum AccentColorPolicy {
     ) -> CGFloat {
         let cap: CGFloat?
         if analysis.isMonochrome || source.c < 0.010 {
-            cap = scheme == .dark ? 0.022 : 0.016
+            if scheme == .dark,
+               analysis.hasTrustedHueCandidate,
+               analysis.colorfulness < 0.055,
+               source.h >= 0.03,
+               source.h < 0.16 {
+                cap = 0.014
+            } else {
+                cap = scheme == .dark ? 0.022 : 0.016
+            }
+        } else if scheme == .dark,
+                  analysis.colorfulness < 0.055,
+                  source.h >= 0.03,
+                  source.h < 0.16 {
+            cap = 0.018
         } else if analysis.colorfulness < ColorSystemTokens.Accent.nearMonoColorfulnessThreshold
                     || source.c < 0.040 {
             cap = scheme == .dark ? 0.065 : 0.052
