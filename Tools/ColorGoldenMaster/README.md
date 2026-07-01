@@ -98,6 +98,49 @@ Print a snapshot without writing the approved baseline:
 Tools/ColorGoldenMaster/run.sh snapshot
 ```
 
+Write the Stage 3 controlled accent parity report:
+
+```sh
+Tools/ColorGoldenMaster/run.sh accent-parity
+```
+
+Generate the interactive local Accent Parity Review page:
+
+```sh
+Tools/ColorGoldenMaster/run.sh accent-review
+```
+
+The page is written to:
+
+```text
+Tools/ColorGoldenMaster/.generated/accent-parity-review.html
+```
+
+It is a static, double-clickable review artifact. It embeds a representative
+queue of about 100 items from the real parity output, shows legacy HSL vs
+candidate OKLCH in UI-like accent and MiniPlayer contexts, and renders both
+Display P3 CSS and adapter-derived sRGB fallback swatches. The page stores
+in-progress decisions in browser local storage and can download/import a review
+session JSON.
+
+Export a downloaded review session into follow-up files:
+
+```sh
+Tools/ColorGoldenMaster/run.sh accent-review-export \
+  Tools/ColorGoldenMaster/ReviewSessions/accent-review-session.json
+```
+
+The export command writes an ignored directory under
+`Tools/ColorGoldenMaster/ReviewSessions/` containing:
+
+- `accent-approved-deltas.candidate.json`
+- `needs-tuning.md`
+- `legacy-better.md`
+- `candidate-better.md`
+- `both-acceptable.md`
+- `undecided.md`
+- `summary.md`
+
 Refresh the extended real-cover corpus. This is intentionally explicit and must
 not be run as part of ordinary verification:
 

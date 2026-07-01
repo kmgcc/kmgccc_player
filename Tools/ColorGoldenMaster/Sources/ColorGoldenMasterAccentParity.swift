@@ -91,101 +91,7 @@ enum ColorGoldenMasterAccentParity {
     static func renderHTML() throws -> String {
         let rows = try buildRows()
         let summary = summarize(rows)
-        let focus = rows.filter {
-            $0.classification == .blocker || $0.classification == .reviewRequired
-        }
-        let surfaceOrder = ["globalAccent", "uiAccentOnDark", "uiAccentOnLight", "miniPlayer"]
-        var html = htmlHead(summary: summary, focusCount: focus.count)
-        for surface in surfaceOrder {
-            let group = focus
-                .filter { $0.surface == surface }
-                .sorted { $0.diff.deltaEOKLab > $1.diff.deltaEOKLab }
-            guard !group.isEmpty else { continue }
-            html += "<h2>\(surface) — \(group.count) need review</h2>\n<table>\n"
-            html += "<tr><th>sample</th><th>legacy (current)</th><th>candidate (OKLCH)</th><th>OKLCH</th><th>delta</th><th>gamut</th></tr>\n"
-            for row in group { html += htmlRow(row) }
-            html += "</table>\n"
-        }
-        html += "</body></html>\n"
-        return html
-    }
-
-    private static func htmlHead(summary: AccentParitySummary, focusCount: Int) -> String {
-        """
-        <!doctype html><html lang="en"><head><meta charset="utf-8">
-        <title>Accent Parity Review</title>
-        <style>
-          body { font: 13px -apple-system, system-ui, sans-serif; margin: 24px; color: #1c1c1e; background: #fff; }
-          h1 { font-size: 20px; } h2 { font-size: 15px; margin-top: 28px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
-          .summary { font-family: ui-monospace, Menlo, monospace; background: #f4f4f6; padding: 8px 10px; border-radius: 6px; }
-          .note { color: #666; max-width: 70ch; }
-          table { border-collapse: collapse; width: 100%; margin-top: 8px; }
-          th { text-align: left; font-size: 11px; color: #888; font-weight: 600; padding: 4px 8px; }
-          td { padding: 6px 8px; vertical-align: middle; border-top: 1px solid #eee; }
-          .cellDark { background: #15161a; border-radius: 8px; }
-          .cellLight { background: #f0f0f2; border-radius: 8px; }
-          .pill { display: inline-block; width: 72px; height: 26px; border-radius: 13px; vertical-align: middle; }
-          .fg { display: inline-block; margin-left: 8px; font-weight: 700; font-size: 15px; vertical-align: middle; }
-          .cap { font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: #999; margin-top: 3px; }
-          .cellDark .cap { color: #aaa; }
-          .sample { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
-          .sub { color: #888; font-size: 11px; }
-          .cls { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 4px; margin-top: 3px; }
-          .review-required { background: #fff3cd; color: #856404; }
-          .blocker { background: #f8d7da; color: #721c24; }
-          .oklch, .delta { font-family: ui-monospace, Menlo, monospace; font-size: 11px; white-space: nowrap; }
-          .gamut { font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: #999; max-width: 22ch; }
-        </style></head><body>
-        <h1>Accent Parity Review</h1>
-        <p class="summary">\(summary.statusLine)</p>
-        <p class="note">\(focusCount) rows shown (blocker + review-required). Swatches render in Display&nbsp;P3 on a capable display/browser, with sRGB fallback otherwise. <b>Legacy</b> is current production output; <b>candidate</b> is the OKLCH policy. Each cell sits on the scheme background, with the accent also drawn as foreground text to judge readability / gray / neon. Sorted worst-&Delta;E first per surface. Tooling artifact only &mdash; not part of the strict golden baseline.</p>
-        """
-    }
-
-    private static func htmlRow(_ row: AccentParityRow) -> String {
-        let d = row.diff
-        let lL = d.legacyLCH.map { ColorGoldenMasterSupport.f($0.l) } ?? "—"
-        let lC = d.legacyLCH.map { ColorGoldenMasterSupport.f($0.c) } ?? "—"
-        let lH = d.legacyLCH.map { ColorGoldenMasterSupport.f($0.h) } ?? "—"
-        let cL = d.candidateLCH.map { ColorGoldenMasterSupport.f($0.l) } ?? "—"
-        let cC = d.candidateLCH.map { ColorGoldenMasterSupport.f($0.c) } ?? "—"
-        let cH = d.candidateLCH.map { ColorGoldenMasterSupport.f($0.h) } ?? "—"
-        let deltas = "ΔL \(ColorGoldenMasterSupport.f(d.deltaL))<br>ΔC \(ColorGoldenMasterSupport.f(d.deltaC))<br>ΔH \(ColorGoldenMasterSupport.f(d.deltaH))<br><b>ΔE \(ColorGoldenMasterSupport.f(d.deltaEOKLab))</b>"
-        return """
-        <tr>
-          <td><div class="sample">\(htmlEscape(row.sample))</div><div class="sub">\(row.role) · \(row.scheme)</div><div class="cls \(row.classification.rawValue)">\(row.classification.rawValue)</div></td>
-          \(swatchCell(row.legacy, scheme: row.scheme, caption: ColorGoldenMasterSupport.hex(row.legacy)))
-          \(swatchCell(row.candidate, scheme: row.scheme, caption: ColorGoldenMasterSupport.hex(row.candidate)))
-          <td class="oklch">L \(lL)→\(cL)<br>C \(lC)→\(cC)<br>H \(lH)→\(cH)</td>
-          <td class="delta">\(deltas)</td>
-          <td class="gamut">\(htmlEscape(d.targetGamutDescription))</td>
-        </tr>
-        """
-    }
-
-    private static func swatchCell(_ color: NSColor, scheme: String, caption: String) -> String {
-        let cls = scheme == "dark" ? "cellDark" : "cellLight"
-        return """
-        <td class="\(cls)"><span class="pill" style="\(cssBackground(color))"></span><span class="fg" style="\(cssForeground(color))">Aa 12:34</span><div class="cap">\(htmlEscape(caption))</div></td>
-        """
-    }
-
-    private static func cssBackground(_ color: NSColor) -> String {
-        let srgb = ColorRenderingAdapter.makeCSSSRGBFallback(color) ?? "#888888"
-        let p3 = ColorRenderingAdapter.makeCSSColor(color, target: .displayP3) ?? srgb
-        return "background:\(srgb);background:\(p3);"
-    }
-
-    private static func cssForeground(_ color: NSColor) -> String {
-        let srgb = ColorRenderingAdapter.makeCSSSRGBFallback(color) ?? "#888888"
-        let p3 = ColorRenderingAdapter.makeCSSColor(color, target: .displayP3) ?? srgb
-        return "color:\(srgb);color:\(p3);"
-    }
-
-    private static func htmlEscape(_ value: String) -> String {
-        value.replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
+        return try AccentParityReviewArtifact.render(rows: rows, summary: summary)
     }
 
     private static func appendRows(
@@ -311,7 +217,10 @@ enum ColorGoldenMasterAccentParity {
                 candidate: candidate,
                 diff: diff,
                 classification: classification.kind,
-                reason: classification.reason
+                reason: classification.reason,
+                isNearMonochrome: analysis.isNearMonochrome,
+                isUltraDark: analysis.isUltraDark,
+                hasTrustedHueCandidate: analysis.hasTrustedHueCandidate
             )
         )
     }
@@ -463,6 +372,9 @@ struct AccentParityRow {
     let diff: ColorDifference
     let classification: AccentParityClassification
     let reason: String
+    let isNearMonochrome: Bool
+    let isUltraDark: Bool
+    let hasTrustedHueCandidate: Bool
 
     var tsvLine: String {
         [

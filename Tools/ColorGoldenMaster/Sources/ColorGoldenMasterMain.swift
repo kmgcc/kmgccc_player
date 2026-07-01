@@ -73,6 +73,26 @@ enum ColorGoldenMasterCLI {
                 print("accent review artifact: \(accentReviewURL.path)")
                 return 0
 
+            case "accent-review-export":
+                guard arguments.count >= 2 else {
+                    print("accent-review-export requires a review session JSON path", to: &standardError)
+                    printHelp()
+                    return 2
+                }
+                let result = try AccentParityReviewArtifact.exportReviewSession(path: arguments[1])
+                print("accent review export: \(result.outputDirectory)")
+                print("decisions: \(result.decisionCount)")
+                print("approved delta candidates: \(result.approvedCount)")
+                print("needs tuning: \(result.needsTuningCount)")
+                print("legacy better: \(result.legacyBetterCount)")
+                print("undecided: \(result.undecidedCount)")
+                print("approved manifest candidate: \(result.approvedURL)")
+                print("needs tuning list: \(result.needsTuningURL)")
+                print("legacy better list: \(result.legacyBetterURL)")
+                print("undecided list: \(result.undecidedURL)")
+                print("summary: \(result.summaryURL)")
+                return 0
+
             case "refresh-extended-corpus":
                 let options = try parseRefreshOptions(Array(arguments.dropFirst()))
                 let manifest = try ExtendedCorpusStore.refresh(
@@ -175,6 +195,10 @@ enum ColorGoldenMasterCLI {
           snapshot   Print current stable snapshot to stdout
           accent-parity
                      Write controlled legacy/candidate accent diff report
+          accent-review
+                     Write interactive local accent review HTML
+          accent-review-export <session.json>
+                     Export a downloaded accent review session into approved-delta and tuning lists
           refresh-extended-corpus --seed <seed> [--target 130]
                      Rebuild the frozen extended real-cover manifest
           help       Show this help
