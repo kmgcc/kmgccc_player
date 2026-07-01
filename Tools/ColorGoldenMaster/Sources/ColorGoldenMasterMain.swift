@@ -23,6 +23,10 @@ enum ColorGoldenMasterCLI {
         .appendingPathComponent(".generated/accent-parity-report.txt")
     static let accentReviewURL = toolDirectory
         .appendingPathComponent(".generated/accent-parity-review.html")
+    static let bkParityURL = toolDirectory
+        .appendingPathComponent(".generated/bk-parity-report.txt")
+    static let bkReviewURL = toolDirectory
+        .appendingPathComponent(".generated/bk-parity-review.html")
 
     static func run(arguments: [String]) -> Int {
         let command = arguments.first ?? "help"
@@ -71,6 +75,22 @@ enum ColorGoldenMasterCLI {
                 let html = try ColorGoldenMasterAccentParity.renderHTML()
                 try write(html, to: accentReviewURL)
                 print("accent review artifact: \(accentReviewURL.path)")
+                return 0
+
+            case "bk-parity":
+                let report = try ColorGoldenMasterBKParity.render()
+                try write(report.text, to: bkParityURL)
+                print("BK parity report: \(bkParityURL.path)")
+                print("summary: \(report.summary.statusLine)")
+                if report.summary.blocker > 0 {
+                    return 1
+                }
+                return 0
+
+            case "bk-review":
+                let html = try ColorGoldenMasterBKParity.renderHTML()
+                try write(html, to: bkReviewURL)
+                print("BK review artifact: \(bkReviewURL.path)")
                 return 0
 
             case "accent-review-export":
@@ -197,6 +217,10 @@ enum ColorGoldenMasterCLI {
                      Write controlled legacy/candidate accent diff report
           accent-review
                      Write interactive local accent review HTML
+          bk-parity
+                     Write controlled legacy-HSB / candidate-OKLCH BK diff report
+          bk-review
+                     Write local BK role/layer review HTML
           accent-review-export <session.json>
                      Export a downloaded accent review session into approved-delta and tuning lists
           refresh-extended-corpus --seed <seed> [--target 130]

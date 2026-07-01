@@ -21,6 +21,7 @@ xcrun --sdk macosx swiftc \
   "${SCRIPT_DIR}/Sources/ColorGoldenMasterSupport.swift" \
   "${SCRIPT_DIR}/Sources/ColorGoldenMasterAccentParity.swift" \
   "${SCRIPT_DIR}/Sources/ColorGoldenMasterAccentReview.swift" \
+  "${SCRIPT_DIR}/Sources/ColorGoldenMasterBKParity.swift" \
   "${SCRIPT_DIR}/Sources/ColorGoldenMasterSnapshot.swift" \
   "${SCRIPT_DIR}/Sources/ColorGoldenMasterMain.swift" \
   "myPlayer2/Utilities/ColorMath.swift" \
@@ -34,6 +35,7 @@ xcrun --sdk macosx swiftc \
   "myPlayer2/Utilities/LEDColorResolver.swift" \
   "myPlayer2/Views/NowPlaying/BKExtractedPalettePolicy.swift" \
   "myPlayer2/Views/NowPlaying/BKColorEngine.swift" \
+  "myPlayer2/Views/NowPlaying/BKPerceptualColorPolicy.swift" \
   -o "${BIN}"
 
 exec "${BIN}" "$@"

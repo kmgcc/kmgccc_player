@@ -123,6 +123,28 @@ Display P3 CSS and adapter-derived sRGB fallback swatches. The page stores
 in-progress decisions in browser local storage and can download/import a review
 session JSON.
 
+Write the BK controlled parity report:
+
+```sh
+Tools/ColorGoldenMaster/run.sh bk-parity
+```
+
+Generate the BK role/layer review page:
+
+```sh
+Tools/ColorGoldenMaster/run.sh bk-review
+```
+
+The BK report compares production legacy HSB output with the candidate OKLCH
+role policy for cache-miss and cache-hit inputs in light and dark schemes. It
+records background base, atmosphere, floating shapes, highlight/glow,
+stabilized shape output, Display P3 resolution, sRGB fallback, OKLab deltas,
+and the BK layer contract classification. The HTML artifact is written to:
+
+```text
+Tools/ColorGoldenMaster/.generated/bk-parity-review.html
+```
+
 Export a downloaded review session into follow-up files:
 
 ```sh
@@ -172,6 +194,7 @@ Tools/ColorGoldenMaster/run.sh refresh-extended-corpus \
 | `bk.hit.*.shape_swatches.*` | Same production `BKColorEngine.makeShapeSwatches(...)`. | Uses fixed deterministic seed (distinct from cache-miss seed). |
 | `bk.hit.*.stabilized_shape_jitter_*` | Same production `BKColorEngine.stabilize(...)`. | Fixed jitter values and formatting only. |
 | `bk.hit_miss.*_differs` | Same production BK selection, engine, shape swatch, and stabilize calls for both paths. | Boolean comparison fields only; swatch/stabilize comparison uses a shared deterministic seed so randomness cannot create a false path diff. |
+| `bk-parity` / `bk-review` | Production legacy `BKColorEngine.make(...)`, candidate `BKColorEngine.makeCandidateOKLCH(...)`, legacy/candidate shape swatches, legacy/candidate stabilize. | Sidecar diagnostics only; does not affect `verify` or the strict baseline. |
 
 Call chain for real artwork:
 
