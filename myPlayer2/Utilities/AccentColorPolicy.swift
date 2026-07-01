@@ -14,7 +14,7 @@ nonisolated enum AccentColorPolicy {
         case candidate
     }
 
-    static let productionImplementation: Implementation = .legacy
+    static let productionImplementation: Implementation = .candidate
 
     static func productionOptimizedAccent(
         for scheme: ColorScheme,
