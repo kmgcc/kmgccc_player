@@ -106,6 +106,21 @@ struct BKColorEngine {
         isDark: Bool,
         analysis: ArtworkColorAnalysis? = nil
     ) -> HarmonizedPalette {
+        let legacy = makeLegacyHSB(
+            extracted: extracted,
+            fallback: fallback,
+            isDark: isDark,
+            analysis: analysis
+        )
+        return makeCandidateOKLCH(fromLegacy: legacy, analysis: analysis)
+    }
+
+    nonisolated static func makeLegacyHSB(
+        extracted: [NSColor],
+        fallback: [NSColor],
+        isDark: Bool,
+        analysis: ArtworkColorAnalysis? = nil
+    ) -> HarmonizedPalette {
         let paletteInput = (extracted.isEmpty ? fallback : extracted)
             .compactMap(hsb(from:))
             .map(normalizeCandidateColor(_:))
@@ -464,6 +479,33 @@ struct BKColorEngine {
     }
 
     nonisolated static func makeShapeSwatches(
+        seed: UInt64,
+        extracted: [NSColor],
+        fallback: [NSColor],
+        isDark: Bool,
+        analysis: ArtworkColorAnalysis? = nil
+    ) -> ShapeSwatchResult {
+        let legacy = makeLegacyHSBShapeSwatches(
+            seed: seed,
+            extracted: extracted,
+            fallback: fallback,
+            isDark: isDark,
+            analysis: analysis
+        )
+        let palette = make(
+            extracted: extracted,
+            fallback: fallback,
+            isDark: isDark,
+            analysis: analysis
+        )
+        return BKPerceptualRolePolicy.candidateShapeSwatches(
+            legacy: legacy,
+            palette: palette,
+            analysis: analysis
+        )
+    }
+
+    nonisolated static func makeLegacyHSBShapeSwatches(
         seed: UInt64,
         extracted: [NSColor],
         fallback: [NSColor],
@@ -885,6 +927,24 @@ struct BKColorEngine {
     }
 
     nonisolated static func stabilize(
+        color: CGColor,
+        kind: ElementKind,
+        palette: HarmonizedPalette,
+        hueJitter: CGFloat = 0,
+        saturationJitter: CGFloat = 0,
+        brightnessJitter: CGFloat = 0
+    ) -> CGColor {
+        BKStabilizationPolicy.candidateOKLCHStabilize(
+            color: color,
+            kind: kind,
+            palette: palette,
+            hueJitter: hueJitter,
+            saturationJitter: saturationJitter,
+            brightnessJitter: brightnessJitter
+        )
+    }
+
+    nonisolated static func stabilizeLegacyHSB(
         color: CGColor,
         kind: ElementKind,
         palette: HarmonizedPalette,

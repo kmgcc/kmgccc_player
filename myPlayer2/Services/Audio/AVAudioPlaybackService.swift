@@ -170,7 +170,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// for field diagnosis.
     private enum GaplessFallbackReason: String {
         case disabled
-        case lookaheadEnabled
         case noNext
         case formatMismatch
         case prefetchFailed
@@ -193,10 +192,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
     }
 
-    /// Gapless is allowed only when the user hasn't disabled it AND the output
-    /// delay node is not in the live graph (gapless never runs with lookahead on).
+    /// Gapless is allowed when the user hasn't disabled it. Lookahead (the
+    /// 180ms output delay node) is compatible with gapless: AVAudioPlayerNode
+    /// renders back-to-back scheduled items seamlessly regardless of downstream
+    /// delay nodes, so both features coexist.
     private var gaplessEnabled: Bool {
-        AppSettings.shared.audioGaplessSchedulingEnabled && !activeLookaheadEnabled
+        AppSettings.shared.audioGaplessSchedulingEnabled
     }
 
     // MARK: - Smart Shuffle Integration
@@ -1646,19 +1647,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         guard token == activeScheduleToken else { return }
         guard isPlaying else { return }
 
-        // With lookahead active, the player finishes ~lookahead seconds before
-        // the audio is actually heard. Defer finalize so the buffered tail plays
-        // out (no truncated ending / premature track switch). Gapless never runs
-        // while lookahead is on, so this path is unchanged.
-        let delaySeconds = lookaheadSeconds
-        if delaySeconds > 0 {
-            beginDrain(lookaheadSeconds: delaySeconds, token: token)
-            return
-        }
-
-        // Gapless boundary: the next item is already scheduled and rendering on
-        // the same node. The completion handler only confirms the audible
-        // boundary and commits logical/UI state — it does NOT load the next track.
+        // Gapless boundary (checked first, even with lookahead): the next item
+        // is already scheduled and rendering on the same player node. The node
+        // renders back-to-back items seamlessly regardless of any downstream
+        // delay node, so we commit the logical/UI boundary here. With lookahead
+        // the UI update precedes the audible transition by ~lookaheadSeconds,
+        // which is acceptable.
         if scheduleQueue.current?.token == token, let pending = scheduleQueue.pendingNext {
             if let reason = gaplessBoundaryBlockReason(pending: pending) {
                 logGaplessFallback(reason, context: "boundary track=\(pending.trackID.uuidString.prefix(8))")
@@ -1668,6 +1662,16 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
                 return
             }
             commitGaplessBoundary(pending: pending)
+            return
+        }
+
+        // No gapless pending. With lookahead active, the player finishes
+        // ~lookahead seconds before the audio is actually heard. Defer finalize
+        // so the buffered tail plays out (no truncated ending / premature track
+        // switch).
+        let delaySeconds = lookaheadSeconds
+        if delaySeconds > 0 {
+            beginDrain(lookaheadSeconds: delaySeconds, token: token)
             return
         }
 
@@ -1724,7 +1728,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// at the boundary so a mid-track settings/queue change is honored.
     private func gaplessBoundaryBlockReason(pending: ScheduledItem) -> GaplessFallbackReason? {
         if !AppSettings.shared.audioGaplessSchedulingEnabled { return .disabled }
-        if activeLookaheadEnabled { return .lookaheadEnabled }
         let playbackOrderMode = effectivePlaybackOrderMode
         if playbackOrderMode == .stopAfterTrack { return .stopAfterTrack }
         if playbackOrderMode == .repeatOne { return .repeatOne }

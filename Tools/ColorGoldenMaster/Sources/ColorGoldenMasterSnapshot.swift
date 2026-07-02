@@ -25,7 +25,7 @@ enum ColorGoldenMasterSnapshot {
         lines.append("color_space: deviceRGB components; OKLCH derived from deviceRGB")
         lines.append("precision: fixed decimal 4")
         lines.append("hue_note: hue_reliable=false means OKLCH hue is recorded numerically but should not be treated as semantic")
-        lines.append("bk_note: bk.* keys use analysis.topPalette as basePalette (cache-miss/direct-analysis path); bk.hit.* keys use analysis.displayPalette as basePalette (cache-hit/snapshot path); both call production BKExtractedPalettePolicy.select, BKColorEngine.make, makeShapeSwatches, and stabilize")
+        lines.append("bk_note: bk.* keys use analysis.topPalette as basePalette (cache-miss/direct-analysis path); bk.hit.* keys use analysis.displayPalette as basePalette (cache-hit/snapshot path); both call production BKExtractedPalettePolicy.select plus OKLCH-first BKColorEngine.make, makeShapeSwatches, and stabilize")
         lines.append("")
 
         for section in sections {

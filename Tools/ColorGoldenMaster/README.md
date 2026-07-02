@@ -135,11 +135,12 @@ Generate the BK role/layer review page:
 Tools/ColorGoldenMaster/run.sh bk-review
 ```
 
-The BK report compares production legacy HSB output with the candidate OKLCH
-role policy for cache-miss and cache-hit inputs in light and dark schemes. It
-records background base, atmosphere, floating shapes, highlight/glow,
-stabilized shape output, Display P3 resolution, sRGB fallback, OKLab deltas,
-and the BK layer contract classification. The HTML artifact is written to:
+The BK report compares the retained legacy HSB parity reference with the
+production OKLCH role policy for cache-miss and cache-hit inputs in light and
+dark schemes. It records background base, atmosphere, floating shapes,
+highlight/glow, stabilized shape output, Display P3 resolution, sRGB fallback,
+OKLab deltas, and the BK layer contract classification. The HTML artifact is
+written to:
 
 ```text
 Tools/ColorGoldenMaster/.generated/bk-parity-review.html
@@ -194,7 +195,7 @@ Tools/ColorGoldenMaster/run.sh refresh-extended-corpus \
 | `bk.hit.*.shape_swatches.*` | Same production `BKColorEngine.makeShapeSwatches(...)`. | Uses fixed deterministic seed (distinct from cache-miss seed). |
 | `bk.hit.*.stabilized_shape_jitter_*` | Same production `BKColorEngine.stabilize(...)`. | Fixed jitter values and formatting only. |
 | `bk.hit_miss.*_differs` | Same production BK selection, engine, shape swatch, and stabilize calls for both paths. | Boolean comparison fields only; swatch/stabilize comparison uses a shared deterministic seed so randomness cannot create a false path diff. |
-| `bk-parity` / `bk-review` | Production legacy `BKColorEngine.make(...)`, candidate `BKColorEngine.makeCandidateOKLCH(...)`, legacy/candidate shape swatches, legacy/candidate stabilize. | Sidecar diagnostics only; does not affect `verify` or the strict baseline. |
+| `bk-parity` / `bk-review` | Legacy `BKColorEngine.makeLegacyHSB(...)`, production/candidate `BKColorEngine.makeCandidateOKLCH(...)`, legacy/candidate shape swatches, legacy/candidate stabilize. | Sidecar diagnostics for the HSB-to-OKLCH migration; strict `verify` records the OKLCH production path. Approved migration deltas are summarized in `Tools/ColorGoldenMaster/ApprovedDeltas/bk-approved-deltas.json`. |
 
 Call chain for real artwork:
 
@@ -262,8 +263,8 @@ The baseline records:
 - standard fullscreen, artistic fullscreen, and CoverBlur lyric color sets
 - LED center/edge/status/volume colors for dark and light schemes
 - BK selected extracted palette policy for both cache-hit and cache-miss input
-  paths, `BKColorEngine.make`, BK shape swatches, diagnostics, and fixed-jitter
-  stabilized shape colors
+  paths, OKLCH-first `BKColorEngine.make`, BK shape swatches, diagnostics, and
+  fixed-jitter stabilized shape colors
 - BK cache-hit/cache-miss comparison booleans for base palette, selected
   palette, engine output, same-seed shape swatches, and same-seed stabilized
   shape colors

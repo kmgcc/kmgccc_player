@@ -702,8 +702,6 @@ public final class AppSettings {
     /// same player node for a 0-second join). Default ON. Turn OFF to revert to
     /// the legacy "load the next track only after completion" path without a
     /// rebuild — useful to isolate any gapless-related issue in the field.
-    /// Gapless is additionally gated on the output delay being OFF (it never
-    /// runs while the 180ms lookahead delay node is in the graph).
     @ObservationIgnored
     @AppStorage("audioGaplessSchedulingEnabled") var audioGaplessSchedulingEnabled: Bool = true
 

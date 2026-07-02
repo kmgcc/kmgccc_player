@@ -1,0 +1,76 @@
+{
+  "format_version": 1,
+  "policy": "bk-oklch-production-switch",
+  "approved_at": "2026-07-01",
+  "scope": "BK art background production keys only",
+  "legacy_policy": "legacy-hsb",
+  "candidate_policy": "candidate-oklch",
+  "reason": "Approve the intentional BK migration from historical HSB-led brightness/saturation decisions to OKLCH/OKLab-led role decisions. Light mode raises the background field above floating shapes and caps shape chroma below atmosphere; dark mode keeps shape visibility under an OKLCH lightness ceiling.",
+  "guards": {
+    "strict_golden_diff_scope": "bk.* only",
+    "bk_parity_summary": "total=3744 pass=3744 review_required=0 blocker=0",
+    "light_min_l_separation": 0.1229,
+    "light_min_srgb_l_separation": 0.1373,
+    "light_max_shape_chroma": 0.064,
+    "light_max_background_chroma": 0.086,
+    "dark_max_shape_l": 0.5344,
+    "dark_shape_l_upper_bound": 0.56,
+    "p3_and_srgb_layer_contract": "covered by bk-parity contract metrics",
+    "sample_specific_overrides": false,
+    "threshold_relaxation": false
+  },
+  "review_artifacts": [
+    "Tools/ColorGoldenMaster/.generated/bk-parity-report.txt",
+    "Tools/ColorGoldenMaster/.generated/bk-parity-review.html"
+  ],
+  "tuning_records": [
+    {
+      "approved_at": "2026-07-02",
+      "policy": "bk-oklch-visual-tone-tuning-1",
+      "scope": "BK art background OKLCH tone parameters and UltraDark image attenuation only",
+      "reason": "Recover user-confirmed visual air and floating shape presence after the OKLCH production switch without returning to legacy HSB decisions.",
+      "approved_delta_classes": [
+        {
+          "class": "light background lift",
+          "before": "bgL min=0.8975 median=0.9141 mean=0.9103",
+          "after": "bgL min=0.9125 median=0.9272 mean=0.9236",
+          "delta": "mean +0.0133; min +0.0150 for true nearMono"
+        },
+        {
+          "class": "light floating-shape visibility recovery",
+          "before": "shapeMaxL min=0.7544 median=0.7700 mean=0.7746; shapeAvgL mean=0.6798",
+          "after": "shapeMaxL min=0.8150 median=0.8194 mean=0.8226; shapeAvgL mean=0.7228",
+          "delta": "shapeMaxL mean +0.0479; shapeAvgL mean +0.0429; chroma was not increased as the visibility fix is lightness-led"
+        },
+        {
+          "class": "dark background floor recovery",
+          "before": "normalDark bgL min=0.1450 median=0.1455 mean=0.1468",
+          "after": "normalDark bgL min=0.1700 median=0.1704 mean=0.1708",
+          "delta": "mean +0.0240; dark shape L unchanged"
+        },
+        {
+          "class": "UltraDark attenuation reduction",
+          "before": "ultraDark bgL min=0.0820 median=0.0841 mean=0.0871; image overlay opacity=0.36",
+          "after": "ultraDark bgL min=0.1050 median=0.1075 mean=0.1081; image overlay opacity=0.24",
+          "delta": "palette mean +0.0210 while remaining below normal dark by median ΔL=0.0629"
+        }
+      ],
+      "guards": {
+        "bk_parity_summary": "total=3744 pass=3744 review_required=0 blocker=0",
+        "light_min_l_separation": 0.0922,
+        "light_min_srgb_l_separation": 0.1065,
+        "light_max_shape_chroma": 0.0639,
+        "normal_dark_max_shape_l": 0.5344,
+        "ultra_dark_max_shape_l": 0.4544,
+        "dark_shape_l_changed": false,
+        "p3_and_srgb_layer_contract": "covered by bk-parity contract metrics",
+        "sample_specific_overrides": false,
+        "threshold_relaxation": false
+      },
+      "review_artifacts": {
+        "before": "Tools/ColorGoldenMaster/.generated/bk-tuning-before/bk-parity-review.before.html",
+        "after": "Tools/ColorGoldenMaster/.generated/bk-parity-review.html"
+      }
+    }
+  ]
+}

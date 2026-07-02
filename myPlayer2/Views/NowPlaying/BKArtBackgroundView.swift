@@ -690,7 +690,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private var didPauseBackgroundTimerForTransition = false
     private var didPauseDotTimerForTransition = false
     private var rebuildDebounceTask: Task<Void, Never>?
-    private let ultraDarkOverlayOpacity: Float = 0.36
+    private let ultraDarkOverlayOpacity: Float = 0.24
     private var activeAvoidanceRect: CGRect?
     private var backgroundAssetMode: BackgroundAssetMode = .currentPhaseLowRes
     private var resourceProfile: BKArtBackgroundView.ResourceProfile = .standard
@@ -1330,117 +1330,50 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func energizedLightShapeTint(_ color: CGColor, source: CGColor? = nil) -> CGColor {
         guard !harmonized.isDark else { return color }
-        guard let nsColor = NSColor(cgColor: color)?.usingColorSpace(.deviceRGB) else {
+        guard var lch = BKPerceptualColorMath.lch(from: color) else {
             return color
         }
-
-        if harmonized.usesStrictNeutralRendering {
-            guard var lch = OKColor.nsColorToOKLCH(nsColor) else { return color }
-            lch.l = min(max(lch.l + 0.045, 0.60), 0.90)
-            lch.c = 0
-            lch.h = 0
-            return OKColor.okLCHToNSColor(lch, alpha: nsColor.alphaComponent).cgColor
-        }
-
-        var h: CGFloat = 0
-        var s: CGFloat = 0
-        var b: CGFloat = 0
-        var a: CGFloat = 0
-        nsColor.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-
-        let minS: CGFloat
-        let maxS: CGFloat
+        let alpha = NSColor(cgColor: color)?.alphaComponent ?? 1
+        let bgLCH = BKPerceptualColorMath.lchValues(from: harmonized.bgStops)
+        let bgVariantColors = harmonized.bgVariants.flatMap { $0 }
+        let bgVariantLCH = BKPerceptualColorMath.lchValues(
+            from: bgVariantColors.isEmpty ? harmonized.bgStops : bgVariantColors
+        )
+        let backgroundMinL = bgLCH.map(\.l).min() ?? 0.915
+        let backgroundMaxC = bgVariantLCH.map { $0.c }.max() ?? bgLCH.map { $0.c }.max() ?? 0.048
         let hasTrustedArtworkTint =
             currentAnalysis?.hasTrustedHueCandidate
-            ?? !harmonized.isGrayscaleCover
-        if harmonized.isGrayscaleCover && !hasTrustedArtworkTint {
-            minS = 0.0
-            maxS = 0.0
-        } else if harmonized.chromaticClusterCount <= 1 {
-            let colorEvidence = max(
-                harmonized.coverAvgS,
-                currentAnalysis?.avgSaturation ?? 0,
-                currentAnalysis?.colorfulness ?? 0
-            )
-            let vividSingleHue = colorEvidence >= 0.30
-            minS = vividSingleHue ? 0.38 : 0.34
-            maxS = vividSingleHue ? 0.64 : 0.58
-        } else if harmonized.isNearGray || harmonized.complexity == .low {
-            minS = 0.34
-            maxS = 0.60
-        } else {
-            minS = 0.40
-            maxS = 0.66
+            ?? (!harmonized.usesStrictNeutralRendering && !harmonized.isGrayscaleCover)
+
+        if harmonized.usesStrictNeutralRendering || (harmonized.isGrayscaleCover && !hasTrustedArtworkTint) {
+            lch.l = min(max(lch.l, 0.615), max(0.640, min(0.820, backgroundMinL - 0.075)))
+            lch.c = 0
+            lch.h = 0
+            return BKRenderingColorAdapter.cgColor(lch, alpha: alpha)
         }
 
-        let sourceComponents: (s: CGFloat, b: CGFloat) = {
-            guard let source,
-                  let sourceNS = NSColor(cgColor: source)?.usingColorSpace(.deviceRGB)
-            else { return (s, b) }
-            var sh: CGFloat = 0
-            var ss: CGFloat = 0
-            var sb: CGFloat = 0
-            var sa: CGFloat = 0
-            sourceNS.getHue(&sh, saturation: &ss, brightness: &sb, alpha: &sa)
-            return (ss, sb)
-        }()
+        let sourceLCH = BKPerceptualColorMath.lch(from: source) ?? lch
         let neutralToneFromDarkField = hasTinyAccentOnDarkField
-            && sourceComponents.s < 0.08
-            && sourceComponents.b < 0.42
-        let liftedS = neutralToneFromDarkField
-            ? min(0.080, max(0.018, s))
-            : min(maxS, max(minS, s * 1.65 + 0.090))
-        let bgBrightnesses = harmonized.bgStops.compactMap { stop -> CGFloat? in
-            guard let ns = NSColor(cgColor: stop)?.usingColorSpace(.deviceRGB) else {
-                return nil
-            }
-            var sh: CGFloat = 0
-            var ss: CGFloat = 0
-            var sb: CGFloat = 0
-            var sa: CGFloat = 0
-            ns.getHue(&sh, saturation: &ss, brightness: &sb, alpha: &sa)
-            return sb
-        }
-        let bgLightnesses = harmonized.bgStops.compactMap { stop -> CGFloat? in
-            guard let ns = NSColor(cgColor: stop)?.usingColorSpace(.deviceRGB),
-                  let lch = OKColor.nsColorToOKLCH(ns)
-            else { return nil }
-            return lch.l
-        }
-        let backgroundB = bgBrightnesses.isEmpty
-            ? max(0.88, harmonized.imageCoverLuma)
-            : bgBrightnesses.reduce(0, +) / CGFloat(bgBrightnesses.count)
-        let backgroundL = bgLightnesses.isEmpty
-            ? 0.94
-            : bgLightnesses.reduce(0, +) / CGFloat(bgLightnesses.count)
-        let darkAccent = sourceComponents.b < 0.40
-        let brightnessLower: CGFloat
-        let brightnessUpper: CGFloat
-        if neutralToneFromDarkField {
-            brightnessLower = min(max(backgroundB - 0.12, 0.84), 0.90)
-            brightnessUpper = min(max(backgroundB - 0.035, 0.91), 0.97)
-        } else if darkAccent {
-            brightnessLower = min(max(backgroundB - 0.09, 0.88), 0.93)
-            brightnessUpper = min(max(backgroundB - 0.010, 0.94), 0.985)
-        } else {
-            brightnessLower = min(max(backgroundB - 0.025, 0.93), 0.975)
-            brightnessUpper = min(max(backgroundB + 0.015, 0.975), 0.998)
-        }
-        let liftedB = min(brightnessUpper, max(brightnessLower, b + 0.10))
-        let hsbLifted = NSColor(deviceHue: h, saturation: liftedS, brightness: liftedB, alpha: a)
-        guard var lch = OKColor.nsColorToOKLCH(hsbLifted) else {
-            return hsbLifted.cgColor
-        }
+            && sourceLCH.c < 0.014
+            && sourceLCH.l < 0.380
         let lightnessFloor: CGFloat
+        let chromaCeiling: CGFloat
         if neutralToneFromDarkField {
-            lightnessFloor = min(max(backgroundL - 0.10, 0.84), 0.91)
-        } else if darkAccent {
-            lightnessFloor = min(max(backgroundL - 0.09, 0.86), 0.93)
+            lightnessFloor = max(0.585, min(0.675, backgroundMinL - 0.185))
+            chromaCeiling = min(0.020, max(0.010, backgroundMaxC * 0.28))
         } else {
-            lightnessFloor = min(max(backgroundL - 0.035, 0.90), 0.965)
+            lightnessFloor = max(0.625, min(0.720, backgroundMinL - 0.145))
+            chromaCeiling = max(0.018, min(0.064, backgroundMaxC * 0.78))
         }
-        lch.l = min(max(lch.l, lightnessFloor), min(0.985, max(lightnessFloor, backgroundL + 0.015)))
-        return OKColor.okLCHToNSColor(lch, alpha: a).cgColor
+        let lightnessUpper = max(lightnessFloor, min(0.835, backgroundMinL - 0.045))
+        lch.l = min(max(lch.l, lightnessFloor), lightnessUpper)
+        lch.c = min(
+            lch.c,
+            chromaCeiling,
+            BKColorRiskPolicy.chromaCap(hue: lch.h, role: .stabilizedShape, isDark: false)
+        )
+        lch.h = BKColorRiskPolicy.adjustedHue(lch.h, role: .stabilizedShape)
+        return BKRenderingColorAdapter.cgColor(lch, alpha: alpha)
     }
 
     private var hasTinyAccentOnDarkField: Bool {
@@ -2549,7 +2482,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private struct ImageVariantTuning: Sendable {
-        let avgS: CGFloat
+        let avgChroma: CGFloat
         let hueSpread: CGFloat
         let richScore: CGFloat
         let mapAlpha: CGFloat
@@ -2780,19 +2713,11 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func imageVariantTuning(for colors: [NSColor]) -> ImageVariantTuning {
-        let hsbs = colors.compactMap { color -> (h: CGFloat, s: CGFloat, b: CGFloat)? in
-            guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
-            var h: CGFloat = 0
-            var s: CGFloat = 0
-            var b: CGFloat = 0
-            var a: CGFloat = 0
-            rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-            return ((h * 360).truncatingRemainder(dividingBy: 360), s, b)
-        }
+        let lches = colors.compactMap { OKColor.nsColorToOKLCH($0) }
 
-        guard !hsbs.isEmpty else {
+        guard !lches.isEmpty else {
             return ImageVariantTuning(
-                avgS: 0.20,
+                avgChroma: 0.020,
                 hueSpread: 0,
                 richScore: 0,
                 mapAlpha: 0.66,
@@ -2801,12 +2726,15 @@ private final class BKArtBackgroundLayerView: NSView {
             )
         }
 
-        let avgS = hsbs.map(\.s).reduce(0, +) / CGFloat(hsbs.count)
+        let avgC = lches.map(\.c).reduce(0, +) / CGFloat(lches.count)
+        let chromaticHues = lches
+            .filter { $0.c >= 0.006 }
+            .map { ($0.h * 360).truncatingRemainder(dividingBy: 360) }
         var hueSpread: CGFloat = 0
-        if hsbs.count > 1 {
-            for i in 0..<(hsbs.count - 1) {
-                for j in (i + 1)..<hsbs.count {
-                    var d = abs(hsbs[i].h - hsbs[j].h).truncatingRemainder(dividingBy: 360)
+        if chromaticHues.count > 1 {
+            for i in 0..<(chromaticHues.count - 1) {
+                for j in (i + 1)..<chromaticHues.count {
+                    var d = abs(chromaticHues[i] - chromaticHues[j]).truncatingRemainder(dividingBy: 360)
                     if d > 180 { d = 360 - d }
                     hueSpread = max(hueSpread, d)
                 }
@@ -2817,14 +2745,14 @@ private final class BKArtBackgroundLayerView: NSView {
             0,
             min(
                 1,
-                (avgS - 0.12) / 0.38 * 0.6 + (hueSpread / 90) * 0.4
+                (avgC - 0.020) / 0.075 * 0.6 + (hueSpread / 90) * 0.4
             )
         )
-        let coverAvgS = harmonized.coverAvgS
-        let lowColorCover = coverAvgS >= 0.08 && coverAvgS < 0.22
+        let colorfulnessEvidence = currentAnalysis?.colorfulness ?? min(1, avgC * 3.0)
+        let lowColorCover = colorfulnessEvidence >= 0.08 && colorfulnessEvidence < 0.22
         let lowSatLift = harmonized.isGrayscaleCover
             ? 0
-            : max(0, min(1, (0.26 - max(avgS, coverAvgS)) / 0.18))
+            : max(0, min(1, (0.070 - max(avgC, colorfulnessEvidence * 0.10)) / 0.050))
         var mapAlpha = max(0.68, min(0.90, lerp(0.70, 0.86, t: richScore) + lowSatLift * 0.04))
         var originalSaturation = max(
             harmonized.isGrayscaleCover ? 0.02 : 0.08,
@@ -2840,9 +2768,9 @@ private final class BKArtBackgroundLayerView: NSView {
         }
         let hasTrustedTint =
             currentAnalysis?.hasTrustedHueCandidate
-            ?? (!harmonized.isGrayscaleCover && coverAvgS >= 0.12)
+            ?? (!harmonized.isGrayscaleCover && avgC >= 0.018)
         if harmonized.isDark, hasTrustedTint, !harmonized.isGrayscaleCover {
-            let chromaEvidence = max(avgS, coverAvgS)
+            let chromaEvidence = max(avgC * 3.0, colorfulnessEvidence)
             let vividT = max(0, min(1, (chromaEvidence - 0.10) / 0.34))
             let darkT = max(0, min(1, (0.36 - harmonized.imageCoverLuma) / 0.30))
             mapAlpha = max(mapAlpha, min(0.96, lerp(0.88, 0.95, t: vividT) + darkT * 0.02))
@@ -2854,7 +2782,7 @@ private final class BKArtBackgroundLayerView: NSView {
         }
 
         return ImageVariantTuning(
-            avgS: avgS,
+            avgChroma: avgC,
             hueSpread: hueSpread,
             richScore: richScore,
             mapAlpha: mapAlpha,
@@ -2885,41 +2813,46 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func enforceImageToneFloor(_ color: NSColor) -> NSColor {
         let rgb = color.usingColorSpace(.deviceRGB) ?? color
-        var h: CGFloat = 0
-        var s: CGFloat = 0
-        var b: CGFloat = 0
-        var a: CGFloat = 0
-        rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        let coverAvgS = harmonized.coverAvgS
-        let isUltraDesatCover =
-            harmonized.isGrayscaleCover
-            || (harmonized.grayScore >= 0.82 && coverAvgS < 0.08)
-        let minS: CGFloat
-        if harmonized.isDark {
-            if isUltraDesatCover {
-                minS = 0.04
-            } else {
-                let adaptive = max(0.16, min(0.36, 0.16 + coverAvgS * 0.95))
-                minS = max(adaptive, min(0.32, harmonized.bgSRange.lowerBound + 0.04))
+        guard var lch = OKColor.nsColorToOKLCH(rgb) else { return color }
+        let hasTrustedTint =
+            currentAnalysis?.hasTrustedHueCandidate
+            ?? (!harmonized.usesStrictNeutralRendering && !harmonized.isGrayscaleCover && lch.c >= 0.012)
+        let neutral = harmonized.usesStrictNeutralRendering
+            || harmonized.isGrayscaleCover
+            || !hasTrustedTint
+
+        if neutral {
+            lch.c = min(lch.c, harmonized.isDark ? 0.012 : 0.010)
+            if lch.c <= 0.0005 {
+                lch.h = 0
             }
         } else {
-            if isUltraDesatCover {
-                minS = 0.03
+            let colorfulnessEvidence = currentAnalysis?.colorfulness ?? min(1, lch.c * 3.0)
+            let floorC: CGFloat
+            if harmonized.isDark {
+                floorC = ColorMath.clamp(0.020 + colorfulnessEvidence * 0.10, 0.024, 0.070)
             } else {
-                let adaptive = max(0.16, min(0.34, 0.18 + coverAvgS * 0.82))
-                minS = max(adaptive, min(0.32, harmonized.bgSRange.lowerBound + 0.03))
+                floorC = ColorMath.clamp(0.040 + colorfulnessEvidence * 0.075, 0.044, 0.082)
             }
+            lch.c = min(
+                max(lch.c, floorC),
+                BKColorRiskPolicy.chromaCap(hue: lch.h, role: .backgroundAtmosphere, isDark: harmonized.isDark)
+            )
+            lch.h = BKColorRiskPolicy.adjustedHue(lch.h, role: .backgroundAtmosphere)
         }
-        let minB: CGFloat
+
         if harmonized.isDark {
-            minB = isUltraDarkCover ? 0.14 : 0.10
+            let floorL: CGFloat = isUltraDarkCover ? 0.108 : 0.145
+            let ceilingL: CGFloat = isUltraDarkCover ? 0.260 : 0.340
+            lch.l = min(max(lch.l, floorL), ceilingL)
         } else {
-            minB = 0.22
+            lch.l = min(max(lch.l, 0.900), 0.970)
         }
-        let clampedS = max(minS, min(1.0, s))
-        let clampedB = max(minB, min(1.0, b))
-        let hsbAdjusted = NSColor(deviceHue: h, saturation: clampedS, brightness: clampedB, alpha: a)
-        return energizedDarkImageTone(hsbAdjusted)
+        let adjusted = ColorRenderingAdapter.makeNSColor(
+            OKLCHColor(lch, alpha: Double(rgb.alphaComponent)),
+            target: .displayP3
+        )
+        return energizedDarkImageTone(adjusted)
     }
 
     private func energizedDarkImageTone(_ color: NSColor) -> NSColor {
@@ -2929,17 +2862,17 @@ private final class BKArtBackgroundLayerView: NSView {
             return color
         }
 
-        let hasTrustedTint =
-            currentAnalysis?.hasTrustedHueCandidate
-            ?? (harmonized.coverAvgS >= 0.12)
-        guard hasTrustedTint,
-              let lch = OKColor.nsColorToOKLCH(color),
+        guard let lch = OKColor.nsColorToOKLCH(color),
               lch.c >= 0.018
         else {
             return color
         }
+        let hasTrustedTint =
+            currentAnalysis?.hasTrustedHueCandidate
+            ?? (!harmonized.usesStrictNeutralRendering && lch.c >= 0.018)
+        guard hasTrustedTint else { return color }
 
-        let chromaEvidence = max(harmonized.coverAvgS, lch.c * 2.4)
+        let chromaEvidence = max(currentAnalysis?.colorfulness ?? 0, lch.c * 3.0)
         let vividT = max(0, min(1, (chromaEvidence - 0.12) / 0.36))
         let lowLightT = max(0, min(1, (0.38 - lch.l) / 0.24))
         let floorC = min(0.070, lch.c + lowLightT * vividT * 0.026)
@@ -2949,7 +2882,10 @@ private final class BKArtBackgroundLayerView: NSView {
             ceiling: 0.116,
             softness: 0.034
         )
-        return OKColor.okLCHToNSColor(shouldered, alpha: color.alphaComponent)
+        return ColorRenderingAdapter.makeNSColor(
+            OKLCHColor(shouldered, alpha: Double(color.alphaComponent)),
+            target: .displayP3
+        )
     }
 
     private nonisolated static func makeColorMapImage(colors: [ToneStopComponent]) -> CIImage? {

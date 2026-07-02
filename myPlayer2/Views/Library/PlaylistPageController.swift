@@ -1139,6 +1139,15 @@ final class PlaylistPageController {
         HeaderColorExtractor.shared.cancelPending()
         inFlightHeaderColorRequestKey = requestKey
 
+        if let cached = HeaderColorExtractor.shared.cachedResult(artworkIdentity: artworkIdentity) {
+            commitHeaderColor(
+                accent: cached.accent,
+                palette: cached.palette,
+                artworkIdentity: artworkIdentity,
+                checksum: cached.checksum
+            )
+        }
+
         headerColorTask = Task(priority: .utility) { @MainActor in
             let colorOpToken = FirstUseHitchDiagnostics.begin(
                 "PlaylistPageController.headerColor",
@@ -1345,15 +1354,25 @@ final class PlaylistPageController {
         haloIncomingImage = nil
         haloSourceBlendOpacity = 1
         haloPresentationOpacity = 0
-        headerAccentColor = ThemeStore.shared.accentColor
-        headerSemanticPalette = nil
-        lastHeaderColorIdentity = nil
-        lastHeaderColorChecksum = 0
+        if let identity,
+           let cached = HeaderColorExtractor.shared.cachedResult(artworkIdentity: identity)
+        {
+            headerAccentColor = cached.accent
+            headerSemanticPalette = cached.palette
+            lastHeaderColorIdentity = identity
+            lastHeaderColorChecksum = cached.checksum
+        } else {
+            headerAccentColor = ThemeStore.shared.accentColor
+            headerSemanticPalette = nil
+            lastHeaderColorIdentity = nil
+            lastHeaderColorChecksum = 0
+        }
         inFlightHeaderColorRequestKey = nil
     }
 
     private func publishHeaderImage(_ image: NSImage, identity: String, resolveToken: UUID) {
         guard currentArtworkPresentationIdentity == identity else { return }
+        guard headerResolveToken == resolveToken else { return }
         LyricsRuntimeProfile.increment("header.publishHeaderImage")
         if didFadeHeaderIdentity == identity {
             if headerIncomingArtwork != nil {
@@ -1369,6 +1388,7 @@ final class PlaylistPageController {
     private func publishHaloImage(_ image: NSImage?, identity: String, resolveToken: UUID) {
         guard let image else { return }
         guard currentArtworkPresentationIdentity == identity else { return }
+        guard headerResolveToken == resolveToken else { return }
         LyricsRuntimeProfile.increment("header.publishHaloImage")
         if didFadeHaloIdentity == identity {
             if haloIncomingImage != nil {
@@ -1405,6 +1425,7 @@ final class PlaylistPageController {
             try? await Task.sleep(nanoseconds: UInt64(FadeTiming.headerCrossfadeDuration * 1_000_000_000))
             guard !Task.isCancelled else { return }
             guard self.currentArtworkPresentationIdentity == identity else { return }
+            guard self.headerResolveToken == resolveToken else { return }
 
             self.headerCurrentArtwork = image
             self.headerIncomingArtwork = nil
@@ -1557,7 +1578,7 @@ final class PlaylistPageController {
                 entry: PlaylistHeaderData(
                     description: playlist.userDescription,
                     tracks: displayedTracks,
-                    artworkRevision: nil
+                    artworkRevision: LocalLibraryService.shared.playlistArtworkRevision(playlistID: playlist.id)
                 )
             )
         case .artist(let key):

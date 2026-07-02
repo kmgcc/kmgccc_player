@@ -1135,7 +1135,7 @@
     {
       "album" : "岚 Evergreen",
       "artist" : "CORSAK胡梦周",
-      "artwork_hash" : "0xA08328D9C5FDB5EE",
+      "artwork_hash" : "0xAF218508E19E6A56",
       "artwork_path" : "/Users/kmg/Music/kmgccc_player Library/Tracks/3D9F19BF-5907-4005-9FED-1206D6AC3923/artwork.jpg",
       "categories" : [
         "cool",
@@ -1146,19 +1146,19 @@
       "sample_id" : "extended.034-3D9F19BF",
       "source" : "local-track-library-random-plus-color-fill",
       "stats" : {
-        "avg_brightness" : "0.4978",
-        "avg_saturation" : "0.9270",
+        "avg_brightness" : "0.4991",
+        "avg_saturation" : "0.9365",
         "colorfulness" : "1.0000",
         "display_palette_count" : 5,
-        "dominant_hue" : "0.2778",
-        "dominant_hue_confidence" : "0.4097",
+        "dominant_hue" : "0.2781",
+        "dominant_hue_confidence" : "0.4161",
         "has_trusted_hue" : true,
         "high_saturation_area_share" : "1.0000",
-        "largest_high_saturation_area_share" : "0.4097",
+        "largest_high_saturation_area_share" : "0.4161",
         "near_mono" : false,
-        "surface_palette_count" : 4,
+        "surface_palette_count" : 5,
         "ultra_dark" : false,
-        "weighted_luma" : "0.1842"
+        "weighted_luma" : "0.1847"
       },
       "title" : "岚 Evergreen",
       "track_id" : "3D9F19BF-5907-4005-9FED-1206D6AC3923"
