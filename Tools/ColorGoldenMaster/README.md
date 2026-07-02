@@ -146,6 +146,37 @@ written to:
 Tools/ColorGoldenMaster/.generated/bk-parity-review.html
 ```
 
+Write the lyric legacy parity and Web adapter model report:
+
+```sh
+Tools/ColorGoldenMaster/run.sh lyrics-parity
+```
+
+Generate the lyric visual review page:
+
+```sh
+Tools/ColorGoldenMaster/run.sh lyrics-review
+```
+
+The lyric report is a sidecar parity/review artifact only. It does not change
+the strict Golden baseline and does not implement a new OKLCH lyric production
+strategy. Candidate fields are intentionally filled with
+`phase1_passthrough_no_oklch_strategy` so the schema is ready for a future
+candidate policy without changing current production colors.
+
+The report models current legacy lyric paths for window lyrics, batch preview,
+standard fullscreen, artistic-background fullscreen, generic CoverBlur
+lighter/darker, Apple style's fixed lighter CoverBlur path, and the disabled
+dedicated CoverBlur compatibility branch. It records Swift legacy roles,
+fullscreen alpha stripping, Web-derived `--amll-fs-*` and `--amll-cb-*`
+background/karaoke/sub roles, CoverBlur blend classification, Display P3 CSS,
+sRGB fallback, OKLCH values, adapter deltas, and hierarchy/alpha risk tags.
+The HTML artifact is written to:
+
+```text
+Tools/ColorGoldenMaster/.generated/lyrics-parity-review.html
+```
+
 Export a downloaded review session into follow-up files:
 
 ```sh
@@ -196,6 +227,7 @@ Tools/ColorGoldenMaster/run.sh refresh-extended-corpus \
 | `bk.hit.*.stabilized_shape_jitter_*` | Same production `BKColorEngine.stabilize(...)`. | Fixed jitter values and formatting only. |
 | `bk.hit_miss.*_differs` | Same production BK selection, engine, shape swatch, and stabilize calls for both paths. | Boolean comparison fields only; swatch/stabilize comparison uses a shared deterministic seed so randomness cannot create a false path diff. |
 | `bk-parity` / `bk-review` | Legacy `BKColorEngine.makeLegacyHSB(...)`, production/candidate `BKColorEngine.makeCandidateOKLCH(...)`, legacy/candidate shape swatches, legacy/candidate stabilize. | Sidecar diagnostics for the HSB-to-OKLCH migration; strict `verify` records the OKLCH production path. Approved migration deltas are summarized in `Tools/ColorGoldenMaster/ApprovedDeltas/bk-approved-deltas.json`. |
+| `lyrics-parity` / `lyrics-review` | Production `SemanticPaletteFactory.make(...)`, `fullscreenLyricsColorSet(...)`, `coverBlurLyricsColorSet(...)`, and `artisticLyricsSingleSeed(...)`. | Sidecar lyric migration diagnostics. The tool-side model mirrors current `Resources/AMLL/index.html` alpha stripping, derived fullscreen/CoverBlur roles, blend-mode classification, Display P3 output, and sRGB fallback. It does not modify or approve the strict baseline. |
 
 Call chain for real artwork:
 

@@ -27,6 +27,10 @@ enum ColorGoldenMasterCLI {
         .appendingPathComponent(".generated/bk-parity-report.txt")
     static let bkReviewURL = toolDirectory
         .appendingPathComponent(".generated/bk-parity-review.html")
+    static let lyricsParityURL = toolDirectory
+        .appendingPathComponent(".generated/lyrics-parity-report.txt")
+    static let lyricsReviewURL = toolDirectory
+        .appendingPathComponent(".generated/lyrics-parity-review.html")
 
     static func run(arguments: [String]) -> Int {
         let command = arguments.first ?? "help"
@@ -91,6 +95,19 @@ enum ColorGoldenMasterCLI {
                 let html = try ColorGoldenMasterBKParity.renderHTML()
                 try write(html, to: bkReviewURL)
                 print("BK review artifact: \(bkReviewURL.path)")
+                return 0
+
+            case "lyrics-parity":
+                let report = try ColorGoldenMasterLyricsParity.render()
+                try write(report.text, to: lyricsParityURL)
+                print("lyrics parity report: \(lyricsParityURL.path)")
+                print("summary: \(report.summary.statusLine)")
+                return 0
+
+            case "lyrics-review":
+                let html = try ColorGoldenMasterLyricsParity.renderHTML()
+                try write(html, to: lyricsReviewURL)
+                print("lyrics review artifact: \(lyricsReviewURL.path)")
                 return 0
 
             case "accent-review-export":
@@ -221,6 +238,10 @@ enum ColorGoldenMasterCLI {
                      Write controlled legacy-HSB / candidate-OKLCH BK diff report
           bk-review
                      Write local BK role/layer review HTML
+          lyrics-parity
+                     Write lyric legacy parity and Web adapter derived-role report
+          lyrics-review
+                     Write local lyric parity review HTML
           accent-review-export <session.json>
                      Export a downloaded accent review session into approved-delta and tuning lists
           refresh-extended-corpus --seed <seed> [--target 130]

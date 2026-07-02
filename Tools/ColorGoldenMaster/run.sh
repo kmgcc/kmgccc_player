@@ -22,6 +22,7 @@ xcrun --sdk macosx swiftc \
   "${SCRIPT_DIR}/Sources/ColorGoldenMasterAccentParity.swift" \
   "${SCRIPT_DIR}/Sources/ColorGoldenMasterAccentReview.swift" \
   "${SCRIPT_DIR}/Sources/ColorGoldenMasterBKParity.swift" \
+  "${SCRIPT_DIR}/Sources/ColorGoldenMasterLyricsParity.swift" \
   "${SCRIPT_DIR}/Sources/ColorGoldenMasterSnapshot.swift" \
   "${SCRIPT_DIR}/Sources/ColorGoldenMasterMain.swift" \
   "myPlayer2/Utilities/ColorMath.swift" \
