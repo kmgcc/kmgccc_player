@@ -21,10 +21,19 @@ private struct LibraryPresentedAccentColorKey: EnvironmentKey {
     static let defaultValue: Color = ThemeStore.shared.accentColor
 }
 
+private struct LibraryHeaderSemanticPaletteKey: EnvironmentKey {
+    static let defaultValue: SemanticPalette? = nil
+}
+
 extension EnvironmentValues {
     var libraryPresentedAccentColor: Color {
         get { self[LibraryPresentedAccentColorKey.self] }
         set { self[LibraryPresentedAccentColorKey.self] = newValue }
+    }
+
+    var libraryHeaderSemanticPalette: SemanticPalette? {
+        get { self[LibraryHeaderSemanticPaletteKey.self] }
+        set { self[LibraryHeaderSemanticPaletteKey.self] = newValue }
     }
 }
 
@@ -59,6 +68,7 @@ struct LibraryDetailHeaderView: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.libraryHeaderSemanticPalette) private var headerSemanticPalette
     @EnvironmentObject private var themeStore: ThemeStore
 
     let config: DetailHeaderConfig
@@ -288,6 +298,22 @@ struct LibraryDetailHeaderView: View {
 
     // MARK: - Text fields
 
+    private var headerForegroundPalette: AppForegroundPalette {
+        headerSemanticPalette?.appForeground ?? themeStore.appForegroundPalette
+    }
+
+    private var headerPrimaryTextColor: Color {
+        headerForegroundPalette.primaryColor
+    }
+
+    private var headerSecondaryTextColor: Color {
+        headerForegroundPalette.secondaryColor
+    }
+
+    private var headerTertiaryTextColor: Color {
+        headerForegroundPalette.tertiaryColor
+    }
+
     private var titleView: some View {
         Group {
             if isEditing {
@@ -303,6 +329,7 @@ struct LibraryDetailHeaderView: View {
                     .lineLimit(2)
             }
         }
+        .foregroundStyle(headerPrimaryTextColor)
     }
 
     private var titleString: String {
@@ -316,7 +343,7 @@ struct LibraryDetailHeaderView: View {
     private var subtitleView: some View {
         Text(subtitleString)
             .font(.callout)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(headerSecondaryTextColor)
     }
 
     private var subtitleString: String {
@@ -338,19 +365,19 @@ struct LibraryDetailHeaderView: View {
             let dur = data.tracks.reduce(0) { $0 + $1.duration }
             Text(formatDuration(dur))
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(headerTertiaryTextColor)
         case .artist(let entry, _):
             let parts = buildArtistMetaParts(entry: entry)
             if !parts.isEmpty {
                 Text(parts.joined(separator: " · "))
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(headerTertiaryTextColor)
             }
         case .album(let entry, let stats):
             let parts = buildAlbumMetaParts(entry: entry, stats: stats)
             Text(parts.joined(separator: " · "))
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(headerTertiaryTextColor)
         }
     }
 
@@ -398,7 +425,7 @@ struct LibraryDetailHeaderView: View {
             Text(headerDescriptionText)
                 .font(.callout)
                 .lineSpacing(0)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(headerSecondaryTextColor)
                 .lineLimit(Self.maxHeaderDescriptionContentLines)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(
@@ -435,6 +462,7 @@ struct LibraryDetailHeaderView: View {
         TextField("添加描述…", text: $editDescription, axis: .vertical)
             .font(.callout)
             .textFieldStyle(.plain)
+            .foregroundStyle(headerSecondaryTextColor)
             .lineLimit(2...5)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -443,10 +471,11 @@ struct LibraryDetailHeaderView: View {
         HStack(spacing: 6) {
             Text("年份")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(headerSecondaryTextColor)
             TextField("", text: $editYear)
                 .font(.callout)
                 .textFieldStyle(.roundedBorder)
+                .foregroundStyle(headerPrimaryTextColor)
                 .frame(width: 70)
                 .onSubmit { commitEdits() }
         }

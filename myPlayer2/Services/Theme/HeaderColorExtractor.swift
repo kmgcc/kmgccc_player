@@ -29,15 +29,28 @@ final class HeaderColorExtractor {
     static let shared = HeaderColorExtractor()
 
     private let cache = NSCache<NSString, HeaderColorCacheEntry>()
+    private let latestByIdentityCache = NSCache<NSString, HeaderColorCacheEntry>()
     private let extractionQueue = DispatchQueue(
         label: "kmg.myPlayer2.headerColor.extraction",
         qos: .userInitiated
     )
-    private var activeToken = UUID()
 
     private init() {
         cache.countLimit = 32
         cache.totalCostLimit = 2 * 1024 * 1024
+        latestByIdentityCache.countLimit = 32
+    }
+
+    /// Return the most recent cached palette for this artwork identity.
+    /// `DetailHeaderConfig.artworkIdentity` includes the playlist/artist/album
+    /// artwork revision, so this is safe as an instant first-paint hint.
+    func cachedResult(
+        artworkIdentity: String
+    ) -> (accent: Color, palette: SemanticPalette, checksum: UInt64)? {
+        guard let cached = latestByIdentityCache.object(forKey: artworkIdentity as NSString) else {
+            return nil
+        }
+        return renderedResult(from: cached)
     }
 
     /// Extract a header-specific accent color and semantic palette from artwork data.
@@ -55,23 +68,12 @@ final class HeaderColorExtractor {
         // Memory cache hit
         if let cached = cache.object(forKey: cacheKey), cached.checksum == checksum {
             Log.trace("HeaderColor cache hit for \(shortIdentity(artworkIdentity))", category: .theme)
-            return (
-                ColorRenderingAdapter.makeSwiftUIColor(cached.accentColor),
-                cached.semanticPalette
-            )
+            latestByIdentityCache.setObject(cached, forKey: artworkIdentity as NSString)
+            let rendered = renderedResult(from: cached)
+            return (rendered.accent, rendered.palette)
         }
-
-        // Async extraction
-        let token = UUID()
-        activeToken = token
 
         let result = await extractInBackground(data: data, checksum: checksum)
-
-        guard token == activeToken else {
-            Log.trace("HeaderColor token mismatch, discarding result", category: .theme)
-            return nil
-        }
-
         guard let (accentNS, palette) = result else { return nil }
 
         // Cache result
@@ -81,6 +83,7 @@ final class HeaderColorExtractor {
             checksum: checksum
         )
         cache.setObject(entry, forKey: cacheKey)
+        latestByIdentityCache.setObject(entry, forKey: artworkIdentity as NSString)
 
         Log.debug(
             "HeaderColor extracted for \(shortIdentity(artworkIdentity)) accent=\(formatColor(accentNS))",
@@ -90,9 +93,11 @@ final class HeaderColorExtractor {
         return (ColorRenderingAdapter.makeSwiftUIColor(accentNS), palette)
     }
 
-    /// Reset the active token to cancel any in-flight extraction.
+    /// Compatibility hook for callers that cancel their own extraction tasks.
     func cancelPending() {
-        activeToken = UUID()
+        // Cancellation is owned by each PlaylistPageController task. Keeping
+        // this method as a no-op preserves call-site intent without letting one
+        // header invalidate another header's extraction result globally.
     }
 
     // MARK: - Private
@@ -129,6 +134,16 @@ final class HeaderColorExtractor {
                 continuation.resume(returning: (palette.globalAccent, palette))
             }
         }
+    }
+
+    private func renderedResult(
+        from cached: HeaderColorCacheEntry
+    ) -> (accent: Color, palette: SemanticPalette, checksum: UInt64) {
+        (
+            ColorRenderingAdapter.makeSwiftUIColor(cached.accentColor),
+            cached.semanticPalette,
+            cached.checksum
+        )
     }
 
     private func shortIdentity(_ identity: String) -> String {

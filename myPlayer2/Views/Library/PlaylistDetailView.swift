@@ -415,6 +415,7 @@ struct PlaylistDetailView: View {
             }
         )
         .environment(\.libraryPresentedAccentColor, pageController.headerAccentColor)
+        .environment(\.libraryHeaderSemanticPalette, pageController.headerSemanticPalette)
 
         Spacer().frame(height: 12)
     }

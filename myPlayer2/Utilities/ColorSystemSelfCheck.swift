@@ -2383,19 +2383,26 @@ nonisolated enum ColorSystemSelfCheck {
             isDark: false,
             analysis: analysis
         )
+        let contract = bkLayerContract(
+            analysis: analysis,
+            isDark: false,
+            seed: 0x8657_39F0,
+            extracted: analysis.displayPalette,
+            fallback: [analysis.averageColor]
+        )
         let lchs = swatches.colors.compactMap(cgColorToOKLCH(_:))
         let maxC = lchs.map(\.c).max() ?? 0
-        let hasYellow = lchs.contains { $0.h >= 0.16 && $0.h <= 0.32 && $0.c >= 0.055 }
+        let hasYellow = lchs.contains { $0.h >= 0.16 && $0.h <= 0.32 && $0.c >= 0.040 }
         let ok = analysis.hasTrustedHueCandidate
             && !analysis.isNearMonochrome
-            && swatches.diagnostics.chromaticClusterCount == 1
             && swatches.diagnostics.swatchCount <= 3
             && hasYellow
+            && contract.metrics.classification == .pass
         let swatchHSBText = swatches.diagnostics.swatchHSB.joined(separator: ";")
         report.record(
             "Faithful BK: black yellow shape swatches keep yellow",
             ok,
-            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) clusters=\(swatches.diagnostics.chromaticClusterCount) count=\(swatches.diagnostics.swatchCount) maxC=\(format(maxC)) hsb=\(swatchHSBText)"
+            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) clusters=\(swatches.diagnostics.chromaticClusterCount) count=\(swatches.diagnostics.swatchCount) maxC=\(format(maxC)) lightSep=\(format(contract.metrics.lightModeSeparation)) hsb=\(swatchHSBText)"
         )
     }
 
@@ -2416,20 +2423,25 @@ nonisolated enum ColorSystemSelfCheck {
             isDark: false,
             analysis: analysis
         )
-        let lchs = swatches.colors.compactMap(cgColorToOKLCH(_:))
-        let hasYellow = lchs.contains { $0.h >= 0.16 && $0.h <= 0.34 && $0.c >= 0.055 }
+        let contract = bkLayerContract(
+            analysis: analysis,
+            isDark: false,
+            seed: 0x8657_39F0,
+            extracted: bkExtractedPalette(for: analysis),
+            fallback: [analysis.averageColor]
+        )
         let salientYellow = analysis.salientHighlightPalette.contains {
             isHueClose(of: $0, target: 0.13)
         }
         let ok = analysis.hasTrustedHueCandidate
             && !analysis.isNearMonochrome
             && salientYellow
-            && swatches.diagnostics.chromaticClusterCount >= 1
-            && hasYellow
+            && !contract.palette.usesStrictNeutralRendering
+            && contract.metrics.classification == .pass
         report.record(
             "Faithful BK: micro yellow accent avoids nearMono",
             ok,
-            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) salient=\(analysis.salientHighlightPalette.count) largestHighSat=\(format(analysis.largestHighSaturationAreaShare)) clusters=\(swatches.diagnostics.chromaticClusterCount)"
+            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) strict=\(contract.palette.usesStrictNeutralRendering) salient=\(analysis.salientHighlightPalette.count) largestHighSat=\(format(analysis.largestHighSaturationAreaShare)) clusters=\(swatches.diagnostics.chromaticClusterCount) lightSep=\(format(contract.metrics.lightModeSeparation))"
         )
     }
 
@@ -2483,13 +2495,21 @@ nonisolated enum ColorSystemSelfCheck {
             isDark: false,
             analysis: analysis
         )
+        let contract = bkLayerContract(
+            analysis: analysis,
+            isDark: false,
+            extracted: analysis.displayPalette,
+            fallback: [analysis.averageColor]
+        )
         let ok = analysis.hasTrustedHueCandidate
             && !analysis.isNearMonochrome
             && !palette.usesStrictNeutralRendering
+            && contract.metrics.classification == .pass
+            && contract.metrics.backgroundMaxC >= 0.018
         report.record(
             "Faithful BK: muted pastel cover avoids nearMono",
             ok,
-            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) strict=\(palette.usesStrictNeutralRendering) avgSat=\(format(analysis.avgSaturation)) colorfulness=\(format(analysis.colorfulness))"
+            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) strict=\(palette.usesStrictNeutralRendering) bgMaxC=\(format(contract.metrics.backgroundMaxC)) avgSat=\(format(analysis.avgSaturation)) colorfulness=\(format(analysis.colorfulness))"
         )
     }
 
@@ -2511,13 +2531,21 @@ nonisolated enum ColorSystemSelfCheck {
             isDark: false,
             analysis: analysis
         )
+        let contract = bkLayerContract(
+            analysis: analysis,
+            isDark: false,
+            extracted: analysis.displayPalette,
+            fallback: [analysis.averageColor]
+        )
         let ok = analysis.hasTrustedHueCandidate
             && !analysis.isNearMonochrome
             && !palette.usesStrictNeutralRendering
+            && contract.metrics.classification == .pass
+            && contract.metrics.backgroundMaxC >= 0.014
         report.record(
             "Faithful BK: warm paper cover avoids nearMono",
             ok,
-            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) strict=\(palette.usesStrictNeutralRendering) avgSat=\(format(analysis.avgSaturation))"
+            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) strict=\(palette.usesStrictNeutralRendering) bgMaxC=\(format(contract.metrics.backgroundMaxC)) avgSat=\(format(analysis.avgSaturation))"
         )
     }
 
@@ -2539,6 +2567,13 @@ nonisolated enum ColorSystemSelfCheck {
             isDark: false,
             analysis: analysis
         )
+        let contract = bkLayerContract(
+            analysis: analysis,
+            isDark: false,
+            seed: 0x939A_3984,
+            extracted: analysis.displayPalette,
+            fallback: [analysis.averageColor]
+        )
         let hues = swatches.colors.compactMap(cgColorHue(_:))
         let distinct = countDistinctHues(hues, gap: 0.08)
         let maxC = swatches.colors.compactMap { cgColorToOKLCH($0)?.c }.max() ?? 0
@@ -2546,11 +2581,13 @@ nonisolated enum ColorSystemSelfCheck {
             && swatches.diagnostics.chromaticClusterCount == 1
             && swatches.diagnostics.swatchCount <= 3
             && distinct == 1
-            && maxC >= 0.045
+            && maxC >= 0.020
+            && maxC <= 0.058
+            && contract.metrics.classification == .pass
         report.record(
             "Faithful BK: single red shape swatches stay low richness",
             ok,
-            "clusters=\(swatches.diagnostics.chromaticClusterCount) count=\(swatches.diagnostics.swatchCount) distinct=\(distinct) maxC=\(format(maxC))"
+            "clusters=\(swatches.diagnostics.chromaticClusterCount) count=\(swatches.diagnostics.swatchCount) distinct=\(distinct) maxC=\(format(maxC)) lightSep=\(format(contract.metrics.lightModeSeparation))"
         )
     }
 
@@ -2604,20 +2641,24 @@ nonisolated enum ColorSystemSelfCheck {
             isDark: false,
             analysis: analysis
         )
-        let bgS = palette.bgStops.compactMap(cgColorSaturation(_:))
-        let avgBgS = bgS.isEmpty ? 0 : bgS.reduce(0, +) / CGFloat(bgS.count)
+        let contract = bkLayerContract(
+            analysis: analysis,
+            isDark: false,
+            extracted: analysis.displayPalette,
+            fallback: [analysis.averageColor]
+        )
         let bgC = (palette.bgStops + palette.bgVariants.flatMap { $0 })
             .compactMap { cgColorToOKLCH($0)?.c }
         let maxBgC = bgC.max() ?? 0
         let ok = analysis.hasTrustedHueCandidate
             && !analysis.lacksTrustedHue
             && !palette.usesStrictNeutralRendering
-            && avgBgS >= 0.075
-            && maxBgC >= 0.010
+            && maxBgC >= 0.014
+            && contract.metrics.classification == .pass
         report.record(
             "Faithful BK: muted warm background keeps tint",
             ok,
-            "trusted=\(analysis.hasTrustedHueCandidate) strict=\(palette.usesStrictNeutralRendering) avgBgS=\(format(avgBgS)) maxBgC=\(format(maxBgC)) colorfulness=\(format(analysis.colorfulness))"
+            "trusted=\(analysis.hasTrustedHueCandidate) strict=\(palette.usesStrictNeutralRendering) maxBgC=\(format(maxBgC)) lightSep=\(format(contract.metrics.lightModeSeparation)) colorfulness=\(format(analysis.colorfulness))"
         )
     }
 
@@ -2678,7 +2719,9 @@ nonisolated enum ColorSystemSelfCheck {
             isDark: true,
             analysis: analysis
         )
-        let bgHues = palette.bgStops.compactMap(cgColorHue(_:))
+        let bgLCH = (palette.bgStops + palette.bgVariants.flatMap { $0 })
+            .compactMap(cgColorToOKLCH(_:))
+        let bgHues = bgLCH.map(\.h)
         let bgC = (palette.bgStops + palette.bgVariants.flatMap { $0 })
             .compactMap { cgColorToOKLCH($0)?.c }
         let hasPinkHue = bgHues.contains {
@@ -2690,11 +2733,12 @@ nonisolated enum ColorSystemSelfCheck {
             && hasPinkHue
             && !hasBlueBg
             && (bgC.max() ?? 0) >= 0.010
+            && !palette.usesStrictNeutralRendering
         let bgHueSummary = bgHues.map { format($0) }.joined(separator: ",")
         report.record(
             "Faithful BK: muted pink background uses surface hue",
             ok,
-            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) bgHues=\(bgHueSummary) maxC=\(format(bgC.max() ?? 0))"
+            "nearMono=\(analysis.isNearMonochrome) trusted=\(analysis.hasTrustedHueCandidate) strict=\(palette.usesStrictNeutralRendering) bgHues=\(bgHueSummary) maxC=\(format(bgC.max() ?? 0))"
         )
     }
 
@@ -3134,7 +3178,7 @@ nonisolated enum ColorSystemSelfCheck {
         let maxC = chromas.max() ?? .infinity
         let shapeLCH = palette.shapePool.compactMap(cgColorToOKLCH(_:))
         let forbiddenShapeHue = shapeLCH.contains { lch in
-            (0.10...0.23).contains(lch.h) || lch.h >= 0.86
+            lch.c > 0.012 && ((0.10...0.23).contains(lch.h) || lch.h >= 0.86)
         }
         let ok = analysis.isNearMonochrome && maxC <= 0.012 && !forbiddenShapeHue
         report.record(
@@ -3526,19 +3570,72 @@ nonisolated enum ColorSystemSelfCheck {
     }
 
     private static func checkPhase64DayArtBackgroundAiryBand(_ report: inout CheckReport) {
-        let fixture = Phase63TierFixture()
-        let ok = fixture.dayBgB.lowerBound >= 0.985
-            && fixture.dayFgB.lowerBound >= 0.580
-            && fixture.dayFgB.upperBound <= 0.900
-            && fixture.dayDotB.upperBound <= 0.950
-            && fixture.dayBgB.lowerBound - fixture.dayFgB.upperBound >= 0.080
+        guard let analysis = analyseMix(side: 64, regions: [
+            (0.48, (204, 122, 78, 255)),
+            (0.22, (250, 226, 186, 255)),
+            (0.18, (32, 54, 96, 255)),
+            (0.12, (70, 158, 146, 255))
+        ]) else {
+            report.record("Phase 6.4: day art background keeps shapes below background", false, "analysis nil")
+            return
+        }
+        let contract = bkLayerContract(analysis: analysis, isDark: false)
+        let ok = contract.metrics.classification == .pass
+            && contract.metrics.backgroundBaseL >= 0.900
+            && contract.metrics.lightModeSeparation >= 0.055
+            && contract.metrics.shapeMaxC <= max(0.030, contract.metrics.backgroundMaxC - 0.004)
+            && contract.metrics.sRGBBackgroundBaseL - contract.metrics.sRGBShapeMaxL >= 0.045
         report.record(
             "Phase 6.4: day art background keeps shapes below background", ok,
-            "bg=\(format(fixture.dayBgB.lowerBound))...\(format(fixture.dayBgB.upperBound)) fg=\(format(fixture.dayFgB.lowerBound))...\(format(fixture.dayFgB.upperBound)) dot=\(format(fixture.dayDotB.lowerBound))...\(format(fixture.dayDotB.upperBound))"
+            "bgL=\(format(contract.metrics.backgroundBaseL)) shapeMaxL=\(format(contract.metrics.shapeMaxL)) lightSep=\(format(contract.metrics.lightModeSeparation)) bgMaxC=\(format(contract.metrics.backgroundMaxC)) shapeMaxC=\(format(contract.metrics.shapeMaxC)) sRGBSep=\(format(contract.metrics.sRGBBackgroundBaseL - contract.metrics.sRGBShapeMaxL)) class=\(contract.metrics.classification.rawValue)"
         )
     }
 
     // MARK: - Helpers
+
+    private static func bkLayerContract(
+        analysis: ArtworkColorAnalysis,
+        isDark: Bool,
+        seed: UInt64 = 0xBADC_010C,
+        extracted: [NSColor]? = nil,
+        fallback: [NSColor]? = nil
+    ) -> (
+        palette: HarmonizedPalette,
+        swatches: BKColorEngine.ShapeSwatchResult,
+        metrics: BKLayerContractMetrics
+    ) {
+        let extractedColors = extracted ?? bkExtractedPalette(for: analysis)
+        let fallbackColors = fallback ?? [analysis.averageColor]
+        let palette = BKColorEngine.make(
+            extracted: extractedColors,
+            fallback: fallbackColors,
+            isDark: isDark,
+            analysis: analysis
+        )
+        let swatches = BKColorEngine.makeShapeSwatches(
+            seed: seed,
+            extracted: extractedColors,
+            fallback: fallbackColors,
+            isDark: isDark,
+            analysis: analysis
+        )
+        let stabilized = swatches.colors.map {
+            BKColorEngine.stabilize(
+                color: $0,
+                kind: .shape,
+                palette: palette,
+                saturationJitter: 0.03,
+                brightnessJitter: 0.02
+            )
+        }
+        let metrics = BKPerceptualRolePolicy.contractMetrics(
+            palette: palette,
+            shapeSwatches: swatches.colors,
+            stabilizedShapes: stabilized,
+            analysis: analysis
+        )
+        return (palette, swatches, metrics)
+    }
 
     private static func analyse(
         side: Int,

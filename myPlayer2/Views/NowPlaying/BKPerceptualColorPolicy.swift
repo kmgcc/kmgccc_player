@@ -2,10 +2,9 @@
 //  BKPerceptualColorPolicy.swift
 //  myPlayer2
 //
-//  OKLCH-first candidate policy for BK art background roles. Production still
-//  calls the legacy HSB engine unless explicitly routed through the candidate
-//  entry points below; this file exists so parity tooling can compare both
-//  systems without weakening the strict Golden baseline.
+//  OKLCH-first policy for BK art background roles. Production enters through
+//  BKColorEngine.make / makeShapeSwatches / stabilize; legacy HSB entry points
+//  remain available for parity and DEBUG diagnostics.
 //
 
 import AppKit
@@ -79,7 +78,7 @@ nonisolated enum BKLegacyHSBPolicy {
         isDark: Bool,
         analysis: ArtworkColorAnalysis?
     ) -> HarmonizedPalette {
-        BKColorEngine.make(
+        BKColorEngine.makeLegacyHSB(
             extracted: extracted,
             fallback: fallback,
             isDark: isDark,
@@ -94,7 +93,7 @@ nonisolated enum BKLegacyHSBPolicy {
         isDark: Bool,
         analysis: ArtworkColorAnalysis?
     ) -> BKColorEngine.ShapeSwatchResult {
-        BKColorEngine.makeShapeSwatches(
+        BKColorEngine.makeLegacyHSBShapeSwatches(
             seed: seed,
             extracted: extracted,
             fallback: fallback,
@@ -111,7 +110,7 @@ nonisolated enum BKLegacyHSBPolicy {
         saturationJitter: CGFloat = 0,
         brightnessJitter: CGFloat = 0
     ) -> CGColor {
-        BKColorEngine.stabilize(
+        BKColorEngine.stabilizeLegacyHSB(
             color: color,
             kind: kind,
             palette: palette,
@@ -186,7 +185,7 @@ nonisolated enum BKPerceptualRolePolicy {
             accentHue: legacy.accentHue,
             accentStrength: legacy.accentStrength,
             accentEnabled: legacy.accentEnabled,
-            usesStrictNeutralRendering: neutral || legacy.usesStrictNeutralRendering,
+            usesStrictNeutralRendering: neutral,
             chromaticClusterCount: neutral ? 0 : legacy.chromaticClusterCount,
             bgStops: bgStops,
             bgVariants: bgVariants,
@@ -327,9 +326,15 @@ nonisolated enum BKPerceptualRolePolicy {
         legacy: HarmonizedPalette,
         analysis: ArtworkColorAnalysis?
     ) -> Bool {
-        legacy.usesStrictNeutralRendering
-            || legacy.isGrayscaleCover
-            || (analysis?.lacksTrustedHue ?? false)
+        if let analysis {
+            if analysis.lacksTrustedHue {
+                return true
+            }
+            if analysis.hasTrustedHueCandidate {
+                return false
+            }
+        }
+        return legacy.usesStrictNeutralRendering || legacy.isGrayscaleCover
     }
 
     private static func seedLCH(
@@ -424,13 +429,13 @@ nonisolated enum BKBackgroundTonePolicy {
     ) -> OKColor.OKLCH {
         let hue = source.c >= 0.004 ? source.h : seed.h
         if neutral {
-            let lightL = CGFloat(0.925 + (indexT - 0.5) * 0.055)
-            let darkL = CGFloat(isUltraDark ? 0.095 + indexT * 0.055 : 0.150 + indexT * 0.085)
+            let lightL = CGFloat(0.940 + (indexT - 0.5) * 0.055)
+            let darkL = CGFloat(isUltraDark ? 0.112 + indexT * 0.060 : 0.170 + indexT * 0.090)
             return OKColor.OKLCH(l: ColorMath.clamp(isDark ? darkL : lightL, 0, 1), c: 0, h: 0)
         }
 
         if isDark {
-            let baseL = isUltraDark ? CGFloat(0.082 + indexT * 0.070) : CGFloat(0.145 + indexT * 0.105)
+            let baseL = isUltraDark ? CGFloat(0.105 + indexT * 0.085) : CGFloat(0.170 + indexT * 0.110)
             let colorFloor = ColorMath.clamp(0.020 + coverColorfulness * 0.10, 0.024, 0.070)
             let cap = BKColorRiskPolicy.chromaCap(
                 hue: hue,
@@ -441,7 +446,7 @@ nonisolated enum BKBackgroundTonePolicy {
             return OKColor.OKLCH(l: baseL, c: c, h: BKColorRiskPolicy.adjustedHue(hue, role: .backgroundAtmosphere))
         }
 
-        let baseL = CGFloat(0.915 + indexT * 0.045)
+        let baseL = CGFloat(0.928 + indexT * 0.040)
         let colorFloor = ColorMath.clamp(0.042 + coverColorfulness * 0.075, 0.048, 0.086)
         let cap = BKColorRiskPolicy.chromaCap(
             hue: hue,
@@ -531,7 +536,7 @@ nonisolated enum BKFloatingShapePolicy {
         if neutral {
             let l = isDark
                 ? CGFloat(0.34 + position * (isUltraDark ? 0.10 : 0.18))
-                : CGFloat(0.56 + position * 0.18)
+                : CGFloat(0.615 + position * 0.190)
             return OKColor.OKLCH(l: l, c: 0, h: 0)
         }
 
@@ -549,9 +554,9 @@ nonisolated enum BKFloatingShapePolicy {
             )
         }
 
-        let lightUpper = max(0.590, min(0.805, backgroundMinL - 0.065))
-        let baseL = CGFloat(0.600 + position * 0.170)
-        let chromaCeiling = max(0.026, min(0.074, backgroundMaxC - 0.006))
+        let lightUpper = max(0.640, min(0.835, backgroundMinL - 0.045))
+        let baseL = CGFloat(0.635 + position * 0.180)
+        let chromaCeiling = max(0.024, min(0.068, backgroundMaxC * 0.78))
         let c = min(
             chromaCeiling,
             BKColorRiskPolicy.chromaCap(hue: hue, role: .floatingShapePrimary, isDark: false),
@@ -654,11 +659,17 @@ nonisolated enum BKStabilizationPolicy {
             }
         } else {
             let bgL = BKPerceptualColorMath.lchValues(from: palette.bgStops).map(\.l).min() ?? 0.92
+            let bgMaxC = BKPerceptualColorMath.lchValues(
+                from: palette.bgVariants.flatMap { $0 }.ifEmpty(palette.bgStops)
+            )
+            .map(\.c)
+            .max() ?? 0.048
             switch kind {
             case .background:
                 lch.l = max(lch.l, 0.900)
             case .shape:
                 lch.l = min(lch.l, bgL - 0.060)
+                lch.c = min(lch.c, max(0.024, min(0.064, bgMaxC * 0.78)))
             case .dot:
                 lch.l = min(lch.l, 0.765)
             }
@@ -766,7 +777,7 @@ extension BKColorEngine {
         isDark: Bool,
         analysis: ArtworkColorAnalysis? = nil
     ) -> HarmonizedPalette {
-        let legacy = make(
+        let legacy = makeLegacyHSB(
             extracted: extracted,
             fallback: fallback,
             isDark: isDark,
@@ -793,7 +804,7 @@ extension BKColorEngine {
         analysis: ArtworkColorAnalysis? = nil,
         candidatePalette: HarmonizedPalette? = nil
     ) -> ShapeSwatchResult {
-        let legacy = makeShapeSwatches(
+        let legacy = makeLegacyHSBShapeSwatches(
             seed: seed,
             extracted: extracted,
             fallback: fallback,
