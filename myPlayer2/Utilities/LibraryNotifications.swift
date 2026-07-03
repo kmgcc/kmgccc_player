@@ -8,7 +8,7 @@
 import Foundation
 
 extension Notification.Name {
-    static let playlistArtworkDidChange = Notification.Name(
+    nonisolated static let playlistArtworkDidChange = Notification.Name(
         "kmgccc_player.playlistArtworkDidChange"
     )
 }

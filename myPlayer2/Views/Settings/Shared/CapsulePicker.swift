@@ -45,8 +45,7 @@ struct CapsulePicker<T: Hashable & Identifiable>: View where T.ID: Hashable {
                         .foregroundStyle(isSelected ? accentColor : .secondary)
                 }
             )
-            .padding(.horizontal, 4)
-            .padding(.vertical, 3)
+            .padding(3)
             .background(
                 Capsule()
                     .fill(Color.secondary.opacity(0.08))

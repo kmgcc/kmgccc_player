@@ -249,20 +249,22 @@ struct SettingsTaskDialogButton: View {
                 .foregroundStyle(kind.foregroundColor)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
+                .contentShape(Capsule())
+                .background(
+                    Capsule()
+                        .fill(kind.fillColor)
+                )
+                .overlay(
+                    Capsule()
+                        .strokeBorder(GlassStyleTokens.glassBorderColor, lineWidth: GlassStyleTokens.hairlineWidth)
+                )
+                .glassEffect(.clear, in: Capsule())
+                .clipShape(Capsule())
         }
         .buttonStyle(.plain)
+        .contentShape(Capsule())
         .disabled(disabled)
         .opacity(disabled ? 0.5 : 1)
-        .background(
-            Capsule()
-                .fill(kind.fillColor)
-        )
-        .overlay(
-            Capsule()
-                .strokeBorder(GlassStyleTokens.glassBorderColor, lineWidth: GlassStyleTokens.hairlineWidth)
-        )
-        .glassEffect(.clear, in: Capsule())
-        .clipShape(Capsule())
         .if(kind.isProminent) { view in
             view.subtleFloatingShadow()
         }

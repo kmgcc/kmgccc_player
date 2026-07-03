@@ -12,14 +12,46 @@ import SwiftUI
 /// Cache entry for header color extraction results.
 private final class HeaderColorCacheEntry: NSObject {
     let accentColor: NSColor
-    let semanticPalette: SemanticPalette
+    let semanticPalette: SemanticPalette?
+    let foregroundPalette: AppForegroundPalette?
     let checksum: UInt64
 
-    init(accentColor: NSColor, semanticPalette: SemanticPalette, checksum: UInt64) {
+    init(
+        accentColor: NSColor,
+        semanticPalette: SemanticPalette?,
+        foregroundPalette: AppForegroundPalette?,
+        checksum: UInt64
+    ) {
         self.accentColor = accentColor
         self.semanticPalette = semanticPalette
+        self.foregroundPalette = foregroundPalette
         self.checksum = checksum
     }
+}
+
+private struct HeaderColorPersistentEntry: Codable {
+    let cacheVersion: String
+    let artworkIdentity: String
+    let isDark: Bool
+    let checksum: UInt64
+    let accent: CodableColor
+    let foreground: CodableForegroundPalette
+    let cachedAt: Date
+}
+
+private struct CodableForegroundPalette: Codable {
+    let primary: CodableColor
+    let secondary: CodableColor
+    let tertiary: CodableColor
+    let quaternary: CodableColor
+    let disabled: CodableColor
+}
+
+private struct CodableColor: Codable {
+    let red: CGFloat
+    let green: CGFloat
+    let blue: CGFloat
+    let alpha: CGFloat
 }
 
 /// Extracts colors from header artwork independently of the global ThemeStore.
@@ -47,13 +79,17 @@ final class HeaderColorExtractor {
     func cachedResult(
         artworkIdentity: String,
         isDark: Bool? = nil
-    ) -> (accent: Color, palette: SemanticPalette, checksum: UInt64)? {
+    ) -> (accent: Color, palette: SemanticPalette?, foreground: AppForegroundPalette?, checksum: UInt64)? {
         let dark = isDark ?? (NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
         let identityCacheKey = "\(artworkIdentity)-\(dark ? "dark" : "light")" as NSString
-        guard let cached = latestByIdentityCache.object(forKey: identityCacheKey) else {
+        if let cached = latestByIdentityCache.object(forKey: identityCacheKey) {
+            return renderedResult(from: cached)
+        }
+        guard let persisted = loadPersistentEntry(artworkIdentity: artworkIdentity, isDark: dark) else {
             return nil
         }
-        return renderedResult(from: cached)
+        latestByIdentityCache.setObject(persisted, forKey: identityCacheKey)
+        return renderedResult(from: persisted)
     }
 
     /// Extract a header-specific accent color and semantic palette from artwork data.
@@ -77,7 +113,9 @@ final class HeaderColorExtractor {
             Log.trace("HeaderColor cache hit for \(shortIdentity(artworkIdentity))", category: .theme)
             latestByIdentityCache.setObject(cached, forKey: identityCacheKey)
             let rendered = renderedResult(from: cached)
-            return (rendered.accent, rendered.palette)
+            if let palette = rendered.palette {
+                return (rendered.accent, palette)
+            }
         }
 
         let result = await extractInBackground(data: data, checksum: checksum, isDark: dark)
@@ -87,10 +125,12 @@ final class HeaderColorExtractor {
         let entry = HeaderColorCacheEntry(
             accentColor: accentNS,
             semanticPalette: palette,
+            foregroundPalette: palette.appForeground,
             checksum: checksum
         )
         cache.setObject(entry, forKey: cacheKey)
         latestByIdentityCache.setObject(entry, forKey: identityCacheKey)
+        persist(entry, artworkIdentity: artworkIdentity, isDark: dark)
 
         Log.debug(
             "HeaderColor extracted for \(shortIdentity(artworkIdentity)) accent=\(formatColor(accentNS))",
@@ -144,12 +184,77 @@ final class HeaderColorExtractor {
 
     private func renderedResult(
         from cached: HeaderColorCacheEntry
-    ) -> (accent: Color, palette: SemanticPalette, checksum: UInt64) {
+    ) -> (accent: Color, palette: SemanticPalette?, foreground: AppForegroundPalette?, checksum: UInt64) {
         (
             ColorRenderingAdapter.makeSwiftUIColor(cached.accentColor),
             cached.semanticPalette,
+            cached.foregroundPalette ?? cached.semanticPalette?.appForeground,
             cached.checksum
         )
+    }
+
+    private func loadPersistentEntry(artworkIdentity: String, isDark: Bool) -> HeaderColorCacheEntry? {
+        let url = persistentFileURL(artworkIdentity: artworkIdentity, isDark: isDark)
+        guard let data = try? Data(contentsOf: url),
+              let record = try? JSONDecoder().decode(HeaderColorPersistentEntry.self, from: data),
+              record.cacheVersion == ArtworkColorExtractor.cacheVersion,
+              record.artworkIdentity == artworkIdentity,
+              record.isDark == isDark
+        else {
+            return nil
+        }
+
+        let entry = HeaderColorCacheEntry(
+            accentColor: record.accent.nsColor,
+            semanticPalette: nil,
+            foregroundPalette: record.foreground.palette,
+            checksum: record.checksum
+        )
+        Log.trace("HeaderColor disk cache hit for \(shortIdentity(artworkIdentity))", category: .theme)
+        return entry
+    }
+
+    private func persist(_ entry: HeaderColorCacheEntry, artworkIdentity: String, isDark: Bool) {
+        let foreground = entry.foregroundPalette ?? entry.semanticPalette?.appForeground
+        guard let foreground else { return }
+        let record = HeaderColorPersistentEntry(
+            cacheVersion: ArtworkColorExtractor.cacheVersion,
+            artworkIdentity: artworkIdentity,
+            isDark: isDark,
+            checksum: entry.checksum,
+            accent: CodableColor(entry.accentColor),
+            foreground: CodableForegroundPalette(foreground),
+            cachedAt: Date()
+        )
+        let url = persistentFileURL(artworkIdentity: artworkIdentity, isDark: isDark)
+        do {
+            try FileManager.default.createDirectory(
+                at: persistentCacheDirectory,
+                withIntermediateDirectories: true
+            )
+            let data = try JSONEncoder().encode(record)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            Log.warning("Failed to persist header color cache: \(error.localizedDescription)", category: .theme)
+        }
+    }
+
+    private var persistentCacheDirectory: URL {
+        StorageLocations.headerColorCacheURL
+    }
+
+    private func persistentFileURL(artworkIdentity: String, isDark: Bool) -> URL {
+        let key = "\(ArtworkColorExtractor.cacheVersion)|\(artworkIdentity)|\(isDark ? "dark" : "light")"
+        return persistentCacheDirectory.appendingPathComponent("\(stableDigest(key)).json")
+    }
+
+    private func stableDigest(_ value: String) -> String {
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        for byte in value.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
     }
 
     private func shortIdentity(_ identity: String) -> String {
@@ -162,5 +267,40 @@ final class HeaderColorExtractor {
         let g = Int((rgb.greenComponent * 255).rounded())
         let b = Int((rgb.blueComponent * 255).rounded())
         return "rgb(\(r),\(g),\(b))"
+    }
+}
+
+private extension CodableColor {
+    init(_ color: NSColor) {
+        let rgb = color.usingColorSpace(.deviceRGB)
+            ?? NSColor(deviceRed: 0.9, green: 0.78, blue: 0.6, alpha: 1)
+        red = rgb.redComponent
+        green = rgb.greenComponent
+        blue = rgb.blueComponent
+        alpha = rgb.alphaComponent
+    }
+
+    var nsColor: NSColor {
+        NSColor(deviceRed: red, green: green, blue: blue, alpha: alpha)
+    }
+}
+
+private extension CodableForegroundPalette {
+    init(_ palette: AppForegroundPalette) {
+        primary = CodableColor(palette.primary)
+        secondary = CodableColor(palette.secondary)
+        tertiary = CodableColor(palette.tertiary)
+        quaternary = CodableColor(palette.quaternary)
+        disabled = CodableColor(palette.disabled)
+    }
+
+    var palette: AppForegroundPalette {
+        AppForegroundPalette(
+            primary: primary.nsColor,
+            secondary: secondary.nsColor,
+            tertiary: tertiary.nsColor,
+            quaternary: quaternary.nsColor,
+            disabled: disabled.nsColor
+        )
     }
 }

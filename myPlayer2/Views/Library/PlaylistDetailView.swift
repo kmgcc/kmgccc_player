@@ -391,6 +391,7 @@ struct PlaylistDetailView: View {
             currentArtwork: pageController.headerCurrentArtwork,
             incomingArtwork: pageController.headerIncomingArtwork,
             incomingOpacity: pageController.headerIncomingOpacity,
+            isColorReady: pageController.isHeaderColorReady,
             onPlay: {
                 guard !queueTracks.isEmpty else { return }
                 if case .album = libraryVM.currentSelection {
@@ -419,6 +420,7 @@ struct PlaylistDetailView: View {
         )
         .environment(\.libraryPresentedAccentColor, pageController.headerAccentColor)
         .environment(\.libraryHeaderSemanticPalette, pageController.headerSemanticPalette)
+        .environment(\.libraryHeaderForegroundPalette, pageController.headerForegroundPalette)
 
         Spacer().frame(height: 12)
     }
