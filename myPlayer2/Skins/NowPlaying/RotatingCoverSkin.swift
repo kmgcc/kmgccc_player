@@ -994,16 +994,13 @@ private struct RotatingCoverArtwork: View {
 
             if visualizerMode == "led" {
                 let usesFullscreen = usesFullscreenLayout
-                LedMeterView(
-                    level: Double(context.audio.smoothedLevel),
-                    ledValues: context.led.leds,
+                LiveLedMeterView(
                     dotSize: usesFullscreen ? 16 : 14,
                     spacing: usesFullscreen ? 10 : 8,
                     pillTint: context.theme.artworkAccentColor,
                     isPlaying: context.playback.isPlaying,
                     forceBrightLEDColors: context.theme.artBackgroundIsUltraDark
                 )
-                .ledMeterLifecycle(isPlaying: context.playback.isPlaying)
             } else if visualizerMode == "spectrum" {
                 PillSpectrumView(
                     context: context,

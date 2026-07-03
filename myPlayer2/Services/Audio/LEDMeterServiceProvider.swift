@@ -15,6 +15,7 @@ import Observation
 @Observable
 @MainActor
 final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
+    typealias FrameConsumer = @MainActor (_ led: LEDMeterMetrics, _ audio: AudioMetrics) -> Void
 
     private var _service: LEDMeterService?
     private let config: LEDMeterConfig
@@ -24,6 +25,8 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     private var externalIsPlaying: Bool = false
     private var externalPollSuspendWork: DispatchWorkItem?
     private var lastObservedPlaying: Bool = false
+    private var frameConsumers: [UUID: FrameConsumer] = [:]
+    private var serviceFrameConsumerID: UUID?
 
     /// Active sampling sessions. The provider keeps the underlying meter alive
     /// while at least one session is held (Now Playing scene, fullscreen,
@@ -64,10 +67,13 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
         didSet {
             guard oldValue != playbackSource else { return }
             if playbackSource.isExternal {
+                detachServiceFrameConsumer()
                 startExternalPolling()
             } else {
                 stopExternalPolling()
+                syncFrameConsumerForwarder()
             }
+            publishFrameToConsumers()
         }
     }
 
@@ -90,6 +96,9 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
         service.attachToMixer(mixerProvider())
         service.updatePlaybackState(isPlaying: lastObservedPlaying)
         _service = service
+        if !playbackSource.isExternal, !frameConsumers.isEmpty {
+            attachServiceFrameConsumer(to: service)
+        }
         Log.debug("LEDMeterService lazily initialized", category: .audio)
         return service
     }
@@ -140,6 +149,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     func releaseNowPlayingResources() {
         guard sessionCount == 0 else { return }
         stopExternalPolling()
+        detachServiceFrameConsumer()
         _service?.stop()
         _service = nil
     }
@@ -174,6 +184,61 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
         }
     }
 
+    // MARK: - Frame Consumers
+
+    func addFrameConsumer(_ consumer: @escaping FrameConsumer) -> UUID {
+        let id = UUID()
+        frameConsumers[id] = consumer
+        consumer(metrics, audioMetrics)
+        syncFrameConsumerForwarder()
+        return id
+    }
+
+    func removeFrameConsumer(_ id: UUID) {
+        frameConsumers.removeValue(forKey: id)
+        syncFrameConsumerForwarder()
+    }
+
+    private func syncFrameConsumerForwarder() {
+        guard !frameConsumers.isEmpty else {
+            detachServiceFrameConsumer()
+            return
+        }
+
+        if playbackSource.isExternal {
+            detachServiceFrameConsumer()
+            startExternalPolling()
+            return
+        }
+
+        attachServiceFrameConsumer(to: getOrCreate())
+    }
+
+    private func attachServiceFrameConsumer(to service: LEDMeterService) {
+        guard serviceFrameConsumerID == nil else { return }
+        serviceFrameConsumerID = service.addFrameConsumer { [weak self] led, audio in
+            self?.publishFrameToConsumers(led: led, audio: audio)
+        }
+    }
+
+    private func detachServiceFrameConsumer() {
+        guard let id = serviceFrameConsumerID else { return }
+        _service?.removeFrameConsumer(id)
+        serviceFrameConsumerID = nil
+    }
+
+    private func publishFrameToConsumers(
+        led: LEDMeterMetrics? = nil,
+        audio: AudioMetrics? = nil
+    ) {
+        guard !frameConsumers.isEmpty else { return }
+        let resolvedLED = led ?? metrics
+        let resolvedAudio = audio ?? audioMetrics
+        for consumer in frameConsumers.values {
+            consumer(resolvedLED, resolvedAudio)
+        }
+    }
+
     // MARK: - External Polling
 
     private func startExternalPolling() {
@@ -188,6 +253,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
             Task { @MainActor [weak self] in
                 guard let self, self.playbackSource.isExternal else { return }
                 self.externalPulse &+= 1
+                self.publishFrameToConsumers()
             }
         }
         RunLoop.main.add(timer, forMode: .common)

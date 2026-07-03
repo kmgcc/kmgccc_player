@@ -110,16 +110,13 @@ struct ClassicCoverArtworkView: View {
             artworkContainer(size: artworkSize)
 
             if visualizerMode == "led" {
-                LedMeterView(
-                    level: Double(context.audio.smoothedLevel),
-                    ledValues: context.led.leds,
+                LiveLedMeterView(
                     dotSize: dotSize,
                     spacing: spacing,
                     pillTint: context.theme.artworkAccentColor,
                     isPlaying: context.playback.isPlaying,
                     forceBrightLEDColors: forceBrightLEDColors || context.theme.artBackgroundIsUltraDark
                 )
-                .ledMeterLifecycle(isPlaying: context.playback.isPlaying)
             } else if visualizerMode == "spectrum" {
                 PillSpectrumView(
                     context: context,
