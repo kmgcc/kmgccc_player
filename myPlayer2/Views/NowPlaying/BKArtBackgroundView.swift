@@ -1744,7 +1744,7 @@ private final class BKArtBackgroundLayerView: NSView {
             ]
         )
 
-        let outputSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let outputSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
         let rendered = circleTintContext.createCGImage(
             tinted,
             from: input.extent,
@@ -2686,7 +2686,7 @@ private final class BKArtBackgroundLayerView: NSView {
             )
         }
         let finalImage = toneMap(image: composed, isDark: isDark)
-        let outputSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let outputSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
         let rendered = backgroundRenderContext.createCGImage(
             finalImage,
             from: input.extent,
