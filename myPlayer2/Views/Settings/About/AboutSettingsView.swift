@@ -9,6 +9,7 @@ import SwiftUI
 
 /// About page with app info, licenses, and social links.
 struct AboutSettingsView: View {
+    @EnvironmentObject private var themeStore: ThemeStore
     @AppStorage(UpdateCheckPreferences.checkForUpdatesOnLaunchKey) private var checkForUpdatesOnLaunch: Bool = true
     @State private var aboutEasterEggTracker = AboutEasterEggTapTracker()
     @State private var showEasterEggImage: Bool = false
@@ -87,6 +88,11 @@ struct AboutSettingsView: View {
                     title: "书",
                     hexColor: "f72241",
                     destination: "https://xhslink.com/m/7o53GE3YNQy"
+                )
+                socialIconLink(
+                    title: "K",
+                    color: themeStore.accentColor,
+                    destination: "https://player.kmgccc.cn/"
                 )
 
                 Button("查看更新") {
@@ -333,6 +339,20 @@ struct AboutSettingsView: View {
         Link(destination: URL(string: destination)!) {
             Circle()
                 .fill(Color(hex: hexColor) ?? .secondary)
+                .frame(width: 30, height: 30)
+                .overlay {
+                    Text(title)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func socialIconLink(title: String, color: Color, destination: String) -> some View {
+        Link(destination: URL(string: destination)!) {
+            Circle()
+                .fill(color)
                 .frame(width: 30, height: 30)
                 .overlay {
                     Text(title)
