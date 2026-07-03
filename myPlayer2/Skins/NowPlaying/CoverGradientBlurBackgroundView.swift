@@ -672,7 +672,13 @@ enum CoverGradientBlurRenderer {
             ciContext.clearCaches()
         }
 
-        guard let cgImage = ciContext.createCGImage(finalImage, from: canvasRect) else {
+        let outputSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
+        guard let cgImage = ciContext.createCGImage(
+            finalImage,
+            from: canvasRect,
+            format: .RGBA8,
+            colorSpace: outputSpace
+        ) else {
             return nil
         }
 
