@@ -830,17 +830,10 @@ nonisolated enum SemanticPaletteFactory {
         if useArtworkTint {
             globalAccent = isDark ? artworkAccentOnDark : artworkAccentOnLight
         } else {
+            let T = ColorSystemTokens.FallbackAccentOKLCH.self
             globalAccent = isDark
-                ? ColorMath.clampLightness(
-                    userFallbackAccent,
-                    lo: ColorSystemTokens.FallbackAccent.darkMinL,
-                    hi: ColorSystemTokens.FallbackAccent.darkMaxL
-                )
-                : ColorMath.clampLightness(
-                    userFallbackAccent,
-                    lo: ColorSystemTokens.FallbackAccent.lightMinL,
-                    hi: ColorSystemTokens.FallbackAccent.lightMaxL
-                )
+                ? clampLightnessOKLCH(userFallbackAccent, lo: T.darkMinL, hi: T.darkMaxL)
+                : clampLightnessOKLCH(userFallbackAccent, lo: T.lightMinL, hi: T.lightMaxL)
             // Debug: log resolved accent RGB so we can confirm the runtime colour.
             let inC = ColorMath.hsl(of: userFallbackAccent)
             let outC = ColorMath.hsl(of: globalAccent)
@@ -1077,6 +1070,17 @@ nonisolated enum SemanticPaletteFactory {
             h: 0
         )
         return OKColor.okLCHToNSColor(crushed, alpha: color.alphaComponent)
+    }
+
+    nonisolated private static func clampLightnessOKLCH(
+        _ color: NSColor,
+        lo: CGFloat,
+        hi: CGFloat
+    ) -> NSColor {
+        guard let lch = OKColor.nsColorToOKLCH(color) else { return color }
+        let clampedL = ColorMath.clamp(lch.l, lo, hi)
+        let targetLCH = OKColor.OKLCH(l: clampedL, c: lch.c, h: lch.h)
+        return OKColor.okLCHToNSColor(targetLCH, alpha: color.alphaComponent)
     }
 
     // MARK: - Lyric colour palette
@@ -1624,8 +1628,7 @@ nonisolated enum SemanticPaletteFactory {
         }
         guard dominantLCH.c < T.lyricsDominantSeedMinChroma else { return nil }
 
-        let averageHSL = ColorMath.hsl(of: averageBaseColor)
-        let carriesHue = averageHSL.s >= 0.18
+        let carriesHue = averageLCH.c >= 0.024
             || averageLCH.c >= ColorSystemTokens.NearMonochromeProfile.mutedTrustedHueChromaFloor
         return carriesHue ? averageLCH : nil
     }
@@ -1922,7 +1925,7 @@ nonisolated enum SemanticPaletteFactory {
         analysis.topPalette.dropFirst().first ?? analysis.dominantColor
     }
 
-    nonisolated fileprivate static func readableTextOnArtwork(analysis: ArtworkColorAnalysis) -> NSColor {
+    nonisolated fileprivate static func legacyReadableTextOnArtwork(analysis: ArtworkColorAnalysis) -> NSColor {
         let hsl = ColorMath.hsl(of: analysis.bestTextSourceColor)
         if analysis.usesDarkForeground {
             return ColorMath.color(
@@ -1945,6 +1948,75 @@ nonisolated enum SemanticPaletteFactory {
                 l: ColorSystemTokens.ReadableText.lightForegroundLightness
             )
         }
+    }
+
+    nonisolated fileprivate static func readableTextOnArtworkOKLCH(analysis: ArtworkColorAnalysis) -> NSColor {
+        let T = ColorSystemTokens.ReadableTextOKLCH.self
+        let sourceColor = analysis.bestTextSourceColor
+        guard let lch = OKColor.nsColorToOKLCH(sourceColor) else {
+            return sourceColor
+        }
+
+        let targetL: CGFloat
+        let h = lch.h
+
+        if analysis.usesDarkForeground {
+            targetL = T.darkForegroundL
+            let cap: CGFloat
+            switch h {
+            case 0.04..<0.14: cap = T.darkChromaCapWarm
+            case 0.14..<0.20: cap = T.darkChromaCapYellow
+            case 0.20..<0.42: cap = T.darkChromaCapGreen
+            case 0.42..<0.72: cap = T.darkChromaCapCool
+            case 0.72..<0.88: cap = T.darkChromaCapViolet
+            default:          cap = T.darkChromaCapDefault
+            }
+
+            let clampedC = ColorMath.clamp(lch.c, T.darkForegroundChromaLo, T.darkForegroundChromaHi)
+            let capC = analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate ? 0 : cap
+            let finalC: CGFloat
+            if capC > 0 {
+                let shouldered = OKColor.chromaSoftShoulder(
+                    OKColor.OKLCH(l: targetL, c: clampedC, h: h),
+                    ceiling: capC,
+                    softness: T.chromaShoulderSoftness
+                ).c
+                finalC = ColorMath.clamp(shouldered, T.darkForegroundChromaLo, capC)
+            } else {
+                finalC = 0
+            }
+            return OKColor.okLCHToNSColor(OKColor.OKLCH(l: targetL, c: finalC, h: h), alpha: 1.0)
+        } else {
+            targetL = T.lightForegroundL
+            let cap: CGFloat
+            switch h {
+            case 0.04..<0.14: cap = T.lightChromaCapWarm
+            case 0.14..<0.20: cap = T.lightChromaCapYellow
+            case 0.20..<0.42: cap = T.lightChromaCapGreen
+            case 0.42..<0.72: cap = T.lightChromaCapCool
+            case 0.72..<0.88: cap = T.lightChromaCapViolet
+            default:          cap = T.lightChromaCapDefault
+            }
+
+            let clampedC = ColorMath.clamp(lch.c, T.lightForegroundChromaLo, T.lightForegroundChromaHi)
+            let capC = analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate ? 0 : cap
+            let finalC: CGFloat
+            if capC > 0 {
+                let shouldered = OKColor.chromaSoftShoulder(
+                    OKColor.OKLCH(l: targetL, c: clampedC, h: h),
+                    ceiling: capC,
+                    softness: T.chromaShoulderSoftness
+                ).c
+                finalC = ColorMath.clamp(shouldered, T.lightForegroundChromaLo, capC)
+            } else {
+                finalC = 0
+            }
+            return OKColor.okLCHToNSColor(OKColor.OKLCH(l: targetL, c: finalC, h: h), alpha: 1.0)
+        }
+    }
+
+    nonisolated fileprivate static func readableTextOnArtwork(analysis: ArtworkColorAnalysis) -> NSColor {
+        return readableTextOnArtworkOKLCH(analysis: analysis)
     }
 
     fileprivate static func secondaryTextOnArtwork(analysis: ArtworkColorAnalysis) -> NSColor {
@@ -2000,7 +2072,7 @@ nonisolated enum SemanticPaletteFactory {
         neutraliseLyricIfNearMono(analysis.averageColor, analysis: analysis)
     }
 
-    fileprivate static func coverGradientDominant(
+    fileprivate static func legacyCoverGradientDominant(
         analysis: ArtworkColorAnalysis,
         isDark: Bool
     ) -> NSColor {
@@ -2020,7 +2092,29 @@ nonisolated enum SemanticPaletteFactory {
         return ColorMath.color(h: hsl.h, s: s, l: l)
     }
 
-    fileprivate static func coverGradientText(analysis: ArtworkColorAnalysis) -> NSColor {
+    fileprivate static func coverGradientDominantOKLCH(
+        analysis: ArtworkColorAnalysis,
+        isDark: Bool
+    ) -> NSColor {
+        let T = ColorSystemTokens.CoverGradientOKLCH.self
+        guard let lch = OKColor.nsColorToOKLCH(analysis.dominantColor) else {
+            return analysis.dominantColor
+        }
+        let scaledC = lch.c * T.dominantChromaScale
+        let clampedC = ColorMath.clamp(scaledC, T.dominantChromaLo, T.dominantChromaHi)
+        let capC = analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate ? 0 : clampedC
+        let clampedL = ColorMath.clamp(lch.l, T.dominantLLo, T.dominantLHi)
+        return OKColor.okLCHToNSColor(OKColor.OKLCH(l: clampedL, c: capC, h: lch.h), alpha: 1.0)
+    }
+
+    fileprivate static func coverGradientDominant(
+        analysis: ArtworkColorAnalysis,
+        isDark: Bool
+    ) -> NSColor {
+        return coverGradientDominantOKLCH(analysis: analysis, isDark: isDark)
+    }
+
+    fileprivate static func legacyCoverGradientText(analysis: ArtworkColorAnalysis) -> NSColor {
         // Stronger contrast bias than readableTextOnArtwork — used over a blurred
         // cover, not a solid surface.
         let hsl = ColorMath.hsl(of: analysis.bestTextSourceColor)
@@ -2045,6 +2139,55 @@ nonisolated enum SemanticPaletteFactory {
                 l: ColorSystemTokens.CoverGradient.lightTextLightness
             )
         }
+    }
+
+    fileprivate static func coverGradientTextOKLCH(analysis: ArtworkColorAnalysis) -> NSColor {
+        let T = ColorSystemTokens.CoverGradientOKLCH.self
+        let sourceColor = analysis.bestTextSourceColor
+        guard let lch = OKColor.nsColorToOKLCH(sourceColor) else {
+            return sourceColor
+        }
+
+        let targetL: CGFloat
+        let h = lch.h
+
+        if analysis.usesDarkForeground {
+            targetL = T.darkTextL
+            let clampedC = ColorMath.clamp(lch.c, T.darkTextChromaLo, T.darkTextChromaHi)
+            let capC = analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate ? 0 : T.darkTextChromaHi
+            let finalC: CGFloat
+            if capC > 0 {
+                let shouldered = OKColor.chromaSoftShoulder(
+                    OKColor.OKLCH(l: targetL, c: clampedC, h: h),
+                    ceiling: capC,
+                    softness: T.chromaShoulderSoftness
+                ).c
+                finalC = ColorMath.clamp(shouldered, T.darkTextChromaLo, capC)
+            } else {
+                finalC = 0
+            }
+            return OKColor.okLCHToNSColor(OKColor.OKLCH(l: targetL, c: finalC, h: h), alpha: 1.0)
+        } else {
+            targetL = T.lightTextL
+            let clampedC = ColorMath.clamp(lch.c, T.lightTextChromaLo, T.lightTextChromaHi)
+            let capC = analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate ? 0 : T.lightTextChromaHi
+            let finalC: CGFloat
+            if capC > 0 {
+                let shouldered = OKColor.chromaSoftShoulder(
+                    OKColor.OKLCH(l: targetL, c: clampedC, h: h),
+                    ceiling: capC,
+                    softness: T.chromaShoulderSoftness
+                ).c
+                finalC = ColorMath.clamp(shouldered, T.lightTextChromaLo, capC)
+            } else {
+                finalC = 0
+            }
+            return OKColor.okLCHToNSColor(OKColor.OKLCH(l: targetL, c: finalC, h: h), alpha: 1.0)
+        }
+    }
+
+    fileprivate static func coverGradientText(analysis: ArtworkColorAnalysis) -> NSColor {
+        return coverGradientTextOKLCH(analysis: analysis)
     }
 }
 
@@ -2081,6 +2224,30 @@ nonisolated enum SemanticPaletteSelfCheck {
             globalAccent: globalAccent,
             isDark: isDark
         )
+    }
+
+    nonisolated static func legacyReadableTextOnArtwork(
+        _ analysis: ArtworkColorAnalysis
+    ) -> NSColor {
+        SemanticPaletteFactory.legacyReadableTextOnArtwork(analysis: analysis)
+    }
+
+    nonisolated static func legacyCoverGradientText(
+        _ analysis: ArtworkColorAnalysis
+    ) -> NSColor {
+        SemanticPaletteFactory.legacyCoverGradientText(analysis: analysis)
+    }
+
+    nonisolated static func readableTextOnArtworkOKLCH(
+        _ analysis: ArtworkColorAnalysis
+    ) -> NSColor {
+        SemanticPaletteFactory.readableTextOnArtworkOKLCH(analysis: analysis)
+    }
+
+    nonisolated static func coverGradientTextOKLCH(
+        _ analysis: ArtworkColorAnalysis
+    ) -> NSColor {
+        SemanticPaletteFactory.coverGradientTextOKLCH(analysis: analysis)
     }
 
     nonisolated static func lyricsPalette(

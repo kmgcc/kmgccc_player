@@ -181,6 +181,94 @@ nonisolated enum ColorSystemTokens {
         static let lightTextLightness: CGFloat = 0.94
     }
 
+    // MARK: - OKLCH readable text on artwork
+    //
+    // OKLCH replacement for `ReadableText`. OKLCH L replaces HSL lightness
+    // (perceptually uniform); OKLCH C replaces HSL saturation (hue-independent
+    // chroma control). Per-hue-family caps prevent high-saturation warm/green
+    // hues from producing unreadable or fluorescent text.
+
+    enum ReadableTextOKLCH {
+
+        // Dark foreground (text-on-light-cover): L locked near deep charcoal.
+        // OKLCH L≈0.20 is perceptually equivalent to HSL L=0.12 for typical
+        // mid-chroma text.
+        static let darkForegroundL: CGFloat = 0.20
+
+        // Dark foreground chroma clamp.
+        static let darkForegroundChromaLo: CGFloat = 0.008
+        static let darkForegroundChromaHi: CGFloat = 0.045
+
+        // Per-hue-family dark foreground chroma caps. Warm/orange can carry
+        // more chroma without losing readability; cool/violet needs less.
+        static let darkChromaCapWarm: CGFloat       = 0.055  // hue 0.04…0.14 (red-orange)
+        static let darkChromaCapYellow: CGFloat     = 0.050  // hue 0.14…0.20
+        static let darkChromaCapGreen: CGFloat      = 0.038  // hue 0.20…0.42 (incl. yellow-green)
+        static let darkChromaCapCool: CGFloat       = 0.042  // hue 0.42…0.72 (cyan-blue)
+        static let darkChromaCapViolet: CGFloat     = 0.040  // hue 0.72…0.88
+        static let darkChromaCapDefault: CGFloat    = 0.045  // pink/magenta wraparound
+
+        // Light foreground (text-on-dark-cover): L locked near off-white.
+        static let lightForegroundL: CGFloat = 0.93
+
+        // Light foreground chroma clamp: narrower than dark because bright
+        // high-chroma text on dark backgrounds can appear fluorescent.
+        static let lightForegroundChromaLo: CGFloat = 0.004
+        static let lightForegroundChromaHi: CGFloat = 0.030
+
+        // Per-hue-family light foreground chroma caps.
+        static let lightChromaCapWarm: CGFloat      = 0.035  // hue 0.04…0.14
+        static let lightChromaCapYellow: CGFloat    = 0.028  // hue 0.14…0.20
+        static let lightChromaCapGreen: CGFloat     = 0.022  // hue 0.20…0.42 (most restrictive)
+        static let lightChromaCapCool: CGFloat      = 0.028  // hue 0.42…0.72
+        static let lightChromaCapViolet: CGFloat    = 0.026  // hue 0.72…0.88
+        static let lightChromaCapDefault: CGFloat   = 0.030
+
+        // Chroma soft-shoulder softness for gentle compression above cap.
+        static let chromaShoulderSoftness: CGFloat = 0.012
+    }
+
+    // MARK: - OKLCH cover gradient
+    //
+    // OKLCH replacement for `CoverGradient`. Cover gradient sits behind a blur
+    // and demands stronger contrast bias than direct-on-artwork text.
+
+    enum CoverGradientOKLCH {
+
+        // Dominant-tint: OKLCH L/C clamp replaces HSL S/L clamp.
+        static let dominantChromaScale: CGFloat = 0.92
+        static let dominantChromaLo: CGFloat = 0.010
+        static let dominantChromaHi: CGFloat = 0.120
+        static let dominantLLo: CGFloat = 0.24
+        static let dominantLHi: CGFloat = 0.76
+
+        // Text-over-blurred-cover: stronger contrast bias.
+        // Dark foreground (text-on-light gradient).
+        static let darkTextL: CGFloat = 0.22
+        static let darkTextChromaLo: CGFloat = 0.010
+        static let darkTextChromaHi: CGFloat = 0.048
+
+        // Light foreground (text-on-dark gradient).
+        static let lightTextL: CGFloat = 0.95
+        static let lightTextChromaLo: CGFloat = 0.004
+        static let lightTextChromaHi: CGFloat = 0.024
+
+        // Per-hue chroma shoulder softness.
+        static let chromaShoulderSoftness: CGFloat = 0.010
+    }
+
+    // MARK: - OKLCH fallback accent
+    //
+    // OKLCH replacement for `FallbackAccent`. Applied to the user's configured
+    // fallback accent when `useArtworkTint` is off.
+
+    enum FallbackAccentOKLCH {
+        static let darkMinL: CGFloat = 0.72
+        static let darkMaxL: CGFloat = 0.86
+        static let lightMinL: CGFloat = 0.38
+        static let lightMaxL: CGFloat = 0.55
+    }
+
     // MARK: - Fullscreen lyric base
     //
     // Switches between using the dominant cover hue and the best text-source

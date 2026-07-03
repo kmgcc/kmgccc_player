@@ -109,9 +109,9 @@ final class HeaderColorExtractor {
         // Read AppKit/SwiftUI APIs on MainActor before crossing to the background queue.
         let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let scheme: ColorScheme = isDark ? .dark : .light
-        // Resolve the dynamic accent color to plain sRGB components while on MainActor.
+        // Resolve the dynamic accent color while on MainActor.
         let accentBase = NSColor(AppSettings.shared.accentColor)
-            .usingColorSpace(.sRGB) ?? NSColor(srgbRed: 0.9, green: 0.78, blue: 0.6, alpha: 1)
+            .usingColorSpace(.deviceRGB) ?? NSColor(deviceRed: 0.9, green: 0.78, blue: 0.6, alpha: 1)
         let accentR = accentBase.redComponent
         let accentG = accentBase.greenComponent
         let accentB = accentBase.blueComponent
@@ -123,7 +123,7 @@ final class HeaderColorExtractor {
                     return
                 }
 
-                let fallbackAccent = NSColor(srgbRed: accentR, green: accentG, blue: accentB, alpha: 1)
+                let fallbackAccent = NSColor(deviceRed: accentR, green: accentG, blue: accentB, alpha: 1)
                 let palette = SemanticPaletteFactory.make(
                     from: analysis,
                     scheme: scheme,

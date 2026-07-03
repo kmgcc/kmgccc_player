@@ -1059,6 +1059,8 @@ private enum WaveformCapsulesPalette {
         let blue = c1.blueComponent + (c2.blueComponent - c1.blueComponent) * t
         let interpolated = NSColor(calibratedRed: red, green: green, blue: blue, alpha: 1)
 
+        // Allowed legacy HSB residual: local graphic/rendering transform for capsule waveform.
+        // Does not participate in semantic color decisions.
         var hue: CGFloat = 0
         var saturation: CGFloat = 0
         var brightness: CGFloat = 0
