@@ -146,6 +146,29 @@ written to:
 Tools/ColorGoldenMaster/.generated/bk-parity-review.html
 ```
 
+Write the LED controlled parity report:
+
+```sh
+Tools/ColorGoldenMaster/run.sh led-parity
+```
+
+Generate the LED visual review page:
+
+```sh
+Tools/ColorGoldenMaster/run.sh led-review
+```
+
+The LED report compares the retained DEBUG legacy reference, the migration-era
+current candidate reference, and the retuned production OKLCH policy. It records
+the LED seed, center, edge, status levels, center/edge volume levels, per-level
+OKLCH, `levelProgress`, `hueDrift`, `chromaScale`, Display P3 output, sRGB
+fallback, nearMono / UltraDark state, hue-risk family, monotonic level checks,
+and P3/sRGB role-order checks. The HTML artifact is written to:
+
+```text
+Tools/ColorGoldenMaster/.generated/led-parity-review.html
+```
+
 Write the lyric legacy parity and Web adapter model report:
 
 ```sh
@@ -227,6 +250,7 @@ Tools/ColorGoldenMaster/run.sh refresh-extended-corpus \
 | `bk.hit.*.stabilized_shape_jitter_*` | Same production `BKColorEngine.stabilize(...)`. | Fixed jitter values and formatting only. |
 | `bk.hit_miss.*_differs` | Same production BK selection, engine, shape swatch, and stabilize calls for both paths. | Boolean comparison fields only; swatch/stabilize comparison uses a shared deterministic seed so randomness cannot create a false path diff. |
 | `bk-parity` / `bk-review` | Legacy `BKColorEngine.makeLegacyHSB(...)`, production/candidate `BKColorEngine.makeCandidateOKLCH(...)`, legacy/candidate shape swatches, legacy/candidate stabilize. | Sidecar diagnostics for the HSB-to-OKLCH migration; strict `verify` records the OKLCH production path. Approved migration deltas are summarized in `Tools/ColorGoldenMaster/ApprovedDeltas/bk-approved-deltas.json`. |
+| `led-parity` / `led-review` | DEBUG legacy `LEDColorResolverImplementation.legacy` vs migration-era current candidate vs retuned production `LEDColorResolverImplementation.oklch`. | Sidecar diagnostics for the LED OKLCH migration and retune; strict `verify` records the production OKLCH LED path. The legacy HSL/Hue-cap path is retained only for DEBUG parity. Approved retune deltas are summarized in `Tools/ColorGoldenMaster/ApprovedDeltas/led-approved-deltas.json`. |
 | `lyrics-parity` / `lyrics-review` | Production `SemanticPaletteFactory.make(...)`, `fullscreenLyricsColorSet(...)`, `coverBlurLyricsColorSet(...)`, and `artisticLyricsSingleSeed(...)`. | Sidecar lyric migration diagnostics. The tool-side model mirrors current `Resources/AMLL/index.html` alpha stripping, derived fullscreen/CoverBlur roles, blend-mode classification, Display P3 output, and sRGB fallback. It does not modify or approve the strict baseline. |
 
 Call chain for real artwork:

@@ -60,7 +60,7 @@ struct SemanticPalette: Equatable, Sendable {
     let lyrics: LyricsColorPalette
 }
 
-enum LyricsCoverBlurBlendProfile: String, Equatable, Sendable {
+nonisolated enum LyricsCoverBlurBlendProfile: String, Equatable, Sendable {
     case lighter
     case darker
 
@@ -74,7 +74,7 @@ enum LyricsCoverBlurBlendProfile: String, Equatable, Sendable {
     }
 }
 
-struct LyricsSurfaceColorSet: Equatable, Sendable {
+nonisolated struct LyricsSurfaceColorSet: Equatable, Sendable {
     let mainActive: NSColor
     let mainInactive: NSColor
     let lineTimingMainInactive: NSColor
@@ -83,12 +83,574 @@ struct LyricsSurfaceColorSet: Equatable, Sendable {
     let lineTimingSubInactive: NSColor
 }
 
-struct LyricsColorPalette: Equatable, Sendable {
+nonisolated struct LyricsColorPalette: Equatable, Sendable {
     let windowActive: NSColor
     let windowInactive: NSColor
     let fullscreenBase: NSColor
     let fullscreenInactiveBase: NSColor
     let fullscreen: LyricsSurfaceColorSet
+}
+
+nonisolated enum LyricSurfaceMode: String, Equatable, Sendable {
+    case standard
+    case artistic
+    case coverBlur
+    case appleStyle
+}
+
+nonisolated enum LyricSurfaceBackgroundType: String, Equatable, Sendable {
+    case standardSkin
+    case artisticBackground
+    case coverBlur
+    case appleStyle
+    case fallbackSkin
+}
+
+nonisolated enum LyricSeedState: String, Equatable, Sendable {
+    case resolved
+    case fallback
+}
+
+nonisolated struct LyricSurfaceContext: Equatable, Sendable {
+    let mode: LyricSurfaceMode
+    let scheme: ColorScheme
+    let skinID: String
+    let backgroundType: LyricSurfaceBackgroundType
+    let coverBlurProfile: LyricsCoverBlurBlendProfile?
+    let nearMonochrome: Bool
+    let isUltraDark: Bool
+    let hasTrustedHue: Bool
+    let outputTarget: ColorRenderTarget
+    let seedState: LyricSeedState
+}
+
+nonisolated struct LyricSemanticRoleColor: Equatable, Sendable {
+    let oklch: OKLCHColor
+
+    var nsColor: NSColor {
+        ColorRenderingAdapter.makeNSColor(oklch, target: .displayP3)
+    }
+
+    func withAlpha(_ alpha: CGFloat) -> LyricSemanticRoleColor {
+        LyricSemanticRoleColor(
+            oklch: OKLCHColor(
+                lightness: oklch.lightness,
+                chroma: oklch.chroma,
+                hue: oklch.hue,
+                alpha: Double(alpha)
+            )
+        )
+    }
+}
+
+nonisolated struct LyricAlphaPolicy: Equatable, Sendable {
+    let foregroundAlpha: CGFloat
+    let backgroundBaseOpacity: CGFloat
+    let backgroundKaraokeOpacity: CGFloat
+    let dedicatedCoverBlurBackgroundBaseOpacity: CGFloat
+    let dedicatedCoverBlurBackgroundKaraokeOpacity: CGFloat
+    let emphasisGlowAlpha: CGFloat
+
+    static func make(context: LyricSurfaceContext) -> LyricAlphaPolicy {
+        switch context.mode {
+        case .standard:
+            return LyricAlphaPolicy(
+                foregroundAlpha: 1,
+                backgroundBaseOpacity: 0.46,
+                backgroundKaraokeOpacity: 0.86,
+                dedicatedCoverBlurBackgroundBaseOpacity: 0.38,
+                dedicatedCoverBlurBackgroundKaraokeOpacity: 0.84,
+                emphasisGlowAlpha: context.scheme == .light ? 0.36 : 0.50
+            )
+        case .artistic:
+            return LyricAlphaPolicy(
+                foregroundAlpha: 1,
+                backgroundBaseOpacity: 0.54,
+                backgroundKaraokeOpacity: 0.88,
+                dedicatedCoverBlurBackgroundBaseOpacity: 0.38,
+                dedicatedCoverBlurBackgroundKaraokeOpacity: 0.84,
+                emphasisGlowAlpha: context.scheme == .light ? 0.32 : 0.48
+            )
+        case .coverBlur:
+            switch context.coverBlurProfile {
+            case .darker:
+                return LyricAlphaPolicy(
+                    foregroundAlpha: 1,
+                    backgroundBaseOpacity: 0.48,
+                    backgroundKaraokeOpacity: 0.86,
+                    dedicatedCoverBlurBackgroundBaseOpacity: 0.44,
+                    dedicatedCoverBlurBackgroundKaraokeOpacity: 0.86,
+                    emphasisGlowAlpha: 0.16
+                )
+            case .lighter, .none:
+                return LyricAlphaPolicy(
+                    foregroundAlpha: 1,
+                    backgroundBaseOpacity: 0.38,
+                    backgroundKaraokeOpacity: 0.82,
+                    dedicatedCoverBlurBackgroundBaseOpacity: 0.34,
+                    dedicatedCoverBlurBackgroundKaraokeOpacity: 0.80,
+                    emphasisGlowAlpha: 0.12
+                )
+            }
+        case .appleStyle:
+            return LyricAlphaPolicy(
+                foregroundAlpha: 1,
+                backgroundBaseOpacity: 0.36,
+                backgroundKaraokeOpacity: 0.80,
+                dedicatedCoverBlurBackgroundBaseOpacity: 0.34,
+                dedicatedCoverBlurBackgroundKaraokeOpacity: 0.80,
+                emphasisGlowAlpha: 0.14
+            )
+        }
+    }
+}
+
+nonisolated struct FullscreenLyricSemanticPalette: Equatable, Sendable {
+    let context: LyricSurfaceContext
+    let alpha: LyricAlphaPolicy
+    let mainActive: LyricSemanticRoleColor
+    let mainInactive: LyricSemanticRoleColor
+    let lineTimingMainInactive: LyricSemanticRoleColor
+    let subActive: LyricSemanticRoleColor
+    let subInactive: LyricSemanticRoleColor
+    let lineTimingSubInactive: LyricSemanticRoleColor
+    let subColor: LyricSemanticRoleColor
+    let backgroundInactive: LyricSemanticRoleColor
+    let backgroundActive: LyricSemanticRoleColor
+    let backgroundKaraokeActive: LyricSemanticRoleColor
+    let emphasisGlow: LyricSemanticRoleColor
+    let coverBlurMainGlow: LyricSemanticRoleColor
+    let coverBlurSubGlow: LyricSemanticRoleColor
+
+    var foregroundColorSet: LyricsSurfaceColorSet {
+        LyricsSurfaceColorSet(
+            mainActive: mainActive.nsColor,
+            mainInactive: mainInactive.nsColor,
+            lineTimingMainInactive: lineTimingMainInactive.nsColor,
+            subActive: subActive.nsColor,
+            subInactive: subInactive.nsColor,
+            lineTimingSubInactive: lineTimingSubInactive.nsColor
+        )
+    }
+}
+
+nonisolated struct LyricSeedResult: Equatable, Sendable {
+    let seed: OKColor.OKLCH
+    let state: LyricSeedState
+}
+
+nonisolated enum LyricSeedPolicy {
+    static func standardSeed(
+        preferred: NSColor,
+        inactiveBaseColor: NSColor,
+        analysis: ArtworkColorAnalysis
+    ) -> LyricSeedResult {
+        if analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate {
+            let l = OKColor.nsColorToOKLCH(inactiveBaseColor)?.l
+                ?? OKColor.nsColorToOKLCH(preferred)?.l
+                ?? 0.72
+            return LyricSeedResult(seed: OKColor.OKLCH(l: l, c: 0, h: 0), state: .fallback)
+        }
+
+        let candidates: [NSColor?] = [
+            preferred,
+            analysis.primaryHueSourceColor,
+            inactiveBaseColor,
+            analysis.dominantColor,
+            analysis.bestTextSourceColor,
+            analysis.topPalette.first,
+        ]
+        return strongestSeed(in: candidates.compactMap { $0 }, fallbackLightness: 0.72)
+    }
+
+    static func artisticSeed(
+        preferred: NSColor,
+        inactiveBaseColor: NSColor,
+        analysis: ArtworkColorAnalysis
+    ) -> LyricSeedResult {
+        if analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate {
+            let l = OKColor.nsColorToOKLCH(inactiveBaseColor)?.l
+                ?? OKColor.nsColorToOKLCH(preferred)?.l
+                ?? 0.72
+            return LyricSeedResult(seed: OKColor.OKLCH(l: l, c: 0, h: 0), state: .fallback)
+        }
+
+        if let seed = SemanticPaletteFactory.artisticLyricsSingleSeed(
+            preferred: preferred,
+            averageBaseColor: inactiveBaseColor,
+            analysis: analysis
+        ) {
+            return LyricSeedResult(seed: seed, state: .resolved)
+        }
+        return standardSeed(
+            preferred: preferred,
+            inactiveBaseColor: inactiveBaseColor,
+            analysis: analysis
+        )
+    }
+
+    static func coverBlurSeed(
+        themeColor: NSColor,
+        analysis: ArtworkColorAnalysis
+    ) -> LyricSeedResult {
+        let themeLCH = OKColor.nsColorToOKLCH(themeColor)
+        if analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate {
+            return LyricSeedResult(
+                seed: OKColor.OKLCH(l: themeLCH?.l ?? 0.48, c: 0, h: 0),
+                state: .fallback
+            )
+        }
+        if let themeLCH, themeLCH.c >= 0.018 {
+            return LyricSeedResult(seed: themeLCH, state: .resolved)
+        }
+        let candidates: [NSColor?] = [
+            themeColor,
+            analysis.averageColor,
+            analysis.dominantColor,
+            analysis.primaryHueSourceColor,
+            analysis.bestTextSourceColor,
+        ]
+        return strongestSeed(in: candidates.compactMap { $0 }, fallbackLightness: themeLCH?.l ?? 0.48)
+    }
+
+    static func appleStyleSeed(
+        themeColor: NSColor,
+        analysis: ArtworkColorAnalysis
+    ) -> LyricSeedResult {
+        if analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate {
+            let l = OKColor.nsColorToOKLCH(themeColor)?.l ?? 0.62
+            return LyricSeedResult(seed: OKColor.OKLCH(l: l, c: 0, h: 0), state: .fallback)
+        }
+        let candidates: [NSColor?] = [
+            themeColor,
+            analysis.primaryHueSourceColor,
+            analysis.averageColor,
+            analysis.bestTextSourceColor,
+        ]
+        return strongestSeed(
+            in: candidates.compactMap { $0 },
+            fallbackLightness: OKColor.nsColorToOKLCH(themeColor)?.l ?? 0.62
+        )
+    }
+
+    private static func strongestSeed(
+        in colors: [NSColor],
+        fallbackLightness: CGFloat
+    ) -> LyricSeedResult {
+        var best: OKColor.OKLCH?
+        for color in colors {
+            guard let lch = OKColor.nsColorToOKLCH(color) else { continue }
+            if best == nil || lch.c > (best?.c ?? 0) {
+                best = lch
+            }
+            if lch.c >= ColorSystemTokens.ToneLadder.lyricsSeedChromaPreferred {
+                return LyricSeedResult(seed: lch, state: .resolved)
+            }
+        }
+        if let best {
+            return LyricSeedResult(
+                seed: best.c >= 0.012 ? best : OKColor.OKLCH(l: best.l, c: best.c, h: best.h),
+                state: best.c >= 0.018 ? .resolved : .fallback
+            )
+        }
+        return LyricSeedResult(seed: OKColor.OKLCH(l: fallbackLightness, c: 0, h: 0), state: .fallback)
+    }
+}
+
+nonisolated enum LyricPerceptualPolicy {
+    static func makePalette(
+        context: LyricSurfaceContext,
+        seed: OKColor.OKLCH
+    ) -> FullscreenLyricSemanticPalette {
+        let alpha = LyricAlphaPolicy.make(context: context)
+        let foreground = foregroundRoles(context: context, seed: seed)
+        let background = backgroundRoles(context: context, seed: seed, foreground: foreground)
+        let glow = glowRoles(context: context, seed: seed, foreground: foreground)
+
+        return FullscreenLyricSemanticPalette(
+            context: context,
+            alpha: alpha,
+            mainActive: foreground.mainActive,
+            mainInactive: foreground.mainInactive,
+            lineTimingMainInactive: foreground.lineTimingMainInactive,
+            subActive: foreground.subActive,
+            subInactive: foreground.subInactive,
+            lineTimingSubInactive: foreground.lineTimingSubInactive,
+            subColor: foreground.subInactive,
+            backgroundInactive: background.inactive,
+            backgroundActive: background.active,
+            backgroundKaraokeActive: background.karaokeActive,
+            emphasisGlow: glow.emphasis.withAlpha(alpha.emphasisGlowAlpha),
+            coverBlurMainGlow: glow.coverBlurMain,
+            coverBlurSubGlow: glow.coverBlurSub
+        )
+    }
+
+    private struct ForegroundRoles {
+        let mainActive: LyricSemanticRoleColor
+        let mainInactive: LyricSemanticRoleColor
+        let lineTimingMainInactive: LyricSemanticRoleColor
+        let subActive: LyricSemanticRoleColor
+        let subInactive: LyricSemanticRoleColor
+        let lineTimingSubInactive: LyricSemanticRoleColor
+    }
+
+    private struct BackgroundRoles {
+        let inactive: LyricSemanticRoleColor
+        let active: LyricSemanticRoleColor
+        let karaokeActive: LyricSemanticRoleColor
+    }
+
+    private struct GlowRoles {
+        let emphasis: LyricSemanticRoleColor
+        let coverBlurMain: LyricSemanticRoleColor
+        let coverBlurSub: LyricSemanticRoleColor
+    }
+
+    private static func foregroundRoles(
+        context: LyricSurfaceContext,
+        seed: OKColor.OKLCH
+    ) -> ForegroundRoles {
+        if context.mode == .artistic {
+            return ForegroundRoles(
+                mainActive: artisticRole(.mainActive, seed: seed, context: context),
+                mainInactive: artisticRole(.mainInactive, seed: seed, context: context),
+                lineTimingMainInactive: artisticRole(.lineTimingMainInactive, seed: seed, context: context),
+                subActive: artisticRole(.subActive, seed: seed, context: context),
+                subInactive: artisticRole(.subInactive, seed: seed, context: context),
+                lineTimingSubInactive: artisticRole(.lineTimingSubInactive, seed: seed, context: context)
+            )
+        }
+
+        switch context.mode {
+        case .standard:
+            return context.scheme == .light
+                ? lightStandardRoles(seed: seed, context: context)
+                : darkStandardRoles(seed: seed, context: context)
+        case .coverBlur:
+            return context.coverBlurProfile == .darker
+                ? coverBlurDarkerRoles(seed: seed, context: context)
+                : coverBlurLighterRoles(seed: seed, context: context, appleStyle: false)
+        case .appleStyle:
+            return coverBlurLighterRoles(seed: seed, context: context, appleStyle: true)
+        case .artistic:
+            return darkStandardRoles(seed: seed, context: context)
+        }
+    }
+
+    private static func darkStandardRoles(
+        seed: OKColor.OKLCH,
+        context: LyricSurfaceContext
+    ) -> ForegroundRoles {
+        let inactiveTrim: CGFloat = context.isUltraDark ? 0.10 : 0
+        return ForegroundRoles(
+            mainActive: role(seed, l: context.isUltraDark ? 0.905 : 0.930, cScale: 0.96, cFloor: 0.046, cCap: 0.132, context: context, hueShift: 0.002),
+            mainInactive: role(seed, l: 0.560 - inactiveTrim, cScale: 0.70, cFloor: 0.032, cCap: 0.086, context: context, hueShift: -0.004),
+            lineTimingMainInactive: role(seed, l: 0.530 - inactiveTrim, cScale: 0.62, cFloor: 0.026, cCap: 0.074, context: context, hueShift: -0.006),
+            subActive: role(seed, l: context.isUltraDark ? 0.815 : 0.850, cScale: 0.86, cFloor: 0.040, cCap: 0.108, context: context, hueShift: 0.001),
+            subInactive: role(seed, l: 0.505 - inactiveTrim, cScale: 0.58, cFloor: 0.024, cCap: 0.068, context: context, hueShift: -0.008),
+            lineTimingSubInactive: role(seed, l: 0.475 - inactiveTrim, cScale: 0.50, cFloor: 0.020, cCap: 0.058, context: context, hueShift: -0.010)
+        )
+    }
+
+    private static func lightStandardRoles(
+        seed: OKColor.OKLCH,
+        context: LyricSurfaceContext
+    ) -> ForegroundRoles {
+        return ForegroundRoles(
+            mainActive: role(seed, l: 0.305, cScale: 0.72, cFloor: 0.024, cCap: 0.076, context: context, hueShift: -0.002),
+            mainInactive: role(seed, l: 0.600, cScale: 0.58, cFloor: 0.020, cCap: 0.062, context: context, hueShift: 0.005),
+            lineTimingMainInactive: role(seed, l: 0.635, cScale: 0.52, cFloor: 0.018, cCap: 0.056, context: context, hueShift: 0.007),
+            subActive: role(seed, l: 0.415, cScale: 0.66, cFloor: 0.022, cCap: 0.070, context: context, hueShift: -0.001),
+            subInactive: role(seed, l: 0.625, cScale: 0.50, cFloor: 0.018, cCap: 0.054, context: context, hueShift: 0.008),
+            lineTimingSubInactive: role(seed, l: 0.660, cScale: 0.44, cFloor: 0.016, cCap: 0.048, context: context, hueShift: 0.010)
+        )
+    }
+
+    private static func coverBlurLighterRoles(
+        seed: OKColor.OKLCH,
+        context: LyricSurfaceContext,
+        appleStyle: Bool
+    ) -> ForegroundRoles {
+        let activeL: CGFloat = appleStyle ? 0.900 : 0.880
+        let inactiveL: CGFloat = appleStyle ? 0.360 : (context.isUltraDark ? 0.340 : 0.320)
+        return ForegroundRoles(
+            mainActive: role(seed, l: activeL, cScale: 0.86, cFloor: 0.040, cCap: appleStyle ? 0.102 : 0.112, context: context, hueShift: 0.002),
+            mainInactive: role(seed, l: inactiveL, cScale: 0.42, cFloor: 0.020, cCap: 0.060, context: context, hueShift: -0.006),
+            lineTimingMainInactive: role(seed, l: inactiveL - 0.030, cScale: 0.36, cFloor: 0.016, cCap: 0.050, context: context, hueShift: -0.008),
+            subActive: role(seed, l: appleStyle ? 0.470 : 0.405, cScale: 0.44, cFloor: 0.020, cCap: 0.058, context: context, hueShift: -0.002),
+            subInactive: role(seed, l: inactiveL - 0.035, cScale: 0.30, cFloor: 0.014, cCap: 0.040, context: context, hueShift: -0.010),
+            lineTimingSubInactive: role(seed, l: inactiveL - 0.060, cScale: 0.26, cFloor: 0.012, cCap: 0.034, context: context, hueShift: -0.012)
+        )
+    }
+
+    private static func coverBlurDarkerRoles(
+        seed: OKColor.OKLCH,
+        context: LyricSurfaceContext
+    ) -> ForegroundRoles {
+        return ForegroundRoles(
+            mainActive: role(seed, l: 0.385, cScale: 0.64, cFloor: 0.022, cCap: 0.070, context: context, hueShift: -0.003),
+            mainInactive: role(seed, l: 0.815, cScale: 0.32, cFloor: 0.014, cCap: 0.044, context: context, hueShift: 0.006),
+            lineTimingMainInactive: role(seed, l: 0.765, cScale: 0.28, cFloor: 0.012, cCap: 0.038, context: context, hueShift: 0.008),
+            subActive: role(seed, l: 0.650, cScale: 0.34, cFloor: 0.014, cCap: 0.044, context: context, hueShift: 0.004),
+            subInactive: role(seed, l: 0.790, cScale: 0.24, cFloor: 0.010, cCap: 0.034, context: context, hueShift: 0.010),
+            lineTimingSubInactive: role(seed, l: 0.735, cScale: 0.20, cFloor: 0.008, cCap: 0.030, context: context, hueShift: 0.012)
+        )
+    }
+
+    private static func artisticRole(
+        _ role: PerceptualToneLadder.LyricsRole,
+        seed: OKColor.OKLCH,
+        context: LyricSurfaceContext
+    ) -> LyricSemanticRoleColor {
+        let tone = PerceptualToneLadder.artisticLyricsTone(
+            base: seed,
+            role: role,
+            isUltraDark: context.scheme == .dark && context.isUltraDark,
+            isNearMonochrome: context.nearMonochrome && !context.hasTrustedHue,
+            scheme: context.scheme
+        )
+        return semanticColor(tone)
+    }
+
+    private static func backgroundRoles(
+        context: LyricSurfaceContext,
+        seed: OKColor.OKLCH,
+        foreground: ForegroundRoles
+    ) -> BackgroundRoles {
+        let activeTone = okLCH(foreground.mainActive)
+        let inactiveTone = okLCH(foreground.mainInactive)
+        let karaokeWeight: CGFloat = {
+            switch context.mode {
+            case .coverBlur:
+                return context.coverBlurProfile == .darker ? 0.80 : 0.84
+            case .appleStyle:
+                return 0.82
+            case .artistic:
+                return 0.76
+            case .standard:
+                return 0.78
+            }
+        }()
+        let karaoke = OKColor.oklabLerp(inactiveTone, activeTone, t: karaokeWeight)
+        let darkPolarity = expectsLightText(context)
+        let inactiveL = inactiveTone.l + (darkPolarity ? -0.070 : 0.070)
+        let activeL = foreground.subActive.oklch.lightness + (darkPolarity ? -0.040 : 0.040)
+        return BackgroundRoles(
+            inactive: role(seed, l: CGFloat(inactiveL), cScale: 0.46, cFloor: 0.012, cCap: 0.052, context: context, hueShift: darkPolarity ? -0.010 : 0.010),
+            active: role(seed, l: CGFloat(activeL), cScale: 0.52, cFloor: 0.016, cCap: 0.060, context: context, hueShift: darkPolarity ? -0.004 : 0.004),
+            karaokeActive: semanticColor(
+                OKColor.OKLCH(
+                    l: karaoke.l,
+                    c: resolvedChroma(karaoke.c, floor: 0.018, cap: 0.070, context: context),
+                    h: karaoke.h
+                )
+            )
+        )
+    }
+
+    private static func glowRoles(
+        context: LyricSurfaceContext,
+        seed: OKColor.OKLCH,
+        foreground: ForegroundRoles
+    ) -> GlowRoles {
+        let darkPolarity = expectsLightText(context)
+        let emphasisL = darkPolarity
+            ? min(0.96, CGFloat(foreground.mainActive.oklch.lightness) + 0.015)
+            : max(0.18, CGFloat(foreground.mainActive.oklch.lightness) - 0.040)
+        let emphasis = role(seed, l: emphasisL, cScale: 0.58, cFloor: 0.014, cCap: 0.064, context: context, hueShift: 0)
+        let mainGlow = semanticColor(
+            OKColor.OKLCH(
+                l: darkPolarity ? 0.96 : 0.10,
+                c: context.nearMonochrome && !context.hasTrustedHue ? 0 : 0.010,
+                h: seed.h
+            )
+        ).withAlpha(context.coverBlurProfile == .darker ? 0.16 : 0.12)
+        let subGlow = semanticColor(
+            OKColor.OKLCH(
+                l: darkPolarity ? 0.84 : 0.20,
+                c: context.nearMonochrome && !context.hasTrustedHue ? 0 : 0.008,
+                h: seed.h
+            )
+        ).withAlpha(context.coverBlurProfile == .darker ? 0.16 : 0.12)
+        return GlowRoles(emphasis: emphasis, coverBlurMain: mainGlow, coverBlurSub: subGlow)
+    }
+
+    private static func role(
+        _ seed: OKColor.OKLCH,
+        l: CGFloat,
+        cScale: CGFloat,
+        cFloor: CGFloat,
+        cCap: CGFloat,
+        context: LyricSurfaceContext,
+        hueShift: CGFloat
+    ) -> LyricSemanticRoleColor {
+        let c = resolvedChroma(seed.c * cScale, floor: cFloor, cap: cCap, context: context)
+        let h = OKColor.normalizedHue(seed.h + hueShift)
+        return semanticColor(OKColor.OKLCH(l: ColorMath.clamp(l, 0.02, 0.98), c: c, h: h))
+    }
+
+    private static func resolvedChroma(
+        _ chroma: CGFloat,
+        floor: CGFloat,
+        cap: CGFloat,
+        context: LyricSurfaceContext
+    ) -> CGFloat {
+        if context.nearMonochrome && !context.hasTrustedHue {
+            return 0
+        }
+        let safeCap = max(0, cap)
+        let safeFloor = min(max(0, floor), safeCap)
+        return ColorMath.clamp(chroma, safeFloor, safeCap)
+    }
+
+    private static func semanticColor(_ lch: OKColor.OKLCH) -> LyricSemanticRoleColor {
+        LyricSemanticRoleColor(oklch: OKLCHColor(lch, alpha: 1))
+    }
+
+    private static func okLCH(_ color: LyricSemanticRoleColor) -> OKColor.OKLCH {
+        OKColor.OKLCH(
+            l: CGFloat(color.oklch.lightness),
+            c: CGFloat(color.oklch.chroma),
+            h: CGFloat(color.oklch.hue ?? 0)
+        )
+    }
+
+    private static func expectsLightText(_ context: LyricSurfaceContext) -> Bool {
+        switch context.mode {
+        case .coverBlur:
+            return context.coverBlurProfile != .darker
+        case .appleStyle:
+            return true
+        case .standard, .artistic:
+            return context.scheme == .dark
+        }
+    }
+}
+
+nonisolated enum LyricRenderingAdapter {
+    static func cssPayload(
+        _ role: LyricSemanticRoleColor,
+        alpha: CGFloat? = nil
+    ) -> [String: String] {
+        let color = alpha.map { role.withAlpha($0).oklch } ?? role.oklch
+        return [
+            "srgb": ColorRenderingAdapter.makeCSSSRGBFallback(color),
+            "displayP3": ColorRenderingAdapter.makeCSSColor(color, target: .displayP3),
+        ]
+    }
+
+    static func cssFallback(
+        _ role: LyricSemanticRoleColor,
+        alpha: CGFloat? = nil
+    ) -> String {
+        let color = alpha.map { role.withAlpha($0).oklch } ?? role.oklch
+        return ColorRenderingAdapter.makeCSSSRGBFallback(color)
+    }
+
+    static func nsColor(_ role: LyricSemanticRoleColor) -> NSColor {
+        role.nsColor
+    }
 }
 
 /// "Compress UI on top of artwork" readability decision. One profile
@@ -251,6 +813,10 @@ extension MiniPlayerControlPalette {
 }
 
 nonisolated enum SemanticPaletteFactory {
+    private static var shouldUseLegacyFullscreenLyricsPolicy: Bool {
+        ProcessInfo.processInfo.environment["COLOR_SYSTEM_LEGACY_FULLSCREEN_LYRICS"] == "1"
+    }
+
     static func make(
         from analysis: ArtworkColorAnalysis,
         scheme: ColorScheme,
@@ -541,7 +1107,75 @@ nonisolated enum SemanticPaletteFactory {
         )
     }
 
+    nonisolated static func fullscreenLyricSemanticPalette(
+        analysis: ArtworkColorAnalysis,
+        scheme: ColorScheme,
+        highlightBaseColor: NSColor,
+        inactiveBaseColor: NSColor,
+        isUltraDark: Bool,
+        usesArtisticBackground: Bool = false,
+        skinID: String = "fullscreen.standard",
+        backgroundType: LyricSurfaceBackgroundType? = nil
+    ) -> FullscreenLyricSemanticPalette {
+        let seed = usesArtisticBackground
+            ? LyricSeedPolicy.artisticSeed(
+                preferred: highlightBaseColor,
+                inactiveBaseColor: inactiveBaseColor,
+                analysis: analysis
+            )
+            : LyricSeedPolicy.standardSeed(
+                preferred: highlightBaseColor,
+                inactiveBaseColor: inactiveBaseColor,
+                analysis: analysis
+            )
+        let mode: LyricSurfaceMode = usesArtisticBackground && seed.state == .resolved
+            ? .artistic
+            : .standard
+        let context = LyricSurfaceContext(
+            mode: mode,
+            scheme: scheme,
+            skinID: skinID,
+            backgroundType: backgroundType ?? (mode == .artistic ? .artisticBackground : .standardSkin),
+            coverBlurProfile: nil,
+            nearMonochrome: analysis.isNearMonochrome,
+            isUltraDark: isUltraDark || analysis.isUltraDark,
+            hasTrustedHue: analysis.hasTrustedHueCandidate,
+            outputTarget: .displayP3,
+            seedState: seed.state
+        )
+        return LyricPerceptualPolicy.makePalette(context: context, seed: seed.seed)
+    }
+
     nonisolated static func fullscreenLyricsColorSet(
+        analysis: ArtworkColorAnalysis,
+        scheme: ColorScheme,
+        highlightBaseColor: NSColor,
+        inactiveBaseColor: NSColor,
+        isUltraDark: Bool,
+        usesArtisticBackground: Bool = false
+    ) -> LyricsSurfaceColorSet {
+        if shouldUseLegacyFullscreenLyricsPolicy {
+            return legacyFullscreenLyricsColorSet(
+                analysis: analysis,
+                scheme: scheme,
+                highlightBaseColor: highlightBaseColor,
+                inactiveBaseColor: inactiveBaseColor,
+                isUltraDark: isUltraDark,
+                usesArtisticBackground: usesArtisticBackground
+            )
+        }
+
+        return fullscreenLyricSemanticPalette(
+            analysis: analysis,
+            scheme: scheme,
+            highlightBaseColor: highlightBaseColor,
+            inactiveBaseColor: inactiveBaseColor,
+            isUltraDark: isUltraDark,
+            usesArtisticBackground: usesArtisticBackground
+        ).foregroundColorSet
+    }
+
+    nonisolated static func legacyFullscreenLyricsColorSet(
         analysis: ArtworkColorAnalysis,
         scheme: ColorScheme,
         highlightBaseColor: NSColor,
@@ -1001,7 +1635,51 @@ nonisolated enum SemanticPaletteFactory {
         return min(raw, 1 - raw)
     }
 
+    nonisolated static func coverBlurLyricSemanticPalette(
+        analysis: ArtworkColorAnalysis,
+        themeColor: NSColor,
+        profile: LyricsCoverBlurBlendProfile,
+        mode: LyricSurfaceMode = .coverBlur,
+        skinID: String = "fullscreen.coverGradientBlur"
+    ) -> FullscreenLyricSemanticPalette {
+        let seed = mode == .appleStyle
+            ? LyricSeedPolicy.appleStyleSeed(themeColor: themeColor, analysis: analysis)
+            : LyricSeedPolicy.coverBlurSeed(themeColor: themeColor, analysis: analysis)
+        let context = LyricSurfaceContext(
+            mode: mode,
+            scheme: profile.paletteScheme,
+            skinID: skinID,
+            backgroundType: mode == .appleStyle ? .appleStyle : .coverBlur,
+            coverBlurProfile: profile,
+            nearMonochrome: analysis.isNearMonochrome,
+            isUltraDark: analysis.isUltraDark,
+            hasTrustedHue: analysis.hasTrustedHueCandidate,
+            outputTarget: .displayP3,
+            seedState: seed.state
+        )
+        return LyricPerceptualPolicy.makePalette(context: context, seed: seed.seed)
+    }
+
     nonisolated static func coverBlurLyricsColorSet(
+        analysis: ArtworkColorAnalysis,
+        themeColor: NSColor,
+        profile: LyricsCoverBlurBlendProfile
+    ) -> LyricsSurfaceColorSet {
+        if shouldUseLegacyFullscreenLyricsPolicy {
+            return legacyCoverBlurLyricsColorSet(
+                analysis: analysis,
+                themeColor: themeColor,
+                profile: profile
+            )
+        }
+        return coverBlurLyricSemanticPalette(
+            analysis: analysis,
+            themeColor: themeColor,
+            profile: profile
+        ).foregroundColorSet
+    }
+
+    nonisolated static func legacyCoverBlurLyricsColorSet(
         analysis: ArtworkColorAnalysis,
         themeColor: NSColor,
         profile: LyricsCoverBlurBlendProfile

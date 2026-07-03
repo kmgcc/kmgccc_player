@@ -28,7 +28,7 @@ struct LyricsParitySummary {
 
 enum ColorGoldenMasterLyricsParity {
     static let reportVersion = 1
-    static let candidatePolicy = "phase1_passthrough_no_oklch_strategy"
+    static let candidatePolicy = "phase2_fullscreen_oklch_semantic_palette"
 
     static func buildRows() throws -> [LyricsParityRow] {
         let sections = try ColorGoldenMasterSamples.sections()
@@ -172,13 +172,23 @@ enum ColorGoldenMasterLyricsParity {
                 mode: "standard_fullscreen",
                 skin: "coverLed/rotatingCover/kmgccc.cassette/non-CoverBlur skins",
                 backgroundType: "standard fullscreen skin, BK/custom background, or embedded opaque base",
-                colorSet: SemanticPaletteFactory.fullscreenLyricsColorSet(
+                legacyColorSet: SemanticPaletteFactory.legacyFullscreenLyricsColorSet(
                     analysis: analysis,
                     scheme: scheme,
                     highlightBaseColor: palette.fullscreenLyricBase,
                     inactiveBaseColor: palette.fullscreenLyricInactiveBase,
                     isUltraDark: analysis.isUltraDark,
                     usesArtisticBackground: false
+                ),
+                semanticPalette: SemanticPaletteFactory.fullscreenLyricSemanticPalette(
+                    analysis: analysis,
+                    scheme: scheme,
+                    highlightBaseColor: palette.fullscreenLyricBase,
+                    inactiveBaseColor: palette.fullscreenLyricInactiveBase,
+                    isUltraDark: analysis.isUltraDark,
+                    usesArtisticBackground: false,
+                    skinID: "coverLed/rotatingCover/kmgccc.cassette",
+                    backgroundType: .standardSkin
                 ),
                 scheme: scheme,
                 coverBlurProfile: nil,
@@ -202,13 +212,23 @@ enum ColorGoldenMasterLyricsParity {
                 backgroundType: artisticSeed == nil
                     ? "artistic requested but seed missing; production falls back to standard fullscreen color set"
                     : "artistic fullscreen/BK art background; Swift roles are OKLCH-led before Web derivation",
-                colorSet: SemanticPaletteFactory.fullscreenLyricsColorSet(
+                legacyColorSet: SemanticPaletteFactory.legacyFullscreenLyricsColorSet(
                     analysis: analysis,
                     scheme: scheme,
                     highlightBaseColor: palette.fullscreenLyricBase,
                     inactiveBaseColor: palette.fullscreenLyricInactiveBase,
                     isUltraDark: analysis.isUltraDark,
                     usesArtisticBackground: true
+                ),
+                semanticPalette: SemanticPaletteFactory.fullscreenLyricSemanticPalette(
+                    analysis: analysis,
+                    scheme: scheme,
+                    highlightBaseColor: palette.fullscreenLyricBase,
+                    inactiveBaseColor: palette.fullscreenLyricInactiveBase,
+                    isUltraDark: analysis.isUltraDark,
+                    usesArtisticBackground: true,
+                    skinID: "coverLed/rotatingCover/kmgccc.cassette",
+                    backgroundType: artisticSeed == nil ? .fallbackSkin : .artisticBackground
                 ),
                 scheme: scheme,
                 coverBlurProfile: nil,
@@ -222,10 +242,17 @@ enum ColorGoldenMasterLyricsParity {
 
             for profile in [LyricsCoverBlurBlendProfile.lighter, .darker] {
                 let themeColor = analysis.averageColor
-                let colorSet = SemanticPaletteFactory.coverBlurLyricsColorSet(
+                let legacyColorSet = SemanticPaletteFactory.legacyCoverBlurLyricsColorSet(
                     analysis: analysis,
                     themeColor: themeColor,
                     profile: profile
+                )
+                let semanticPalette = SemanticPaletteFactory.coverBlurLyricSemanticPalette(
+                    analysis: analysis,
+                    themeColor: themeColor,
+                    profile: profile,
+                    mode: .coverBlur,
+                    skinID: "fullscreen.coverGradientBlur"
                 )
                 appendFullscreenRows(
                     sample: sample,
@@ -234,7 +261,8 @@ enum ColorGoldenMasterLyricsParity {
                     mode: "cover_blur_generic_\(profile.rawValue)",
                     skin: "fullscreen.coverGradientBlur",
                     backgroundType: "generic CoverBlur fullscreen path; themeColor=averageColor; profile=\(profile.rawValue)",
-                    colorSet: colorSet,
+                    legacyColorSet: legacyColorSet,
+                    semanticPalette: semanticPalette,
                     scheme: profile.paletteScheme,
                     coverBlurProfile: profile,
                     blendMode: profile == .darker ? "plus-darker" : "plus-lighter",
@@ -247,17 +275,25 @@ enum ColorGoldenMasterLyricsParity {
                     sectionID: sectionID,
                     schemeName: schemeName,
                     profile: profile,
-                    colorSet: colorSet,
+                    legacyColorSet: legacyColorSet,
+                    semanticPalette: semanticPalette,
                     analysis: analysis,
                     to: &rows
                 )
             }
 
             let appleThemeColor = palette.fullscreenLyricBase
-            let appleColorSet = SemanticPaletteFactory.coverBlurLyricsColorSet(
+            let appleLegacyColorSet = SemanticPaletteFactory.legacyCoverBlurLyricsColorSet(
                 analysis: analysis,
                 themeColor: appleThemeColor,
                 profile: .lighter
+            )
+            let appleSemanticPalette = SemanticPaletteFactory.coverBlurLyricSemanticPalette(
+                analysis: analysis,
+                themeColor: appleThemeColor,
+                profile: .lighter,
+                mode: .appleStyle,
+                skinID: "appleStyle"
             )
             appendFullscreenRows(
                 sample: sample,
@@ -266,7 +302,8 @@ enum ColorGoldenMasterLyricsParity {
                 mode: "apple_style_cover_blur_lighter",
                 skin: "appleStyle",
                 backgroundType: "Apple style skin reuses generic CoverBlur lyrics path with fixed lighter profile",
-                colorSet: appleColorSet,
+                legacyColorSet: appleLegacyColorSet,
+                semanticPalette: appleSemanticPalette,
                 scheme: LyricsCoverBlurBlendProfile.lighter.paletteScheme,
                 coverBlurProfile: .lighter,
                 blendMode: "plus-lighter",
@@ -372,7 +409,8 @@ enum ColorGoldenMasterLyricsParity {
         mode: String,
         skin: String,
         backgroundType: String,
-        colorSet: LyricsSurfaceColorSet,
+        legacyColorSet: LyricsSurfaceColorSet,
+        semanticPalette: FullscreenLyricSemanticPalette,
         scheme: ColorScheme,
         coverBlurProfile: LyricsCoverBlurBlendProfile?,
         blendMode: String,
@@ -381,7 +419,8 @@ enum ColorGoldenMasterLyricsParity {
         to rows: inout [LyricsParityRow]
     ) {
         let adapter = FullscreenLyricsAdapterModel(
-            colorSet: colorSet,
+            legacyColorSet: legacyColorSet,
+            semanticPalette: semanticPalette,
             scheme: scheme,
             coverBlurProfile: coverBlurProfile,
             blendMode: blendMode
@@ -406,11 +445,16 @@ enum ColorGoldenMasterLyricsParity {
         sectionID: String,
         schemeName: String,
         profile: LyricsCoverBlurBlendProfile,
-        colorSet: LyricsSurfaceColorSet,
+        legacyColorSet: LyricsSurfaceColorSet,
+        semanticPalette: FullscreenLyricSemanticPalette,
         analysis: ArtworkColorAnalysis,
         to rows: inout [LyricsParityRow]
     ) {
-        let adapter = DedicatedCoverBlurAdapterModel(colorSet: colorSet, profile: profile)
+        let adapter = DedicatedCoverBlurAdapterModel(
+            legacyColorSet: legacyColorSet,
+            semanticPalette: semanticPalette,
+            profile: profile
+        )
         appendRows(
             sample: sample,
             sectionID: sectionID,
@@ -597,7 +641,8 @@ struct LyricsParityRow {
 }
 
 struct FullscreenLyricsAdapterModel {
-    let colorSet: LyricsSurfaceColorSet
+    let legacyColorSet: LyricsSurfaceColorSet
+    let semanticPalette: FullscreenLyricSemanticPalette
     let scheme: ColorScheme
     let coverBlurProfile: LyricsCoverBlurBlendProfile?
     let blendMode: String
@@ -614,18 +659,25 @@ struct FullscreenLyricsAdapterModel {
     }
 
     var roles: [LyricsAdapterRole] {
+        combinedRoles(
+            legacy: legacyRoles,
+            candidate: candidateRoles
+        )
+    }
+
+    private var legacyRoles: [LyricsAdapterRole] {
         let profileName = coverBlurProfile?.rawValue ?? "none"
         let baseOpacity = fullscreenBackgroundBaseOpacity(profile: coverBlurProfile)
         let karaokeOpacity = fullscreenBackgroundKaraokeOpacity(profile: coverBlurProfile)
         let karaokeWeight = fullscreenBackgroundKaraokeWeight(profile: coverBlurProfile)
-        let active = LyricsColorWebModel.opaque(colorSet.mainActive)
-        let inactive = LyricsColorWebModel.opaque(colorSet.mainInactive)
-        let subInactive = LyricsColorWebModel.opaque(colorSet.subInactive)
-        let lineTimingInactive = LyricsColorWebModel.opaque(colorSet.lineTimingMainInactive)
-        let bgActive = LyricsColorWebModel.opaque(colorSet.subActive)
+        let active = LyricsColorWebModel.opaque(legacyColorSet.mainActive)
+        let inactive = LyricsColorWebModel.opaque(legacyColorSet.mainInactive)
+        let subInactive = LyricsColorWebModel.opaque(legacyColorSet.subInactive)
+        let lineTimingInactive = LyricsColorWebModel.opaque(legacyColorSet.lineTimingMainInactive)
+        let bgActive = LyricsColorWebModel.opaque(legacyColorSet.subActive)
         let bgKaraoke = LyricsColorWebModel.mixedOpaque(
-            foreground: colorSet.mainActive,
-            background: colorSet.mainInactive,
+            foreground: legacyColorSet.mainActive,
+            background: legacyColorSet.mainInactive,
             foregroundWeight: karaokeWeight
         )
         let notes = "fullscreenOpaqueLyricsMode=true; toOpaqueColor strips rgba alpha; profile=\(profileName)"
@@ -633,7 +685,7 @@ struct FullscreenLyricsAdapterModel {
             role(
                 group: "active",
                 name: "fs_main_active",
-                source: colorSet.mainActive,
+                source: legacyColorSet.mainActive,
                 final: active,
                 alpha: 1,
                 cssVar: "--amll-fs-main-active",
@@ -643,7 +695,7 @@ struct FullscreenLyricsAdapterModel {
             role(
                 group: "inactive",
                 name: "fs_main_inactive",
-                source: colorSet.mainInactive,
+                source: legacyColorSet.mainInactive,
                 final: inactive,
                 alpha: 1,
                 cssVar: "--amll-fs-main-inactive",
@@ -653,7 +705,7 @@ struct FullscreenLyricsAdapterModel {
             role(
                 group: "secondary",
                 name: "fs_sub_color",
-                source: colorSet.subInactive,
+                source: legacyColorSet.subInactive,
                 final: subInactive,
                 alpha: 1,
                 cssVar: "--amll-fs-sub-color",
@@ -663,7 +715,7 @@ struct FullscreenLyricsAdapterModel {
             role(
                 group: "secondary",
                 name: "fs_line_timing_inactive",
-                source: colorSet.lineTimingMainInactive,
+                source: legacyColorSet.lineTimingMainInactive,
                 final: lineTimingInactive,
                 alpha: 1,
                 cssVar: "--amll-fs-main-line-timing-inactive",
@@ -673,7 +725,7 @@ struct FullscreenLyricsAdapterModel {
             role(
                 group: "background_lyric",
                 name: "fs_bg_inactive",
-                source: colorSet.mainInactive,
+                source: legacyColorSet.mainInactive,
                 final: inactive.withAlphaComponent(baseOpacity),
                 alpha: baseOpacity,
                 cssVar: "--amll-fs-bg-inactive",
@@ -683,7 +735,7 @@ struct FullscreenLyricsAdapterModel {
             role(
                 group: "background_lyric",
                 name: "fs_bg_active_explicit",
-                source: colorSet.subActive,
+                source: legacyColorSet.subActive,
                 final: bgActive,
                 alpha: 1,
                 cssVar: "--amll-fs-bg-active",
@@ -693,13 +745,26 @@ struct FullscreenLyricsAdapterModel {
             role(
                 group: "background_lyric",
                 name: "fs_bg_karaoke_active",
-                source: colorSet.mainActive,
+                source: legacyColorSet.mainActive,
                 final: bgKaraoke.withAlphaComponent(karaokeOpacity),
                 alpha: karaokeOpacity,
                 cssVar: "--amll-fs-bg-karaoke-active",
                 formula: "mix mainActive/mainInactive in sRGB weight=\(ColorGoldenMasterSupport.f(karaokeWeight)); CSS opacity=\(ColorGoldenMasterSupport.f(karaokeOpacity))",
                 notes: notes
             ),
+        ]
+    }
+
+    private var candidateRoles: [LyricsAdapterRole] {
+        let notes = "Swift FullscreenLyricSemanticPalette direct role; Web adapter only consumes P3/sRGB payload, opacity, blend, and masks"
+        return [
+            semanticRole(group: "active", name: "fs_main_active", role: semanticPalette.mainActive, alpha: 1, cssVar: "--amll-fs-main-active", formula: "direct fullscreenActiveColor payload", notes: notes),
+            semanticRole(group: "inactive", name: "fs_main_inactive", role: semanticPalette.mainInactive, alpha: 1, cssVar: "--amll-fs-main-inactive", formula: "direct fullscreenInactiveColor payload", notes: notes),
+            semanticRole(group: "secondary", name: "fs_sub_color", role: semanticPalette.subColor, alpha: 1, cssVar: "--amll-fs-sub-color", formula: "direct fullscreenSubColor payload", notes: notes),
+            semanticRole(group: "secondary", name: "fs_line_timing_inactive", role: semanticPalette.lineTimingMainInactive, alpha: 1, cssVar: "--amll-fs-main-line-timing-inactive", formula: "direct fullscreenLineTimingInactiveColor payload", notes: notes),
+            semanticRole(group: "background_lyric", name: "fs_bg_inactive", role: semanticPalette.backgroundInactive, alpha: semanticPalette.alpha.backgroundBaseOpacity, cssVar: "--amll-fs-bg-inactive", formula: "direct fullscreenBackgroundInactiveColor payload; renderer opacity=\(ColorGoldenMasterSupport.f(semanticPalette.alpha.backgroundBaseOpacity))", notes: notes),
+            semanticRole(group: "background_lyric", name: "fs_bg_active_explicit", role: semanticPalette.backgroundActive, alpha: 1, cssVar: "--amll-fs-bg-active", formula: "direct fullscreenBackgroundColor payload", notes: notes),
+            semanticRole(group: "background_lyric", name: "fs_bg_karaoke_active", role: semanticPalette.backgroundKaraokeActive, alpha: semanticPalette.alpha.backgroundKaraokeOpacity, cssVar: "--amll-fs-bg-karaoke-active", formula: "direct fullscreenBackgroundKaraokeActiveColor payload; renderer opacity=\(ColorGoldenMasterSupport.f(semanticPalette.alpha.backgroundKaraokeOpacity))", notes: notes),
         ]
     }
 
@@ -727,6 +792,56 @@ struct FullscreenLyricsAdapterModel {
             notes: notes,
             blendMode: blendMode
         )
+    }
+
+    private func semanticRole(
+        group: String,
+        name: String,
+        role: LyricSemanticRoleColor,
+        alpha: CGFloat,
+        cssVar: String,
+        formula: String,
+        notes: String
+    ) -> LyricsAdapterRole {
+        let final = role.nsColor.withAlphaComponent(alpha)
+        return LyricsAdapterRole(
+            roleGroup: group,
+            role: name,
+            legacySwiftRole: cssVar,
+            legacySwiftColor: final,
+            legacySwiftCSS: LyricRenderingAdapter.cssFallback(role, alpha: alpha),
+            finalColor: final,
+            effectiveAlpha: alpha,
+            finalCSS: LyricRenderingAdapter.cssFallback(role, alpha: alpha),
+            webDerivedRole: cssVar,
+            formula: formula,
+            notes: notes,
+            blendMode: blendMode
+        )
+    }
+
+    private func combinedRoles(
+        legacy: [LyricsAdapterRole],
+        candidate: [LyricsAdapterRole]
+    ) -> [LyricsAdapterRole] {
+        let legacyByName = Dictionary(uniqueKeysWithValues: legacy.map { ($0.role, $0) })
+        return candidate.map { candidateRole in
+            guard let legacyRole = legacyByName[candidateRole.role] else { return candidateRole }
+            return LyricsAdapterRole(
+                roleGroup: candidateRole.roleGroup,
+                role: candidateRole.role,
+                legacySwiftRole: legacyRole.webDerivedRole,
+                legacySwiftColor: legacyRole.finalColor,
+                legacySwiftCSS: legacyRole.finalCSS,
+                finalColor: candidateRole.finalColor,
+                effectiveAlpha: candidateRole.effectiveAlpha,
+                finalCSS: candidateRole.finalCSS,
+                webDerivedRole: candidateRole.webDerivedRole,
+                formula: "\(candidateRole.formula); legacy=\(legacyRole.formula)",
+                notes: "\(candidateRole.notes); legacy_notes=\(legacyRole.notes)",
+                blendMode: candidateRole.blendMode
+            )
+        }
     }
 
     private func fullscreenBackgroundBaseOpacity(profile: LyricsCoverBlurBlendProfile?) -> CGFloat {
@@ -757,24 +872,48 @@ struct FullscreenLyricsAdapterModel {
 }
 
 struct DedicatedCoverBlurAdapterModel {
-    let colorSet: LyricsSurfaceColorSet
+    let legacyColorSet: LyricsSurfaceColorSet
+    let semanticPalette: FullscreenLyricSemanticPalette
     let profile: LyricsCoverBlurBlendProfile
 
     var backgroundL: CGFloat { profile == .lighter ? 0.12 : 0.90 }
 
     var roles: [LyricsAdapterRole] {
+        let legacy = legacyRoles
+        let candidate = candidateRoles
+        let legacyByName = Dictionary(uniqueKeysWithValues: legacy.map { ($0.role, $0) })
+        return candidate.map { candidateRole in
+            guard let legacyRole = legacyByName[candidateRole.role] else { return candidateRole }
+            return LyricsAdapterRole(
+                roleGroup: candidateRole.roleGroup,
+                role: candidateRole.role,
+                legacySwiftRole: legacyRole.webDerivedRole,
+                legacySwiftColor: legacyRole.finalColor,
+                legacySwiftCSS: legacyRole.finalCSS,
+                finalColor: candidateRole.finalColor,
+                effectiveAlpha: candidateRole.effectiveAlpha,
+                finalCSS: candidateRole.finalCSS,
+                webDerivedRole: candidateRole.webDerivedRole,
+                formula: "\(candidateRole.formula); legacy=\(legacyRole.formula)",
+                notes: "\(candidateRole.notes); legacy_notes=\(legacyRole.notes)",
+                blendMode: candidateRole.blendMode
+            )
+        }
+    }
+
+    private var legacyRoles: [LyricsAdapterRole] {
         let baseOpacity: CGFloat = profile == .lighter ? 0.34 : 0.44
         let karaokeOpacity: CGFloat = profile == .lighter ? 0.80 : 0.86
         let karaokeWeight: CGFloat = profile == .lighter ? 0.90 : 0.86
         let blendMode = profile == .darker ? "plus-darker" : "plus-lighter"
-        let active = LyricsColorWebModel.opaque(colorSet.mainActive)
-        let inactive = LyricsColorWebModel.opaque(colorSet.mainInactive)
-        let subInactive = LyricsColorWebModel.opaque(colorSet.subInactive)
-        let lineTimingInactive = LyricsColorWebModel.opaque(colorSet.lineTimingMainInactive)
-        let bgActive = LyricsColorWebModel.opaque(colorSet.subActive)
+        let active = LyricsColorWebModel.opaque(legacyColorSet.mainActive)
+        let inactive = LyricsColorWebModel.opaque(legacyColorSet.mainInactive)
+        let subInactive = LyricsColorWebModel.opaque(legacyColorSet.subInactive)
+        let lineTimingInactive = LyricsColorWebModel.opaque(legacyColorSet.lineTimingMainInactive)
+        let bgActive = LyricsColorWebModel.opaque(legacyColorSet.subActive)
         let bgKaraoke = LyricsColorWebModel.mixedOpaque(
-            foreground: colorSet.mainActive,
-            background: colorSet.mainInactive,
+            foreground: legacyColorSet.mainActive,
+            background: legacyColorSet.mainInactive,
             foregroundWeight: karaokeWeight
         )
         let notes = "dedicated .amll-surface-fullscreen-cover-blur compatibility model; current second overlay disabled"
@@ -805,13 +944,53 @@ struct DedicatedCoverBlurAdapterModel {
         }
 
         return [
-            role(group: "active", name: "cb_main_active", source: colorSet.mainActive, final: active, alpha: 1, cssVar: "--amll-cb-main-active", formula: "direct coverBlurMainActiveColor"),
-            role(group: "inactive", name: "cb_main_inactive", source: colorSet.mainInactive, final: inactive, alpha: 1, cssVar: "--amll-cb-main-inactive", formula: "direct coverBlurMainInactiveColor"),
-            role(group: "secondary", name: "cb_sub_color", source: colorSet.subInactive, final: subInactive, alpha: 1, cssVar: "--amll-cb-sub-color", formula: "resolve --amll-cb-sub-inactive then set --amll-cb-sub-color"),
-            role(group: "secondary", name: "cb_line_timing_inactive", source: colorSet.lineTimingMainInactive, final: lineTimingInactive, alpha: 1, cssVar: "--amll-cb-main-line-timing-inactive", formula: "direct coverBlurLineTimingInactiveColor"),
-            role(group: "background_lyric", name: "cb_bg_inactive", source: colorSet.mainInactive, final: inactive, alpha: baseOpacity, cssVar: "--amll-cb-bg-inactive", formula: "set from --amll-cb-main-inactive; CSS opacity=\(ColorGoldenMasterSupport.f(baseOpacity))"),
-            role(group: "background_lyric", name: "cb_bg_active_explicit", source: colorSet.subActive, final: bgActive, alpha: 1, cssVar: "--amll-cb-bg-active", formula: "explicit coverBlurBackgroundColor=colorSet.subActive"),
-            role(group: "background_lyric", name: "cb_bg_karaoke_active", source: colorSet.mainActive, final: bgKaraoke, alpha: karaokeOpacity, cssVar: "--amll-cb-bg-karaoke-active", formula: "mix mainActive/mainInactive in sRGB weight=\(ColorGoldenMasterSupport.f(karaokeWeight)); CSS opacity=\(ColorGoldenMasterSupport.f(karaokeOpacity))"),
+            role(group: "active", name: "cb_main_active", source: legacyColorSet.mainActive, final: active, alpha: 1, cssVar: "--amll-cb-main-active", formula: "direct coverBlurMainActiveColor"),
+            role(group: "inactive", name: "cb_main_inactive", source: legacyColorSet.mainInactive, final: inactive, alpha: 1, cssVar: "--amll-cb-main-inactive", formula: "direct coverBlurMainInactiveColor"),
+            role(group: "secondary", name: "cb_sub_color", source: legacyColorSet.subInactive, final: subInactive, alpha: 1, cssVar: "--amll-cb-sub-color", formula: "resolve --amll-cb-sub-inactive then set --amll-cb-sub-color"),
+            role(group: "secondary", name: "cb_line_timing_inactive", source: legacyColorSet.lineTimingMainInactive, final: lineTimingInactive, alpha: 1, cssVar: "--amll-cb-main-line-timing-inactive", formula: "direct coverBlurLineTimingInactiveColor"),
+            role(group: "background_lyric", name: "cb_bg_inactive", source: legacyColorSet.mainInactive, final: inactive, alpha: baseOpacity, cssVar: "--amll-cb-bg-inactive", formula: "set from --amll-cb-main-inactive; CSS opacity=\(ColorGoldenMasterSupport.f(baseOpacity))"),
+            role(group: "background_lyric", name: "cb_bg_active_explicit", source: legacyColorSet.subActive, final: bgActive, alpha: 1, cssVar: "--amll-cb-bg-active", formula: "explicit coverBlurBackgroundColor=colorSet.subActive"),
+            role(group: "background_lyric", name: "cb_bg_karaoke_active", source: legacyColorSet.mainActive, final: bgKaraoke, alpha: karaokeOpacity, cssVar: "--amll-cb-bg-karaoke-active", formula: "mix mainActive/mainInactive in sRGB weight=\(ColorGoldenMasterSupport.f(karaokeWeight)); CSS opacity=\(ColorGoldenMasterSupport.f(karaokeOpacity))"),
+        ]
+    }
+
+    private var candidateRoles: [LyricsAdapterRole] {
+        let blendMode = profile == .darker ? "plus-darker" : "plus-lighter"
+        let notes = "Swift FullscreenLyricSemanticPalette direct role for disabled/dedicated CoverBlur compatibility branch"
+
+        func role(
+            group: String,
+            name: String,
+            semantic: LyricSemanticRoleColor,
+            alpha: CGFloat,
+            cssVar: String,
+            formula: String
+        ) -> LyricsAdapterRole {
+            let final = semantic.nsColor.withAlphaComponent(alpha)
+            return LyricsAdapterRole(
+                roleGroup: group,
+                role: name,
+                legacySwiftRole: cssVar,
+                legacySwiftColor: final,
+                legacySwiftCSS: LyricRenderingAdapter.cssFallback(semantic, alpha: alpha),
+                finalColor: final,
+                effectiveAlpha: alpha,
+                finalCSS: LyricRenderingAdapter.cssFallback(semantic, alpha: alpha),
+                webDerivedRole: cssVar,
+                formula: formula,
+                notes: notes,
+                blendMode: blendMode
+            )
+        }
+
+        return [
+            role(group: "active", name: "cb_main_active", semantic: semanticPalette.mainActive, alpha: 1, cssVar: "--amll-cb-main-active", formula: "direct coverBlurMainActiveColor payload"),
+            role(group: "inactive", name: "cb_main_inactive", semantic: semanticPalette.mainInactive, alpha: 1, cssVar: "--amll-cb-main-inactive", formula: "direct coverBlurMainInactiveColor payload"),
+            role(group: "secondary", name: "cb_sub_color", semantic: semanticPalette.subColor, alpha: 1, cssVar: "--amll-cb-sub-color", formula: "direct coverBlurSubColor payload"),
+            role(group: "secondary", name: "cb_line_timing_inactive", semantic: semanticPalette.lineTimingMainInactive, alpha: 1, cssVar: "--amll-cb-main-line-timing-inactive", formula: "direct coverBlurLineTimingInactiveColor payload"),
+            role(group: "background_lyric", name: "cb_bg_inactive", semantic: semanticPalette.backgroundInactive, alpha: semanticPalette.alpha.dedicatedCoverBlurBackgroundBaseOpacity, cssVar: "--amll-cb-bg-inactive", formula: "direct coverBlurBackgroundInactiveColor payload; renderer opacity=\(ColorGoldenMasterSupport.f(semanticPalette.alpha.dedicatedCoverBlurBackgroundBaseOpacity))"),
+            role(group: "background_lyric", name: "cb_bg_active_explicit", semantic: semanticPalette.backgroundActive, alpha: 1, cssVar: "--amll-cb-bg-active", formula: "direct coverBlurBackgroundColor payload"),
+            role(group: "background_lyric", name: "cb_bg_karaoke_active", semantic: semanticPalette.backgroundKaraokeActive, alpha: semanticPalette.alpha.dedicatedCoverBlurBackgroundKaraokeOpacity, cssVar: "--amll-cb-bg-karaoke-active", formula: "direct coverBlurBackgroundKaraokeActiveColor payload; renderer opacity=\(ColorGoldenMasterSupport.f(semanticPalette.alpha.dedicatedCoverBlurBackgroundKaraokeOpacity))"),
         ]
     }
 }
@@ -982,7 +1161,7 @@ enum LyricsParityReviewArtifact {
         <body>
         <main>
           <h1>Lyrics Parity Review</h1>
-          <p class="summary">\(escape(summary.statusLine)) &middot; candidate fields are phase-1 passthrough placeholders; production colors are unchanged.</p>
+          <p class="summary">\(escape(summary.statusLine)) &middot; candidate fields are the fullscreen OKLCH semantic palette now used by production; legacy columns retain rollback/parity output.</p>
           \(cards)
         </main>
         </body>

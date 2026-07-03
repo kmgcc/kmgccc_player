@@ -2288,10 +2288,33 @@
             lyricPlayer.setWordFadeWidth(defaultWordFadeWidth);
         };
 
+        const supportsDisplayP3Color = (() => {
+            try {
+                return typeof CSS !== "undefined"
+                    && typeof CSS.supports === "function"
+                    && CSS.supports("color", "color(display-p3 1 0 0)");
+            } catch (_) {
+                return false;
+            }
+        })();
+
+        const resolveConfigCSSColor = (value) => {
+            if (typeof value === "string") return value;
+            if (!value || typeof value !== "object") return null;
+            const displayP3 = typeof value.displayP3 === "string" ? value.displayP3.trim() : "";
+            const srgb = typeof value.srgb === "string" ? value.srgb.trim() : "";
+            const fallback = typeof value.fallback === "string" ? value.fallback.trim() : "";
+            if (supportsDisplayP3Color && displayP3.length > 0) return displayP3;
+            if (srgb.length > 0) return srgb;
+            if (fallback.length > 0) return fallback;
+            return null;
+        };
+
         const toOpaqueColor = (value) => {
-            if (typeof value !== "string") return value;
-            const raw = value.trim();
-            if (raw.length === 0) return value;
+            const resolvedValue = resolveConfigCSSColor(value) ?? value;
+            if (typeof resolvedValue !== "string") return resolvedValue;
+            const raw = resolvedValue.trim();
+            if (raw.length === 0) return resolvedValue;
 
             const rgbaMatch = raw.match(
                 /^rgba?\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,)\s]+)(?:\s*,\s*[^)]+)?\s*\)$/i
@@ -2301,6 +2324,26 @@
                 const green = rgbaMatch[2].trim();
                 const blue = rgbaMatch[3].trim();
                 return `rgb(${red}, ${green}, ${blue})`;
+            }
+
+            const rgbSpaceMatch = raw.match(
+                /^rgba?\(\s*([^\s/),]+)\s+([^\s/),]+)\s+([^\s/),]+)(?:\s*\/\s*[^)]+)?\s*\)$/i
+            );
+            if (rgbSpaceMatch) {
+                const red = rgbSpaceMatch[1].trim();
+                const green = rgbSpaceMatch[2].trim();
+                const blue = rgbSpaceMatch[3].trim();
+                return `rgb(${red} ${green} ${blue})`;
+            }
+
+            const p3Match = raw.match(
+                /^color\(\s*display-p3\s+([^\s/),]+)\s+([^\s/),]+)\s+([^\s/),]+)(?:\s*\/\s*[^)]+)?\s*\)$/i
+            );
+            if (p3Match) {
+                const red = p3Match[1].trim();
+                const green = p3Match[2].trim();
+                const blue = p3Match[3].trim();
+                return `color(display-p3 ${red} ${green} ${blue})`;
             }
 
             const hslaMatch = raw.match(
@@ -2354,12 +2397,16 @@
             "--amll-fs-sub-color",
             "--amll-fs-bg-inactive",
             "--amll-fs-bg-karaoke-active",
+            "--amll-fs-bg-base-opacity",
+            "--amll-fs-bg-karaoke-opacity",
         ];
         const coverBlurDerivedColorVarNames = [
             "--amll-cb-sub-color",
             "--amll-cb-bg-inactive",
             "--amll-cb-bg-active",
             "--amll-cb-bg-karaoke-active",
+            "--amll-cb-bg-base-opacity",
+            "--amll-cb-bg-karaoke-opacity",
         ];
         const removeStyleVars = (element, names) => {
             if (!(element instanceof HTMLElement) || !Array.isArray(names)) return;
@@ -2376,6 +2423,7 @@
                 "--amll-lp-color",
             ];
             for (const name of vars) {
+                if (name === "--amll-fs-emphasis-glow") continue;
                 const value = playerElement.style.getPropertyValue(name);
                 if (!value || value.trim().length === 0) continue;
                 playerElement.style.setProperty(name, toOpaqueColor(value));
@@ -2390,6 +2438,8 @@
             "--amll-cb-main-line-timing-inactive",
             "--amll-cb-sub-line-timing-inactive",
             "--amll-cb-bg-active",
+            "--amll-cb-main-glow",
+            "--amll-cb-sub-glow",
         ];
 
         const isValidCoverBlurProfile = (value) => value === "lighter" || value === "darker";
@@ -2679,6 +2729,10 @@
             }
 
             const computedStyle = window.getComputedStyle(playerElement);
+            const hasInlineColor = (name) => {
+                const value = playerElement.style.getPropertyValue(name);
+                return typeof value === "string" && value.trim().length > 0;
+            };
             if (playerElement.classList.contains("amll-surface-fullscreen")) {
                 const fsMainInactive = resolveComputedOpaqueColor(
                     computedStyle,
@@ -2697,15 +2751,21 @@
                     "--amll-fs-sub-inactive",
                     fsMainInactive
                 ) ?? fsMainInactive;
-                playerElement.style.setProperty("--amll-fs-sub-color", fsSubInactive);
-                playerElement.style.setProperty("--amll-fs-bg-inactive", fsMainInactive);
+                if (!hasInlineColor("--amll-fs-sub-color")) {
+                    playerElement.style.setProperty("--amll-fs-sub-color", fsSubInactive);
+                }
+                if (!hasInlineColor("--amll-fs-bg-inactive")) {
+                    playerElement.style.setProperty("--amll-fs-bg-inactive", fsMainInactive);
+                }
                 const fsBgKaraokeWeight = playerElement.dataset.amllCoverBlurProfile === "lighter"
                     ? 0.90
                     : 0.88;
-                playerElement.style.setProperty(
-                    "--amll-fs-bg-karaoke-active",
-                    deriveMixedOpaqueColor(fsMainActive, fsMainInactive, fsBgKaraokeWeight)
-                );
+                if (!hasInlineColor("--amll-fs-bg-karaoke-active")) {
+                    playerElement.style.setProperty(
+                        "--amll-fs-bg-karaoke-active",
+                        deriveMixedOpaqueColor(fsMainActive, fsMainInactive, fsBgKaraokeWeight)
+                    );
+                }
                 const explicitFsBgActive = playerElement.style.getPropertyValue("--amll-fs-bg-active");
                 if (typeof explicitFsBgActive !== "string" || explicitFsBgActive.trim().length === 0) {
                     playerElement.style.setProperty(
@@ -2735,15 +2795,21 @@
                     "--amll-cb-sub-inactive",
                     cbMainInactive
                 ) ?? cbMainInactive;
-                playerElement.style.setProperty("--amll-cb-sub-color", cbSubInactive);
-                playerElement.style.setProperty("--amll-cb-bg-inactive", cbMainInactive);
+                if (!hasInlineColor("--amll-cb-sub-color")) {
+                    playerElement.style.setProperty("--amll-cb-sub-color", cbSubInactive);
+                }
+                if (!hasInlineColor("--amll-cb-bg-inactive")) {
+                    playerElement.style.setProperty("--amll-cb-bg-inactive", cbMainInactive);
+                }
                 const cbBgKaraokeWeight = playerElement.dataset.amllCoverBlurProfile === "lighter"
                     ? 0.90
                     : 0.86;
-                playerElement.style.setProperty(
-                    "--amll-cb-bg-karaoke-active",
-                    deriveMixedOpaqueColor(cbMainActive, cbMainInactive, cbBgKaraokeWeight)
-                );
+                if (!hasInlineColor("--amll-cb-bg-karaoke-active")) {
+                    playerElement.style.setProperty(
+                        "--amll-cb-bg-karaoke-active",
+                        deriveMixedOpaqueColor(cbMainActive, cbMainInactive, cbBgKaraokeWeight)
+                    );
+                }
                 const explicitCbBgActive = playerElement.style.getPropertyValue("--amll-cb-bg-active");
                 if (typeof explicitCbBgActive !== "string" || explicitCbBgActive.trim().length === 0) {
                     playerElement.style.setProperty(
@@ -6509,16 +6575,17 @@
                             syncCoverBlurRootState();
                         }
 
-                        const applyFullscreenColorVar = (key, cssVarName) => {
+                        const applyFullscreenColorVar = (key, cssVarName, options = {}) => {
                             if (!hasOwn(key)) return;
                             if (!isFullscreenSurface) {
                                 playerElement.style.removeProperty(cssVarName);
                                 return;
                             }
-                            if (typeof config[key] === "string" && config[key].length > 0) {
-                                const resolved = fullscreenOpaqueLyricsMode
-                                    ? toOpaqueColor(config[key])
-                                    : config[key];
+                            const cssColor = resolveConfigCSSColor(config[key]);
+                            if (typeof cssColor === "string" && cssColor.length > 0) {
+                                const resolved = fullscreenOpaqueLyricsMode && !options.preserveAlpha
+                                    ? toOpaqueColor(cssColor)
+                                    : cssColor;
                                 playerElement.style.setProperty(cssVarName, resolved);
                             } else {
                                 playerElement.style.removeProperty(cssVarName);
@@ -6530,8 +6597,21 @@
                                 playerElement.style.removeProperty(cssVarName);
                                 return;
                             }
-                            if (typeof config[key] === "string" && config[key].length > 0) {
-                                playerElement.style.setProperty(cssVarName, config[key]);
+                            const cssColor = resolveConfigCSSColor(config[key]);
+                            if (typeof cssColor === "string" && cssColor.length > 0) {
+                                playerElement.style.setProperty(cssVarName, cssColor);
+                            } else {
+                                playerElement.style.removeProperty(cssVarName);
+                            }
+                        };
+                        const applyFullscreenNumberVar = (key, cssVarName) => {
+                            if (!hasOwn(key)) return;
+                            const value = Number(config[key]);
+                            if (Number.isFinite(value)) {
+                                playerElement.style.setProperty(
+                                    cssVarName,
+                                    `${Math.max(0, Math.min(1, value))}`
+                                );
                             } else {
                                 playerElement.style.removeProperty(cssVarName);
                             }
@@ -6540,8 +6620,13 @@
                         applyFullscreenColorVar("fullscreenInactiveColor", "--amll-fs-main-inactive");
                         applyFullscreenColorVar("fullscreenSubActiveColor", "--amll-fs-sub-active");
                         applyFullscreenColorVar("fullscreenSubInactiveColor", "--amll-fs-sub-inactive");
+                        applyFullscreenColorVar("fullscreenSubColor", "--amll-fs-sub-color");
                         applyFullscreenColorVar("fullscreenBackgroundColor", "--amll-fs-bg-active");
-                        applyFullscreenColorVar("fullscreenEmphasisGlowColor", "--amll-fs-emphasis-glow");
+                        applyFullscreenColorVar("fullscreenBackgroundInactiveColor", "--amll-fs-bg-inactive");
+                        applyFullscreenColorVar("fullscreenBackgroundKaraokeActiveColor", "--amll-fs-bg-karaoke-active");
+                        applyFullscreenColorVar("fullscreenEmphasisGlowColor", "--amll-fs-emphasis-glow", {
+                            preserveAlpha: true,
+                        });
                         applyFullscreenColorVar(
                             "fullscreenLineTimingInactiveColor",
                             "--amll-fs-main-line-timing-inactive"
@@ -6554,7 +6639,12 @@
                         applyCoverBlurColorVar("coverBlurMainInactiveColor", "--amll-cb-main-inactive");
                         applyCoverBlurColorVar("coverBlurSubActiveColor", "--amll-cb-sub-active");
                         applyCoverBlurColorVar("coverBlurSubInactiveColor", "--amll-cb-sub-inactive");
+                        applyCoverBlurColorVar("coverBlurSubColor", "--amll-cb-sub-color");
                         applyCoverBlurColorVar("coverBlurBackgroundColor", "--amll-cb-bg-active");
+                        applyCoverBlurColorVar("coverBlurBackgroundInactiveColor", "--amll-cb-bg-inactive");
+                        applyCoverBlurColorVar("coverBlurBackgroundKaraokeActiveColor", "--amll-cb-bg-karaoke-active");
+                        applyCoverBlurColorVar("coverBlurMainGlowColor", "--amll-cb-main-glow");
+                        applyCoverBlurColorVar("coverBlurSubGlowColor", "--amll-cb-sub-glow");
                         applyCoverBlurColorVar(
                             "coverBlurLineTimingInactiveColor",
                             "--amll-cb-main-line-timing-inactive"
@@ -6563,6 +6653,10 @@
                             "coverBlurLineTimingSubInactiveColor",
                             "--amll-cb-sub-line-timing-inactive"
                         );
+                        applyFullscreenNumberVar("fullscreenBackgroundBaseOpacity", "--amll-fs-bg-base-opacity");
+                        applyFullscreenNumberVar("fullscreenBackgroundKaraokeOpacity", "--amll-fs-bg-karaoke-opacity");
+                        applyFullscreenNumberVar("coverBlurBackgroundBaseOpacity", "--amll-cb-bg-base-opacity");
+                        applyFullscreenNumberVar("coverBlurBackgroundKaraokeOpacity", "--amll-cb-bg-karaoke-opacity");
                         syncFullscreenDerivedColors();
                         syncFullscreenCoverBlurGenericRootState();
 	                    if (typeof config.alignAnchor === "string" && typeof lyricPlayer.setAlignAnchor === "function") {

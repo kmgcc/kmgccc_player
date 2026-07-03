@@ -27,6 +27,10 @@ enum ColorGoldenMasterCLI {
         .appendingPathComponent(".generated/bk-parity-report.txt")
     static let bkReviewURL = toolDirectory
         .appendingPathComponent(".generated/bk-parity-review.html")
+    static let ledParityURL = toolDirectory
+        .appendingPathComponent(".generated/led-parity-report.txt")
+    static let ledReviewURL = toolDirectory
+        .appendingPathComponent(".generated/led-parity-review.html")
     static let lyricsParityURL = toolDirectory
         .appendingPathComponent(".generated/lyrics-parity-report.txt")
     static let lyricsReviewURL = toolDirectory
@@ -95,6 +99,22 @@ enum ColorGoldenMasterCLI {
                 let html = try ColorGoldenMasterBKParity.renderHTML()
                 try write(html, to: bkReviewURL)
                 print("BK review artifact: \(bkReviewURL.path)")
+                return 0
+
+            case "led-parity":
+                let report = try ColorGoldenMasterLEDParity.render()
+                try write(report.text, to: ledParityURL)
+                print("LED parity report: \(ledParityURL.path)")
+                print("summary: \(report.summary.statusLine)")
+                if report.summary.blocker > 0 {
+                    return 1
+                }
+                return 0
+
+            case "led-review":
+                let html = try ColorGoldenMasterLEDParity.renderHTML()
+                try write(html, to: ledReviewURL)
+                print("LED review artifact: \(ledReviewURL.path)")
                 return 0
 
             case "lyrics-parity":
@@ -238,6 +258,10 @@ enum ColorGoldenMasterCLI {
                      Write controlled legacy-HSB / candidate-OKLCH BK diff report
           bk-review
                      Write local BK role/layer review HTML
+          led-parity
+                     Write controlled legacy/candidate LED OKLCH parity report
+          led-review
+                     Write local LED role/level review HTML
           lyrics-parity
                      Write lyric legacy parity and Web adapter derived-role report
           lyrics-review

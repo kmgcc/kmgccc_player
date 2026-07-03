@@ -178,13 +178,17 @@ nonisolated enum ColorSystemSelfCheck {
         checkToneLadderHueFamilyChromaPreserved(&report, family: "purple", base: OKColor.OKLCH(l: 0.50, c: 0.16, h: 0.85))
         // v3 regression guards: the bugs the v2 selfcheck did NOT catch.
         checkToneLadderColorfulSeedSurvivesNearMonoFlag(&report)
-        checkArtisticLyricsColorfulSeedSurvivesNeutralFallback(&report)
+        checkArtisticLyricsNeutralFallbackStaysNeutral(&report)
         checkArtisticLyricsSubInactiveCloseToMainInactive(&report)
+        checkLEDLevelStylePolicyContinuous(&report)
         checkLEDLevelHueDriftVisible(&report)
         checkLEDToneStepsPerceptual(&report)
         checkLEDColorfulNotPale(&report)
         checkLEDPeakNotWhiteWashed(&report)
         checkLEDLightnessSurvivesOpacity(&report)
+        checkLEDProductionLevelsMonotonic(&report)
+        checkLEDProductionNearMonoNeutral(&report)
+        checkLEDP3SRGBFallbackPreservesOrder(&report)
         checkArtisticLyricsToneLadderHierarchy(&report)
         checkArtisticLyricsHueIdentityPreserved(&report)
         checkCoverBlurProfileUnaffectedByArtisticToneLadder(&report)
@@ -311,12 +315,12 @@ nonisolated enum ColorSystemSelfCheck {
         )
     }
 
-    /// v3 regression guard wired through the SemanticPalette entry point so
-    /// the post-hoc `neutraliseLyricsSurfaceIfNearMono` skip is also
-    /// covered. With `.neutralFallback` (isNearMonochrome=true) + a
-    /// colourful highlight base, the artistic path must still produce
-    /// colourful lyrics. v2 returned #80828X-style grey here.
-    private static func checkArtisticLyricsColorfulSeedSurvivesNeutralFallback(_ report: inout CheckReport) {
+    /// Phase 2 fullscreen lyrics route `.neutralFallback` through the
+    /// production seed policy, not the old "trust any colourful base colour"
+    /// shortcut. A fallback analysis has no trusted artwork hue, so even a
+    /// colourful caller-provided base must resolve to a stable neutral
+    /// hierarchy instead of flashing default white/yellow or inventing hue.
+    private static func checkArtisticLyricsNeutralFallbackStaysNeutral(_ report: inout CheckReport) {
         let analysis = ArtworkColorAnalysis.neutralFallback // isNearMonochrome=true
         let seedColor = NSColor(deviceRed: 0.92, green: 0.34, blue: 0.12, alpha: 1)
         let set = SemanticPaletteSelfCheck.fullscreenLyricsColorSet(
@@ -331,18 +335,36 @@ nonisolated enum ColorSystemSelfCheck {
             set.mainActive, set.mainInactive, set.subActive,
             set.subInactive, set.lineTimingMainInactive, set.lineTimingSubInactive
         ].compactMap { OKColor.nsColorToOKLCH($0)?.c }
-        let minC = chromas.min() ?? 0
-        let limit = ColorSystemTokens.ToneLadder.lyricsNearMonoSeedTrustChromaAssertion
-        // Hue identity must survive too — if the system white-washes the
-        // seed it would have an undefined hue.
-        let seedH = OKColor.nsColorToOKLCH(seedColor)?.h ?? 0
-        let inactiveH = OKColor.nsColorToOKLCH(set.mainInactive)?.h ?? .infinity
-        let hueOK = circularHueDelta(inactiveH, seedH) <= ColorSystemTokens.ToneLadder.lyricsHueIdentityAssertion
-        let gamutSafeLimit: CGFloat = 0.030
-        let ok = minC >= gamutSafeLimit && hueOK
+        let lValues = [
+            set.mainActive, set.subActive, set.mainInactive,
+            set.subInactive, set.lineTimingMainInactive, set.lineTimingSubInactive
+        ].compactMap { OKColor.nsColorToOKLCH($0)?.l }
+        let active = OKColor.nsColorToOKLCH(set.mainActive)
+        let subActive = OKColor.nsColorToOKLCH(set.subActive)
+        let inactive = OKColor.nsColorToOKLCH(set.mainInactive)
+        let subInactive = OKColor.nsColorToOKLCH(set.subInactive)
+        let lineInactive = OKColor.nsColorToOKLCH(set.lineTimingMainInactive)
+        let lineSubInactive = OKColor.nsColorToOKLCH(set.lineTimingSubInactive)
+        let activeL = active?.l ?? 0
+        let subActiveL = subActive?.l ?? 0
+        let inactiveL = inactive?.l ?? 0
+        let subInactiveL = subInactive?.l ?? 0
+        let lineInactiveL = lineInactive?.l ?? 0
+        let lineSubInactiveL = lineSubInactive?.l ?? 0
+        let maxC = chromas.max() ?? 0
+        let neutralLimit = ColorSystemTokens.ToneLadder.nearMonoChromaAssertion
+        let neutralOK = maxC <= neutralLimit
+        let hierarchyOK = activeL > subActiveL
+            && subActiveL > inactiveL
+            && inactiveL > lineInactiveL
+            && lineInactiveL > subInactiveL
+            && subInactiveL > lineSubInactiveL
+            && lineInactiveL >= lineSubInactiveL
+        let contrastOK = (lValues.max() ?? 0) - (lValues.min() ?? 0) >= 0.35
+        let ok = neutralOK && hierarchyOK && contrastOK
         report.record(
-            "Lyrics v3: artistic path keeps colour under .neutralFallback analysis", ok,
-            "minRoleC=\(format(minC)) legacyMin=\(format(limit)) gamutSafeMin=\(format(gamutSafeLimit)) seedC=\(format(OKColor.nsColorToOKLCH(seedColor)?.c ?? 0)) inactiveHueΔ=\(format(circularHueDelta(inactiveH, seedH)))"
+            "Lyrics Phase 2: artistic neutralFallback stays neutral", ok,
+            "maxRoleC=\(format(maxC)) neutralLimit=\(format(neutralLimit)) seedC=\(format(OKColor.nsColorToOKLCH(seedColor)?.c ?? 0)) hierarchy=\(hierarchyOK) L=\(format(activeL))/\(format(subActiveL))/\(format(inactiveL))/\(format(subInactiveL))/\(format(lineInactiveL))/\(format(lineSubInactiveL)) contrastΔ=\(format((lValues.max() ?? 0) - (lValues.min() ?? 0)))"
         )
     }
 
@@ -404,8 +426,52 @@ nonisolated enum ColorSystemSelfCheck {
         // scale is heavier than highlight drift scale).
         let ok = lowDrift > peakDrift && lowDrift >= 0.003
         report.record(
-            "LED v3: low-level hue drift visible vs peak", ok,
+            "LED v4: low-level hue drift visible vs peak", ok,
             "lowHueΔ=\(format(lowDrift)) peakHueΔ=\(format(peakDrift))"
+        )
+    }
+
+    private static func checkLEDLevelStylePolicyContinuous(_ report: inout CheckReport) {
+        let base = OKColor.OKLCH(l: 0.82, c: 0.100, h: 0.09)
+        let maxLevel = 9
+        let styles = (0...maxLevel).map {
+            PerceptualToneLadder.ledLevelStylePolicy(
+                base: base,
+                level: $0,
+                maxLevel: maxLevel,
+                scheme: .dark,
+                isNearMonochrome: false
+            )
+        }
+        let nearMonoStyles = (0...maxLevel).map {
+            PerceptualToneLadder.ledLevelStylePolicy(
+                base: OKColor.OKLCH(l: 0.50, c: 0.003, h: 0.69),
+                level: $0,
+                maxLevel: maxLevel,
+                scheme: .dark,
+                isNearMonochrome: true
+            )
+        }
+        let ultraDarkPeak = PerceptualToneLadder.ledLevelStylePolicy(
+            base: base,
+            level: maxLevel,
+            maxLevel: maxLevel,
+            scheme: .dark,
+            isNearMonochrome: false,
+            isUltraDark: true
+        )
+        let driftAbs = styles.map { abs($0.hueDrift) }
+        let driftConverges = isNonIncreasing(driftAbs, tolerance: 0.0006)
+            && (driftAbs.first ?? 0) >= 0.006
+            && (driftAbs.last ?? 1) <= 0.001
+        let chromaRises = isNonDecreasing(styles.map(\.chromaScale), tolerance: 0.0006)
+        let lightnessRises = isNonDecreasing(styles.map(\.lightness), tolerance: 0.0006)
+        let nearMonoNeutral = nearMonoStyles.allSatisfy { abs($0.hueDrift) <= 0.0001 }
+        let peakGlow = (styles.last?.lightness ?? 0) >= 0.823
+            && ultraDarkPeak.lightness <= ColorSystemTokens.ToneLadder.ledUltraDarkPeakL + 0.001
+        report.record(
+            "LED v4: level style policy continuous and peak constrained", driftConverges && chromaRises && lightnessRises && nearMonoNeutral && peakGlow,
+            "drift=\(driftAbs.map(format).joined(separator: "/")) chromaScale=\(styles.map { format($0.chromaScale) }.joined(separator: "/")) L=\(styles.map { format($0.lightness) }.joined(separator: "/")) ultraDarkPeakL=\(format(ultraDarkPeak.lightness))"
         )
     }
 
@@ -510,10 +576,11 @@ nonisolated enum ColorSystemSelfCheck {
         let d2 = oklabDistance(mid, peak)
         let minDistance = ColorSystemTokens.ToneLadder.ledPerceptualStepAssertion
         let ok = low.l < mid.l && mid.l < peak.l
+            && low.c <= mid.c + 0.0005
+            && mid.c <= peak.c + 0.0005
             && d1 >= minDistance && d2 >= minDistance * 0.5
-            && mid.c >= base.c
         report.record(
-            "LED v2: tone steps have perceptual distance", ok,
+            "LED OKLCH: tone steps have monotonic perceptual distance", ok,
             "L=\(format(low.l))/\(format(mid.l))/\(format(peak.l)) C=\(format(low.c))/\(format(mid.c))/\(format(peak.c)) d=\(format(d1))/\(format(d2))"
         )
     }
@@ -579,6 +646,85 @@ nonisolated enum ColorSystemSelfCheck {
         report.record(
             "LED v2: lightness survives opacity ramp", ok,
             "perceivedL low/peak=\(format(perceivedLow))/\(format(perceivedPeak)) Δ=\(format(visibilityDelta)) min=\(format(minDelta))"
+        )
+    }
+
+    private static func checkLEDProductionLevelsMonotonic(_ report: inout CheckReport) {
+        let seed = OKColor.OKLCH(l: 0.54, c: 0.145, h: 0.71)
+        let levels = MainActor.assumeIsolated { () -> [NSColor] in
+            let resolver = LEDColorResolver(
+                accentColor: ColorRenderingAdapter.makeSwiftUIColor(OKLCHColor(seed)),
+                colorScheme: .dark,
+                brightnessLevels: 10
+            )
+            return (0...9).map {
+                resolver.volumeLEDNSColor(index: 4, count: 10, level: $0)
+            }
+        }
+        let lch = levels.compactMap { OKColor.nsColorToOKLCH($0) }
+        let lOK = isNonDecreasing(lch.map(\.l), tolerance: 0.0015)
+        let cOK = isNonDecreasing(lch.map(\.c), tolerance: 0.0025)
+        let hueOK: Bool
+        if let peak = lch.last {
+            hueOK = lch.allSatisfy {
+                $0.c < 0.012 || peak.c < 0.012 || circularHueDelta($0.h, peak.h) <= 0.035
+            }
+        } else {
+            hueOK = false
+        }
+        let lSteps = lch.map { format($0.l) }.joined(separator: "/")
+        let cSteps = lch.map { format($0.c) }.joined(separator: "/")
+        report.record(
+            "LED OKLCH: production levels monotonic after Display P3 render", lOK && cOK && hueOK,
+            "L=\(lSteps) C=\(cSteps) lOK=\(lOK) cOK=\(cOK) hueOK=\(hueOK)"
+        )
+    }
+
+    private static func checkLEDProductionNearMonoNeutral(_ report: inout CheckReport) {
+        let levels = MainActor.assumeIsolated { () -> [NSColor] in
+            let resolver = LEDColorResolver(
+                accentColor: ColorRenderingAdapter.makeSwiftUIColor(
+                    OKLCHColor(lightness: 0.50, chroma: 0.001, hue: nil, alpha: 1)
+                ),
+                colorScheme: .dark,
+                brightnessLevels: 10
+            )
+            return [resolver.centerColor, resolver.edgeColor]
+                + (0...9).map { resolver.volumeLEDNSColor(index: 4, count: 10, level: $0) }
+        }
+        let maxC = levels.compactMap { OKColor.nsColorToOKLCH($0)?.c }.max() ?? .infinity
+        let ok = maxC <= 0.012
+        report.record(
+            "LED OKLCH: nearMono production remains neutral", ok,
+            "maxC=\(format(maxC)) limit=0.012"
+        )
+    }
+
+    private static func checkLEDP3SRGBFallbackPreservesOrder(_ report: inout CheckReport) {
+        let seed = OKColor.OKLCH(l: 0.54, c: 0.145, h: 0.71)
+        let colors = MainActor.assumeIsolated { () -> [NSColor] in
+            let resolver = LEDColorResolver(
+                accentColor: ColorRenderingAdapter.makeSwiftUIColor(OKLCHColor(seed)),
+                colorScheme: .dark,
+                brightnessLevels: 10
+            )
+            return (0...9).map {
+                resolver.volumeLEDNSColor(index: 4, count: 10, level: $0)
+            }
+        }
+        let p3 = colors.compactMap { resolvedLCH($0, target: .displayP3) }
+        let srgb = colors.compactMap { resolvedLCH($0, target: .sRGB) }
+        let p3OK = isNonDecreasing(p3.map(\.l), tolerance: 0.002)
+            && isNonDecreasing(p3.map(\.c), tolerance: 0.003)
+        let srgbOK = isNonDecreasing(srgb.map(\.l), tolerance: 0.002)
+            && isNonDecreasing(srgb.map(\.c), tolerance: 0.003)
+        let p3LSteps = p3.map { format($0.l) }.joined(separator: "/")
+        let p3CSteps = p3.map { format($0.c) }.joined(separator: "/")
+        let srgbLSteps = srgb.map { format($0.l) }.joined(separator: "/")
+        let srgbCSteps = srgb.map { format($0.c) }.joined(separator: "/")
+        report.record(
+            "LED OKLCH: P3 and sRGB fallback preserve level order", p3OK && srgbOK,
+            "p3L=\(p3LSteps) p3C=\(p3CSteps) sRGBL=\(srgbLSteps) sRGBC=\(srgbCSteps)"
         )
     }
 
@@ -704,10 +850,13 @@ nonisolated enum ColorSystemSelfCheck {
             report.record("Lyrics v2: cover blur profile remains separate", false, "OKLCH nil")
             return
         }
-        let ok = coverInactiveL < 0.30 && artisticInactiveL > 0.45
+        let ok = coverInactiveL >= 0.30
+            && coverInactiveL <= 0.42
+            && artisticInactiveL > 0.45
+            && artisticInactiveL - coverInactiveL >= 0.16
         report.record(
             "Lyrics v2: cover blur profile remains separate", ok,
-            "coverInactiveL=\(format(coverInactiveL)) artisticInactiveL=\(format(artisticInactiveL))"
+            "coverInactiveL=\(format(coverInactiveL)) artisticInactiveL=\(format(artisticInactiveL)) gap=\(format(artisticInactiveL - coverInactiveL))"
         )
     }
 
@@ -3857,6 +4006,50 @@ nonisolated enum ColorSystemSelfCheck {
         let da = la.a - lb.a
         let db = la.b - lb.b
         return sqrt(dl * dl + da * da + db * db)
+    }
+
+    private static func isNonDecreasing(_ values: [CGFloat], tolerance: CGFloat) -> Bool {
+        guard values.count > 1 else { return true }
+        for index in 1..<values.count {
+            if values[index] + tolerance < values[index - 1] {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func isNonIncreasing(_ values: [CGFloat], tolerance: CGFloat) -> Bool {
+        guard values.count > 1 else { return true }
+        for index in 1..<values.count {
+            if values[index] > values[index - 1] + tolerance {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func resolvedLCH(_ color: NSColor, target: ColorRenderTarget) -> OKColor.OKLCH? {
+        guard let resolved = ColorRenderingAdapter.resolve(color, target: target) else {
+            return nil
+        }
+        let ns: NSColor
+        switch target {
+        case .sRGB:
+            ns = NSColor(
+                srgbRed: CGFloat(resolved.red),
+                green: CGFloat(resolved.green),
+                blue: CGFloat(resolved.blue),
+                alpha: CGFloat(resolved.alpha)
+            )
+        case .displayP3, .linearDisplayP3:
+            ns = NSColor(
+                displayP3Red: CGFloat(resolved.red),
+                green: CGFloat(resolved.green),
+                blue: CGFloat(resolved.blue),
+                alpha: CGFloat(resolved.alpha)
+            )
+        }
+        return OKColor.nsColorToOKLCH(ns)
     }
 
     private static func cgColorToOKLCH(_ color: CGColor) -> OKColor.OKLCH? {

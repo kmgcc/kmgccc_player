@@ -1,0 +1,85 @@
+{
+  "format_version": 1,
+  "policy": "led-oklch-level-style-retune-1",
+  "approved_at": "2026-07-03",
+  "scope": "LED OKLCH production level policy, Golden parity diagnostics, and LED synthetic review samples",
+  "legacy_policy": "debug-legacy-hsl-hue-cap-reference",
+  "current_candidate_policy": "current-candidate",
+  "retuned_candidate_policy": "retuned-candidate",
+  "reason": "Approve the first visual retune after the LED OKLCH production switch. Lower LED levels now carry a continuous OKLCH hue drift and chroma-scale style bias, while peak levels converge back toward the semantic center hue. Dark-mode peak lightness is lifted for stronger glow, with hue-risk peak trims keeping blue, violet, green, yellow-green, and cyan inside stable P3/sRGB fallback order.",
+  "approved_delta_classes": [
+    {
+      "class": "low-level stylization",
+      "delta": "Per-level hueDrift now decays continuously to zero at peak; chromaScale starts lower and rises monotonically, making the lowest two levels more stylized without per-sample overrides.",
+      "guard": "LEDLevelStylePolicy exposes levelProgress, hueDrift, chromaScale, lightness, chromaCap, and hueRiskAdjustment in led-parity/led-review."
+    },
+    {
+      "class": "dark peak glow",
+      "delta": "Normal dark peak target moves above the prior 0.790 band, then applies hue-risk peak trims so warm hues glow more while cold/high-risk hues avoid gamut flattening.",
+      "guard": "led-parity blocker=0; strict Golden records the production LED output."
+    },
+    {
+      "class": "green-risk controlled style",
+      "delta": "Yellow-green, green, and cyan use the same level hue-risk adjustment model, reducing low-level drift and low-scale chroma contrast relative to safer hue families.",
+      "guard": "green-risk rows remain review-required, not hidden by threshold relaxation."
+    },
+    {
+      "class": "UltraDark OKLCH scope",
+      "delta": "LED production consumes analysis.isUltraDark as an analysis signal and applies UltraDark as OKLCH peak-lightness policy; DEBUG legacy remains the only LED HSL/Hue-cap branch.",
+      "guard": "nearMono remains neutral and UltraDark peak stays below the normal dark glow target."
+    }
+  ],
+  "guards": {
+    "led_parity_summary": "total=344 preserve=0 candidate_better=271 legacy_better=0 hierarchy_risk=0 near_mono_risk=0 p3_fallback_shift=0 green_risk=73 hue_family_drift=0 blocker=0",
+    "strict_golden_diff_scope": "pending clean-worktree landing; the current shared baseline diff also contains parallel fullscreen lyrics rows, so LED-only submission must regenerate or isolate the strict baseline before commit",
+    "review_cards": 344,
+    "review_swatches": 33024,
+    "legacy_current_retuned_columns": true,
+    "level_style_diagnostics": true,
+    "sample_specific_overrides": false,
+    "threshold_relaxation": false
+  },
+  "green_risk_samples_review_required": [
+    "extended.018-29926610",
+    "extended.034-3D9F19BF",
+    "extended.038-42A62A98",
+    "extended.040-44BB3261",
+    "extended.048-4FDA8F23",
+    "extended.049-50B10116",
+    "extended.052-57E94407",
+    "extended.058-674500BA",
+    "extended.071-779C88B6",
+    "extended.079-8CC5E0F4",
+    "extended.086-A4560963",
+    "extended.090-AD9A16BE",
+    "extended.104-CBCDAA04",
+    "extended.105-CEADBA14",
+    "extended.106-D4502BEC",
+    "extended.107-D4B98F1B",
+    "extended.112-DE090F6F",
+    "extended.115-E796374E",
+    "extended.121-F237BAA3",
+    "extended.125-F7BE8289",
+    "led.synthetic.high-chroma-cyan",
+    "led.synthetic.high-chroma-green",
+    "led.synthetic.low-light-green-pin",
+    "led.synthetic.low-light-yellow-green-pin",
+    "led.synthetic.ultra-dark-green-pin",
+    "led.synthetic.yellow-green-overlap",
+    "real.03-golden-gate-green-black-avoid-pink",
+    "real.04-golden-gate-warm-brown-led",
+    "real.06-golden-gate-warm-paper",
+    "real.07-golden-gate-black-small-yellow-a",
+    "real.08-golden-gate-black-small-yellow-b",
+    "real.09-golden-gate-black-small-yellow-control",
+    "real.17-golden-gate-light-shapes-mode-consistency",
+    "synthetic.04-black-micro-yellow",
+    "synthetic.05-warm-paper-black-ink",
+    "synthetic.06-high-saturation-four-way",
+    "synthetic.07-single-hue-tonal-warm"
+  ],
+  "review_artifacts": [
+    "Tools/ColorGoldenMaster/.generated/led-parity-report.txt",
+    "Tools/ColorGoldenMaster/.generated/led-parity-review.html"
+  ]
+}
