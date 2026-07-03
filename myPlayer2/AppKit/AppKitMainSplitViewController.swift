@@ -672,6 +672,7 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
     private var lastAppliedLayoutSignature: String?
     private var pendingLayoutSignature: String?
     private var isApplyingDeferredLayout = false
+    private var lastReportedMainSurfaceVisible: Bool?
 
     // 24pt matches LyricsPanelView's .padding(.horizontal, 24) on AMLLWebView.
     private static let horizontalInset: CGFloat = 24
@@ -711,24 +712,12 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        // Call reportMainVisible BEFORE installDriver so the surface manager
-        // registers its onStoreReady handler before the WebView attach below.
-        LyricsSurfaceManager.shared.reportMainVisible(true)
-        // Apply quality scale before attach so layoutWebView uses the correct scale immediately.
-        mainStore.setRenderQualityScale(AppSettings.shared.amllLyricsRenderQualityScale, reason: "flatHost.appear")
-        installDriverIfNeeded()
-        attachWebViewIfNeeded()
-        // After attach, explicitly relayout with current host bounds.
-        // setRenderQualityScale early-exits when scale is unchanged (guard in the store
-        // skips layoutWebView). layoutPreparedWebView always applies renderQualityScale
-        // to the provided bounds, correcting any stale frame/transform left from before
-        // collapse or from a zero-bounds layout call during the expand animation.
-        mainStore.layoutPreparedWebView(in: webViewHostView.bounds, reason: "flatHost.appear.postAttach")
+        syncVisibilityAndAttachment(reason: "flatHost.appear")
     }
 
     override func viewWillDisappear() {
         super.viewWillDisappear()
-        LyricsSurfaceManager.shared.reportMainVisible(false)
+        reportMainSurfaceVisible(false)
         detachWebView()
     }
 
@@ -746,6 +735,7 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         if webViewHostView.frame != targetFrame {
             webViewHostView.frame = targetFrame
         }
+        syncVisibilityAndAttachment(reason: "flatHostLayout")
         // Guard: skip layout when the WebView is detached (attachmentID == nil).
         // viewDidLayout fires during the NSSplitView collapse animation after
         // viewWillDisappear + detachWebView. Without this guard, the shrinking panel
@@ -777,9 +767,45 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         driverVC = vc
     }
 
+    private var shouldAttachLyricsWebView: Bool {
+        appSession.uiState.lyricsVisible
+            && view.window != nil
+            && webViewHostView.bounds.width > 1
+            && webViewHostView.bounds.height > 1
+    }
+
+    private func syncVisibilityAndAttachment(reason: String) {
+        guard isViewLoaded else { return }
+        guard shouldAttachLyricsWebView else {
+            reportMainSurfaceVisible(false)
+            detachWebView()
+            return
+        }
+
+        // Call reportMainVisible BEFORE installDriver so the surface manager
+        // registers its onStoreReady handler before the WebView attach below.
+        reportMainSurfaceVisible(true)
+        // Apply quality scale before attach so layoutWebView uses the correct scale immediately.
+        mainStore.setRenderQualityScale(AppSettings.shared.amllLyricsRenderQualityScale, reason: reason)
+        installDriverIfNeeded()
+        attachWebViewIfNeeded()
+        // After attach, explicitly relayout with current host bounds.
+        // setRenderQualityScale early-exits when scale is unchanged (guard in the store
+        // skips layoutWebView). layoutPreparedWebView always applies renderQualityScale
+        // to the provided bounds, correcting any stale frame/transform left from before
+        // collapse or from a zero-bounds layout call during the expand animation.
+        mainStore.layoutPreparedWebView(in: webViewHostView.bounds, reason: "\(reason).postAttach")
+    }
+
+    private func reportMainSurfaceVisible(_ visible: Bool) {
+        guard lastReportedMainSurfaceVisible != visible else { return }
+        lastReportedMainSurfaceVisible = visible
+        LyricsSurfaceManager.shared.reportMainVisible(visible)
+    }
+
     private func attachWebViewIfNeeded() {
         let store = mainStore
-        if attachmentID == nil {
+        if attachmentID == nil || store.activeAttachmentID != attachmentID {
             attachmentID = store.attach()
         }
         let webView = store.webView
@@ -867,13 +893,15 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         lastAppliedLayoutSignature = nil
         pendingLayoutSignature = nil
         isApplyingDeferredLayout = false
-        let store = mainStore
+        guard let store = LyricsSurfaceManager.shared.existingStore(for: .main) else { return }
         if let webView = store.preparedWebView, webView.superview === webViewHostView {
             webView.removeFromSuperview()
         }
         webViewHostView.onLayout = nil
         webViewHostView.onWindowStateChange = nil
         webViewHostView.webViewLayoutScale = 1
-        store.detach(requestingID: id)
+        if store.activeAttachmentID == id {
+            store.detach(requestingID: id)
+        }
     }
 }

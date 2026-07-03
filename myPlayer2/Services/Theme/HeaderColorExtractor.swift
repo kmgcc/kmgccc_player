@@ -45,9 +45,12 @@ final class HeaderColorExtractor {
     /// `DetailHeaderConfig.artworkIdentity` includes the playlist/artist/album
     /// artwork revision, so this is safe as an instant first-paint hint.
     func cachedResult(
-        artworkIdentity: String
+        artworkIdentity: String,
+        isDark: Bool? = nil
     ) -> (accent: Color, palette: SemanticPalette, checksum: UInt64)? {
-        guard let cached = latestByIdentityCache.object(forKey: artworkIdentity as NSString) else {
+        let dark = isDark ?? (NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+        let identityCacheKey = "\(artworkIdentity)-\(dark ? "dark" : "light")" as NSString
+        guard let cached = latestByIdentityCache.object(forKey: identityCacheKey) else {
             return nil
         }
         return renderedResult(from: cached)
@@ -57,23 +60,27 @@ final class HeaderColorExtractor {
     /// - Parameters:
     ///   - data: The artwork image data.
     ///   - artworkIdentity: A stable identity string for this header artwork (e.g. DetailHeaderConfig.artworkIdentity).
+    ///   - isDark: Override the color scheme lookup.
     /// - Returns: A tuple of (accentColor, semanticPalette) suitable for header UI controls.
     func extract(
         from data: Data,
-        artworkIdentity: String
+        artworkIdentity: String,
+        isDark: Bool? = nil
     ) async -> (accent: Color, palette: SemanticPalette)? {
         let checksum = ColorMath.fnv1a(data)
-        let cacheKey = "\(artworkIdentity)-\(checksum)" as NSString
+        let dark = isDark ?? (NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+        let cacheKey = "\(artworkIdentity)-\(checksum)-\(dark ? "dark" : "light")" as NSString
+        let identityCacheKey = "\(artworkIdentity)-\(dark ? "dark" : "light")" as NSString
 
         // Memory cache hit
         if let cached = cache.object(forKey: cacheKey), cached.checksum == checksum {
             Log.trace("HeaderColor cache hit for \(shortIdentity(artworkIdentity))", category: .theme)
-            latestByIdentityCache.setObject(cached, forKey: artworkIdentity as NSString)
+            latestByIdentityCache.setObject(cached, forKey: identityCacheKey)
             let rendered = renderedResult(from: cached)
             return (rendered.accent, rendered.palette)
         }
 
-        let result = await extractInBackground(data: data, checksum: checksum)
+        let result = await extractInBackground(data: data, checksum: checksum, isDark: dark)
         guard let (accentNS, palette) = result else { return nil }
 
         // Cache result
@@ -83,7 +90,7 @@ final class HeaderColorExtractor {
             checksum: checksum
         )
         cache.setObject(entry, forKey: cacheKey)
-        latestByIdentityCache.setObject(entry, forKey: artworkIdentity as NSString)
+        latestByIdentityCache.setObject(entry, forKey: identityCacheKey)
 
         Log.debug(
             "HeaderColor extracted for \(shortIdentity(artworkIdentity)) accent=\(formatColor(accentNS))",
@@ -104,10 +111,9 @@ final class HeaderColorExtractor {
 
     private func extractInBackground(
         data: Data,
-        checksum: UInt64
+        checksum: UInt64,
+        isDark: Bool
     ) async -> (NSColor, SemanticPalette)? {
-        // Read AppKit/SwiftUI APIs on MainActor before crossing to the background queue.
-        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let scheme: ColorScheme = isDark ? .dark : .light
         // Resolve the dynamic accent color while on MainActor.
         let accentBase = NSColor(AppSettings.shared.accentColor)

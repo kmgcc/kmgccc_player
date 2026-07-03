@@ -53,15 +53,11 @@ struct LyricsPanelView: View {
                 )
                 Log.info("LyricsPanelView appeared", category: .webview)
 
-                // Report visibility to manager - let manager decide if switch is needed
-                LyricsSurfaceManager.shared.reportMainVisible(true)
-
                 setupSeekCallback()
-                updateLyricsWebViewHosting(
-                    hasTrack: playbackCoordinator.presentation.hasTrack,
+                syncMainLyricsSurfaceVisibility(
+                    isVisible: uiState.lyricsVisible,
                     reason: "lyrics panel appear"
                 )
-                lyricsVM.revealExistingLyrics(reason: "lyrics panel appear")
                 FirstUseHitchDiagnostics.end(token)
             }
             .onDisappear {
@@ -74,27 +70,25 @@ struct LyricsPanelView: View {
                 LyricsSurfaceManager.shared.reportMainVisible(false)
                 pendingWebViewUnmount?.cancel()
                 pendingWebViewUnmount = nil
+                shouldHostLyricsWebView = false
                 FirstUseHitchDiagnostics.end(token)
             }
             .onChange(of: playbackCoordinator.presentation.lyricsIdentity, handleTrackIdentityChange)
             .onChange(of: playbackCoordinator.presentation.hasTrack) { _, hasTrack in
-                updateLyricsWebViewHosting(
-                    hasTrack: hasTrack,
-                    reason: "presentation hasTrack changed"
+                syncMainLyricsSurfaceVisibility(
+                    isVisible: uiState.lyricsVisible,
+                    reason: "presentation hasTrack changed",
+                    hasTrackOverride: hasTrack
                 )
-                guard hasTrack else { return }
-                LyricsSurfaceManager.shared.reportMainVisible(true)
             }
             .onChange(of: uiState.lyricsVisible) { _, isVisible in
-                guard isVisible else { return }
-                updateLyricsWebViewHosting(
-                    hasTrack: playbackCoordinator.presentation.hasTrack,
-                    reason: "lyrics inspector expanded"
+                syncMainLyricsSurfaceVisibility(
+                    isVisible: isVisible,
+                    reason: isVisible ? "lyrics inspector expanded" : "lyrics inspector collapsed"
                 )
-                LyricsSurfaceManager.shared.reportMainVisible(true)
-                lyricsVM.revealExistingLyrics(reason: "lyrics inspector expanded")
             }
             .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
+                guard uiState.lyricsVisible else { return }
                 guard
                     let trackID = notification.userInfo?["trackID"] as? UUID,
                     trackID == playbackCoordinator.presentation.localTrack?.id
@@ -102,14 +96,15 @@ struct LyricsPanelView: View {
                 reloadLyricsSurface(reason: "library track enrichment update", forceLyricsReload: true)
             }
             .onChange(of: themeStore.colorScheme) { _, _ in
+                guard uiState.lyricsVisible else { return }
                 // Theme mode switches must immediately re-push AMLL config,
                 // so light/dark dedicated font weights take effect without waiting for settings edits.
                 lyricsVM.refreshConfigFromSettings()
             }
             // Settings observation moved to modifier to reduce compiler complexity
-            .modifier(LyricsSettingsObserver(lyricsVM: lyricsVM))
+            .modifier(LyricsSettingsObserver(lyricsVM: lyricsVM, isActive: uiState.lyricsVisible))
             .overlay {
-                LyricsRealtimeSyncObserver {
+                LyricsRealtimeSyncObserver(isActive: uiState.lyricsVisible) {
                     reloadLyricsSurface(reason: "playback restarted", forceLyricsReload: true)
                 }
                 .allowsHitTesting(false)
@@ -197,11 +192,32 @@ struct LyricsPanelView: View {
         }
     }
 
-    private func updateLyricsWebViewHosting(hasTrack: Bool, reason: String) {
+    private func syncMainLyricsSurfaceVisibility(
+        isVisible: Bool,
+        reason: String,
+        hasTrackOverride: Bool? = nil
+    ) {
+        let hasTrack = hasTrackOverride ?? playbackCoordinator.presentation.hasTrack
+        updateLyricsWebViewHosting(
+            shouldHost: isVisible && hasTrack,
+            reason: reason
+        )
+
+        guard isVisible, hasTrack else {
+            LyricsSurfaceManager.shared.reportMainVisible(false)
+            return
+        }
+
+        LyricsSurfaceManager.shared.reportMainVisible(true)
+        reloadLyricsSurface(reason: reason)
+        lyricsVM.revealExistingLyrics(reason: reason)
+    }
+
+    private func updateLyricsWebViewHosting(shouldHost: Bool, reason: String) {
         pendingWebViewUnmount?.cancel()
         pendingWebViewUnmount = nil
 
-        if hasTrack {
+        if shouldHost {
             if !shouldHostLyricsWebView {
                 Log.debug("LyricsPanelView host WebView: true, reason=\(reason)", category: .webview)
             }
@@ -343,17 +359,20 @@ private struct LyricsRealtimeSyncObserver: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LyricsViewModel.self) private var lyricsVM
 
+    let isActive: Bool
     let onPlaybackRestart: () -> Void
 
     var body: some View {
         Color.clear
             .onChange(of: playbackCoordinator.presentation.currentTime) { oldTime, newTime in
+                guard isActive else { return }
                 lyricsVM.syncTime(playbackCoordinator.presentation.lyricsCurrentTime)
                 if oldTime > 1.0, newTime < 0.2 {
                     onPlaybackRestart()
                 }
             }
             .onChange(of: playbackCoordinator.presentation.isPlaying) { _, newValue in
+                guard isActive else { return }
                 if !newValue {
                     lyricsVM.syncTime(playbackCoordinator.presentation.lyricsCurrentTime)
                 }
@@ -366,6 +385,7 @@ private struct LyricsRealtimeSyncObserver: View {
 
 struct LyricsSettingsObserver: ViewModifier {
     var lyricsVM: LyricsViewModel
+    var isActive: Bool = true
 
     @AppStorage("lyricsFontSize") private var lyricsFontSize: Double = 26.0
     @AppStorage("lyricsFontNameZh") private var lyricsFontNameZh: String = "PingFang SC"
@@ -385,23 +405,28 @@ struct LyricsSettingsObserver: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .onChange(of: lyricsFontSize) { _, _ in lyricsVM.refreshConfigFromSettings() }
-            .onChange(of: lyricsFontNameZh) { _, _ in lyricsVM.refreshConfigFromSettings() }
-            .onChange(of: lyricsFontNameEn) { _, _ in lyricsVM.refreshConfigFromSettings() }
-            .onChange(of: lyricsTranslationFontName) { _, _ in lyricsVM.refreshConfigFromSettings()
+            .onChange(of: lyricsFontSize) { _, _ in refreshConfigIfActive() }
+            .onChange(of: lyricsFontNameZh) { _, _ in refreshConfigIfActive() }
+            .onChange(of: lyricsFontNameEn) { _, _ in refreshConfigIfActive() }
+            .onChange(of: lyricsTranslationFontName) { _, _ in refreshConfigIfActive()
             }
-            .onChange(of: lyricsFontWeightLight) { _, _ in lyricsVM.refreshConfigFromSettings() }
-            .onChange(of: lyricsFontWeightDark) { _, _ in lyricsVM.refreshConfigFromSettings() }
-            .onChange(of: lyricsLeadInMs) { _, _ in lyricsVM.refreshConfigFromSettings() }
-            .onChange(of: lyricsNearSwitchGapMs) { _, _ in lyricsVM.refreshConfigFromSettings() }
-            .onChange(of: lyricsGlobalAdvanceMs) { _, _ in lyricsVM.refreshConfigFromSettings() }
-            .onChange(of: lyricsTranslationFontSize) { _, _ in lyricsVM.refreshConfigFromSettings()
+            .onChange(of: lyricsFontWeightLight) { _, _ in refreshConfigIfActive() }
+            .onChange(of: lyricsFontWeightDark) { _, _ in refreshConfigIfActive() }
+            .onChange(of: lyricsLeadInMs) { _, _ in refreshConfigIfActive() }
+            .onChange(of: lyricsNearSwitchGapMs) { _, _ in refreshConfigIfActive() }
+            .onChange(of: lyricsGlobalAdvanceMs) { _, _ in refreshConfigIfActive() }
+            .onChange(of: lyricsTranslationFontSize) { _, _ in refreshConfigIfActive()
             }
             .onChange(of: lyricsTranslationFontWeightLight) { _, _ in
-                lyricsVM.refreshConfigFromSettings()
+                refreshConfigIfActive()
             }
             .onChange(of: lyricsTranslationFontWeightDark) { _, _ in
-                lyricsVM.refreshConfigFromSettings()
+                refreshConfigIfActive()
             }
+    }
+
+    private func refreshConfigIfActive() {
+        guard isActive else { return }
+        lyricsVM.refreshConfigFromSettings()
     }
 }

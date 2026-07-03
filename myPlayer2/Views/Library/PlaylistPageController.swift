@@ -88,6 +88,8 @@ final class PlaylistPageController {
     private var headerLoadDispatchTask: Task<Void, Never>?
     private var lastHeaderColorIdentity: String?
     private var lastHeaderColorChecksum: UInt64 = 0
+    private var lastHeaderArtworkData: Data?
+    private var lastHeaderColorScheme: ColorScheme?
     private var inFlightHeaderColorRequestKey: HeaderColorRequestKey?
 
     // MARK: - Halo Crossfade State (low-resolution seed image)
@@ -1139,12 +1141,14 @@ final class PlaylistPageController {
         HeaderColorExtractor.shared.cancelPending()
         inFlightHeaderColorRequestKey = requestKey
 
-        if let cached = HeaderColorExtractor.shared.cachedResult(artworkIdentity: artworkIdentity) {
+        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        if let cached = HeaderColorExtractor.shared.cachedResult(artworkIdentity: artworkIdentity, isDark: isDark) {
             commitHeaderColor(
                 accent: cached.accent,
                 palette: cached.palette,
                 artworkIdentity: artworkIdentity,
-                checksum: cached.checksum
+                checksum: cached.checksum,
+                scheme: isDark ? .dark : .light
             )
         }
 
@@ -1179,25 +1183,32 @@ final class PlaylistPageController {
             }
 
             let checksum = resolvedData.map { ColorMath.fnv1a($0) } ?? 0
+            let currentScheme = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? ColorScheme.dark : ColorScheme.light
             if artworkIdentity == self.lastHeaderColorIdentity,
-               checksum == self.lastHeaderColorChecksum
+               checksum == self.lastHeaderColorChecksum,
+               currentScheme == self.lastHeaderColorScheme
             {
                 return
             }
 
             guard let data = resolvedData, !data.isEmpty else {
+                self.lastHeaderArtworkData = nil
                 self.commitHeaderColor(
                     accent: ThemeStore.shared.accentColor,
                     palette: nil,
                     artworkIdentity: artworkIdentity,
-                    checksum: 0
+                    checksum: 0,
+                    scheme: currentScheme
                 )
                 return
             }
 
+            self.lastHeaderArtworkData = data
+
             let result = await HeaderColorExtractor.shared.extract(
                 from: data,
-                artworkIdentity: artworkIdentity
+                artworkIdentity: artworkIdentity,
+                isDark: currentScheme == .dark
             )
             guard !Task.isCancelled else { return }
             guard self.headerResolveToken == resolveToken else {
@@ -1210,7 +1221,8 @@ final class PlaylistPageController {
                     accent: result.accent,
                     palette: result.palette,
                     artworkIdentity: artworkIdentity,
-                    checksum: checksum
+                    checksum: checksum,
+                    scheme: currentScheme
                 )
             }
         }
@@ -1230,19 +1242,22 @@ final class PlaylistPageController {
         accent: Color,
         palette: SemanticPalette?,
         artworkIdentity: String,
-        checksum: UInt64
+        checksum: UInt64,
+        scheme: ColorScheme? = nil
     ) {
-        guard artworkIdentity != lastHeaderColorIdentity || checksum != lastHeaderColorChecksum else {
+        let currentScheme = scheme ?? (NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light)
+        guard artworkIdentity != lastHeaderColorIdentity || checksum != lastHeaderColorChecksum || currentScheme != lastHeaderColorScheme else {
             return
         }
         let token = FirstUseHitchDiagnostics.begin(
             "PlaylistPageController.headerColorCommit",
-            detail: "identity=\(artworkIdentity.prefix(8)), checksum=\(String(checksum, radix: 16))"
+            detail: "identity=\(artworkIdentity.prefix(8)), checksum=\(String(checksum, radix: 16)), scheme=\(currentScheme)"
         )
         headerAccentColor = accent
         headerSemanticPalette = palette
         lastHeaderColorIdentity = artworkIdentity
         lastHeaderColorChecksum = checksum
+        lastHeaderColorScheme = currentScheme
         FirstUseHitchDiagnostics.end(token)
     }
 
@@ -1361,13 +1376,63 @@ final class PlaylistPageController {
             headerSemanticPalette = cached.palette
             lastHeaderColorIdentity = identity
             lastHeaderColorChecksum = cached.checksum
+            lastHeaderColorScheme = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light
         } else {
             headerAccentColor = ThemeStore.shared.accentColor
             headerSemanticPalette = nil
             lastHeaderColorIdentity = nil
             lastHeaderColorChecksum = 0
+            lastHeaderColorScheme = nil
         }
+        lastHeaderArtworkData = nil
         inFlightHeaderColorRequestKey = nil
+    }
+
+    func colorSchemeDidChange(to scheme: ColorScheme) {
+        guard let identity = lastHeaderColorIdentity else { return }
+        guard scheme != lastHeaderColorScheme else { return }
+
+        let isDark = (scheme == .dark)
+        if let cached = HeaderColorExtractor.shared.cachedResult(artworkIdentity: identity, isDark: isDark) {
+            commitHeaderColor(
+                accent: cached.accent,
+                palette: cached.palette,
+                artworkIdentity: identity,
+                checksum: cached.checksum,
+                scheme: scheme
+            )
+        } else if let data = lastHeaderArtworkData {
+            let resolveToken = UUID()
+            self.headerResolveToken = resolveToken
+
+            headerColorTask?.cancel()
+            headerColorTask = Task(priority: .utility) { @MainActor in
+                let result = await HeaderColorExtractor.shared.extract(
+                    from: data,
+                    artworkIdentity: identity,
+                    isDark: isDark
+                )
+                guard !Task.isCancelled else { return }
+                guard self.headerResolveToken == resolveToken else { return }
+                if let result {
+                    self.commitHeaderColor(
+                        accent: result.accent,
+                        palette: result.palette,
+                        artworkIdentity: identity,
+                        checksum: self.lastHeaderColorChecksum,
+                        scheme: scheme
+                    )
+                }
+            }
+        } else {
+            commitHeaderColor(
+                accent: ThemeStore.shared.accentColor,
+                palette: nil,
+                artworkIdentity: identity,
+                checksum: 0,
+                scheme: scheme
+            )
+        }
     }
 
     private func publishHeaderImage(_ image: NSImage, identity: String, resolveToken: UUID) {

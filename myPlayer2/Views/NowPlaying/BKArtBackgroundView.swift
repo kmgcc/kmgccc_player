@@ -113,19 +113,19 @@ struct BKArtBackgroundView: View {
 
         func dotFrameInterval(for style: DotRenderStyle) -> TimeInterval {
             switch (self, style) {
-            case (.window, .solidCircles):
+            case (.fullscreenBalanced, .solidCircles):
                 return 1.0 / 30.0
-            case (.window, .dotGrid), (.fullscreenBalanced, _):
+            default:
                 return 1.0 / 15.0
             }
         }
 
         func usesHighRateDotClock(for style: DotRenderStyle) -> Bool {
-            self == .window && style == .solidCircles
+            self == .fullscreenBalanced && style == .solidCircles
         }
 
         var allowsAutomaticBackgroundPhaseCycling: Bool {
-            self == .window
+            true
         }
     }
 
@@ -747,8 +747,6 @@ private final class BKArtBackgroundLayerView: NSView {
     private var isPausedFrozen = false
     private var pendingBoundsRebuild = false
     private var isTransitionInFlight = false
-    private var didPauseBackgroundTimerForTransition = false
-    private var didPauseDotTimerForTransition = false
     private var rebuildDebounceTask: Task<Void, Never>?
     private let ultraDarkOverlayOpacity: Float = 0.24
     private var activeAvoidanceRect: CGRect?
@@ -1941,8 +1939,6 @@ private final class BKArtBackgroundLayerView: NSView {
         speedRampClockSubscription?.cancel()
         speedRampClockSubscription = nil
         isTransitionInFlight = false
-        didPauseBackgroundTimerForTransition = false
-        didPauseDotTimerForTransition = false
         isPausedFrozen = false
         updateClockActivity()
     }
@@ -2180,37 +2176,13 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func enterTransitionPerformanceMode() {
         isTransitionInFlight = true
-
-        if backgroundClockSubscription != nil {
-            backgroundClockSubscription?.cancel()
-            backgroundClockSubscription = nil
-            didPauseBackgroundTimerForTransition = true
-        } else {
-            didPauseBackgroundTimerForTransition = false
-        }
-
-        if isDotAnimationDriverRunning {
-            stopDotAnimationDriver()
-            didPauseDotTimerForTransition = true
-        } else {
-            didPauseDotTimerForTransition = false
-        }
-
+        startBackgroundTimerIfNeeded()
+        startDotTimerIfNeeded()
         updateClockActivity()
     }
 
     private func exitTransitionPerformanceMode() {
         isTransitionInFlight = false
-
-        if didPauseBackgroundTimerForTransition {
-            didPauseBackgroundTimerForTransition = false
-            startBackgroundTimerIfNeeded()
-        }
-
-        if didPauseDotTimerForTransition {
-            didPauseDotTimerForTransition = false
-            startDotTimerIfNeeded()
-        }
 
         if pendingBoundsRebuild {
             pendingBoundsRebuild = false

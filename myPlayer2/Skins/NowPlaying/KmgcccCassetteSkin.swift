@@ -1250,7 +1250,6 @@ private struct KmgcccCassetteNormalSettingsView: View {
                 set: { isOn in
                     if isOn {
                         visualizerMode = "led"
-                        ledMeterProvider.getOrCreate().start()
                     } else if visualizerMode == "led" {
                         visualizerMode = "off"
                         ledMeterProvider.releaseNowPlayingResources()

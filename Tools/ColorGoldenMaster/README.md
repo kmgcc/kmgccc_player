@@ -1,8 +1,9 @@
 # Color Golden Master
 
-This tool is the first Golden Master guard for the color-system refactor. It
-captures current behavior; it does not claim the current visual result is
-ideal.
+This tool is the strict Golden Master guard for the current color system. It
+captures approved production behavior; it does not claim every visual result is
+ideal. Current color-system maintenance rules live in
+`docs/oklch-color-system.md`.
 
 ## What It Builds
 
@@ -25,8 +26,8 @@ by this tool.
 
 The snapshot is split into three stable sections:
 
-- Golden Gate: 19 fixed real-cover samples from
-  `docs/oklch-color-system-refactor-findings.md`.
+- Golden Gate: 19 fixed real-cover samples originally recorded in
+  `docs/archive/oklch-color-system-refactor-findings.md`.
 - Extended Corpus: 130 frozen real covers from the local track library,
   selected by a fixed seed and stored in
   `Tools/ColorGoldenMaster/Fixtures/extended-corpus-manifest.json`.
@@ -98,7 +99,7 @@ Print a snapshot without writing the approved baseline:
 Tools/ColorGoldenMaster/run.sh snapshot
 ```
 
-Write the Stage 3 controlled accent parity report:
+Write the accent controlled parity report:
 
 ```sh
 Tools/ColorGoldenMaster/run.sh accent-parity
@@ -182,18 +183,14 @@ Tools/ColorGoldenMaster/run.sh lyrics-review
 ```
 
 The lyric report is a sidecar parity/review artifact only. It does not change
-the strict Golden baseline and does not implement a new OKLCH lyric production
-strategy. Candidate fields are intentionally filled with
-`phase1_passthrough_no_oklch_strategy` so the schema is ready for a future
-candidate policy without changing current production colors.
-
-The report models current legacy lyric paths for window lyrics, batch preview,
-standard fullscreen, artistic-background fullscreen, generic CoverBlur
-lighter/darker, Apple style's fixed lighter CoverBlur path, and the disabled
-dedicated CoverBlur compatibility branch. It records Swift legacy roles,
-fullscreen alpha stripping, Web-derived `--amll-fs-*` and `--amll-cb-*`
-background/karaoke/sub roles, CoverBlur blend classification, Display P3 CSS,
-sRGB fallback, OKLCH values, adapter deltas, and hierarchy/alpha risk tags.
+or approve the strict Golden baseline. It compares the retained legacy rollback
+paths with current production roles for window lyrics, batch preview, standard
+fullscreen, artistic-background fullscreen, generic CoverBlur lighter/darker,
+Apple style's fixed lighter CoverBlur context, and the disabled dedicated
+CoverBlur compatibility branch. It records Swift semantic roles, fullscreen
+alpha stripping, Web-applied `--amll-fs-*` and `--amll-cb-*` roles, CoverBlur
+blend classification, Display P3 CSS, sRGB fallback, OKLCH values, adapter
+deltas, and hierarchy/alpha risk tags.
 The HTML artifact is written to:
 
 ```text
@@ -233,9 +230,9 @@ Tools/ColorGoldenMaster/run.sh refresh-extended-corpus \
 | --- | --- | --- |
 | `classification.*`, `analysis.*` | Real covers call `ArtworkColorExtractor.analyze(from:)`; synthetic calls `ArtworkColorExtractor.analyzeSyntheticSample(...)`; both return production `ArtworkColorAnalysis`. | Only file loading, hash checking, and stable text formatting. |
 | `semantic.*` | `SemanticPaletteFactory.make(from:scheme:userFallbackAccent:useArtworkTint:)` with the production analysis. | Fixed fallback accent value and formatting only. |
-| `lyrics_surface.*.standard_fullscreen` | `SemanticPaletteFactory.fullscreenLyricsColorSet(... usesArtisticBackground: false)`. | Formatting only. |
-| `lyrics_surface.*.art_background_fullscreen` | `SemanticPaletteFactory.fullscreenLyricsColorSet(... usesArtisticBackground: true)`. | Formatting only. |
-| `lyrics_surface.*.cover_blur_*` | `SemanticPaletteFactory.coverBlurLyricsColorSet(...)`. | Formatting only. |
+| `lyrics_surface.*.standard_fullscreen` | `SemanticPaletteFactory.fullscreenLyricsColorSet(... usesArtisticBackground: false)`, which defaults to Swift-owned OKLCH production roles unless legacy rollback is explicitly enabled. | Formatting only. |
+| `lyrics_surface.*.art_background_fullscreen` | `SemanticPaletteFactory.fullscreenLyricsColorSet(... usesArtisticBackground: true)`, including artistic seed fallback to standard OKLCH roles. | Formatting only. |
+| `lyrics_surface.*.cover_blur_*` | `SemanticPaletteFactory.coverBlurLyricsColorSet(...)`, which defaults to Swift-owned CoverBlur OKLCH production roles unless legacy rollback is explicitly enabled. | Formatting only. |
 | `lyrics_surface.*.artistic_seed` | `SemanticPaletteFactory.artisticLyricsSingleSeed(...)`. | Formatting only. |
 | `led.*` | Production `LEDColorResolver` properties and methods: `centerColor`, `edgeColor`, `statusLightColor`, `statusLightStrokeColor`, `volumeLEDColor`, `volumeLEDStrokeColor`. | Formatting only. |
 | `bk.base_palette` | Production cache-miss/direct-analysis base palette input. | Records `analysis.topPalette` before selection. |
@@ -251,7 +248,7 @@ Tools/ColorGoldenMaster/run.sh refresh-extended-corpus \
 | `bk.hit_miss.*_differs` | Same production BK selection, engine, shape swatch, and stabilize calls for both paths. | Boolean comparison fields only; swatch/stabilize comparison uses a shared deterministic seed so randomness cannot create a false path diff. |
 | `bk-parity` / `bk-review` | Legacy `BKColorEngine.makeLegacyHSB(...)`, production/candidate `BKColorEngine.makeCandidateOKLCH(...)`, legacy/candidate shape swatches, legacy/candidate stabilize. | Sidecar diagnostics for the HSB-to-OKLCH migration; strict `verify` records the OKLCH production path. Approved migration deltas are summarized in `Tools/ColorGoldenMaster/ApprovedDeltas/bk-approved-deltas.json`. |
 | `led-parity` / `led-review` | DEBUG legacy `LEDColorResolverImplementation.legacy` vs migration-era current candidate vs retuned production `LEDColorResolverImplementation.oklch`. | Sidecar diagnostics for the LED OKLCH migration and retune; strict `verify` records the production OKLCH LED path. The legacy HSL/Hue-cap path is retained only for DEBUG parity. Approved retune deltas are summarized in `Tools/ColorGoldenMaster/ApprovedDeltas/led-approved-deltas.json`. |
-| `lyrics-parity` / `lyrics-review` | Production `SemanticPaletteFactory.make(...)`, `fullscreenLyricsColorSet(...)`, `coverBlurLyricsColorSet(...)`, and `artisticLyricsSingleSeed(...)`. | Sidecar lyric migration diagnostics. The tool-side model mirrors current `Resources/AMLL/index.html` alpha stripping, derived fullscreen/CoverBlur roles, blend-mode classification, Display P3 output, and sRGB fallback. It does not modify or approve the strict baseline. |
+| `lyrics-parity` / `lyrics-review` | Production `SemanticPaletteFactory.make(...)`, current fullscreen/CoverBlur OKLCH role builders, retained legacy rollback builders, and `artisticLyricsSingleSeed(...)`. | Sidecar lyric diagnostics. The tool-side model mirrors current `Resources/AMLL/index.html` alpha stripping, explicit fullscreen/CoverBlur roles, fallback derivation, blend-mode classification, Display P3 output, and sRGB fallback. It does not modify or approve the strict baseline. |
 
 Call chain for real artwork:
 
