@@ -239,6 +239,24 @@ final class LyricsSurfaceManager {
     func reportMainVisible(_ visible: Bool) {
         Log.debug("LyricsSurfaceManager: reportMainVisible=\(visible), targetMode=\(targetMode), currentMode=\(currentMode), state=\(switchState)", category: .webview)
 
+        if !visible {
+            pendingSwitchWorkItem?.cancel()
+            pendingSwitchWorkItem = nil
+            onStoreReadyHandlers.removeValue(forKey: .main)
+            activeRoles.remove(.main)
+
+            if let store = stores[.main] {
+                store.releasePreparedWebViewPreservingSnapshot(reason: "main surface hidden")
+            }
+            if currentMode == .main {
+                currentMode = activeRoles.contains(.fullscreen) ? .fullscreen : .none
+            }
+            if targetMode == .main {
+                switchState = .idle
+            }
+            return
+        }
+
         // Only consider switching to main if:
         // - We're not explicitly targeting fullscreen
         // - Or fullscreen is not actually active yet

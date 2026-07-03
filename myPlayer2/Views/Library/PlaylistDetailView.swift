@@ -160,6 +160,9 @@ struct PlaylistDetailView: View {
         .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
             pageController.notePlaybackTrackDidChange()
         }
+        .onChange(of: themeStore.colorScheme) { _, newScheme in
+            pageController.colorSchemeDidChange(to: newScheme)
+        }
     }
 
     // MARK: - Computed Properties

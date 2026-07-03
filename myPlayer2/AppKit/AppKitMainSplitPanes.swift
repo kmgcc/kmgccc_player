@@ -731,9 +731,11 @@ struct LyricsFlatDriverView: View {
         Color.clear
             .frame(width: 0, height: 0)
             .onAppear {
-                LyricsSurfaceManager.shared.reportMainVisible(true)
                 setupSeekCallback()
-                lyricsVM.revealExistingLyrics(reason: "flat driver appear")
+                syncMainLyricsVisibility(
+                    isVisible: uiState.lyricsVisible,
+                    reason: "flat driver appear"
+                )
             }
             .onDisappear {
                 LyricsSurfaceManager.shared.reportMainVisible(false)
@@ -743,15 +745,20 @@ struct LyricsFlatDriverView: View {
                 LyricsRuntimeProfile.increment("LyricsFlatDriverView.trackIDChange")
             }
             .onChange(of: playbackCoordinator.presentation.hasTrack) { _, hasTrack in
-                guard hasTrack else { return }
-                LyricsSurfaceManager.shared.reportMainVisible(true)
+                syncMainLyricsVisibility(
+                    isVisible: uiState.lyricsVisible,
+                    reason: "flat driver hasTrack changed",
+                    hasTrackOverride: hasTrack
+                )
             }
             .onChange(of: uiState.lyricsVisible) { _, isVisible in
-                guard isVisible else { return }
-                LyricsSurfaceManager.shared.reportMainVisible(true)
-                lyricsVM.revealExistingLyrics(reason: "flat lyrics expanded")
+                syncMainLyricsVisibility(
+                    isVisible: isVisible,
+                    reason: isVisible ? "flat lyrics expanded" : "flat lyrics collapsed"
+                )
             }
             .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
+                guard uiState.lyricsVisible else { return }
                 guard
                     let trackID = notification.userInfo?["trackID"] as? UUID,
                     trackID == playbackCoordinator.presentation.localTrack?.id
@@ -759,23 +766,27 @@ struct LyricsFlatDriverView: View {
                 reloadLyrics(reason: "library track update", forceLyricsReload: true)
             }
             .onChange(of: themeStore.colorScheme) { _, _ in
+                guard uiState.lyricsVisible else { return }
                 lyricsVM.refreshConfigFromSettings()
             }
             // Real-time sync — inlined from LyricsRealtimeSyncObserver (which is private).
             .onChange(of: playbackCoordinator.presentation.currentTime) { oldTime, newTime in
+                guard uiState.lyricsVisible else { return }
                 lyricsVM.syncTime(playbackCoordinator.presentation.lyricsCurrentTime)
                 if oldTime > 1.0, newTime < 0.2 {
                     reloadLyrics(reason: "playback restarted", forceLyricsReload: true)
                 }
             }
             .onChange(of: playbackCoordinator.presentation.isPlaying) { _, newValue in
+                guard uiState.lyricsVisible else { return }
                 if !newValue {
                     lyricsVM.syncTime(playbackCoordinator.presentation.lyricsCurrentTime)
                 }
                 lyricsVM.setPlaying(newValue)
             }
-            .modifier(LyricsSettingsObserver(lyricsVM: lyricsVM))
+            .modifier(LyricsSettingsObserver(lyricsVM: lyricsVM, isActive: uiState.lyricsVisible))
             .onChange(of: amllLyricsRenderQuality) { _, newValue in
+                guard uiState.lyricsVisible else { return }
                 let scale = AppSettings.AMLLLyricsRenderQuality(rawValue: newValue)?.webViewScale ?? 0.75
                 LyricsSurfaceManager.shared.mainStore.setRenderQualityScale(
                     scale,
@@ -789,6 +800,23 @@ struct LyricsFlatDriverView: View {
         lyricsVM.onSeekRequest = { seconds in
             coordinator.seek(to: seconds)
         }
+    }
+
+    private func syncMainLyricsVisibility(
+        isVisible: Bool,
+        reason: String,
+        hasTrackOverride: Bool? = nil
+    ) {
+        setupSeekCallback()
+        let hasTrack = hasTrackOverride ?? playbackCoordinator.presentation.hasTrack
+        guard isVisible, hasTrack else {
+            LyricsSurfaceManager.shared.reportMainVisible(false)
+            return
+        }
+
+        LyricsSurfaceManager.shared.reportMainVisible(true)
+        reloadLyrics(reason: reason)
+        lyricsVM.revealExistingLyrics(reason: reason)
     }
 
     private func reloadLyrics(reason: String, forceWebReload: Bool = false, forceLyricsReload: Bool = false) {

@@ -68,17 +68,12 @@ struct NowPlayingHostView: View {
                     await CassetteArtworkCache.shared.removeAll()
                 }
             }
-            if isLedEnabledForCurrentSkin() {
-                ledMeterProvider.getOrCreate().start()
-            } else {
+            if !isLedEnabledForCurrentSkin() {
                 ledMeterProvider.releaseNowPlayingResources()
             }
         }
         .onAppear {
             TelemetryService.shared.setWindowNowPlayingVisible(true)
-            if isLedEnabledForCurrentSkin() {
-                ledMeterProvider.getOrCreate().start()
-            }
         }
         .onDisappear {
             TelemetryService.shared.setWindowNowPlayingVisible(false)

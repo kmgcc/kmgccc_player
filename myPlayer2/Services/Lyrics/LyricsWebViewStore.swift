@@ -780,6 +780,8 @@ final class LyricsWebViewStore: NSObject {
         lastAppliedBackingScale = nil
         lastAppliedLayoutSignature = nil
         awaitingValidLayoutBounds = false
+        activeAttachmentID = nil
+        isAttached = false
 
         guard let webView = retainedWebView else {
             Log.debug("Release skipped, no prepared WebView: role=\(role), reason=\(reason)", category: .webview)
@@ -1980,8 +1982,9 @@ final class LyricsWebViewStore: NSObject {
         // 2. Inject CSS Variables (renderer-level styles).
         // Only `--amll-text` / `--amll-active` / `--amll-inactive` have live
         // consumers in the renderer. `--amll-bg`, `--amll-accent` and
-        // `--amll-shadow` were removed as part of Phase 0 cleanup (see
-        // docs/oklch-color-system-migration-log.md).
+        // `--amll-shadow` were removed during the color-system cleanup. Current
+        // color rules live in docs/oklch-color-system.md; the old migration log
+        // is archived under docs/archive/.
         let css = """
             (function() {
                 var root = document.documentElement;

@@ -967,7 +967,6 @@ private struct ClassicLEDSkinNormalSettingsView: View {
                 set: { isOn in
                     if isOn {
                         visualizerMode = "led"
-                        ledMeterProvider.getOrCreate().start()
                     } else if visualizerMode == "led" {
                         visualizerMode = "off"
                         ledMeterProvider.releaseNowPlayingResources()

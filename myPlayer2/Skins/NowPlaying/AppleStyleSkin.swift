@@ -158,8 +158,6 @@ private struct AppleStyleSettingsView: View {
                             visualizerMode = "led"
                             if mode == .fullscreen {
                                 FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
-                            } else {
-                                ledMeterProvider.getOrCreate().start()
                             }
                         } else if visualizerMode == "led" {
                             visualizerMode = "off"
