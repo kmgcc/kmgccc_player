@@ -38,39 +38,26 @@ nonisolated enum BKExtractedPalettePolicy {
                 guard let rgb = color.usingColorSpace(.deviceRGB),
                       let lch = OKColor.nsColorToOKLCH(rgb)
                 else { return false }
-                var hue: CGFloat = 0
-                var saturation: CGFloat = 0
-                var brightness: CGFloat = 0
-                var alpha: CGFloat = 0
-                rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-                return lch.c >= 0.006
-                    && saturation >= 0.035
-                    && brightness >= 0.08
-                    && brightness <= 0.97
+                return lch.c >= 0.008
+                    && lch.l >= 0.08
+                    && lch.l <= 0.97
             }
 
             func isUsefulBackgroundMaterial(_ color: NSColor, areaShare: CGFloat?) -> Bool {
                 guard let rgb = color.usingColorSpace(.deviceRGB),
                       let lch = OKColor.nsColorToOKLCH(rgb)
                 else { return false }
-                var hue: CGFloat = 0
-                var saturation: CGFloat = 0
-                var brightness: CGFloat = 0
-                var alpha: CGFloat = 0
-                rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
 
                 let share = areaShare ?? 0
                 let dominantTonalField = share >= 0.18
-                    && (brightness <= 0.22 || (brightness >= 0.78 && saturation <= 0.18))
+                    && (lch.l <= 0.22 || (lch.l >= 0.78 && lch.c <= 0.025))
                 let visibleMaterial = lch.c >= 0.006
-                    && saturation >= 0.030
-                    && brightness >= 0.08
-                    && brightness <= 0.97
+                    && lch.l >= 0.08
+                    && lch.l <= 0.97
                 let mutedAreaColor = share >= 0.012
                     && lch.c >= 0.010
-                    && saturation >= 0.030
-                    && brightness >= 0.05
-                    && brightness <= 0.98
+                    && lch.l >= 0.05
+                    && lch.l <= 0.98
                 return dominantTonalField || visibleMaterial || mutedAreaColor
             }
 
@@ -80,30 +67,23 @@ nonisolated enum BKExtractedPalettePolicy {
             }
 
             func isSmallSalientVariant(_ color: NSColor) -> Bool {
-                guard let rgb = color.usingColorSpace(.deviceRGB) else { return false }
-                var hue: CGFloat = 0
-                var saturation: CGFloat = 0
-                var brightness: CGFloat = 0
-                var alpha: CGFloat = 0
-                rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+                guard let rgb = color.usingColorSpace(.deviceRGB),
+                      let lch = OKColor.nsColorToOKLCH(rgb)
+                else { return false }
 
                 for (index, salient) in analysis.salientHighlightPalette.enumerated() {
                     let share = index < analysis.salientHighlightAreaShares.count
                         ? analysis.salientHighlightAreaShares[index]
                         : 1
                     guard share <= 0.080,
-                          let salientRGB = salient.usingColorSpace(.deviceRGB)
+                          let salientRGB = salient.usingColorSpace(.deviceRGB),
+                          let salientLCH = OKColor.nsColorToOKLCH(salientRGB)
                     else { continue }
-                    var sh: CGFloat = 0
-                    var ss: CGFloat = 0
-                    var sb: CGFloat = 0
-                    var sa: CGFloat = 0
-                    salientRGB.getHue(&sh, saturation: &ss, brightness: &sb, alpha: &sa)
                     if rgbDistance(rgb, salientRGB) < 0.12 {
                         return true
                     }
-                    if saturation >= 0.18,
-                       ColorMath.circularHueDistance(hue, sh) <= 0.055 {
+                    if lch.c >= 0.024,
+                       ColorMath.circularHueDistance(lch.h, salientLCH.h) <= 0.055 {
                         return true
                     }
                 }
@@ -127,13 +107,8 @@ nonisolated enum BKExtractedPalettePolicy {
 
                 if selected.count == 1,
                    let only = selected.first,
-                   let onlyRGB = only.usingColorSpace(.deviceRGB) {
-                    var hue: CGFloat = 0
-                    var saturation: CGFloat = 0
-                    var brightness: CGFloat = 0
-                    var alpha: CGFloat = 0
-                    onlyRGB.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-                    if brightness < 0.08, !analysis.salientHighlightPalette.isEmpty {
+                   let onlyLCH = OKColor.nsColorToOKLCH(only) {
+                    if onlyLCH.l < 0.08, !analysis.salientHighlightPalette.isEmpty {
                         appendDistinct(analysis.averageColor)
                     }
                 }

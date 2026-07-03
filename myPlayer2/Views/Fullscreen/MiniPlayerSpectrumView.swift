@@ -252,6 +252,8 @@ nonisolated enum SpectrumColorResolver {
             let fillColor = NSColor(calibratedRed: r, green: g, blue: bComp, alpha: fillAlpha)
 
             let strokeHSB = fillColor.usingColorSpace(.deviceRGB) ?? fillColor
+            // Allowed legacy HSB residual: local graphic/rendering transform for outline stroke contrast.
+            // Does not make semantic decisions. Output resolves via CGColor.
             var sh: CGFloat = 0, ss: CGFloat = 0, sb: CGFloat = 0, sa: CGFloat = 0
             strokeHSB.getHue(&sh, saturation: &ss, brightness: &sb, alpha: &sa)
 

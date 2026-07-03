@@ -3558,6 +3558,12 @@ extension BKColorEngine {
         return output
     }
 
+    // MARK: - Legacy HSB Helpers
+    //
+    // Kept strictly for debug/diagnostics logging, legacy parity reference,
+    // and backward-compatible seed representation. Do not use for core semantic
+    // color decision-making.
+
     fileprivate nonisolated static func hsb(from color: NSColor) -> HSBColor? {
         guard let rgb = color.usingColorSpace(.deviceRGB) else { return nil }
         var h: CGFloat = 0

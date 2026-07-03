@@ -93,6 +93,8 @@ struct UnifiedNowPlayingBackground: View {
         return Array(result.prefix(4)).map { ColorRenderingAdapter.makeSwiftUIColor($0) }
     }
 
+    // Allowed legacy HSB residual: local graphic transform for dynamic mesh styling.
+    // Does not make semantic decisions. Output passes through ColorRenderingAdapter.
     private func style(_ color: NSColor, darkMode: Bool) -> NSColor {
         var hue: CGFloat = 0
         var saturation: CGFloat = 0

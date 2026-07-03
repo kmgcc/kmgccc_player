@@ -2633,24 +2633,70 @@
 
         const parseRGBAColor = (value) => {
             if (typeof value !== "string") return null;
-            const match = value.trim().match(/^rgba?\(([^)]+)\)$/i);
-            if (!match) return null;
-            const parts = match[1].split(",").map((part) => Number.parseFloat(part.trim()));
-            if (parts.length < 3 || parts.some((part, index) => index < 3 && !Number.isFinite(part))) {
-                return null;
+            const trimmed = value.trim();
+
+            const rgbMatch = trimmed.match(/^rgba?\(([^)]+)\)$/i);
+            if (rgbMatch) {
+                let parts;
+                if (rgbMatch[1].includes(",")) {
+                    parts = rgbMatch[1].split(",").map((part) => part.trim());
+                } else {
+                    const body = rgbMatch[1].replace(/\//g, " ").trim();
+                    parts = body.split(/\s+/).map((part) => part.trim());
+                }
+                const numericParts = parts.map((part) => Number.parseFloat(part));
+                if (numericParts.length < 3 || numericParts.slice(0, 3).some(isNaN)) {
+                    return null;
+                }
+                const r = parts[0].endsWith("%") ? (numericParts[0] / 100) * 255 : numericParts[0];
+                const g = parts[1].endsWith("%") ? (numericParts[1] / 100) * 255 : numericParts[1];
+                const b = parts[2].endsWith("%") ? (numericParts[2] / 100) * 255 : numericParts[2];
+                let a = 1;
+                if (numericParts.length >= 4 && !isNaN(numericParts[3])) {
+                    a = parts[3].endsWith("%") ? numericParts[3] / 100 : numericParts[3];
+                }
+                return {
+                    space: "srgb",
+                    r: Math.max(0, Math.min(255, r)),
+                    g: Math.max(0, Math.min(255, g)),
+                    b: Math.max(0, Math.min(255, b)),
+                    a: Math.max(0, Math.min(1, a)),
+                };
             }
-            const alpha = parts.length >= 4 && Number.isFinite(parts[3]) ? parts[3] : 1;
-            return {
-                r: Math.max(0, Math.min(255, parts[0])),
-                g: Math.max(0, Math.min(255, parts[1])),
-                b: Math.max(0, Math.min(255, parts[2])),
-                a: Math.max(0, Math.min(1, alpha)),
-            };
+
+            const p3Match = trimmed.match(/^color\(\s*display-p3\s+([^)]+)\)$/i);
+            if (p3Match) {
+                const body = p3Match[1].replace(/\//g, " ").trim();
+                const parts = body.split(/\s+/).map((part) => part.trim());
+                const numericParts = parts.map((part) => Number.parseFloat(part));
+                if (numericParts.length < 3 || numericParts.slice(0, 3).some(isNaN)) {
+                    return null;
+                }
+                const r = numericParts[0];
+                const g = numericParts[1];
+                const b = numericParts[2];
+                let a = 1;
+                if (numericParts.length >= 4 && !isNaN(numericParts[3])) {
+                    a = parts[3].endsWith("%") ? numericParts[3] / 100 : numericParts[3];
+                }
+                return {
+                    space: "display-p3",
+                    r: Math.max(0, Math.min(1, r)),
+                    g: Math.max(0, Math.min(1, g)),
+                    b: Math.max(0, Math.min(1, b)),
+                    a: Math.max(0, Math.min(1, a)),
+                };
+            }
+
+            return null;
         };
 
         const formatRGBAColor = (color) => {
             if (!color) return null;
-            return `rgba(${Math.round(color.r)}, ${Math.round(color.g)}, ${Math.round(color.b)}, ${Math.max(0, Math.min(1, color.a))})`;
+            if (color.space === "display-p3") {
+                return `color(display-p3 ${color.r.toFixed(4)} ${color.g.toFixed(4)} ${color.b.toFixed(4)} / ${color.a.toFixed(4)})`;
+            }
+            return `rgba(${Math.round(color.r)}, ${Math.round(color.g)}, ${Math.round(color.b)}, ${color.a.toFixed(4)})`;
         };
 
         const scaleRGBAColor = (color, options = {}) => {
@@ -2661,7 +2707,17 @@
             const alphaMultiplier = Number.isFinite(options.alphaMultiplier)
                 ? options.alphaMultiplier
                 : 1;
+            if (color.space === "display-p3") {
+                return {
+                    space: "display-p3",
+                    r: Math.max(0, Math.min(1, color.r * brightnessMultiplier)),
+                    g: Math.max(0, Math.min(1, color.g * brightnessMultiplier)),
+                    b: Math.max(0, Math.min(1, color.b * brightnessMultiplier)),
+                    a: Math.max(0, Math.min(1, color.a * alphaMultiplier)),
+                };
+            }
             return {
+                space: "srgb",
                 r: Math.max(0, Math.min(255, color.r * brightnessMultiplier)),
                 g: Math.max(0, Math.min(255, color.g * brightnessMultiplier)),
                 b: Math.max(0, Math.min(255, color.b * brightnessMultiplier)),
@@ -2684,26 +2740,47 @@
         const mixRGBAColors = (foreground, background, foregroundWeight = 0.88) => {
             if (!foreground || !background) return null;
             const weight = Math.max(0, Math.min(1, foregroundWeight));
+            if (foreground.space === "display-p3" && background.space === "display-p3") {
+                return {
+                    space: "display-p3",
+                    r: foreground.r * weight + background.r * (1 - weight),
+                    g: foreground.g * weight + background.g * (1 - weight),
+                    b: foreground.b * weight + background.b * (1 - weight),
+                    a: foreground.a * weight + background.a * (1 - weight),
+                };
+            }
+            const getRGBVal = (c) => {
+                if (c.space === "display-p3") {
+                    return { r: c.r * 255, g: c.g * 255, b: c.b * 255, a: c.a };
+                }
+                return c;
+            };
+            const fg = getRGBVal(foreground);
+            const bg = getRGBVal(background);
             return {
-                r: foreground.r * weight + background.r * (1 - weight),
-                g: foreground.g * weight + background.g * (1 - weight),
-                b: foreground.b * weight + background.b * (1 - weight),
-                a: foreground.a * weight + background.a * (1 - weight),
+                space: "srgb",
+                r: fg.r * weight + bg.r * (1 - weight),
+                g: fg.g * weight + bg.g * (1 - weight),
+                b: fg.b * weight + bg.b * (1 - weight),
+                a: fg.a * weight + bg.a * (1 - weight),
             };
         };
 
         const deriveMixedOpaqueColor = (foregroundValue, backgroundValue, foregroundWeight = 0.88) => {
             const foreground = toOpaqueColor(foregroundValue);
             const background = toOpaqueColor(backgroundValue);
+            const fgParsed = parseRGBAColor(foreground);
+            const bgParsed = parseRGBAColor(background);
             const mixed = mixRGBAColors(
-                parseRGBAColor(foreground),
-                parseRGBAColor(background),
+                fgParsed,
+                bgParsed,
                 foregroundWeight
             );
             const formatted = formatRGBAColor(mixed);
             if (formatted) return toOpaqueColor(formatted);
             const percent = Math.round(Math.max(0, Math.min(1, foregroundWeight)) * 100);
-            return `color-mix(in srgb, ${foreground} ${percent}%, ${background} ${100 - percent}%)`;
+            const space = supportsDisplayP3Color ? "oklch" : "srgb";
+            return `color-mix(in ${space}, ${foreground} ${percent}%, ${background} ${100 - percent}%)`;
         };
 
         const resolveComputedOpaqueColor = (computedStyle, ...candidates) => {
@@ -2863,10 +2940,12 @@
             if (typeof textShadow !== "string" || textShadow.length === 0) return textShadow;
             const targetColor = parseRGBAColor(colorValue);
             if (!targetColor) return textShadow;
-            return textShadow.replace(/rgba?\(([^)]+)\)/gi, (match) => {
+            const colorRegex = /rgba?\([^)]+\)|color\(\s*display-p3\s+[^)]+\)/gi;
+            return textShadow.replace(colorRegex, (match) => {
                 const sourceColor = parseRGBAColor(match);
                 const alpha = sourceColor ? sourceColor.a * targetColor.a : targetColor.a;
                 return formatRGBAColor({
+                    space: targetColor.space,
                     r: targetColor.r,
                     g: targetColor.g,
                     b: targetColor.b,
@@ -2878,10 +2957,12 @@
         const rescaleTextShadowAlpha = (textShadow, alphaMultiplier = 1) => {
             if (typeof textShadow !== "string" || textShadow.length === 0) return textShadow;
             if (!Number.isFinite(alphaMultiplier) || alphaMultiplier <= 0) return textShadow;
-            return textShadow.replace(/rgba?\(([^)]+)\)/gi, (match) => {
+            const colorRegex = /rgba?\([^)]+\)|color\(\s*display-p3\s+[^)]+\)/gi;
+            return textShadow.replace(colorRegex, (match) => {
                 const sourceColor = parseRGBAColor(match);
                 if (!sourceColor) return match;
                 return formatRGBAColor({
+                    space: sourceColor.space,
                     r: sourceColor.r,
                     g: sourceColor.g,
                     b: sourceColor.b,
@@ -2927,11 +3008,13 @@
             if (typeof textShadow !== "string" || textShadow.length === 0) return textShadow;
             const base = WINDOW_EMPHASIS_LIGHT_GLOW_BASE;
             const gain = WINDOW_EMPHASIS_LIGHT_GLOW_ALPHA_GAIN;
-            return textShadow.replace(/rgba?\(([^)]+)\)/gi, (match) => {
+            const colorRegex = /rgba?\([^)]+\)|color\(\s*display-p3\s+[^)]+\)/gi;
+            return textShadow.replace(colorRegex, (match) => {
                 const source = parseRGBAColor(match);
                 if (!source) return match;
                 const nextAlpha = Math.max(0, Math.min(1, source.a * gain));
                 return formatRGBAColor({
+                    space: "srgb",
                     r: base.r,
                     g: base.g,
                     b: base.b,

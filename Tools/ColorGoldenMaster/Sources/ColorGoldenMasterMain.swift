@@ -35,6 +35,8 @@ enum ColorGoldenMasterCLI {
         .appendingPathComponent(".generated/lyrics-parity-report.txt")
     static let lyricsReviewURL = toolDirectory
         .appendingPathComponent(".generated/lyrics-parity-review.html")
+    static let readabilityParityURL = toolDirectory
+        .appendingPathComponent(".generated/readability-parity-report.txt")
 
     static func run(arguments: [String]) -> Int {
         let command = arguments.first ?? "help"
@@ -128,6 +130,12 @@ enum ColorGoldenMasterCLI {
                 let html = try ColorGoldenMasterLyricsParity.renderHTML()
                 try write(html, to: lyricsReviewURL)
                 print("lyrics review artifact: \(lyricsReviewURL.path)")
+                return 0
+
+            case "readability-parity":
+                let report = try ColorGoldenMasterReadabilityParity.render()
+                try write(report, to: readabilityParityURL)
+                print("readability parity report: \(readabilityParityURL.path)")
                 return 0
 
             case "accent-review-export":

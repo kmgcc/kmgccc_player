@@ -739,6 +739,8 @@ enum HomeAmbientPalette {
                 ? NSColor(calibratedHue: 0.10, saturation: 0.14, brightness: 0.10, alpha: 1)
                 : .white
         }
+        // Allowed legacy HSB residual: local graphic transform for ambient background dimming.
+        // Core ambient shape colors and main palette are resolved via OKLCH.
         var hue: CGFloat = 0
         var saturation: CGFloat = 0
         var brightness: CGFloat = 0
