@@ -822,6 +822,7 @@ struct FullscreenPlayerView: View {
                     ? .cassetteForeground
                     : .standard,
                 dotRenderStyle: .solidCircles,
+                motionProfile: .fullscreenBalanced,
                 initialPalette: fullscreenArtBackgroundSeedPalette,
                 holdPaletteWhenArtworkMissing: currentDisplayContext.isArtworkLoading
             )
@@ -3929,8 +3930,11 @@ struct FullscreenPlayerView: View {
         return SkinContext(
             track: trackMeta,
             playback: playback,
-            audio: ledMeterProvider.audioMetrics,
-            led: ledMeterProvider.metrics,
+            // High-frequency LED/audio frames are consumed by the visualizer host
+            // itself. Keeping SkinContext stable prevents 30Hz audio metrics from
+            // invalidating the whole fullscreen SwiftUI tree.
+            audio: .zero,
+            led: LEDMeterMetrics.zero(count: AppSettings.shared.ledCount),
             theme: theme,
             windowSize: windowSize,
             contentBounds: contentBounds,

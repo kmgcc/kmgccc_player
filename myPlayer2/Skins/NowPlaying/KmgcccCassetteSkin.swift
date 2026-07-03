@@ -1224,16 +1224,13 @@ private struct CassetteOverlay: View {
 
         Group {
             if metrics.visualizerMode == "led" {
-                LedMeterView(
-                    level: Double(context.audio.smoothedLevel),
-                    ledValues: context.led.leds,
+                LiveLedMeterView(
                     dotSize: 12,
                     spacing: 8,
                     pillTint: context.theme.artworkAccentColor,
                     isPlaying: context.playback.isPlaying,
                     forceBrightLEDColors: context.theme.artBackgroundIsUltraDark
                 )
-                .ledMeterLifecycle(isPlaying: context.playback.isPlaying)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .offset(x: horizontalOffset, y: yOffset)
             }

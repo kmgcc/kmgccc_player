@@ -3,39 +3,116 @@
 //  myPlayer2
 //
 //  kmgccc_player - Master clock for background animations
-//  Consolidates 6 separate timers into one 60Hz timer with phase gates.
+//  Consolidates background animation timers and adapts cadence to demand.
 //
 
 import Combine
 import Foundation
 
 /// Master clock for background animations.
-/// Replaces 6 separate timers in BKArtBackgroundView with a single 60Hz timer
-/// and phase-based gates for different animation rates.
+/// Views keep the same typed publishers, but leases declare which channels are
+/// active so the backing timer only wakes at the cadence currently required.
 @MainActor
 final class BackgroundAnimationClock: ObservableObject {
     
     static let shared = BackgroundAnimationClock()
     
-    // MARK: - Phase Gates
-    
-    /// Gate for background cycling (0.7 fps ≈ every 1.43s)
-    var backgroundGate = AnimationPhaseGate(interval: 90)  // 60/90 = 0.67Hz
-    
-    /// Gate for shape animations (12 fps)
-    var shapeGate = AnimationPhaseGate(interval: 5)  // 60/5 = 12Hz
-    
-    /// Gate for dot animations (15 fps)
-    var dotGate = AnimationPhaseGate(interval: 4)  // 60/4 = 15Hz
-    
-    /// Gate for dot animations at high rate (30 fps)
-    var dotHighRateGate = AnimationPhaseGate(interval: 2)  // 60/2 = 30Hz
-    
-    /// Gate for transitions (6 fps)
-    var transitionGate = AnimationPhaseGate(interval: 10)  // 60/10 = 6Hz
-    
-    /// Gate for speed ramping (60 fps)
-    var speedRampGate = AnimationPhaseGate(interval: 1)  // 60/1 = 60Hz
+    struct Channels: OptionSet, Sendable {
+        let rawValue: Int
+
+        static let background = Channels(rawValue: 1 << 0)
+        static let shape = Channels(rawValue: 1 << 1)
+        static let dot = Channels(rawValue: 1 << 2)
+        static let dotHighRate = Channels(rawValue: 1 << 3)
+        static let transition = Channels(rawValue: 1 << 4)
+        static let speedRamp = Channels(rawValue: 1 << 5)
+
+        static let all: Channels = [
+            .background,
+            .shape,
+            .dot,
+            .dotHighRate,
+            .transition,
+            .speedRamp,
+        ]
+    }
+
+    private enum Cadence {
+        static let background: TimeInterval = 1.0 / 0.67
+        static let shape: TimeInterval = 1.0 / 15.0
+        static let dot: TimeInterval = 1.0 / 15.0
+        static let dotHighRate: TimeInterval = 1.0 / 30.0
+        static let transition: TimeInterval = 1.0 / 6.0
+        static let speedRamp: TimeInterval = 1.0 / 60.0
+    }
+
+    private enum DriverCadence: Equatable {
+        case background
+        case transition6
+        case art15
+        case art30
+        case speed60
+
+        var interval: TimeInterval {
+            switch self {
+            case .background:
+                return Cadence.background
+            case .transition6:
+                return Cadence.transition
+            case .art15:
+                return Cadence.shape
+            case .art30:
+                return Cadence.dotHighRate
+            case .speed60:
+                return Cadence.speedRamp
+            }
+        }
+
+        var shapeTickInterval: UInt64? {
+            switch self {
+            case .art15:
+                return 1
+            case .art30:
+                return 2
+            case .speed60:
+                return 4
+            default:
+                return nil
+            }
+        }
+
+        var dotTickInterval: UInt64? {
+            shapeTickInterval
+        }
+
+        var dotHighRateTickInterval: UInt64? {
+            switch self {
+            case .art30:
+                return 1
+            case .speed60:
+                return 2
+            default:
+                return nil
+            }
+        }
+
+        var transitionTickInterval: UInt64? {
+            switch self {
+            case .transition6:
+                return 1
+            case .art30:
+                return 5
+            case .speed60:
+                return 10
+            default:
+                return nil
+            }
+        }
+
+        var speedRampTickInterval: UInt64? {
+            self == .speed60 ? 1 : nil
+        }
+    }
     
     // MARK: - State
     
@@ -43,7 +120,13 @@ final class BackgroundAnimationClock: ObservableObject {
     private var tickCount: UInt64 = 0
     private var isRunning = false
     private var isPaused = false
-    private var activeClientCount: Int = 0
+    private var leases: [UUID: Channels] = [:]
+    private var legacyLeaseID: UUID?
+    private var activeChannels: Channels = []
+    private var currentDriverCadence: DriverCadence?
+    private var driverTickCount: UInt64 = 0
+
+    private var lastBackgroundFire: TimeInterval = 0
     
     /// Publishers for each phase
     let backgroundPublisher = PassthroughSubject<Void, Never>()
@@ -59,41 +142,50 @@ final class BackgroundAnimationClock: ObservableObject {
     
     // MARK: - Control
     
-    /// Start the master clock.
+    /// Start the master clock with full demand. Prefer `acquire(channels:)`
+    /// when the caller can describe the channels it actually uses.
     func start() {
-        if isRunning {
-            if isPaused {
-                resume()
-            }
-            return
+        if let legacyLeaseID {
+            updateLease(legacyLeaseID, channels: .all)
+        } else {
+            legacyLeaseID = acquire(channels: .all)
         }
 
-        isRunning = true
-        isPaused = false
-        tickCount = 0
-        resetGates()
-        scheduleTimer()
-
         if LogConfig.perfDebugEnabled {
-            Log.info("[BackgroundAnimationClock] Started at 60Hz operationStack=\(FirstUseHitchDiagnostics.currentOperationStack())", category: .perf)
+            Log.info("[BackgroundAnimationClock] Started operationStack=\(FirstUseHitchDiagnostics.currentOperationStack())", category: .perf)
         }
     }
 
     /// Acquire a shared clock lease.
     /// The timer runs while at least one client is active.
-    func acquire() {
-        activeClientCount += 1
-        if activeClientCount == 1 {
-            start()
-        }
+    @discardableResult
+    func acquire(channels: Channels = .all) -> UUID {
+        let id = UUID()
+        leases[id] = channels
+        refreshDemand()
+        return id
+    }
+
+    func updateLease(_ id: UUID, channels: Channels) {
+        guard leases[id] != channels else { return }
+        leases[id] = channels
+        refreshDemand()
     }
 
     /// Release a shared clock lease.
+    func release(_ id: UUID) {
+        leases.removeValue(forKey: id)
+        if legacyLeaseID == id {
+            legacyLeaseID = nil
+        }
+        refreshDemand()
+    }
+
+    /// Legacy release for old call sites that only balance start/acquire with
+    /// release. New call sites should release by token.
     func release() {
-        guard activeClientCount > 0 else { return }
-        activeClientCount -= 1
-        if activeClientCount == 0 {
-            stop()
+        if let id = legacyLeaseID {
+            release(id)
         }
     }
     
@@ -103,8 +195,12 @@ final class BackgroundAnimationClock: ObservableObject {
         isRunning = false
         isPaused = false
         tickCount = 0
-        activeClientCount = 0
-        resetGates()
+        leases.removeAll(keepingCapacity: true)
+        legacyLeaseID = nil
+        activeChannels = []
+        currentDriverCadence = nil
+        driverTickCount = 0
+        resetFireTimes()
         if LogConfig.perfDebugEnabled {
             Log.info("[BackgroundAnimationClock] Stopped operationStack=\(FirstUseHitchDiagnostics.currentOperationStack())", category: .perf)
         }
@@ -124,7 +220,7 @@ final class BackgroundAnimationClock: ObservableObject {
     func resume() {
         guard isRunning, isPaused else { return }
         isPaused = false
-        scheduleTimer()
+        scheduleTimerIfNeeded()
         if LogConfig.perfDebugEnabled {
             Log.info("[BackgroundAnimationClock] Resumed", category: .perf)
         }
@@ -132,14 +228,56 @@ final class BackgroundAnimationClock: ObservableObject {
     
     // MARK: - Private
 
-    private func scheduleTimer() {
+    private func refreshDemand() {
+        activeChannels = leases.values.reduce(into: Channels(rawValue: 0)) { result, channels in
+            result.formUnion(channels)
+        }
+
+        if activeChannels.isEmpty {
+            invalidateTimer()
+            isRunning = false
+            isPaused = false
+            tickCount = 0
+            currentDriverCadence = nil
+            driverTickCount = 0
+            resetFireTimes()
+            return
+        }
+
+        if !isRunning {
+            isRunning = true
+            isPaused = false
+            tickCount = 0
+            resetFireTimes(to: Date.timeIntervalSinceReferenceDate)
+        }
+
+        scheduleTimerIfNeeded()
+    }
+
+    private func scheduleTimerIfNeeded() {
+        guard isRunning, !isPaused else { return }
+        let cadence = requiredDriverCadence(for: activeChannels)
+        guard currentDriverCadence != cadence || timer == nil else { return }
+        scheduleTimer(cadence: cadence)
+    }
+
+    private func scheduleTimer(cadence: DriverCadence) {
         invalidateTimer()
 
-        // Single 60Hz timer (16.67ms interval).
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+        driverTickCount = 0
+        let interval = cadence.interval
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.tick()
             }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+        currentDriverCadence = cadence
+
+        if LogConfig.perfDebugEnabled {
+            let hz = 1.0 / interval
+            Log.info("[BackgroundAnimationClock] Cadence \(String(format: "%.1f", hz))Hz channels=\(activeChannels.rawValue)", category: .perf)
         }
     }
 
@@ -148,68 +286,95 @@ final class BackgroundAnimationClock: ObservableObject {
         timer = nil
     }
 
-    private func resetGates() {
-        backgroundGate.reset()
-        shapeGate.reset()
-        dotGate.reset()
-        dotHighRateGate.reset()
-        transitionGate.reset()
-        speedRampGate.reset()
+    private func requiredDriverCadence(for channels: Channels) -> DriverCadence {
+        if channels.contains(.speedRamp) {
+            return .speed60
+        }
+        if channels.contains(.dotHighRate) {
+            return .art30
+        }
+        if channels.contains(.transition), !channels.intersection([.shape, .dot]).isEmpty {
+            // 30Hz is the lowest common driver for the steady art rates used here:
+            // 15fps floating/dot motion fires every 2 ticks, while the 6fps mask
+            // transition keeps its deliberate style cadence at every 5 ticks.
+            return .art30
+        }
+
+        if !channels.intersection([.shape, .dot]).isEmpty {
+            return .art15
+        }
+        if channels.contains(.transition) {
+            return .transition6
+        }
+        return .background
+    }
+
+    private func resetFireTimes(to time: TimeInterval = 0) {
+        lastBackgroundFire = time
     }
 
     private func tick() {
+        guard let currentDriverCadence else { return }
+        let now = Date.timeIntervalSinceReferenceDate
         tickCount += 1
-        
-        // Check each gate and fire if needed
-        if backgroundGate.tick() {
+        driverTickCount += 1
+
+        if activeChannels.contains(.background),
+           shouldFire(now: now, lastFire: &lastBackgroundFire, interval: Cadence.background) {
             backgroundPublisher.send()
         }
-        
-        if shapeGate.tick() {
+
+        if activeChannels.contains(.shape),
+           shouldFire(every: currentDriverCadence.shapeTickInterval) {
             shapePublisher.send()
         }
-        
-        if dotGate.tick() {
+
+        if activeChannels.contains(.dot),
+           shouldFire(every: currentDriverCadence.dotTickInterval) {
             dotPublisher.send()
         }
-        
-        if dotHighRateGate.tick() {
+
+        if activeChannels.contains(.dotHighRate),
+           shouldFire(every: currentDriverCadence.dotHighRateTickInterval) {
             dotHighRatePublisher.send()
         }
-        
-        if transitionGate.tick() {
+
+        if activeChannels.contains(.transition),
+           shouldFire(every: currentDriverCadence.transitionTickInterval) {
             transitionPublisher.send()
         }
-        
-        if speedRampGate.tick() {
+
+        if activeChannels.contains(.speedRamp),
+           shouldFire(every: currentDriverCadence.speedRampTickInterval) {
             speedRampPublisher.send()
         }
     }
-}
 
-// MARK: - Phase Gate
-
-/// Tracks when a specific animation phase should fire.
-final class AnimationPhaseGate {
-    let interval: UInt64  // Number of master clock ticks between fires
-    private var counter: UInt64 = 0
-    
-    init(interval: UInt64) {
-        self.interval = interval
+    private func shouldFire(every tickInterval: UInt64?) -> Bool {
+        guard let tickInterval, tickInterval > 0 else { return false }
+        return driverTickCount % tickInterval == 0
     }
-    
-    /// Returns true if this phase should fire on this tick.
-    func tick() -> Bool {
-        counter += 1
-        if counter >= interval {
-            counter = 0
-            return true
+
+    private func shouldFire(
+        now: TimeInterval,
+        lastFire: inout TimeInterval,
+        interval: TimeInterval
+    ) -> Bool {
+        if lastFire <= 0 {
+            lastFire = now
+            return false
         }
-        return false
-    }
-    
-    /// Reset the gate.
-    func reset() {
-        counter = 0
+
+        let elapsed = now - lastFire
+        guard elapsed >= interval else { return false }
+
+        if elapsed > interval * 8 {
+            lastFire = now
+        } else {
+            repeat {
+                lastFire += interval
+            } while now - lastFire >= interval
+        }
+        return true
     }
 }

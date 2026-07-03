@@ -46,12 +46,14 @@ nonisolated struct LEDMeterMetrics: Sendable {
 @Observable
 @MainActor
 final class LEDMeterService: AudioLevelMeterProtocol {
+    typealias FrameConsumer = @MainActor (_ led: LEDMeterMetrics, _ audio: AudioMetrics) -> Void
 
     private let processor: LEDMeterProcessor
     private var config: LEDMeterConfig
     private var consumerID: UUID?
     private var isInstalled = false
     private var runGeneration: UInt64 = 0
+    private var frameConsumers: [UUID: FrameConsumer] = [:]
 
     private let hub = AudioAnalysisHub.shared
 
@@ -67,6 +69,17 @@ final class LEDMeterService: AudioLevelMeterProtocol {
         self.config = resolvedConfig
         self.metrics = LEDMeterMetrics.zero(count: resolvedConfig.ledCount)
         self.processor = LEDMeterProcessor(config: resolvedConfig)
+    }
+
+    func addFrameConsumer(_ consumer: @escaping FrameConsumer) -> UUID {
+        let id = UUID()
+        frameConsumers[id] = consumer
+        consumer(metrics, audioMetrics)
+        return id
+    }
+
+    func removeFrameConsumer(_ id: UUID) {
+        frameConsumers.removeValue(forKey: id)
     }
 
     func attachToMixer(_ mixer: AVAudioMixerNode) {
@@ -89,6 +102,7 @@ final class LEDMeterService: AudioLevelMeterProtocol {
                 guard self.isInstalled, self.runGeneration == generation else { return }
                 self.metrics = result.led
                 self.audioMetrics = result.audio
+                self.publishFrameToConsumers()
             }
         }
 
@@ -109,6 +123,7 @@ final class LEDMeterService: AudioLevelMeterProtocol {
         processor.reset()
         metrics = LEDMeterMetrics.zero(count: config.ledCount)
         audioMetrics = AudioMetrics.zero
+        publishFrameToConsumers()
     }
 
     func updatePlaybackState(isPlaying: Bool) {
@@ -122,8 +137,18 @@ final class LEDMeterService: AudioLevelMeterProtocol {
         processor.updateConfig(newConfig)
         if metrics.leds.count != newConfig.ledCount {
             metrics = LEDMeterMetrics.zero(count: newConfig.ledCount)
+            publishFrameToConsumers()
         }
         hub.targetHz = newConfig.targetHz
+    }
+
+    private func publishFrameToConsumers() {
+        guard !frameConsumers.isEmpty else { return }
+        let currentLED = metrics
+        let currentAudio = audioMetrics
+        for consumer in frameConsumers.values {
+            consumer(currentLED, currentAudio)
+        }
     }
 }
 

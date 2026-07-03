@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import QuartzCore
 import SwiftUI
 import WebKit
 
@@ -79,10 +80,19 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        private struct RuntimeConfig: Equatable {
+            let dynamic: Bool
+            let fps: Int
+            let flowSpeed: Double
+            let renderScale: Double
+        }
+
         private weak var hostView: NSView?
         private var webView: WKWebView?
         private var isReady = false
         private var lastConfiguration: Configuration?
+        private var lastAppliedRuntimeConfig: RuntimeConfig?
+        private var lastAppliedPlaying: Bool?
         // Gate the album push on a fingerprint of the actual artwork bytes we
         // send, not the host-supplied `artworkChecksum`. In fullscreen that
         // checksum is snapshot-synced and can lag `artworkData`, which used to
@@ -93,6 +103,8 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
         // pushed value (its internal smoothedVolume is computed but unused), so
         // we smooth here to keep the background breathing instead of twitching.
         private var smoothedLowFreq: Float = 0
+        private var lastPushedLowFreq: Float = -1
+        private var lastLowFreqPushTime: CFTimeInterval = 0
         private let spectrumService = AudioVisualizationService.shared
 
         func attach(to hostView: NSView) {
@@ -129,7 +141,11 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
             hostView = nil
             isReady = false
             lastConfiguration = nil
+            lastAppliedRuntimeConfig = nil
+            lastAppliedPlaying = nil
             lastAppliedArtworkFingerprint = nil
+            lastPushedLowFreq = -1
+            lastLowFreqPushTime = 0
         }
 
         func userContentController(
@@ -205,11 +221,20 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
         }
 
         private func applyConfig(_ configuration: Configuration) {
+            let runtimeConfig = RuntimeConfig(
+                dynamic: configuration.dynamicBackgroundEnabled,
+                fps: configuration.fps,
+                flowSpeed: configuration.flowSpeed,
+                renderScale: configuration.renderScale
+            )
+            guard runtimeConfig != lastAppliedRuntimeConfig else { return }
+            lastAppliedRuntimeConfig = runtimeConfig
+
             let payload: [String: Any] = [
-                "dynamic": configuration.dynamicBackgroundEnabled,
-                "fps": configuration.fps,
-                "flowSpeed": configuration.flowSpeed,
-                "renderScale": configuration.renderScale,
+                "dynamic": runtimeConfig.dynamic,
+                "fps": runtimeConfig.fps,
+                "flowSpeed": runtimeConfig.flowSpeed,
+                "renderScale": runtimeConfig.renderScale,
             ]
             callFunction(
                 "window.AMLLBackground?.setConfig",
@@ -243,11 +268,14 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
         }
 
         private func setPlaying(_ isPlaying: Bool) {
-            callFunction(
-                "window.AMLLBackground?.setPlaying",
-                arguments: [isPlaying],
-                label: "setPlaying"
-            )
+            if lastAppliedPlaying != isPlaying {
+                lastAppliedPlaying = isPlaying
+                callFunction(
+                    "window.AMLLBackground?.setPlaying",
+                    arguments: [isPlaying],
+                    label: "setPlaying"
+                )
+            }
             spectrumService.updatePlaybackState(isPlaying: isPlaying)
         }
 
@@ -281,6 +309,8 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
                 spectrumService.stop()
             }
             smoothedLowFreq = 0
+            lastPushedLowFreq = -1
+            lastLowFreqPushTime = 0
         }
 
         private func publishLowFrequencyVolume(from wave: [Float]) {
@@ -300,6 +330,18 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
             let release: Float = 0.11
             let alpha = target > smoothedLowFreq ? attack : release
             smoothedLowFreq += (target - smoothedLowFreq) * alpha
+
+            let now = CACurrentMediaTime()
+            let bridgeHz: Double = lastConfiguration?.speed == .active ? 24 : 15
+            let minInterval = 1.0 / bridgeHz
+            let delta = abs(smoothedLowFreq - lastPushedLowFreq)
+            let elapsed = now - lastLowFreqPushTime
+            let shouldPublish = lastPushedLowFreq < 0
+                || (delta >= 0.006 && elapsed >= minInterval)
+                || elapsed >= 0.25
+            guard shouldPublish else { return }
+            lastPushedLowFreq = smoothedLowFreq
+            lastLowFreqPushTime = now
 
             callFunction(
                 "window.AMLLBackground?.setLowFreqVolume",

@@ -186,8 +186,11 @@ struct NowPlayingHostView: View {
         return SkinContext(
             track: trackMeta,
             playback: playback,
-            audio: ledMeterProvider.audioMetrics,
-            led: ledMeterProvider.metrics,
+            // Live visualizer views subscribe to LED/audio frames directly. The
+            // parent skin context stays stable so routine audio frames do not
+            // rebuild the whole Now Playing skin hierarchy.
+            audio: .zero,
+            led: LEDMeterMetrics.zero(count: AppSettings.shared.ledCount),
             theme: theme,
             windowSize: windowSize,
             contentBounds: contentBounds,

@@ -200,6 +200,11 @@ struct TrackRowView<MenuContent: View>: View {
                 onTap(Self.isShiftPressed)
             }
         }
+        .contextMenu {
+            if enableSecondaryInteractions {
+                menuContent()
+            }
+        }
         .onAppear {
             LyricsRuntimeProfile.increment("TrackRowView.onAppear")
             LyricsRuntimeProfile.insertUniqueValue("TrackRowView.onAppear.trackID", value: model.id.uuidString)
