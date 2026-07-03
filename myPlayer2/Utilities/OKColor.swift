@@ -222,10 +222,9 @@ nonisolated enum OKColor {
 // MARK: - Perceptual tone ladder
 //
 // v2 redesign vs v1 (commit 8b6404a):
-//   * LED L band narrows to the upper register (dark 0.78..0.92, light
-//     0.43..0.56) so OKLCH brightness no longer fights the opacity ramp
-//     in `LEDColorResolver.opacityForLevel`. Chroma stays >= base.c at
-//     all levels, with a mid-level sin boost.
+//   * LED L band lives in the visible register so OKLCH brightness no longer
+//     fights the opacity ramp in `LEDColorResolver.opacityForLevel`. Chroma is
+//     a monotonic OKLCH scale, not an RGB/alpha brightness proxy.
 //   * Artistic lyrics ladder is single-seed: callers pass ONE active
 //     seed; inactive / sub / line-timing are L-and-hue variants of the
 //     same hue, NOT a low-chroma "background" seed. Chroma scale is
@@ -254,31 +253,151 @@ nonisolated enum PerceptualToneLadder {
 
     // MARK: LED
 
+    enum LEDToneVariant: String, Sendable {
+#if DEBUG
+        case migrationReference = "current-candidate"
+#endif
+        case retuned = "retuned-candidate"
+    }
+
+    struct LEDLevelStylePolicy: Sendable {
+        let levelProgress: CGFloat
+        let hueDrift: CGFloat
+        let chromaScale: CGFloat
+        let lightness: CGFloat
+        let chromaCap: CGFloat
+        let hueRiskAdjustment: CGFloat
+        let variant: LEDToneVariant
+
+        var description: String {
+            "t=\(Self.f(levelProgress)) L=\(Self.f(lightness)) hueDrift=\(Self.f(hueDrift)) chromaScale=\(Self.f(chromaScale)) cap=\(Self.f(chromaCap)) riskScale=\(Self.f(hueRiskAdjustment)) variant=\(variant.rawValue)"
+        }
+
+        private static func f(_ value: CGFloat) -> String {
+            String(format: "%.4f", Double(value))
+        }
+    }
+
+    static func ledLevelStylePolicy(
+        base: OKColor.OKLCH,
+        level: Int,
+        maxLevel: Int,
+        scheme: ColorScheme,
+        isNearMonochrome: Bool,
+        isUltraDark: Bool = false,
+        isStroke: Bool = false,
+        variant: LEDToneVariant = .retuned
+    ) -> LEDLevelStylePolicy {
+        let T = ColorSystemTokens.ToneLadder.self
+        let safeMax = max(1, maxLevel)
+        let t = ColorMath.clamp(CGFloat(min(max(level, 0), safeMax)) / CGFloat(safeMax), 0, 1)
+        let isDark = scheme == .dark
+
+#if DEBUG
+        if variant == .migrationReference {
+            let lowL: CGFloat = isDark ? 0.620 : 0.340
+            let peakL: CGFloat = isDark ? 0.790 : 0.640
+            let chromaT = pow(t, 0.82)
+            let chromaScale = CGFloat(0.86) + (CGFloat(0.94) - CGFloat(0.86)) * chromaT
+            let shadowAmount = (1 - t) * CGFloat(1.25)
+            let highlightAmount = max(0, t - 0.65) / 0.35 * CGFloat(0.70)
+            let shifted = shiftedHue(
+                base.h,
+                shadowAmount: shadowAmount,
+                highlightAmount: highlightAmount,
+                intensity: .led
+            )
+            var lightness = lowL + (peakL - lowL) * t
+            var scale = chromaScale
+            var drift = signedHueDelta(from: base.h, to: shifted)
+            if isStroke {
+                lightness -= isDark ? T.ledStrokeLightnessTrimDark : T.ledStrokeLightnessTrimLight
+                scale *= T.ledStrokeChromaScale
+                drift += signedHueDelta(
+                    from: shifted,
+                    to: shiftedHue(shifted, shadowAmount: 0.25, highlightAmount: 0, intensity: .subtle)
+                )
+            }
+            return LEDLevelStylePolicy(
+                levelProgress: t,
+                hueDrift: drift,
+                chromaScale: scale,
+                lightness: lightness,
+                chromaCap: hueChromaCap(base.h, role: .led, scheme: scheme),
+                hueRiskAdjustment: 1,
+                variant: variant
+            )
+        }
+#endif
+
+        let lowL = isDark ? T.ledDarkMinL : T.ledLightMinL
+        var peakL = isDark
+            ? (isUltraDark ? T.ledUltraDarkPeakL : T.ledDarkPeakL)
+            : T.ledLightPeakL
+        if !isNearMonochrome {
+            peakL -= ledLevelPeakLightnessTrim(base.h, scheme: scheme)
+        }
+        let lCurve = pow(t, isDark ? 0.92 : 1.04)
+        var lightness = lowL + (peakL - lowL) * lCurve
+
+        let hueRiskScale = ledLevelHueRiskScale(base.h, isNearMonochrome: isNearMonochrome)
+        let shadowT = pow(1 - t, 1.22)
+        let schemeScale: CGFloat = isDark ? 1.0 : 0.82
+        let rawDrift = ledLevelFamilyStyleDrift(base.h)
+            * T.ledShadowDriftScale
+            * shadowT
+            * schemeScale
+            * hueRiskScale
+        var hueDrift = isNearMonochrome ? 0 : rawDrift
+
+        let lowScaleBase = isDark ? T.ledLowChromaScale : T.ledLightLowChromaScale
+        let peakScaleBase = isDark ? T.ledPeakChromaScale : T.ledLightPeakChromaScale
+        let riskLowLift = (1 - hueRiskScale) * 0.07
+        let lowScale = min(peakScaleBase - 0.08, lowScaleBase + riskLowLift)
+        let chromaT = pow(t, isDark ? 2.35 : 1.75)
+        var chromaScale = lowScale + (peakScaleBase - lowScale) * chromaT
+
+        if isStroke {
+            lightness -= isDark ? T.ledStrokeLightnessTrimDark : T.ledStrokeLightnessTrimLight
+            chromaScale *= T.ledStrokeChromaScale
+            hueDrift *= 0.55
+        }
+
+        return LEDLevelStylePolicy(
+            levelProgress: t,
+            hueDrift: hueDrift,
+            chromaScale: chromaScale,
+            lightness: lightness,
+            chromaCap: hueChromaCap(base.h, role: .led, scheme: scheme),
+            hueRiskAdjustment: hueRiskScale,
+            variant: variant
+        )
+    }
+
     static func ledTone(
         base: OKColor.OKLCH,
         level: Int,
         maxLevel: Int,
         scheme: ColorScheme,
         isNearMonochrome: Bool,
-        isStroke: Bool = false
+        isUltraDark: Bool = false,
+        isStroke: Bool = false,
+        variant: LEDToneVariant = .retuned
     ) -> OKColor.OKLCH {
         let T = ColorSystemTokens.ToneLadder.self
-        let safeMax = max(1, maxLevel)
-        let t = ColorMath.clamp(CGFloat(min(max(level, 0), safeMax)) / CGFloat(safeMax), 0, 1)
-        let isDark = scheme == .dark
-        let lowL = isDark ? T.ledDarkMinL : T.ledLightMinL
-        let peakL = isDark ? T.ledDarkPeakL : T.ledLightPeakL
-        let mid = sin(.pi * t)
+        let style = ledLevelStylePolicy(
+            base: base,
+            level: level,
+            maxLevel: maxLevel,
+            scheme: scheme,
+            isNearMonochrome: isNearMonochrome,
+            isUltraDark: isUltraDark,
+            isStroke: isStroke,
+            variant: variant
+        )
+        var c: CGFloat = base.c * style.chromaScale
 
-        var l: CGFloat = lowL + (peakL - lowL) * t
-        // Chroma stays >= base.c at all levels; mid-level boost keeps the
-        // "color comes alive at mid" effect that LED level distinction needs.
-        let midBoost: CGFloat = T.ledMidChromaBoost * mid
-        let peakTrim: CGFloat = T.ledPeakChromaTrim * (max(0, t - 0.85) / 0.15)
-        let chromaScale: CGFloat = 1.0 + midBoost - peakTrim
-        var c: CGFloat = base.c * chromaScale
-
-        let cap = hueChromaCap(base.h, role: .led, scheme: scheme)
+        let cap = style.chromaCap
         // v3: trust the seed. Analysis-level nearMono only neutralises when
         // the seed itself has no visible chroma — otherwise a colourful
         // artwork that the analysis falsely flagged as nearMono (e.g. via
@@ -295,23 +414,11 @@ nonisolated enum PerceptualToneLadder {
             c = min(c, cap)
         }
 
-        // Hue family drift: warmer at the low end, slightly cooler at the
-        // very top. Scale stays small (±0.005..0.008) so identity holds.
-        let shadowAmount = (1 - t) * T.ledShadowDriftScale
-        let highlightAmount = max(0, t - 0.65) / 0.35 * T.ledHighlightDriftScale
-        var h = shiftedHue(
-            base.h,
-            shadowAmount: shadowAmount,
-            highlightAmount: highlightAmount,
-            intensity: .led
+        return OKColor.OKLCH(
+            l: style.lightness,
+            c: c,
+            h: OKColor.normalizedHue(base.h + style.hueDrift)
         )
-
-        if isStroke {
-            l -= isDark ? T.ledStrokeLightnessTrimDark : T.ledStrokeLightnessTrimLight
-            c *= T.ledStrokeChromaScale
-            h = shiftedHue(h, shadowAmount: 0.25, highlightAmount: 0, intensity: .subtle)
-        }
-        return OKColor.OKLCH(l: l, c: c, h: OKColor.normalizedHue(h))
     }
 
     // MARK: Artistic fullscreen lyrics
@@ -451,6 +558,51 @@ nonisolated enum PerceptualToneLadder {
         let shadow = familyShadowDrift(h) * shadowAmount * scale
         let highlight = familyHighlightDrift(h) * highlightAmount * scale
         return OKColor.normalizedHue(h + shadow + highlight)
+    }
+
+    private static func signedHueDelta(from source: CGFloat, to target: CGFloat) -> CGFloat {
+        var delta = OKColor.normalizedHue(target) - OKColor.normalizedHue(source)
+        if delta > 0.5 { delta -= 1 }
+        if delta < -0.5 { delta += 1 }
+        return delta
+    }
+
+    private static func ledLevelHueRiskScale(_ h: CGFloat, isNearMonochrome: Bool) -> CGFloat {
+        guard !isNearMonochrome else { return 0 }
+        switch OKColor.normalizedHue(h) {
+        case 0.18..<0.30: return 0.68
+        case 0.30..<0.45: return 0.74
+        case 0.45..<0.58: return 0.78
+        case 0.06..<0.18: return 0.88
+        default:          return 1.00
+        }
+    }
+
+    private static func ledLevelPeakLightnessTrim(_ h: CGFloat, scheme: ColorScheme) -> CGFloat {
+        let darkTrim: CGFloat
+        switch OKColor.normalizedHue(h) {
+        case 0.18..<0.30: darkTrim = 0.014
+        case 0.30..<0.45: darkTrim = 0.016
+        case 0.45..<0.58: darkTrim = 0.018
+        case 0.58..<0.76: darkTrim = 0.036
+        case 0.76..<0.92: darkTrim = 0.022
+        case 0.06..<0.18: darkTrim = 0.010
+        default:          darkTrim = 0.012
+        }
+        return scheme == .dark ? darkTrim : darkTrim * 0.35
+    }
+
+    private static func ledLevelFamilyStyleDrift(_ h: CGFloat) -> CGFloat {
+        switch OKColor.normalizedHue(h) {
+        case 0.00..<0.06, 0.94..<1.00: return 0.0075   // red lows deepen toward ruby
+        case 0.06..<0.18:              return -0.0100  // amber lows warm without browning
+        case 0.18..<0.30:              return -0.0080  // yellow-green lows step away from neon
+        case 0.30..<0.45:              return -0.0060  // green lows olive down gently
+        case 0.45..<0.58:              return 0.0070   // cyan lows lean blue, not medical green
+        case 0.58..<0.76:              return 0.0100   // blue lows gain indigo depth
+        case 0.76..<0.92:              return -0.0090  // violet lows lean wine
+        default:                       return 0.0060
+        }
     }
 
     // Family drifts — tighter than v1 so hue identity is preserved.

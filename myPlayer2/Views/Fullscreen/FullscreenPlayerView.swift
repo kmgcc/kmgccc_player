@@ -30,6 +30,7 @@ struct FullscreenPlayerView: View {
     )!
 
     private typealias FullscreenLyricsColorSet = LyricsSurfaceColorSet
+    private typealias FullscreenLyricPalette = FullscreenLyricSemanticPalette
     private typealias FullscreenCoverBlurBlendProfile = LyricsCoverBlurBlendProfile
 
     private struct FullscreenCoverBlurLyricsTheme {
@@ -37,7 +38,11 @@ struct FullscreenPlayerView: View {
         let themeColor: NSColor
         let themeLightness: CGFloat
         let profile: FullscreenCoverBlurBlendProfile
-        let colors: FullscreenLyricsColorSet
+        let palette: FullscreenLyricPalette
+
+        var colors: FullscreenLyricsColorSet {
+            palette.foregroundColorSet
+        }
     }
 
     private struct FullscreenLyricsThemeIdentity: Equatable {
@@ -3312,8 +3317,9 @@ struct FullscreenPlayerView: View {
             )
             return
         }
-        let colorSet = activeCoverBlurTheme?.colors
-            ?? makeFullscreenLyricsColorSet(forTrackID: displayTrackID)
+        let semanticPalette = activeCoverBlurTheme?.palette
+            ?? makeFullscreenLyricSemanticPalette(forTrackID: displayTrackID)
+        let colorSet = semanticPalette.foregroundColorSet
 
         if isCoverBlurFullscreenSkin, readyCoverBlurTheme == nil {
             if activeCoverBlurTheme == nil {
@@ -3372,51 +3378,35 @@ struct FullscreenPlayerView: View {
         let translationFontFamily = cssFontFamily([
             settings.fullscreenLyricsTranslationFontName
         ])
-        let mainActiveColor = ArtworkColorExtractor.cssRGBA(
-            colorSet.mainActive,
-            alpha: 1.0
+        let mainActiveColor = LyricRenderingAdapter.cssPayload(semanticPalette.mainActive)
+        let mainInactiveColor = LyricRenderingAdapter.cssPayload(semanticPalette.mainInactive)
+        let subActiveColor = LyricRenderingAdapter.cssPayload(semanticPalette.subActive)
+        let subInactiveColor = LyricRenderingAdapter.cssPayload(semanticPalette.subInactive)
+        let subColor = LyricRenderingAdapter.cssPayload(semanticPalette.subColor)
+        let lineTimingMainInactiveColor = LyricRenderingAdapter.cssPayload(
+            semanticPalette.lineTimingMainInactive
         )
-        let mainInactiveColor = ArtworkColorExtractor.cssRGBA(
-            colorSet.mainInactive,
-            alpha: 1.0
+        let lineTimingSubInactiveColor = LyricRenderingAdapter.cssPayload(
+            semanticPalette.lineTimingSubInactive
         )
-        let subActiveColor = ArtworkColorExtractor.cssRGBA(
-            colorSet.subActive,
-            alpha: 1.0
+        let emphasisGlowColor = LyricRenderingAdapter.cssPayload(semanticPalette.emphasisGlow)
+        let backgroundColor = LyricRenderingAdapter.cssPayload(semanticPalette.backgroundActive)
+        let backgroundInactiveColor = LyricRenderingAdapter.cssPayload(
+            semanticPalette.backgroundInactive
         )
-        let subInactiveColor = ArtworkColorExtractor.cssRGBA(
-            colorSet.subInactive,
-            alpha: 1.0
+        let backgroundKaraokeActiveColor = LyricRenderingAdapter.cssPayload(
+            semanticPalette.backgroundKaraokeActive
         )
-        let lineTimingMainInactiveColor = ArtworkColorExtractor.cssRGBA(
-            colorSet.lineTimingMainInactive,
-            alpha: 1.0
+        let coverBlurMainGlowColor = LyricRenderingAdapter.cssPayload(
+            semanticPalette.coverBlurMainGlow
         )
-        let lineTimingSubInactiveColor = ArtworkColorExtractor.cssRGBA(
-            colorSet.lineTimingSubInactive,
-            alpha: 1.0
-        )
-        let emphasisGlowColor = ArtworkColorExtractor.cssRGBA(
-            colorSet.mainActive,
-            alpha: colorScheme == .light && activeCoverBlurTheme == nil ? 0.36 : 0.50
-        )
-        let backgroundColor = ArtworkColorExtractor.cssRGBA(
-            colorSet.subActive,
-            alpha: 1.0
+        let coverBlurSubGlowColor = LyricRenderingAdapter.cssPayload(
+            semanticPalette.coverBlurSubGlow
         )
         let coverBlurThemeColor = activeCoverBlurTheme.map {
             ArtworkColorExtractor.cssRGBA($0.themeColor, alpha: 1.0)
         }
-        // v3 diagnostic: dump the actual colour set the WebView will receive
-        // so we can verify on a real run whether the Swift output is already
-        // grey (analysis / seed bug) or only the on-screen render is grey
-        // (Web-layer override / CSS opacity bug). The CSS vars are pushed by
-        // `applyFullscreenColorVar` inside `index.html`; the names below
-        // match those CSS var names so the user can grep DevTools styles.
-        if ProcessInfo.processInfo.environment["COLOR_SYSTEM_LYRICS_DEBUG"] == "1"
-            || (settings.fullscreenArtBackgroundEnabled
-                && activeCoverBlurTheme == nil)
-        {
+        if ProcessInfo.processInfo.environment["COLOR_SYSTEM_LYRICS_DEBUG"] == "1" {
             let analysis = resolveLyricsAnalysis(forTrackID: displayTrackID)
             let highlightBase = resolveFullscreenLyricsBaseColor(forTrackID: displayTrackID)
             let inactiveBase = resolveFullscreenLyricsInactiveBaseColor(forTrackID: displayTrackID)
@@ -3488,10 +3478,15 @@ struct FullscreenPlayerView: View {
             "fullscreenInactiveColor": mainInactiveColor,
             "fullscreenSubActiveColor": subActiveColor,
             "fullscreenSubInactiveColor": subInactiveColor,
+            "fullscreenSubColor": subColor,
             "fullscreenBackgroundColor": backgroundColor,
+            "fullscreenBackgroundInactiveColor": backgroundInactiveColor,
+            "fullscreenBackgroundKaraokeActiveColor": backgroundKaraokeActiveColor,
             "fullscreenEmphasisGlowColor": emphasisGlowColor,
             "fullscreenLineTimingInactiveColor": lineTimingMainInactiveColor,
             "fullscreenLineTimingSubInactiveColor": lineTimingSubInactiveColor,
+            "fullscreenBackgroundBaseOpacity": Double(semanticPalette.alpha.backgroundBaseOpacity),
+            "fullscreenBackgroundKaraokeOpacity": Double(semanticPalette.alpha.backgroundKaraokeOpacity),
             "alignAnchor": "top",
             "alignPosition": 0.18,
             "alignOffset": 0,
@@ -3514,9 +3509,20 @@ struct FullscreenPlayerView: View {
             config["coverBlurMainInactiveColor"] = mainInactiveColor
             config["coverBlurSubActiveColor"] = subActiveColor
             config["coverBlurSubInactiveColor"] = subInactiveColor
+            config["coverBlurSubColor"] = subColor
             config["coverBlurBackgroundColor"] = backgroundColor
+            config["coverBlurBackgroundInactiveColor"] = backgroundInactiveColor
+            config["coverBlurBackgroundKaraokeActiveColor"] = backgroundKaraokeActiveColor
+            config["coverBlurMainGlowColor"] = coverBlurMainGlowColor
+            config["coverBlurSubGlowColor"] = coverBlurSubGlowColor
             config["coverBlurLineTimingInactiveColor"] = lineTimingMainInactiveColor
             config["coverBlurLineTimingSubInactiveColor"] = lineTimingSubInactiveColor
+            config["coverBlurBackgroundBaseOpacity"] = Double(
+                semanticPalette.alpha.dedicatedCoverBlurBackgroundBaseOpacity
+            )
+            config["coverBlurBackgroundKaraokeOpacity"] = Double(
+                semanticPalette.alpha.dedicatedCoverBlurBackgroundKaraokeOpacity
+            )
         }
 
         let shouldUseHighlightOverlay = shouldRenderCoverBlurHighlightOverlay
@@ -4025,14 +4031,16 @@ struct FullscreenPlayerView: View {
         )
     }
 
-    private func makeFullscreenLyricsColorSet(forTrackID trackID: UUID?) -> FullscreenLyricsColorSet {
-        SemanticPaletteFactory.fullscreenLyricsColorSet(
+    private func makeFullscreenLyricSemanticPalette(forTrackID trackID: UUID?) -> FullscreenLyricPalette {
+        SemanticPaletteFactory.fullscreenLyricSemanticPalette(
             analysis: resolveLyricsAnalysis(forTrackID: trackID),
             scheme: colorScheme,
             highlightBaseColor: resolveFullscreenLyricsBaseColor(forTrackID: trackID),
             inactiveBaseColor: resolveFullscreenLyricsInactiveBaseColor(forTrackID: trackID),
             isUltraDark: colorScheme == .dark && lockedFullscreenLyricsUltraDark,
-            usesArtisticBackground: settings.fullscreenArtBackgroundEnabled
+            usesArtisticBackground: settings.fullscreenArtBackgroundEnabled,
+            skinID: settings.fullscreen.skinID,
+            backgroundType: settings.fullscreenArtBackgroundEnabled ? .artisticBackground : .standardSkin
         )
     }
 
@@ -4060,14 +4068,18 @@ struct FullscreenPlayerView: View {
         return true
     }
 
-    private func makeCoverBlurLyricsColorSet(
+    private func makeCoverBlurLyricSemanticPalette(
         from themeColor: NSColor,
-        profile: FullscreenCoverBlurBlendProfile
-    ) -> FullscreenLyricsColorSet {
-        SemanticPaletteFactory.coverBlurLyricsColorSet(
+        profile: FullscreenCoverBlurBlendProfile,
+        mode: LyricSurfaceMode,
+        skinID: String
+    ) -> FullscreenLyricPalette {
+        SemanticPaletteFactory.coverBlurLyricSemanticPalette(
             analysis: resolveLyricsAnalysis(forTrackID: currentArtworkTrackID),
             themeColor: themeColor,
-            profile: profile
+            profile: profile,
+            mode: mode,
+            skinID: skinID
         )
     }
 
@@ -4105,32 +4117,42 @@ struct FullscreenPlayerView: View {
             return nil
         }
 
-        let themeHSL = ColorMath.hsl(of: themeColor)
-        let profile: FullscreenCoverBlurBlendProfile = themeHSL.l > 0.72
+        let themeLightness = OKColor.nsColorToOKLCH(themeColor)?.l ?? 0.50
+        let profile: FullscreenCoverBlurBlendProfile = themeLightness > 0.72
             ? .darker
             : .lighter
 
         return FullscreenCoverBlurLyricsTheme(
             trackID: trackID,
             themeColor: themeColor,
-            themeLightness: themeHSL.l,
+            themeLightness: themeLightness,
             profile: profile,
-            colors: makeCoverBlurLyricsColorSet(from: themeColor, profile: profile)
+            palette: makeCoverBlurLyricSemanticPalette(
+                from: themeColor,
+                profile: profile,
+                mode: .coverBlur,
+                skinID: "fullscreen.coverGradientBlur"
+            )
         )
     }
 
     private func makeAppleStyleCoverBlurLyricsTheme(forTrackID trackID: UUID?) -> FullscreenCoverBlurLyricsTheme {
         let resolvedTrackID = trackID ?? Self.fallbackExternalTrackID
         let themeColor = resolveFullscreenLyricsBaseColor(forTrackID: trackID)
-        let themeHSL = ColorMath.hsl(of: themeColor)
+        let themeLightness = OKColor.nsColorToOKLCH(themeColor)?.l ?? 0.62
         let profile: FullscreenCoverBlurBlendProfile = .lighter
 
         return FullscreenCoverBlurLyricsTheme(
             trackID: resolvedTrackID,
             themeColor: themeColor,
-            themeLightness: themeHSL.l,
+            themeLightness: themeLightness,
             profile: profile,
-            colors: makeCoverBlurLyricsColorSet(from: themeColor, profile: profile)
+            palette: makeCoverBlurLyricSemanticPalette(
+                from: themeColor,
+                profile: profile,
+                mode: .appleStyle,
+                skinID: AppleStyleSkin.skinID
+            )
         )
     }
 

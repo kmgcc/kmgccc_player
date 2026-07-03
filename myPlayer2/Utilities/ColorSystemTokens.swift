@@ -373,9 +373,8 @@ nonisolated enum ColorSystemTokens {
     //      lower-chroma variants. Chroma scales sit near 1.0 for every role
     //      and hue identity must survive end-to-end.
     //   2. The LED ladder lives in the upper L register (so OKLCH brightness
-    //      doesn't fight the opacity ramp) and uses a mid-level chroma boost
-    //      to deliver the "color comes alive at mid" effect that level
-    //      distinction needs.
+    //      doesn't fight the opacity ramp) and uses a monotonic chroma scale
+    //      so level distinction is not produced by opacity alone.
     //
     // nearMono callers force chroma to the neutral ceiling; the hue is
     // numerically present but visually muted.
@@ -384,22 +383,30 @@ nonisolated enum ColorSystemTokens {
         static let nearMonoChromaCeiling: CGFloat = 0.004
         static let nearMonoChromaAssertion: CGFloat = 0.005
 
-        // LED ladder. v3 widens the L band substantially so the OKLCH
+        // LED ladder. v4 keeps the v3 visible L band but makes the level
+        // language explicit: lower levels carry stronger style drift and a
+        // wider chroma ramp, while peak returns closest to the semantic seed.
+        // Dark peak is lifted for a clearer night glow without crossing the
+        // white-wash ceiling.
+        //
+        // v3 widened the L band substantially so the OKLCH
         // lightness delta is visible *after* the opacity ramp (which is
         // the dominant brightness driver). v2's narrow 0.78–0.92 band was
         // visually flat because the perceived lightness difference between
-        // levels was dominated by opacity alone. The mid-level chroma boost
-        // is also significantly larger so mid-level pixels read as more
-        // "alive" than low or peak — this is the "color science hierarchy"
-        // the user expects from a LED meter.
-        static let ledDarkMinL: CGFloat = 0.620
-        static let ledDarkPeakL: CGFloat = 0.945
-        static let ledLightMinL: CGFloat = 0.340
-        static let ledLightPeakL: CGFloat = 0.640
-        static let ledMidChromaBoost: CGFloat = 0.42
-        static let ledPeakChromaTrim: CGFloat = 0.10
-        static let ledShadowDriftScale: CGFloat = 1.25
-        static let ledHighlightDriftScale: CGFloat = 0.70
+        // levels was dominated by opacity alone. Chroma now climbs
+        // monotonically with level, then lets the family cap flatten the
+        // highest-risk hues instead of using a mid-level bump / peak rollback.
+        static let ledDarkMinL: CGFloat = 0.610
+        static let ledDarkPeakL: CGFloat = 0.835
+        static let ledUltraDarkPeakL: CGFloat = 0.820
+        static let ledLightMinL: CGFloat = 0.335
+        static let ledLightPeakL: CGFloat = 0.650
+        static let ledLowChromaScale: CGFloat = 0.74
+        static let ledPeakChromaScale: CGFloat = 0.96
+        static let ledLightLowChromaScale: CGFloat = 0.70
+        static let ledLightPeakChromaScale: CGFloat = 0.94
+        static let ledShadowDriftScale: CGFloat = 1.85
+        static let ledHighlightDriftScale: CGFloat = 0.0
         static let ledNearMonoChromaCap: CGFloat = 0.006
         static let ledColorfulMinimumChroma: CGFloat = 0.062
         static let ledColorfulMinimumChromaAssertion: CGFloat = 0.055
