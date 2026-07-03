@@ -186,17 +186,17 @@ public final class AppSettings {
     }
 
     enum HomeCardMaterialMode: String, CaseIterable, Identifiable {
-        case liquidGlass
-        case frostedGlass
         case solid
+        case frostedGlass
+        case liquidGlass
 
         var id: String { rawValue }
 
         var title: String {
             switch self {
-            case .liquidGlass: return "液态玻璃"
-            case .frostedGlass: return "磨砂玻璃"
             case .solid: return "普通"
+            case .frostedGlass: return "磨砂玻璃"
+            case .liquidGlass: return "液态玻璃"
             }
         }
     }
@@ -342,8 +342,8 @@ public final class AppSettings {
             access(keyPath: \.homeCardMaterialMode)
             let raw =
                 UserDefaults.standard.string(forKey: AppearanceKeys.homeCardMaterialMode)
-                ?? HomeCardMaterialMode.liquidGlass.rawValue
-            return HomeCardMaterialMode(rawValue: raw) ?? .liquidGlass
+                ?? HomeCardMaterialMode.frostedGlass.rawValue
+            return HomeCardMaterialMode(rawValue: raw) ?? .frostedGlass
         }
         set {
             withMutation(keyPath: \.homeCardMaterialMode) {
@@ -514,8 +514,8 @@ public final class AppSettings {
 
     static let lyricSpringDurationRange: ClosedRange<Double> = 0.30...1.20
     static let lyricSpringBounceRange: ClosedRange<Double> = -0.25...3.25
-    static let defaultLyricSpringDuration: Double = 0.5
-    static let defaultLyricSpringBounce: Double = 0.3
+    static let defaultLyricSpringDuration: Double = 0.4
+    static let defaultLyricSpringBounce: Double = 0.75
 
     private static func clampLyricSpringDuration(_ value: Double) -> Double {
         guard value.isFinite else { return defaultLyricSpringDuration }
