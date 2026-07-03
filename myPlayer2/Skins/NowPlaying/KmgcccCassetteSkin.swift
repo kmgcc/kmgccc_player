@@ -1268,10 +1268,21 @@ private struct KmgcccCassetteNormalSettingsView: View {
 private struct KmgcccCassetteFullscreenSettingsView: View {
     @AppStorage("skin.kmgcccCassette.fullscreen.visualizerMode") private var visualizerMode: String = "off"
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
+    @AppStorage("fullscreenArtBackgroundEnabled") private var fullscreenArtBackgroundEnabled: Bool = true
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
+            SettingsSwitchRow(
+                title: "启用艺术背景",
+                isOn: $fullscreenArtBackgroundEnabled,
+                detail: "遇到性能问题时，可以关闭此选项",
+                titleFont: presentationStyle.rowLabelFont,
+                detailFont: presentationStyle.captionFont,
+                titleColor: presentationStyle.primaryTextColor,
+                detailColor: presentationStyle.secondaryTextColor
+            )
+
             SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
                 get: { visualizerMode == "led" },
                 set: { isOn in

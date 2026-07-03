@@ -318,7 +318,7 @@ public final class FullscreenPresentationCoordinator {
     }
 
     private func loadLegacyConfiguration() -> FullscreenPresentationConfiguration {
-        let skinID = UserDefaults.standard.string(forKey: Keys.skinID) ?? "fullscreen.coverGradientBlur"
+        let skinID = UserDefaults.standard.string(forKey: Keys.skinID) ?? "coverLed"
         let hasExplicitMiniPlayerSpectrum = UserDefaults.standard.object(forKey: Keys.miniPlayerSpectrumEnabled) != nil
         let miniPlayerSpectrum = hasExplicitMiniPlayerSpectrum
             ? shouldUseLegacyMiniPlayerSpectrumValue(for: skinID)
@@ -430,8 +430,8 @@ public final class FullscreenPresentationCoordinator {
     public func resetToDefaults() {
         UserDefaults.standard.removeObject(forKey: Keys.userExplicitlyDisabledMiniPlayerSpectrum)
         updateConfiguration(FullscreenPresentationConfiguration(
-            skinID: "fullscreen.coverGradientBlur",
-            visualizerMode: .miniPlayerSpectrum
+            skinID: "coverLed",
+            visualizerMode: .skinVisualizer
         ))
     }
 }

@@ -1121,10 +1121,21 @@ private struct RotatingCoverSkinNormalSettingsView: View {
 
 private struct RotatingCoverSkinFullscreenSettingsView: View {
     @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = false
+    @AppStorage("fullscreenArtBackgroundEnabled") private var fullscreenArtBackgroundEnabled: Bool = true
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
+            SettingsSwitchRow(
+                title: "启用艺术背景",
+                isOn: $fullscreenArtBackgroundEnabled,
+                detail: "遇到性能问题时，可以关闭此选项",
+                titleFont: presentationStyle.rowLabelFont,
+                detailFont: presentationStyle.captionFont,
+                titleColor: presentationStyle.primaryTextColor,
+                detailColor: presentationStyle.secondaryTextColor
+            )
+
             SettingsSwitchRow(
                 title: "CD 模式",
                 isOn: $cdMode,

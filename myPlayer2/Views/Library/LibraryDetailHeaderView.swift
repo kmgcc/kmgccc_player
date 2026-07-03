@@ -9,6 +9,7 @@
 //
 
 import AppKit
+import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -25,6 +26,10 @@ private struct LibraryHeaderSemanticPaletteKey: EnvironmentKey {
     static let defaultValue: SemanticPalette? = nil
 }
 
+private struct LibraryHeaderForegroundPaletteKey: EnvironmentKey {
+    static let defaultValue: AppForegroundPalette? = nil
+}
+
 extension EnvironmentValues {
     var libraryPresentedAccentColor: Color {
         get { self[LibraryPresentedAccentColorKey.self] }
@@ -34,6 +39,11 @@ extension EnvironmentValues {
     var libraryHeaderSemanticPalette: SemanticPalette? {
         get { self[LibraryHeaderSemanticPaletteKey.self] }
         set { self[LibraryHeaderSemanticPaletteKey.self] = newValue }
+    }
+
+    var libraryHeaderForegroundPalette: AppForegroundPalette? {
+        get { self[LibraryHeaderForegroundPaletteKey.self] }
+        set { self[LibraryHeaderForegroundPaletteKey.self] = newValue }
     }
 }
 
@@ -69,6 +79,7 @@ struct LibraryDetailHeaderView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.libraryHeaderSemanticPalette) private var headerSemanticPalette
+    @Environment(\.libraryHeaderForegroundPalette) private var headerForegroundPaletteOverride
     @EnvironmentObject private var themeStore: ThemeStore
 
     let config: DetailHeaderConfig
@@ -80,6 +91,7 @@ struct LibraryDetailHeaderView: View {
     let incomingArtwork: NSImage?
     /// Opacity of incoming layer (0 = show current, 1 = show incoming)
     let incomingOpacity: Double
+    let isColorReady: Bool
     let onPlay: () -> Void
     let canPlay: Bool
     let onArtworkFrameChange: (CGRect) -> Void
@@ -105,6 +117,11 @@ struct LibraryDetailHeaderView: View {
             )
 
             headerTextColumn
+                .opacity(isColorReady ? 1 : 0)
+                .allowsHitTesting(isColorReady)
+                .transaction { transaction in
+                    transaction.animation = nil
+                }
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 20)
@@ -299,7 +316,7 @@ struct LibraryDetailHeaderView: View {
     // MARK: - Text fields
 
     private var headerForegroundPalette: AppForegroundPalette {
-        headerSemanticPalette?.appForeground ?? themeStore.appForegroundPalette
+        headerForegroundPaletteOverride ?? headerSemanticPalette?.appForeground ?? themeStore.appForegroundPalette
     }
 
     private var headerPrimaryTextColor: Color {
@@ -596,36 +613,38 @@ struct LibraryDetailHeaderView: View {
         switch result {
         case .success(let urls):
             guard let url = urls.first else { return }
-
-            let didStartAccess = url.startAccessingSecurityScopedResource()
-            defer {
-                if didStartAccess {
-                    url.stopAccessingSecurityScopedResource()
-                }
-            }
-
-            guard let importedArtwork = normalizedImportedArtwork(from: url) else { return }
             Task {
+                let pngData = await Task.detached(priority: .userInitiated) { () -> Data? in
+                    let didStartAccess = url.startAccessingSecurityScopedResource()
+                    defer {
+                        if didStartAccess {
+                            url.stopAccessingSecurityScopedResource()
+                        }
+                    }
+                    return Self.normalizedImportedPNGData(from: url)
+                }.value
+                guard let pngData else { return }
                 switch config {
                 case .playlist(let playlist, _):
-                    await MainActor.run {
-                        LocalLibraryService.shared.savePlaylistCustomArtwork(
-                            playlistID: playlist.id,
-                            image: importedArtwork.image
+                    let playlistID = playlist.id
+                    let didSave = await Task.detached(priority: .utility) {
+                        LocalLibraryService.savePlaylistCustomArtworkDataOnDisk(
+                            playlistID: playlistID,
+                            pngData: pngData
                         )
-                    }
-                    await MainActor.run {
+                    }.value
+                    if didSave {
                         onArtworkMutation()
                     }
                 case .artist(let entry, _):
                     var updated = entry
                     updated.artworkFileName = "artwork.png"
-                    updated.artworkData = importedArtwork.pngData
+                    updated.artworkData = pngData
                     await libraryVM.saveArtistEntry(updated)
                 case .album(let entry, _):
                     var updated = entry
                     updated.artworkFileName = "artwork.png"
-                    updated.artworkData = importedArtwork.pngData
+                    updated.artworkData = pngData
                     await libraryVM.saveAlbumEntry(updated)
                 }
             }
@@ -635,35 +654,62 @@ struct LibraryDetailHeaderView: View {
         }
     }
 
-    private func normalizedImportedArtwork(from url: URL) -> NormalizedImportedHeaderArtwork? {
-        guard let originalImage = NSImage(contentsOf: url) else { return nil }
-        let size: CGFloat = 512
-        let originalSize = originalImage.size
-        let minDimension = min(originalSize.width, originalSize.height)
-        let cropRect = NSRect(
-            x: (originalSize.width - minDimension) / 2,
-            y: (originalSize.height - minDimension) / 2,
-            width: minDimension,
-            height: minDimension
-        )
+    private nonisolated static func normalizedImportedPNGData(from url: URL) -> Data? {
+        autoreleasepool {
+            guard
+                let source = CGImageSourceCreateWithURL(
+                    url as CFURL,
+                    [kCGImageSourceShouldCache: false] as CFDictionary
+                )
+            else { return nil }
 
-        let cropped = NSImage(size: NSSize(width: size, height: size))
-        cropped.lockFocus()
-        originalImage.draw(
-            in: NSRect(origin: .zero, size: NSSize(width: size, height: size)),
-            from: cropRect,
-            operation: .copy,
-            fraction: 1.0
-        )
-        cropped.unlockFocus()
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceThumbnailMaxPixelSize: 1024,
+            ]
+            guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+                source,
+                0,
+                options as CFDictionary
+            ) else { return nil }
 
-        guard let tiff = cropped.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let pngData = rep.representation(using: .png, properties: [:])
-        else { return nil }
+            let side = min(thumbnail.width, thumbnail.height)
+            guard side > 0,
+                  let cropped = thumbnail.cropping(to: CGRect(
+                    x: (thumbnail.width - side) / 2,
+                    y: (thumbnail.height - side) / 2,
+                    width: side,
+                    height: side
+                  ))
+            else { return nil }
 
-        print("🎨 [HeaderArtworkImport] selectionType=\(config.selectionTypeLabel) selectionIdentity=\(config.selectionIdentity) phase=processed-square-import sourcePath=\(url.path)")
-        return NormalizedImportedHeaderArtwork(image: cropped, pngData: pngData)
+            let outputSide = 512
+            guard let context = CGContext(
+                data: nil,
+                width: outputSide,
+                height: outputSide,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return nil }
+            context.interpolationQuality = .high
+            context.draw(cropped, in: CGRect(x: 0, y: 0, width: outputSide, height: outputSide))
+            guard let normalized = context.makeImage() else { return nil }
+
+            let output = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(
+                output,
+                UTType.png.identifier as CFString,
+                1,
+                nil
+            ) else { return nil }
+            CGImageDestinationAddImage(destination, normalized, nil)
+            guard CGImageDestinationFinalize(destination) else { return nil }
+            return output as Data
+        }
     }
 
     // MARK: - Artwork regeneration
@@ -757,19 +803,31 @@ struct LibraryDetailHeaderView: View {
                     return
                 }
 
+                let generatedPNGData = await Task.detached(priority: .utility) {
+                    image.pngData()
+                }.value
+
+                let didSave: Bool
+                if let generatedPNGData {
+                    let playlistID = playlist.id
+                    didSave = await Task.detached(priority: .utility) {
+                        LocalLibraryService.savePlaylistGeneratedArtworkDataOnDisk(
+                            playlistID: playlistID,
+                            pngData: generatedPNGData
+                        )
+                    }.value
+                } else {
+                    didSave = false
+                }
+
                 await MainActor.run {
-                    let didSave = LocalLibraryService.shared.regeneratePlaylistArtwork(
-                        playlistID: playlist.id,
-                        tracks: tracks,
-                        image: image
-                    )
-                    if !didSave {
+                    if didSave {
+                        onArtworkMutation()
+                    } else {
                         print(
                             "🎨 [HeaderGenerateClick] phase=writeback-failed playlistID=\(playlist.id) "
                                 + "tracks=\(tracks.count)"
                         )
-                    } else {
-                        onArtworkMutation()
                     }
                     isArtworkActionInFlight = false
                 }

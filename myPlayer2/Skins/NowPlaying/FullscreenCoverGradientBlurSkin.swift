@@ -238,6 +238,7 @@ private struct CoverGradientBlurSettingsView: View {
 
     @AppStorage("skin.coverGradientBlur.maxBlurRadius") private var maxBlurRadius: Double = 1600
     @AppStorage("skin.coverGradientBlur.edgeFillMode") private var edgeFillMode: String = CoverEdgeFillMode.pixelStretch.rawValue
+    @AppStorage("fullscreenDimmingIntensity") private var fullscreenDimmingIntensity: Double = 0.15
 
     private var currentEdgeFillMode: CoverEdgeFillMode {
         CoverEdgeFillMode(rawValue: edgeFillMode) ?? .pixelStretch
@@ -258,6 +259,8 @@ private struct CoverGradientBlurSettingsView: View {
             edgeFillModePicker
 
             blurRadiusSlider
+
+            dimmingIntensitySlider
         }
         .padding(.vertical, 6)
     }
@@ -320,7 +323,7 @@ private struct CoverGradientBlurSettingsView: View {
             Text("模糊半径")
                 .font(presentationStyle.rowLabelFont)
                 .foregroundStyle(presentationStyle.primaryTextColor)
-                .frame(width: 56, alignment: .leading)
+                .frame(width: 84, alignment: .leading)
 
             Slider(value: $maxBlurRadius, in: 100...2500, step: 100)
                 .tint(themeStore.accentColor)
@@ -331,6 +334,27 @@ private struct CoverGradientBlurSettingsView: View {
                 .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
                 .lineLimit(1)
                 // Don't let the value collapse into an ellipsis on narrower settings windows.
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
+                .frame(minWidth: 52, alignment: .trailing)
+        }
+    }
+
+    private var dimmingIntensitySlider: some View {
+        HStack(spacing: 12) {
+            Text("背景压暗强度")
+                .font(presentationStyle.rowLabelFont)
+                .foregroundStyle(presentationStyle.primaryTextColor)
+                .frame(width: 84, alignment: .leading)
+
+            Slider(value: $fullscreenDimmingIntensity, in: 0.0...0.5, step: 0.05)
+                .tint(themeStore.accentColor)
+                .frame(maxWidth: .infinity)
+
+            Text(String(format: "%.0f%%", fullscreenDimmingIntensity * 100))
+                .font(presentationStyle.rowValueFont)
+                .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
+                .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
                 .layoutPriority(1)
                 .frame(minWidth: 52, alignment: .trailing)

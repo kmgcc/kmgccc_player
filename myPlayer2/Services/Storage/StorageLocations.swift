@@ -56,6 +56,10 @@ nonisolated enum StorageLocations {
         libraryCacheRootURL.appendingPathComponent("Colors", isDirectory: true)
     }
 
+    static var headerColorCacheURL: URL {
+        colorsCacheURL.appendingPathComponent("Header", isDirectory: true)
+    }
+
     static var homeCacheURL: URL {
         libraryCacheRootURL.appendingPathComponent("Home", isDirectory: true)
     }

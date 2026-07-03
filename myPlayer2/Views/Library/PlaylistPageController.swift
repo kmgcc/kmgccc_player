@@ -59,7 +59,7 @@ final class PlaylistPageController {
         /// Crossfade duration for halo (slower + delayed for softer appearance)
         static let haloReadyDelayNanoseconds: UInt64 = 70_000_000
         static let haloReadyFadeDuration: Double = 0.54
-        static let haloSeedPixelSide: Int = 192
+        static let haloSeedPixelSide: Int = 128
     }
 
     private(set) var phase: PlaylistPagePhase = .idle
@@ -84,6 +84,10 @@ final class PlaylistPageController {
     private(set) var headerAccentColor: Color = ThemeStore.shared.accentColor
     /// Full semantic palette derived from the current header artwork.
     private(set) var headerSemanticPalette: SemanticPalette?
+    /// Header foreground may be restored from a persistent cache before the
+    /// full semantic palette is rehydrated from artwork data.
+    private(set) var headerForegroundPalette: AppForegroundPalette?
+    private(set) var isHeaderColorReady = false
     private var headerColorTask: Task<Void, Never>?
     private var headerLoadDispatchTask: Task<Void, Never>?
     private var lastHeaderColorIdentity: String?
@@ -636,7 +640,15 @@ final class PlaylistPageController {
         areRowSecondaryInteractionsEnabled = false
         areRowArtworkLoadsEnabled = true
         isRowArtworkPrefetchEnabled = false
-        isHeaderEffectsEnabled = selection == .allSongs && !playbackActive
+        let hasDetailHeader: Bool = {
+            switch selection {
+            case .playlist, .artist, .album:
+                return true
+            case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
+                return false
+            }
+        }()
+        isHeaderEffectsEnabled = hasDetailHeader && !playbackActive
 
         let token = UUID()
         phaseToken = token
@@ -652,7 +664,7 @@ final class PlaylistPageController {
                 self.isRowArtworkPrefetchEnabled = true
             }
 
-            guard selection != .allSongs else { return }
+            guard hasDetailHeader else { return }
             try? await Task.sleep(nanoseconds: playbackActive ? 500_000_000 : 140_000_000)
             guard !Task.isCancelled, self.phaseToken == token else { return }
             self.isRowArtworkPrefetchEnabled = true
@@ -1146,10 +1158,13 @@ final class PlaylistPageController {
             commitHeaderColor(
                 accent: cached.accent,
                 palette: cached.palette,
+                foregroundPalette: cached.foreground,
                 artworkIdentity: artworkIdentity,
                 checksum: cached.checksum,
                 scheme: isDark ? .dark : .light
             )
+        } else if requestKey.sourceKey != "empty" {
+            isHeaderColorReady = false
         }
 
         headerColorTask = Task(priority: .utility) { @MainActor in
@@ -1196,6 +1211,7 @@ final class PlaylistPageController {
                 self.commitHeaderColor(
                     accent: ThemeStore.shared.accentColor,
                     palette: nil,
+                    foregroundPalette: nil,
                     artworkIdentity: artworkIdentity,
                     checksum: 0,
                     scheme: currentScheme
@@ -1220,6 +1236,7 @@ final class PlaylistPageController {
                 self.commitHeaderColor(
                     accent: result.accent,
                     palette: result.palette,
+                    foregroundPalette: result.palette.appForeground,
                     artworkIdentity: artworkIdentity,
                     checksum: checksum,
                     scheme: currentScheme
@@ -1241,6 +1258,7 @@ final class PlaylistPageController {
     private func commitHeaderColor(
         accent: Color,
         palette: SemanticPalette?,
+        foregroundPalette: AppForegroundPalette?,
         artworkIdentity: String,
         checksum: UInt64,
         scheme: ColorScheme? = nil
@@ -1255,6 +1273,8 @@ final class PlaylistPageController {
         )
         headerAccentColor = accent
         headerSemanticPalette = palette
+        headerForegroundPalette = foregroundPalette ?? palette?.appForeground
+        isHeaderColorReady = true
         lastHeaderColorIdentity = artworkIdentity
         lastHeaderColorChecksum = checksum
         lastHeaderColorScheme = currentScheme
@@ -1374,12 +1394,16 @@ final class PlaylistPageController {
         {
             headerAccentColor = cached.accent
             headerSemanticPalette = cached.palette
+            headerForegroundPalette = cached.foreground ?? cached.palette?.appForeground
+            isHeaderColorReady = headerForegroundPalette != nil || headerSemanticPalette != nil
             lastHeaderColorIdentity = identity
             lastHeaderColorChecksum = cached.checksum
             lastHeaderColorScheme = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light
         } else {
             headerAccentColor = ThemeStore.shared.accentColor
             headerSemanticPalette = nil
+            headerForegroundPalette = nil
+            isHeaderColorReady = false
             lastHeaderColorIdentity = nil
             lastHeaderColorChecksum = 0
             lastHeaderColorScheme = nil
@@ -1397,6 +1421,7 @@ final class PlaylistPageController {
             commitHeaderColor(
                 accent: cached.accent,
                 palette: cached.palette,
+                foregroundPalette: cached.foreground,
                 artworkIdentity: identity,
                 checksum: cached.checksum,
                 scheme: scheme
@@ -1404,6 +1429,7 @@ final class PlaylistPageController {
         } else if let data = lastHeaderArtworkData {
             let resolveToken = UUID()
             self.headerResolveToken = resolveToken
+            isHeaderColorReady = false
 
             headerColorTask?.cancel()
             headerColorTask = Task(priority: .utility) { @MainActor in
@@ -1418,6 +1444,7 @@ final class PlaylistPageController {
                     self.commitHeaderColor(
                         accent: result.accent,
                         palette: result.palette,
+                        foregroundPalette: result.palette.appForeground,
                         artworkIdentity: identity,
                         checksum: self.lastHeaderColorChecksum,
                         scheme: scheme
@@ -1425,13 +1452,7 @@ final class PlaylistPageController {
                 }
             }
         } else {
-            commitHeaderColor(
-                accent: ThemeStore.shared.accentColor,
-                palette: nil,
-                artworkIdentity: identity,
-                checksum: 0,
-                scheme: scheme
-            )
+            isHeaderColorReady = headerForegroundPalette != nil || headerSemanticPalette != nil
         }
     }
 

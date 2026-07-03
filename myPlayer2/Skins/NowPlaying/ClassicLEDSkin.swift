@@ -331,6 +331,7 @@ private struct ArtworkFrameMaskedImageView: View {
     let artworkChecksum: UInt64
     let size: CGFloat
     let displayScale: CGFloat
+    @AppStorage("skin.classicLED.edgeBlurEnabled") private var edgeBlurEnabled: Bool = true
     @State private var extendedArtworkImage: NSImage?
     @State private var extendedArtworkKey: String?
     // The artistic-edge mask and its final scale are committed TOGETHER with
@@ -398,6 +399,7 @@ private struct ArtworkFrameMaskedImageView: View {
             "frame:\(frameIndex)",
             "px:\(targetPixel)",
             "scale:\(String(format: "%.3f", Double(artworkScale)))",
+            "blur:\(edgeBlurEnabled)",
         ].joined(separator: "|")
     }
 
@@ -618,6 +620,8 @@ private enum ClassicArtworkFrameExtendedArtworkRenderer {
             // fast. When there is no extension band (insetPixel == 0) the base
             // image is returned unchanged.
             guard insetPixel > 0 else { return baseImage }
+            let edgeBlurEnabled = UserDefaults.standard.object(forKey: "skin.classicLED.edgeBlurEnabled") as? Bool ?? true
+            guard edgeBlurEnabled else { return baseImage }
             return progressiveEdgeBlur(
                 base: baseImage,
                 outputPixel: outputPixel,
@@ -956,11 +960,26 @@ private enum ClassicArtworkFrameExtendedArtworkRenderer {
 private struct ClassicLEDSkinNormalSettingsView: View {
     @AppStorage("skin.classicLED.visualizerMode") private var visualizerMode: String = "off"
     @AppStorage("skin.classicLED.artworkFrameMaskEnabled") private var artworkFrameMaskEnabled: Bool = true
+    @AppStorage("skin.classicLED.edgeBlurEnabled") private var edgeBlurEnabled: Bool = true
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            SettingsSwitchRow(title: "风格化封面边缘", isOn: $artworkFrameMaskEnabled)
+            HStack(spacing: 0) {
+                SettingsSwitchRow(title: "风格化封面边缘", isOn: $artworkFrameMaskEnabled)
+                
+                Spacer()
+                    .frame(width: 24)
+                
+                Rectangle()
+                    .fill(Color.primary.opacity(0.1))
+                    .frame(width: 1, height: 16)
+                
+                Spacer()
+                    .frame(width: 24)
+                
+                SettingsSwitchRow(title: "边缘模糊", isOn: $edgeBlurEnabled)
+            }
 
             SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
                 get: { visualizerMode == "led" },
@@ -993,15 +1012,46 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
     @AppStorage("skin.classicLED.artworkFrameMaskEnabled") private var artworkFrameMaskEnabled: Bool = true
+    @AppStorage("fullscreenArtBackgroundEnabled") private var fullscreenArtBackgroundEnabled: Bool = true
+    @AppStorage("skin.classicLED.edgeBlurEnabled") private var edgeBlurEnabled: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
             SettingsSwitchRow(
-                title: "风格化封面边缘",
-                isOn: $artworkFrameMaskEnabled,
+                title: "启用艺术背景",
+                isOn: $fullscreenArtBackgroundEnabled,
+                detail: "遇到性能问题时，可以关闭此选项",
                 titleFont: presentationStyle.rowLabelFont,
-                titleColor: presentationStyle.primaryTextColor
+                detailFont: presentationStyle.captionFont,
+                titleColor: presentationStyle.primaryTextColor,
+                detailColor: presentationStyle.secondaryTextColor
             )
+
+            HStack(spacing: 0) {
+                SettingsSwitchRow(
+                    title: "风格化封面边缘",
+                    isOn: $artworkFrameMaskEnabled,
+                    titleFont: presentationStyle.rowLabelFont,
+                    titleColor: presentationStyle.primaryTextColor
+                )
+                
+                Spacer()
+                    .frame(width: 24)
+                
+                Rectangle()
+                    .fill(presentationStyle.primaryTextColor.opacity(0.12))
+                    .frame(width: 1, height: 16)
+                
+                Spacer()
+                    .frame(width: 24)
+                
+                SettingsSwitchRow(
+                    title: "边缘模糊",
+                    isOn: $edgeBlurEnabled,
+                    titleFont: presentationStyle.rowLabelFont,
+                    titleColor: presentationStyle.primaryTextColor
+                )
+            }
 
             SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
                 get: {

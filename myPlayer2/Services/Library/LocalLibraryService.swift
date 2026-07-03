@@ -1399,7 +1399,23 @@ final class LocalLibraryService {
     func savePlaylistCustomArtwork(playlistID: UUID, image: NSImage) {
         let fileURL = LocalLibraryPaths.playlistCustomArtworkURL(for: playlistID)
         guard writePNGArtwork(image, to: fileURL) else { return }
+        savePlaylistCustomArtworkMetadata(playlistID: playlistID, fileURL: fileURL)
+    }
 
+    @discardableResult
+    nonisolated func savePlaylistCustomArtworkData(playlistID: UUID, pngData: Data) -> Bool {
+        Self.savePlaylistCustomArtworkDataOnDisk(playlistID: playlistID, pngData: pngData)
+    }
+
+    @discardableResult
+    nonisolated static func savePlaylistCustomArtworkDataOnDisk(playlistID: UUID, pngData: Data) -> Bool {
+        let fileURL = LocalLibraryPaths.playlistCustomArtworkURL(for: playlistID)
+        guard writeArtworkDataOnDisk(pngData, to: fileURL) else { return false }
+        return savePlaylistCustomArtworkMetadataOnDisk(playlistID: playlistID, fileURL: fileURL)
+    }
+
+    @discardableResult
+    private nonisolated func savePlaylistCustomArtworkMetadata(playlistID: UUID, fileURL: URL) -> Bool {
         let existing = loadPlaylistSidecar(playlistID: playlistID)
 
         // Delete old generated artwork file when switching to custom
@@ -1409,12 +1425,32 @@ final class LocalLibraryService {
             try? FileManager.default.removeItem(at: generatedURL)
         }
 
-        updatePlaylistArtworkMetadata(
+        return updatePlaylistArtworkMetadata(
             playlistID: playlistID,
             customFileName: fileURL.lastPathComponent,
             generatedFileName: nil, // Clear generated file reference
             activeSource: .custom,
             generatedSignature: nil, // Clear signature since we're using custom
+            artworkRevision: UUID().uuidString
+        )
+    }
+
+    @discardableResult
+    private nonisolated static func savePlaylistCustomArtworkMetadataOnDisk(playlistID: UUID, fileURL: URL) -> Bool {
+        let existing = loadPlaylistSidecarFromDisk(playlistID: playlistID)
+
+        if let generatedFileName = existing?.generatedHeaderArtworkFileName {
+            let generatedURL = LocalLibraryPaths.playlistsRootURL
+                .appendingPathComponent(generatedFileName)
+            try? FileManager.default.removeItem(at: generatedURL)
+        }
+
+        return updatePlaylistArtworkMetadataOnDisk(
+            playlistID: playlistID,
+            customFileName: fileURL.lastPathComponent,
+            generatedFileName: nil,
+            activeSource: .custom,
+            generatedSignature: nil,
             artworkRevision: UUID().uuidString
         )
     }
@@ -1440,6 +1476,40 @@ final class LocalLibraryService {
             artworkRevision: shouldActivateGenerated
                 ? UUID().uuidString
                 : existing?.artworkRevision
+        )
+    }
+
+    @discardableResult
+    nonisolated func savePlaylistGeneratedArtworkData(
+        playlistID: UUID,
+        pngData: Data
+    ) -> Bool {
+        Self.savePlaylistGeneratedArtworkDataOnDisk(playlistID: playlistID, pngData: pngData)
+    }
+
+    @discardableResult
+    nonisolated static func savePlaylistGeneratedArtworkDataOnDisk(
+        playlistID: UUID,
+        pngData: Data
+    ) -> Bool {
+        let fileURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlistID)
+        guard writeArtworkDataOnDisk(pngData, to: fileURL) else { return false }
+
+        let existing = loadPlaylistSidecarFromDisk(playlistID: playlistID)
+
+        if let customFileName = existing?.customHeaderArtworkFileName {
+            let customURL = LocalLibraryPaths.playlistsRootURL
+                .appendingPathComponent(customFileName)
+            try? FileManager.default.removeItem(at: customURL)
+        }
+
+        return updatePlaylistArtworkMetadataOnDisk(
+            playlistID: playlistID,
+            customFileName: nil,
+            generatedFileName: fileURL.lastPathComponent,
+            activeSource: .generated,
+            generatedSignature: nil,
+            artworkRevision: UUID().uuidString
         )
     }
 
@@ -1485,6 +1555,10 @@ final class LocalLibraryService {
     }
 
     nonisolated func loadPlaylistSidecar(playlistID: UUID) -> PlaylistSidecar? {
+        Self.loadPlaylistSidecarFromDisk(playlistID: playlistID)
+    }
+
+    nonisolated static func loadPlaylistSidecarFromDisk(playlistID: UUID) -> PlaylistSidecar? {
         let url = LocalLibraryPaths.playlistURL(for: playlistID)
         guard let data = try? Data(contentsOf: url),
               let sidecar = try? Self.makeJSONDecoder().decode(PlaylistSidecar.self, from: data)
@@ -1493,7 +1567,7 @@ final class LocalLibraryService {
     }
 
     @discardableResult
-    private func updatePlaylistArtworkMetadata(
+    private nonisolated func updatePlaylistArtworkMetadata(
         playlistID: UUID,
         customFileName: String?,
         generatedFileName: String?,
@@ -1518,14 +1592,47 @@ final class LocalLibraryService {
             trackSortOrder: sidecar.trackSortOrder
         )
         do {
-            let data = try encoder.encode(updated)
+            let data = try Self.makeJSONEncoder().encode(updated)
             let url = LocalLibraryPaths.playlistURL(for: playlistID)
             try data.write(to: url, options: .atomic)
-            NotificationCenter.default.post(
-                name: .playlistArtworkDidChange,
-                object: nil,
-                userInfo: ["playlistID": playlistID]
-            )
+            Self.postPlaylistArtworkDidChange(playlistID: playlistID)
+            return true
+        } catch {
+            Log.error("Failed to update playlist artwork metadata: \(error)", category: .library)
+            return false
+        }
+    }
+
+    @discardableResult
+    private nonisolated static func updatePlaylistArtworkMetadataOnDisk(
+        playlistID: UUID,
+        customFileName: String?,
+        generatedFileName: String?,
+        activeSource: PlaylistArtworkSource,
+        generatedSignature: String?,
+        artworkRevision: String?
+    ) -> Bool {
+        guard let sidecar = loadPlaylistSidecarFromDisk(playlistID: playlistID) else { return false }
+        let updated = PlaylistSidecar(
+            schemaVersion: sidecar.schemaVersion,
+            id: sidecar.id,
+            name: sidecar.name,
+            description: sidecar.description,
+            createdAt: sidecar.createdAt,
+            items: sidecar.items,
+            customHeaderArtworkFileName: customFileName,
+            generatedHeaderArtworkFileName: generatedFileName,
+            headerArtworkSource: activeSource,
+            generatedArtworkSignature: generatedSignature,
+            artworkRevision: artworkRevision,
+            trackSortKey: sidecar.trackSortKey,
+            trackSortOrder: sidecar.trackSortOrder
+        )
+        do {
+            let data = try Self.makeJSONEncoder().encode(updated)
+            let url = LocalLibraryPaths.playlistURL(for: playlistID)
+            try data.write(to: url, options: .atomic)
+            Self.postPlaylistArtworkDidChange(playlistID: playlistID)
             return true
         } catch {
             Log.error("Failed to update playlist artwork metadata: \(error)", category: .library)
@@ -1623,18 +1730,47 @@ final class LocalLibraryService {
     }
 
     @discardableResult
-    private func writePNGArtwork(_ image: NSImage, to url: URL) -> Bool {
+    private nonisolated func writePNGArtwork(_ image: NSImage, to url: URL) -> Bool {
         guard let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let pngData = rep.representation(using: .png, properties: [:])
         else { return false }
 
+        return writeArtworkData(pngData, to: url)
+    }
+
+    private nonisolated func writeArtworkData(_ data: Data, to url: URL) -> Bool {
+        Self.writeArtworkDataOnDisk(data, to: url)
+    }
+
+    private nonisolated static func writeArtworkDataOnDisk(_ data: Data, to url: URL) -> Bool {
         do {
-            try pngData.write(to: url, options: .atomic)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: url, options: .atomic)
             return true
         } catch {
             Log.error("Failed to save playlist artwork: \(error)", category: .library)
             return false
+        }
+    }
+
+    private nonisolated static func postPlaylistArtworkDidChange(playlistID: UUID) {
+        let publish = {
+            NotificationCenter.default.post(
+                name: .playlistArtworkDidChange,
+                object: nil,
+                userInfo: ["playlistID": playlistID]
+            )
+        }
+        if Thread.isMainThread {
+            publish()
+        } else {
+            Task { @MainActor in
+                publish()
+            }
         }
     }
 
@@ -2128,7 +2264,7 @@ final class LocalLibraryService {
 }
 
 extension NSImage {
-    func pngData() -> Data? {
+    nonisolated func pngData() -> Data? {
         guard let tiff = tiffRepresentation,
             let rep = NSBitmapImageRep(data: tiff)
         else {

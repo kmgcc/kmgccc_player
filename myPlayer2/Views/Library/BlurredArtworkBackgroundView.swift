@@ -157,7 +157,7 @@ private struct LowCostHaloLayerView: View {
         let s = max(0.25, min(1.0, internalRenderScale))
         let scaledBloom = bloomSize * s
         let scaledExtent = verticalExtent * s
-        let blurRadius = 14.0 * s
+        let blurRadius = 20.0 * s
 
         ZStack {
             ZStack {
@@ -187,9 +187,9 @@ private struct LowCostHaloLayerView: View {
                 .opacity(colorScheme == .dark ? 0.62 : 0.54)
 
             Ellipse()
-                .fill(colorScheme == .dark ? .thinMaterial : .ultraThinMaterial)
+                .fill(.regularMaterial)
                 .frame(width: scaledBloom * 0.92, height: scaledExtent * 0.86)
-                .opacity(colorScheme == .dark ? 0.40 : 0.32)
+                .opacity(colorScheme == .dark ? 0.44 : 0.36)
 
             Ellipse()
                 .fill(

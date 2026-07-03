@@ -280,8 +280,7 @@ struct LDDCSearchSection: View {
                                 .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
                         }
                     )
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 3)
+                    .padding(3)
                     .background(
                         Capsule()
                             .fill(Color.secondary.opacity(0.08))
@@ -314,8 +313,7 @@ struct LDDCSearchSection: View {
                                 .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
                         }
                     )
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 3)
+                    .padding(3)
                     .background(
                         Capsule()
                             .fill(Color.secondary.opacity(0.08))

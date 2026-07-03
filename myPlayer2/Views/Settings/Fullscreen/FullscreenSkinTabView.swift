@@ -14,8 +14,6 @@ struct FullscreenSkinTabView: View {
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     @State private var fullscreenArtworkScale: Double = AppSettings.shared.fullscreenArtworkScale
-    @State private var fullscreenDimmingIntensity: Double = AppSettings.shared.fullscreenDimmingIntensity
-    @State private var fullscreenArtBackgroundEnabled: Bool = AppSettings.shared.fullscreenArtBackgroundEnabled
     @State private var fullscreenMiniPlayerAutoHideSeconds: Double = AppSettings.shared.fullscreenMiniPlayerAutoHideSeconds
     @State private var fullscreenMiniPlayerGlassMaterial: AppSettings.FullscreenMiniPlayerGlassMaterial = AppSettings.shared.fullscreenMiniPlayerGlassMaterial
 
@@ -91,24 +89,10 @@ struct FullscreenSkinTabView: View {
                 }
             }
 
-            SettingsSection("视觉效果") {
-                VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                    SettingsSwitchRow(
-                        title: "启用艺术背景",
-                        isOn: $fullscreenArtBackgroundEnabled,
-                        detail: "遇到性能问题时，可以关闭此选项",
-                        titleFont: presentationStyle.rowLabelFont,
-                        detailFont: presentationStyle.captionFont,
-                        titleColor: presentationStyle.primaryTextColor,
-                        detailColor: presentationStyle.secondaryTextColor
-                    )
-
-                    if supportsArtworkScaleControl(for: settings.fullscreen.skinID) {
+            if supportsArtworkScaleControl(for: settings.fullscreen.skinID) {
+                SettingsSection("视觉效果") {
+                    VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
                         artworkScaleSection
-                    }
-
-                    if settings.fullscreen.skinID != AppleStyleSkin.skinID {
-                        dimmingIntensitySection
                     }
                 }
             }
@@ -119,8 +103,6 @@ struct FullscreenSkinTabView: View {
             let range = artworkScaleRange(for: skinID)
             fullscreenArtworkScale = min(max(scale, range.lowerBound), range.upperBound)
 
-            fullscreenDimmingIntensity = settings.fullscreenDimmingIntensity
-            fullscreenArtBackgroundEnabled = settings.fullscreenArtBackgroundEnabled
             fullscreenMiniPlayerAutoHideSeconds = settings.fullscreenMiniPlayerAutoHideSeconds
             fullscreenMiniPlayerGlassMaterial = settings.fullscreenMiniPlayerGlassMaterial
         }
@@ -131,12 +113,6 @@ struct FullscreenSkinTabView: View {
         }
         .onChange(of: fullscreenArtworkScale) { _, newValue in
             settings.fullscreenArtworkScale = newValue
-        }
-        .onChange(of: fullscreenDimmingIntensity) { _, newValue in
-            settings.fullscreenDimmingIntensity = newValue
-        }
-        .onChange(of: fullscreenArtBackgroundEnabled) { _, newValue in
-            settings.fullscreenArtBackgroundEnabled = newValue
         }
         .onChange(of: fullscreenMiniPlayerAutoHideSeconds) { _, newValue in
             settings.fullscreenMiniPlayerAutoHideSeconds = newValue
@@ -257,27 +233,7 @@ struct FullscreenSkinTabView: View {
         }
     }
 
-    private var dimmingIntensitySection: some View {
-        VStack(alignment: .leading, spacing: presentationStyle.sliderBlockSpacing) {
-            HStack {
-                Text("背景压暗强度")
-                    .font(presentationStyle.rowLabelFont)
-                    .foregroundStyle(presentationStyle.primaryTextColor)
-                Spacer()
-                Text(String(format: "%.0f%%", fullscreenDimmingIntensity * 100))
-                    .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
-                    .font(presentationStyle.rowValueFont)
-            }
-            Slider(
-                value: $fullscreenDimmingIntensity,
-                in: 0.0...0.5,
-                step: 0.05
-            )
-            .frame(height: presentationStyle.tabHeight)
-            Text("调整背景压暗程度，提高可读性")
-                .settingsDescriptionStyle()
-        }
-    }
+
 
     @ViewBuilder
     private var segmentedTrackBackground: some View {
