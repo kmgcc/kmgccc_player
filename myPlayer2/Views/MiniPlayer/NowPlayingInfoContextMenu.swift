@@ -273,3 +273,21 @@ struct NowPlayingInfoContextMenu: View {
         }
     }
 }
+
+struct MiniPlayerRefetchLyricsButton: View {
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryViewModel.self) private var libraryVM
+    var onAction: (() -> Void)? = nil
+
+    var body: some View {
+        if AppBuild.current < AppBuild(10) {
+            // 这是为旧歌词转换质量问题提供的临时补救入口；过渡期结束后应删除该菜单项、门限判断及相关临时代码，而不是长期保留隐藏分支。
+            Button {
+                onAction?()
+                playbackCoordinator.forceRefetchLyrics(libraryVM: libraryVM)
+            } label: {
+                Label("重新获取歌词", systemImage: "arrow.clockwise")
+            }
+        }
+    }
+}

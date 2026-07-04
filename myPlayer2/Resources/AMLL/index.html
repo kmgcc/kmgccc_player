@@ -1396,6 +1396,8 @@
         const SPRING_BOUNCE_MAX = 3.25;
         const DEFAULT_SPRING_DURATION = 0.4;
         const DEFAULT_SPRING_BOUNCE = 0.75;
+        const SPRING_REFERENCE_DURATION = 0.5;
+        const SPRING_REFERENCE_BOUNCE = 0.3;
         const DEFAULT_LINE_POS_X_SPRING_PARAMS = Object.freeze({
             mass: 1,
             damping: 10,
@@ -1420,8 +1422,8 @@
             return Math.max(min, Math.min(max, numeric));
         };
         const isDefaultLyricSpringSetting = (duration, bounce) =>
-            Math.abs(duration - DEFAULT_SPRING_DURATION) < 0.0001
-            && Math.abs(bounce - DEFAULT_SPRING_BOUNCE) < 0.0001;
+            Math.abs(duration - SPRING_REFERENCE_DURATION) < 0.0001
+            && Math.abs(bounce - SPRING_REFERENCE_BOUNCE) < 0.0001;
         const SPRING_STIFFNESS_MIN = 8;
         const SPRING_STIFFNESS_MAX = 5000;
         const SPRING_DAMPING_MIN = 0.8;
@@ -1439,7 +1441,7 @@
                 SPRING_BOUNCE_MAX,
                 DEFAULT_SPRING_BOUNCE
             );
-            const speedRatio = DEFAULT_SPRING_DURATION / d;
+            const speedRatio = SPRING_REFERENCE_DURATION / d;
             const mass = baseParams.mass;
             const stiffness = clampSpringNumber(
                 baseParams.stiffness * speedRatio * speedRatio,
@@ -1448,7 +1450,7 @@
                 baseParams.stiffness
             );
             let damping = baseParams.damping * speedRatio;
-            const bounceOffset = b - DEFAULT_SPRING_BOUNCE;
+            const bounceOffset = b - SPRING_REFERENCE_BOUNCE;
 
             if (bounceOffset > 0) {
                 const primaryT = Math.min(1, bounceOffset / 1.0);
@@ -1458,14 +1460,14 @@
                 const extraTravel = Math.max(0, bounceOffset - 1.0);
                 const extraRange = Math.max(
                     0.001,
-                    SPRING_BOUNCE_MAX - DEFAULT_SPRING_BOUNCE - 1.0
+                    SPRING_BOUNCE_MAX - SPRING_REFERENCE_BOUNCE - 1.0
                 );
                 const extraT = Math.min(1, extraTravel / extraRange);
                 damping *= 1 - extraT * 0.35;
             } else if (bounceOffset < 0) {
                 const t = Math.min(
                     1,
-                    -bounceOffset / (DEFAULT_SPRING_BOUNCE - SPRING_BOUNCE_MIN)
+                    -bounceOffset / (SPRING_REFERENCE_BOUNCE - SPRING_BOUNCE_MIN)
                 );
                 const shaped = Math.sqrt(t);
                 damping *= 1 + shaped * 1.15;
