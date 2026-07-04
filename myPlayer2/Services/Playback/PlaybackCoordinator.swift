@@ -251,6 +251,68 @@ final class PlaybackCoordinator {
         NowPlayingService.shared.updateNowPlaying(force: true)
     }
 
+    func invalidateCachedLyrics(for trackID: UUID) {
+        if cachedLyricsTrackID == trackID {
+            cachedLyricsTrackID = nil
+            cachedLyricsSignature = nil
+            cachedLyricsText = nil
+        }
+    }
+
+    func forceRefetchLyrics(libraryVM: LibraryViewModel?) {
+        switch activeSource {
+        case .local:
+            guard let track = presentation.localTrack else { return }
+            let trackID = track.id
+            let title = track.title
+            let artist = track.artist.isEmpty ? nil : track.artist
+            let album = track.album.isEmpty ? nil : track.album
+            let duration = track.duration > 0 ? track.duration : nil
+            
+            guard !title.isEmpty else { return }
+            
+            Task { @MainActor [weak self, weak track] in
+                let result = await LyricsSearchHelper.searchAndFetchAutomaticallyMatchedLyrics(
+                    title: title,
+                    artist: artist,
+                    album: album,
+                    duration: duration
+                )
+                
+                guard let self else { return }
+                guard let track, track.id == trackID else { return }
+                
+                guard let ttml = result.ttml, !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    Log.warning("[PlaybackCoordinator] forceRefetchLyrics: failed to fetch automatically matched lyrics or low confidence", category: .playback)
+                    return
+                }
+                
+                track.ttmlLyricText = ttml
+                track.lyricsText = nil
+                track.lyricsFileName = nil
+                
+                if self.playerVM.currentTrack?.id == trackID {
+                    self.cachedLyricsTrackID = nil
+                    self.cachedLyricsSignature = nil
+                    self.refreshPresentation()
+                }
+                
+                if let libraryVM {
+                    await libraryVM.saveTrackEdits(track, mode: .metaAndLyrics, reason: "forceRefetchLyrics")
+                } else {
+                    Log.warning("[PlaybackCoordinator] forceRefetchLyrics: libraryVM was nil, saving track edits locally only (in-memory)", category: .playback)
+                }
+                Log.info("[PlaybackCoordinator] forceRefetchLyrics: successfully re-fetched and applied lyrics for track=\(trackID.uuidString.prefix(8))", category: .playback)
+            }
+            
+        case .appleMusic, .systemNowPlaying:
+            guard let identity = presentation.externalStableKey else { return }
+            ExternalPlaybackMetadataStore.shared.clearAutoLyricsCache(for: identity)
+            invalidateExternalPlaybackResolution()
+            Log.info("[PlaybackCoordinator] forceRefetchLyrics: cleared external lyrics cache and invalidated resolution for identity=\(identity.prefix(8))", category: .playback)
+        }
+    }
+
     func checkSystemNowPlayingAvailability() async -> ExternalPlaybackPermissionState {
         await systemNowPlayingProvider.checkAdapterAvailability()
     }
