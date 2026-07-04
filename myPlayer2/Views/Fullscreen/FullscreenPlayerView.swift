@@ -812,10 +812,11 @@ struct FullscreenPlayerView: View {
                     .allowsHitTesting(false)
             }
         } else if settings.fullscreenArtBackgroundEnabled && currentDisplayContext.hasTrack {
+            let renderingArtworkData = currentRenderingArtworkData
             BKArtBackgroundView(
                 controller: bkController,
                 trackID: currentArtworkTrackID,
-                artworkData: currentDisplayContext.artworkData,
+                artworkData: renderingArtworkData,
                 isPlaying: currentDisplayContext.isPlaying,
                 avoidanceRect: nil,
                 resourceProfile: settings.fullscreen.skinID == "kmgccc.cassette"
@@ -825,6 +826,7 @@ struct FullscreenPlayerView: View {
                 motionProfile: .fullscreenBalanced,
                 initialPalette: fullscreenArtBackgroundSeedPalette,
                 holdPaletteWhenArtworkMissing: currentDisplayContext.isArtworkLoading
+                    && renderingArtworkData == nil
             )
             .ignoresSafeArea()
 
@@ -3841,6 +3843,7 @@ struct FullscreenPlayerView: View {
     private func makeContext(windowSize: CGSize, artworkColumnWidth: CGFloat, fullscreenScale: CGFloat = 1.0) -> SkinContext {
         let display = currentDisplayContext
         let displayArtworkTrackID = display.artworkTrackID ?? display.trackID ?? Self.fallbackExternalTrackID
+        let renderingArtworkData = currentRenderingArtworkData
 
         let trackMeta: SkinContext.TrackMetadata? = display.hasTrack
             ? SkinContext.TrackMetadata(
@@ -3855,7 +3858,7 @@ struct FullscreenPlayerView: View {
                 // presentation-derived checksum would let skins render the held
                 // previous cover under the next track's key and stay stuck on it.
                 artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
-                artworkData: display.artworkData,
+                artworkData: renderingArtworkData,
                 artworkImage: artworkSnapshot?.fullImage,
                 displayedArtworkID: artworkSnapshot?.trackID
             )
@@ -4273,8 +4276,27 @@ struct FullscreenPlayerView: View {
         if let source = playbackCoordinator.presentation.localTrack?.trackArtworkSource(fallbackData: display.artworkData) {
             return "\(trackID.uuidString)-local-\(source.sourceKey)-px:\(preferredArtworkFullImageMaxPixel)"
         }
+        if ArtworkRenderingFallback.shouldUse(
+            for: display.artworkData,
+            isArtworkLoading: display.isArtworkLoading
+        ) {
+            let identity = display.artworkIdentity ?? display.lyricsIdentity ?? trackID.uuidString
+            return "\(trackID.uuidString)-\(identity)-\(ArtworkRenderingFallback.identity(for: trackID))-px:\(preferredArtworkFullImageMaxPixel)"
+        }
         let identity = display.artworkIdentity ?? display.lyricsIdentity ?? trackID.uuidString
         return "\(trackID.uuidString)-\(identity)-\(ArtworkDataFingerprint.sampledString(for: display.artworkData))-px:\(preferredArtworkFullImageMaxPixel)"
+    }
+
+    private var currentRenderingArtworkData: Data? {
+        let display = currentDisplayContext
+        if let artworkData = display.artworkData, !artworkData.isEmpty {
+            return artworkData
+        }
+        let fallbackTrackID = display.artworkTrackID
+        guard artworkSnapshot?.artworkChecksum == ArtworkRenderingFallback.checksum(for: fallbackTrackID) else {
+            return nil
+        }
+        return ArtworkRenderingFallback.data(for: fallbackTrackID)
     }
     
     private func loadArtworkSnapshot() async {
@@ -4297,10 +4319,15 @@ struct FullscreenPlayerView: View {
                 artworkData: artworkData,
                 fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
             )
+        } else if ArtworkRenderingFallback.shouldUse(
+            for: display.artworkData,
+            isArtworkLoading: display.isArtworkLoading
+        ) {
+            snapshot = await ArtworkAssetStore.shared.renderingFallbackSnapshot(
+                trackID: trackID,
+                fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
+            )
         } else {
-            if !display.isArtworkLoading {
-                artworkSnapshot = nil
-            }
             return
         }
         guard !Task.isCancelled else { return }

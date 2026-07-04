@@ -30,6 +30,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
         static let multiselect = NSToolbarItem.Identifier("AppKitMainToolbar.multiselect")
         static let play = NSToolbarItem.Identifier("AppKitMainToolbar.play")
+        static let revealNowPlaying = NSToolbarItem.Identifier("AppKitMainToolbar.revealNowPlaying")
         static let `import` = NSToolbarItem.Identifier("AppKitMainToolbar.import")
         static let homePillGroup = NSToolbarItem.Identifier("AppKitMainToolbar.homePillGroup")
     }
@@ -43,6 +44,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
     private weak var multiselectItem: NSToolbarItem?
     private weak var playItem: NSToolbarItem?
+    private weak var revealNowPlayingItem: NSToolbarItem?
     private weak var importItem: NSToolbarItem?
     private weak var searchItem: NSToolbarItem?
     private weak var searchField: NSSearchField?
@@ -67,6 +69,10 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
     private var currentPlaybackCoordinator: PlaybackCoordinator? {
         appSession?.playbackCoordinator
+    }
+
+    private var currentPlayerVM: PlayerViewModel? {
+        appSession?.playerVM
     }
 
     private lazy var sortMenu: NSMenu = {
@@ -123,6 +129,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         observeEmbeddedFullscreenMode()
         observeLibrarySearchResetTrigger()
         observeToolbarState()
+        observeNowPlayingRevealState()
         observeHomeNavigationState()
         if rebuildLayout {
             applyToolbarLayoutForCurrentState()
@@ -191,6 +198,10 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                 return !(currentLibraryVM?.allTracks.filter { $0.availability != .missing }.isEmpty ?? true)
             }
             return !queueTracks.isEmpty || (hasSelection && !isCollectionSelection)
+        case Identifier.revealNowPlaying:
+            return isLibraryMode
+                && hasLibrary
+                && currentPlayerVM?.currentTrack != nil
         case Identifier.import:
             return isLibraryMode && hasLibrary
         case Identifier.pillGroup:
@@ -318,6 +329,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         case Identifier.pillGroup:
             let multiselectLabel = NSLocalizedString("context.multiselect", comment: "Select")
             let playLabel = NSLocalizedString("context.play_all", comment: "Play All")
+            let revealLabel = "定位正在播放"
             let importLabel = NSLocalizedString("context.import", comment: "Import")
             let multiselectSymbol = currentPageController?.isMultiselectMode == true
                 ? "checkmark.circle.fill"
@@ -330,11 +342,13 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                         ?? NSImage(),
                     NSImage(systemSymbolName: "play.fill", accessibilityDescription: playLabel)
                         ?? NSImage(),
+                    NSImage(systemSymbolName: "scope", accessibilityDescription: revealLabel)
+                        ?? NSImage(),
                     NSImage(systemSymbolName: "plus", accessibilityDescription: importLabel)
                         ?? NSImage()
                 ],
                 selectionMode: .momentary,
-                labels: [multiselectLabel, playLabel, importLabel],
+                labels: [multiselectLabel, playLabel, revealLabel, importLabel],
                 target: self,
                 action: #selector(handlePillGroupAction(_:))
             )
@@ -353,11 +367,16 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                 group.subitems[1].toolTip = playLabel
             }
             if group.subitems.indices.contains(2) {
-                self.importItem = group.subitems[2]
-                group.subitems[2].toolTip = importLabel
+                self.revealNowPlayingItem = group.subitems[2]
+                group.subitems[2].toolTip = revealLabel
+            }
+            if group.subitems.indices.contains(3) {
+                self.importItem = group.subitems[3]
+                group.subitems[3].toolTip = importLabel
             }
 
             syncMultiselectItemPresentation()
+            syncRevealNowPlayingItemPresentation()
             return group
 
         case Identifier.homePillGroup:
@@ -727,7 +746,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             )
         }
 
-        let segmentWidth = max(view.bounds.width / 3, 28)
+        let segmentWidth = max(view.bounds.width / 4, 28)
         return NSRect(
             x: view.bounds.minX,
             y: view.bounds.minY,
@@ -750,7 +769,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             in: rootView,
             matching: { view in
                 guard let control = view as? NSSegmentedControl else { return false }
-                return control.segmentCount == 3
+                return control.segmentCount == 4
             }
         ) as? NSSegmentedControl {
             return (segmentedControl, multiselectAnchorRect(in: segmentedControl))
@@ -882,6 +901,28 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     }
 
     @objc
+    private func handleRevealNowPlaying(_ sender: NSToolbarItem) {
+        guard
+            let libraryVM = currentLibraryVM,
+            let pageController = currentPageController,
+            let playerVM = currentPlayerVM,
+            let track = playerVM.currentTrack
+        else { return }
+
+        let targetSelection = librarySelectionForNowPlayingTrack(
+            track,
+            libraryVM: libraryVM,
+            playerVM: playerVM
+        )
+
+        pageController.requestRevealTrack(track.id, animated: true)
+        appSession?.uiState.showLibrary()
+        libraryVM.selectOrResetCurrentSelection(targetSelection)
+        syncSearchPlaceholder()
+        validateCurrentToolbarVisibleItems()
+    }
+
+    @objc
     private func handleImportToPlaylist(_ sender: NSToolbarItem) {
         guard let libraryVM = currentLibraryVM else { return }
         let contentMode = appSession?.uiState.contentMode ?? .library
@@ -897,6 +938,8 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             handleToggleMultiselect(sender)
         case Identifier.play:
             handlePlayFromToolbar(sender)
+        case Identifier.revealNowPlaying:
+            handleRevealNowPlaying(sender)
         case Identifier.import:
             handleImportToPlaylist(sender)
         default:
@@ -962,6 +1005,10 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         case 1:
             handlePlayFromToolbar(playItem ?? NSToolbarItem(itemIdentifier: Identifier.play))
         case 2:
+            handleRevealNowPlaying(
+                revealNowPlayingItem ?? NSToolbarItem(itemIdentifier: Identifier.revealNowPlaying)
+            )
+        case 3:
             handleImportToPlaylist(importItem ?? NSToolbarItem(itemIdentifier: Identifier.import))
         default:
             break
@@ -997,6 +1044,124 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         }
     }
 
+    private func librarySelectionForNowPlayingTrack(
+        _ track: Track,
+        libraryVM: LibraryViewModel,
+        playerVM: PlayerViewModel
+    ) -> LibrarySelection {
+        if case .librarySelection(let identity) = playerVM.activeLibraryQueueSource,
+           let sourceSelection = librarySelection(fromQueueIdentity: identity, libraryVM: libraryVM),
+           selection(sourceSelection, contains: track, libraryVM: libraryVM) {
+            return sourceSelection
+        }
+
+        if let playlist = libraryVM.playlists.first(where: { playlist in
+            playlist.tracks.contains { $0.id == track.id }
+        }) {
+            return .playlist(playlist.id)
+        }
+
+        return .allSongs
+    }
+
+    private func librarySelection(
+        fromQueueIdentity identity: String,
+        libraryVM: LibraryViewModel
+    ) -> LibrarySelection? {
+        if let playlistID = uuidSuffix(identity, prefixes: [
+            "playlist-",
+            "home-playlist-",
+            "all-playlists-"
+        ]) {
+            return .playlist(playlistID)
+        }
+
+        if identity == "allSongs" {
+            return .allSongs
+        }
+
+        if identity.hasPrefix("home-album-") {
+            return .album(String(identity.dropFirst("home-album-".count)))
+        }
+        if let albumSelection = librarySelection(
+            identity: identity,
+            prefix: "album-",
+            entries: libraryVM.albumEntries,
+            id: \.id,
+            key: \.canonicalKey,
+            makeSelection: { .album($0) }
+        ) {
+            return albumSelection
+        }
+
+        if identity.hasPrefix("home-artist-") {
+            return .artist(String(identity.dropFirst("home-artist-".count)))
+        }
+        if let artistSelection = librarySelection(
+            identity: identity,
+            prefix: "artist-",
+            entries: libraryVM.artistEntries,
+            id: \.id,
+            key: \.canonicalName,
+            makeSelection: { .artist($0) }
+        ) {
+            return artistSelection
+        }
+
+        return nil
+    }
+
+    private func uuidSuffix(_ identity: String, prefixes: [String]) -> UUID? {
+        for prefix in prefixes where identity.hasPrefix(prefix) {
+            let raw = String(identity.dropFirst(prefix.count))
+            if let uuid = UUID(uuidString: raw) {
+                return uuid
+            }
+        }
+        return nil
+    }
+
+    private func librarySelection<Entry>(
+        identity: String,
+        prefix: String,
+        entries: [Entry],
+        id: KeyPath<Entry, UUID>,
+        key: KeyPath<Entry, String>,
+        makeSelection: (String) -> LibrarySelection
+    ) -> LibrarySelection? {
+        guard identity.hasPrefix(prefix) else { return nil }
+        let raw = String(identity.dropFirst(prefix.count))
+        if let entry = entries.first(where: { $0[keyPath: id].uuidString == raw }) {
+            return makeSelection(entry[keyPath: key])
+        }
+        if entries.contains(where: { $0[keyPath: key] == raw }) {
+            return makeSelection(raw)
+        }
+        return nil
+    }
+
+    private func selection(
+        _ selection: LibrarySelection,
+        contains track: Track,
+        libraryVM: LibraryViewModel
+    ) -> Bool {
+        switch selection {
+        case .home, .allSongs:
+            return libraryVM.allTracks.contains { $0.id == track.id }
+        case .playlist(let id):
+            return libraryVM.playlists
+                .first(where: { $0.id == id })?
+                .tracks
+                .contains { $0.id == track.id } == true
+        case .artist(let key):
+            return LibraryNormalization.containsArtist(key, in: track.artist)
+        case .album(let key):
+            return track.albumGroupKey == key
+        case .allPlaylists, .allAlbums, .allArtists:
+            return false
+        }
+    }
+
     private func syncMultiselectItemPresentation() {
         let pageController = currentPageController
         let isOn = pageController?.isMultiselectMode == true
@@ -1005,6 +1170,10 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         multiselectItem?.isEnabled = currentLibraryVM?.currentSelection != .home
             && pageController?.hasMultiselectRowsForCurrentSelection == true
             && pageController?.isSearchFilteringCurrentList != true
+    }
+
+    private func syncRevealNowPlayingItemPresentation() {
+        revealNowPlayingItem?.isEnabled = currentPlayerVM?.currentTrack != nil
     }
 
     private func syncSearchFieldFromModel() {
@@ -1189,6 +1358,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         searchField = nil
         multiselectItem = nil
         playItem = nil
+        revealNowPlayingItem = nil
         importItem = nil
         pillGroupItem = nil
         homePillGroupItem = nil
@@ -1244,7 +1414,10 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                     playItem = group.subitems[1]
                 }
                 if group.subitems.indices.contains(2) {
-                    importItem = group.subitems[2]
+                    revealNowPlayingItem = group.subitems[2]
+                }
+                if group.subitems.indices.contains(3) {
+                    importItem = group.subitems[3]
                 }
 
             case Identifier.homePillGroup:
@@ -1298,6 +1471,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         syncSearchFieldFromModel()
         syncSidebarToggleItemPresentation()
         syncMultiselectItemPresentation()
+        syncRevealNowPlayingItemPresentation()
         syncLyricsToggleItemPresentation()
         syncHomeNavPillPresentation()
     }
@@ -1393,6 +1567,23 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                 self.syncMultiselectItemPresentation()
                 self.validateCurrentToolbarVisibleItems()
                 self.observeToolbarState()
+            }
+        }
+    }
+
+    private func observeNowPlayingRevealState() {
+        guard isCurrentToolbarAttached else { return }
+        guard let playerVM = currentPlayerVM else { return }
+        let generation = attachmentGeneration
+        withObservationTracking {
+            _ = playerVM.currentTrack?.id
+            _ = playerVM.activeLibraryQueueSource
+        } onChange: {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.isCurrentAttachment(generation) else { return }
+                self.syncRevealNowPlayingItemPresentation()
+                self.validateCurrentToolbarVisibleItems()
+                self.observeNowPlayingRevealState()
             }
         }
     }
