@@ -103,6 +103,7 @@ struct NowPlayingHostView: View {
         let displayArtworkTrackID = presentation.artworkDisplayTrackID
             ?? presentation.displayTrackID
             ?? Self.externalArtworkTrackID
+        let renderingArtworkData = currentRenderingArtworkData
 
         let trackMeta: SkinContext.TrackMetadata? = presentation.hasTrack
             ? SkinContext.TrackMetadata(
@@ -119,7 +120,7 @@ struct NowPlayingHostView: View {
                 // the old cover under the new key and stick there. Snapshot-
                 // synced checksum keeps key and image atomic across the switch.
                 artworkChecksum: artworkSnapshot?.artworkChecksum ?? 0,
-                artworkData: presentation.artworkData,
+                artworkData: renderingArtworkData,
                 artworkImage: artworkSnapshot?.fullImage,
                 displayedArtworkID: artworkSnapshot?.trackID
             )
@@ -202,11 +203,43 @@ struct NowPlayingHostView: View {
         if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
             return "local-\(source.sourceKey)-px:\(preferredArtworkFullImageMaxPixel)"
         }
+        if ArtworkRenderingFallback.shouldUse(
+            for: presentation.artworkData,
+            isArtworkLoading: presentation.isArtworkLoading
+        ) {
+            let fallbackTrackID = currentFallbackArtworkTrackID
+            let identity = presentation.artworkIdentity
+                ?? presentation.externalStableKey
+                ?? presentation.localTrack?.id.uuidString
+                ?? presentation.displayTrackID?.uuidString
+                ?? "unknown"
+            return "\(identity)-\(ArtworkRenderingFallback.identity(for: fallbackTrackID))-px:\(preferredArtworkFullImageMaxPixel)"
+        }
         let identity = presentation.artworkIdentity
             ?? presentation.externalStableKey
             ?? presentation.localTrack?.id.uuidString
             ?? "unknown"
         return "\(identity)-\(ArtworkDataFingerprint.sampledString(for: presentation.artworkData))-px:\(preferredArtworkFullImageMaxPixel)"
+    }
+
+    private var currentFallbackArtworkTrackID: UUID {
+        let presentation = playbackCoordinator.presentation
+        return presentation.artworkDisplayTrackID
+            ?? presentation.displayTrackID
+            ?? presentation.localTrack?.id
+            ?? Self.externalArtworkTrackID
+    }
+
+    private var currentRenderingArtworkData: Data? {
+        let presentation = playbackCoordinator.presentation
+        if let artworkData = presentation.artworkData, !artworkData.isEmpty {
+            return artworkData
+        }
+        let fallbackTrackID = currentFallbackArtworkTrackID
+        guard artworkSnapshot?.artworkChecksum == ArtworkRenderingFallback.checksum(for: fallbackTrackID) else {
+            return nil
+        }
+        return ArtworkRenderingFallback.data(for: fallbackTrackID)
     }
     
     private func loadArtworkSnapshot() async {
@@ -232,10 +265,15 @@ struct NowPlayingHostView: View {
                 artworkData: artworkData,
                 fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
             )
+        } else if ArtworkRenderingFallback.shouldUse(
+            for: presentation.artworkData,
+            isArtworkLoading: presentation.isArtworkLoading
+        ) {
+            snapshot = await ArtworkAssetStore.shared.renderingFallbackSnapshot(
+                trackID: expectedTrackID,
+                fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
+            )
         } else {
-            if !presentation.isArtworkLoading {
-                artworkSnapshot = nil
-            }
             return
         }
         guard !Task.isCancelled else { return }

@@ -519,13 +519,14 @@ struct AppKitMainWindowArtBackgroundLayer: View {
                     BKArtBackgroundView(
                         controller: artBackgroundController,
                         trackID: artworkBackgroundTrackID(playbackCoordinator: playbackCoordinator),
-                        artworkData: playbackCoordinator.presentation.artworkData,
+                        artworkData: renderingArtworkData(playbackCoordinator: playbackCoordinator),
                         isPlaying: playbackCoordinator.presentation.isPlaying,
                         resourceProfile: settings.selectedNowPlayingSkinID == "kmgccc.cassette"
                             ? .cassetteForeground
                             : .standard,
                         initialPalette: [themeStore.accentNSColor],
                         holdPaletteWhenArtworkMissing: playbackCoordinator.presentation.isArtworkLoading
+                            && renderingArtworkData(playbackCoordinator: playbackCoordinator) == nil
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .ignoresSafeArea(.container, edges: .all)
@@ -595,12 +596,27 @@ struct AppKitMainWindowArtBackgroundLayer: View {
             : nil
     }
 
+    private func renderingArtworkData(playbackCoordinator: PlaybackCoordinator) -> Data? {
+        let presentation = playbackCoordinator.presentation
+        if let artworkData = presentation.artworkData, !artworkData.isEmpty {
+            return artworkData
+        }
+        guard ArtworkRenderingFallback.shouldUse(
+            for: presentation.artworkData,
+            isArtworkLoading: presentation.isArtworkLoading
+        ) else {
+            return nil
+        }
+        return ArtworkRenderingFallback.data(for: artworkBackgroundTrackID(playbackCoordinator: playbackCoordinator))
+    }
+
     private func makeAppleStyleWindowContext(
         windowSize: CGSize,
         playbackCoordinator: PlaybackCoordinator
     ) -> SkinContext {
         let presentation = playbackCoordinator.presentation
-        let artworkChecksum = ArtworkDataFingerprint.sampledHash(for: presentation.artworkData)
+        let effectiveArtworkData = renderingArtworkData(playbackCoordinator: playbackCoordinator)
+        let artworkChecksum = ArtworkDataFingerprint.sampledHash(for: effectiveArtworkData)
 
         let trackMeta: SkinContext.TrackMetadata? = presentation.hasTrack
             ? SkinContext.TrackMetadata(
@@ -613,7 +629,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
                 album: presentation.album ?? "",
                 duration: presentation.duration,
                 artworkChecksum: artworkChecksum,
-                artworkData: presentation.artworkData,
+                artworkData: effectiveArtworkData,
                 artworkImage: nil,
                 displayedArtworkID: nil
             )

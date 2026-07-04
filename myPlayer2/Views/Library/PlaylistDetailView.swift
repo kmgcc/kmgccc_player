@@ -38,6 +38,8 @@ struct PlaylistDetailView: View {
     @State private var scrollFadeTopChromeInset: CGFloat = 0
     @State private var lifecycleToken = UUID()
 
+    private let revealScrollAnchor = UnitPoint(x: 0.5, y: 0.18)
+
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("PlaylistDetailView.body")
         let _ = TintTimelineProbe.noteRootConsumer("PlaylistDetailView.body")
@@ -299,7 +301,7 @@ struct PlaylistDetailView: View {
                 topChromeInset: scrollFadeTopChromeInset
             )
             .offset(y: -scrollFadeTopChromeInset)
-            .scrollPosition(id: scrollBinding, anchor: .top)
+            .scrollPosition(id: scrollBinding, anchor: revealScrollAnchor)
         }
     }
 
@@ -353,7 +355,7 @@ struct PlaylistDetailView: View {
             )
             .coordinateSpace(name: "detailScroll")
             .offset(y: -scrollFadeTopChromeInset)
-            .scrollPosition(id: scrollBinding, anchor: .top)
+            .scrollPosition(id: scrollBinding, anchor: revealScrollAnchor)
         }
     }
 

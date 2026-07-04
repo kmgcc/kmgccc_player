@@ -62,6 +62,10 @@ final class PlaylistPageController {
         static let haloSeedPixelSide: Int = 128
     }
 
+    private enum RevealScroll {
+        static let animation: Animation = .timingCurve(0.22, 0.88, 0.24, 1.0, duration: 0.42)
+    }
+
     private(set) var phase: PlaylistPagePhase = .idle
     private(set) var page: PlaylistPageModel?
     private(set) var isSelectionTransitioning = false
@@ -152,6 +156,10 @@ final class PlaylistPageController {
     private var headerHeavyWorkBaselineUptime: TimeInterval = 0
     @ObservationIgnored
     private var hasObservedPlaybackTrackChangeSinceBaseline = false
+    @ObservationIgnored
+    private var pendingRevealTrackID: UUID?
+    @ObservationIgnored
+    private var pendingRevealAnimated = true
 
     func bind(
         libraryVM: LibraryViewModel,
@@ -244,6 +252,13 @@ final class PlaylistPageController {
         guard !isManualTrackReorderActive else { return }
         listScrollPositionID = trackID
         scheduleSnapshotUpdate()
+    }
+
+    func requestRevealTrack(_ trackID: UUID, animated: Bool) {
+        guard !isManualTrackReorderActive else { return }
+        pendingRevealTrackID = trackID
+        pendingRevealAnimated = animated
+        revealPendingTrackIfPossible()
     }
 
     func refreshHeaderArtwork() {
@@ -892,7 +907,9 @@ final class PlaylistPageController {
         isSelectionTransitioning = false
         phase = .ready
 
-        if restoreScroll {
+        if revealPendingTrackIfPossible() {
+            // The explicit reveal request owns the scroll target for this rebuild.
+        } else if restoreScroll {
             restoreScrollIfNeeded()
         } else if listScrollPositionID != nil, !(pageModel.rows.contains { $0.id == listScrollPositionID }) {
             listScrollPositionID = nil
@@ -1720,6 +1737,30 @@ final class PlaylistPageController {
         Task { @MainActor in
             self.listScrollPositionID = restoreID
         }
+    }
+
+    @discardableResult
+    private func revealPendingTrackIfPossible() -> Bool {
+        guard let targetID = pendingRevealTrackID else { return false }
+        guard let page else { return false }
+
+        guard page.rows.contains(where: { $0.id == targetID }) else {
+            return false
+        }
+
+        let applyReveal = {
+            self.listScrollPositionID = targetID
+        }
+        if pendingRevealAnimated {
+            withAnimation(RevealScroll.animation) {
+                applyReveal()
+            }
+        } else {
+            applyReveal()
+        }
+        pendingRevealTrackID = nil
+        scheduleSnapshotUpdate()
+        return true
     }
 
     private func updateLibrarySnapshot() {
