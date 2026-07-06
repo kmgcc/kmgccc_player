@@ -21,7 +21,10 @@ struct SidebarView: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(ImportEnrichmentService.self) private var importEnrichmentService
+    @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LyricsViewModel.self) private var lyricsVM
+    @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
@@ -398,6 +401,12 @@ struct SidebarView: View {
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
+                .environment(settings)
+                .environment(libraryVM)
+                .environment(playerVM)
+                .environment(playbackCoordinator)
+                .environment(lyricsVM)
+                .environment(ledMeterProvider)
                 .environmentObject(themeStore)
         }
         .sheet(isPresented: $showingPlaylistSheet) {

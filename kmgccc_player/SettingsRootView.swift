@@ -10,6 +10,7 @@ import SwiftUI
 struct SettingsRootView: View {
     let libraryVM: LibraryViewModel
     let playerVM: PlayerViewModel
+    let playbackCoordinator: PlaybackCoordinator
     let lyricsVM: LyricsViewModel
     let ledMeterProvider: LEDMeterServiceProvider
 
@@ -21,6 +22,7 @@ struct SettingsRootView: View {
             .environment(settings)
             .environment(libraryVM)
             .environment(playerVM)
+            .environment(playbackCoordinator)
             .environment(lyricsVM)
             .environment(ledMeterProvider)
             .environmentObject(themeStore)

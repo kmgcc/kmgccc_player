@@ -96,20 +96,22 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             LibraryDiskScanner().scanAll()
         }.value
 
-        let tracks = snapshot.trackMetas.map { buildTrack(from: $0) }
-        let tracksById = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
+        let trackMetas = uniqueTrackMetas(snapshot.trackMetas)
+        let tracks = trackMetas.map { buildTrack(from: $0) }
+        let tracksById = trackDictionaryByID(tracks)
 
         let loadedPlaylists: [Playlist] = snapshot.playlistSidecars.map { sidecar in
             let resolvedTrackIDs: [UUID]
             let addedAtByTrackID: [UUID: Date]
 
             if sidecar.schemaVersion >= 2 {
-                resolvedTrackIDs = sidecar.items.map(\.trackID)
-                addedAtByTrackID = Dictionary(uniqueKeysWithValues: sidecar.items.map {
+                let uniqueItems = uniquePlaylistItems(sidecar.items, playlistID: sidecar.id)
+                resolvedTrackIDs = uniqueItems.map(\.trackID)
+                addedAtByTrackID = Dictionary(uniqueKeysWithValues: uniqueItems.map {
                     ($0.trackID, $0.addedAt)
                 })
             } else {
-                resolvedTrackIDs = sidecar.trackIDs
+                resolvedTrackIDs = uniquePlaylistTrackIDs(sidecar.trackIDs, playlistID: sidecar.id)
                 addedAtByTrackID = Dictionary(uniqueKeysWithValues: resolvedTrackIDs.map { trackID in
                     let fallback = tracksById[trackID]?.importedAt ?? tracksById[trackID]?.addedAt
                         ?? Date()
@@ -708,6 +710,84 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     // MARK: - Private Helpers
+
+    private func uniqueTrackMetas(_ metas: [ScannedTrackMeta]) -> [ScannedTrackMeta] {
+        var seen = Set<UUID>()
+        var unique: [ScannedTrackMeta] = []
+        unique.reserveCapacity(metas.count)
+
+        for meta in metas {
+            guard seen.insert(meta.id).inserted else {
+                Log.warning(
+                    "[LibraryReload] skipped duplicate track id=\(meta.id) folder=\(meta.folderURL.path)",
+                    category: .library
+                )
+                continue
+            }
+            unique.append(meta)
+        }
+
+        return unique
+    }
+
+    private func trackDictionaryByID(_ tracks: [Track]) -> [UUID: Track] {
+        var result: [UUID: Track] = [:]
+        result.reserveCapacity(tracks.count)
+
+        for track in tracks {
+            guard result[track.id] == nil else {
+                Log.warning(
+                    "[LibraryReload] ignored duplicate in-memory track id=\(track.id)",
+                    category: .library
+                )
+                continue
+            }
+            result[track.id] = track
+        }
+
+        return result
+    }
+
+    private func uniquePlaylistItems(
+        _ items: [PlaylistItemSidecar],
+        playlistID: UUID
+    ) -> [PlaylistItemSidecar] {
+        var seen = Set<UUID>()
+        var unique: [PlaylistItemSidecar] = []
+        unique.reserveCapacity(items.count)
+
+        for item in items {
+            guard seen.insert(item.trackID).inserted else {
+                Log.warning(
+                    "[LibraryReload] skipped duplicate playlist item playlist=\(playlistID) track=\(item.trackID)",
+                    category: .library
+                )
+                continue
+            }
+            unique.append(item)
+        }
+
+        return unique
+    }
+
+    private func uniquePlaylistTrackIDs(_ trackIDs: [UUID], playlistID: UUID) -> [UUID] {
+        var seen = Set<UUID>()
+        var unique: [UUID] = []
+        unique.reserveCapacity(trackIDs.count)
+
+        for trackID in trackIDs {
+            guard seen.insert(trackID).inserted else {
+                Log.warning(
+                    "[LibraryReload] skipped duplicate legacy playlist item playlist=\(playlistID) track=\(trackID)",
+                    category: .library
+                )
+                continue
+            }
+            unique.append(trackID)
+        }
+
+        return unique
+    }
 
     private func buildTrack(from meta: ScannedTrackMeta) -> Track {
         let audioURL = LocalLibraryPaths.libraryURL(from: meta.libraryRelativePath)

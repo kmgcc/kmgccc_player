@@ -136,6 +136,7 @@
 				9351188E2F3231C500766A5F /* Sources */,
 				9351188F2F3231C500766A5F /* Frameworks */,
 				935118902F3231C500766A5F /* Resources */,
+				9396ADAC2FA12C0100000003 /* Embed MediaRemoteAdapter framework */,
 				93D91A122FA5000000010001 /* Copy QQMusic helper */,
 				93D91A132FA5000000010002 /* Copy SACAD helper */,
 			);
@@ -220,6 +221,26 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		9396ADAC2FA12C0100000003 /* Embed MediaRemoteAdapter framework */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/kmgccc_player/Resources/mediaremote-adapter/build/MediaRemoteAdapter.framework",
+			);
+			name = "Embed MediaRemoteAdapter framework";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/MediaRemoteAdapter.framework",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/kmgccc_player/Resources/mediaremote-adapter/build/MediaRemoteAdapter.framework\"\nDST_DIR=\"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\nDST=\"${DST_DIR}/MediaRemoteAdapter.framework\"\nif [ ! -d \"${SRC}\" ]; then\n  echo \"error: MediaRemoteAdapter.framework missing: ${SRC}\"\n  exit 1\nfi\nmkdir -p \"${DST_DIR}\"\nrm -rf \"${DST}\"\nCOPYFILE_DISABLE=1 /usr/bin/ditto \"${SRC}\" \"${DST}\"\n/usr/bin/xattr -cr \"${DST}\" 2>/dev/null || true\n/usr/bin/codesign --force --deep --sign - \"${DST}\" >/dev/null 2>&1 || true\n";
+		};
 		93D91A122FA5000000010001 /* Copy QQMusic helper */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -556,9 +577,9 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				AUTOMATION_APPLE_EVENTS = NO;
-				CODE_SIGN_ENTITLEMENTS = kmgccc_player/kmgccc_player.entitlements;
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_ENTITLEMENTS = kmgccc_player/kmgccc_player.release.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 7;
 				DEAD_CODE_STRIPPING = YES;
@@ -613,6 +634,7 @@
 				MARKETING_VERSION = 2.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.player;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				REGISTER_APP_GROUPS = YES;
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
 				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
