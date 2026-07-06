@@ -207,7 +207,7 @@ final class AppleMusicBridge: @unchecked Sendable {
         guard isMusicAppRunning() else { return nil }
 
         let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("myPlayer2-am-artwork-\(UUID().uuidString)")
+            .appendingPathComponent("kmgccc_player-am-artwork-\(UUID().uuidString)")
             .appendingPathExtension("art")
         defer {
             try? FileManager.default.removeItem(at: tempURL)

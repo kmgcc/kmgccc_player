@@ -1,6 +1,6 @@
 //
 //  SpectrumRecorder.swift
-//  myPlayer2
+//  kmgccc_player
 //
 //  Development tool: records real app spectrum output from a local audio file.
 //  Run with KMGCCC_RECORD_SPECTRUM=1 to regenerate SpectrumFrames.swift.
@@ -103,7 +103,7 @@ final class SpectrumRecorder {
         ledFrames: [LEDMeterMetrics],
         audioFrames: [AudioMetrics]
     ) {
-        let dstPath = "/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Models/SpectrumFrames.swift"
+        let dstPath = "/Users/kmg/Documents/vscode/player/myPlayer2/kmgccc_player/Models/SpectrumFrames.swift"
 
         let frameCount = waveFrames.count
         let waveBandCount = 9
@@ -118,7 +118,7 @@ final class SpectrumRecorder {
         var lines: [String] = []
         lines.append("//")
         lines.append("//  SpectrumFrames.swift")
-        lines.append("//  myPlayer2")
+        lines.append("//  kmgccc_player")
         lines.append("//")
         lines.append("//  Auto-generated from real app spectrum chain playback.")
         lines.append("//  Source: Tabata Songs - Tabata Wod.mp3 [15s-35s]")

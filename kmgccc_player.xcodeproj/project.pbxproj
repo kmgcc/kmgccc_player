@@ -30,48 +30,29 @@
 		933AAE412F3CCCDF0081B59C /* BKThemes */ = {isa = PBXFileReference; lastKnownFileType = folder; path = BKThemes; sourceTree = "<group>"; };
 		9340EE0F2FA6000000010001 /* EncryptedArtAssets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = EncryptedArtAssets; sourceTree = "<group>"; };
 		935118922F3231C500766A5F /* kmgccc_player.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = kmgccc_player.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		9351198D2F33149A00766A5F /* AMLL */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMLL; path = myPlayer2/Resources/AMLL; sourceTree = "<group>"; };
-		9396ADAB2FA12C0100000001 /* mediaremote-adapter */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "mediaremote-adapter"; path = "myPlayer2/Resources/mediaremote-adapter"; sourceTree = "<group>"; };
+		9351198D2F33149A00766A5F /* AMLL */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMLL; path = kmgccc_player/Resources/AMLL; sourceTree = "<group>"; };
+		9396ADAB2FA12C0100000001 /* mediaremote-adapter */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "mediaremote-adapter"; path = "kmgccc_player/Resources/mediaremote-adapter"; sourceTree = "<group>"; };
 		93CF3F822F344E9F0004C8E3 /* lddc-server */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "lddc-server"; path = "Tools/lddc-server"; sourceTree = "<group>"; };
-		93D91A102FA5000000010001 /* Tools */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Tools; path = myPlayer2/Resources/Tools; sourceTree = "<group>"; };
+		93D91A102FA5000000010001 /* Tools */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Tools; path = kmgccc_player/Resources/Tools; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		9351197F2F33130A00766A5F /* Exceptions for "myPlayer2" folder in "kmgccc_player" target */ = {
+		9351197F2F33130A00766A5F /* Exceptions for "kmgccc_player" folder in "kmgccc_player" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				Resources/.DS_Store,
-				"Resources/AMLL/amll-background.js",
-				"Resources/AMLL/amll-core.js",
-				"Resources/AMLL/amll-lyric.js",
-				Resources/AMLL/background.html,
-				Resources/AMLL/bridge.js,
-				Resources/AMLL/index.html,
-				Resources/AMLL/sample.ttml,
-				Resources/AMLL/style.css,
-				"Resources/mediaremote-adapter/bin/mediaremote-adapter.pl",
-				"Resources/mediaremote-adapter/build/MediaRemoteAdapter.framework",
-				"Resources/mediaremote-adapter/build/MediaRemoteAdapterTestClient",
-				"Resources/mediaremote-adapter/LICENSE",
-				"Resources/mediaremote-adapter/README.md",
-				"Resources/Tools/qqmusic-helper/_internal 2.bundle",
-				"Resources/Tools/qqmusic-helper/build-universal.sh",
-				"Resources/Tools/qqmusic-helper/main.py",
-				"Resources/Tools/qqmusic-helper/requirements.txt",
-				Resources/Tools/sacad/sacad,
 			);
 			target = 935118912F3231C500766A5F /* kmgccc_player */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		935118942F3231C500766A5F /* myPlayer2 */ = {
+		935118942F3231C500766A5F /* kmgccc_player */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				9351197F2F33130A00766A5F /* Exceptions for "myPlayer2" folder in "kmgccc_player" target */,
+				9351197F2F33130A00766A5F /* Exceptions for "kmgccc_player" folder in "kmgccc_player" target */,
 			);
-			path = myPlayer2;
+			path = kmgccc_player;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -104,7 +85,7 @@
 				93D91A102FA5000000010001 /* Tools */,
 				9351198D2F33149A00766A5F /* AMLL */,
 				9396ADAB2FA12C0100000001 /* mediaremote-adapter */,
-				935118942F3231C500766A5F /* myPlayer2 */,
+				935118942F3231C500766A5F /* kmgccc_player */,
 				935118932F3231C500766A5F /* Products */,
 				93EBF7BA2F8A113D007F15E3 /* Recovered References */,
 			);
@@ -164,13 +145,13 @@
 				933AAE3E2F3CCB9C0081B59C /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				935118942F3231C500766A5F /* myPlayer2 */,
+				935118942F3231C500766A5F /* kmgccc_player */,
 			);
 			name = kmgccc_player;
 			packageProductDependencies = (
 				AA0000000000000000000002 /* WhatsNewKit */,
 			);
-			productName = myPlayer2;
+			productName = kmgccc_player;
 			productReference = 935118922F3231C500766A5F /* kmgccc_player.app */;
 			productType = "com.apple.product-type.application";
 		};
@@ -247,8 +228,8 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/qqmusic-helper",
-				"$(PROJECT_DIR)/myPlayer2/Resources/Tools/qqmusic-helper/_internal.bundle",
+				"$(PROJECT_DIR)/kmgccc_player/Resources/Tools/qqmusic-helper/qqmusic-helper",
+				"$(PROJECT_DIR)/kmgccc_player/Resources/Tools/qqmusic-helper/_internal.bundle",
 			);
 			name = "Copy QQMusic helper";
 			outputFileListPaths = (
@@ -260,7 +241,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
-			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/myPlayer2/Resources/Tools/qqmusic-helper\"\nDST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools/qqmusic-helper\"\nAPP=\"${TARGET_BUILD_DIR}/${WRAPPER_NAME}\"\nclean_xattrs() {\n  local root=\"$1\"\n  while IFS= read -r -d '' item; do\n    /usr/bin/xattr -d com.apple.FinderInfo \"${item}\" 2>/dev/null || true\n    /usr/bin/xattr -d 'com.apple.fileprovider.fpfs#P' \"${item}\" 2>/dev/null || true\n    /usr/bin/xattr -d com.apple.ResourceFork \"${item}\" 2>/dev/null || true\n  done < <(/usr/bin/find \"${root}\" -print0)\n  /usr/bin/xattr -cr \"${root}\" 2>/dev/null || true\n}\nif [ ! -x \"${SRC}/qqmusic-helper\" ]; then\n  echo \"warning: QQMusic helper binary missing or not executable: ${SRC}/qqmusic-helper\"\n  exit 0\nfi\nmkdir -p \"${DST}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}/qqmusic-helper\" \"${DST}/qqmusic-helper\"\nif [ -d \"${SRC}/_internal.bundle\" ]; then\n  mkdir -p \"${DST}/_internal.bundle\"\n  COPYFILE_DISABLE=1 /bin/cp -R \"${SRC}/_internal.bundle/.\" \"${DST}/_internal.bundle/\"\nfi\nclean_xattrs \"${DST}\"\nchmod 755 \"${DST}/qqmusic-helper\"\ncodesign --force --deep --sign - \"${DST}/qqmusic-helper\" >/dev/null 2>&1 || true\nclean_xattrs \"${APP}\"\n";
+			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/kmgccc_player/Resources/Tools/qqmusic-helper\"\nDST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools/qqmusic-helper\"\nAPP=\"${TARGET_BUILD_DIR}/${WRAPPER_NAME}\"\nclean_xattrs() {\n  local root=\"$1\"\n  while IFS= read -r -d '' item; do\n    /usr/bin/xattr -d com.apple.FinderInfo \"${item}\" 2>/dev/null || true\n    /usr/bin/xattr -d 'com.apple.fileprovider.fpfs#P' \"${item}\" 2>/dev/null || true\n    /usr/bin/xattr -d com.apple.ResourceFork \"${item}\" 2>/dev/null || true\n  done < <(/usr/bin/find \"${root}\" -print0)\n  /usr/bin/xattr -cr \"${root}\" 2>/dev/null || true\n}\nif [ ! -x \"${SRC}/qqmusic-helper\" ]; then\n  echo \"warning: QQMusic helper binary missing or not executable: ${SRC}/qqmusic-helper\"\n  exit 0\nfi\nmkdir -p \"${DST}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}/qqmusic-helper\" \"${DST}/qqmusic-helper\"\nif [ -d \"${SRC}/_internal.bundle\" ]; then\n  mkdir -p \"${DST}/_internal.bundle\"\n  COPYFILE_DISABLE=1 /bin/cp -R \"${SRC}/_internal.bundle/.\" \"${DST}/_internal.bundle/\"\nfi\nclean_xattrs \"${DST}\"\nchmod 755 \"${DST}/qqmusic-helper\"\ncodesign --force --deep --sign - \"${DST}/qqmusic-helper\" >/dev/null 2>&1 || true\nclean_xattrs \"${APP}\"\n";
 		};
 		93D91A132FA5000000010002 /* Copy SACAD helper */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -270,7 +251,7 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(PROJECT_DIR)/myPlayer2/Resources/Tools/sacad/sacad",
+				"$(PROJECT_DIR)/kmgccc_player/Resources/Tools/sacad/sacad",
 			);
 			name = "Copy SACAD helper";
 			outputFileListPaths = (
@@ -280,7 +261,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
-			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/myPlayer2/Resources/Tools/sacad/sacad\"\nDST_DIR=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools/sacad\"\nDST=\"${DST_DIR}/sacad\"\nif [ ! -x \"${SRC}\" ]; then\n  echo \"error: SACAD arm64 binary missing or not executable: ${SRC}\"\n  exit 1\nfi\nmkdir -p \"${DST_DIR}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}\" \"${DST}\"\n/usr/bin/xattr -cr \"${DST}\" 2>/dev/null || true\nchmod 755 \"${DST}\"\n/usr/bin/codesign --force --sign - \"${DST}\" >/dev/null 2>&1 || true\n";
+			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/kmgccc_player/Resources/Tools/sacad/sacad\"\nDST_DIR=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools/sacad\"\nDST=\"${DST_DIR}/sacad\"\nif [ ! -x \"${SRC}\" ]; then\n  echo \"error: SACAD arm64 binary missing or not executable: ${SRC}\"\n  exit 1\nfi\nmkdir -p \"${DST_DIR}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}\" \"${DST}\"\n/usr/bin/xattr -cr \"${DST}\" 2>/dev/null || true\nchmod 755 \"${DST}\"\n/usr/bin/codesign --force --sign - \"${DST}\" >/dev/null 2>&1 || true\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -493,7 +474,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				AUTOMATION_APPLE_EVENTS = NO;
-				CODE_SIGN_ENTITLEMENTS = myPlayer2/myPlayer2.entitlements;
+				CODE_SIGN_ENTITLEMENTS = kmgccc_player/kmgccc_player.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -535,10 +516,10 @@
 				);
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/myPlayer2/Resources/mediaremote-adapter/build",
+					"$(PROJECT_DIR)/kmgccc_player/Resources/mediaremote-adapter/build",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = myPlayer2/Info.plist;
+				INFOPLIST_FILE = kmgccc_player/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = kmgccc_player;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -575,7 +556,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				AUTOMATION_APPLE_EVENTS = NO;
-				CODE_SIGN_ENTITLEMENTS = myPlayer2/myPlayer2.entitlements;
+				CODE_SIGN_ENTITLEMENTS = kmgccc_player/kmgccc_player.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -616,10 +597,10 @@
 				);
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(PROJECT_DIR)/myPlayer2/Resources/mediaremote-adapter/build",
+					"$(PROJECT_DIR)/kmgccc_player/Resources/mediaremote-adapter/build",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = myPlayer2/Info.plist;
+				INFOPLIST_FILE = kmgccc_player/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = kmgccc_player;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";

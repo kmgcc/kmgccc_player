@@ -18,7 +18,7 @@ NC='\033[0m' # No Color
 # Test directories
 TEST_DIR="/Users/kmg/Documents/vscode/player/myPlayer2/LDDC-main/LDDC_Fetch_Core/examples/out_separate"
 SWIFT_DIR="/Users/kmg/Documents/vscode/player/myPlayer2"
-PYTHON_DIR="/Users/kmg/Documents/vscode/player/myPlayer2/myPlayer2/Resources"
+PYTHON_DIR="/Users/kmg/Documents/vscode/player/myPlayer2/kmgccc_player/Resources"
 OUTPUT_DIR="/tmp/lrc_test_output"
 
 # Create output directories

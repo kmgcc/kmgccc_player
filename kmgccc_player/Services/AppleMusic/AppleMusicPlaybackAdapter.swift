@@ -155,7 +155,7 @@ final class AppleMusicPlaybackAdapter {
     private let libraryVM: LibraryViewModel
     private let artworkResolver: AppleMusicArtworkResolver
     private let metadataStore: ExternalPlaybackMetadataStore
-    private let pollQueue = DispatchQueue(label: "myPlayer2.applemusic.poll", qos: .utility)
+    private let pollQueue = DispatchQueue(label: "kmgccc_player.applemusic.poll", qos: .utility)
     private let temporaryUnavailableThreshold = 2
     private let disconnectedFailureThreshold = 8
     private let processMissingDisconnectThreshold = 3

@@ -78,7 +78,7 @@ enum ColorGoldenMasterLyricsParity {
         lines.append("legacy_policy: production_lyrics_legacy")
         lines.append("candidate_policy: \(candidatePolicy)")
         lines.append("strict_baseline: unchanged")
-        lines.append("adapter_source: myPlayer2/Resources/AMLL/index.html")
+        lines.append("adapter_source: kmgccc_player/Resources/AMLL/index.html")
         lines.append("summary: \(summary.statusLine)")
         lines.append("")
         lines.append([

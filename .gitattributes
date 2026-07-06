@@ -2,7 +2,7 @@
 # Documentation: https://github.com/github/linguist/blob/master/docs/overrides.md
 
 # AMLL runtime resources
-myPlayer2/Resources/AMLL/** linguist-vendored
+kmgccc_player/Resources/AMLL/** linguist-vendored
 
 # AMLL full source project
 applemusic-like-lyrics-kmgcccplayer-integration/** linguist-vendored
@@ -10,4 +10,4 @@ applemusic-like-lyrics-kmgcccplayer-integration/** linguist-vendored
 LDDC_Fetch_Core/** linguist-vendored
 
 # External Python helper tools
-myPlayer2/Resources/Tools/qqmusic-helper/** linguist-vendored
+kmgccc_player/Resources/Tools/qqmusic-helper/** linguist-vendored

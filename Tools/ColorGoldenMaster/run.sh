@@ -27,18 +27,18 @@ xcrun --sdk macosx swiftc \
   "${SCRIPT_DIR}/Sources/ColorGoldenMasterReadabilityParity.swift" \
   "${SCRIPT_DIR}/Sources/ColorGoldenMasterSnapshot.swift" \
   "${SCRIPT_DIR}/Sources/ColorGoldenMasterMain.swift" \
-  "myPlayer2/Utilities/ColorMath.swift" \
-  "myPlayer2/Utilities/OKColor.swift" \
-  "myPlayer2/Utilities/AccentColorPolicy.swift" \
-  "myPlayer2/Utilities/ColorRenderingAdapter.swift" \
-  "myPlayer2/Utilities/ColorSystemTokens.swift" \
-  "myPlayer2/Utilities/ArtworkColorAnalysis.swift" \
-  "myPlayer2/Utilities/ArtworkColorExtractor.swift" \
-  "myPlayer2/Utilities/SemanticPalette.swift" \
-  "myPlayer2/Utilities/LEDColorResolver.swift" \
-  "myPlayer2/Views/NowPlaying/BKExtractedPalettePolicy.swift" \
-  "myPlayer2/Views/NowPlaying/BKColorEngine.swift" \
-  "myPlayer2/Views/NowPlaying/BKPerceptualColorPolicy.swift" \
+  "kmgccc_player/Utilities/ColorMath.swift" \
+  "kmgccc_player/Utilities/OKColor.swift" \
+  "kmgccc_player/Utilities/AccentColorPolicy.swift" \
+  "kmgccc_player/Utilities/ColorRenderingAdapter.swift" \
+  "kmgccc_player/Utilities/ColorSystemTokens.swift" \
+  "kmgccc_player/Utilities/ArtworkColorAnalysis.swift" \
+  "kmgccc_player/Utilities/ArtworkColorExtractor.swift" \
+  "kmgccc_player/Utilities/SemanticPalette.swift" \
+  "kmgccc_player/Utilities/LEDColorResolver.swift" \
+  "kmgccc_player/Views/NowPlaying/BKExtractedPalettePolicy.swift" \
+  "kmgccc_player/Views/NowPlaying/BKColorEngine.swift" \
+  "kmgccc_player/Views/NowPlaying/BKPerceptualColorPolicy.swift" \
   -o "${BIN}"
 
 exec "${BIN}" "$@"
