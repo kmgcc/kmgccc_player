@@ -196,10 +196,10 @@ final class LDDCServerManager: ObservableObject {
             urls.append(url)
         }
 
-        // Path 2: myPlayer2/Resources/Tools (Xcode might preserve structure)
+        // Path 2: kmgccc_player/Resources/Tools (Xcode might preserve structure)
         if let url = Bundle.main.url(
             forResource: "lddc-server", withExtension: nil,
-            subdirectory: "myPlayer2/Resources/Tools")
+            subdirectory: "kmgccc_player/Resources/Tools")
         {
             urls.append(url)
         }
@@ -216,7 +216,7 @@ final class LDDCServerManager: ObservableObject {
             let candidates = [
                 "\(resourcePath)/Tools/lddc-server",
                 "\(resourcePath)/lddc-server",
-                "\(resourcePath)/myPlayer2/Resources/Tools/lddc-server",
+                "\(resourcePath)/kmgccc_player/Resources/Tools/lddc-server",
             ]
             for candidate in candidates {
                 if FileManager.default.fileExists(atPath: candidate) {
@@ -228,11 +228,11 @@ final class LDDCServerManager: ObservableObject {
         // Path 5: Development paths
         let devRoot =
             Bundle.main.bundlePath
-            .replacingOccurrences(of: "/Build/Products/Debug/myPlayer2.app", with: "")
-            .replacingOccurrences(of: "/myPlayer2.app", with: "")
+            .replacingOccurrences(of: "/Build/Products/Debug/kmgccc_player.app", with: "")
+            .replacingOccurrences(of: "/kmgccc_player.app", with: "")
 
         let devCandidates = [
-            "\(devRoot)/myPlayer2/Resources/Tools/lddc-server",
+            "\(devRoot)/kmgccc_player/Resources/Tools/lddc-server",
             "\(devRoot)/LDDC_Fetch_Core/dist/lddc-server",
         ]
         for candidate in devCandidates {

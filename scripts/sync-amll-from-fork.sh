@@ -4,7 +4,7 @@ set -euo pipefail
 APP_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_AMLL_SOURCE="$APP_REPO_ROOT/applemusic-like-lyrics-kmgcccplayer-integration"
 AMLL_SOURCE="${AMLL_SOURCE:-$DEFAULT_AMLL_SOURCE}"
-APP_AMLL_DIR="$APP_REPO_ROOT/myPlayer2/Resources/AMLL"
+APP_AMLL_DIR="$APP_REPO_ROOT/kmgccc_player/Resources/AMLL"
 
 if [[ ! -e "$AMLL_SOURCE/.git" ]]; then
   echo "AMLL source repo not found: $AMLL_SOURCE" >&2

@@ -1,7 +1,7 @@
 #!/usr/bin/env swift
 //
 //  MetadataMatchScorerTests.swift
-//  myPlayer2/Tests
+//  kmgccc_player/Tests
 //
 //  Standalone Swift script: run with `swift MetadataMatchScorerTests.swift`
 //  Tests the short-title matching gate introduced to prevent errors like

@@ -1,10 +1,10 @@
 //
 //  LRCConverterServiceRegressionTests.swift
-//  myPlayer2/Tests
+//  kmgccc_player/Tests
 //
 //  Standalone regression checks for LRCConverterService.
 //  Run with:
-//    swiftc -parse-as-library myPlayer2/Services/LDDC/LRCConverterService.swift Tests/LRCConverterServiceRegressionTests.swift -o /tmp/lrc_regression && /tmp/lrc_regression
+//    swiftc -parse-as-library kmgccc_player/Services/LDDC/LRCConverterService.swift Tests/LRCConverterServiceRegressionTests.swift -o /tmp/lrc_regression && /tmp/lrc_regression
 //
 
 import Foundation

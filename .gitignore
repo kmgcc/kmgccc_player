@@ -8,7 +8,7 @@ docs/
 /BKThemes/
 # Migrated xcassets and cassette skin source images are local master art assets.
 # Ship encrypted EncryptedArtAssets/*.kmgasset instead. Runtime audio assets
-# belong under myPlayer2/Resources/Audio/ and must remain tracked.
+# belong under kmgccc_player/Resources/Audio/ and must remain tracked.
 /PrivateArtSources/
 # Encryption tools, allowlist, and manifest live in PrivateArtSources/ sub-repo.
 scripts/encrypt_art_assets.swift
@@ -27,11 +27,11 @@ GEMINI.md
 kmgccc_player_demo.pptx
 scan_ui.py
 ui_candidates.txt
-myPlayer2/scan_ui.py
-myPlayer2/ui_candidates.txt
+kmgccc_player/scan_ui.py
+kmgccc_player/ui_candidates.txt
 # Local asset catalog masters are ignored after the image-art encryption
 # migration. Do not store runtime audio resources here.
-myPlayer2/Assets.xcassets/
+kmgccc_player/Assets.xcassets/
 
 # Tool working directories
 .opencode/
@@ -71,11 +71,11 @@ __pycache__/
 env/
 dist/
 *.spec
-myPlayer2/Resources/Tools/qqmusic-helper/.venv/
-myPlayer2/Resources/Tools/qqmusic-helper/.build-arm64/
-myPlayer2/Resources/Tools/qqmusic-helper/.build-universal/
-myPlayer2/Resources/Tools/qqmusic-helper/qqmusic-helper
-myPlayer2/Resources/Tools/qqmusic-helper/_internal.bundle/
+kmgccc_player/Resources/Tools/qqmusic-helper/.venv/
+kmgccc_player/Resources/Tools/qqmusic-helper/.build-arm64/
+kmgccc_player/Resources/Tools/qqmusic-helper/.build-universal/
+kmgccc_player/Resources/Tools/qqmusic-helper/qqmusic-helper
+kmgccc_player/Resources/Tools/qqmusic-helper/_internal.bundle/
 .qqmusic-helper-venv/
 
 # Tools / Binary distributions

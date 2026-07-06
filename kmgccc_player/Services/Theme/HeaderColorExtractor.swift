@@ -63,7 +63,7 @@ final class HeaderColorExtractor {
     private let cache = NSCache<NSString, HeaderColorCacheEntry>()
     private let latestByIdentityCache = NSCache<NSString, HeaderColorCacheEntry>()
     private let extractionQueue = DispatchQueue(
-        label: "kmg.myPlayer2.headerColor.extraction",
+        label: "kmg.kmgccc_player.headerColor.extraction",
         qos: .userInitiated
     )
 

@@ -69,7 +69,7 @@ final class ThemeStore: ObservableObject {
     private var activeAssetTrackID: UUID?
     private var extractionToken = UUID()
     private let extractionQueue = DispatchQueue(
-        label: "kmg.myPlayer2.theme.artwork.extraction",
+        label: "kmg.kmgccc_player.theme.artwork.extraction",
         qos: .userInitiated
     )
 

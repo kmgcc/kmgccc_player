@@ -229,8 +229,8 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     private let metadataStore: ExternalPlaybackMetadataStore
     private let sourceStore: ExternalPlaybackSourceStore
     private let decoder = JSONDecoder()
-    private let streamQueue = DispatchQueue(label: "myPlayer2.systemNowPlaying.stream", qos: .utility)
-    private let controlQueue = DispatchQueue(label: "myPlayer2.systemNowPlaying.control", qos: .utility)
+    private let streamQueue = DispatchQueue(label: "kmgccc_player.systemNowPlaying.stream", qos: .utility)
+    private let controlQueue = DispatchQueue(label: "kmgccc_player.systemNowPlaying.control", qos: .utility)
     private let systemProgressDisplayDelay: TimeInterval = 0.5
     private var process: Process?
     private var stdoutPipe: Pipe?
@@ -3109,7 +3109,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         //    is missing the resources (e.g. running from an old build).
         var devBases: [String] = ["/tmp/mediaremote-adapter"]
         if let home = ProcessInfo.processInfo.environment["HOME"] {
-            devBases.append("\(home)/Documents/vscode/player/myPlayer2/myPlayer2/Resources/mediaremote-adapter")
+            devBases.append("\(home)/Documents/vscode/player/myPlayer2/kmgccc_player/Resources/mediaremote-adapter")
         }
         for base in devBases {
             scriptCandidates.append("\(base)/bin/mediaremote-adapter.pl")
@@ -3154,7 +3154,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             for path in testClientCandidates {
                 Log.warning("[SystemNowPlaying]   test client candidate exists=\(fileManager.fileExists(atPath: path)): \(path)", category: .playback)
             }
-            Log.warning("[SystemNowPlaying] place mediaremote-adapter.pl + MediaRemoteAdapter.framework under myPlayer2/Resources/mediaremote-adapter/{bin,build}/ and rebuild", category: .playback)
+            Log.warning("[SystemNowPlaying] place mediaremote-adapter.pl + MediaRemoteAdapter.framework under kmgccc_player/Resources/mediaremote-adapter/{bin,build}/ and rebuild", category: .playback)
             hasLoggedAdapterResolution = true
         }
         return nil
