@@ -224,9 +224,10 @@ struct MiniPlayerView: View {
                     pillTintColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
                     scale: 0.75,
                     onModeChange: { mode in
+                        uiState.hideWindowPlaybackQueue()
                         playbackCoordinator.setPlaybackOrderMode(mode)
                     },
-                    onCurrentModeRetap: { _ in }
+                    onCurrentModeRetap: handleCurrentPlaybackModeRetap
                 )
             case .appleMusic, .systemNowPlaying:
                 AppleMusicPlaybackModeSlider(
@@ -238,6 +239,7 @@ struct MiniPlayerView: View {
                     pillTintColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
                     scale: 0.75,
                     onModeChange: { mode in
+                        uiState.hideWindowPlaybackQueue()
                         playbackCoordinator.setAppleMusicPlaybackMode(mode)
                     }
                 )
@@ -254,6 +256,18 @@ struct MiniPlayerView: View {
             withAnimation(layoutAnimation) {
                 isPlaybackModeExpanded = hovering
             }
+        }
+    }
+
+    private func handleCurrentPlaybackModeRetap(_ currentMode: PlaybackOrderMode) {
+        guard currentMode == currentPlaybackMode else { return }
+
+        if uiState.isWindowPlaybackQueueVisible {
+            uiState.hideWindowPlaybackQueue()
+        } else {
+            AppKitMainSplitWindowController.setLyricsVisible(true, animated: true)
+            uiState.lyricsVisible = true
+            uiState.showWindowPlaybackQueue()
         }
     }
 

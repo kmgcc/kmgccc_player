@@ -342,7 +342,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                         ?? NSImage(),
                     NSImage(systemSymbolName: "play.fill", accessibilityDescription: playLabel)
                         ?? NSImage(),
-                    NSImage(systemSymbolName: "scope", accessibilityDescription: revealLabel)
+                    NSImage(systemSymbolName: "location", accessibilityDescription: revealLabel)
                         ?? NSImage(),
                     NSImage(systemSymbolName: "plus", accessibilityDescription: importLabel)
                         ?? NSImage()
