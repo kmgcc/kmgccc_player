@@ -31,6 +31,7 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private var queue: [Track] = []
     private var currentIndex: Int = 0
+    private var playNextInsertionAnchorID: UUID?
 
     // MARK: - Playback Control
 
@@ -46,6 +47,7 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
     func playTracks(_ tracks: [Track], startingAt index: Int, startPolicy: PlaybackStartPolicy) {
         queue = tracks
         currentIndex = index
+        playNextInsertionAnchorID = nil
         if index >= 0 && index < tracks.count {
             play(track: tracks[index])
         }
@@ -55,6 +57,7 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
         queue = tracks
         guard index >= 0, index < tracks.count else { return }
         currentIndex = index
+        playNextInsertionAnchorID = nil
         let track = tracks[index]
         currentTrack = track
         duration = track.duration
@@ -64,6 +67,7 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     func updateQueueTracks(_ tracks: [Track]) {
         queue = tracks
+        playNextInsertionAnchorID = nil
         if let currentID = currentTrack?.id,
             let idx = tracks.firstIndex(where: { $0.id == currentID })
         {
@@ -71,6 +75,39 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
         } else {
             currentIndex = min(max(currentIndex, 0), max(0, tracks.count - 1))
         }
+    }
+
+    @discardableResult
+    func insertTracksAfterCurrent(_ tracks: [Track]) -> Int {
+        guard let currentID = currentTrack?.id else { return 0 }
+        var seenIDs = Set<UUID>()
+        let insertionTracks = tracks.filter { track in
+            guard track.id != currentID else { return false }
+            guard track.availability != .missing else { return false }
+            return seenIDs.insert(track.id).inserted
+        }
+        guard !insertionTracks.isEmpty else { return 0 }
+
+        let insertionIDs = Set(insertionTracks.map(\.id))
+        var updatedQueue = queue.filter { !insertionIDs.contains($0.id) }
+        guard let currentQueueIndex = updatedQueue.firstIndex(where: { $0.id == currentID }) else {
+            return 0
+        }
+
+        let insertionIndex: Int
+        if let anchorID = playNextInsertionAnchorID,
+           let anchorIndex = updatedQueue.firstIndex(where: { $0.id == anchorID }),
+           anchorIndex >= currentQueueIndex {
+            insertionIndex = min(anchorIndex + 1, updatedQueue.count)
+        } else {
+            insertionIndex = min(currentQueueIndex + 1, updatedQueue.count)
+        }
+
+        updatedQueue.insert(contentsOf: insertionTracks, at: insertionIndex)
+        queue = updatedQueue
+        currentIndex = queue.firstIndex(where: { $0.id == currentID }) ?? currentQueueIndex
+        playNextInsertionAnchorID = insertionTracks.last?.id
+        return insertionTracks.count
     }
 
     func refreshTracks(_ tracks: [Track]) {

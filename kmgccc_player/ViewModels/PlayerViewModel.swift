@@ -26,6 +26,7 @@ final class PlayerViewModel {
     private let settings: AppSettings
     private let nowPlayingService: NowPlayingService
     private var isLevelMeterRunning = false
+    private var queueRevision = 0
     private(set) var activeLibraryQueueSource: LibraryQueueSource?
 
     // MARK: - Computed Properties (from playbackService)
@@ -121,7 +122,19 @@ final class PlayerViewModel {
 
     func updateQueueTracks(_ tracks: [Track]) {
         playbackService.updateQueueTracks(tracks)
+        queueRevision += 1
         nowPlayingService.updateNowPlaying(force: true)
+    }
+
+    @discardableResult
+    func insertTracksAfterCurrent(_ tracks: [Track]) -> Int {
+        let insertedCount = playbackService.insertTracksAfterCurrent(tracks)
+        guard insertedCount > 0 else { return 0 }
+
+        activeLibraryQueueSource = nil
+        queueRevision += 1
+        nowPlayingService.updateNowPlaying(force: true)
+        return insertedCount
     }
 
     func refreshTracks(_ tracks: [Track]) {
@@ -130,11 +143,13 @@ final class PlayerViewModel {
     }
 
     var currentQueueTracks: [Track] {
-        playbackService.currentQueueTracks()
+        _ = queueRevision
+        return playbackService.currentQueueTracks()
     }
 
     var currentQueueDisplayIndex: Int? {
-        playbackService.currentQueueDisplayIndex()
+        _ = queueRevision
+        return playbackService.currentQueueDisplayIndex()
     }
 
     // MARK: - Playback Control

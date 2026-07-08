@@ -13,6 +13,7 @@ struct TrackActionMenuContent: View {
     var selectedPlaylistID: UUID?
     var onSelectMultiple: (() -> Void)?
     let onPlay: () -> Void
+    var onPlayNext: (() -> Int)?
     let onEditTrack: (Track) -> Void
     var onRemoveFromCurrentPlaylist: ((Track) -> Void)?
     var showsPlay: Bool = true
@@ -28,6 +29,7 @@ struct TrackActionMenuContent: View {
         selectedPlaylistID: UUID? = nil,
         onSelectMultiple: (() -> Void)? = nil,
         onPlay: @escaping () -> Void,
+        onPlayNext: (() -> Int)? = nil,
         onEditTrack: @escaping (Track) -> Void,
         onRemoveFromCurrentPlaylist: ((Track) -> Void)? = nil,
         showsPlay: Bool = true,
@@ -45,6 +47,7 @@ struct TrackActionMenuContent: View {
         self.selectedPlaylistID = selectedPlaylistID
         self.onSelectMultiple = onSelectMultiple
         self.onPlay = onPlay
+        self.onPlayNext = onPlayNext
         self.onEditTrack = onEditTrack
         self.onRemoveFromCurrentPlaylist = onRemoveFromCurrentPlaylist
         self.showsPlay = showsPlay
@@ -82,6 +85,18 @@ struct TrackActionMenuContent: View {
                 }
             } label: {
                 Label("播放", systemImage: "play")
+            }
+
+            if let onPlayNext {
+                Button {
+                    invokeAction("playNext") {
+                        if onPlayNext() > 0 {
+                            uiState.showSidebarNotice("已加入下一首")
+                        }
+                    }
+                } label: {
+                    Label("下一首播放", systemImage: "text.line.first.and.arrowtriangle.forward")
+                }
             }
 
             Divider()

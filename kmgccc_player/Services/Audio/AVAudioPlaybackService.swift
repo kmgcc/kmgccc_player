@@ -1147,6 +1147,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         smartController.updateQueue(tracks: tracks, preservePosition: true)
     }
 
+    @discardableResult
+    func insertTracksAfterCurrent(_ tracks: [Track]) -> Int {
+        smartController.insertTracksAfterCurrent(tracks)
+    }
+
     func refreshTracks(_ tracks: [Track]) {
         let refreshedByID = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) })
         guard !refreshedByID.isEmpty else { return }
