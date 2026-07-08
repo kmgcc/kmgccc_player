@@ -279,12 +279,19 @@ struct HomeHeroView: View {
             overlayStartRatioFromEdge: isCoverHover ? 0.0 : 0.28,
             edgeFillMode: .pixelStretch,
             blurMaskMode: isCoverHover ? .extensionOnly : .progressiveRamp,
-            // Normal keeps the existing soft ramp; cover hover selects only
-            // the right-side extension so the square cover area stays clean.
-            blurStartRatioFromEdge: isCoverHover ? 0.0 : 0.42,
-            // Keep the hero ramp earlier than fullscreen so the text area
-            // resolves into a cleaner colour field at card height.
-            blurAlphaCoefficients: isCoverHover ? (0, 0.36, 0.38, 0.26) : (0, 0.62, 0.26, 0.12)
+            // Cover hover selects only the right-side extension so the square
+            // cover area stays clean. Normal uses the same narrow strip as
+            // fullscreen (30% of cover width) so the crisp cover region is wide.
+            blurStartRatioFromEdge: isCoverHover ? 0.0 : 0.30,
+            // Quadratic-dominant ramp matching the fullscreen skin: ~0 at the
+            // strip's inner side, accelerating smoothly to a strong edge value
+            // so the cover↔fill junction is well masked. Cover hover retains its
+            // own curve unchanged.
+            blurAlphaCoefficients: isCoverHover ? (0, 0.36, 0.38, 0.26) : (0, 0, 1.8, -0.8),
+            // Continuous blur ramp across the fill (pixel-stretch) region:
+            // 0 at the cover's right edge, easing up toward the right with no
+            // hard seam at the cover→fill boundary. Matches fullscreen value.
+            extensionFloorStrength: isCoverHover ? 0 : 0.2
         )
     }
 
@@ -676,7 +683,7 @@ struct HomeHeroView: View {
     ) async -> CGImage? {
         let config = heroBlurConfig(variant: variant)
         let targetSize = CGSize(width: 1280, height: 380)
-        let cacheKey = "\(checksum)-1280x380-home-hero-\(variant.cacheKey)-v5" as NSString
+        let cacheKey = "\(checksum)-1280x380-home-hero-\(variant.cacheKey)-v6" as NSString
 
         if let cached = HomeHeroBackdropCache.shared.image(for: cacheKey) {
             return cached
