@@ -10,7 +10,7 @@ import CoreImage
 import ImageIO
 import SwiftUI
 
-private let coverGradientBlurRendererCacheVersion = "smoothStretchV14"
+private let coverGradientBlurRendererCacheVersion = "smoothStretchV15"
 
 // MARK: - Edge Fill Mode
 
@@ -35,6 +35,11 @@ enum CoverGradientBlurMaskMode: String, Sendable {
     case extensionOnly
 }
 
+enum CoverGradientBlurArtworkPlacement: String, Sendable {
+    case leading
+    case centeredSymmetric
+}
+
 struct CoverGradientBlurConfig: Sendable {
     var blurRadius: CGFloat = 50.0
     var colorOverlayOpacity: CGFloat = 0.65
@@ -48,6 +53,7 @@ struct CoverGradientBlurConfig: Sendable {
     var overlayStartRatioFromEdge: CGFloat = 0.28
     var edgeFillMode: CoverEdgeFillMode = .pixelStretch
     var blurMaskMode: CoverGradientBlurMaskMode = .progressiveRamp
+    var artworkPlacement: CoverGradientBlurArtworkPlacement = .leading
 
     // How far left of the artwork's right edge the blur begins, expressed as
     // a fraction of the visible artwork width. 0.48 = legacy fullscreen default.
@@ -104,7 +110,7 @@ private struct RenderKey: Equatable {
             alphaCoeffStr = "default"
         }
         self.configHash = String(
-            format: "%@-%.1f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%@-%@-%@-%.3f-%@-%.3f",
+            format: "%@-%.1f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%.3f-%@-%@-%@-%@-%.3f-%@-%.3f",
             coverGradientBlurRendererCacheVersion,
             config.blurRadius,
             config.colorOverlayOpacity,
@@ -117,6 +123,7 @@ private struct RenderKey: Equatable {
             config.overlayStartRatioFromEdge,
             config.edgeFillMode.rawValue,
             config.blurMaskMode.rawValue,
+            config.artworkPlacement.rawValue,
             prefersAdaptiveArtworkSizing ? "adaptive" : "fixed",
             config.blurStartRatioFromEdge,
             alphaCoeffStr,
@@ -439,8 +446,17 @@ enum CoverGradientBlurRenderer {
             scale = canvasLogicalHeight / artworkHeight
         }
         let drawWidth = artworkWidth * scale
-        let artworkRect = CGRect(x: 0, y: 0, width: drawWidth, height: canvasLogicalHeight)
-        let artworkRightEdgeX = min(drawWidth, canvasLogicalWidth)
+        let artworkX: CGFloat
+        switch config.artworkPlacement {
+        case .leading:
+            artworkX = 0
+        case .centeredSymmetric:
+            artworkX = max(0, (canvasLogicalWidth - drawWidth) * 0.5)
+        }
+        let artworkRect = CGRect(x: artworkX, y: 0, width: drawWidth, height: canvasLogicalHeight)
+        let artworkLeftEdgeX = max(0, min(canvasLogicalWidth, artworkRect.minX))
+        let artworkRightEdgeX = max(artworkLeftEdgeX, min(artworkRect.maxX, canvasLogicalWidth))
+        let artworkLeftEdgePixel = Int(artworkLeftEdgeX)
         let artworkRightEdgePixel = Int(artworkRightEdgeX)
 
         // Step 1: Render Artwork + Edge Extension
@@ -449,19 +465,25 @@ enum CoverGradientBlurRenderer {
             canvasPixelWidth: canvasPixelWidth,
             canvasPixelHeight: canvasPixelHeight,
             artworkRect: artworkRect,
+            artworkLeftEdgePixel: artworkLeftEdgePixel,
             artworkRightEdgePixel: artworkRightEdgePixel,
             config: config
         ) else {
             return nil
         }
 
-        let visibleArtworkWidth = artworkRightEdgeX
+        let visibleArtworkWidth = max(1, artworkRightEdgeX - artworkLeftEdgeX)
 
-        let blurStartX = artworkRightEdgeX - (visibleArtworkWidth * config.blurStartRatioFromEdge)
         let blurEndInsetRatioFromRight: CGFloat = 0.04
-        let blurEndX = max(
-            blurStartX + 1,
+        let rightBlurStartX = artworkRightEdgeX - (visibleArtworkWidth * config.blurStartRatioFromEdge)
+        let rightBlurEndX = max(
+            rightBlurStartX + 1,
             canvasLogicalWidth - (visibleArtworkWidth * blurEndInsetRatioFromRight)
+        )
+        let leftBlurStartX = artworkLeftEdgeX + (visibleArtworkWidth * config.blurStartRatioFromEdge)
+        let leftBlurEndX = min(
+            leftBlurStartX - 1,
+            visibleArtworkWidth * blurEndInsetRatioFromRight
         )
 
         let baseCIImage = CIImage(cgImage: baseImage)
@@ -480,19 +502,42 @@ enum CoverGradientBlurRenderer {
         let nonLinearMask: CIImage?
         switch config.blurMaskMode {
         case .progressiveRamp:
-            nonLinearMask = progressiveRampMask(
-                blurStartX: blurStartX,
-                blurEndX: blurEndX,
-                canvasRect: canvasRect,
-                canvasLogicalHeight: canvasLogicalHeight,
-                alphaCoefficients: config.blurAlphaCoefficients
-            )
+            switch config.artworkPlacement {
+            case .leading:
+                nonLinearMask = progressiveRampMask(
+                    blurStartX: rightBlurStartX,
+                    blurEndX: rightBlurEndX,
+                    canvasRect: canvasRect,
+                    canvasLogicalHeight: canvasLogicalHeight,
+                    alphaCoefficients: config.blurAlphaCoefficients
+                )
+            case .centeredSymmetric:
+                nonLinearMask = symmetricProgressiveRampMask(
+                    leftBlurStartX: leftBlurStartX,
+                    leftBlurEndX: leftBlurEndX,
+                    rightBlurStartX: rightBlurStartX,
+                    rightBlurEndX: rightBlurEndX,
+                    canvasRect: canvasRect,
+                    canvasLogicalHeight: canvasLogicalHeight,
+                    alphaCoefficients: config.blurAlphaCoefficients
+                )
+            }
         case .extensionOnly:
-            nonLinearMask = extensionOnlyMask(
-                artworkRightEdgeX: artworkRightEdgeX,
-                canvasRect: canvasRect,
-                canvasLogicalHeight: canvasLogicalHeight
-            )
+            switch config.artworkPlacement {
+            case .leading:
+                nonLinearMask = extensionOnlyMask(
+                    artworkRightEdgeX: artworkRightEdgeX,
+                    canvasRect: canvasRect,
+                    canvasLogicalHeight: canvasLogicalHeight
+                )
+            case .centeredSymmetric:
+                nonLinearMask = symmetricExtensionOnlyMask(
+                    artworkLeftEdgeX: artworkLeftEdgeX,
+                    artworkRightEdgeX: artworkRightEdgeX,
+                    canvasRect: canvasRect,
+                    canvasLogicalHeight: canvasLogicalHeight
+                )
+            }
         }
 
         guard let nonLinearMask else { return nil }
@@ -540,20 +585,35 @@ enum CoverGradientBlurRenderer {
         // boundary.) Gated by `extensionFloorStrength` so non-opted-in consumers
         // are unchanged.
         if config.extensionFloorStrength > 0,
-           artworkRightEdgePixel < canvasPixelWidth {
+           artworkLeftEdgePixel > 0 || artworkRightEdgePixel < canvasPixelWidth {
             let floorRadius = min(120, totalRadius * config.extensionFloorStrength)
+            let floorMask: CIImage?
+            switch config.artworkPlacement {
+            case .leading:
+                floorMask = extensionFloorMask(
+                    coverEdgeX: artworkRightEdgeX,
+                    // Linear rise from the cover edge: blur starts increasing at
+                    // the very left end of the fill (no smoothstep dwell, so the
+                    // wide stretch bands get buried from the start) and climbs
+                    // continuously. ~18% of the cover-edge→blurEnd distance to the
+                    // cap. Smaller = buries the bands faster; larger = gentler.
+                    rampSpan: max(12, (rightBlurEndX - artworkRightEdgeX) * 0.18),
+                    canvasRect: canvasRect,
+                    canvasLogicalHeight: canvasLogicalHeight
+                )
+            case .centeredSymmetric:
+                floorMask = symmetricExtensionFloorMask(
+                    leftCoverEdgeX: artworkLeftEdgeX,
+                    rightCoverEdgeX: artworkRightEdgeX,
+                    leftRampSpan: max(12, (artworkLeftEdgeX - leftBlurEndX) * 0.18),
+                    rightRampSpan: max(12, (rightBlurEndX - artworkRightEdgeX) * 0.18),
+                    canvasRect: canvasRect,
+                    canvasLogicalHeight: canvasLogicalHeight
+                )
+            }
+
             if floorRadius > 0,
-               let floorMask = extensionFloorMask(
-                   coverEdgeX: artworkRightEdgeX,
-                   // Linear rise from the cover edge: blur starts increasing at
-                   // the very left end of the fill (no smoothstep dwell, so the
-                   // wide stretch bands get buried from the start) and climbs
-                   // continuously. ~18% of the cover-edge→blurEnd distance to the
-                   // cap. Smaller = buries the bands faster; larger = gentler.
-                   rampSpan: max(12, (blurEndX - artworkRightEdgeX) * 0.18),
-                   canvasRect: canvasRect,
-                   canvasLogicalHeight: canvasLogicalHeight
-               ),
+               let floorMask,
                let floorClampFilter = CIFilter(name: "CIAffineClamp") {
                 floorClampFilter.setValue(currentImage, forKey: kCIInputImageKey)
                 floorClampFilter.setValue(CGAffineTransform.identity, forKey: kCIInputTransformKey)
@@ -576,14 +636,28 @@ enum CoverGradientBlurRenderer {
             if passIndex == 0 || config.blurMaskMode == .extensionOnly {
                 passMask = nonLinearMask
             } else {
-                passMask = staggeredOnsetMask(
-                    passIndex: passIndex,
-                    featherPassCount: passRadii.count - 1,
-                    coverEdgeX: artworkRightEdgeX,
-                    blurEndX: blurEndX,
-                    canvasRect: canvasRect,
-                    canvasLogicalHeight: canvasLogicalHeight
-                ) ?? nonLinearMask
+                switch config.artworkPlacement {
+                case .leading:
+                    passMask = staggeredOnsetMask(
+                        passIndex: passIndex,
+                        featherPassCount: passRadii.count - 1,
+                        coverEdgeX: artworkRightEdgeX,
+                        blurEndX: rightBlurEndX,
+                        canvasRect: canvasRect,
+                        canvasLogicalHeight: canvasLogicalHeight
+                    ) ?? nonLinearMask
+                case .centeredSymmetric:
+                    passMask = symmetricStaggeredOnsetMask(
+                        passIndex: passIndex,
+                        featherPassCount: passRadii.count - 1,
+                        leftCoverEdgeX: artworkLeftEdgeX,
+                        rightCoverEdgeX: artworkRightEdgeX,
+                        leftBlurEndX: leftBlurEndX,
+                        rightBlurEndX: rightBlurEndX,
+                        canvasRect: canvasRect,
+                        canvasLogicalHeight: canvasLogicalHeight
+                    ) ?? nonLinearMask
+                }
             }
 
             guard let passClampFilter = CIFilter(name: "CIAffineClamp") else {
@@ -609,8 +683,6 @@ enum CoverGradientBlurRenderer {
 
         let blurredImage = currentImage
 
-        let overlayStartX = artworkRightEdgeX - (visibleArtworkWidth * config.overlayStartRatioFromEdge)
-        let overlayEndX = canvasLogicalWidth
         let overlayAlphaMax = config.colorOverlayOpacity
 
         let overlayColor: CIColor
@@ -620,33 +692,31 @@ enum CoverGradientBlurRenderer {
             overlayColor = CIColor(red: 0.15, green: 0.15, blue: 0.15)
         }
 
-        guard let overlayGradientFilter = CIFilter(name: "CILinearGradient") else {
-            return nil
+        let linearOverlay: CIImage?
+        switch config.artworkPlacement {
+        case .leading:
+            linearOverlay = colorOverlayGradient(
+                startX: artworkRightEdgeX - (visibleArtworkWidth * config.overlayStartRatioFromEdge),
+                endX: canvasLogicalWidth,
+                color: overlayColor,
+                alphaMax: overlayAlphaMax,
+                canvasRect: canvasRect,
+                canvasLogicalHeight: canvasLogicalHeight
+            )
+        case .centeredSymmetric:
+            linearOverlay = symmetricColorOverlayGradient(
+                leftStartX: artworkLeftEdgeX + (visibleArtworkWidth * config.overlayStartRatioFromEdge),
+                leftEndX: 0,
+                rightStartX: artworkRightEdgeX - (visibleArtworkWidth * config.overlayStartRatioFromEdge),
+                rightEndX: canvasLogicalWidth,
+                color: overlayColor,
+                alphaMax: overlayAlphaMax,
+                canvasRect: canvasRect,
+                canvasLogicalHeight: canvasLogicalHeight
+            )
         }
 
-        let overlayPoint0 = CIVector(x: overlayStartX, y: canvasLogicalHeight / 2)
-        let overlayPoint1 = CIVector(x: overlayEndX, y: canvasLogicalHeight / 2)
-        let overlayColor0 = CIColor(
-            red: overlayColor.red,
-            green: overlayColor.green,
-            blue: overlayColor.blue,
-            alpha: 0
-        )
-        let overlayColor1 = CIColor(
-            red: overlayColor.red,
-            green: overlayColor.green,
-            blue: overlayColor.blue,
-            alpha: overlayAlphaMax
-        )
-
-        overlayGradientFilter.setValue(overlayPoint0, forKey: "inputPoint0")
-        overlayGradientFilter.setValue(overlayPoint1, forKey: "inputPoint1")
-        overlayGradientFilter.setValue(overlayColor0, forKey: "inputColor0")
-        overlayGradientFilter.setValue(overlayColor1, forKey: "inputColor1")
-
-        guard let linearOverlay = overlayGradientFilter.outputImage?.cropped(to: canvasRect) else {
-            return nil
-        }
+        guard let linearOverlay else { return nil }
 
         let overlayImage: CIImage
         if let overlayGammaFilter = CIFilter(name: "CIGammaAdjust") {
@@ -738,6 +808,32 @@ enum CoverGradientBlurRenderer {
         return polynomialFilter.outputImage?.cropped(to: canvasRect)
     }
 
+    private nonisolated static func symmetricProgressiveRampMask(
+        leftBlurStartX: CGFloat,
+        leftBlurEndX: CGFloat,
+        rightBlurStartX: CGFloat,
+        rightBlurEndX: CGFloat,
+        canvasRect: CGRect,
+        canvasLogicalHeight: CGFloat,
+        alphaCoefficients: (CGFloat, CGFloat, CGFloat, CGFloat)?
+    ) -> CIImage? {
+        let leftMask = progressiveRampMask(
+            blurStartX: leftBlurStartX,
+            blurEndX: leftBlurEndX,
+            canvasRect: canvasRect,
+            canvasLogicalHeight: canvasLogicalHeight,
+            alphaCoefficients: alphaCoefficients
+        )
+        let rightMask = progressiveRampMask(
+            blurStartX: rightBlurStartX,
+            blurEndX: rightBlurEndX,
+            canvasRect: canvasRect,
+            canvasLogicalHeight: canvasLogicalHeight,
+            alphaCoefficients: alphaCoefficients
+        )
+        return maximumComposite(leftMask, rightMask, canvasRect: canvasRect)
+    }
+
     private nonisolated static func extensionOnlyMask(
         artworkRightEdgeX: CGFloat,
         canvasRect: CGRect,
@@ -758,6 +854,47 @@ enum CoverGradientBlurRenderer {
         linearGradientFilter.setValue(color1, forKey: "inputColor1")
 
         return linearGradientFilter.outputImage?.cropped(to: canvasRect)
+    }
+
+    private nonisolated static func leftExtensionOnlyMask(
+        artworkLeftEdgeX: CGFloat,
+        canvasRect: CGRect,
+        canvasLogicalHeight: CGFloat
+    ) -> CIImage? {
+        guard let linearGradientFilter = CIFilter(name: "CILinearGradient") else {
+            return nil
+        }
+
+        let point0 = CIVector(x: artworkLeftEdgeX + 0.5, y: canvasLogicalHeight / 2)
+        let point1 = CIVector(x: artworkLeftEdgeX - 1.5, y: canvasLogicalHeight / 2)
+        let color0 = CIColor(red: 0, green: 0, blue: 0, alpha: 0)
+        let color1 = CIColor(red: 1, green: 1, blue: 1, alpha: 1)
+
+        linearGradientFilter.setValue(point0, forKey: "inputPoint0")
+        linearGradientFilter.setValue(point1, forKey: "inputPoint1")
+        linearGradientFilter.setValue(color0, forKey: "inputColor0")
+        linearGradientFilter.setValue(color1, forKey: "inputColor1")
+
+        return linearGradientFilter.outputImage?.cropped(to: canvasRect)
+    }
+
+    private nonisolated static func symmetricExtensionOnlyMask(
+        artworkLeftEdgeX: CGFloat,
+        artworkRightEdgeX: CGFloat,
+        canvasRect: CGRect,
+        canvasLogicalHeight: CGFloat
+    ) -> CIImage? {
+        let leftMask = leftExtensionOnlyMask(
+            artworkLeftEdgeX: artworkLeftEdgeX,
+            canvasRect: canvasRect,
+            canvasLogicalHeight: canvasLogicalHeight
+        )
+        let rightMask = extensionOnlyMask(
+            artworkRightEdgeX: artworkRightEdgeX,
+            canvasRect: canvasRect,
+            canvasLogicalHeight: canvasLogicalHeight
+        )
+        return maximumComposite(leftMask, rightMask, canvasRect: canvasRect)
     }
 
     /// Mask for the extension blur ramp pass. A LINEAR gradient (alpha 0→1) from
@@ -792,6 +929,52 @@ enum CoverGradientBlurRenderer {
         gradientFilter.setValue(color1, forKey: "inputColor1")
 
         return gradientFilter.outputImage?.cropped(to: canvasRect)
+    }
+
+    private nonisolated static func leftExtensionFloorMask(
+        coverEdgeX: CGFloat,
+        rampSpan: CGFloat,
+        canvasRect: CGRect,
+        canvasLogicalHeight: CGFloat
+    ) -> CIImage? {
+        guard let gradientFilter = CIFilter(name: "CILinearGradient") else {
+            return nil
+        }
+
+        let point0 = CIVector(x: coverEdgeX, y: canvasLogicalHeight / 2)
+        let point1 = CIVector(x: coverEdgeX - max(1, rampSpan), y: canvasLogicalHeight / 2)
+        let color0 = CIColor(red: 0, green: 0, blue: 0, alpha: 0)
+        let color1 = CIColor(red: 1, green: 1, blue: 1, alpha: 1)
+
+        gradientFilter.setValue(point0, forKey: "inputPoint0")
+        gradientFilter.setValue(point1, forKey: "inputPoint1")
+        gradientFilter.setValue(color0, forKey: "inputColor0")
+        gradientFilter.setValue(color1, forKey: "inputColor1")
+
+        return gradientFilter.outputImage?.cropped(to: canvasRect)
+    }
+
+    private nonisolated static func symmetricExtensionFloorMask(
+        leftCoverEdgeX: CGFloat,
+        rightCoverEdgeX: CGFloat,
+        leftRampSpan: CGFloat,
+        rightRampSpan: CGFloat,
+        canvasRect: CGRect,
+        canvasLogicalHeight: CGFloat
+    ) -> CIImage? {
+        let leftMask = leftExtensionFloorMask(
+            coverEdgeX: leftCoverEdgeX,
+            rampSpan: leftRampSpan,
+            canvasRect: canvasRect,
+            canvasLogicalHeight: canvasLogicalHeight
+        )
+        let rightMask = extensionFloorMask(
+            coverEdgeX: rightCoverEdgeX,
+            rampSpan: rightRampSpan,
+            canvasRect: canvasRect,
+            canvasLogicalHeight: canvasLogicalHeight
+        )
+        return maximumComposite(leftMask, rightMask, canvasRect: canvasRect)
     }
 
     /// Mask for later blur passes. Each pass starts at its own onset X —
@@ -849,6 +1032,160 @@ enum CoverGradientBlurRenderer {
         return gradientFilter.outputImage?.cropped(to: canvasRect)
     }
 
+    private nonisolated static func leftStaggeredOnsetMask(
+        passIndex: Int,
+        featherPassCount: Int,
+        coverEdgeX: CGFloat,
+        blurEndX: CGFloat,
+        canvasRect: CGRect,
+        canvasLogicalHeight: CGFloat
+    ) -> CIImage? {
+        guard let gradientFilter = CIFilter(name: "CISmoothLinearGradient") else {
+            return nil
+        }
+
+        let onsetSpanRatio: CGFloat = 0.85
+        let rampWidthRatio: CGFloat = 0.45
+        let onsetExponent: CGFloat = 1.0
+        let stretchWidth = max(1, coverEdgeX - blurEndX)
+        let onsetFraction: CGFloat
+        if featherPassCount <= 1 {
+            onsetFraction = 0
+        } else {
+            let linearStep = CGFloat(passIndex - 1) / CGFloat(featherPassCount - 1)
+            onsetFraction = onsetSpanRatio * pow(linearStep, onsetExponent)
+        }
+        let onsetX = coverEdgeX - stretchWidth * onsetFraction
+        let endX = min(onsetX - 1, max(onsetX - stretchWidth * rampWidthRatio, blurEndX))
+
+        let point0 = CIVector(x: onsetX, y: canvasLogicalHeight / 2)
+        let point1 = CIVector(x: endX, y: canvasLogicalHeight / 2)
+        let color0 = CIColor(red: 0, green: 0, blue: 0, alpha: 0)
+        let color1 = CIColor(red: 1, green: 1, blue: 1, alpha: 1)
+
+        gradientFilter.setValue(point0, forKey: "inputPoint0")
+        gradientFilter.setValue(point1, forKey: "inputPoint1")
+        gradientFilter.setValue(color0, forKey: "inputColor0")
+        gradientFilter.setValue(color1, forKey: "inputColor1")
+
+        return gradientFilter.outputImage?.cropped(to: canvasRect)
+    }
+
+    private nonisolated static func symmetricStaggeredOnsetMask(
+        passIndex: Int,
+        featherPassCount: Int,
+        leftCoverEdgeX: CGFloat,
+        rightCoverEdgeX: CGFloat,
+        leftBlurEndX: CGFloat,
+        rightBlurEndX: CGFloat,
+        canvasRect: CGRect,
+        canvasLogicalHeight: CGFloat
+    ) -> CIImage? {
+        let leftMask = leftStaggeredOnsetMask(
+            passIndex: passIndex,
+            featherPassCount: featherPassCount,
+            coverEdgeX: leftCoverEdgeX,
+            blurEndX: leftBlurEndX,
+            canvasRect: canvasRect,
+            canvasLogicalHeight: canvasLogicalHeight
+        )
+        let rightMask = staggeredOnsetMask(
+            passIndex: passIndex,
+            featherPassCount: featherPassCount,
+            coverEdgeX: rightCoverEdgeX,
+            blurEndX: rightBlurEndX,
+            canvasRect: canvasRect,
+            canvasLogicalHeight: canvasLogicalHeight
+        )
+        return maximumComposite(leftMask, rightMask, canvasRect: canvasRect)
+    }
+
+    private nonisolated static func colorOverlayGradient(
+        startX: CGFloat,
+        endX: CGFloat,
+        color: CIColor,
+        alphaMax: CGFloat,
+        canvasRect: CGRect,
+        canvasLogicalHeight: CGFloat
+    ) -> CIImage? {
+        guard let overlayGradientFilter = CIFilter(name: "CILinearGradient") else {
+            return nil
+        }
+
+        let overlayPoint0 = CIVector(x: startX, y: canvasLogicalHeight / 2)
+        let overlayPoint1 = CIVector(x: endX, y: canvasLogicalHeight / 2)
+        let overlayColor0 = CIColor(
+            red: color.red,
+            green: color.green,
+            blue: color.blue,
+            alpha: 0
+        )
+        let overlayColor1 = CIColor(
+            red: color.red,
+            green: color.green,
+            blue: color.blue,
+            alpha: alphaMax
+        )
+
+        overlayGradientFilter.setValue(overlayPoint0, forKey: "inputPoint0")
+        overlayGradientFilter.setValue(overlayPoint1, forKey: "inputPoint1")
+        overlayGradientFilter.setValue(overlayColor0, forKey: "inputColor0")
+        overlayGradientFilter.setValue(overlayColor1, forKey: "inputColor1")
+
+        return overlayGradientFilter.outputImage?.cropped(to: canvasRect)
+    }
+
+    private nonisolated static func symmetricColorOverlayGradient(
+        leftStartX: CGFloat,
+        leftEndX: CGFloat,
+        rightStartX: CGFloat,
+        rightEndX: CGFloat,
+        color: CIColor,
+        alphaMax: CGFloat,
+        canvasRect: CGRect,
+        canvasLogicalHeight: CGFloat
+    ) -> CIImage? {
+        let leftOverlay = colorOverlayGradient(
+            startX: leftStartX,
+            endX: leftEndX,
+            color: color,
+            alphaMax: alphaMax,
+            canvasRect: canvasRect,
+            canvasLogicalHeight: canvasLogicalHeight
+        )
+        let rightOverlay = colorOverlayGradient(
+            startX: rightStartX,
+            endX: rightEndX,
+            color: color,
+            alphaMax: alphaMax,
+            canvasRect: canvasRect,
+            canvasLogicalHeight: canvasLogicalHeight
+        )
+        return maximumComposite(leftOverlay, rightOverlay, canvasRect: canvasRect)
+    }
+
+    private nonisolated static func maximumComposite(
+        _ first: CIImage?,
+        _ second: CIImage?,
+        canvasRect: CGRect
+    ) -> CIImage? {
+        switch (first, second) {
+        case let (first?, second?):
+            guard let maxFilter = CIFilter(name: "CIMaximumCompositing") else {
+                return first.cropped(to: canvasRect)
+            }
+            maxFilter.setValue(second, forKey: kCIInputImageKey)
+            maxFilter.setValue(first, forKey: kCIInputBackgroundImageKey)
+            return maxFilter.outputImage?.cropped(to: canvasRect)
+        case let (first?, nil):
+            return first.cropped(to: canvasRect)
+        case let (nil, second?):
+            return second.cropped(to: canvasRect)
+        case (nil, nil):
+            return nil
+        }
+    }
+
     // MARK: - Render Base Image
 
     private nonisolated static func renderBaseImage(
@@ -856,6 +1193,7 @@ enum CoverGradientBlurRenderer {
         canvasPixelWidth: Int,
         canvasPixelHeight: Int,
         artworkRect: CGRect,
+        artworkLeftEdgePixel: Int,
         artworkRightEdgePixel: Int,
         config: CoverGradientBlurConfig
     ) -> CGImage? {
@@ -878,26 +1216,31 @@ enum CoverGradientBlurRenderer {
         context.interpolationQuality = .high
         context.draw(artworkCGImage, in: artworkRect)
 
-        guard artworkRightEdgePixel < canvasPixelWidth else {
+        let hasLeftExtension = artworkLeftEdgePixel > 0
+        let hasRightExtension = artworkRightEdgePixel < canvasPixelWidth
+
+        guard hasLeftExtension || hasRightExtension else {
             return context.makeImage()
         }
 
         switch config.edgeFillMode {
         case .pixelStretch:
-            return renderPixelStretchExtension(
+            return renderPixelStretchExtensions(
                 context: context,
                 artworkCGImage: artworkCGImage,
                 artworkRect: artworkRect,
+                artworkLeftEdgePixel: artworkLeftEdgePixel,
                 artworkRightEdgePixel: artworkRightEdgePixel,
                 canvasPixelWidth: canvasPixelWidth,
                 canvasPixelHeight: canvasPixelHeight,
                 config: config
             )
         case .mirroredCover:
-            return renderMirroredCoverExtension(
+            return renderMirroredCoverExtensions(
                 context: context,
                 artworkCGImage: artworkCGImage,
                 artworkRect: artworkRect,
+                artworkLeftEdgePixel: artworkLeftEdgePixel,
                 artworkRightEdgePixel: artworkRightEdgePixel,
                 canvasPixelWidth: canvasPixelWidth,
                 canvasPixelHeight: canvasPixelHeight
@@ -907,18 +1250,56 @@ enum CoverGradientBlurRenderer {
 
     // MARK: - Pixel Stretch Extension (Original Method)
 
-    private nonisolated static func renderPixelStretchExtension(
+    private nonisolated static func renderPixelStretchExtensions(
         context: CGContext,
         artworkCGImage: CGImage,
         artworkRect: CGRect,
+        artworkLeftEdgePixel: Int,
         artworkRightEdgePixel: Int,
         canvasPixelWidth: Int,
         canvasPixelHeight: Int,
         config: CoverGradientBlurConfig
     ) -> CGImage? {
 
+        if artworkLeftEdgePixel > 0 {
+            let extensionPixelStart = 0
+            let extensionPixelWidth = artworkLeftEdgePixel
+            let stripPixelWidth = Int(min(config.edgeStripWidth, artworkRect.width)) + 1
+            let stripPixelEnd = min(canvasPixelWidth, artworkLeftEdgePixel + stripPixelWidth)
+            let actualStripPixelWidth = max(0, stripPixelEnd - artworkLeftEdgePixel)
+
+            if actualStripPixelWidth > 0 {
+                let extensionRect = CGRect(
+                    x: CGFloat(extensionPixelStart),
+                    y: 0,
+                    width: CGFloat(extensionPixelWidth),
+                    height: CGFloat(canvasPixelHeight)
+                )
+                let normalizedStripWidth = CGFloat(actualStripPixelWidth) / max(1, artworkRect.width)
+                let sourceStripWidth = max(
+                    1,
+                    min(artworkCGImage.width, Int(ceil(normalizedStripWidth * CGFloat(artworkCGImage.width))))
+                )
+                let sourceStripRect = CGRect(
+                    x: 0,
+                    y: 0,
+                    width: sourceStripWidth,
+                    height: artworkCGImage.height
+                )
+
+                if let stripCGImage = artworkCGImage.cropping(to: sourceStripRect) {
+                    context.interpolationQuality = .high
+                    context.draw(stripCGImage, in: extensionRect)
+                }
+            }
+        }
+
         let extensionPixelStart = artworkRightEdgePixel
         let extensionPixelWidth = canvasPixelWidth - extensionPixelStart
+
+        guard extensionPixelWidth > 0 else {
+            return context.makeImage()
+        }
 
         let stripPixelWidth = Int(min(config.edgeStripWidth, artworkRect.width)) + 1
         let stripPixelStart = max(0, artworkRightEdgePixel - stripPixelWidth)
@@ -961,14 +1342,45 @@ enum CoverGradientBlurRenderer {
 
     // MARK: - Mirrored Cover Extension
 
-    private nonisolated static func renderMirroredCoverExtension(
+    private nonisolated static func renderMirroredCoverExtensions(
         context: CGContext,
         artworkCGImage: CGImage,
         artworkRect: CGRect,
+        artworkLeftEdgePixel: Int,
         artworkRightEdgePixel: Int,
         canvasPixelWidth: Int,
         canvasPixelHeight: Int
     ) -> CGImage? {
+
+        if artworkLeftEdgePixel > 0 {
+            let extensionPixelWidth = artworkLeftEdgePixel
+            let artworkHeight = artworkRect.height
+            let stretchRatio: CGFloat = 2.0
+            let stretchedWidth = artworkRect.width * stretchRatio
+            let targetRect = CGRect(
+                x: CGFloat(artworkLeftEdgePixel) - stretchedWidth,
+                y: 0,
+                width: stretchedWidth,
+                height: artworkHeight
+            )
+            let extensionClipRect = CGRect(
+                x: 0,
+                y: 0,
+                width: CGFloat(extensionPixelWidth),
+                height: CGFloat(canvasPixelHeight)
+            )
+
+            context.interpolationQuality = .high
+            context.saveGState()
+            context.clip(to: extensionClipRect)
+            context.translateBy(x: targetRect.minX + targetRect.width, y: targetRect.minY)
+            context.scaleBy(x: -1, y: 1)
+            context.draw(
+                artworkCGImage,
+                in: CGRect(x: 0, y: 0, width: targetRect.width, height: targetRect.height)
+            )
+            context.restoreGState()
+        }
 
         let extensionPixelStart = artworkRightEdgePixel
         let extensionPixelWidth = canvasPixelWidth - extensionPixelStart
