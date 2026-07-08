@@ -127,13 +127,11 @@ public final class AppSettings {
     /// LED sensitivity is now fixed; UI control was removed and the value is sourced from LEDDefaults.
     var ledSensitivity: Float { LEDDefaults.sensitivity }
 
-    /// LED cutoff frequency (Hz)
-    @ObservationIgnored
-    @AppStorage("ledCutoffHz") var ledCutoffHz: Double = LEDDefaults.cutoffHz
+    /// LED cutoff frequency is now fixed; UI control was removed and the value is sourced from LEDDefaults.
+    var ledCutoffHz: Double { LEDDefaults.cutoffHz }
 
-    /// LED response speed (0.5 to 2.0)
-    @ObservationIgnored
-    @AppStorage("ledSpeed") var ledSpeed: Double = LEDDefaults.speed
+    /// LED response speed is now fixed; UI control was removed and the value is sourced from LEDDefaults.
+    var ledSpeed: Double { LEDDefaults.speed }
 
     /// LED publish rate is now fixed; UI control was removed and the value is sourced from LEDDefaults.
     var ledTargetHz: Int { LEDDefaults.targetHz }

@@ -19,8 +19,6 @@ struct LEDMeterSettingsView: View {
     /// inside another settings container that already shows a title.
     let showTitle: Bool
 
-    @State private var cutoffHz: Double = AppSettings.shared.ledCutoffHz
-    @State private var speed: Double = AppSettings.shared.ledSpeed
     @State private var ledCount: Int = AppSettings.shared.ledCount
     @State private var brightnessLevels: Int = AppSettings.shared.ledBrightnessLevels
     @State private var hasActiveSession: Bool = false
@@ -58,13 +56,8 @@ struct LEDMeterSettingsView: View {
 
             // Visual Config
             visualConfigSection
-
-            // Tuning Sliders
-            tuningSection
         }
         .onAppear {
-            cutoffHz = settings.ledCutoffHz
-            speed = settings.ledSpeed
             ledCount = settings.ledCount
             brightnessLevels = settings.ledBrightnessLevels
             if !hasActiveSession {
@@ -78,8 +71,6 @@ struct LEDMeterSettingsView: View {
                 hasActiveSession = false
             }
         }
-        .onChange(of: cutoffHz) { _, _ in applyLedConfig() }
-        .onChange(of: speed) { _, _ in applyLedConfig() }
         .onChange(of: ledCount) { _, _ in applyLedConfig() }
         .onChange(of: brightnessLevels) { _, _ in applyLedConfig() }
     }
@@ -161,46 +152,7 @@ struct LEDMeterSettingsView: View {
         }
     }
 
-    private var tuningSection: some View {
-        SettingsSection {
-            VStack(alignment: .leading, spacing: 16) {
-                tuningSlidersContent
-            }
-        }
-    }
-
-    private var tuningSlidersContent: some View {
-        Group {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("settings.led.frequency")
-                        .settingsRowLabelStyle()
-                    Spacer()
-                    Text(String(format: "%.0f Hz", cutoffHz))
-                        .font(presentationStyle.rowValueFont)
-                        .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
-                }
-                Slider(value: $cutoffHz, in: 200...6000, step: 100)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("settings.led.speed")
-                        .settingsRowLabelStyle()
-                    Spacer()
-                    Text(String(format: "%.2fx", speed))
-                        .font(presentationStyle.rowValueFont)
-                        .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
-                }
-                Slider(value: $speed, in: 0.5...2.0, step: 0.05)
-            }
-        }
-        .padding(.horizontal, 10)
-    }
-
     private func applyLedConfig() {
-        settings.ledCutoffHz = cutoffHz
-        settings.ledSpeed = speed
         settings.ledCount = ledCount
         settings.ledBrightnessLevels = brightnessLevels
 
@@ -208,10 +160,10 @@ struct LEDMeterSettingsView: View {
             LEDMeterConfig(
                 ledCount: ledCount,
                 levels: brightnessLevels,
-                cutoffHz: Float(cutoffHz),
-                sensitivity: LEDDefaults.sensitivity,
-                speed: Float(speed),
-                targetHz: LEDDefaults.targetHz
+                cutoffHz: Float(settings.ledCutoffHz),
+                sensitivity: settings.ledSensitivity,
+                speed: Float(settings.ledSpeed),
+                targetHz: settings.ledTargetHz
             )
         )
     }
