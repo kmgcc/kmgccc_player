@@ -27,7 +27,7 @@ nonisolated struct LEDMeterConfig: Sendable {
 nonisolated enum LEDDefaults {
     static let ledCount: Int = 11
     static let levels: Int = 5
-    static let sensitivity: Float = 0.8
+    static let sensitivity: Float = 1.0
     static let targetHz: Int = 30
     static let cutoffHz: Double = 2400
     static let speed: Double = 1.15
