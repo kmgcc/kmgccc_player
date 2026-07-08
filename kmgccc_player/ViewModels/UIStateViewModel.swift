@@ -16,6 +16,11 @@ enum ContentMode: Equatable {
     case nowPlaying
 }
 
+struct SidebarNotice: Equatable, Identifiable, Sendable {
+    let id = UUID()
+    let message: String
+}
+
 /// Observable ViewModel for UI layout state.
 /// - Sidebar: Toggleable with width memory
 /// - Lyrics: Toggleable
@@ -39,6 +44,7 @@ final class UIStateViewModel {
 
     private let defaults = UserDefaults.standard
     private var isLoadingPersistedLayoutState = false
+    @ObservationIgnored private var sidebarNoticeDismissTask: Task<Void, Never>?
 
     // MARK: - Layout Visibility
 
@@ -98,6 +104,24 @@ final class UIStateViewModel {
 
     /// Current content mode (library or now playing)
     var contentMode: ContentMode = .library
+
+    /// Compact, transient notice shown in the sidebar bottom status area.
+    var sidebarNotice: SidebarNotice?
+
+    func showSidebarNotice(_ message: String, duration: TimeInterval = 1.8) {
+        let notice = SidebarNotice(message: message)
+        sidebarNotice = notice
+
+        sidebarNoticeDismissTask?.cancel()
+        let delay = UInt64(max(0.1, duration) * 1_000_000_000)
+        sidebarNoticeDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled else { return }
+            if self?.sidebarNotice?.id == notice.id {
+                self?.sidebarNotice = nil
+            }
+        }
+    }
 
     // MARK: - Navigation State
 

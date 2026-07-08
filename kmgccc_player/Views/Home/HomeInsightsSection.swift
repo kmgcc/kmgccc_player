@@ -650,6 +650,9 @@ private struct HomeRankRow: View {
                 track: item.track,
                 selectedPlaylistID: nil,
                 onPlay: play,
+                onPlayNext: playbackCoordinator.canInsertTracksAfterCurrent
+                    ? { playbackCoordinator.insertTracksAfterCurrent([item.track]) }
+                    : nil,
                 onEditTrack: onEditTrack
             )
         }

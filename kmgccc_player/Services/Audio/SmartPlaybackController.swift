@@ -39,6 +39,9 @@ final class SmartPlaybackController {
     /// Current track index in source array (for non-shuffle mode).
     private var currentSourceIndex: Int = -1
 
+    /// Last track in the explicit play-next block for sequential queues.
+    private var playNextInsertionAnchorID: UUID?
+
     // MARK: - Initialization
 
     init() {
@@ -80,6 +83,7 @@ final class SmartPlaybackController {
         sourceTracks = tracks
         isShuffleEnabled = shuffle
         currentSourceIndex = index
+        playNextInsertionAnchorID = nil
 
         if shuffle {
             // Initialize shuffle session.
@@ -103,6 +107,7 @@ final class SmartPlaybackController {
         let currentTrackID = preservePosition ? currentTrack?.id : nil
 
         sourceTracks = tracks
+        playNextInsertionAnchorID = nil
 
         if isShuffleEnabled, let session = shuffleSession {
             // Rebuild shuffle session with new tracks.
@@ -153,6 +158,34 @@ final class SmartPlaybackController {
             }
             shuffleSession = nil
         }
+        playNextInsertionAnchorID = nil
+    }
+
+    /// Insert tracks after the current play-next block without starting playback.
+    @discardableResult
+    func insertTracksAfterCurrent(_ tracks: [Track]) -> Int {
+        guard let currentTrack else { return 0 }
+        let insertionTracks = Self.playableUniqueTracks(from: tracks, excluding: currentTrack.id)
+        guard !insertionTracks.isEmpty else { return 0 }
+
+        if isShuffleEnabled, let session = shuffleSession {
+            sourceTracks = Self.replacingOrAppendingTracks(in: sourceTracks, with: insertionTracks)
+            return session.insertTracksAfterCurrent(insertionTracks)
+        }
+
+        let insertionIDs = Set(insertionTracks.map(\.id))
+        var queue = sourceTracks.filter { !insertionIDs.contains($0.id) }
+        guard let currentIndex = queue.firstIndex(where: { $0.id == currentTrack.id }) else {
+            return 0
+        }
+
+        let insertionIndex = playNextInsertionIndex(in: queue, currentIndex: currentIndex)
+        queue.insert(contentsOf: insertionTracks, at: insertionIndex)
+
+        sourceTracks = queue
+        currentSourceIndex = sourceTracks.firstIndex(where: { $0.id == currentTrack.id }) ?? currentIndex
+        playNextInsertionAnchorID = insertionTracks.last?.id
+        return insertionTracks.count
     }
 
     /// Mark the currently active playback session so its already-started stats will be dropped once.
@@ -597,6 +630,7 @@ final class SmartPlaybackController {
                 currentSourceIndex = index
             }
         }
+        playNextInsertionAnchorID = nil
         
         startTrackSession(track: track)
         onPlayTrack?(track)
@@ -630,5 +664,37 @@ final class SmartPlaybackController {
         // Shuffle mode: use session's peek.
         let previousIDs = session.peekPrevious(count: count)
         return previousIDs.compactMap { id in sourceTracks.first { $0.id == id } }
+    }
+
+    private func playNextInsertionIndex(in queue: [Track], currentIndex: Int) -> Int {
+        if let anchorID = playNextInsertionAnchorID,
+           let anchorIndex = queue.firstIndex(where: { $0.id == anchorID }),
+           anchorIndex >= currentIndex {
+            return min(anchorIndex + 1, queue.count)
+        }
+        return min(currentIndex + 1, queue.count)
+    }
+
+    private static func playableUniqueTracks(from tracks: [Track], excluding excludedID: UUID?) -> [Track] {
+        var seenIDs = Set<UUID>()
+        return tracks.filter { track in
+            guard track.id != excludedID else { return false }
+            guard track.availability != .missing else { return false }
+            return seenIDs.insert(track.id).inserted
+        }
+    }
+
+    private static func replacingOrAppendingTracks(in sourceTracks: [Track], with replacements: [Track]) -> [Track] {
+        guard !replacements.isEmpty else { return sourceTracks }
+
+        let replacementByID = Dictionary(uniqueKeysWithValues: replacements.map { ($0.id, $0) })
+        var merged = sourceTracks.map { replacementByID[$0.id] ?? $0 }
+        var existingIDs = Set(merged.map(\.id))
+
+        for track in replacements where existingIDs.insert(track.id).inserted {
+            merged.append(track)
+        }
+
+        return merged
     }
 }

@@ -572,6 +572,18 @@ struct PlaylistDetailView: View {
 
                 Divider()
 
+                if playbackCoordinator.canInsertTracksAfterCurrent {
+                    Button {
+                        processBatchAction(actionName: "batchPlayNext") { tracks in
+                            insertTracksAfterCurrent(tracks)
+                        }
+                    } label: {
+                        Label("下一首播放", systemImage: "text.line.first.and.arrowtriangle.forward")
+                    }
+
+                    Divider()
+                }
+
                 Button {
                     openBatchEditor()
                 } label: {
@@ -673,6 +685,9 @@ struct PlaylistDetailView: View {
                             libraryQueueSource: .librarySelection(selectionIdentity)
                         )
                     },
+                    onPlayNext: playbackCoordinator.canInsertTracksAfterCurrent
+                        ? { playbackCoordinator.insertTracksAfterCurrent([track]) }
+                        : nil,
                     onEditTrack: { trackToEdit = $0 },
                     onRemoveFromCurrentPlaylist: libraryVM.selectedPlaylist.map { currentPlaylist in
                         { track in
@@ -703,6 +718,13 @@ struct PlaylistDetailView: View {
                 pageController.clearMultiselectState()
             }
             ContextMenuDiagnostics.end(token)
+        }
+    }
+
+    @MainActor
+    private func insertTracksAfterCurrent(_ tracks: [Track]) {
+        if playbackCoordinator.insertTracksAfterCurrent(tracks) > 0 {
+            uiState.showSidebarNotice("已加入下一首")
         }
     }
 

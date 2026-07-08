@@ -68,6 +68,9 @@ final class ShuffleSession {
     /// Whether the session is active.
     private(set) var isActive: Bool = false
 
+    /// Last track in the explicit play-next block.
+    private var playNextInsertionAnchorID: UUID?
+
     /// Callback for loading track metadata (injected dependency).
     var trackLoader: ((UUID) -> Track?)?
 
@@ -111,6 +114,7 @@ final class ShuffleSession {
         generatedTrackIDs.removeAll()
         recentlyPlayedTrackIDs.removeAll()
         currentIndex = -1
+        playNextInsertionAnchorID = nil
 
         // If starting track specified, add it as first in sequence.
         if let startID = trackID,
@@ -148,6 +152,7 @@ final class ShuffleSession {
 
         generatedTrackIDs = filteredSequence
         sourceSnapshotTrackIDs = newTrackIDs
+        playNextInsertionAnchorID = nil
 
         // Update weights with new tracks.
         initializeWeights(tracks: tracks)
@@ -166,6 +171,7 @@ final class ShuffleSession {
         recentlyPlayedTrackIDs.removeAll()
         trackCache.removeAll()
         baseWeights.removeAll()
+        playNextInsertionAnchorID = nil
         isActive = false
     }
 
@@ -241,6 +247,38 @@ final class ShuffleSession {
 
         guard startIndex < endIndex else { return [] }
         return Array(generatedTrackIDs[startIndex..<endIndex])
+    }
+
+    /// Insert tracks into the generated sequence after the current play-next block.
+    @discardableResult
+    func insertTracksAfterCurrent(_ tracks: [Track]) -> Int {
+        guard isActive, currentIndex >= 0, currentIndex < generatedTrackIDs.count else {
+            return 0
+        }
+
+        let currentID = generatedTrackIDs[currentIndex]
+        let insertionTracks = Self.playableUniqueTracks(from: tracks, excluding: currentID)
+        guard !insertionTracks.isEmpty else { return 0 }
+
+        for track in insertionTracks {
+            trackCache[track.id] = track
+            if !sourceSnapshotTrackIDs.contains(track.id) {
+                sourceSnapshotTrackIDs.append(track.id)
+            }
+            updateBaseWeight(for: track)
+        }
+
+        let insertionIDs = Set(insertionTracks.map(\.id))
+        let keptSequence = generatedTrackIDs.enumerated().compactMap { index, trackID in
+            index > currentIndex && insertionIDs.contains(trackID) ? nil : trackID
+        }
+        let insertionIndex = playNextInsertionIndex(in: keptSequence, currentIndex: currentIndex)
+
+        generatedTrackIDs = keptSequence
+        generatedTrackIDs.insert(contentsOf: insertionTracks.map(\.id), at: insertionIndex)
+        playNextInsertionAnchorID = insertionTracks.last?.id
+        extendQueueIfNeeded()
+        return insertionTracks.count
     }
 
     // MARK: - Queue Extension
@@ -363,6 +401,34 @@ final class ShuffleSession {
         return adjustedWeights
     }
 
+    private func updateBaseWeight(for track: Track) {
+        let stats = PreferenceStatsService.shared.getStats(for: track.id)
+        let result = PreferenceScorerV2.calculateScore(
+            stats: stats,
+            duration: track.duration,
+            manualLikeState: stats.manualLikeState
+        )
+        baseWeights[track.id] = result.baseWeight
+    }
+
+    private func playNextInsertionIndex(in sequence: [UUID], currentIndex: Int) -> Int {
+        if let anchorID = playNextInsertionAnchorID,
+           let anchorIndex = sequence.firstIndex(of: anchorID),
+           anchorIndex >= currentIndex {
+            return min(anchorIndex + 1, sequence.count)
+        }
+        return min(currentIndex + 1, sequence.count)
+    }
+
+    private static func playableUniqueTracks(from tracks: [Track], excluding excludedID: UUID?) -> [Track] {
+        var seenIDs = Set<UUID>()
+        return tracks.filter { track in
+            guard track.id != excludedID else { return false }
+            guard track.availability != .missing else { return false }
+            return seenIDs.insert(track.id).inserted
+        }
+    }
+
     /// Amplify the most rediscovery-eligible candidates (low exposure / long
     /// unplayed, not recently played, not disliked / frequently quick-skipped).
     private func applyRediscoveryBoost(to weights: inout [UUID: Double], now: Date) {
@@ -427,6 +493,7 @@ final class ShuffleSession {
         
         // Update current index
         currentIndex = targetIndex
+        playNextInsertionAnchorID = nil
         
         // Update history to include tracks before current position
         recentlyPlayedTrackIDs = Array(generatedTrackIDs.prefix(targetIndex))

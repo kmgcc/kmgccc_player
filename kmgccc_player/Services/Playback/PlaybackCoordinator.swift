@@ -319,6 +319,10 @@ final class PlaybackCoordinator {
 
     // MARK: - Local Track Playback (auto-switches source)
 
+    var canInsertTracksAfterCurrent: Bool {
+        activeSource == .local && playerVM.currentTrack != nil
+    }
+
     func playTracks(
         _ tracks: [Track],
         startingAt index: Int = 0,
@@ -353,6 +357,17 @@ final class PlaybackCoordinator {
             startPolicy: startPolicy
         )
         scheduleSeekAfterLocalTrackLoad(trackID: tracks[index].id, seconds: seconds)
+    }
+
+    @discardableResult
+    func insertTracksAfterCurrent(_ tracks: [Track]) -> Int {
+        guard canInsertTracksAfterCurrent else { return 0 }
+        let insertedCount = playerVM.insertTracksAfterCurrent(tracks)
+        guard insertedCount > 0 else { return 0 }
+
+        refreshPresentation()
+        NowPlayingService.shared.updateNowPlaying(force: true)
+        return insertedCount
     }
 
     func playRandomTracks(_ tracks: [Track], libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil) {

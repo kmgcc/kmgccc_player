@@ -506,6 +506,9 @@ struct HomeHeroView: View {
                 onPlay: {
                     playHeroTrackInHomeQueue()
                 },
+                onPlayNext: playbackCoordinator.canInsertTracksAfterCurrent
+                    ? { playbackCoordinator.insertTracksAfterCurrent([track]) }
+                    : nil,
                 onEditTrack: { trackToEdit = $0 }
             )
         } label: {

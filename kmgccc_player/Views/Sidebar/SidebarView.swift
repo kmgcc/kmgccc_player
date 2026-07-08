@@ -445,6 +445,7 @@ struct SidebarView: View {
             }
         }
         .animation(.snappy(duration: 0.2), value: importEnrichmentService.hasOutstandingWork)
+        .animation(.snappy(duration: 0.2), value: uiState.sidebarNotice?.id)
     }
 
     private var legacyAppHeader: some View {
@@ -465,11 +466,18 @@ struct SidebarView: View {
     }
 
     private var hasSidebarTaskProgress: Bool {
-        updateDownloadManager.sidebarProgress != nil || importEnrichmentService.hasOutstandingWork
+        uiState.sidebarNotice != nil
+            || updateDownloadManager.sidebarProgress != nil
+            || importEnrichmentService.hasOutstandingWork
     }
 
     private var sidebarTaskProgressStack: some View {
         VStack(spacing: 6) {
+            if let notice = uiState.sidebarNotice {
+                SidebarNoticeView(notice: notice)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
             if let updateProgress = updateDownloadManager.sidebarProgress {
                 SidebarTaskProgressView(
                     progress: updateProgress,
@@ -841,6 +849,37 @@ private struct SidebarPlaylistThumbnail: View {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try? decoder.decode(PlaylistSidecar.self, from: data)
+    }
+}
+
+private struct SidebarNoticeView: View {
+    let notice: SidebarNotice
+
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(themeStore.accentColor)
+
+            Text(notice.message)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(themeStore.appForegroundPalette.primaryColor.opacity(0.055))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(themeStore.appForegroundPalette.secondaryColor.opacity(0.12), lineWidth: 0.5)
+        )
     }
 }
 
