@@ -749,7 +749,7 @@ struct LyricsFlatDriverView: View {
             .onAppear {
                 setupSeekCallback()
                 syncMainLyricsVisibility(
-                    isVisible: uiState.lyricsVisible,
+                    isVisible: isLyricsSurfaceActive,
                     reason: "flat driver appear"
                 )
             }
@@ -762,19 +762,25 @@ struct LyricsFlatDriverView: View {
             }
             .onChange(of: playbackCoordinator.presentation.hasTrack) { _, hasTrack in
                 syncMainLyricsVisibility(
-                    isVisible: uiState.lyricsVisible,
+                    isVisible: isLyricsSurfaceActive,
                     reason: "flat driver hasTrack changed",
                     hasTrackOverride: hasTrack
                 )
             }
             .onChange(of: uiState.lyricsVisible) { _, isVisible in
                 syncMainLyricsVisibility(
-                    isVisible: isVisible,
+                    isVisible: isVisible && !uiState.isWindowPlaybackQueueVisible,
                     reason: isVisible ? "flat lyrics expanded" : "flat lyrics collapsed"
                 )
             }
+            .onChange(of: uiState.isWindowPlaybackQueueVisible) { _, isQueueVisible in
+                syncMainLyricsVisibility(
+                    isVisible: uiState.lyricsVisible && !isQueueVisible,
+                    reason: isQueueVisible ? "flat window queue opened" : "flat window queue closed"
+                )
+            }
             .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
-                guard uiState.lyricsVisible else { return }
+                guard isLyricsSurfaceActive else { return }
                 guard
                     let trackID = notification.userInfo?["trackID"] as? UUID,
                     trackID == playbackCoordinator.presentation.localTrack?.id
@@ -782,33 +788,37 @@ struct LyricsFlatDriverView: View {
                 reloadLyrics(reason: "library track update", forceLyricsReload: true)
             }
             .onChange(of: themeStore.colorScheme) { _, _ in
-                guard uiState.lyricsVisible else { return }
+                guard isLyricsSurfaceActive else { return }
                 lyricsVM.refreshConfigFromSettings()
             }
             // Real-time sync — inlined from LyricsRealtimeSyncObserver (which is private).
             .onChange(of: playbackCoordinator.presentation.currentTime) { oldTime, newTime in
-                guard uiState.lyricsVisible else { return }
+                guard isLyricsSurfaceActive else { return }
                 lyricsVM.syncTime(playbackCoordinator.presentation.lyricsCurrentTime)
                 if oldTime > 1.0, newTime < 0.2 {
                     reloadLyrics(reason: "playback restarted", forceLyricsReload: true)
                 }
             }
             .onChange(of: playbackCoordinator.presentation.isPlaying) { _, newValue in
-                guard uiState.lyricsVisible else { return }
+                guard isLyricsSurfaceActive else { return }
                 if !newValue {
                     lyricsVM.syncTime(playbackCoordinator.presentation.lyricsCurrentTime)
                 }
                 lyricsVM.setPlaying(newValue)
             }
-            .modifier(LyricsSettingsObserver(lyricsVM: lyricsVM, isActive: uiState.lyricsVisible))
+            .modifier(LyricsSettingsObserver(lyricsVM: lyricsVM, isActive: isLyricsSurfaceActive))
             .onChange(of: amllLyricsRenderQuality) { _, newValue in
-                guard uiState.lyricsVisible else { return }
+                guard isLyricsSurfaceActive else { return }
                 let scale = AppSettings.AMLLLyricsRenderQuality(rawValue: newValue)?.webViewScale ?? 0.75
                 LyricsSurfaceManager.shared.mainStore.setRenderQualityScale(
                     scale,
                     reason: "flatDriver.qualityChanged"
                 )
             }
+    }
+
+    private var isLyricsSurfaceActive: Bool {
+        uiState.lyricsVisible && !uiState.isWindowPlaybackQueueVisible
     }
 
     private func setupSeekCallback() {

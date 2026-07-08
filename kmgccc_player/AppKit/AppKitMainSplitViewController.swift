@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import SwiftData
 import SwiftUI
 
 @MainActor
@@ -527,6 +528,14 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         lyricsItem.viewController.view.frame.width
     }
 
+    func containsWindowContentPointInLyricsPane(_ point: NSPoint) -> Bool {
+        guard isLyricsVisible else { return false }
+        guard let contentView = view.window?.contentView else { return false }
+        let lyricsView = lyricsItem.viewController.view
+        let lyricsRect = lyricsView.convert(lyricsView.bounds, to: contentView)
+        return lyricsRect.contains(point)
+    }
+
     private static let splitAutosaveDefaultsKey = "NSSplitView Subview Frames AppKitMainSplitView"
 
     private func describeDefault(_ key: String) -> String {
@@ -666,6 +675,8 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
     private var attachmentID: UUID?
     private var driverVC: NSViewController?
     private var backgroundVC: NSViewController?
+    private var queueOverlayVC: NSViewController?
+    private var playbackQueueVisibilityObserver: NSObjectProtocol?
     // WebViewHostView provides the correct superview type for mouse suppression and
     // scaled hit-testing (webViewLayoutScale) when render quality < 1.0.
     private var webViewHostView: WebViewHostView!
@@ -708,21 +719,27 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         view.addSubview(bgVC.view, positioned: .below, relativeTo: webViewHostView)
         addChild(bgVC)
         backgroundVC = bgVC
+        installQueueOverlayIfNeeded()
+        installPlaybackQueueVisibilityObserverIfNeeded()
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
+        installQueueOverlayIfNeeded()
+        installPlaybackQueueVisibilityObserverIfNeeded()
         syncVisibilityAndAttachment(reason: "flatHost.appear")
     }
 
     override func viewWillDisappear() {
         super.viewWillDisappear()
+        removePlaybackQueueVisibilityObserver()
         reportMainSurfaceVisible(false)
         detachWebView()
     }
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        installQueueOverlayIfNeeded()
         let inset = Self.horizontalInset
         // Always update the host frame so webViewHostView.bounds is correct when
         // viewDidAppear fires and attachWebViewIfNeeded reads it.
@@ -735,6 +752,7 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         if webViewHostView.frame != targetFrame {
             webViewHostView.frame = targetFrame
         }
+        queueOverlayVC?.view.frame = view.bounds
         syncVisibilityAndAttachment(reason: "flatHostLayout")
         // Guard: skip layout when the WebView is detached (attachmentID == nil).
         // viewDidLayout fires during the NSSplitView collapse animation after
@@ -767,8 +785,65 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         driverVC = vc
     }
 
+    private func installQueueOverlayIfNeeded() {
+        guard queueOverlayVC == nil else { return }
+        guard
+            let libraryVM = appSession.libraryVM,
+            let playerVM = appSession.playerVM,
+            let playbackCoordinator = appSession.playbackCoordinator,
+            let lyricsVM = appSession.lyricsVM,
+            let ledMeterProvider = appSession.ledMeterProvider,
+            let importEnrichmentService = appSession.importEnrichmentService,
+            let skinManager = appSession.skinManager
+        else { return }
+
+        let queueView = WindowPlaybackQueuePanelView()
+            .environment(AppSettings.shared)
+            .environment(appSession.uiState)
+            .environment(libraryVM)
+            .environment(playerVM)
+            .environment(playbackCoordinator)
+            .environment(lyricsVM)
+            .environment(ledMeterProvider)
+            .environment(importEnrichmentService)
+            .environment(skinManager)
+            .environmentObject(ThemeStore.shared)
+            .environment(\.libraryPresentedAccentColor, ThemeStore.shared.accentColor)
+            .modelContainer(appSession.sharedModelContainer)
+            .tint(ThemeStore.shared.accentColor)
+            .accentColor(ThemeStore.shared.accentColor)
+        let vc = NSHostingController(rootView: queueView)
+        vc.view.frame = view.bounds
+        vc.view.autoresizingMask = [.width, .height]
+        vc.view.wantsLayer = true
+        vc.view.layer?.backgroundColor = NSColor.clear.cgColor
+        view.addSubview(vc.view, positioned: .above, relativeTo: webViewHostView)
+        addChild(vc)
+        queueOverlayVC = vc
+    }
+
+    private func installPlaybackQueueVisibilityObserverIfNeeded() {
+        guard playbackQueueVisibilityObserver == nil else { return }
+        playbackQueueVisibilityObserver = NotificationCenter.default.addObserver(
+            forName: .windowPlaybackQueueVisibilityDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.syncVisibilityAndAttachment(reason: "windowQueueVisibilityChanged")
+            }
+        }
+    }
+
+    private func removePlaybackQueueVisibilityObserver() {
+        guard let playbackQueueVisibilityObserver else { return }
+        NotificationCenter.default.removeObserver(playbackQueueVisibilityObserver)
+        self.playbackQueueVisibilityObserver = nil
+    }
+
     private var shouldAttachLyricsWebView: Bool {
         appSession.uiState.lyricsVisible
+            && !appSession.uiState.isWindowPlaybackQueueVisible
             && view.window != nil
             && webViewHostView.bounds.width > 1
             && webViewHostView.bounds.height > 1

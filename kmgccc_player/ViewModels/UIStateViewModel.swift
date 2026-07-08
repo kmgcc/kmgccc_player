@@ -10,6 +10,10 @@
 import Foundation
 import SwiftUI
 
+extension Notification.Name {
+    static let windowPlaybackQueueVisibilityDidChange = Notification.Name("windowPlaybackQueueVisibilityDidChange")
+}
+
 /// Content mode for main area
 enum ContentMode: Equatable {
     case library
@@ -80,6 +84,9 @@ final class UIStateViewModel {
                 value: lyricsVisible,
                 oldValue: oldValue
             )
+            if !lyricsVisible {
+                isWindowPlaybackQueueVisible = false
+            }
             defaults.set(lyricsVisible, forKey: StorageKey.lyricsVisible)
         }
     }
@@ -87,6 +94,15 @@ final class UIStateViewModel {
     /// Temporarily hide the main lyrics panel when another lyrics surface
     /// (e.g. batch editor preview) is actively displayed.
     var lyricsPanelSuppressedByModal: Bool = false
+
+    /// Replaces the window lyrics inspector content with the current playback queue.
+    /// This is intentionally transient and not persisted across launches.
+    var isWindowPlaybackQueueVisible: Bool = false {
+        didSet {
+            guard oldValue != isWindowPlaybackQueueVisible else { return }
+            NotificationCenter.default.post(name: .windowPlaybackQueueVisibilityDidChange, object: nil)
+        }
+    }
 
     /// Current lyrics panel width (user-resizable).
     var lyricsWidth: CGFloat = Constants.Layout.lyricsPanelDefaultWidth {
@@ -121,6 +137,18 @@ final class UIStateViewModel {
                 self?.sidebarNotice = nil
             }
         }
+    }
+
+    func showWindowPlaybackQueue() {
+        isWindowPlaybackQueueVisible = true
+    }
+
+    func hideWindowPlaybackQueue() {
+        isWindowPlaybackQueueVisible = false
+    }
+
+    func toggleWindowPlaybackQueue() {
+        isWindowPlaybackQueueVisible.toggle()
     }
 
     // MARK: - Navigation State

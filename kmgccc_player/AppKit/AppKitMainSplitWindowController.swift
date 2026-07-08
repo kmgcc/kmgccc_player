@@ -66,6 +66,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     private var didInstallToolbar = false
     private var didReachPresentedState = false
     private var isClosingMainWindow = false
+    private var playbackQueueDismissMonitor: Any?
 
     private var externalPlaybackTipPopover: NSPopover?
     private var pendingTipDisplay: Bool = false
@@ -230,6 +231,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
             _ = window.setFrameUsingName(WindowMetrics.frameAutosaveName)
         }
         window.delegate = self
+        installPlaybackQueueDismissMonitorIfNeeded()
 
         // Install the toolbar only after the split view has applied its initial layout (viewDidAppear),
         // otherwise tracking separator items may bind too early (or throw during setToolbar).
@@ -247,6 +249,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
     func windowWillClose(_ notification: Notification) {
         isClosingMainWindow = true
+        removePlaybackQueueDismissMonitor()
         if let closingWindow = notification.object as? NSWindow {
             PaneLayoutTrace.log(
                 "windowWillClose frameSave embedded=\(FullscreenWindowManager.shared.presentationMode) sidebar=\(splitViewController.isSidebarVisible) lyrics=\(splitViewController.isLyricsVisible)"
@@ -287,6 +290,33 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         guard !isClosingMainWindow else { return }
         guard let movedWindow = notification.object as? NSWindow, movedWindow === window else { return }
         movedWindow.saveFrame(usingName: WindowMetrics.frameAutosaveName)
+    }
+
+    private func installPlaybackQueueDismissMonitorIfNeeded() {
+        guard playbackQueueDismissMonitor == nil else { return }
+        playbackQueueDismissMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
+            self?.dismissWindowPlaybackQueueIfNeeded(for: event)
+            return event
+        }
+    }
+
+    private func removePlaybackQueueDismissMonitor() {
+        guard let playbackQueueDismissMonitor else { return }
+        NSEvent.removeMonitor(playbackQueueDismissMonitor)
+        self.playbackQueueDismissMonitor = nil
+    }
+
+    private func dismissWindowPlaybackQueueIfNeeded(for event: NSEvent) {
+        guard appSession.uiState.isWindowPlaybackQueueVisible else { return }
+        guard let window, event.window === window else { return }
+        guard let contentView = window.contentView else { return }
+
+        let contentPoint = contentView.convert(event.locationInWindow, from: nil)
+        guard !splitViewController.containsWindowContentPointInLyricsPane(contentPoint) else { return }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.appSession.uiState.hideWindowPlaybackQueue()
+        }
     }
 
     func windowDidBecomeMain(_ notification: Notification) {

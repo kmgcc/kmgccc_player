@@ -55,7 +55,7 @@ struct LyricsPanelView: View {
 
                 setupSeekCallback()
                 syncMainLyricsSurfaceVisibility(
-                    isVisible: uiState.lyricsVisible,
+                    isVisible: isLyricsSurfaceActive,
                     reason: "lyrics panel appear"
                 )
                 FirstUseHitchDiagnostics.end(token)
@@ -76,19 +76,25 @@ struct LyricsPanelView: View {
             .onChange(of: playbackCoordinator.presentation.lyricsIdentity, handleTrackIdentityChange)
             .onChange(of: playbackCoordinator.presentation.hasTrack) { _, hasTrack in
                 syncMainLyricsSurfaceVisibility(
-                    isVisible: uiState.lyricsVisible,
+                    isVisible: isLyricsSurfaceActive,
                     reason: "presentation hasTrack changed",
                     hasTrackOverride: hasTrack
                 )
             }
             .onChange(of: uiState.lyricsVisible) { _, isVisible in
                 syncMainLyricsSurfaceVisibility(
-                    isVisible: isVisible,
+                    isVisible: isVisible && !uiState.isWindowPlaybackQueueVisible,
                     reason: isVisible ? "lyrics inspector expanded" : "lyrics inspector collapsed"
                 )
             }
+            .onChange(of: uiState.isWindowPlaybackQueueVisible) { _, isQueueVisible in
+                syncMainLyricsSurfaceVisibility(
+                    isVisible: uiState.lyricsVisible && !isQueueVisible,
+                    reason: isQueueVisible ? "window queue opened" : "window queue closed"
+                )
+            }
             .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
-                guard uiState.lyricsVisible else { return }
+                guard isLyricsSurfaceActive else { return }
                 guard
                     let trackID = notification.userInfo?["trackID"] as? UUID,
                     trackID == playbackCoordinator.presentation.localTrack?.id
@@ -96,19 +102,23 @@ struct LyricsPanelView: View {
                 reloadLyricsSurface(reason: "library track enrichment update", forceLyricsReload: true)
             }
             .onChange(of: themeStore.colorScheme) { _, _ in
-                guard uiState.lyricsVisible else { return }
+                guard isLyricsSurfaceActive else { return }
                 // Theme mode switches must immediately re-push AMLL config,
                 // so light/dark dedicated font weights take effect without waiting for settings edits.
                 lyricsVM.refreshConfigFromSettings()
             }
             // Settings observation moved to modifier to reduce compiler complexity
-            .modifier(LyricsSettingsObserver(lyricsVM: lyricsVM, isActive: uiState.lyricsVisible))
+            .modifier(LyricsSettingsObserver(lyricsVM: lyricsVM, isActive: isLyricsSurfaceActive))
             .overlay {
-                LyricsRealtimeSyncObserver(isActive: uiState.lyricsVisible) {
+                LyricsRealtimeSyncObserver(isActive: isLyricsSurfaceActive) {
                     reloadLyricsSurface(reason: "playback restarted", forceLyricsReload: true)
                 }
                 .allowsHitTesting(false)
             }
+    }
+
+    private var isLyricsSurfaceActive: Bool {
+        uiState.lyricsVisible && !uiState.isWindowPlaybackQueueVisible
     }
 
     @ViewBuilder
@@ -166,20 +176,25 @@ struct LyricsPanelView: View {
 
     @ViewBuilder
     private var panelContent: some View {
-        ZStack {
-            if !playbackCoordinator.presentation.hasTrack && !shouldHostLyricsWebView {
-                emptyStateView
-            }
+        if uiState.isWindowPlaybackQueueVisible {
+            WindowPlaybackQueuePanelView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        } else {
+            ZStack {
+                if !playbackCoordinator.presentation.hasTrack && !shouldHostLyricsWebView {
+                    emptyStateView
+                }
 
-            if shouldHostLyricsWebView {
-                AMLLWebView(store: lyricsVM.webViewStore, animatesAttachment: false)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.horizontal, 24)
-            }
+                if shouldHostLyricsWebView {
+                    AMLLWebView(store: lyricsVM.webViewStore, animatesAttachment: false)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(.horizontal, 24)
+                }
 
-            if playbackCoordinator.presentation.hasTrack,
-               let message = emptyLyricsMessage {
-                lyricsUnavailableOverlay(message: message)
+                if playbackCoordinator.presentation.hasTrack,
+                   let message = emptyLyricsMessage {
+                    lyricsUnavailableOverlay(message: message)
+                }
             }
         }
     }
@@ -322,6 +337,331 @@ struct LyricsPanelView: View {
         }
         .padding(.top, 12)
         .allowsHitTesting(false)
+    }
+}
+
+// MARK: - Window Playback Queue
+
+struct WindowPlaybackQueuePanelView: View {
+    @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(UIStateViewModel.self) private var uiState
+    @Environment(AppSettings.self) private var settings
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    @State private var hasPerformedInitialScroll = false
+
+    private var tracks: [Track] {
+        playerVM.currentQueueTracks
+    }
+
+    private var currentTrackID: UUID? {
+        playerVM.currentTrack?.id
+    }
+
+    private var playbackMode: PlaybackOrderMode {
+        playbackCoordinator.presentation.localPlaybackOrderMode ?? settings.playbackOrderMode
+    }
+
+    var body: some View {
+        if uiState.isWindowPlaybackQueueVisible {
+            VStack(spacing: 0) {
+                header
+                    .padding(.horizontal, 22)
+                    .padding(.top, 20)
+                    .padding(.bottom, 12)
+
+                if tracks.isEmpty {
+                    emptyQueueView
+                } else {
+                    queueList
+                        .padding(.horizontal, 14)
+                        .padding(.bottom, 18)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .contentShape(Rectangle())
+            .onTapGesture {}
+        } else {
+            Color.clear
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Image(systemName: modeIcon)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(secondaryForegroundColor)
+
+            Text(titleText)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(primaryForegroundColor)
+
+            Text("\(tracks.count) 首")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(secondaryForegroundColor)
+
+            Spacer(minLength: 8)
+
+            Button {
+                uiState.hideWindowPlaybackQueue()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(secondaryForegroundColor)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("关闭播放队列")
+        }
+    }
+
+    private var queueList: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: true) {
+                LazyVStack(spacing: 4) {
+                    Color.clear
+                        .frame(height: 8)
+                        .accessibilityHidden(true)
+
+                    ForEach(tracks) { track in
+                        WindowPlaybackQueueRow(
+                            track: track,
+                            isPlaying: track.id == currentTrackID,
+                            primaryColor: primaryForegroundColor,
+                            secondaryColor: secondaryForegroundColor,
+                            tertiaryColor: tertiaryForegroundColor,
+                            hoverFillColor: hoverFillColor
+                        )
+                        .id(track.id)
+                        .onTapGesture {
+                            playbackCoordinator.playTrackFromQueue(track)
+                        }
+                    }
+
+                    Color.clear
+                        .frame(height: 8)
+                        .accessibilityHidden(true)
+                }
+            }
+            .mask(queueListMask)
+            .onAppear {
+                revealCurrentTrack(using: proxy, animated: false)
+                hasPerformedInitialScroll = true
+            }
+            .onChange(of: currentTrackID) { _, newTrackID in
+                guard hasPerformedInitialScroll, let newTrackID else { return }
+                scrollToTrack(newTrackID, using: proxy, animated: true)
+            }
+            .onChange(of: tracks.map(\.id)) { _, _ in
+                guard hasPerformedInitialScroll else { return }
+                revealCurrentTrack(using: proxy, animated: true)
+            }
+        }
+    }
+
+    private var emptyQueueView: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "music.note.list")
+                .font(.system(size: 34, weight: .regular))
+                .foregroundStyle(tertiaryForegroundColor)
+
+            Text("当前没有播放队列")
+                .font(.subheadline)
+                .foregroundStyle(secondaryForegroundColor)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .padding(.bottom, 30)
+    }
+
+    private var queueListMask: some View {
+        VStack(spacing: 0) {
+            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                .frame(height: 14)
+            Rectangle().fill(.black)
+            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: 18)
+        }
+    }
+
+    private var titleText: String {
+        switch playbackMode {
+        case .sequence:
+            return "播放列表"
+        case .shuffle:
+            return "随机队列"
+        case .repeatOne:
+            return "单曲循环队列"
+        case .stopAfterTrack:
+            return "当前队列"
+        }
+    }
+
+    private var modeIcon: String {
+        switch playbackMode {
+        case .shuffle:
+            return "shuffle"
+        case .sequence:
+            return "list.bullet"
+        case .repeatOne:
+            return "repeat.1"
+        case .stopAfterTrack:
+            return "pause.circle"
+        }
+    }
+
+    private var primaryForegroundColor: Color {
+        themeStore.appForegroundPalette.primaryColor.opacity(0.96)
+    }
+
+    private var secondaryForegroundColor: Color {
+        themeStore.appForegroundPalette.secondaryColor.opacity(0.82)
+    }
+
+    private var tertiaryForegroundColor: Color {
+        themeStore.appForegroundPalette.tertiaryColor.opacity(0.72)
+    }
+
+    private var hoverFillColor: Color {
+        Color.primary.opacity(0.08)
+    }
+
+    private var queueScrollAnimation: Animation {
+        .timingCurve(0.22, 0.88, 0.24, 1.0, duration: 0.42)
+    }
+
+    private func revealCurrentTrack(using proxy: ScrollViewProxy, animated: Bool) {
+        guard let currentTrackID, tracks.contains(where: { $0.id == currentTrackID }) else { return }
+        scrollToTrack(currentTrackID, using: proxy, animated: animated)
+    }
+
+    private func scrollToTrack(_ trackID: UUID, using proxy: ScrollViewProxy, animated: Bool) {
+        DispatchQueue.main.async {
+            guard tracks.contains(where: { $0.id == trackID }) else { return }
+            if animated {
+                withAnimation(queueScrollAnimation) {
+                    proxy.scrollTo(trackID, anchor: UnitPoint(x: 0.5, y: 0.16))
+                }
+            } else {
+                proxy.scrollTo(trackID, anchor: UnitPoint(x: 0.5, y: 0.16))
+            }
+        }
+    }
+}
+
+private struct WindowPlaybackQueueRow: View {
+    let track: Track
+    let isPlaying: Bool
+    let primaryColor: Color
+    let secondaryColor: Color
+    let tertiaryColor: Color
+    let hoverFillColor: Color
+
+    @State private var isHovering = false
+    @State private var artworkImage: NSImage?
+
+    private let artworkSize: CGFloat = 38
+
+    var body: some View {
+        HStack(spacing: 10) {
+            artworkView
+                .frame(width: artworkSize, height: artworkSize)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(track.title)
+                    .font(.system(size: 13, weight: isPlaying ? .semibold : .medium))
+                    .foregroundStyle(isPlaying ? primaryColor : primaryColor.opacity(0.94))
+                    .lineLimit(1)
+
+                Text(artistText)
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(secondaryColor)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if isPlaying {
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(primaryColor)
+                    .frame(width: 24)
+            } else {
+                Text(formatDuration(track.duration))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(tertiaryColor)
+                    .monospacedDigit()
+            }
+        }
+        .padding(.horizontal, 9)
+        .frame(height: 52)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(rowFill)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovering = hovering
+        }
+        .task(id: currentArtworkTaskKey) {
+            await loadArtwork()
+        }
+    }
+
+    @ViewBuilder
+    private var artworkView: some View {
+        if let artworkImage {
+            Image(nsImage: artworkImage)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: artworkSize, height: artworkSize)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        } else {
+            ArtworkPlaceholderView.queueRow(
+                artworkSize: artworkSize,
+                scale: 1,
+                themeColor: isPlaying ? primaryColor : secondaryColor
+            )
+        }
+    }
+
+    private var rowFill: Color {
+        if isPlaying {
+            return primaryColor.opacity(0.13)
+        }
+        return isHovering ? hoverFillColor : Color.clear
+    }
+
+    private var artistText: String {
+        track.artist.isEmpty ? "未知艺人" : track.artist
+    }
+
+    private var currentArtworkTaskKey: String {
+        track.trackArtworkSource()?.sourceKey ?? "none-\(track.id.uuidString)"
+    }
+
+    private func loadArtwork() async {
+        guard let source = track.trackArtworkSource() else {
+            await MainActor.run {
+                artworkImage = nil
+            }
+            return
+        }
+
+        let image = await TrackArtworkCache.shared.thumbnail(for: source)
+        guard !Task.isCancelled else { return }
+        await MainActor.run {
+            artworkImage = image
+        }
+    }
+
+    private func formatDuration(_ duration: Double) -> String {
+        let totalSeconds = max(0, Int(duration))
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        return String(format: "%d:%02d", minutes, seconds)
     }
 }
 
