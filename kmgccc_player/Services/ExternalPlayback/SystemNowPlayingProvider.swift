@@ -549,6 +549,9 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         process.arguments = arguments
         process.standardOutput = stdout
         process.standardError = stderr
+        var env = ProcessInfo.processInfo.environment
+        env["NSUnbufferedIO"] = "YES"
+        process.environment = env
         process.terminationHandler = { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.streamGeneration == generation else { return }
@@ -861,6 +864,10 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             pendingArtworkIdentity = identity
         }
 
+        let providerArtwork = currentProviderArtworkData()
+        let providerArtworkChecksum = ArtworkAssetStore.checksum(for: providerArtwork)
+        let artworkChecksumChanged = providerArtwork != nil && providerArtworkChecksum != displayedArtwork.checksum
+
         latestRawMetadata = raw
         if didChangeTrack {
             resolveControlConvergenceAfterTrackChange(newCore: stableKey.identifier)
@@ -869,12 +876,27 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             if reliability == .reliable {
                 startResolutionIfNeeded(raw: raw, identity: identity)
             }
-        } else if didChangeStableMetadata {
-            // Playback state / metadata fill-in path: presentation only, no resolve.
-            Log.debug("[SystemNowPlaying] playback state update isPlaying=\(stableKey.playing) rate=\(stableKey.playbackRate) duration=\(stableKey.duration)", category: .playback)
-            updatePresentationFromLatestPayload(force: false)
         } else {
-            updateProgressPresentationFromBaseline()
+            if artworkChecksumChanged {
+                Log.info("[SystemNowPlaying] artwork checksum changed for same track identity=\(identity.prefix(16))", category: .playback)
+                if let effective = latestEffectiveMetadata {
+                    startArtworkResolution(
+                        identity: identity,
+                        effective: effective,
+                        matchedTrack: latestMatchedTrack,
+                        manualOverrideArtwork: metadataStore.cachedArtwork(for: identity, source: "manualOverride"),
+                        cachedNetworkArtwork: metadataStore.cachedNetworkArtwork(for: identity),
+                        providerArtwork: providerArtwork
+                    )
+                }
+            }
+            if didChangeStableMetadata {
+                // Playback state / metadata fill-in path: presentation only, no resolve.
+                Log.debug("[SystemNowPlaying] playback state update isPlaying=\(stableKey.playing) rate=\(stableKey.playbackRate) duration=\(stableKey.duration)", category: .playback)
+                updatePresentationFromLatestPayload(force: false)
+            } else {
+                updateProgressPresentationFromBaseline()
+            }
         }
     }
 
@@ -1863,6 +1885,8 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
               let rawTitle = payload.title,
               let identity = latestIdentity else { return }
 
+        let override = metadataStore.override(for: identity)
+        let externalLyricsTimeOffsetMs = override?.lyricsTimeOffsetMs ?? latestMatchedTrack?.lyricsTimeOffsetMs
         let raw = latestRawMetadata
         let effective = latestEffectiveMetadata
         let displayTitle = effective?.title ?? raw?.title ?? rawTitle
@@ -1900,6 +1924,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             externalMatchConfidence: latestMatchResult?.confidence,
             externalLyricsStatusMessage: externalLyricsStatusMessage(for: resolvedLyricsText),
             externalConnectionState: presentationConnectionState,
+            externalLyricsTimeOffsetMs: externalLyricsTimeOffsetMs,
             isControlEnabled: capabilities.canControlPlayback,
             isSeekEnabled: false,
             isVolumeControlEnabled: capabilities.canSetVolume,
@@ -2130,6 +2155,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         pendingArtworkIdentity = identity
         updatePresentationFromLatestPayload()
 
+        artworkTask?.cancel()
         let resolver = artworkResolver
         let metadataStore = metadataStore
         let matchedTrackID = matchedTrack?.id
@@ -2220,7 +2246,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     private func commitArtworkResolutionFinishedWithoutArtwork(identity: String) {
         guard canApplyCurrentResolution(identity: identity) else { return }
         pendingArtworkIdentity = nil
-        displayedArtwork = .none
+        displayedArtwork = ResolvedArtwork(identity: identity, source: .none, data: nil, displayTrackID: nil)
         isInvalidatingCurrentResolution = false
         updatePresentationFromLatestPayload()
     }

@@ -278,16 +278,22 @@ struct LiveLedMeterView: View {
     }
 }
 
-private struct LiveLedMeterLayerConfiguration {
+private struct LiveLedMeterLayerConfiguration: Equatable {
     let ledCount: Int
     let brightnessLevels: Int
     let dotSize: CGFloat
     let spacing: CGFloat
     let isPlaying: Bool
     let colors: LiveLedMeterLayerColors
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.ledCount == rhs.ledCount && lhs.brightnessLevels == rhs.brightnessLevels
+            && lhs.dotSize == rhs.dotSize && lhs.spacing == rhs.spacing
+            && lhs.isPlaying == rhs.isPlaying && lhs.colors == rhs.colors
+    }
 }
 
-private struct LiveLedMeterLayerColors {
+private struct LiveLedMeterLayerColors: Equatable {
     let signature: Int
     let baseFill: CGColor
     let dividerFill: CGColor
@@ -354,6 +360,10 @@ private struct LiveLedMeterLayerColors {
             return 0.08 + pow(t, 1.55) * 0.92
         }
         return 0.06 + pow(t, 1.65) * 0.94
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.signature == rhs.signature
     }
 
     private static func append(_ color: CGColor, to hasher: inout Hasher) {
@@ -433,6 +443,14 @@ private final class LiveLedMeterLayerHostView: NSView {
         _ configuration: LiveLedMeterLayerConfiguration,
         provider: LEDMeterServiceProvider
     ) {
+        Log.warning("[FS-DIAG] LiveLedMeter.configure BEGIN t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
+        // Defense-in-depth: skip if configuration hasn't changed.
+        // Equatable on LiveLedMeterLayerConfiguration should prevent most
+        // redundant updateNSView calls, but this guard catches any remaining
+        // re-entrant calls before they touch the @Observable provider.
+        if let lastConfig = self.configuration, lastConfig == configuration, self.provider === provider {
+            return
+        }
         if self.provider !== provider {
             unbind()
             self.provider = provider
@@ -459,6 +477,7 @@ private final class LiveLedMeterLayerHostView: NSView {
         syncBindingIfPossible()
         provider.updatePlaybackState(isPlaying: configuration.isPlaying)
         updateBreathTimer()
+        Log.warning("[FS-DIAG] LiveLedMeter.configure END t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
     }
 
     func unbind() {

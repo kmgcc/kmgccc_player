@@ -1235,6 +1235,7 @@ private struct PillSpectrumView: View {
 }
 
 private struct PillSpectrumContainer: NSViewRepresentable {
+
     let isPlaying: Bool
     let usesDarkForeground: Bool
     var lightModeDarkening: Bool = false
@@ -1252,6 +1253,9 @@ private struct PillSpectrumContainer: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: CapsuleSpectrumHostView, context: Context) {
+        let newHash = currentIdentityHash
+        if nsView.pillSpectrumIdentityHash == newHash { return }
+        nsView.pillSpectrumIdentityHash = newHash
         nsView.configure(makeConfiguration())
         applyColors(to: nsView)
         nsView.setPlayback(isPlaying: isPlaying)
@@ -1259,6 +1263,22 @@ private struct PillSpectrumContainer: NSViewRepresentable {
 
     static func dismantleNSView(_ nsView: CapsuleSpectrumHostView, coordinator: ()) {
         nsView.stop()
+    }
+
+    private var currentIdentityHash: Int {
+        var hasher = Hasher()
+        hasher.combine(isPlaying)
+        hasher.combine(usesDarkForeground)
+        hasher.combine(lightModeDarkening)
+        hasher.combine(capsuleWidth)
+        hasher.combine(capsuleSpacing)
+        hasher.combine(SpectrumColorResolver.colorSignature(
+            artworkColors: artworkColors,
+            accentColor: artworkAccentColor,
+            usesDarkForeground: usesDarkForeground,
+            lightModeDarkening: lightModeDarkening
+        ))
+        return hasher.finalize()
     }
 
     private func makeConfiguration() -> CapsuleSpectrumConfiguration {

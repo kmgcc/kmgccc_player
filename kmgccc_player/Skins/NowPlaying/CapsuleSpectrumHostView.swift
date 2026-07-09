@@ -177,6 +177,10 @@ struct CapsuleSpectrumConfiguration {
 @MainActor
 final class CapsuleSpectrumHostView: NSView {
 
+    /// Tracks the hash of the last applied PillSpectrumContainer.Identity
+    /// so updateNSView can skip redundant configure/applyColors/setPlayback calls.
+    var pillSpectrumIdentityHash: Int?
+
     private let service = AudioVisualizationService.shared
     private let rootLayer = CALayer()
     private var capsuleLayers: [CALayer] = []

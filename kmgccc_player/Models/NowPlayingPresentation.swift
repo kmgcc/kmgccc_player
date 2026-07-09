@@ -46,6 +46,7 @@ struct NowPlayingPresentation {
     var externalMatchConfidence: Double?
     var externalLyricsStatusMessage: String?
     var externalConnectionState: ExternalPlaybackConnectionState?
+    var externalLyricsTimeOffsetMs: Double? = nil
     var isControlEnabled: Bool
     var isSeekEnabled: Bool
     var isVolumeControlEnabled: Bool
@@ -80,6 +81,7 @@ struct NowPlayingPresentation {
         externalMatchConfidence: nil,
         externalLyricsStatusMessage: nil,
         externalConnectionState: nil,
+        externalLyricsTimeOffsetMs: nil,
         isControlEnabled: false,
         isSeekEnabled: false,
         isVolumeControlEnabled: true,
@@ -115,6 +117,7 @@ struct NowPlayingPresentation {
         externalMatchConfidence: nil,
         externalLyricsStatusMessage: nil,
         externalConnectionState: .disconnected,
+        externalLyricsTimeOffsetMs: nil,
         isControlEnabled: false,
         isSeekEnabled: false,
         isVolumeControlEnabled: true,
@@ -150,6 +153,7 @@ struct NowPlayingPresentation {
         externalMatchConfidence: nil,
         externalLyricsStatusMessage: nil,
         externalConnectionState: .disconnected,
+        externalLyricsTimeOffsetMs: nil,
         isControlEnabled: false,
         isSeekEnabled: false,
         isVolumeControlEnabled: false,
@@ -201,6 +205,7 @@ extension NowPlayingPresentation {
         externalMatchConfidence == other.externalMatchConfidence &&
         externalLyricsStatusMessage == other.externalLyricsStatusMessage &&
         externalConnectionState == other.externalConnectionState &&
+        externalLyricsTimeOffsetMs == other.externalLyricsTimeOffsetMs &&
         isControlEnabled == other.isControlEnabled &&
         isSeekEnabled == other.isSeekEnabled &&
         isVolumeControlEnabled == other.isVolumeControlEnabled &&

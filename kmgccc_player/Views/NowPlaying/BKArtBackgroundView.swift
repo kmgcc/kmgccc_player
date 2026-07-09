@@ -440,6 +440,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
     let analysis: ArtworkColorAnalysis?
 
     func makeNSView(context: Context) -> BKArtBackgroundLayerView {
+        Log.warning("[FS-DIAG] BKArtBackground.makeNSView BEGIN t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
         let contentView = BKArtBackgroundLayerView()
         contentView.backgroundController = controller
         contentView.trackID = trackID
@@ -455,6 +456,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: BKArtBackgroundLayerView, context: Context) {
+        Log.warning("[FS-DIAG] BKArtBackground.updateNSView BEGIN t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
         nsView.backgroundController = controller
         nsView.trackID = trackID
         nsView.updatePalette(palette, isDark: isDark, analysis: analysis)
@@ -808,12 +810,14 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     func prepareForDismissal() {
+        Log.warning("[FS-DIAG] BKArtBackground.prepareForDismissal BEGIN t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
         stopTimers()
         releaseHeavyResources()
         activeAvoidanceRect = nil
         backgroundController = nil
         trackID = nil
         tearDownRootLayer()
+        Log.warning("[FS-DIAG] BKArtBackground.prepareForDismissal END t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
     }
 
     func updateResourceProfile(_ profile: BKArtBackgroundView.ResourceProfile) {
@@ -1004,6 +1008,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     func ensureBaseContainer(seed: UInt64) {
+        Log.warning("[FS-DIAG] BKArtBackground.ensureBaseContainer BEGIN t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
         rebuildSeed = seed
         guard fromContainer == nil, !bounds.isEmpty else { return }
         ensureRootLayerIfNeeded()
@@ -1016,6 +1021,7 @@ private final class BKArtBackgroundLayerView: NSView {
         publishCurrentSurfaceBackgroundColor()
         startTimersIfNeeded()
         scheduleInitialResourceUpgradeIfNeeded()
+        Log.warning("[FS-DIAG] BKArtBackground.ensureBaseContainer END t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
     }
 
     @discardableResult

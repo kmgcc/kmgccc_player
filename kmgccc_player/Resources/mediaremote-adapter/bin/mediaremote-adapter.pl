@@ -6,6 +6,7 @@
 
 use strict;
 use warnings;
+$| = 1;
 use DynaLoader;
 use File::Spec;
 use File::Basename;

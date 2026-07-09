@@ -39,6 +39,7 @@ struct ExternalPlaybackMatchOverride: Codable, Equatable, Sendable {
     var album: String?
     var manuallySelectedLyrics: String?
     var manuallySelectedLyricsSource: String?
+    var lyricsTimeOffsetMs: Double?
     var updatedAt: Date
 
     var isEmpty: Bool {
@@ -46,6 +47,7 @@ struct ExternalPlaybackMatchOverride: Codable, Equatable, Sendable {
             && (artist?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
             && (album?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
             && (manuallySelectedLyrics?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            && lyricsTimeOffsetMs == nil
     }
 
     var fingerprint: String {

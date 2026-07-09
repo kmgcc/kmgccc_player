@@ -156,7 +156,7 @@ struct LEDMeterSettingsView: View {
         settings.ledCount = ledCount
         settings.ledBrightnessLevels = brightnessLevels
 
-        ledMeterProvider.getOrCreate().updateConfig(
+        ledMeterProvider.getOrCreate()?.updateConfig(
             LEDMeterConfig(
                 ledCount: ledCount,
                 levels: brightnessLevels,

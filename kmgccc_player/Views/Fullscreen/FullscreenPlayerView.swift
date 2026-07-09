@@ -425,6 +425,10 @@ struct FullscreenPlayerView: View {
         .onDisappear(perform: handleFullscreenDisappear)
         .onChange(of: settings.fullscreen.skinID) { oldValue, newValue in
             skinRevision &+= 1
+            Log.warning(
+                "[FS-DIAG] onChange(skinID) old=\(oldValue) new=\(newValue) external=\(playbackCoordinator.presentation.source.isExternal) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
+                category: .fullscreen
+            )
             if oldValue == "kmgccc.cassette", newValue != oldValue {
                 Task {
                     await CassetteArtworkCache.shared.removeAll()
@@ -432,14 +436,26 @@ struct FullscreenPlayerView: View {
             }
             let coverBlurTransition = oldValue == "fullscreen.coverGradientBlur"
                 || newValue == "fullscreen.coverGradientBlur"
+            Log.warning(
+                "[FS-DIAG] onChange(skinID) syncCoverBlurHighlight BEGIN external=\(playbackCoordinator.presentation.source.isExternal) coverBlurTransition=\(coverBlurTransition) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
+                category: .fullscreen
+            )
             syncCoverBlurHighlightActivation()
             if coverBlurTransition {
+                Log.warning(
+                    "[FS-DIAG] onChange(skinID) reloadLyricsSurface CALL external=\(playbackCoordinator.presentation.source.isExternal) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
+                    category: .fullscreen
+                )
                 reloadLyricsSurface(reason: "fullscreen skin changed", forceLyricsReload: true)
             } else {
                 applyFullscreenLyricsTheme(force: true, reason: "fullscreen skin changed")
             }
         }
         .onChange(of: fullscreenLedServiceSignature) { _, _ in
+            Log.warning(
+                "[FS-DIAG] onChange(skinID) syncFullscreenLedService CALL external=\(playbackCoordinator.presentation.source.isExternal) sig=\(fullscreenLedServiceSignature) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
+                category: .fullscreen
+            )
             syncFullscreenLedService()
         }
         .onChange(of: playerVM.currentTime, handleCurrentTimeChange)
@@ -517,6 +533,10 @@ struct FullscreenPlayerView: View {
 
     private func handleFullscreenAppear() {
         guard !didHandleFullscreenAppear else { return }
+        Log.warning(
+            "[FS-DIAG] handleFullscreenAppear ENTER host=\(hostContext.rawValue) skin=\(settings.fullscreen.skinID) external=\(playbackCoordinator.presentation.source.isExternal) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
+            category: .fullscreen
+        )
         didHandleFullscreenAppear = true
         Log.info(
             "FullscreenPlayerView appeared context=\(hostContext.rawValue)",
@@ -526,6 +546,10 @@ struct FullscreenPlayerView: View {
             setPointerOverMiniPlayerOcclusion(isOccluded, reason: "mouse-location")
         }
 
+        Log.warning(
+            "[FS-DIAG] handleFullscreenAppear syncCoverBlurHighlight BEGIN t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
+            category: .fullscreen
+        )
         syncCoverBlurHighlightActivation()
         resetFullscreenLyricsBackgroundSnapshot()
         scheduleFullscreenLyricsBackgroundCapture()
@@ -537,6 +561,10 @@ struct FullscreenPlayerView: View {
             startFullscreenLyricsSurface(reason: "fullscreen appear")
         }
         resetFullscreenBottomControlsAutoHideState()
+        Log.warning(
+            "[FS-DIAG] handleFullscreenAppear syncFullscreenLedService CALL t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
+            category: .fullscreen
+        )
         syncFullscreenLedService()
         showPlaybackModeRetapTipIfNeeded()
     }
@@ -713,6 +741,8 @@ struct FullscreenPlayerView: View {
             if hasRenderableGeometry {
                 fullscreenBackgroundLayer(selectedSkin: selectedSkin, scale: scale)
                     .id("\(skinIdentity)_bg")
+                    .onAppear { Log.warning("[FS-DIAG] skinBg onAppear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
+                    .onDisappear { Log.warning("[FS-DIAG] skinBg onDisappear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
 
                 // Layer 1: AMLL lyrics at actual resolution.
                 // NOT under the skin-keyed `.id()` — stays mounted across
@@ -725,6 +755,8 @@ struct FullscreenPlayerView: View {
                     .frame(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight)
                     .scaleEffect(scale, anchor: .center)
                     .id("\(skinIdentity)_scaled")
+                    .onAppear { Log.warning("[FS-DIAG] skinScaled onAppear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
+                    .onDisappear { Log.warning("[FS-DIAG] skinScaled onDisappear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
 
                 // Layer 3: Bottom bar at actual resolution - on top
                 fullscreenBottomBarLayer(
@@ -734,6 +766,7 @@ struct FullscreenPlayerView: View {
                 )
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .id("\(skinIdentity)_bottom")
+                    .onAppear { Log.warning("[FS-DIAG] skinBottom onAppear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
             } else {
                 Color.clear
             }
@@ -2476,7 +2509,13 @@ struct FullscreenPlayerView: View {
     private func syncFullscreenLedService() {
         let enabled = isLedEnabledForFullscreenSkin()
         if enabled {
-            ledMeterProvider.getOrCreate()
+        let _fsLedEnabled = enabled
+        let _fsLedGetOrCreateNil = ledMeterProvider.getOrCreate() == nil
+        Log.warning(
+            "[FS-DIAG] syncFullscreenLedService BODY ledEnabled=\(_fsLedEnabled) getOrCreateNil=\(_fsLedGetOrCreateNil) external=\(playbackCoordinator.presentation.source.isExternal) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
+            category: .fullscreen
+        )
+            ledMeterProvider.getOrCreate()?
                 .updatePlaybackState(isPlaying: playbackCoordinator.presentation.isPlaying)
         } else {
             ledMeterProvider.releaseNowPlayingResources()
@@ -2671,10 +2710,12 @@ struct FullscreenPlayerView: View {
             context: overlayContext,
             playbackSource: presentation.source
         )
-        let trackOffsetMs = max(
-            -15000,
-            min(15000, presentation.localTrack?.lyricsTimeOffsetMs ?? 0)
-        )
+        let trackOffsetMs: Double
+        if presentation.source.isExternal {
+            trackOffsetMs = max(-15000, min(15000, presentation.externalLyricsTimeOffsetMs ?? 0))
+        } else {
+            trackOffsetMs = max(-15000, min(15000, presentation.localTrack?.lyricsTimeOffsetMs ?? 0))
+        }
         let effectiveGlobalAdvanceMs = max(
             -5000,
             min(5000, settings.lyricsGlobalAdvanceMs + overlay.globalAdvanceDeltaMs)
@@ -2865,6 +2906,10 @@ struct FullscreenPlayerView: View {
         forceLocalLyricsReload: Bool = false,
         forcedCurrentTime: Double? = nil
     ) {
+        Log.warning(
+            "[FS-DIAG] reloadLyricsSurface ENTER reason=\(reason) forceLyricsReload=\(forceLyricsReload) external=\(playbackCoordinator.presentation.source.isExternal) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
+            category: .fullscreen
+        )
         syncCoverBlurHighlightActivation()
 
         var playbackPayload = makeFullscreenPlaybackPayload(
@@ -3429,7 +3474,12 @@ struct FullscreenPlayerView: View {
                 category: .theme
             )
         }
-        let trackOffsetMs = max(-15000, min(15000, effectiveTrack?.lyricsTimeOffsetMs ?? 0))
+        let trackOffsetMs: Double
+        if playbackCoordinator.presentation.source.isExternal {
+            trackOffsetMs = max(-15000, min(15000, playbackCoordinator.presentation.externalLyricsTimeOffsetMs ?? 0))
+        } else {
+            trackOffsetMs = max(-15000, min(15000, effectiveTrack?.lyricsTimeOffsetMs ?? 0))
+        }
         let effectiveGlobalAdvanceMs = max(
             -5000,
             min(5000, settings.lyricsGlobalAdvanceMs + overlay.globalAdvanceDeltaMs)

@@ -20,6 +20,7 @@ struct ExternalPlaybackInfoEditorView: View {
     @State private var lyricsTimeOffsetMs: Double = 0
 
     private let stableKey: String?
+    private let initialLyricsTimeOffsetMs: Double
     private let rawTitle: String
     private let rawArtist: String
     private let rawAlbum: String
@@ -44,6 +45,8 @@ struct ExternalPlaybackInfoEditorView: View {
         self.initialLyricsText = LyricsFormatSupport.normalizedTTMLText(manualLyrics)
             ?? LyricsFormatSupport.normalizedTTMLText(presentation.lyricsText)
             ?? ""
+        let existingOverride = stableKey.flatMap { ExternalPlaybackMetadataStore.shared.override(for: $0) }
+        self.initialLyricsTimeOffsetMs = existingOverride?.lyricsTimeOffsetMs ?? 0
         self.initialArtworkData = presentation.artworkData
 
         _title = State(initialValue: initialTitle)
@@ -51,6 +54,7 @@ struct ExternalPlaybackInfoEditorView: View {
         _album = State(initialValue: initialAlbum)
         _lyricsText = State(initialValue: initialLyricsText)
         _artworkData = State(initialValue: initialArtworkData)
+        _lyricsTimeOffsetMs = State(initialValue: initialLyricsTimeOffsetMs)
     }
 
     var body: some View {
@@ -60,7 +64,7 @@ struct ExternalPlaybackInfoEditorView: View {
             rawReference: rawReference,
             lyricsSearchTrack: nil,
             allowsArtworkImport: true,
-            allowsLyricsOffset: false,
+            allowsLyricsOffset: true,
             allowsDescriptionEditing: false,
             canSave: canSave,
             saveTitle: LocalizedStringKey("保存外部播放匹配"),
@@ -116,6 +120,7 @@ struct ExternalPlaybackInfoEditorView: View {
             || album != initialAlbum
             || lyricsText != initialLyricsText
             || artworkData != initialArtworkData
+            || lyricsTimeOffsetMs != initialLyricsTimeOffsetMs
     }
 
     private func saveExternalEdits() {
@@ -127,6 +132,7 @@ struct ExternalPlaybackInfoEditorView: View {
             album: overrideValue(album, raw: rawAlbum),
             manuallySelectedLyrics: existingOverride?.manuallySelectedLyrics,
             manuallySelectedLyricsSource: existingOverride?.manuallySelectedLyricsSource,
+            lyricsTimeOffsetMs: lyricsTimeOffsetMs == 0 ? nil : lyricsTimeOffsetMs,
             updatedAt: Date()
         )
         ExternalPlaybackMetadataStore.shared.saveOverride(override, for: stableKey)
