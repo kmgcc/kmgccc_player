@@ -195,39 +195,31 @@ public final class FullscreenPresentationCoordinator {
     public func setSkinID(_ skinID: String) {
         let currentConfig = configuration
         let previousID = currentConfig.skinID
-        let proposed = FullscreenPresentationConfiguration(
-            skinID: skinID,
-            visualizerMode: currentConfig.visualizerMode
-        )
-        updateConfiguration(applyingMiniPlayerSpectrumDefaultIfNeeded(to: proposed))
-        applyFullscreenSkinEntryDefaults(previous: previousID, new: skinID)
-    }
+        guard previousID != skinID else { return }
 
-    /// Apply one-shot fullscreen LED defaults on a real skin transition. Mirrors
-    /// `AppSettings.applySkinEntryDefaults` for the fullscreen-side settings keys.
-    /// - Only fires when previous != new (so init / cold start never trigger).
-    /// - Cassette is intentionally left untouched.
-    /// - User toggles inside the same skin persist (no transition fires while
-    ///   the skin stays the same).
-    /// - Switching out and back DOES re-apply the default — matches the user
-    ///   spec "切出再切回 Classic / RotatingCover 默认再次开 LED".
-    private func applyFullscreenSkinEntryDefaults(previous: String, new: String) {
-        guard previous != new else { return }
+        var targetVisualizerMode = currentConfig.visualizerMode
+
         let defaults = UserDefaults.standard
-        switch new {
+        switch skinID {
         case FullscreenSkinID.coverLed.rawValue:
             defaults.set("led", forKey: Keys.classicLEDVisualizer)
-            setVisualizerMode(.skinVisualizer)
+            targetVisualizerMode = .skinVisualizer
         case FullscreenSkinID.appleStyle.rawValue:
             defaults.set("led", forKey: Keys.appleStyleVisualizer)
-            setVisualizerMode(.skinVisualizer)
+            targetVisualizerMode = .skinVisualizer
         case FullscreenSkinID.rotatingCover.rawValue:
             defaults.set("led", forKey: Keys.rotatingCoverVisualizer)
             defaults.set(true, forKey: "skin.rotatingCover.cdMode")
-            setVisualizerMode(.skinVisualizer)
+            targetVisualizerMode = .skinVisualizer
         default:
             break
         }
+
+        let proposed = FullscreenPresentationConfiguration(
+            skinID: skinID,
+            visualizerMode: targetVisualizerMode
+        )
+        updateConfiguration(applyingMiniPlayerSpectrumDefaultIfNeeded(to: proposed))
     }
 
     public func setVisualizerMode(_ mode: FullscreenVisualizerMode) {

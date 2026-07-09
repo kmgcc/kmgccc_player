@@ -567,6 +567,7 @@ final class AppleMusicPlaybackAdapter {
             resolvedLyricsText = nil
             autoLyricsLookupState = .idle
             pendingArtworkIdentity = identity
+            displayedArtwork = .none
         }
 
         latestRawMetadata = raw
@@ -580,7 +581,8 @@ final class AppleMusicPlaybackAdapter {
         raw: ExternalPlaybackRawMetadata,
         identity: String
     ) {
-        guard resolvedRawMetadata != raw else { return }
+        let needsArtwork = displayedArtwork.identity != identity
+        guard resolvedRawMetadata != raw || needsArtwork else { return }
         guard resolutionTask == nil else { return }
 
         let metadataStore = self.metadataStore
@@ -726,6 +728,7 @@ final class AppleMusicPlaybackAdapter {
         let displayedArtworkForPresentation = displayedArtwork
         let isArtworkLoading = pendingArtworkIdentity == identity
 
+        let externalLyricsTimeOffsetMs = override?.lyricsTimeOffsetMs ?? matchedTrack?.lyricsTimeOffsetMs
         let newPresentation = NowPlayingPresentation(
             source: .appleMusic,
             localTrack: matchedTrack,
@@ -754,6 +757,7 @@ final class AppleMusicPlaybackAdapter {
             externalMatchConfidence: latestMatchResult?.confidence,
             externalLyricsStatusMessage: externalLyricsStatusMessage(for: lyricsText),
             externalConnectionState: connectionState,
+            externalLyricsTimeOffsetMs: externalLyricsTimeOffsetMs,
             isControlEnabled: true,
             isSeekEnabled: info.duration > 0,
             isVolumeControlEnabled: true,
@@ -835,36 +839,38 @@ final class AppleMusicPlaybackAdapter {
         pendingArtworkIdentity = identity
         updatePresentationFromLatestInfo()
 
+        artworkTask?.cancel()
         artworkTask = Task { [weak self] in
             guard let self else { return }
 
             let directSnapshot = bridge.fetchCurrentArtworkSnapshot()
             guard !Task.isCancelled else { return }
+            var directArtworkCommitted = false
+            
             if let directSnapshot, !directSnapshot.data.isEmpty {
-                guard self.artworkSnapshot(directSnapshot.info, matchesExpectedInfo: info, identity: identity) else {
+                if self.artworkSnapshot(directSnapshot.info, matchesExpectedInfo: info, identity: identity) {
+                    let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
+                    let didCommit = await self.prepareAndCommitArtwork(
+                        directSnapshot.data,
+                        source: .appleMusic,
+                        identity: identity,
+                        displayTrackID: displayTrackID
+                    )
+                    if didCommit {
+                        await MainActor.run {
+                            metadataStore.updateArtworkSource("appleMusicArtwork", for: identity)
+                        }
+                    }
+                    directArtworkCommitted = true
+                } else {
                     Log.info(
-                        "[AMAdapter] artwork source=appleMusicArtwork identity=\(identity.prefix(16)) result=stale actual=\(self.artworkSnapshotDebugIdentity(for: directSnapshot.info).prefix(32)) skipFallback=true",
+                        "[AMAdapter] artwork source=appleMusicArtwork identity=\(identity.prefix(16)) result=stale actual=\(self.artworkSnapshotDebugIdentity(for: directSnapshot.info).prefix(32)) - continuing to fallbacks",
                         category: .playback
                     )
-                    await MainActor.run {
-                        guard self.latestIdentity == identity else { return }
-                        self.pendingArtworkIdentity = nil
-                        self.updatePresentationFromLatestInfo()
-                    }
-                    return
                 }
-                let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
-                let didCommit = await self.prepareAndCommitArtwork(
-                    directSnapshot.data,
-                    source: .appleMusic,
-                    identity: identity,
-                    displayTrackID: displayTrackID
-                )
-                if didCommit {
-                    await MainActor.run {
-                        metadataStore.updateArtworkSource("appleMusicArtwork", for: identity)
-                    }
-                }
+            }
+
+            if directArtworkCommitted {
                 return
             }
             Log.info(
@@ -1081,7 +1087,7 @@ final class AppleMusicPlaybackAdapter {
     private func commitArtworkResolutionFinishedWithoutArtwork(identity: String) {
         guard latestIdentity == identity else { return }
         pendingArtworkIdentity = nil
-        displayedArtwork = .none
+        displayedArtwork = ResolvedArtwork(identity: identity, source: .none, data: nil, displayTrackID: nil)
         Log.info(
             "[AMAdapter] artwork finalSource=failed/noArtwork identity=\(identity.prefix(16))",
             category: .playback

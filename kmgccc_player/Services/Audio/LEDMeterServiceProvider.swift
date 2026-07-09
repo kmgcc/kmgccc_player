@@ -18,7 +18,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     typealias FrameConsumer = @MainActor (_ led: LEDMeterMetrics, _ audio: AudioMetrics) -> Void
 
     private var _service: LEDMeterService?
-    private let config: LEDMeterConfig
+    private var config: LEDMeterConfig
     private let mixerProvider: () -> AVAudioMixerNode
     private var externalPollTimer: Timer?
     private var externalPulse: UInt64 = 0
@@ -68,6 +68,8 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
             guard oldValue != playbackSource else { return }
             if playbackSource.isExternal {
                 detachServiceFrameConsumer()
+                _service?.stop()
+                _service = nil
                 startExternalPolling()
             } else {
                 stopExternalPolling()
@@ -88,7 +90,10 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
 
     /// Gets the existing service or creates it if needed.
     /// Use this when you need the actual LEDMeterService instance (e.g., for environment injection).
-    func getOrCreate() -> LEDMeterService {
+    func getOrCreate() -> LEDMeterService? {
+        if playbackSource.isExternal {
+            return nil
+        }
         if let service = _service {
             return service
         }
@@ -96,10 +101,10 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
         service.attachToMixer(mixerProvider())
         service.updatePlaybackState(isPlaying: lastObservedPlaying)
         _service = service
-        if !playbackSource.isExternal, !frameConsumers.isEmpty {
+        if !frameConsumers.isEmpty {
             attachServiceFrameConsumer(to: service)
         }
-        Log.debug("LEDMeterService lazily initialized", category: .audio)
+        Log.debug("LEDMeterService lazily initialized - playbackSource isExternal: \(playbackSource.isExternal)", category: .audio)
         return service
     }
 
@@ -161,11 +166,13 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     /// last session is released.
     func acquireSession() {
         sessionCount += 1
-        let service = getOrCreate()
-        service.start()
-        service.updatePlaybackState(isPlaying: lastObservedPlaying)
         if playbackSource.isExternal {
             startExternalPolling()
+        } else {
+            if let service = getOrCreate() {
+                service.start()
+                service.updatePlaybackState(isPlaying: lastObservedPlaying)
+            }
         }
     }
 
@@ -211,7 +218,9 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
             return
         }
 
-        attachServiceFrameConsumer(to: getOrCreate())
+        if let service = getOrCreate() {
+            attachServiceFrameConsumer(to: service)
+        }
     }
 
     private func attachServiceFrameConsumer(to service: LEDMeterService) {

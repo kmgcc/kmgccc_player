@@ -386,6 +386,10 @@ final class LyricsSurfaceManager {
     /// Mark a role as inactive (surface hidden/closed).
     /// For non-persistent roles, performs full teardown.
     func deactivate(role: LyricsSurfaceRole) {
+        Log.warning(
+            "[FS-DIAG] LyricsSurfaceManager.deactivate role=\(role.rawValue) persistsState=\(role.persistsState) storeExists=\(stores[role] != nil) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
+            category: .webview
+        )
         activeRoles.remove(role)
 
         // Clean up non-persistent roles
@@ -552,6 +556,10 @@ final class LyricsSurfaceManager {
         store: LyricsWebViewStore,
         reason: String
     ) {
+        Log.warning(
+            "[FS-DIAG] LyricsSurfaceManager.replaySnapshot role=\(role.rawValue) trackID=\(currentPlaybackSnapshot.trackID?.uuidString.prefix(8) ?? "nil") ttmlLen=\(currentPlaybackSnapshot.lyricsTTML.count) reason=\(reason) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
+            category: .webview
+        )
         if let baseThemePalette {
             store.applyTheme(baseThemePalette)
         }
