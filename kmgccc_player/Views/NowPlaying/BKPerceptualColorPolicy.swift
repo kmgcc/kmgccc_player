@@ -128,13 +128,15 @@ nonisolated enum BKPerceptualRolePolicy {
     ) -> HarmonizedPalette {
         let neutral = shouldRenderNeutral(legacy: legacy, analysis: analysis)
         let seed = seedLCH(legacy: legacy, analysis: analysis)
+        let brightAreaRatio = analysis?.brightAreaRatio ?? 0
         let bgStops = BKBackgroundTonePolicy.backgroundStops(
             legacy: legacy.bgStops,
             seed: seed,
             isDark: legacy.isDark,
             isUltraDark: analysis?.isUltraDark ?? false,
             neutral: neutral,
-            coverColorfulness: analysis?.colorfulness ?? legacy.coverAvgS
+            coverColorfulness: analysis?.colorfulness ?? legacy.coverAvgS,
+            brightAreaRatio: brightAreaRatio
         )
         let bgVariants = BKBackgroundTonePolicy.backgroundVariants(
             legacy: legacy.bgVariants,
@@ -143,7 +145,8 @@ nonisolated enum BKPerceptualRolePolicy {
             isDark: legacy.isDark,
             isUltraDark: analysis?.isUltraDark ?? false,
             neutral: neutral,
-            coverColorfulness: analysis?.colorfulness ?? legacy.coverAvgS
+            coverColorfulness: analysis?.colorfulness ?? legacy.coverAvgS,
+            brightAreaRatio: brightAreaRatio
         )
         let bgMetrics = BKPerceptualColorMath.lchValues(from: bgVariants.flatMap { $0 }.ifEmpty(bgStops))
         let bgMinL = bgMetrics.map(\.l).min() ?? seed.l
@@ -369,7 +372,8 @@ nonisolated enum BKBackgroundTonePolicy {
         isDark: Bool,
         isUltraDark: Bool,
         neutral: Bool,
-        coverColorfulness: CGFloat
+        coverColorfulness: CGFloat,
+        brightAreaRatio: CGFloat = 0
     ) -> [CGColor] {
         let sources = BKPerceptualColorMath.lchValues(from: legacy)
             .ifEmpty([seed, seed, seed])
@@ -384,7 +388,8 @@ nonisolated enum BKBackgroundTonePolicy {
                 isDark: isDark,
                 isUltraDark: isUltraDark,
                 neutral: neutral,
-                coverColorfulness: coverColorfulness
+                coverColorfulness: coverColorfulness,
+                brightAreaRatio: brightAreaRatio
             )
             return BKRenderingColorAdapter.cgColor(lch)
         }
@@ -397,7 +402,8 @@ nonisolated enum BKBackgroundTonePolicy {
         isDark: Bool,
         isUltraDark: Bool,
         neutral: Bool,
-        coverColorfulness: CGFloat
+        coverColorfulness: CGFloat,
+        brightAreaRatio: CGFloat = 0
     ) -> [[CGColor]] {
         guard !legacy.isEmpty else { return [fallbackStops] }
         return legacy.enumerated().map { variantIndex, variant in
@@ -411,7 +417,8 @@ nonisolated enum BKBackgroundTonePolicy {
                     isDark: isDark,
                     isUltraDark: isUltraDark,
                     neutral: neutral,
-                    coverColorfulness: coverColorfulness
+                    coverColorfulness: coverColorfulness,
+                    brightAreaRatio: brightAreaRatio
                 )
                 return BKRenderingColorAdapter.cgColor(lch)
             }
@@ -425,7 +432,8 @@ nonisolated enum BKBackgroundTonePolicy {
         isDark: Bool,
         isUltraDark: Bool,
         neutral: Bool,
-        coverColorfulness: CGFloat
+        coverColorfulness: CGFloat,
+        brightAreaRatio: CGFloat = 0
     ) -> OKColor.OKLCH {
         let hue = source.c >= 0.004 ? source.h : seed.h
         if neutral {
@@ -435,7 +443,9 @@ nonisolated enum BKBackgroundTonePolicy {
         }
 
         if isDark {
-            let baseL = isUltraDark ? CGFloat(0.105 + indexT * 0.085) : CGFloat(0.170 + indexT * 0.110)
+            // Narrowed L spread so the gradient-mapped image no longer crushes
+            // shadows to dead black. Hierarchy preserved, just less extreme.
+            let baseL = isUltraDark ? CGFloat(0.122 + indexT * 0.060) : CGFloat(0.185 + indexT * 0.075)
             let colorFloor = ColorMath.clamp(0.020 + coverColorfulness * 0.10, 0.024, 0.070)
             let cap = BKColorRiskPolicy.chromaCap(
                 hue: hue,
@@ -446,14 +456,22 @@ nonisolated enum BKBackgroundTonePolicy {
             return OKColor.OKLCH(l: baseL, c: c, h: BKColorRiskPolicy.adjustedHue(hue, role: .backgroundAtmosphere))
         }
 
-        let baseL = CGFloat(0.928 + indexT * 0.040)
-        let colorFloor = ColorMath.clamp(0.042 + coverColorfulness * 0.075, 0.048, 0.086)
+        // Light mode: lift L and fade chroma for predominantly-bright / near-white
+        // covers so the background never reads darker than a light cover.
+        let brightBoost = ColorMath.clamp((brightAreaRatio - 0.35) / 0.40, 0, 1)
+        let nearWhiteFade = brightBoost * ColorMath.clamp(1 - seed.c * 5.0, 0, 1)
+        let baseL = CGFloat(0.928 + indexT * 0.040 + brightBoost * 0.022)
+        let colorFloor = ColorMath.clamp(
+            (0.030 + coverColorfulness * 0.14) * (1 - nearWhiteFade * 0.45),
+            0.018,
+            0.110
+        )
         let cap = BKColorRiskPolicy.chromaCap(
             hue: hue,
             role: .backgroundAtmosphere,
             isDark: false
         )
-        let c = min(cap, max(colorFloor, source.c * 0.72 + seed.c * 0.20))
+        let c = min(cap, max(colorFloor, source.c * 0.80 + seed.c * 0.32))
         return OKColor.OKLCH(l: baseL, c: c, h: BKColorRiskPolicy.adjustedHue(hue, role: .backgroundAtmosphere))
     }
 }
@@ -511,9 +529,12 @@ nonisolated enum BKFloatingShapePolicy {
             )
         } else {
             l = min(0.760, max(0.680, backgroundMinL - 0.155))
+            // Let the dot/highlight carry more of the cover's own chroma so the
+            // moving circles can follow cover saturation. The background-linked
+            // ceiling is raised and source retention increased.
             c = min(
                 BKColorRiskPolicy.chromaCap(hue: hue, role: .highlightGlow, isDark: false),
-                max(min(0.092, backgroundMaxC + 0.010), source.c * 0.74)
+                max(min(0.108, backgroundMaxC + 0.018), source.c * 0.86)
             )
         }
         return BKRenderingColorAdapter.cgColor(
@@ -534,18 +555,21 @@ nonisolated enum BKFloatingShapePolicy {
     ) -> OKColor.OKLCH {
         let hue = source.c >= 0.004 ? source.h : seed.h
         if neutral {
+            // Light: keep neutral shapes bright (raised floor). Dark: press darker
+            // to match the "light brightens, dark darkens" direction.
             let l = isDark
-                ? CGFloat(0.34 + position * (isUltraDark ? 0.10 : 0.18))
-                : CGFloat(0.615 + position * 0.190)
+                ? CGFloat(0.250 + position * (isUltraDark ? 0.075 : 0.135))
+                : CGFloat(0.750 + position * 0.108)
             return OKColor.OKLCH(l: l, c: 0, h: 0)
         }
 
         if isDark {
-            let upper = isUltraDark ? CGFloat(0.455) : CGFloat(0.535)
-            let baseL = isUltraDark ? CGFloat(0.300 + position * 0.135) : CGFloat(0.330 + position * 0.180)
+            // Dark mode: press shapes darker so they sit more subtly on the dark field.
+            let upper = isUltraDark ? CGFloat(0.345) : CGFloat(0.410)
+            let baseL = isUltraDark ? CGFloat(0.225 + position * 0.105) : CGFloat(0.250 + position * 0.135)
             let c = min(
                 BKColorRiskPolicy.chromaCap(hue: hue, role: .floatingShapePrimary, isDark: true),
-                max(0.034, source.c * 0.80 + coverColorfulness * 0.018)
+                max(0.030, source.c * 0.78 + coverColorfulness * 0.016)
             )
             return OKColor.OKLCH(
                 l: min(upper, baseL),
@@ -554,13 +578,17 @@ nonisolated enum BKFloatingShapePolicy {
             )
         }
 
-        let lightUpper = max(0.640, min(0.835, backgroundMinL - 0.045))
-        let baseL = CGFloat(0.635 + position * 0.180)
-        let chromaCeiling = max(0.024, min(0.068, backgroundMaxC * 0.78))
+        // Light mode: raise the whole L band so shapes are always bright against the
+        // light background, and decouple chroma from the (possibly muted) background
+        // so vivid covers produce recognizable shapes instead of gray.
+        let lightUpper = max(0.730, min(0.862, backgroundMinL - 0.028))
+        let baseL = CGFloat(0.750 + position * 0.108)
+        let sourceDrivenC = source.c * 0.58 + seed.c * 0.20 + coverColorfulness * 0.034
+        let chromaCeiling = max(0.038, min(0.100, max(backgroundMaxC * 0.82, sourceDrivenC)))
         let c = min(
             chromaCeiling,
             BKColorRiskPolicy.chromaCap(hue: hue, role: .floatingShapePrimary, isDark: false),
-            max(0.024, source.c * 0.54 + coverColorfulness * 0.010)
+            max(0.034, sourceDrivenC)
         )
         return OKColor.OKLCH(
             l: min(lightUpper, baseL),
@@ -580,18 +608,20 @@ nonisolated enum BKColorRiskPolicy {
         let roleBase: CGFloat
         switch role {
         case .backgroundBase, .backgroundAtmosphere:
-            roleBase = isDark ? 0.092 : 0.104
+            roleBase = isDark ? 0.092 : 0.114
         case .floatingShapePrimary, .floatingShapeSecondary, .stabilizedShape:
-            roleBase = isDark ? 0.108 : 0.076
+            roleBase = isDark ? 0.108 : 0.096
         case .highlightGlow:
-            roleBase = isDark ? 0.105 : 0.112
+            roleBase = isDark ? 0.105 : 0.128
         }
 
         let familyScale: CGFloat
         switch h {
         case 0.12..<0.22:
             familyScale = 0.84      // muddy yellow / warm paper
-        case 0.22..<0.42:
+        case 0.22..<0.30:
+            familyScale = 0.86      // yellow - less fluorescent risk than chartreuse
+        case 0.30..<0.42:
             familyScale = 0.72      // green / chartreuse fluorescent risk
         case 0.78..<0.94:
             familyScale = 0.82      // pink / violet glow risk
@@ -653,23 +683,20 @@ nonisolated enum BKStabilizationPolicy {
             case .background:
                 lch.l = min(lch.l, 0.30)
             case .shape:
-                lch.l = min(lch.l, 0.56)
+                lch.l = min(lch.l, 0.410)
             case .dot:
                 lch.l = min(lch.l, 0.58)
             }
         } else {
             let bgL = BKPerceptualColorMath.lchValues(from: palette.bgStops).map(\.l).min() ?? 0.92
-            let bgMaxC = BKPerceptualColorMath.lchValues(
-                from: palette.bgVariants.flatMap { $0 }.ifEmpty(palette.bgStops)
-            )
-            .map(\.c)
-            .max() ?? 0.048
             switch kind {
             case .background:
                 lch.l = max(lch.l, 0.900)
             case .shape:
                 lch.l = min(lch.l, bgL - 0.060)
-                lch.c = min(lch.c, max(0.024, min(0.064, bgMaxC * 0.78)))
+                // Safety cap only - do not re-couple shape chroma to the muted
+                // background. shapeTone already set a faithful, capped chroma.
+                lch.c = min(lch.c, 0.096)
             case .dot:
                 lch.l = min(lch.l, 0.765)
             }

@@ -200,7 +200,14 @@ struct NowPlayingHostView: View {
     private var currentArtworkTaskKey: String {
         let presentation = playbackCoordinator.presentation
         guard presentation.hasTrack else { return "none" }
-        if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
+        // The local-track artwork source shortcut is only valid for local
+        // playback, where the track IS the source of truth. For external playback
+        // (even when a local match exists) the provider resolves the artwork into
+        // `presentation.artworkData` / `artworkDisplayTrackID`; loading from the
+        // local track's own source here would disagree with that resolution and
+        // get rejected by the `snapshot.trackID == expectedTrackID` guard below.
+        if presentation.source == .local,
+           let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
             return "local-\(source.sourceKey)-px:\(preferredArtworkFullImageMaxPixel)"
         }
         if ArtworkRenderingFallback.shouldUse(
@@ -254,7 +261,8 @@ struct NowPlayingHostView: View {
             ?? Self.externalArtworkTrackID
 
         let snapshot: ArtworkAssetSnapshot?
-        if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
+        if presentation.source == .local,
+           let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
             snapshot = await TrackArtworkCache.shared.snapshot(
                 for: source,
                 fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel

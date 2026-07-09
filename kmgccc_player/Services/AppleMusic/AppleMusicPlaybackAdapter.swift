@@ -180,7 +180,6 @@ final class AppleMusicPlaybackAdapter {
     private var latestMatchedTrack: Track?
     private var resolvedLyricsText: String?
     private var autoLyricsLookupState: AutoLyricsLookupState = .idle
-    private var lastLyricsCurrentTime: Double = 0
     private var displayedArtwork: ResolvedArtwork = .none
     private var pendingArtworkIdentity: String?
     private var pendingPlaybackMode: AppleMusicPlaybackMode?
@@ -718,12 +717,14 @@ final class AppleMusicPlaybackAdapter {
 
         let finalLyricsText = isTransitioning ? resolvedLyricsText : resolvedLyricsText
         let finalLyricsIdentity = isTransitioning ? resolvedTrackIdentity : (resolvedTrackIdentity ?? identity)
+        // While the new track's lyrics/offset are still resolving, keep the
+        // renderer paused so stale (previous-track) lyrics don't animate - but do
+        // NOT freeze the time at the previous track's last position. Letting the
+        // time follow the new track means the lyrics land on the correct line the
+        // instant the new lyrics arrive, instead of staying stuck at the position
+        // the user switched away from.
         let finalLyricsIsPlaying = isTransitioning ? false : nil
-        let finalLyricsCurrentTimeOverride = isTransitioning ? lastLyricsCurrentTime : nil
-
-        if !isTransitioning {
-            lastLyricsCurrentTime = max(0, info.position - max(0, presentation.audioOutputDelay))
-        }
+        let finalLyricsCurrentTimeOverride: Double? = nil
 
         let actualMode = AppleMusicPlaybackMode(
             shuffleEnabled: info.shuffleEnabled,

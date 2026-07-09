@@ -251,7 +251,6 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     private var latestMatchedTrack: Track?
     private var resolvedLyricsText: String?
     private var autoLyricsLookupState: AutoLyricsLookupState = .idle
-    private var lastLyricsCurrentTime: Double = 0
     private var displayedArtwork: ResolvedArtwork = .none
     private var pendingArtworkIdentity: String?
     private var lyricsTask: Task<Void, Never>?
@@ -1921,13 +1920,16 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
         let finalLyricsText = isTransitioning ? resolvedLyricsText : resolvedLyricsText
         let finalLyricsIdentity = isTransitioning ? resolvedTrackIdentity : (resolvedTrackIdentity ?? identity)
+        // While the new track's lyrics/offset are still resolving, keep the
+        // renderer paused so stale (previous-track) lyrics don't animate - but do
+        // NOT freeze the time at the previous track's last position. Letting the
+        // time follow the new track means the lyrics land on the correct line the
+        // instant the new lyrics arrive, instead of staying stuck at the position
+        // the user switched away from.
         let finalLyricsIsPlaying = isTransitioning ? false : nil
-        let finalLyricsCurrentTimeOverride = isTransitioning ? lastLyricsCurrentTime : nil
+        let finalLyricsCurrentTimeOverride: Double? = nil
 
         let computedCurrentTime = displayCurrentTimeFromBaseline()
-        if !isTransitioning {
-            lastLyricsCurrentTime = max(0, computedCurrentTime - max(0, presentation.audioOutputDelay))
-        }
 
         let newPresentation = NowPlayingPresentation(
             source: source,
@@ -2194,10 +2196,15 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         let resolver = artworkResolver
         let metadataStore = metadataStore
         let matchedTrackID = matchedTrack?.id
-        let localArtwork = matchedTrack?.artworkData
+        // Load the matched track's artwork from disk (mirrors AppleMusicPlaybackAdapter).
+        // Reading `matchedTrack?.artworkData` directly returns nil when the matched
+        // track hasn't been hydrated yet, which silently fell through to network
+        // artwork even though the user owns a correct local cover.
+        let localArtwork = matchedTrack?.loadArtworkDataIfNeeded()
         artworkTask = Task { [weak self] in
             guard let self else { return }
 
+            // 1. Explicit user override always wins.
             if let manualOverrideArtwork, !manualOverrideArtwork.isEmpty {
                 let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
                 await self.prepareAndCommitArtwork(manualOverrideArtwork, source: .manualOverride, identity: identity, displayTrackID: displayTrackID)
@@ -2205,6 +2212,24 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                 return
             }
 
+            // 2. Prefer the matched local library track's artwork. The user's own
+            //    copy is authoritative for their library; auto-fetched network
+            //    artwork can be a different crop/release (and was the source of
+            //    mismatched cover/color vs. the local track).
+            if let localArtwork, !localArtwork.isEmpty {
+                let displayTrackID = matchedTrackID ?? NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
+                await self.prepareAndCommitArtwork(localArtwork, source: .localLibrary, identity: identity, displayTrackID: displayTrackID)
+                await MainActor.run {
+                    metadataStore.updateArtworkSource("localLibrary", for: identity)
+                    Log.info(
+                        "[SystemNowPlaying] artwork source=localMatchedArtwork identity=\(identity.prefix(16)) trackID=\(matchedTrackID?.uuidString ?? "nil")",
+                        category: .playback
+                    )
+                }
+                return
+            }
+
+            // 3. Previously fetched network artwork (avoids re-fetching).
             if let cachedNetworkArtwork, !cachedNetworkArtwork.isEmpty {
                 let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
                 await self.prepareAndCommitArtwork(cachedNetworkArtwork, source: .network, identity: identity, displayTrackID: displayTrackID)
@@ -2212,6 +2237,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                 return
             }
 
+            // 4. Fetch network artwork as a fallback when no local artwork exists.
             let networkArtwork = await resolver.resolveNetworkArtwork(
                 identity: identity,
                 title: effective.title,
@@ -2228,13 +2254,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                 return
             }
 
-            if let localArtwork, !localArtwork.isEmpty {
-                let displayTrackID = matchedTrackID ?? NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
-                await self.prepareAndCommitArtwork(localArtwork, source: .localLibrary, identity: identity, displayTrackID: displayTrackID)
-                await MainActor.run { metadataStore.updateArtworkSource("localLibrary", for: identity) }
-                return
-            }
-
+            // 5. Fall back to the external provider's own artwork.
             if let providerArtwork, !providerArtwork.isEmpty {
                 let displayTrackID = NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
                 await self.prepareAndCommitArtwork(providerArtwork, source: .provider, identity: identity, displayTrackID: displayTrackID)
