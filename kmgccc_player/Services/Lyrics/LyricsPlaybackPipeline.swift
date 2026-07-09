@@ -99,6 +99,14 @@ final class LyricsPlaybackPipeline {
     private func syncPlaybackState(_ presentation: NowPlayingPresentation) {
         guard let lyricsVM else { return }
 
+        // An offset-only change (e.g. user edited the external override) does not
+        // alter the lyrics content signature, so it would otherwise be treated as
+        // a plain sync and never re-push the AMLL config. Reconcile the external
+        // offset here so offset edits refresh the lyrics config immediately.
+        if presentation.source.isExternal {
+            lyricsVM.applyExternalLyricsOffset(presentation.externalLyricsTimeOffsetMs ?? 0)
+        }
+
         let currentTime = presentation.lyricsCurrentTime
         if lastSyncedTime == nil || abs((lastSyncedTime ?? 0) - currentTime) >= 0.01 {
             lyricsVM.syncTime(currentTime)

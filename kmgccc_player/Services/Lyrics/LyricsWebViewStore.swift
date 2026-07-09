@@ -102,6 +102,20 @@ final class LyricsWebViewStore: NSObject {
         retainedWebView.map { ObjectIdentifier($0).hashValue } ?? fallbackObjectID
     }
 
+    /// DEBUG-only snapshot of the WebView's AppKit layer-stability state for
+    /// correlating with `markAllLayersVolatile` floods. Reads window occlusion,
+    /// visibility, alpha, frame, and superview - the signals WebKit uses to
+    /// decide whether to mark layers volatile. Not for production logging.
+    var debugLayerStateSnapshot: String {
+        guard let webView = retainedWebView else {
+            return "noWebView"
+        }
+        let window = webView.window
+        let windowVisible = window?.occlusionState.contains(.visible) ?? false
+        let superviewKind = webView.superview.map { String(describing: type(of: $0)) } ?? "nil"
+        return "role=\(role) hidden=\(webView.isHidden) alpha=\(String(format: "%.2f", webView.alphaValue)) frame=\(Int(webView.frame.width))x\(Int(webView.frame.height)) hasWindow=\(window != nil) winVisible=\(windowVisible) winKey=\(window?.isKeyWindow ?? false) winFullScreen=\(window?.styleMask.contains(.fullScreen) ?? false) superview=\(superviewKind)"
+    }
+
     /// Current active attachment ID (for instance-aware detach).
     private(set) var activeAttachmentID: UUID?
 

@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import Combine
 import Foundation
 import SwiftUI
 
@@ -490,6 +491,20 @@ struct FullscreenPlayerView: View {
         .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
             handleLibraryTrackDidUpdate(notification)
         }
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+            // No-op unless KMGCCC_AMLL_FULLSCREEN_LAYER_DIAGNOSTICS=1; used to
+            // correlate WebView layer state with markAllLayersVolatile floods.
+            FullscreenLyricsLayerDiagnostics.logPeriodicSnapshot(
+                store: existingFullscreenStore,
+                hostOpacity: fullscreenLyricsHostOpacity,
+                viewportOpacity: fullscreenLyricsViewportOpacity,
+                hostMounted: shouldKeepFullscreenLyricsHostMounted,
+                controlsVisible: isFullscreenBottomControlsVisible,
+                disableWrapper: LyricsDebugFlags.fullscreenDisableSwiftUIWrapper,
+                skinID: settings.fullscreen.skinID,
+                hostContext: hostContext.rawValue
+            )
+        }
         .onChange(of: rightPanelDisplayState) { oldValue, newValue in
             handleRightPanelDisplayStateChange(oldValue, newValue)
         }
@@ -567,6 +582,17 @@ struct FullscreenPlayerView: View {
         )
         syncFullscreenLedService()
         showPlaybackModeRetapTipIfNeeded()
+        FullscreenLyricsLayerDiagnostics.logEvent(
+            "appear",
+            store: existingFullscreenStore,
+            hostOpacity: fullscreenLyricsHostOpacity,
+            viewportOpacity: fullscreenLyricsViewportOpacity,
+            hostMounted: shouldKeepFullscreenLyricsHostMounted,
+            controlsVisible: isFullscreenBottomControlsVisible,
+            disableWrapper: LyricsDebugFlags.fullscreenDisableSwiftUIWrapper,
+            skinID: settings.fullscreen.skinID,
+            hostContext: hostContext.rawValue
+        )
     }
 
     private func handleFullscreenDisappear() {
@@ -575,6 +601,17 @@ struct FullscreenPlayerView: View {
         Log.info(
             "FullscreenPlayerView disappeared context=\(hostContext.rawValue)",
             category: .webview
+        )
+        FullscreenLyricsLayerDiagnostics.logEvent(
+            "disappear",
+            store: existingFullscreenStore,
+            hostOpacity: fullscreenLyricsHostOpacity,
+            viewportOpacity: fullscreenLyricsViewportOpacity,
+            hostMounted: shouldKeepFullscreenLyricsHostMounted,
+            controlsVisible: isFullscreenBottomControlsVisible,
+            disableWrapper: LyricsDebugFlags.fullscreenDisableSwiftUIWrapper,
+            skinID: settings.fullscreen.skinID,
+            hostContext: hostContext.rawValue
         )
         didHandleFullscreenAppear = false
         fullscreenPointerOcclusionMonitor.stop()
@@ -1078,9 +1115,12 @@ struct FullscreenPlayerView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            // Motion feel: subtle y-scale anchored at top creates "pushing down" feel during expansion
+            // Motion feel: subtle y-scale anchored at top creates "pushing down" feel during expansion.
+            // Neutralized in the DEBUG no-wrapper A/B so no transform layer wraps the WebView.
             .scaleEffect(
-                y: isFullscreenBottomControlsVisible ? 0.97 : 1.0,
+                y: LyricsDebugFlags.fullscreenDisableSwiftUIWrapper
+                    ? 1.0
+                    : (isFullscreenBottomControlsVisible ? 0.97 : 1.0),
                 anchor: .top
             )
             .animation(bottomControlsAnimation, value: isFullscreenBottomControlsVisible)
@@ -1117,30 +1157,47 @@ struct FullscreenPlayerView: View {
         useCompositingGroup: Bool,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        let maskedContent = content()
-            .frame(width: width, height: height)
-            .offset(y: -lyricsViewportTopLift * scale)
-            .opacity(fullscreenLyricsViewportOpacity)
-            .environment(\.colorScheme, .dark)
-            .mask(
-                ZStack(alignment: .top) {
-                    fullscreenLyricsMask(
-                        visibleHeight: visibleHeight,
-                        topFade: topFade,
-                        bottomFade: bottomFade
-                    )
-                }
-                .frame(height: height, alignment: .top)  // Align mask to top of expanded content
-                .offset(y: (isFullscreenBottomControlsVisible ? 42 : 58) * scale)  // Mask moves down
-            )
-
-        if useCompositingGroup {
-            maskedContent
-                .compositingGroup()
-                .blendMode(blendMode)
+        // DEBUG A/B (KMGCCC_AMLL_FULLSCREEN_NO_WRAPPER): render the WebView with
+        // no SwiftUI compositing wrapper, mirroring the window flat host that does
+        // not flood, to confirm the wrapper is the markAllLayersVolatile trigger.
+        // Fade/scale/opacity are intentionally dropped in this diagnostic mode.
+        if LyricsDebugFlags.fullscreenDisableSwiftUIWrapper {
+            content()
+                .frame(width: width, height: height)
+                .environment(\.colorScheme, .dark)
         } else {
-            maskedContent
-                .blendMode(blendMode)
+            let maskedContent = content()
+                .frame(width: width, height: height)
+                .offset(y: -lyricsViewportTopLift * scale)
+                .opacity(fullscreenLyricsViewportOpacity)
+                .environment(\.colorScheme, .dark)
+                .mask(
+                    ZStack(alignment: .top) {
+                        fullscreenLyricsMask(
+                            visibleHeight: visibleHeight,
+                            topFade: topFade,
+                            bottomFade: bottomFade
+                        )
+                    }
+                    .frame(height: height, alignment: .top)  // Align mask to top of expanded content
+                    .offset(y: (isFullscreenBottomControlsVisible ? 42 : 58) * scale)  // Mask moves down
+                )
+
+            // `.compositingGroup()` + `.blendMode(.normal)` is a visual no-op that
+            // only forces the WKWebView subtree into an offscreen rasterization
+            // group. Skip it so the WebView's layer stays directly in the host
+            // layer tree, matching the window flat host (which does not flood).
+            // Real blend modes (cover-blur / apple style) keep their rasterization.
+            if blendMode == .normal {
+                maskedContent
+            } else if useCompositingGroup {
+                maskedContent
+                    .compositingGroup()
+                    .blendMode(blendMode)
+            } else {
+                maskedContent
+                    .blendMode(blendMode)
+            }
         }
     }
 
@@ -2057,22 +2114,34 @@ struct FullscreenPlayerView: View {
             let horizontalInset: CGFloat = 10
             let expandedHeight = proxy.size.height + topFade + bottomFade + 6
 
-            AMLLWebView(store: fullscreenStore, forcedAppearanceMode: .dark)
-                .frame(
-                    width: max(0, proxy.size.width - horizontalInset * 2),
-                    height: expandedHeight
-                )
-                .offset(y: -lyricsViewportTopLift)
-                .opacity(fullscreenLyricsViewportOpacity)
-                .environment(\.colorScheme, .dark)
-                .mask(
-                    fullscreenLyricsMask(
-                        visibleHeight: proxy.size.height,
-                        topFade: topFade,
-                        bottomFade: bottomFade
+            // DEBUG A/B (KMGCCC_AMLL_FULLSCREEN_NO_WRAPPER): drop the
+            // .mask/.opacity/.offset wrapper to mirror the window flat host.
+            if LyricsDebugFlags.fullscreenDisableSwiftUIWrapper {
+                AMLLWebView(store: fullscreenStore, forcedAppearanceMode: .dark)
+                    .frame(
+                        width: max(0, proxy.size.width - horizontalInset * 2),
+                        height: expandedHeight
                     )
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .environment(\.colorScheme, .dark)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            } else {
+                AMLLWebView(store: fullscreenStore, forcedAppearanceMode: .dark)
+                    .frame(
+                        width: max(0, proxy.size.width - horizontalInset * 2),
+                        height: expandedHeight
+                    )
+                    .offset(y: -lyricsViewportTopLift)
+                    .opacity(fullscreenLyricsViewportOpacity)
+                    .environment(\.colorScheme, .dark)
+                    .mask(
+                        fullscreenLyricsMask(
+                            visibleHeight: proxy.size.height,
+                            topFade: topFade,
+                            bottomFade: bottomFade
+                        )
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            }
         }
     }
 
@@ -4330,7 +4399,12 @@ struct FullscreenPlayerView: View {
     private var currentArtworkTaskKey: String {
         let display = currentDisplayContext
         guard display.hasTrack, let trackID = display.artworkTrackID else { return "none" }
-        if let source = playbackCoordinator.presentation.localTrack?.trackArtworkSource(fallbackData: display.artworkData) {
+        // The local-track artwork source shortcut is only valid for local
+        // playback. For external playback the provider resolves artwork into the
+        // presentation; using the local track's own source here would disagree
+        // with `artworkDisplayTrackID` and get rejected by the snapshot guard.
+        if display.source == .local,
+           let source = playbackCoordinator.presentation.localTrack?.trackArtworkSource(fallbackData: display.artworkData) {
             return "\(trackID.uuidString)-local-\(source.sourceKey)-px:\(preferredArtworkFullImageMaxPixel)"
         }
         if ArtworkRenderingFallback.shouldUse(
@@ -4365,7 +4439,8 @@ struct FullscreenPlayerView: View {
         let expectedTrackID = trackID
         let expectedTaskKey = currentArtworkTaskKey
         let snapshot: ArtworkAssetSnapshot?
-        if let source = playbackCoordinator.presentation.localTrack?.trackArtworkSource(fallbackData: display.artworkData) {
+        if display.source == .local,
+           let source = playbackCoordinator.presentation.localTrack?.trackArtworkSource(fallbackData: display.artworkData) {
             snapshot = await TrackArtworkCache.shared.snapshot(
                 for: source,
                 fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
@@ -4684,5 +4759,81 @@ private final class FullscreenTTMLTimingParser: NSObject, XMLParserDelegate {
     .frame(width: 1600, height: 1000)
     .onAppear {
         playerVM.playTracks([track])
+    }
+}
+
+// MARK: - Fullscreen AMLL layer-volatility diagnostics
+
+/// DEBUG-only logging for correlating the fullscreen AMLL WKWebView's AppKit
+/// layer state with `WebProcess::markAllLayersVolatile` floods. All entry
+/// points are no-ops unless `KMGCCC_AMLL_FULLSCREEN_LAYER_DIAGNOSTICS=1`.
+fileprivate enum FullscreenLyricsLayerDiagnostics {
+    static func logEvent(
+        _ event: String,
+        store: LyricsWebViewStore?,
+        hostOpacity: Double,
+        viewportOpacity: Double,
+        hostMounted: Bool,
+        controlsVisible: Bool,
+        disableWrapper: Bool,
+        skinID: String,
+        hostContext: String
+    ) {
+        guard LyricsDebugFlags.fullscreenLayerDiagnosticsEnabled else { return }
+        emit(
+            event: event,
+            store: store,
+            hostOpacity: hostOpacity,
+            viewportOpacity: viewportOpacity,
+            hostMounted: hostMounted,
+            controlsVisible: controlsVisible,
+            disableWrapper: disableWrapper,
+            skinID: skinID,
+            hostContext: hostContext
+        )
+    }
+
+    /// Periodic snapshot used to line up WebView layer state with Console.app
+    /// flood timestamps. Fires every 2s from the fullscreen view body.
+    static func logPeriodicSnapshot(
+        store: LyricsWebViewStore?,
+        hostOpacity: Double,
+        viewportOpacity: Double,
+        hostMounted: Bool,
+        controlsVisible: Bool,
+        disableWrapper: Bool,
+        skinID: String,
+        hostContext: String
+    ) {
+        guard LyricsDebugFlags.fullscreenLayerDiagnosticsEnabled else { return }
+        emit(
+            event: "periodic",
+            store: store,
+            hostOpacity: hostOpacity,
+            viewportOpacity: viewportOpacity,
+            hostMounted: hostMounted,
+            controlsVisible: controlsVisible,
+            disableWrapper: disableWrapper,
+            skinID: skinID,
+            hostContext: hostContext
+        )
+    }
+
+    private static func emit(
+        event: String,
+        store: LyricsWebViewStore?,
+        hostOpacity: Double,
+        viewportOpacity: Double,
+        hostMounted: Bool,
+        controlsVisible: Bool,
+        disableWrapper: Bool,
+        skinID: String,
+        hostContext: String
+    ) {
+        let webViewState = store?.debugLayerStateSnapshot ?? "noStore"
+        Log.warning(
+            "[FS-LAYER-DIAG] \(event) host=\(hostContext) skin=\(skinID) wrapper=\(disableWrapper ? "DISABLED" : "on") hostOpacity=\(String(format: "%.2f", hostOpacity)) viewportOpacity=\(String(format: "%.2f", viewportOpacity)) hostMounted=\(hostMounted) controlsVisible=\(controlsVisible) | webView[\(webViewState)] t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
+            category: .webview
+        )
     }
 }

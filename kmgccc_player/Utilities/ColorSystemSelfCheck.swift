@@ -3023,6 +3023,8 @@ nonisolated enum ColorSystemSelfCheck {
             dominantBrightness: base.dominantBrightness,
             largestHighSaturationAreaShare: base.largestHighSaturationAreaShare,
             highSaturationAreaShare: base.highSaturationAreaShare,
+            brightAreaRatio: base.brightAreaRatio,
+            darkAreaRatio: base.darkAreaRatio,
             isMonochrome: base.isMonochrome,
             isNearMonochrome: base.isNearMonochrome,
             isUltraDark: base.isUltraDark,

@@ -43,6 +43,12 @@ nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
     let dominantBrightness: CGFloat     // HSB B of dominant bucket
     let largestHighSaturationAreaShare: CGFloat
     let highSaturationAreaShare: CGFloat
+    /// Weighted fraction of pixels whose HSL lightness exceeds 0.62
+    /// (i.e. the cover is predominantly bright / near-white). Used by BKArt
+    /// to avoid rendering an overly dark background against a light cover.
+    let brightAreaRatio: CGFloat
+    /// Weighted fraction of pixels whose HSL lightness is below 0.28.
+    let darkAreaRatio: CGFloat
     let isMonochrome: Bool
     /// Pure chromatic-confidence regime. True when the cover lacks a
     /// trustworthy hue. Independent of lightness.
@@ -98,6 +104,8 @@ nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
         dominantBrightness: 0.62,
         largestHighSaturationAreaShare: 0,
         highSaturationAreaShare: 0,
+        brightAreaRatio: 0,
+        darkAreaRatio: 0,
         isMonochrome: true,
         isNearMonochrome: true,
         isUltraDark: false,
@@ -368,6 +376,8 @@ extension ArtworkColorExtractor {
         var hueSinSum: CGFloat = 0
         var hueCosSum: CGFloat = 0
         var vividWeight: CGFloat = 0
+        var brightWeight: CGFloat = 0
+        var darkWeight: CGFloat = 0
         // For Welford-style variance accumulators (saturation, HSL lightness)
         var satMean: CGFloat = 0
         var satM2: CGFloat = 0
@@ -419,6 +429,8 @@ extension ArtworkColorExtractor {
             hueCosSum += cos(theta) * weight
 
             if sat > 0.28 { vividWeight += weight * min(1.2, sat * 1.1) }
+            if hslL > 0.62 { brightWeight += weight }
+            if hslL < 0.28 { darkWeight += weight }
 
             // Welford running variance (weighted) for saturation + HSL L.
             weightProcessed += weight
@@ -445,6 +457,8 @@ extension ArtworkColorExtractor {
         let satVar = weightProcessed > 0 ? satM2 / weightProcessed : 0
         let lVar   = weightProcessed > 0 ? lM2 / weightProcessed   : 0
         let colorfulness = ColorMath.clamp(vividWeight / totalWeight, 0, 1)
+        let brightAreaRatio = ColorMath.clamp(brightWeight / totalWeight, 0, 1)
+        let darkAreaRatio = ColorMath.clamp(darkWeight / totalWeight, 0, 1)
 
         // Average hue (circular).
         let avgHueAngle = atan2(hueSinSum, hueCosSum) / (2 * .pi)
@@ -671,6 +685,8 @@ extension ArtworkColorExtractor {
             dominantBrightness: dominantBrightness,
             largestHighSaturationAreaShare: largestHighSaturationAreaShare,
             highSaturationAreaShare: highSaturationAreaShare,
+            brightAreaRatio: brightAreaRatio,
+            darkAreaRatio: darkAreaRatio,
             isMonochrome: isMono,
             isNearMonochrome: isNearMonochrome,
             isUltraDark: isUltraDark,

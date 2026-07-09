@@ -354,7 +354,10 @@ struct MiniPlayerView: View {
     
     private var currentArtworkTaskKey: String {
         let presentation = playbackCoordinator.presentation
-        if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
+        // Local-track artwork source shortcut is local-playback only; for
+        // external playback the provider-resolved `artworkData` is authoritative.
+        if presentation.source == .local,
+           let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
             return "local-\(source.sourceKey)-thumb"
         }
         let identity = presentation.artworkIdentity
@@ -363,10 +366,11 @@ struct MiniPlayerView: View {
             ?? "none"
         return "\(identity)-\(ArtworkDataFingerprint.sampledString(for: presentation.artworkData))"
     }
-    
+
     private func loadArtworkThumbnail() async {
         let presentation = playbackCoordinator.presentation
-        if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
+        if presentation.source == .local,
+           let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
             let image = await TrackArtworkCache.shared.thumbnail(for: source)
             guard !Task.isCancelled else { return }
             if let image {

@@ -33,6 +33,10 @@ final class LyricsViewModel {
     private var lastAppliedTrackId: UUID?
     private var lastAppliedExternalLyricsIdentity: String?
     private var lastAppliedExternalLyricsSignature: String?
+    /// Effective lyrics time offset for external playback, mirrored from the
+    /// presentation's `externalLyricsTimeOffsetMs` (override ?? matched-track
+    /// offset). Local playback reads `currentTrack.lyricsTimeOffsetMs` instead.
+    private var externalLyricsTimeOffsetMs: Double = 0
     private var legacyLyricsMigrationTasks: [UUID: Task<Void, Never>] = [:]
 
     /// Whether lyrics are available.
@@ -180,16 +184,22 @@ final class LyricsViewModel {
     ) {
         rebindSeekCallback()
         currentTrack = presentation.localTrack
+        externalLyricsTimeOffsetMs = presentation.externalLyricsTimeOffsetMs ?? 0
         let identity = presentation.lyricsIdentity ?? "external.empty"
         let lyricsText = LyricsFormatSupport.normalizedTTMLText(presentation.lyricsText) ?? ""
         let lyricsSignature = "\(identity):\(lyricsText.count):\(lyricsText.hashValue)"
         let trackID = presentation.localTrack?.id
+        // Use the lyrics-adjusted time/play state (respects audioOutputDelay and
+        // the transitioning pause) so this reload path agrees with the per-tick
+        // sync path in LyricsPlaybackPipeline instead of fighting it.
+        let lyricsCurrentTime = presentation.lyricsCurrentTime
+        let lyricsIsPlaying = presentation.effectiveLyricsIsPlaying
 
         LyricsSurfaceManager.shared.updatePlaybackSnapshot(
             trackID: trackID,
             lyricsTTML: lyricsText,
-            currentTime: presentation.currentTime,
-            isPlaying: presentation.isPlaying
+            currentTime: lyricsCurrentTime,
+            isPlaying: lyricsIsPlaying
         )
 
         Log.debug(
@@ -210,8 +220,8 @@ final class LyricsViewModel {
             store.applyTrack(
                 trackID: trackID,
                 ttml: lyricsText,
-                currentTime: presentation.currentTime,
-                isPlaying: presentation.isPlaying,
+                currentTime: lyricsCurrentTime,
+                isPlaying: lyricsIsPlaying,
                 forceLyricsReload: forceLyricsReload
             )
             rebindSeekCallback()
@@ -219,11 +229,22 @@ final class LyricsViewModel {
             if let palette = ThemeStore.shared.palette {
                 store.applyTheme(palette)
             }
-            LyricsSurfaceManager.shared.updatePlaybackTime(presentation.currentTime)
-            LyricsSurfaceManager.shared.updatePlayingState(presentation.isPlaying)
-            store.setPlaying(presentation.isPlaying)
-            store.setCurrentTime(presentation.currentTime)
+            LyricsSurfaceManager.shared.updatePlaybackTime(lyricsCurrentTime)
+            LyricsSurfaceManager.shared.updatePlayingState(lyricsIsPlaying)
+            store.setPlaying(lyricsIsPlaying)
+            store.setCurrentTime(lyricsCurrentTime)
         }
+    }
+
+    /// Reconcile the external lyrics offset without forcing a full lyrics reload.
+    /// The playback pipeline calls this on every sync tick; it only re-pushes the
+    /// AMLL config when the offset actually changes (e.g. the user edited the
+    /// external override), so offset edits take effect immediately.
+    func applyExternalLyricsOffset(_ ms: Double) {
+        let clamped = max(-15000, min(15000, ms))
+        guard abs(clamped - externalLyricsTimeOffsetMs) > 0.001 else { return }
+        externalLyricsTimeOffsetMs = clamped
+        refreshConfigFromSettings()
     }
 
     private func shouldApplyTrack(_ track: Track?, forceLyricsReload: Bool) -> Bool {
@@ -385,7 +406,14 @@ final class LyricsViewModel {
             playbackSource: playbackSource
         )
 
-        let trackOffsetMs = max(-15000, min(15000, currentTrack?.lyricsTimeOffsetMs ?? 0))
+        // External playback carries its own effective offset on the presentation
+        // (override ?? matched-track offset); local playback reads the track's
+        // stored offset. Reading the local track's offset for external playback
+        // silently dropped the user's override offset.
+        let rawTrackOffsetMs = playbackSource.isExternal
+            ? externalLyricsTimeOffsetMs
+            : (currentTrack?.lyricsTimeOffsetMs ?? 0)
+        let trackOffsetMs = max(-15000, min(15000, rawTrackOffsetMs))
         let effectiveGlobalAdvanceMs = max(
             -5000,
             min(5000, settings.lyricsGlobalAdvanceMs + overlay.globalAdvanceDeltaMs)

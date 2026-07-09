@@ -1460,7 +1460,8 @@ private final class BKArtBackgroundLayerView: NSView {
             ?? (!harmonized.usesStrictNeutralRendering && !harmonized.isGrayscaleCover)
 
         if harmonized.usesStrictNeutralRendering || (harmonized.isGrayscaleCover && !hasTrustedArtworkTint) {
-            lch.l = min(max(lch.l, 0.615), max(0.640, min(0.820, backgroundMinL - 0.075)))
+            // Light mode: neutral shapes must stay bright regardless of cover lightness.
+            lch.l = min(max(lch.l, 0.750), max(0.770, min(0.862, backgroundMinL - 0.038)))
             lch.c = 0
             lch.h = 0
             return BKRenderingColorAdapter.cgColor(lch, alpha: alpha)
@@ -1473,13 +1474,19 @@ private final class BKArtBackgroundLayerView: NSView {
         let lightnessFloor: CGFloat
         let chromaCeiling: CGFloat
         if neutralToneFromDarkField {
-            lightnessFloor = max(0.585, min(0.675, backgroundMinL - 0.185))
-            chromaCeiling = min(0.020, max(0.010, backgroundMaxC * 0.28))
+            // Light mode: tiny-accent-on-dark-field shapes still need a bright floor.
+            lightnessFloor = max(0.750, min(0.798, backgroundMinL - 0.072))
+            chromaCeiling = min(0.046, max(0.020, backgroundMaxC * 0.52))
         } else {
-            lightnessFloor = max(0.625, min(0.720, backgroundMinL - 0.145))
-            chromaCeiling = max(0.018, min(0.064, backgroundMaxC * 0.78))
+            // Light mode: normal chromatic shapes. Floor aligned with shapeTone's
+            // raised L band so shapes stay bright even on dark covers.
+            lightnessFloor = max(0.752, min(0.825, backgroundMinL - 0.058))
+            // Decouple from the muted background: let the ceiling follow the source
+            // shape's own chroma (which shapeTone derived from the cover), so vivid
+            // covers keep recognizable color instead of being flattened to gray.
+            chromaCeiling = max(0.034, min(0.100, max(backgroundMaxC * 0.82, sourceLCH.c * 0.94)))
         }
-        let lightnessUpper = max(lightnessFloor, min(0.835, backgroundMinL - 0.045))
+        let lightnessUpper = max(lightnessFloor, min(0.862, backgroundMinL - 0.028))
         lch.l = min(max(lch.l, lightnessFloor), lightnessUpper)
         lch.c = min(
             lch.c,
@@ -1831,7 +1838,21 @@ private final class BKArtBackgroundLayerView: NSView {
                 ]
             )
         } else {
-            source = input
+            // Light mode: inner layer sits slightly darker than outer so the
+            // two concentric circles read as depth (inner recedes) instead of
+            // both being the same brightness.
+            switch role {
+            case .outer:
+                source = input
+            case .inner:
+                source = input.applyingFilter(
+                    "CIColorControls",
+                    parameters: [
+                        kCIInputBrightnessKey: -0.05,
+                        kCIInputContrastKey: 1.02
+                    ]
+                )
+            }
         }
 
         let componentCeiling: CGFloat = {
@@ -2273,12 +2294,20 @@ private final class BKArtBackgroundLayerView: NSView {
                     lch.c = 0
                     lch.h = 0
                 } else if harmonized.isDark {
-                    lch.l = lch.l * 0.50
-                    lch.c = min(0.105, lch.c * 0.58)
+                    // Dark mode: circle L close to the background band, keeping a
+                    // subtle presence instead of swinging brighter/darker than it.
+                    lch.l = ColorMath.clamp(lch.l * 0.58, 0.19, 0.30)
+                    lch.c = min(0.085, lch.c * 0.55)
                     targetAlpha = 0.80
                 } else {
-                    lch.l = min(max(lch.l, 0.68), 0.765)
-                    lch.c = min(0.200, max(0.130, lch.c * 1.45))
+                    // Light mode: L syncs with bright covers; chroma follows the
+                    // cover's own saturation (capped) so vivid covers get vivid
+                    // circles and muted covers get muted ones.
+                    let brightBoost = ColorMath.clamp(
+                        ((currentAnalysis?.brightAreaRatio ?? 0) - 0.35) / 0.40, 0, 1
+                    )
+                    lch.l = min(max(lch.l, 0.68 + brightBoost * 0.035), 0.765 + brightBoost * 0.025)
+                    lch.c = min(0.130, lch.c * 0.98)
                     targetAlpha = 0.90
                 }
                 let adjustedNS = OKColor.okLCHToNSColor(lch, alpha: 1.0)
@@ -2300,7 +2329,7 @@ private final class BKArtBackgroundLayerView: NSView {
                isDark: harmonized.isDark
            ) {
             layer.contents = tinted
-            layer.opacity = harmonized.isDark ? 0.76 : 0.75
+            layer.opacity = harmonized.isDark ? 0.76 : 0.73
         }
         if let layer = slot.circleInnerImageLayer,
            let source = slot.circleInnerImageSource,
@@ -2311,7 +2340,7 @@ private final class BKArtBackgroundLayerView: NSView {
                isDark: harmonized.isDark
            ) {
             layer.contents = tinted
-            layer.opacity = harmonized.isDark ? 0.82 : 0.72
+            layer.opacity = harmonized.isDark ? 0.82 : 0.76
         }
         CATransaction.commit()
     }
@@ -2824,8 +2853,8 @@ private final class BKArtBackgroundLayerView: NSView {
             "CIColorControls",
             parameters: [
                 kCIInputSaturationKey: 1.0,
-                kCIInputContrastKey: isDark ? 1.024 : 1.015,
-                kCIInputBrightnessKey: isDark ? -0.014 : 0.032,
+                kCIInputContrastKey: isDark ? 1.010 : 1.015,
+                kCIInputBrightnessKey: isDark ? 0.004 : 0.032,
             ]
         )
     }
@@ -2946,11 +2975,21 @@ private final class BKArtBackgroundLayerView: NSView {
             }
         } else {
             let colorfulnessEvidence = currentAnalysis?.colorfulness ?? min(1, lch.c * 3.0)
+            let brightBoost = ColorMath.clamp(
+                ((currentAnalysis?.brightAreaRatio ?? 0) - 0.35) / 0.40, 0, 1
+            )
             let floorC: CGFloat
             if harmonized.isDark {
                 floorC = ColorMath.clamp(0.020 + colorfulnessEvidence * 0.10, 0.024, 0.070)
             } else {
-                floorC = ColorMath.clamp(0.040 + colorfulnessEvidence * 0.075, 0.044, 0.082)
+                // Fade the chroma floor for bright near-white covers so a light
+                // cover does not get an oversaturated background.
+                let nearWhiteFade = brightBoost * ColorMath.clamp(1 - lch.c * 5.0, 0, 1)
+                floorC = ColorMath.clamp(
+                    (0.030 + colorfulnessEvidence * 0.13) * (1 - nearWhiteFade * 0.45),
+                    0.020,
+                    0.105
+                )
             }
             lch.c = min(
                 max(lch.c, floorC),
@@ -2960,11 +2999,17 @@ private final class BKArtBackgroundLayerView: NSView {
         }
 
         if harmonized.isDark {
-            let floorL: CGFloat = isUltraDarkCover ? 0.108 : 0.145
-            let ceilingL: CGFloat = isUltraDarkCover ? 0.260 : 0.340
+            // Narrowed L band: raise the floor and lower the ceiling so the
+            // gradient-mapped image no longer crushes shadows to dead black
+            // while still keeping a light/dark hierarchy.
+            let floorL: CGFloat = isUltraDarkCover ? 0.128 : 0.168
+            let ceilingL: CGFloat = isUltraDarkCover ? 0.240 : 0.310
             lch.l = min(max(lch.l, floorL), ceilingL)
         } else {
-            lch.l = min(max(lch.l, 0.900), 0.970)
+            let brightBoost = ColorMath.clamp(
+                ((currentAnalysis?.brightAreaRatio ?? 0) - 0.35) / 0.40, 0, 1
+            )
+            lch.l = min(max(lch.l, 0.900 + brightBoost * 0.025), 0.970 + brightBoost * 0.015)
         }
         let adjusted = ColorRenderingAdapter.makeNSColor(
             OKLCHColor(lch, alpha: Double(rgb.alphaComponent)),
