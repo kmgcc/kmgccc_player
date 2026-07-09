@@ -190,6 +190,13 @@ final class ExternalPlaybackMetadataStore {
             : nil
     }
 
+    /// True when the user has made a manual lyrics decision for this key -
+    /// either locked specific lyrics or explicitly cleared them. When true,
+    /// local/auto lyrics fallback must be suppressed so a "clear" sticks.
+    func hasManualLyricsDecision(for stableKey: String) -> Bool {
+        overrides[stableKey]?.manuallySelectedLyrics != nil
+    }
+
     func saveManualLyrics(_ lyrics: String, source: String, for stableKey: String) {
         if var override = overrides[stableKey] {
             override.manuallySelectedLyrics = lyrics

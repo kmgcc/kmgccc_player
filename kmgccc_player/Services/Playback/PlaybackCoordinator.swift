@@ -233,13 +233,17 @@ final class PlaybackCoordinator {
         NowPlayingService.shared.updateNowPlaying(force: true)
     }
 
-    func invalidateExternalPlaybackResolution() {
+    func invalidateExternalPlaybackResolution(onlyOffsetChanged: Bool = false) {
         guard activeSource.isExternal else { return }
         Log.info(
-            "[ExternalPlayback] override saved; invalidating current resolution source=\(activeSource.rawValue) identity=\(presentation.externalStableKey ?? "nil")",
+            "[ExternalPlayback] override saved; invalidating current resolution onlyOffsetChanged=\(onlyOffsetChanged) source=\(activeSource.rawValue) identity=\(presentation.externalStableKey ?? "nil")",
             category: .playback
         )
-        activeExternalProvider?.invalidateCurrentResolution()
+        if onlyOffsetChanged {
+            activeExternalProvider?.updateLyricsOffsetOnly()
+        } else {
+            activeExternalProvider?.invalidateCurrentResolution()
+        }
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
     }

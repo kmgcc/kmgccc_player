@@ -42,11 +42,16 @@ struct ExternalPlaybackMatchOverride: Codable, Equatable, Sendable {
     var lyricsTimeOffsetMs: Double?
     var updatedAt: Date
 
+    /// `manuallySelectedLyrics` is nil when there is no manual lyrics decision
+    /// (fall back to local/auto), an empty string when explicitly cleared
+    /// (suppress fallback, show no lyrics), and non-empty text when locked.
+    /// An explicit clear is a meaningful override state, so it must NOT count
+    /// toward `isEmpty` or it would be dropped on save.
     var isEmpty: Bool {
         (title?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
             && (artist?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
             && (album?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-            && (manuallySelectedLyrics?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+            && manuallySelectedLyrics == nil
             && lyricsTimeOffsetMs == nil
     }
 

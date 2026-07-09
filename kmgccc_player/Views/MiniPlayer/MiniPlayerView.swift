@@ -120,8 +120,8 @@ struct MiniPlayerView: View {
         .sheet(isPresented: $isShowingExternalMatchEditor) {
             ExternalPlaybackInfoEditorView(
                 presentation: playbackCoordinator.presentation,
-                onSaved: {
-                    playbackCoordinator.invalidateExternalPlaybackResolution()
+                onSaved: { onlyOffsetChanged in
+                    playbackCoordinator.invalidateExternalPlaybackResolution(onlyOffsetChanged: onlyOffsetChanged)
                 }
             )
             .environmentObject(themeStore)

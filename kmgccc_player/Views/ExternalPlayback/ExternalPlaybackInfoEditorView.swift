@@ -10,7 +10,7 @@ import SwiftUI
 @MainActor
 struct ExternalPlaybackInfoEditorView: View {
     let presentation: NowPlayingPresentation
-    var onSaved: () -> Void
+    var onSaved: (_ onlyOffsetChanged: Bool) -> Void
 
     @State private var title: String
     @State private var artist: String
@@ -30,7 +30,7 @@ struct ExternalPlaybackInfoEditorView: View {
     private let initialLyricsText: String
     private let initialArtworkData: Data?
 
-    init(presentation: NowPlayingPresentation, onSaved: @escaping () -> Void) {
+    init(presentation: NowPlayingPresentation, onSaved: @escaping (_ onlyOffsetChanged: Bool) -> Void) {
         self.presentation = presentation
         self.onSaved = onSaved
         self.stableKey = presentation.externalStableKey
@@ -40,11 +40,16 @@ struct ExternalPlaybackInfoEditorView: View {
         self.initialTitle = presentation.externalEffectiveTitle ?? presentation.externalRawTitle ?? presentation.title
         self.initialArtist = presentation.externalEffectiveArtist ?? presentation.externalRawArtist ?? presentation.artist
         self.initialAlbum = presentation.externalEffectiveAlbum ?? presentation.externalRawAlbum ?? presentation.album ?? ""
-        // Prefer manually-locked lyrics if available; otherwise fall back to current presentation lyrics.
+        // A manual lyrics decision (locked text or an explicit "clear") controls
+        // the editor seed: cleared -> empty; no decision -> fall back to the
+        // current presentation lyrics.
         let manualLyrics = stableKey.flatMap { ExternalPlaybackMetadataStore.shared.manualLyrics(for: $0) }
-        self.initialLyricsText = LyricsFormatSupport.normalizedTTMLText(manualLyrics)
-            ?? LyricsFormatSupport.normalizedTTMLText(presentation.lyricsText)
-            ?? ""
+        let hasManualDecision = stableKey.flatMap { ExternalPlaybackMetadataStore.shared.hasManualLyricsDecision(for: $0) } ?? false
+        self.initialLyricsText = hasManualDecision
+            ? (LyricsFormatSupport.normalizedTTMLText(manualLyrics) ?? "")
+            : (LyricsFormatSupport.normalizedTTMLText(manualLyrics)
+                ?? LyricsFormatSupport.normalizedTTMLText(presentation.lyricsText)
+                ?? "")
         let existingOverride = stableKey.flatMap { ExternalPlaybackMetadataStore.shared.override(for: $0) }
         self.initialLyricsTimeOffsetMs = existingOverride?.lyricsTimeOffsetMs ?? 0
         self.initialArtworkData = presentation.artworkData
@@ -125,6 +130,13 @@ struct ExternalPlaybackInfoEditorView: View {
 
     private func saveExternalEdits() {
         guard let stableKey else { return }
+        let onlyOffsetChanged = (title == initialTitle)
+            && (artist == initialArtist)
+            && (album == initialAlbum)
+            && (lyricsText == initialLyricsText)
+            && (artworkData == initialArtworkData)
+            && (lyricsTimeOffsetMs != initialLyricsTimeOffsetMs)
+
         let existingOverride = ExternalPlaybackMetadataStore.shared.override(for: stableKey)
         let override = ExternalPlaybackMatchOverride(
             title: overrideValue(title, raw: rawTitle),
@@ -153,13 +165,13 @@ struct ExternalPlaybackInfoEditorView: View {
             )
         }
 
-        onSaved()
+        onSaved(onlyOffsetChanged)
     }
 
     private func clearOverride() {
         guard let stableKey else { return }
         ExternalPlaybackMetadataStore.shared.clearOverride(for: stableKey)
-        onSaved()
+        onSaved(false)
     }
 
     private func overrideValue(_ value: String, raw: String) -> String? {

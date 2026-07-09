@@ -633,7 +633,7 @@ struct TrackInfoEditorCore: View {
                 .clipShape(Capsule())
                 .font(.caption)
 
-                if mode == .local {
+                if mode == .local || mode == .externalPlayback {
                     Button("清除歌词", role: .destructive) {
                         lyricsText = ""
                     }

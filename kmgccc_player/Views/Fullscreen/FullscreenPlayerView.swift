@@ -470,7 +470,7 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: playerVM.currentTrack?.id, handleTrackIdChange)
         .onChange(of: playbackCoordinator.presentation.currentTime, handlePresentationCurrentTimeChange)
-        .onChange(of: playbackCoordinator.presentation.isPlaying) { _, newValue in
+        .onChange(of: playbackCoordinator.presentation.effectiveLyricsIsPlaying) { _, newValue in
             guard playbackCoordinator.presentation.source.isExternal else { return }
             LyricsSurfaceManager.shared.updatePlayingState(newValue)
             guard allowsDirectEmbeddedSurfaceUpdates else { return }
@@ -653,8 +653,8 @@ struct FullscreenPlayerView: View {
     private func externalMatchEditorSheet() -> some View {
         ExternalPlaybackInfoEditorView(
             presentation: playbackCoordinator.presentation,
-            onSaved: {
-                playbackCoordinator.invalidateExternalPlaybackResolution()
+            onSaved: { onlyOffsetChanged in
+                playbackCoordinator.invalidateExternalPlaybackResolution(onlyOffsetChanged: onlyOffsetChanged)
             }
         )
         .environmentObject(themeStore)
@@ -2309,6 +2309,12 @@ struct FullscreenPlayerView: View {
             context: overlayContext,
             playbackSource: playbackCoordinator.presentation.source
         )
+        let trackOffsetMs: Double
+        if playbackCoordinator.presentation.source.isExternal {
+            trackOffsetMs = max(-15000, min(15000, playbackCoordinator.presentation.externalLyricsTimeOffsetMs ?? 0))
+        } else {
+            trackOffsetMs = max(-15000, min(15000, playbackCoordinator.presentation.localTrack?.lyricsTimeOffsetMs ?? 0))
+        }
         return [
             settings.fullscreen.skinID,
             settings.fullscreenLyricsFontNameZh,
@@ -2326,6 +2332,7 @@ struct FullscreenPlayerView: View {
             playbackCoordinator.presentation.source.rawValue,
             hostContext.rawValue,
             overlay.signature,
+            String(format: "%.0f", trackOffsetMs),
         ].joined(separator: "|")
     }
 
@@ -3079,7 +3086,7 @@ struct FullscreenPlayerView: View {
                     presentation.lyricsCurrentTime,
                     trackID: presentation.displayTrackID
                 ),
-                isPlaying: presentation.isPlaying
+                isPlaying: presentation.effectiveLyricsIsPlaying
             )
         }
     }
