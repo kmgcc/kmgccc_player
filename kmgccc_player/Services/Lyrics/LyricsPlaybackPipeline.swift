@@ -104,8 +104,9 @@ final class LyricsPlaybackPipeline {
             lyricsVM.syncTime(currentTime)
         }
 
-        if lastIsPlaying != presentation.isPlaying {
-            lyricsVM.setPlaying(presentation.isPlaying)
+        let isPlaying = presentation.effectiveLyricsIsPlaying
+        if lastIsPlaying != isPlaying {
+            lyricsVM.setPlaying(isPlaying)
         }
     }
 
@@ -115,7 +116,7 @@ final class LyricsPlaybackPipeline {
     ) {
         lastContentSignature = signature
         lastHadTrack = presentation.hasTrack
-        lastIsPlaying = presentation.isPlaying
+        lastIsPlaying = presentation.effectiveLyricsIsPlaying
         lastSyncedTime = presentation.lyricsCurrentTime
     }
 

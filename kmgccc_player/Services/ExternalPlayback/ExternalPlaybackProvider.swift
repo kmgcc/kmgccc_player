@@ -51,12 +51,14 @@ protocol ExternalPlaybackProvider: AnyObject {
     func setAppleMusicPlaybackMode(_ mode: AppleMusicPlaybackMode)
     func invalidateCurrentResolution()
     func clearRuntimeResolutionCaches()
+    func updateLyricsOffsetOnly()
 }
 
 extension ExternalPlaybackProvider {
     var capabilities: ExternalPlaybackCapabilities { .unavailable }
     func tickPresentation() {}
     func setVolume(_ volume: Double) {}
+    func updateLyricsOffsetOnly() {}
 }
 
 extension AppleMusicPlaybackAdapter: ExternalPlaybackProvider {

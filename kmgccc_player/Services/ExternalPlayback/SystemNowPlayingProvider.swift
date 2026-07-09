@@ -251,6 +251,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     private var latestMatchedTrack: Track?
     private var resolvedLyricsText: String?
     private var autoLyricsLookupState: AutoLyricsLookupState = .idle
+    private var lastLyricsCurrentTime: Double = 0
     private var displayedArtwork: ResolvedArtwork = .none
     private var pendingArtworkIdentity: String?
     private var lyricsTask: Task<Void, Never>?
@@ -522,6 +523,10 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         isInvalidatingCurrentResolution = true
         updatePresentationFromLatestPayload(force: true)
         startResolutionIfNeeded(raw: raw, identity: identity)
+    }
+
+    func updateLyricsOffsetOnly() {
+        updatePresentationFromLatestPayload(force: true)
     }
 
     func clearRuntimeResolutionCaches() {
@@ -854,11 +859,10 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             resolutionTask = nil
             latestIdentity = identity
             resolvedRawMetadata = nil
-            resolvedTrackIdentity = nil
+            // Do NOT immediately clear resolvedTrackIdentity and resolvedLyricsText
             latestEffectiveMetadata = nil
             latestMatchResult = nil
             latestMatchedTrack = nil
-            resolvedLyricsText = nil
             autoLyricsLookupState = .idle
             displayedArtwork = .none
             pendingArtworkIdentity = identity
@@ -1814,23 +1818,44 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         }
         let didChangeResolvedIdentity = resolvedTrackIdentity != identity
         resolvedRawMetadata = resolution.raw
-        resolvedTrackIdentity = identity
         latestEffectiveMetadata = resolution.effective
         latestMatchResult = resolution.matchResult
         latestMatchedTrack = resolution.matchedTrack
 
         let manualLyrics = metadataStore.manualLyrics(for: identity)
         let localLyrics = preferredLyricsText(for: resolution.matchedTrack)
-        let autoLyrics = metadataStore.cachedAutoLyrics(for: identity)
-        resolvedLyricsText = manualLyrics ?? localLyrics ?? autoLyrics
-        if manualLyrics != nil || localLyrics != nil || autoLyrics != nil {
+        let hasManualDecision = metadataStore.hasManualLyricsDecision(for: identity)
+        let autoLyrics = (!hasManualDecision && localLyrics == nil)
+            ? metadataStore.cachedAutoLyrics(for: identity)
+            : nil
+        let newLyricsText = hasManualDecision
+            ? manualLyrics
+            : (localLyrics ?? autoLyrics)
+
+        if hasManualDecision || localLyrics != nil || autoLyrics != nil {
+            resolvedTrackIdentity = identity
+            resolvedLyricsText = newLyricsText
             autoLyricsLookupState = .idle
+            updatePresentationFromLatestPayload()
+        } else {
+            // Check if we can search online
+            let canSearch = !resolution.effective.title.isEmpty
+                && (lyricsSearchTimestamps[identity] == nil || Date().timeIntervalSince(lyricsSearchTimestamps[identity]!) >= 30)
+            if !canSearch {
+                resolvedTrackIdentity = identity
+                resolvedLyricsText = nil
+                autoLyricsLookupState = .noResults
+                updatePresentationFromLatestPayload()
+            } else {
+                resolveLyricsIfNeeded(
+                    identity: identity,
+                    effective: resolution.effective,
+                    localLyrics: nil
+                )
+            }
         }
 
-        updatePresentationFromLatestPayload()
-
-        // Only re-run artwork / lyrics resolvers when the resolved core identity
-        // actually changed. Album/duration fill-ins on the same track don't qualify.
+        // Only re-run artwork resolver when the resolved core identity actually changed.
         guard didChangeResolvedIdentity else { return }
 
         startArtworkResolution(
@@ -1840,12 +1865,6 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             manualOverrideArtwork: metadataStore.cachedArtwork(for: identity, source: "manualOverride"),
             cachedNetworkArtwork: metadataStore.cachedNetworkArtwork(for: identity),
             providerArtwork: currentProviderArtworkData()
-        )
-
-        resolveLyricsIfNeeded(
-            identity: identity,
-            effective: resolution.effective,
-            localLyrics: preferredLyricsText(for: resolution.matchedTrack)
         )
     }
 
@@ -1896,6 +1915,20 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         let capabilities = capabilities(for: payload)
         currentCapabilities = capabilities
 
+        let isTransitioning = latestIdentity != nil
+            && resolvedTrackIdentity != nil
+            && latestIdentity != resolvedTrackIdentity
+
+        let finalLyricsText = isTransitioning ? resolvedLyricsText : resolvedLyricsText
+        let finalLyricsIdentity = isTransitioning ? resolvedTrackIdentity : (resolvedTrackIdentity ?? identity)
+        let finalLyricsIsPlaying = isTransitioning ? false : nil
+        let finalLyricsCurrentTimeOverride = isTransitioning ? lastLyricsCurrentTime : nil
+
+        let computedCurrentTime = displayCurrentTimeFromBaseline()
+        if !isTransitioning {
+            lastLyricsCurrentTime = max(0, computedCurrentTime - max(0, presentation.audioOutputDelay))
+        }
+
         let newPresentation = NowPlayingPresentation(
             source: source,
             localTrack: latestMatchedTrack,
@@ -1907,11 +1940,11 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             artworkDisplayTrackID: artwork.displayTrackID,
             isArtworkLoading: pendingArtworkIdentity == identity,
             duration: progressBaseline?.duration ?? payload.duration ?? 0,
-            currentTime: displayCurrentTimeFromBaseline(),
+            currentTime: computedCurrentTime,
             isPlaying: progressBaseline?.isPlaying ?? isPayloadPlaying(payload),
             volume: presentation.volume,
-            lyricsText: resolvedLyricsText,
-            lyricsIdentity: identity,
+            lyricsText: finalLyricsText,
+            lyricsIdentity: finalLyricsIdentity,
             appleMusicPlaybackMode: playbackMode(from: payload),
             externalStableKey: identity,
             externalRawTitle: raw?.title ?? rawTitle,
@@ -1922,9 +1955,11 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             externalEffectiveAlbum: effective?.album,
             externalUsesOverride: effective?.usesOverride ?? false,
             externalMatchConfidence: latestMatchResult?.confidence,
-            externalLyricsStatusMessage: externalLyricsStatusMessage(for: resolvedLyricsText),
+            externalLyricsStatusMessage: externalLyricsStatusMessage(for: finalLyricsText),
             externalConnectionState: presentationConnectionState,
             externalLyricsTimeOffsetMs: externalLyricsTimeOffsetMs,
+            lyricsIsPlaying: finalLyricsIsPlaying,
+            lyricsCurrentTimeOverride: finalLyricsCurrentTimeOverride,
             isControlEnabled: capabilities.canControlPlayback,
             isSeekEnabled: false,
             isVolumeControlEnabled: capabilities.canSetVolume,
@@ -2257,30 +2292,6 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         localLyrics: String?
     ) {
         guard canApplyCurrentResolution(identity: identity) else { return }
-        if let manualLyrics = metadataStore.manualLyrics(for: identity) {
-            autoLyricsLookupState = .idle
-            if resolvedLyricsText != manualLyrics {
-                resolvedLyricsText = manualLyrics
-                updatePresentationFromLatestPayload()
-            }
-            return
-        }
-
-        if let localLyrics {
-            resolvedLyricsText = localLyrics
-            autoLyricsLookupState = .idle
-            metadataStore.updateLyricsSource("localLibrary", for: identity)
-            updatePresentationFromLatestPayload()
-            return
-        }
-
-        if let autoLyrics = metadataStore.cachedAutoLyrics(for: identity) {
-            resolvedLyricsText = autoLyrics
-            autoLyricsLookupState = .idle
-            updatePresentationFromLatestPayload()
-            return
-        }
-
         guard !effective.title.isEmpty, lyricsTask == nil else { return }
         if let lastSearch = lyricsSearchTimestamps[identity], Date().timeIntervalSince(lastSearch) < 30 {
             return
@@ -2302,12 +2313,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                 self.lyricsTask = nil
                 guard self.canApplyCurrentResolution(identity: identity) else { return }
 
-                if let manualLyrics = metadataStore.manualLyrics(for: identity) {
-                    self.autoLyricsLookupState = .idle
-                    self.resolvedLyricsText = manualLyrics
-                    self.updatePresentationFromLatestPayload()
-                    return
-                }
+                self.resolvedTrackIdentity = identity
 
                 if let ttml = result.ttml, !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     metadataStore.storeNetworkLyrics(ttml, for: identity, source: "network")

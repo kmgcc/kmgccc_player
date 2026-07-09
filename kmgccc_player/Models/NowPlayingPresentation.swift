@@ -47,6 +47,8 @@ struct NowPlayingPresentation {
     var externalLyricsStatusMessage: String?
     var externalConnectionState: ExternalPlaybackConnectionState?
     var externalLyricsTimeOffsetMs: Double? = nil
+    var lyricsIsPlaying: Bool? = nil
+    var lyricsCurrentTimeOverride: Double? = nil
     var isControlEnabled: Bool
     var isSeekEnabled: Bool
     var isVolumeControlEnabled: Bool
@@ -82,6 +84,8 @@ struct NowPlayingPresentation {
         externalLyricsStatusMessage: nil,
         externalConnectionState: nil,
         externalLyricsTimeOffsetMs: nil,
+        lyricsIsPlaying: nil,
+        lyricsCurrentTimeOverride: nil,
         isControlEnabled: false,
         isSeekEnabled: false,
         isVolumeControlEnabled: true,
@@ -118,6 +122,8 @@ struct NowPlayingPresentation {
         externalLyricsStatusMessage: nil,
         externalConnectionState: .disconnected,
         externalLyricsTimeOffsetMs: nil,
+        lyricsIsPlaying: nil,
+        lyricsCurrentTimeOverride: nil,
         isControlEnabled: false,
         isSeekEnabled: false,
         isVolumeControlEnabled: true,
@@ -154,6 +160,8 @@ struct NowPlayingPresentation {
         externalLyricsStatusMessage: nil,
         externalConnectionState: .disconnected,
         externalLyricsTimeOffsetMs: nil,
+        lyricsIsPlaying: nil,
+        lyricsCurrentTimeOverride: nil,
         isControlEnabled: false,
         isSeekEnabled: false,
         isVolumeControlEnabled: false,
@@ -171,7 +179,14 @@ struct NowPlayingPresentation {
     }
 
     var lyricsCurrentTime: Double {
-        max(0, currentTime - max(0, audioOutputDelay))
+        if let override = lyricsCurrentTimeOverride {
+            return override
+        }
+        return max(0, currentTime - max(0, audioOutputDelay))
+    }
+
+    var effectiveLyricsIsPlaying: Bool {
+        lyricsIsPlaying ?? isPlaying
     }
 }
 
@@ -193,6 +208,8 @@ extension NowPlayingPresentation {
         volume == other.volume &&
         lyricsIdentity == other.lyricsIdentity &&
         lyricsText == other.lyricsText &&
+        lyricsIsPlaying == other.lyricsIsPlaying &&
+        lyricsCurrentTimeOverride == other.lyricsCurrentTimeOverride &&
         appleMusicPlaybackMode == other.appleMusicPlaybackMode &&
         externalStableKey == other.externalStableKey &&
         externalRawTitle == other.externalRawTitle &&
