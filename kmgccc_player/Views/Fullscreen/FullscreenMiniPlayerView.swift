@@ -492,6 +492,7 @@ struct FullscreenMiniPlayerView: View {
         }
         return FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: themeStore.semanticPalette,
+            localArtworkPolarity: nil,
             hasArtworkThemeColor: themeStore.hasArtworkThemeColor,
             skinID: settings.fullscreen.skinID,
             colorScheme: colorScheme,
@@ -575,16 +576,11 @@ struct FullscreenMiniPlayerView: View {
 
     // MARK: - Stricter readability gate
 
-    /// Stricter dark-foreground gate used by surfaces sitting on a blurred
-    /// artwork (Cover Gradient Blur clear material). `analysis.usesDarkForeground`
-    /// flips at HSL L≥0.58; over a blur we want a more conservative
-    /// threshold so a moderately bright cover still keeps light text.
-    /// This stays in the view layer because the gate is specific to the
-    /// over-blur surface; the rest of the readability semantic lives on
-    /// `ArtworkReadabilityProfile`.
-    static func shouldUseDarkArtworkForeground(for analysis: ArtworkColorAnalysis) -> Bool {
-        FullscreenMiniPlayerForegroundStrategy.shouldUseDarkArtworkForeground(for: analysis)
-    }
+    // The old `shouldUseDarkArtworkForeground` wrapper was removed: Cover Blur
+    // foreground polarity is now resolved centrally by
+    // `FullscreenMiniPlayerForegroundStrategy.resolve(localArtworkPolarity:)`
+    // and passed down as a `foregroundProfile`. The volume control and other
+    // surfaces consume that profile instead of re-reading `analysis` here.
 }
 
 // MARK: - Left section (isolated from high-frequency presentation ticks)

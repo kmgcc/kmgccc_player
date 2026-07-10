@@ -39,6 +39,17 @@ struct SemanticPalette: Equatable, Sendable {
     /// of each reinventing usesDarkForeground.
     let readabilityProfile: ArtworkReadabilityProfile
 
+    /// Both polarity variants of the readability profile. Surfaces with a
+    /// local contrast pass (Home Hero, Cover Blur fullscreen) pick the variant
+    /// for their locally-resolved polarity; `readabilityProfile` above stays
+    /// the global-polarity variant for existing consumers.
+    let readabilityCandidates: ArtworkReadabilityCandidates
+
+    /// Both polarity variants of the Cover Gradient Blur text colour. The
+    /// light variant is what Cover Blur actually renders for light foreground,
+    /// so a local contrast pass scores the real on-screen colour.
+    let coverGradientTextCandidates: CoverGradientTextCandidates
+
     /// Control colour for the fullscreen mini player on chrome surfaces
     /// (default liquid-glass pill). When the mini player sits directly on
     /// artwork (Cover Gradient Blur "clear" material), the view consumes
@@ -705,6 +716,47 @@ struct ArtworkReadabilityProfile: Equatable, Sendable {
     let iconForeground: NSColor
 }
 
+/// Both foreground-polarity variants of the artwork readability profile,
+/// produced from one `ArtworkColorAnalysis`. Surfaces that perform their own
+/// local contrast pass (Home Hero, Cover Gradient Blur fullscreen controls)
+/// fetch the variant that matches their locally-resolved polarity instead of
+/// re-reading the global `usesDarkForeground`. The global
+/// `SemanticPalette.readabilityProfile` is still the global-polarity variant,
+/// so existing consumers are unaffected.
+struct ArtworkReadabilityCandidates: Equatable, Sendable {
+    let darkOnLightBackground: ArtworkReadabilityProfile
+    let lightOnDarkBackground: ArtworkReadabilityProfile
+
+    /// Selects the variant for a polarity. View-layer callers (Home Hero,
+    /// Cover Blur fullscreen) are MainActor. Nonisolated callers must read the
+    /// stored properties directly rather than through this accessor.
+    func profile(for polarity: ArtworkForegroundPolarity) -> ArtworkReadabilityProfile {
+        switch polarity {
+        case .darkOnLightBackground: return darkOnLightBackground
+        case .lightOnDarkBackground: return lightOnDarkBackground
+        }
+    }
+}
+
+/// Both foreground-polarity variants of the Cover Gradient Blur text colour.
+/// The light variant uses `coverGradientText`'s light branch (its target L and
+/// chroma cap differ from the direct-on-artwork `readableTextOnArtwork`
+/// profile), so a local contrast pass scores the exact colour that will be
+/// rendered. The global `SemanticPalette.coverGradientText` remains the
+/// global-polarity variant.
+struct CoverGradientTextCandidates: Equatable, Sendable {
+    let darkOnLightBackground: NSColor
+    let lightOnDarkBackground: NSColor
+
+    /// Selects the colour for a polarity (view-layer / MainActor callers).
+    func color(for polarity: ArtworkForegroundPolarity) -> NSColor {
+        switch polarity {
+        case .darkOnLightBackground: return darkOnLightBackground
+        case .lightOnDarkBackground: return lightOnDarkBackground
+        }
+    }
+}
+
 /// Tinted-neutral foreground palette for ordinary App UI — sidebar
 /// navigation, library lists, settings labels, Home section captions,
 /// and empty-state copy. NOT for use over artwork; that is the domain
@@ -858,6 +910,8 @@ nonisolated enum SemanticPaletteFactory {
         }
 
         let readability = readabilityProfile(analysis: analysis)
+        let readabilityCandidatePair = readabilityCandidates(analysis: analysis)
+        let coverGradientTextCandidatePair = coverGradientTextCandidates(analysis: analysis)
         let control = miniPlayerControl(
             analysis: analysis,
             globalAccent: globalAccent
@@ -891,6 +945,8 @@ nonisolated enum SemanticPaletteFactory {
             coverGradientDominant: coverGradientDominant(analysis: analysis, isDark: isDark),
             coverGradientText: coverGradientText(analysis: analysis),
             readabilityProfile: readability,
+            readabilityCandidates: readabilityCandidatePair,
+            coverGradientTextCandidates: coverGradientTextCandidatePair,
             miniPlayerControl: control,
             appForeground: appFg,
             lyrics: lyrics
@@ -904,10 +960,15 @@ nonisolated enum SemanticPaletteFactory {
     /// near-mono neutraliser so downstream consumers (HomeHero overlay,
     /// FullscreenMiniPlayer over artwork, future Library header overlay)
     /// never receive a tinted output on a grey artwork.
+    ///
+    /// `polarity` is explicit so the candidate builder can produce both
+    /// variants from one analysis; the backward-compatible overload below
+    /// selects the global-polarity variant for existing callers.
     nonisolated fileprivate static func readabilityProfile(
-        analysis: ArtworkColorAnalysis
+        analysis: ArtworkColorAnalysis,
+        polarity: ArtworkForegroundPolarity
     ) -> ArtworkReadabilityProfile {
-        let basePrimary = readableTextOnArtwork(analysis: analysis)
+        let basePrimary = readableTextOnArtworkOKLCH(analysis: analysis, polarity: polarity)
         let primary = neutraliseIfNearMono(basePrimary, analysis: analysis)
         let secondary = primary.withAlphaComponent(
             ColorSystemTokens.ReadabilityProfile.secondaryAlpha
@@ -919,13 +980,44 @@ nonisolated enum SemanticPaletteFactory {
             ColorSystemTokens.ReadabilityProfile.quaternaryAlpha
         )
         return ArtworkReadabilityProfile(
-            usesDarkForeground: analysis.usesDarkForeground,
+            usesDarkForeground: polarity.usesDarkForeground,
             isNearMonochrome: analysis.isNearMonochrome,
             foregroundPrimary: primary,
             foregroundSecondary: secondary,
             foregroundTertiary: tertiary,
             foregroundQuaternary: quaternary,
             iconForeground: primary
+        )
+    }
+
+    /// Backward-compatible overload: selects polarity from the global gate.
+    nonisolated fileprivate static func readabilityProfile(
+        analysis: ArtworkColorAnalysis
+    ) -> ArtworkReadabilityProfile {
+        readabilityProfile(
+            analysis: analysis,
+            polarity: analysis.usesDarkForeground ? .darkOnLightBackground : .lightOnDarkBackground
+        )
+    }
+
+    /// Both polarity variants of the readability profile, for surfaces that
+    /// resolve their own local polarity (Home Hero, Cover Blur fullscreen).
+    nonisolated fileprivate static func readabilityCandidates(
+        analysis: ArtworkColorAnalysis
+    ) -> ArtworkReadabilityCandidates {
+        ArtworkReadabilityCandidates(
+            darkOnLightBackground: readabilityProfile(analysis: analysis, polarity: .darkOnLightBackground),
+            lightOnDarkBackground: readabilityProfile(analysis: analysis, polarity: .lightOnDarkBackground)
+        )
+    }
+
+    /// Both polarity variants of the Cover Gradient Blur text colour.
+    fileprivate static func coverGradientTextCandidates(
+        analysis: ArtworkColorAnalysis
+    ) -> CoverGradientTextCandidates {
+        CoverGradientTextCandidates(
+            darkOnLightBackground: coverGradientTextOKLCH(analysis: analysis, polarity: .darkOnLightBackground),
+            lightOnDarkBackground: coverGradientTextOKLCH(analysis: analysis, polarity: .lightOnDarkBackground)
         )
     }
 
@@ -1958,7 +2050,10 @@ nonisolated enum SemanticPaletteFactory {
         }
     }
 
-    nonisolated fileprivate static func readableTextOnArtworkOKLCH(analysis: ArtworkColorAnalysis) -> NSColor {
+    nonisolated fileprivate static func readableTextOnArtworkOKLCH(
+        analysis: ArtworkColorAnalysis,
+        polarity: ArtworkForegroundPolarity
+    ) -> NSColor {
         let T = ColorSystemTokens.ReadableTextOKLCH.self
         let sourceColor = analysis.bestTextSourceColor
         guard let lch = OKColor.nsColorToOKLCH(sourceColor) else {
@@ -1968,7 +2063,7 @@ nonisolated enum SemanticPaletteFactory {
         let targetL: CGFloat
         let h = lch.h
 
-        if analysis.usesDarkForeground {
+        if polarity == .darkOnLightBackground {
             targetL = T.darkForegroundL
             let cap: CGFloat
             switch h {
@@ -2021,6 +2116,15 @@ nonisolated enum SemanticPaletteFactory {
             }
             return OKColor.okLCHToNSColor(OKColor.OKLCH(l: targetL, c: finalC, h: h), alpha: 1.0)
         }
+    }
+
+    /// Backward-compatible overload: selects polarity from the global gate
+    /// baked into `analysis.usesDarkForeground`.
+    nonisolated fileprivate static func readableTextOnArtworkOKLCH(analysis: ArtworkColorAnalysis) -> NSColor {
+        readableTextOnArtworkOKLCH(
+            analysis: analysis,
+            polarity: analysis.usesDarkForeground ? .darkOnLightBackground : .lightOnDarkBackground
+        )
     }
 
     nonisolated fileprivate static func readableTextOnArtwork(analysis: ArtworkColorAnalysis) -> NSColor {
@@ -2149,7 +2253,10 @@ nonisolated enum SemanticPaletteFactory {
         }
     }
 
-    fileprivate static func coverGradientTextOKLCH(analysis: ArtworkColorAnalysis) -> NSColor {
+    fileprivate static func coverGradientTextOKLCH(
+        analysis: ArtworkColorAnalysis,
+        polarity: ArtworkForegroundPolarity
+    ) -> NSColor {
         let T = ColorSystemTokens.CoverGradientOKLCH.self
         let sourceColor = analysis.bestTextSourceColor
         guard let lch = OKColor.nsColorToOKLCH(sourceColor) else {
@@ -2159,7 +2266,7 @@ nonisolated enum SemanticPaletteFactory {
         let targetL: CGFloat
         let h = lch.h
 
-        if analysis.usesDarkForeground {
+        if polarity == .darkOnLightBackground {
             targetL = T.darkTextL
             let clampedC = ColorMath.clamp(lch.c, T.darkTextChromaLo, T.darkTextChromaHi)
             let capC = analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate ? 0 : T.darkTextChromaHi
@@ -2194,6 +2301,14 @@ nonisolated enum SemanticPaletteFactory {
         }
     }
 
+    /// Backward-compatible overload: selects polarity from the global gate.
+    fileprivate static func coverGradientTextOKLCH(analysis: ArtworkColorAnalysis) -> NSColor {
+        coverGradientTextOKLCH(
+            analysis: analysis,
+            polarity: analysis.usesDarkForeground ? .darkOnLightBackground : .lightOnDarkBackground
+        )
+    }
+
     fileprivate static func coverGradientText(analysis: ArtworkColorAnalysis) -> NSColor {
         return coverGradientTextOKLCH(analysis: analysis)
     }
@@ -2212,6 +2327,39 @@ nonisolated enum SemanticPaletteSelfCheck {
         _ analysis: ArtworkColorAnalysis
     ) -> ArtworkReadabilityProfile {
         SemanticPaletteFactory.readabilityProfile(analysis: analysis)
+    }
+
+    nonisolated static func readabilityProfile(
+        _ analysis: ArtworkColorAnalysis,
+        polarity: ArtworkForegroundPolarity
+    ) -> ArtworkReadabilityProfile {
+        SemanticPaletteFactory.readabilityProfile(analysis: analysis, polarity: polarity)
+    }
+
+    nonisolated static func readabilityCandidates(
+        _ analysis: ArtworkColorAnalysis
+    ) -> ArtworkReadabilityCandidates {
+        SemanticPaletteFactory.readabilityCandidates(analysis: analysis)
+    }
+
+    nonisolated static func coverGradientTextCandidates(
+        _ analysis: ArtworkColorAnalysis
+    ) -> CoverGradientTextCandidates {
+        SemanticPaletteFactory.coverGradientTextCandidates(analysis: analysis)
+    }
+
+    nonisolated static func readableTextOnArtworkOKLCH(
+        _ analysis: ArtworkColorAnalysis,
+        polarity: ArtworkForegroundPolarity
+    ) -> NSColor {
+        SemanticPaletteFactory.readableTextOnArtworkOKLCH(analysis: analysis, polarity: polarity)
+    }
+
+    nonisolated static func coverGradientTextOKLCH(
+        _ analysis: ArtworkColorAnalysis,
+        polarity: ArtworkForegroundPolarity
+    ) -> NSColor {
+        SemanticPaletteFactory.coverGradientTextOKLCH(analysis: analysis, polarity: polarity)
     }
 
     nonisolated static func neutralAchromaticControl() -> NSColor {

@@ -161,14 +161,10 @@ struct ExpandableVolumeControl: View {
         if forceDarkForegroundProfile {
             return palette.readabilityProfile.foregroundPrimary
         }
-        if usesAdaptiveForeground,
-           materialStyle == .clear,
-           themeStore.hasArtworkThemeColor,
-           FullscreenMiniPlayerView.shouldUseDarkArtworkForeground(
-                for: palette.analysis
-           ) {
-            return palette.readabilityProfile.foregroundPrimary
-        }
+        // No profile passed (Preview only in production): the fullscreen path
+        // always supplies a resolved profile, so this is a fixed light control
+        // colour. The Cover Blur local-polarity decision is owned by the
+        // strategy, not re-derived here.
         return palette.miniPlayerControl.primary
     }
 
@@ -177,15 +173,6 @@ struct ExpandableVolumeControl: View {
             return foregroundProfile.iconBlendMode
         }
         if forceDarkForegroundProfile {
-            return .normal
-        }
-        if usesAdaptiveForeground,
-           materialStyle == .clear,
-           themeStore.hasArtworkThemeColor,
-           FullscreenMiniPlayerView.shouldUseDarkArtworkForeground(
-                for: themeStore.semanticPalette.analysis
-           ),
-           ColorMath.relativeLuminance(of: controlPrimaryNSColor) < 0.58 {
             return .normal
         }
         return .screen

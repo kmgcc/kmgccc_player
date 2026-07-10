@@ -36,6 +36,7 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
 
     static func resolve(
         palette: SemanticPalette,
+        localArtworkPolarity: ArtworkForegroundPolarity?,
         hasArtworkThemeColor: Bool,
         skinID: String,
         colorScheme: ColorScheme,
@@ -53,8 +54,17 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
         if skinID == coverGradientBlurSkinID,
            isClearOrNormalMaterial(materialStyle),
            hasArtworkThemeColor {
-            let useDarkForeground = shouldUseDarkArtworkForeground(for: palette.analysis)
-            if useDarkForeground {
+            // Local rendered-region polarity wins when the Cover Blur
+            // background map has been scored; otherwise fall back to the
+            // optimized global strict gate. The colours always come from the
+            // explicit candidate variants so colour, blend, spectrum and
+            // progress flags stay in lockstep with the one resolved polarity -
+            // never the old "dark colour + light blend" mixed profile.
+            let polarity = localArtworkPolarity
+                ?? (palette.analysis.usesDarkForeground
+                    ? .darkOnLightBackground
+                    : .lightOnDarkBackground)
+            if polarity == .darkOnLightBackground {
                 return darkOnArtworkProfile(
                     role: .coverBlurDarkForeground,
                     palette: palette,
@@ -105,15 +115,48 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
         )
     }
 
-    /// Foreground polarity for controls over blurred artwork.
-    ///
-    /// Cover Blur must keep the foreground role and blend flags in lockstep
-    /// with the shared readability profile. A previous stricter luma gate
-    /// could reject borderline bright covers after `analysis.usesDarkForeground`
-    /// had already selected a dark text color, producing a mixed profile:
-    /// dark primary color with light-foreground screen-blend flags.
-    static func shouldUseDarkArtworkForeground(for analysis: ArtworkColorAnalysis) -> Bool {
-        analysis.usesDarkForeground
+    /// The two real Cover Blur candidate profiles (dark / light), used by the
+    /// local contrast engine to score the exact colours that will be rendered
+    /// before `resolve` picks one. `FullscreenPlayerView` extracts each
+    /// profile's `primary` and feeds them to `RenderedBackdropReadability`.
+    static func artworkCandidateProfiles(
+        palette: SemanticPalette
+    ) -> (dark: FullscreenMiniPlayerForegroundProfile, light: FullscreenMiniPlayerForegroundProfile) {
+        (
+            dark: darkOnArtworkProfile(
+                role: .coverBlurDarkForeground,
+                palette: palette,
+                spectrumUsesDarkForeground: true
+            ),
+            light: coverBlurLightProfile(
+                role: .coverBlurLightForeground,
+                palette: palette,
+                enforceBrightProgressForeground: true
+            )
+        )
+    }
+
+    /// Queue text palette, decoupled from the bottom controls' local polarity.
+    /// The fullscreen queue is not inside the Mini Player sampling region, so
+    /// it must not inherit a local Cover Blur decision. Cover Blur uses the
+    /// optimized global gate; other skins keep their fixed behaviour.
+    static func resolveQueueUsesBrightText(
+        palette: SemanticPalette,
+        skinID: String,
+        colorScheme: ColorScheme,
+        fullscreenArtBackgroundEnabled: Bool
+    ) -> Bool {
+        if skinID == coverGradientBlurSkinID {
+            return !palette.analysis.usesDarkForeground
+        }
+        if skinID == appleStyleSkinID { return true }
+        if skinID == "coverLed" || skinID == "rotatingCover" || skinID == "kmgccc.cassette" {
+            return colorScheme == .dark
+        }
+        if fullscreenArtBackgroundEnabled {
+            return colorScheme == .dark
+        }
+        return true
     }
 
     private static func isClearOrNormalMaterial(_ materialStyle: LiquidGlassPillMaterialStyle) -> Bool {
@@ -149,7 +192,10 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
         palette: SemanticPalette,
         enforceBrightProgressForeground: Bool
     ) -> FullscreenMiniPlayerForegroundProfile {
-        let primary = palette.coverGradientText
+        // Light variant comes from the Cover Gradient text candidates (its
+        // target L / chroma cap differ from direct-on-artwork text), so the
+        // rendered colour and the scored colour are identical.
+        let primary = palette.coverGradientTextCandidates.lightOnDarkBackground
         return FullscreenMiniPlayerForegroundProfile(
             role: role,
             primary: primary,
@@ -168,11 +214,14 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
         palette: SemanticPalette,
         spectrumUsesDarkForeground: Bool
     ) -> FullscreenMiniPlayerForegroundProfile {
-        let primary = palette.readabilityProfile.foregroundPrimary
+        // Dark variant comes from the readability candidates so a local
+        // polarity override renders the same dark colour that was scored.
+        let darkVariant = palette.readabilityCandidates.darkOnLightBackground
+        let primary = darkVariant.foregroundPrimary
         return FullscreenMiniPlayerForegroundProfile(
             role: role,
             primary: primary,
-            secondary: palette.readabilityProfile.foregroundSecondary,
+            secondary: darkVariant.foregroundSecondary,
             disabled: primary.withAlphaComponent(0.45),
             pillTint: primary,
             iconBlendMode: .normal,

@@ -32,6 +32,7 @@ xcrun --sdk macosx swiftc \
   "kmgccc_player/Utilities/AccentColorPolicy.swift" \
   "kmgccc_player/Utilities/ColorRenderingAdapter.swift" \
   "kmgccc_player/Utilities/ColorSystemTokens.swift" \
+  "kmgccc_player/Utilities/ArtworkForegroundPolarity.swift" \
   "kmgccc_player/Utilities/ArtworkColorAnalysis.swift" \
   "kmgccc_player/Utilities/ArtworkColorExtractor.swift" \
   "kmgccc_player/Utilities/SemanticPalette.swift" \

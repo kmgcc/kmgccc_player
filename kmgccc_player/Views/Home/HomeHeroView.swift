@@ -30,6 +30,15 @@ struct HomeHeroView: View {
     @State private var isHovering = false
     @State private var isCoverHovering = false
 
+    /// Local rendered-region polarity for this hero card's backdrop. Nil until
+    /// the normal backdrop readability map has been scored; the foreground
+    /// accessors then fall back to light ink (never the global dark fallback)
+    /// per the readability plan. See `updateHeroLocalPolarity`.
+    @State private var heroLocalPolarity: ArtworkForegroundPolarity?
+    @State private var heroNormalReadabilityMap: RenderedBackdropReadabilityMap?
+    @State private var heroHoverReadabilityMap: RenderedBackdropReadabilityMap?
+    @State private var heroLocalDecision: LocalForegroundDecision?
+
     /// Cached hero palette. Invariant: equals `Self.makeHeroPalette(...)` for
     /// the most recent observed inputs. Recomputed only via the `.onChange`
     /// guards on `body`, NEVER inside body / computed properties — the
@@ -71,12 +80,27 @@ struct HomeHeroView: View {
         )
     }
 
+    /// Foreground polarity actually applied to this hero card. The local
+    /// rendered-region decision wins once the backdrop map is ready; until then
+    /// light ink is used (never the global dark fallback), so a pending card
+    /// does not flash dark text that the local pass would reject.
+    private var heroResolvedPolarity: ArtworkForegroundPolarity {
+        heroLocalPolarity ?? .lightOnDarkBackground
+    }
+
+    /// Readability profile variant for the resolved polarity. Both variants
+    /// are precomputed in `readabilityCandidates`; selecting by polarity keeps
+    /// colour, blend and alpha tiers in lockstep with one decision.
+    private var heroResolvedReadabilityProfile: ArtworkReadabilityProfile {
+        heroPalette.readabilityCandidates.profile(for: heroResolvedPolarity)
+    }
+
     private var artworkTextPrimary: Color {
-        heroPalette.readabilityProfile.foregroundPrimaryColor
+        ColorRenderingAdapter.makeSwiftUIColor(heroResolvedReadabilityProfile.foregroundPrimary)
     }
 
     private var artworkTextSecondary: Color {
-        heroPalette.readabilityProfile.foregroundSecondaryColor
+        ColorRenderingAdapter.makeSwiftUIColor(heroResolvedReadabilityProfile.foregroundSecondary)
     }
 
     private var artworkDominantColor: NSColor {
@@ -262,6 +286,146 @@ struct HomeHeroView: View {
         .onChange(of: colorScheme) { _, _ in recomputeHeroPalette() }
         .onChange(of: appSettings.accentColor) { _, _ in recomputeHeroPalette() }
         .onChange(of: appSettings.globalArtworkTintEnabled) { _, _ in recomputeHeroPalette() }
+        // Local polarity depends on the rendered backdrop maps AND on the
+        // candidate foreground colours (which live in the palette), plus the
+        // layout that defines the sampling rectangles. None of these are
+        // per-frame signals (playback time, spectrum, mouse), so re-scoring
+        // here stays cheap.
+        .onChange(of: heroPaletteCache) { _, _ in updateHeroLocalPolarity() }
+        .onChange(of: containerWidth) { _, _ in updateHeroLocalPolarity() }
+        .onChange(of: mode) { _, _ in updateHeroLocalPolarity() }
+        .onChange(of: artworkLeadingWidth) { _, _ in updateHeroLocalPolarity() }
+        .overlay { heroReadabilityDebugOverlay }
+    }
+
+    // MARK: - Local rendered-region readability
+
+    /// Three view-space sampling rectangles covering where the hero's
+    /// foreground elements actually render (track info, action buttons, stats),
+    /// expanded by `regionExpansionPoints` and mapped through the backdrop's
+    /// leading-aligned aspect-fill into normalized image regions.
+    private var heroReadabilityRegions: [NormalizedReadabilityRegion] {
+        let viewSize = CGSize(width: containerWidth, height: heroHeight)
+        let imageSize = CGSize(width: 1280, height: 380)
+        let expansion = ColorSystemTokens.ReadabilityForeground.regionExpansionPoints
+        var regions: [NormalizedReadabilityRegion] = []
+
+        func expandAndMap(_ rect: CGRect) {
+            guard rect.width > 0, rect.height > 0 else { return }
+            let expanded = rect.insetBy(dx: -expansion, dy: -expansion)
+            if let mapped = AspectFillReadabilityMapping.map(
+                viewRect: expanded,
+                viewSize: viewSize,
+                imageSize: imageSize,
+                horizontalAlignment: .leading,
+                verticalAlignment: .center
+            ) {
+                regions.append(mapped)
+            }
+        }
+
+        // trackInfo: title (≤2 lines) + artist/album line + description scroll.
+        let trackLeading = heroPadding + artworkLeadingWidth
+        let trackWidth = max(0, containerWidth - trackLeading - heroPadding)
+        let titleHeight = ceil(titleFontSize * 1.2) * 2
+        let artistHeight = ceil(14 * 1.3)
+        let trackHeight = titleHeight + 6 + artistHeight + 6 + descriptionScrollHeight + 4
+        expandAndMap(CGRect(x: trackLeading, y: heroTopPadding, width: trackWidth, height: trackHeight))
+
+        // actions: bottom-leading button group (play + more + switch).
+        let actionBottom = heroHeight - (heroPadding + actionBottomPadding)
+        let playWidth = heroButtonIconSize + 6 + 28 + 2 * heroButtonHorizontalPadding
+        let actionWidth = playWidth + heroButtonHeight * 2 + 20
+        expandAndMap(CGRect(x: trackLeading, y: actionBottom - heroButtonHeight, width: actionWidth, height: heroButtonHeight))
+
+        // stats: bottom-trailing caption (duration + play count).
+        let statsWidth: CGFloat = 112
+        let statsHeight: CGFloat = 16
+        let statsRight = containerWidth - statsTrailingPadding
+        let statsBottom = heroHeight - statsBottomPadding
+        expandAndMap(CGRect(x: statsRight - statsWidth, y: statsBottom - statsHeight, width: statsWidth, height: statsHeight))
+
+        return regions
+    }
+
+    /// View-space rects (pre-mapping) for the DEBUG overlay.
+    private var heroReadabilityDebugViewRects: [CGRect] {
+        let expansion = ColorSystemTokens.ReadabilityForeground.regionExpansionPoints
+        let trackLeading = heroPadding + artworkLeadingWidth
+        let trackWidth = max(0, containerWidth - trackLeading - heroPadding)
+        let titleHeight = ceil(titleFontSize * 1.2) * 2
+        let artistHeight = ceil(14 * 1.3)
+        let trackHeight = titleHeight + 6 + artistHeight + 6 + descriptionScrollHeight + 4
+        let actionBottom = heroHeight - (heroPadding + actionBottomPadding)
+        let playWidth = heroButtonIconSize + 6 + 28 + 2 * heroButtonHorizontalPadding
+        let actionWidth = playWidth + heroButtonHeight * 2 + 20
+        let statsWidth: CGFloat = 112
+        let statsHeight: CGFloat = 16
+        let statsRight = containerWidth - statsTrailingPadding
+        let statsBottom = heroHeight - statsBottomPadding
+        return [
+            CGRect(x: trackLeading, y: heroTopPadding, width: trackWidth, height: trackHeight),
+            CGRect(x: trackLeading, y: actionBottom - heroButtonHeight, width: actionWidth, height: heroButtonHeight),
+            CGRect(x: statsRight - statsWidth, y: statsBottom - statsHeight, width: statsWidth, height: statsHeight)
+        ].map { $0.insetBy(dx: -expansion, dy: -expansion) }
+    }
+
+    /// Re-score the local polarity from the current backdrop maps, candidate
+    /// colours and layout. No-op until the normal map exists; the hover map is
+    /// folded in when it arrives (one further update, no animation).
+    private func updateHeroLocalPolarity() {
+        guard let normalMap = heroNormalReadabilityMap else { return }
+        let regions = heroReadabilityRegions
+        guard !regions.isEmpty else { return }
+        var samples: [(map: RenderedBackdropReadabilityMap, regions: [NormalizedReadabilityRegion])] = [
+            (normalMap, regions)
+        ]
+        if let hoverMap = heroHoverReadabilityMap {
+            samples.append((hoverMap, regions))
+        }
+        let candidates = heroPalette.readabilityCandidates
+        let decision = RenderedBackdropReadability.decide(
+            darkForeground: candidates.darkOnLightBackground.foregroundPrimary,
+            lightForeground: candidates.lightOnDarkBackground.foregroundPrimary,
+            samples: samples
+        )
+        heroLocalDecision = decision
+        // Disable implicit animation so blend-mode/colour tiers don't
+        // interpolate through a grey middle state on the switch.
+        withTransaction(Transaction(animation: nil)) {
+            heroLocalPolarity = decision.polarity
+        }
+    }
+
+    @ViewBuilder
+    private var heroReadabilityDebugOverlay: some View {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["READABILITY_REGION_DEBUG"] == "1" {
+            GeometryReader { _ in
+                ZStack(alignment: .topLeading) {
+                    ForEach(Array(heroReadabilityDebugViewRects.enumerated()), id: \.offset) { _, rect in
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .stroke(Color.green.opacity(0.9), lineWidth: 1.5)
+                            .frame(width: rect.width, height: rect.height)
+                            .position(x: rect.midX, y: rect.midY)
+                    }
+                    let polarity = heroLocalPolarity?.rawValue ?? "pending(light)"
+                    let src = heroLocalPolarity == nil ? "fallback-light" : "hero-local"
+                    let darkC = heroLocalDecision?.darkForegroundRobustContrast ?? 0
+                    let lightC = heroLocalDecision?.lightForegroundRobustContrast ?? 0
+                    let n = heroLocalDecision?.reason.rawValue ?? "-"
+                    Text("\(src) \(polarity)\ndark=\(String(format: "%.2f", darkC)) light=\(String(format: "%.2f", lightC))\n\(n) cs=\(String(heroArtworkChecksum & 0xFFFF, radix: 16))")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.green)
+                        .padding(4)
+                        .background(Color.black.opacity(0.55))
+                        .cornerRadius(4)
+                        .padding(6)
+                }
+            }
+            .allowsHitTesting(false)
+        }
+        #endif
     }
 
     private func heroBlurConfig(variant: HomeHeroBackdropVariant) -> CoverGradientBlurConfig {
@@ -626,6 +790,12 @@ struct HomeHeroView: View {
         heroCoverHoverBackdropImage = nil
         heroArtworkChecksum = 0
         heroAnalysis = nil
+        // New track: clear the previous track's local decision and maps so a
+        // stale polarity cannot bleed into the new card.
+        heroLocalPolarity = nil
+        heroLocalDecision = nil
+        heroNormalReadabilityMap = nil
+        heroHoverReadabilityMap = nil
         let data = await track.loadArtworkDataOffMainIfNeeded()
         guard let data, !data.isEmpty else { return }
         let checksum = ArtworkLoader.checksum(for: data)
@@ -641,7 +811,7 @@ struct HomeHeroView: View {
             cacheKey: key,
             targetPixelSize: CGSize(width: 480, height: 480)
         )
-        async let backdropTask: CGImage? = renderHeroBackdrop(
+        async let backdropTask: HomeHeroBackdropArtifact? = renderHeroBackdrop(
             artworkData: data,
             checksum: checksum,
             variant: .normal
@@ -664,8 +834,13 @@ struct HomeHeroView: View {
                 for: HomeArtworkMemoryStore.heroCoverKey(for: track)
             )
         }
-        heroBackdropImage = backdrop
+        heroBackdropImage = backdrop?.image
+        heroNormalReadabilityMap = backdrop?.readabilityMap ?? nil
         heroAnalysis = analysis
+        // Image and map arrive together (built in one detached task), so score
+        // immediately - no foreground-late-by-a-beat. The palette .onChange
+        // re-scores once heroAnalysis propagates into the candidates.
+        updateHeroLocalPolarity()
 
         let hoverBackdrop = await renderHeroBackdrop(
             artworkData: data,
@@ -673,23 +848,28 @@ struct HomeHeroView: View {
             variant: .coverHover
         )
         guard heroArtworkChecksum == checksum else { return }
-        heroCoverHoverBackdropImage = hoverBackdrop
+        heroCoverHoverBackdropImage = hoverBackdrop?.image
+        heroHoverReadabilityMap = hoverBackdrop?.readabilityMap ?? nil
+        // Fold the hover map in (one further update, animation disabled).
+        updateHeroLocalPolarity()
     }
 
     private func renderHeroBackdrop(
         artworkData: Data,
         checksum: UInt64,
         variant: HomeHeroBackdropVariant
-    ) async -> CGImage? {
+    ) async -> HomeHeroBackdropArtifact? {
         let config = heroBlurConfig(variant: variant)
         let targetSize = CGSize(width: 1280, height: 380)
-        let cacheKey = "\(checksum)-1280x380-home-hero-\(variant.cacheKey)-v6" as NSString
+        // Bumped to v7: the cache now stores a readability map alongside the
+        // image, so the local polarity pass never needs a main-thread re-read.
+        let cacheKey = "\(checksum)-1280x380-home-hero-\(variant.cacheKey)-v7" as NSString
 
-        if let cached = HomeHeroBackdropCache.shared.image(for: cacheKey) {
+        if let cached = HomeHeroBackdropCache.shared.artifact(for: cacheKey) {
             return cached
         }
 
-        let rendered = await Task.detached(priority: .utility) { () -> CGImage? in
+        let rendered = await Task.detached(priority: .utility) { () -> HomeHeroBackdropArtifact? in
             autoreleasepool {
                 guard
                     let prepared = CoverGradientBlurRenderer.preparedArtworkImage(
@@ -699,20 +879,37 @@ struct HomeHeroView: View {
                     )
                 else { return nil }
 
-                return CoverGradientBlurRenderer.render(
+                guard let image = CoverGradientBlurRenderer.render(
                     artworkCGImage: prepared,
                     targetSize: targetSize,
                     dominantColor: nil,
                     config: config
-                )
+                ) else { return nil }
+
+                // Build the readability map from the final rendered image in
+                // the same detached task - never on the main thread. A failed
+                // map build (very rare) still yields the image; the local
+                // polarity pass then falls back to light ink.
+                let map = RenderedBackdropReadabilityMap.make(from: image)
+                return HomeHeroBackdropArtifact(image: image, readabilityMap: map)
             }
         }.value
 
         if let rendered {
-            HomeHeroBackdropCache.shared.setImage(rendered, for: cacheKey)
+            HomeHeroBackdropCache.shared.setArtifact(rendered, for: cacheKey)
         }
         return rendered
     }
+}
+
+/// Rendered hero backdrop plus its precomputed readability map. Both are
+/// produced in one detached task and cached together so the local polarity
+/// pass has the map available the moment the image is displayed. `readabilityMap`
+/// is optional only because `CGImage` -> luminance-map conversion could fail
+/// on a degenerate image; the visual is still usable in that case.
+private struct HomeHeroBackdropArtifact: Sendable {
+    let image: CGImage
+    let readabilityMap: RenderedBackdropReadabilityMap?
 }
 
 private enum HomeHeroBackdropVariant {
@@ -732,9 +929,11 @@ private final class HomeHeroBackdropCache {
 
     private final class ImageBox: NSObject {
         let image: CGImage
+        let readabilityMap: RenderedBackdropReadabilityMap?
 
-        init(_ image: CGImage) {
+        init(_ image: CGImage, _ readabilityMap: RenderedBackdropReadabilityMap?) {
             self.image = image
+            self.readabilityMap = readabilityMap
         }
     }
 
@@ -745,13 +944,14 @@ private final class HomeHeroBackdropCache {
         cache.totalCostLimit = 64 * 1024 * 1024
     }
 
-    func image(for key: NSString) -> CGImage? {
-        cache.object(forKey: key)?.image
+    func artifact(for key: NSString) -> HomeHeroBackdropArtifact? {
+        guard let box = cache.object(forKey: key) else { return nil }
+        return HomeHeroBackdropArtifact(image: box.image, readabilityMap: box.readabilityMap)
     }
 
-    func setImage(_ image: CGImage, for key: NSString) {
-        let cost = max(1, image.bytesPerRow * image.height)
-        cache.setObject(ImageBox(image), forKey: key, cost: cost)
+    func setArtifact(_ artifact: HomeHeroBackdropArtifact, for key: NSString) {
+        let cost = max(1, artifact.image.bytesPerRow * artifact.image.height)
+        cache.setObject(ImageBox(artifact.image, artifact.readabilityMap), forKey: key, cost: cost)
     }
 }
 

@@ -780,14 +780,51 @@ nonisolated enum ColorSystemTokens {
 
     // MARK: - usesDarkForeground gate
     //
-    // The `avgHslL` cut-off used by `ArtworkColorAnalysis` for choosing
-    // whether text-over-cover should default to dark ink or light ink.
-    // Identical to the old `EffectiveMonochrome.usesDarkForegroundAvgHslL`
-    // value; it has its own namespace so the orthogonal axes don't pretend to
-    // own it.
+    // Foreground-polarity thresholds for artwork-overlaid UI. Production
+    // decisions go through `ArtworkForegroundPolarityPolicy.globalPolarity`,
+    // which consumes the `eligibility*` / `clearlyBright*` / `pale*` tokens
+    // below. The old single `usesDarkAvgHslL` threshold is retained only as
+    // the "current" reference column in the readability parity report, so the
+    // dark->light flip list stays auditable.
 
     enum ReadabilityForeground {
+        // Legacy single-threshold. Kept for parity reporting only; the
+        // production gate is the strict multi-signal policy below.
         static let usesDarkAvgHslL: CGFloat = 0.58
+
+        // Strict global gate (see ArtworkForegroundPolarityPolicy).
+        // A cover must clear `eligibilityAvgHslL` before any bright-evidence
+        // signal is even considered.
+        static let eligibilityAvgHslL: CGFloat = 0.58
+        // Any one of these three "clearly bright" signals commits to dark
+        // foreground; otherwise a mid-tone cover stays on light foreground.
+        static let clearlyBrightAvgHslL: CGFloat = 0.68
+        static let clearlyBrightWcagLuma: CGFloat = 0.58
+        static let paleBrightnessFloor: CGFloat = 0.82
+        static let paleSaturationCeiling: CGFloat = 0.30
+
+        // Local rendered-backdrop contrast engine
+        // (RenderedBackdropReadability). These govern the per-surface polarity
+        // override for Home Hero and Cover Gradient Blur fullscreen controls.
+
+        // Longest edge the luminance map is downscaled to. ~36k Float cells at
+        // 192² is small enough to build on a render thread and never copy per
+        // view.
+        static let mapMaximumDimension: Int = 192
+        // A region covering fewer map pixels than this is too small to score.
+        static let minimumRegionSampleCount: Int = 32
+        // Robust (p10) contrast a candidate must reach to be considered
+        // clearly readable. WCAG AA for body text is 4.5.
+        static let minimumRobustContrast: CGFloat = 4.5
+        // Below the minimum but above this floor, a candidate can still win if
+        // it is the higher scorer - flagged as contrast-assist (DEBUG only).
+        static let absoluteContrastFloor: CGFloat = 3.0
+        // Dark foreground must beat light by at least this margin to be
+        // chosen; an intentional product bias toward light ink.
+        static let darkSelectionAdvantage: CGFloat = 0.75
+        // Each sampling rectangle is grown outward by this many points before
+        // being clamped, so the score covers the text/glass neighbourhood.
+        static let regionExpansionPoints: CGFloat = 14
     }
 
     // MARK: - SalientHighlight

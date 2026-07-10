@@ -16,7 +16,7 @@ public nonisolated enum ArtworkColorExtractor {
     /// output (`ArtworkAssetStore` snapshots, `ThemeStore.dominantColorCache`)
     /// fold this into their keys, so previous-version entries cannot bleed
     /// into a new algorithm.
-    public nonisolated static let cacheVersion: String = "material-accent-split-v10"
+    public nonisolated static let cacheVersion: String = "material-accent-split-v11-readability"
 
     // Pixel data cache to avoid repeated decode + CGContext creation.
     private final class PixelCacheBox: @unchecked Sendable {

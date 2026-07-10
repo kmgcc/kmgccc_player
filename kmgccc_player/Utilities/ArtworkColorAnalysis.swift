@@ -111,7 +111,7 @@ nonisolated struct ArtworkColorAnalysis: Equatable, Sendable {
         isUltraDark: false,
         isEffectivelyMonochrome: true,
         hasStrongAccentRegion: false,
-        usesDarkForeground: true,
+        usesDarkForeground: false,
         dominantColor: NSColor(deviceRed: 1.0, green: 200/255, blue: 120/255, alpha: 1),
         averageColor: NSColor(deviceRed: 1.0, green: 200/255, blue: 120/255, alpha: 1),
         topPalette: [],
@@ -636,7 +636,16 @@ extension ArtworkColorExtractor {
             && avgLuma <= ColorSystemTokens.UltraDark.cutoffWcagLuma
             && dominantBrightness <= ColorSystemTokens.UltraDark.dominantBrightnessCeiling
 
-        let usesDark = avgHslL >= ColorSystemTokens.ReadabilityForeground.usesDarkAvgHslL
+        // Foreground polarity is owned by the shared strict gate, not a local
+        // `avgHslL` threshold. Centralizing it here keeps the global
+        // readability profile, the Cover Blur strategy and every parity report
+        // consuming one decision; mid-tone covers no longer flip to dark ink.
+        let usesDark = ArtworkForegroundPolarityPolicy.globalPolarity(
+            avgHslLightness: avgHslL,
+            weightedLuma: avgLuma,
+            avgBrightness: avgBri,
+            avgSaturation: avgSat
+        ).usesDarkForeground
 
         // Reuse existing palette helpers so dominantHue / topPalette stay in sync
         // with the rest of the system.
