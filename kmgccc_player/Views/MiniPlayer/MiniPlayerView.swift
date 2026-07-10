@@ -805,6 +805,7 @@ struct PlaybackModeSlider: View {
                     .offset(x: knobOffset + inset)
                     .allowsHitTesting(false)
                     .animation((reduceMotion || isDragging) ? .none : snap, value: modeIndex)
+                    .animation((reduceMotion || isDragging) ? .none : snap, value: isExpanded)
 
                 HStack(spacing: 0) {
                     ForEach(Array(visibleModes.enumerated()), id: \.offset) { pair in
@@ -1039,6 +1040,7 @@ struct AppleMusicPlaybackModeSlider: View {
                     .offset(x: knobOffset + inset)
                     .allowsHitTesting(false)
                     .animation((reduceMotion || isDragging) ? .none : snap, value: modeIndex)
+                    .animation((reduceMotion || isDragging) ? .none : snap, value: isExpanded)
 
                 HStack(spacing: 0) {
                     ForEach(Array(visibleModes.enumerated()), id: \.offset) { pair in
