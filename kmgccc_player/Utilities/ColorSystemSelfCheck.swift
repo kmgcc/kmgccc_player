@@ -3666,8 +3666,8 @@ nonisolated enum ColorSystemSelfCheck {
     /// Direct exercise of the strict global polarity gate with the calibrated
     /// boundary inputs. The gate must keep mid-tone covers on light foreground
     /// and only commit to dark when one of the three "clearly bright" signals
-    /// fires. See `docs/readability-foreground-region-implementation-plan.md`
-    /// section 11.1 for the calibrated table.
+    /// fires. See `docs/readability-foreground-region-system.md` section 4 for
+    /// the calibrated table.
     private static func checkArtworkForegroundPolarityGlobalPolicy(_ report: inout CheckReport) {
         let T = ColorSystemTokens.ReadabilityForeground.self
         struct Case {
@@ -4075,6 +4075,37 @@ nonisolated enum ColorSystemSelfCheck {
         report.record(
             "Phase 7.1: aspect-fill mapping", equalOk && hCropOk && vCropOk && centerOk,
             "equal=\(equalOk) hCrop=\(hCropOk) vCrop=\(vCropOk) center=\(centerOk)"
+        )
+
+        // Oversized backdrop frame: viewport x=[25,75] over a backdrop whose
+        // frame is x=[-50,150] maps to backdrop x=[0.375,0.625].
+        let transitionMapped = BackdropFrameReadabilityMapping.map(
+            viewportRegion: NormalizedReadabilityRegion(x: 0.25, y: 0, width: 0.5, height: 1),
+            viewportSize: CGSize(width: 100, height: 100),
+            backdropFrame: CGRect(x: -50, y: 0, width: 200, height: 100)
+        )
+        let transitionOk = transitionMapped != nil
+            && abs(transitionMapped!.x - 0.375) < 0.001
+            && abs(transitionMapped!.width - 0.25) < 0.001
+
+        // An ultrawide viewport has a 225pt horizontal canvas margin. Verify
+        // that the bottom-control regions include it instead of normalizing the
+        // 1470-wide base rect directly against the full viewport.
+        let geometry = FullscreenBottomControlsGeometry.make(
+            isLeftActionsExpanded: false,
+            isVolumeExpanded: false
+        )
+        let viewportRegions = geometry.readabilityRegions(
+            viewportSize: CGSize(width: 1920, height: 923),
+            expansionPoints: 14
+        )
+        let expectedLeadingX = (225 + geometry.leadingControlsRect.minX - 14) / 1920
+        let viewportOk = viewportRegions.count == 3
+            && abs(viewportRegions[0].x - expectedLeadingX) < 0.001
+        report.record(
+            "Phase 7.1: fullscreen viewport + transition mapping",
+            transitionOk && viewportOk,
+            "transition=\(transitionOk) viewport=\(viewportOk)"
         )
     }
 

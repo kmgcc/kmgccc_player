@@ -13,7 +13,7 @@
 //  different canvases, and a shared singleton would let a stale window's
 //  snapshot leak into another host.
 //
-//  See docs/readability-foreground-region-implementation-plan.md section 8.3.
+//  See docs/readability-foreground-region-system.md section 8.
 //
 
 import SwiftUI
@@ -32,8 +32,9 @@ enum CoverGradientBlurReadabilityPlacement: String, Sendable, Equatable {
 /// two static placements.
 struct CoverGradientBlurReadabilitySnapshot: Sendable {
     let artworkChecksum: UInt64
-    /// Render cache key / config signature, so a stale snapshot cannot be
-    /// scored against a newer render config.
+    /// Render cache key / config signature used by the consumer's input
+    /// signature. The publishing view rejects a completion whose key is no
+    /// longer current before constructing this snapshot.
     let renderKey: String
     let canvasPixelSize: CGSize
     let placement: CoverGradientBlurReadabilityPlacement
@@ -55,6 +56,17 @@ struct CoverGradientBlurReadabilitySnapshot: Sendable {
         self.readabilityMap = readabilityMap
         self.transitionFrames = transitionFrames
     }
+
+    func withTransitionFrames(_ frames: [CGRect]) -> Self {
+        Self(
+            artworkChecksum: artworkChecksum,
+            renderKey: renderKey,
+            canvasPixelSize: canvasPixelSize,
+            placement: placement,
+            readabilityMap: readabilityMap,
+            transitionFrames: frames
+        )
+    }
 }
 
 @Observable
@@ -67,8 +79,11 @@ final class FullscreenBackdropReadabilityState {
 
     /// Called when a new artwork begins rendering. Clears any snapshots that
     /// belong to the previous artwork so a stale map cannot drive the new
-    /// track's polarity.
+    /// track's polarity. A zero checksum is a transient lazy-loading gap; keep
+    /// the previous snapshot because the renderer also keeps displaying the
+    /// previous background until real artwork arrives.
     func beginArtwork(checksum: UInt64) {
+        guard checksum != 0 else { return }
         guard checksum != artworkChecksum else { return }
         artworkChecksum = checksum
         leading = nil
@@ -76,9 +91,15 @@ final class FullscreenBackdropReadabilityState {
         transition = nil
     }
 
-    /// Accept a freshly rendered snapshot. Stale-artwork and stale-render-key
-    /// snapshots are dropped.
+    /// Accept a freshly rendered snapshot. Stale artwork is rejected here; the
+    /// source view rejects stale render-key completions before publishing.
     func accept(_ snapshot: CoverGradientBlurReadabilitySnapshot) {
+        // Child tasks can finish before the bridge's initial onAppear callback.
+        // Adopt only into a pristine state; once an artwork is known, mismatched
+        // snapshots (including an outgoing view's late completion) stay rejected.
+        if artworkChecksum == 0 {
+            beginArtwork(checksum: snapshot.artworkChecksum)
+        }
         guard snapshot.artworkChecksum == artworkChecksum else { return }
         switch snapshot.placement {
         case .leading: leading = snapshot
@@ -106,7 +127,7 @@ final class FullscreenBackdropReadabilityState {
 /// and `bottomControlsRow`. The readability engine consumes normalized
 /// versions of these rects (scale-invariant, so any render size maps
 /// correctly).
-struct FullscreenBottomControlsGeometry: Equatable, Sendable {
+nonisolated struct FullscreenBottomControlsGeometry: Equatable, Sendable {
     let leadingControlsRect: CGRect
     let miniPlayerRect: CGRect
     let volumeRect: CGRect
@@ -159,26 +180,46 @@ struct FullscreenBottomControlsGeometry: Equatable, Sendable {
         )
     }
 
-    /// Normalized sampling regions (top-left origin) for the readability
-    /// engine: leading controls, Mini Player, and volume, each expanded by
-    /// `expansionPoints` and clamped to the canvas. The three are scored
-    /// separately and the engine takes the worst case.
+    /// Normalized sampling regions (top-left origin) in the actual fullscreen
+    /// viewport. The base-canvas controls are scaled and centered exactly like
+    /// `fullscreenBottomBarLayer`, including letterbox margins. Each rectangle
+    /// is expanded by the scaled neighbourhood token, then clamped. The three
+    /// regions are scored separately and the engine takes the worst case.
     func readabilityRegions(
-        canvasSize: CGSize,
+        viewportSize: CGSize,
+        baseCanvasSize: CGSize = CGSize(width: 1470, height: 923),
         expansionPoints: CGFloat
     ) -> [NormalizedReadabilityRegion] {
-        guard canvasSize.width > 0, canvasSize.height > 0 else { return [] }
-        func norm(_ rect: CGRect) -> NormalizedReadabilityRegion {
-            let r = rect.insetBy(dx: -expansionPoints, dy: -expansionPoints)
+        guard viewportSize.width > 0, viewportSize.height > 0,
+              baseCanvasSize.width > 0, baseCanvasSize.height > 0 else { return [] }
+        let scale = min(
+            viewportSize.width / baseCanvasSize.width,
+            viewportSize.height / baseCanvasSize.height
+        )
+        guard scale > 0 else { return [] }
+        let canvasOrigin = CGPoint(
+            x: max(0, (viewportSize.width - baseCanvasSize.width * scale) * 0.5),
+            y: max(0, (viewportSize.height - baseCanvasSize.height * scale) * 0.5)
+        )
+        let scaledExpansion = expansionPoints * scale
+
+        func norm(_ baseRect: CGRect) -> NormalizedReadabilityRegion {
+            let scaledRect = CGRect(
+                x: canvasOrigin.x + baseRect.minX * scale,
+                y: canvasOrigin.y + baseRect.minY * scale,
+                width: baseRect.width * scale,
+                height: baseRect.height * scale
+            )
+            let r = scaledRect.insetBy(dx: -scaledExpansion, dy: -scaledExpansion)
             let x0 = max(0, r.minX)
             let y0 = max(0, r.minY)
-            let x1 = min(canvasSize.width, r.maxX)
-            let y1 = min(canvasSize.height, r.maxY)
+            let x1 = min(viewportSize.width, r.maxX)
+            let y1 = min(viewportSize.height, r.maxY)
             return NormalizedReadabilityRegion(
-                x: x0 / canvasSize.width,
-                y: y0 / canvasSize.height,
-                width: max(0, (x1 - x0) / canvasSize.width),
-                height: max(0, (y1 - y0) / canvasSize.height)
+                x: x0 / viewportSize.width,
+                y: y0 / viewportSize.height,
+                width: max(0, (x1 - x0) / viewportSize.width),
+                height: max(0, (y1 - y0) / viewportSize.height)
             )
         }
         return [norm(leadingControlsRect), norm(miniPlayerRect), norm(volumeRect)]
@@ -186,8 +227,6 @@ struct FullscreenBottomControlsGeometry: Equatable, Sendable {
 }
 
 // MARK: - Environment
-
-import SwiftUI
 
 private struct FullscreenBackdropReadabilityStateKey: EnvironmentKey {
     static let defaultValue: FullscreenBackdropReadabilityState? = nil
