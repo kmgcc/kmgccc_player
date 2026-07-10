@@ -441,10 +441,15 @@ var InterludeDots = class {
 		this.update();
 	}
 	setInterlude(interlude) {
+		const prevEnd = this.currentInterlude?.[1];
 		this.currentInterlude = interlude;
-		this.currentTime = interlude?.[0] ?? 0;
-		if (interlude) this.element.classList.add(lyric_player_module_default.enabled);
-		else this.element.classList.remove(lyric_player_module_default.enabled);
+		if (interlude) {
+			if (prevEnd !== interlude[1]) this.currentTime = interlude[0];
+			this.element.classList.add(lyric_player_module_default.enabled);
+		} else {
+			this.currentTime = 0;
+			this.element.classList.remove(lyric_player_module_default.enabled);
+		}
 	}
 	pause() {
 		this.playing = false;
@@ -478,14 +483,20 @@ var InterludeDots = class {
 				const dot0Opacity = clamp(.25, currentDuration * 3 / dotsDuration * .75, 1);
 				const dot1Opacity = clamp(.25, (currentDuration - dotsDuration / 3) * 3 / dotsDuration * .75, 1);
 				const dot2Opacity = clamp(.25, (currentDuration - dotsDuration / 3 * 2) * 3 / dotsDuration * .75, 1);
-				this.dot0.style.opacity = `${clamp01(globalOpacity * dot0Opacity)}`;
-				this.dot1.style.opacity = `${clamp01(globalOpacity * dot1Opacity)}`;
-				this.dot2.style.opacity = `${clamp01(globalOpacity * dot2Opacity)}`;
+				this.dot0.style.opacity = `${clamp01(globalOpacity)}`;
+				this.dot0.dataset.amllDotWalk = `${dot0Opacity}`;
+				this.dot1.style.opacity = `${clamp01(globalOpacity)}`;
+				this.dot1.dataset.amllDotWalk = `${dot1Opacity}`;
+				this.dot2.style.opacity = `${clamp01(globalOpacity)}`;
+				this.dot2.dataset.amllDotWalk = `${dot2Opacity}`;
 			} else {
 				curStyle += " scale(0)";
 				this.dot0.style.opacity = "0";
+				this.dot0.dataset.amllDotWalk = "0";
 				this.dot1.style.opacity = "0";
+				this.dot1.dataset.amllDotWalk = "0";
 				this.dot2.style.opacity = "0";
+				this.dot2.dataset.amllDotWalk = "0";
 			}
 			curStyle += ";";
 			if (this.lastStyle !== curStyle) {
@@ -800,7 +811,7 @@ function computeCurrentInterlude(input) {
 		const gapEnd = Math.max(gapStart, nextGroup.startTime - 250);
 		if (gapEnd - gapStart < 4e3) return void 0;
 		if (gapEnd > currentTime && gapStart < currentTime) return {
-			startTime: Math.max(gapStart, currentTime),
+			startTime: gapStart,
 			endTime: gapEnd,
 			anchorLineIndex: k,
 			isNextDuet: nextGroup.mainLine.getLine().isDuet
@@ -2920,6 +2931,15 @@ var LyricLineEl = class extends LyricLineBase {
 		}
 		amount = Math.min(1.2, amount);
 		blur = Math.min(.8, blur);
+		const emphasisGlowRadiusScale = (() => {
+			try {
+				const raw = getComputedStyle(this.element).getPropertyValue("--amll-emphasis-glow-radius-scale").trim();
+				const n = Number.parseFloat(raw);
+				return Number.isFinite(n) && n > 0 ? n : 1;
+			} catch {
+				return 1;
+			}
+		})();
 		const animateDu = Number.isFinite(du) ? du : 0;
 		const empEasing = makeEmpEasing(EMP_EASING_MID);
 		result = characterElements.flatMap((el, i, arr) => {
@@ -2935,7 +2955,7 @@ var LyricLineEl = class extends LyricLineBase {
 				return {
 					offset: x,
 					transform: `${matrix4ToCSS(mat, 4)} translate(${offsetX}em, ${offsetY}em)`,
-					textShadow: `0 0 ${Math.min(.3, blur * .3)}em rgba(255, 255, 255, ${glowLevel})`
+					textShadow: `0 0 ${Math.min(.3, blur * .3) * emphasisGlowRadiusScale}em rgba(255, 255, 255, ${glowLevel})`
 				};
 			});
 			const glow = el.animate(frames, {
