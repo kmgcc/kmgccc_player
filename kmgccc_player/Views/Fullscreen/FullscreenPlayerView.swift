@@ -60,6 +60,22 @@ struct FullscreenPlayerView: View {
         case highlight
     }
 
+    /// Value signature for the event-driven local-readability cache. Keeping it
+    /// as a small Equatable value avoids allocating and concatenating a long
+    /// string on every high-frequency SwiftUI body evaluation.
+    private struct LocalPolarityInputSignature: Equatable {
+        let isCoverBlurSkin: Bool
+        let artworkChecksum: UInt64
+        let leadingRenderKey: String?
+        let centeredRenderKey: String?
+        let transitionRenderKey: String?
+        let isLeftActionsExpanded: Bool
+        let isVolumeExpanded: Bool
+        let viewportSize: CGSize
+        let darkForegroundHash: Int
+        let lightForegroundHash: Int
+    }
+
     private enum FeatureTips {
         static let playbackModeRetapKey = "fullscreen.playbackModeRetap"
         static let playbackModeRetapIntroducedBuild = AppBuild(1)
@@ -2350,21 +2366,27 @@ struct FullscreenPlayerView: View {
         return resolvedLocalPolarity
     }
 
-    /// Cheap signature over the polarity decision's inputs: skin, artwork,
-    /// the three placement render keys, and the two control-expand flags.
+    /// Cheap value signature over every polarity-decision input: skin, artwork,
+    /// render keys, control layout, viewport geometry and candidate colours.
     /// Compared between body evaluations so the expensive engine only re-runs
     /// on a real input change instead of on every body / every profile access.
-    /// Candidate foreground colours come from the artwork analysis, which is
-    /// already captured by `artworkChecksum` + the render keys (the render key
-    /// embeds the dominant-colour hash), so no separate palette token is needed.
-    private var localPolarityInputSignature: String {
+    private var localPolarityInputSignature: LocalPolarityInputSignature {
         let state = backdropReadabilityState
-        return "\(isCoverBlurFullscreenSkin ? 1 : 0)|\(state.artworkChecksum)"
-            + "|L:\(state.leading?.renderKey ?? "")"
-            + "|C:\(state.centered?.renderKey ?? "")"
-            + "|T:\(state.transition?.renderKey ?? "")"
-            + "|LE:\(isLeftActionsExpanded ? 1 : 0)"
-            + "|VE:\(isVolumeExpanded ? 1 : 0)"
+        let candidates = FullscreenMiniPlayerForegroundStrategy.artworkCandidateProfiles(
+            palette: themeStore.semanticPalette
+        )
+        return LocalPolarityInputSignature(
+            isCoverBlurSkin: isCoverBlurFullscreenSkin,
+            artworkChecksum: state.artworkChecksum,
+            leadingRenderKey: state.leading?.renderKey,
+            centeredRenderKey: state.centered?.renderKey,
+            transitionRenderKey: state.transition?.renderKey,
+            isLeftActionsExpanded: isLeftActionsExpanded,
+            isVolumeExpanded: isVolumeExpanded,
+            viewportSize: fullscreenViewportSize,
+            darkForegroundHash: candidates.dark.primary.hash,
+            lightForegroundHash: candidates.light.primary.hash
+        )
     }
 
     /// Recompute and cache the local polarity from the current readability
@@ -2382,9 +2404,10 @@ struct FullscreenPlayerView: View {
             isLeftActionsExpanded: isLeftActionsExpanded,
             isVolumeExpanded: isVolumeExpanded
         )
-        let canvasSize = CGSize(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight)
+        let viewportSize = fullscreenViewportSize
         let regions = geometry.readabilityRegions(
-            canvasSize: canvasSize,
+            viewportSize: viewportSize,
+            baseCanvasSize: CGSize(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight),
             expansionPoints: ColorSystemTokens.ReadabilityForeground.regionExpansionPoints
         )
         guard !regions.isEmpty else {
@@ -2395,7 +2418,21 @@ struct FullscreenPlayerView: View {
         var samples: [(map: RenderedBackdropReadabilityMap, regions: [NormalizedReadabilityRegion])] = []
         if let leading = state.leading { samples.append((leading.readabilityMap, regions)) }
         if let centered = state.centered { samples.append((centered.readabilityMap, regions)) }
-        if let transition = state.transition { samples.append((transition.readabilityMap, regions)) }
+        if let transition = state.transition {
+            for frame in transition.transitionFrames
+            where abs(frame.height - viewportSize.height) < 1 {
+                let mappedRegions = regions.compactMap {
+                    BackdropFrameReadabilityMapping.map(
+                        viewportRegion: $0,
+                        viewportSize: viewportSize,
+                        backdropFrame: frame
+                    )
+                }
+                if !mappedRegions.isEmpty {
+                    samples.append((transition.readabilityMap, mappedRegions))
+                }
+            }
+        }
         guard !samples.isEmpty else {
             if resolvedLocalPolarity != nil { resolvedLocalPolarity = nil }
             return
@@ -2409,7 +2446,9 @@ struct FullscreenPlayerView: View {
             lightForeground: candidates.light.primary,
             samples: samples
         )
-        resolvedLocalPolarity = decision.polarity
+        resolvedLocalPolarity = decision.reason == .noValidSamples
+            ? nil
+            : decision.polarity
     }
 
     private var fullscreenControlsGlassStyle: FullscreenControlsGlassStyle {

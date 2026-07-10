@@ -99,10 +99,11 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
 
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenBackdropReadabilityState) private var readabilityState
-    @State private var displayedCentered: Bool
     @State private var transitionPosition: CGFloat
+    @State private var centeredLayerOpacity: CGFloat
+    @State private var transitionLayerOpacity: CGFloat = 0
     @State private var transitionBlurRadius: CGFloat = 0
-    @State private var isCoverMoving = false
+    @State private var isTransitionActive = false
     @State private var transitionTask: Task<Void, Never>?
 
     init(context: SkinContext, config: CoverGradientBlurConfig) {
@@ -110,8 +111,8 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         self.config = config
 
         let startsCentered = context.usesFullscreenPlayerLayout && !context.lyricsVisible
-        self._displayedCentered = State(initialValue: startsCentered)
         self._transitionPosition = State(initialValue: startsCentered ? 1 : 0)
+        self._centeredLayerOpacity = State(initialValue: startsCentered ? 1 : 0)
     }
 
     var body: some View {
@@ -120,10 +121,11 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
 
             ZStack {
                 staticBackground(size: geometry.size, placement: .leading)
-                    .zIndex(displayedCentered ? 0 : 1)
+                    .zIndex(0)
 
                 staticBackground(size: geometry.size, placement: .centeredSymmetric)
-                    .zIndex(displayedCentered ? 1 : 0)
+                    .opacity(Double(centeredLayerOpacity))
+                    .zIndex(1)
 
                 transitionBackground(size: geometry.size)
                     .frame(
@@ -131,7 +133,8 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                         height: geometry.size.height
                     )
                     .offset(x: transitionCanvasOffset(for: geometry.size))
-                    .zIndex(isCoverMoving ? 2 : -1)
+                    .opacity(Double(transitionLayerOpacity))
+                    .zIndex(2)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
@@ -160,24 +163,58 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         readabilityState?.accept(snapshot)
     }
 
+    /// The transition layer is wider than the viewport and slides horizontally.
+    /// Attach representative start/middle/end frames so the consumer samples
+    /// the pixels that are actually under the controls, not the same normalized
+    /// coordinates in the oversized render at every animation position.
+    @MainActor
+    private func acceptTransitionReadability(
+        _ snapshot: CoverGradientBlurReadabilitySnapshot,
+        viewportSize: CGSize
+    ) {
+        readabilityState?.accept(
+            snapshot.withTransitionFrames(
+                transitionReadabilityFrames(for: viewportSize)
+            )
+        )
+    }
+
     private var blurRiseAnimation: Animation {
         if context.theme.reduceMotion {
-            return .easeInOut(duration: 0.20)
+            return .easeInOut(duration: 0.16)
         }
-        return .timingCurve(0.22, 0.0, 0.24, 1.0, duration: 0.36)
+        return .timingCurve(0.22, 0.0, 0.24, 1.0, duration: 0.34)
     }
 
     private var coverSpringAnimation: Animation {
         if context.theme.reduceMotion {
-            return .easeInOut(duration: 0.46)
+            return .easeInOut(duration: 0.36)
         }
-        return .spring(response: 0.88, dampingFraction: 0.86, blendDuration: 0.12)
+        return .spring(response: 0.74, dampingFraction: 0.78, blendDuration: 0.14)
+    }
+
+    private var backgroundCrossfadeAnimation: Animation {
+        context.theme.reduceMotion
+            ? .easeInOut(duration: 0.28)
+            : .timingCurve(0.24, 0.62, 0.22, 1.0, duration: 0.58)
+    }
+
+    private var transitionLayerFadeInAnimation: Animation {
+        context.theme.reduceMotion
+            ? .easeInOut(duration: 0.12)
+            : .easeInOut(duration: 0.22)
+    }
+
+    private var transitionLayerFadeOutAnimation: Animation {
+        context.theme.reduceMotion
+            ? .easeInOut(duration: 0.18)
+            : .timingCurve(0.24, 0.72, 0.22, 1.0, duration: 0.32)
     }
 
     private var blurFallAnimation: Animation {
         context.theme.reduceMotion
-            ? .easeInOut(duration: 0.32)
-            : .timingCurve(0.20, 0.78, 0.22, 1.0, duration: 0.94)
+            ? .easeInOut(duration: 0.28)
+            : .timingCurve(0.20, 0.78, 0.22, 1.0, duration: 0.78)
     }
 
     @ViewBuilder
@@ -208,7 +245,9 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             dominantColor: themeStore.semanticPalette.coverGradientDominant,
             config: config(for: .centeredSymmetric),
             readabilityPlacement: .transition,
-            onReadabilitySnapshot: acceptReadability
+            onReadabilitySnapshot: { snapshot in
+                acceptTransitionReadability(snapshot, viewportSize: size)
+            }
         )
         .allowsHitTesting(false)
     }
@@ -216,40 +255,67 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     private func runLayoutTransition(to targetCentered: Bool) {
         transitionTask?.cancel()
 
-        guard displayedCentered != targetCentered || isCoverMoving else {
+        let targetPosition: CGFloat = targetCentered ? 1 : 0
+        let shouldRetargetImmediately = isTransitionActive
+
+        guard transitionPosition != targetPosition || isTransitionActive else {
             withAnimation(blurFallAnimation) {
                 transitionBlurRadius = 0
             }
             return
         }
 
-        isCoverMoving = false
-        transitionPosition = displayedCentered ? 1 : 0
+        isTransitionActive = true
+
+        withAnimation(blurRiseAnimation) {
+            transitionBlurRadius = 44
+        }
+        withAnimation(transitionLayerFadeInAnimation) {
+            transitionLayerOpacity = 1
+        }
+
+        if shouldRetargetImmediately {
+            retargetTransition(to: targetPosition)
+        }
 
         transitionTask = Task { @MainActor in
-            withAnimation(blurRiseAnimation) {
-                transitionBlurRadius = 44
+            if !shouldRetargetImmediately {
+                // Start moving once the masking blur is roughly halfway up.
+                guard await waitForTransitionStage(nanoseconds: 105_000_000) else { return }
+                retargetTransition(to: targetPosition)
             }
 
-            guard await waitForTransitionStage(nanoseconds: 380_000_000) else { return }
+            guard await waitForTransitionStage(nanoseconds: movementSettleDelay) else { return }
 
-            isCoverMoving = true
-            guard await waitForTransitionStage(nanoseconds: 24_000_000) else { return }
-
-            withAnimation(coverSpringAnimation) {
-                transitionPosition = targetCentered ? 1 : 0
+            withAnimation(transitionLayerFadeOutAnimation) {
+                transitionLayerOpacity = 0
             }
 
-            guard await waitForTransitionStage(nanoseconds: 1_080_000_000) else { return }
-
-            displayedCentered = targetCentered
-            isCoverMoving = false
-
-            guard await waitForTransitionStage(nanoseconds: 80_000_000) else { return }
+            guard await waitForTransitionStage(nanoseconds: 120_000_000) else { return }
 
             withAnimation(blurFallAnimation) {
                 transitionBlurRadius = 0
             }
+
+            guard await waitForTransitionStage(nanoseconds: transitionCompletionDelay) else { return }
+            isTransitionActive = false
+        }
+    }
+
+    private var movementSettleDelay: UInt64 {
+        context.theme.reduceMotion ? 380_000_000 : 720_000_000
+    }
+
+    private var transitionCompletionDelay: UInt64 {
+        context.theme.reduceMotion ? 320_000_000 : 820_000_000
+    }
+
+    private func retargetTransition(to targetPosition: CGFloat) {
+        withAnimation(coverSpringAnimation) {
+            transitionPosition = targetPosition
+        }
+        withAnimation(backgroundCrossfadeAnimation) {
+            centeredLayerOpacity = targetPosition
         }
     }
 
@@ -269,6 +335,20 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     private func transitionCanvasOffset(for size: CGSize) -> CGFloat {
         let shift = coverCenterShift(for: size)
         return shift * (transitionPosition - 1)
+    }
+
+    private func transitionReadabilityFrames(for size: CGSize) -> [CGRect] {
+        let canvasWidth = transitionCanvasWidth(for: size)
+        let centeredOriginX = (size.width - canvasWidth) * 0.5
+        let shift = coverCenterShift(for: size)
+        return [CGFloat(0), 0.5, 1].map { position in
+            CGRect(
+                x: centeredOriginX + shift * (position - 1),
+                y: 0,
+                width: canvasWidth,
+                height: size.height
+            )
+        }
     }
 
     private func coverCenterShift(for size: CGSize) -> CGFloat {

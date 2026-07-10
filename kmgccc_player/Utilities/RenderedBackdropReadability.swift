@@ -12,7 +12,7 @@
 //  compares the two candidate foregrounds' WCAG contrast directly. The result
 //  may override the global polarity for that one surface only.
 //
-//  Layering rules (see docs/readability-foreground-region-implementation-plan.md):
+//  Layering rules (see docs/readability-foreground-region-system.md):
 //    - `RenderedBackdropReadabilityMap` owns final-backdrop pixels + region
 //      stats only. It never touches hue/chroma semantics.
 //    - The contrast engine receives the exact dark/light primary colours the
@@ -163,64 +163,27 @@ nonisolated struct RenderedBackdropReadabilityMap: Sendable {
 
         var values: [Float] = []
         values.reserveCapacity((x1 - x0) * (y1 - y0))
-        var sum: Double = 0
         for row in y0..<y1 {
             let base = row * pixelWidth
             for col in x0..<x1 {
-                let v = luma[base + col]
-                values.append(v)
-                sum += Double(v)
+                values.append(luma[base + col])
             }
         }
         let count = values.count
         guard count >= minimumSampleCount else { return nil }
-
-        let sorted = values.sorted()
-        let mean = CGFloat(sum / Double(count))
-        let p10 = Self.percentile(sorted, p: 0.10)
-        let p25 = Self.percentile(sorted, p: 0.25)
-        let median = Self.percentile(sorted, p: 0.50)
-        var varianceSum: Double = 0
-        for v in values {
-            let d = Double(v) - Double(mean)
-            varianceSum += d * d
-        }
-        let stdev = CGFloat(sqrt(varianceSum / Double(count)))
-        let darkRatio = CGFloat(values.filter { $0 < 0.28 }.count) / CGFloat(count)
-        let brightRatio = CGFloat(values.filter { $0 > 0.62 }.count) / CGFloat(count)
         return RegionReadabilitySample(
             sampleCount: count,
-            meanLuma: mean,
-            p10Luma: p10,
-            p25Luma: p25,
-            medianLuma: median,
-            standardDeviation: stdev,
-            darkPixelRatio: darkRatio,
-            brightPixelRatio: brightRatio,
             lumaValues: values
         )
     }
-
-    /// Nearest-rank percentile of a pre-sorted ascending array.
-    private static func percentile(_ sorted: [Float], p: CGFloat) -> CGFloat {
-        guard !sorted.isEmpty else { return 0 }
-        let n = sorted.count
-        let idx = max(0, min(n - 1, Int((p * CGFloat(n)).rounded()) - 1))
-        return CGFloat(sorted[idx])
-    }
 }
 
-/// Statistics for one sampled region. `lumaValues` is unsorted (pixel order);
-/// the engine sorts per-pixel contrast arrays internally.
+/// Pixels for one valid sampled region. Deliberately stores only the values the
+/// decision engine consumes. Earlier code also calculated seven unused summary
+/// statistics and performed an additional luma sort per region; removing those
+/// keeps the event-driven recompute cheap without changing its result.
 nonisolated struct RegionReadabilitySample: Sendable {
     let sampleCount: Int
-    let meanLuma: CGFloat
-    let p10Luma: CGFloat
-    let p25Luma: CGFloat
-    let medianLuma: CGFloat
-    let standardDeviation: CGFloat
-    let darkPixelRatio: CGFloat
-    let brightPixelRatio: CGFloat
     let lumaValues: [Float]
 }
 
@@ -290,6 +253,44 @@ nonisolated enum AspectFillReadabilityMapping {
     }
 }
 
+/// Maps a viewport-space foreground region into a backdrop image whose frame
+/// may be wider than and offset from that viewport. Cover Blur uses this for
+/// representative start/middle/end frames of its oversized transition layer.
+nonisolated enum BackdropFrameReadabilityMapping {
+    static func map(
+        viewportRegion: NormalizedReadabilityRegion,
+        viewportSize: CGSize,
+        backdropFrame: CGRect
+    ) -> NormalizedReadabilityRegion? {
+        guard viewportSize.width > 0, viewportSize.height > 0,
+              backdropFrame.width > 0, backdropFrame.height > 0 else {
+            return nil
+        }
+
+        let viewRect = CGRect(
+            x: viewportRegion.x * viewportSize.width,
+            y: viewportRegion.y * viewportSize.height,
+            width: viewportRegion.width * viewportSize.width,
+            height: viewportRegion.height * viewportSize.height
+        )
+        let nx0 = (viewRect.minX - backdropFrame.minX) / backdropFrame.width
+        let ny0 = (viewRect.minY - backdropFrame.minY) / backdropFrame.height
+        let nx1 = (viewRect.maxX - backdropFrame.minX) / backdropFrame.width
+        let ny1 = (viewRect.maxY - backdropFrame.minY) / backdropFrame.height
+        let x0 = max(0, min(1, nx0))
+        let y0 = max(0, min(1, ny0))
+        let x1 = max(0, min(1, nx1))
+        let y1 = max(0, min(1, ny1))
+        guard x1 > x0, y1 > y0 else { return nil }
+        return NormalizedReadabilityRegion(
+            x: x0,
+            y: y0,
+            width: x1 - x0,
+            height: y1 - y0
+        )
+    }
+}
+
 /// Local polarity decision produced by the contrast engine.
 nonisolated struct LocalForegroundDecision: Sendable, Equatable {
     let polarity: ArtworkForegroundPolarity
@@ -308,7 +309,8 @@ nonisolated struct LocalForegroundDecision: Sendable, Equatable {
         /// Dark reaches AA but light does not (and dark did not clear the
         /// advantage margin, so this branch is only hit when light is poor).
         case darkOnly
-        /// Best of two weak scores (>= floor but < AA); assist flagged.
+        /// Best of two weak scores (>= floor but < AA); dark still needs the
+        /// configured advantage, and contrast assist is flagged.
         case bestEffort
         /// Both below the floor; light chosen unless dark leads by margin.
         case fallback
@@ -325,23 +327,33 @@ nonisolated enum RenderedBackdropReadability {
         return (hi + 0.05) / (lo + 0.05)
     }
 
-    /// p10 (robust) contrast of a candidate foreground against a region: the
-    /// value such that at least 90% of sampled pixels reach it. Nil if the
-    /// sample has no pixels.
-    static func robustContrast(
-        foregroundLuma: CGFloat,
+    /// p10 (robust) contrast for both candidate foregrounds against one region.
+    /// The two arrays are filled in the same pixel pass, then sorted separately.
+    private static func robustContrasts(
+        darkForegroundLuma: CGFloat,
+        lightForegroundLuma: CGFloat,
         sample: RegionReadabilitySample
-    ) -> CGFloat? {
+    ) -> (dark: CGFloat, light: CGFloat)? {
         guard sample.sampleCount > 0 else { return nil }
-        var ratios = [CGFloat](repeating: 0, count: sample.sampleCount)
+        var darkRatios = [CGFloat](repeating: 0, count: sample.sampleCount)
+        var lightRatios = [CGFloat](repeating: 0, count: sample.sampleCount)
         for (i, bg) in sample.lumaValues.enumerated() {
-            ratios[i] = contrastRatio(foregroundLuma: foregroundLuma, backgroundLuma: CGFloat(bg))
+            let backgroundLuma = CGFloat(bg)
+            darkRatios[i] = contrastRatio(
+                foregroundLuma: darkForegroundLuma,
+                backgroundLuma: backgroundLuma
+            )
+            lightRatios[i] = contrastRatio(
+                foregroundLuma: lightForegroundLuma,
+                backgroundLuma: backgroundLuma
+            )
         }
-        ratios.sort()
-        let n = ratios.count
+        darkRatios.sort()
+        lightRatios.sort()
+        let n = darkRatios.count
         // Nearest-rank p10: 90% of samples reach this value.
-        let idx = max(0, min(n - 1, Int((0.10 * CGFloat(n)).rounded()) - 1))
-        return ratios[idx]
+        let idx = max(0, min(n - 1, Int(ceil(0.10 * CGFloat(n))) - 1))
+        return (darkRatios[idx], lightRatios[idx])
     }
 
     /// Decide local polarity from the worst-case robust contrast of each
@@ -373,12 +385,13 @@ nonisolated enum RenderedBackdropReadability {
         for entry in samples {
             for region in entry.regions {
                 guard let regionSample = entry.map.sample(region: region) else { continue }
-                if let dc = robustContrast(foregroundLuma: darkForegroundLuma, sample: regionSample) {
-                    darkWorst = darkWorst.map { min($0, dc) } ?? dc
-                }
-                if let lc = robustContrast(foregroundLuma: lightForegroundLuma, sample: regionSample) {
-                    lightWorst = lightWorst.map { min($0, lc) } ?? lc
-                }
+                guard let contrast = robustContrasts(
+                    darkForegroundLuma: darkForegroundLuma,
+                    lightForegroundLuma: lightForegroundLuma,
+                    sample: regionSample
+                ) else { continue }
+                darkWorst = darkWorst.map { min($0, contrast.dark) } ?? contrast.dark
+                lightWorst = lightWorst.map { min($0, contrast.light) } ?? contrast.light
             }
         }
 
@@ -423,7 +436,7 @@ nonisolated enum RenderedBackdropReadability {
             )
         }
         if max(darkScore, lightScore) >= T.absoluteContrastFloor {
-            let darkWins = darkScore >= lightScore
+            let darkWins = darkScore >= lightScore + T.darkSelectionAdvantage
             return LocalForegroundDecision(
                 polarity: darkWins ? .darkOnLightBackground : .lightOnDarkBackground,
                 darkForegroundRobustContrast: darkScore,
