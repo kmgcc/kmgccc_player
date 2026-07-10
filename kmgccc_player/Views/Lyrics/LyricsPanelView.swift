@@ -30,6 +30,7 @@ struct LyricsPanelView: View {
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
+    @ObservedObject private var fullscreenWindowManager = FullscreenWindowManager.shared
 
     private let hostContainer: HostContainer
     @State private var shouldHostLyricsWebView = false
@@ -93,6 +94,14 @@ struct LyricsPanelView: View {
                     reason: isQueueVisible ? "window queue opened" : "window queue closed"
                 )
             }
+            .onChange(of: fullscreenWindowManager.presentationMode) { _, mode in
+                syncMainLyricsSurfaceVisibility(
+                    isVisible: mode == .none
+                        && uiState.lyricsVisible
+                        && !uiState.isWindowPlaybackQueueVisible,
+                    reason: "fullscreen presentation changed to \(String(describing: mode))"
+                )
+            }
             .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
                 guard isLyricsSurfaceActive else { return }
                 guard
@@ -118,7 +127,9 @@ struct LyricsPanelView: View {
     }
 
     private var isLyricsSurfaceActive: Bool {
-        uiState.lyricsVisible && !uiState.isWindowPlaybackQueueVisible
+        LyricsSurfaceManager.shared.targetMode == .main
+            && uiState.lyricsVisible
+            && !uiState.isWindowPlaybackQueueVisible
     }
 
     @ViewBuilder
@@ -212,6 +223,16 @@ struct LyricsPanelView: View {
         reason: String,
         hasTrackOverride: Bool? = nil
     ) {
+        guard LyricsSurfaceManager.shared.targetMode == .main else {
+            pendingWebViewUnmount?.cancel()
+            pendingWebViewUnmount = nil
+            if shouldHostLyricsWebView {
+                Log.debug("LyricsPanelView host WebView: false immediately, reason=\(reason).fullscreenTarget", category: .webview)
+            }
+            shouldHostLyricsWebView = false
+            LyricsSurfaceManager.shared.reportMainVisible(false)
+            return
+        }
         let hasTrack = hasTrackOverride ?? playbackCoordinator.presentation.hasTrack
         updateLyricsWebViewHosting(
             shouldHost: isVisible && hasTrack,

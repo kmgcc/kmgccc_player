@@ -8,6 +8,7 @@
 //
 
 import Foundation
+import OSLog
 
 enum LyricsDebugFlags {
     /// Replace the SwiftUI NSHostingController lyrics inspector pane with a flat
@@ -50,6 +51,61 @@ enum LyricsDebugFlags {
     /// correlated against `markAllLayersVolatile` floods in Console.app.
     /// `KMGCCC_AMLL_FULLSCREEN_LAYER_DIAGNOSTICS=1`
     static var fullscreenLayerDiagnosticsEnabled: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["KMGCCC_AMLL_FULLSCREEN_LAYER_DIAGNOSTICS"] == "1"
+        #else
+        false
+        #endif
+    }
+}
+
+/// Public-privacy DEBUG log channel for the fullscreen volatility investigation.
+/// The regular `Log` wrapper intentionally keeps dynamic strings private in the
+/// unified log; this opt-in channel must remain readable so WebKit page IDs can
+/// be correlated with roles, windows, frames, and renderer counters.
+enum AMLLLifecycleDiagnostics {
+    #if DEBUG
+    private nonisolated static let logger = Logger(
+        subsystem: "kmg.myplayer2",
+        category: "amll-lifecycle"
+    )
+
+    nonisolated static var isEnabled: Bool {
         ProcessInfo.processInfo.environment["KMGCCC_AMLL_FULLSCREEN_LAYER_DIAGNOSTICS"] == "1"
     }
+
+    nonisolated static func emit(_ message: @autoclosure () -> String) {
+        guard isEnabled else { return }
+        let value = message()
+        logger.notice("\(value, privacy: .public)")
+    }
+    #else
+    nonisolated static let isEnabled = false
+    nonisolated static func emit(_ message: @autoclosure () -> String) {}
+    #endif
+}
+
+/// Opt-in DEBUG traces for the fullscreen player / lyrics surface lifecycle
+/// (the `[FS-DIAG]` logs: surface activation, lyrics reload, skin appear, LED
+/// meter configure, BKArt background, etc.). These are diagnostic timing traces,
+/// not real warnings, so they are silent by default to avoid flooding routine
+/// Debug runs. Enable with `KMGCCC_FS_DIAGNOSTICS=1` at launch. In release builds
+/// every entry point is a no-op.
+enum FSDiagnostics {
+    #if DEBUG
+    nonisolated static var isEnabled: Bool {
+        ProcessInfo.processInfo.environment["KMGCCC_FS_DIAGNOSTICS"] == "1"
+    }
+
+    nonisolated static func emit(
+        _ message: @autoclosure () -> String,
+        category: LogCategory
+    ) {
+        guard isEnabled else { return }
+        Log.warning("[FS-DIAG] \(message())", category: category)
+    }
+    #else
+    nonisolated static let isEnabled = false
+    nonisolated static func emit(_ message: @autoclosure () -> String, category: LogCategory) {}
+    #endif
 }

@@ -1027,6 +1027,17 @@
             visibility: visible !important;
         }
         .amll-lyric-player.amll-surface-fullscreen:not(.amll-surface-fullscreen-cover-blur-generic) [class*="interludeDots"] > * {
+            /* Art-background skins express the per-dot walk as COLOR (lightness
+               via `.amll-fs-dot-lit`), not opacity. Override the core's inline
+               `globalOpacity * walkOpacity` with the entrance/lifecycle fade
+               only (`--amll-dot-global-opacity`, exposed by fork core), so unlit
+               dots stay opaque (just dimmer color) instead of semi-transparent.
+               `!important` beats the inline opacity; no opacity transition so
+               the core's per-frame globalOpacity drives the fade directly.
+               CoverBlur / Apple style / window lyrics don't match this selector,
+               so they keep the core's original `globalOpacity * walkOpacity`
+               opacity walk untouched. */
+            opacity: var(--amll-dot-global-opacity, 1) !important;
             background-color: var(
                 --amll-fs-main-inactive,
                 var(--amll-inactive, var(--amll-lp-color, white))
@@ -1222,6 +1233,21 @@
         const isBatchPreviewSurface = surfaceRole === "batchPreview";
         const isMainSurface = surfaceRole === "main";
         const scrollDiagnosticsEnabled = window.__AMLL_SCROLL_DIAGNOSTICS === true;
+        const lifecycleDiagnosticsEnabled = window.__AMLL_LIFECYCLE_DIAGNOSTICS === true;
+        const lifecycleDiagnosticsCounters = {
+            rafFrames: 0,
+            rafFramesWhileHidden: 0,
+            rafFramesWhileZeroSize: 0,
+            resizeObserverCallbacks: 0,
+            resizeObserverEntries: 0,
+            resizeObserverCallbacksWhileHidden: 0,
+            resizeObserverCallbacksWhileZeroSize: 0,
+        };
+        const lifecycleViewportIsZero = () =>
+            window.innerWidth <= 1
+            || window.innerHeight <= 1
+            || document.documentElement?.clientWidth <= 1
+            || document.documentElement?.clientHeight <= 1;
         const useFullscreenQualityProfile = isFullscreenSurface || isMainSurface;
         const defaultEnableSpring = useFullscreenQualityProfile;
         const defaultEnableBlur = useFullscreenQualityProfile;
@@ -1264,6 +1290,18 @@
             window.ResizeObserver = class AMLLTrackProfileResizeObserver extends NativeResizeObserver {
                 constructor(callback) {
                     super((entries, observer) => {
+                        if (lifecycleDiagnosticsEnabled) {
+                            lifecycleDiagnosticsCounters.resizeObserverCallbacks += 1;
+                            lifecycleDiagnosticsCounters.resizeObserverEntries += Array.isArray(entries)
+                                ? entries.length
+                                : 0;
+                            if (document.hidden) {
+                                lifecycleDiagnosticsCounters.resizeObserverCallbacksWhileHidden += 1;
+                            }
+                            if (lifecycleViewportIsZero()) {
+                                lifecycleDiagnosticsCounters.resizeObserverCallbacksWhileZeroSize += 1;
+                            }
+                        }
                         if (activeTrackProfileSession) {
                             activeTrackProfileSession.resizeObserverCallbackCount += 1;
                             activeTrackProfileSession.resizeObserverEntryCount += Array.isArray(entries)
@@ -5713,6 +5751,25 @@
             };
         };
 
+        const collectLifecycleDiagnostics = () => {
+            const playerElement = lyricPlayer.getElement();
+            const playerRect = playerElement?.getBoundingClientRect?.();
+            return {
+                role: surfaceRole,
+                documentHidden: document.hidden,
+                visibilityState: document.visibilityState,
+                innerWidth: window.innerWidth,
+                innerHeight: window.innerHeight,
+                clientWidth: document.documentElement?.clientWidth ?? 0,
+                clientHeight: document.documentElement?.clientHeight ?? 0,
+                playerConnected: playerElement?.isConnected === true,
+                playerWidth: playerRect?.width ?? 0,
+                playerHeight: playerRect?.height ?? 0,
+                rafActive: rendererRuntime.animationFrameRequestId ? 1 : 0,
+                counters: { ...lifecycleDiagnosticsCounters },
+            };
+        };
+
         const clearRendererState = (reason = "clearState") => {
             const clearStart = performance.now();
             stopFirstVisibleLineProbe();
@@ -7145,6 +7202,8 @@
                 return diagnostics;
             },
 
+            collectLifecycleDiagnostics,
+
             collectDisplayHealth,
         };
 
@@ -7164,6 +7223,15 @@
             rendererRuntime.animationFrameRequestId = 0;
             if (rendererRuntime.destroyed) {
                 return;
+            }
+            if (lifecycleDiagnosticsEnabled) {
+                lifecycleDiagnosticsCounters.rafFrames += 1;
+                if (document.hidden) {
+                    lifecycleDiagnosticsCounters.rafFramesWhileHidden += 1;
+                }
+                if (lifecycleViewportIsZero()) {
+                    lifecycleDiagnosticsCounters.rafFramesWhileZeroSize += 1;
+                }
             }
             const delta = time - lastTime;
             lastTime = time;

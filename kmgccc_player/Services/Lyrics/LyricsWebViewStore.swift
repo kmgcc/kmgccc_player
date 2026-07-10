@@ -191,6 +191,11 @@ final class LyricsWebViewStore: NSObject {
 
         super.init()
         Log.debug("Prepared store (WebView deferred), role=\(role)", category: .webview)
+        AMLLLifecycleDiagnostics.emit("store.init role=\(role) store=\(ObjectIdentifier(self))")
+    }
+
+    deinit {
+        AMLLLifecycleDiagnostics.emit("store.deinit role=\(role) store=\(ObjectIdentifier(self))")
     }
 
     // MARK: - Native Mouse Event Gate
@@ -645,6 +650,7 @@ final class LyricsWebViewStore: NSObject {
 
     func shutdown() {
         guard !isShutDown else { return }
+        AMLLLifecycleDiagnostics.emit("store.shutdown.begin \(debugLayerStateSnapshot)")
         isShutDown = true
 
         // Cancel all pending operations
@@ -726,6 +732,7 @@ final class LyricsWebViewStore: NSObject {
         retainedWebView = nil
 
         Log.info("Shutdown complete, objectID=\(webViewObjectID)", category: .webview)
+        AMLLLifecycleDiagnostics.emit("store.shutdown.end role=\(role) objectID=\(webViewObjectID)")
     }
 
     // MARK: - Attach/Detach (Instance-Aware + Dedup)
@@ -740,6 +747,9 @@ final class LyricsWebViewStore: NSObject {
         if isAttached, let existingID = activeAttachmentID {
             Log.debug("Attach (already attached): attachmentID=\(existingID.uuidString.prefix(8)), objectID=\(webViewObjectID)", category: .webview)
             scheduleDisplayHealthCheckAfterAttachIfNeeded()
+            AMLLLifecycleDiagnostics.emit(
+                "store.attach.reused role=\(role) attachment=\(existingID.uuidString.prefix(8)) \(debugLayerStateSnapshot)"
+            )
             return existingID
         }
 
@@ -747,6 +757,9 @@ final class LyricsWebViewStore: NSObject {
         activeAttachmentID = attachmentID
         isAttached = true
         Log.debug("Attach (new): attachmentID=\(attachmentID.uuidString.prefix(8)), objectID=\(webViewObjectID)", category: .webview)
+        AMLLLifecycleDiagnostics.emit(
+            "store.attach.new role=\(role) attachment=\(attachmentID.uuidString.prefix(8)) \(debugLayerStateSnapshot)"
+        )
         scheduleDisplayHealthCheckAfterAttachIfNeeded()
         return attachmentID
     }
@@ -759,6 +772,9 @@ final class LyricsWebViewStore: NSObject {
         }
 
         Log.debug("Detach: attachmentID=\(requestingID.uuidString.prefix(8)), objectID=\(webViewObjectID)", category: .webview)
+        AMLLLifecycleDiagnostics.emit(
+            "store.detach role=\(role) attachment=\(requestingID.uuidString.prefix(8)) \(debugLayerStateSnapshot)"
+        )
         activeAttachmentID = nil
         isAttached = false
         if LyricsSurfaceRole(rawValue: role)?.persistsState == true {
@@ -803,6 +819,9 @@ final class LyricsWebViewStore: NSObject {
         }
 
         let releasedObjectID = ObjectIdentifier(webView).hashValue
+        AMLLLifecycleDiagnostics.emit(
+            "store.release role=\(role) reason=\(reason) objectID=\(releasedObjectID) \(debugLayerStateSnapshot)"
+        )
         Log.info(
             "Releasing WebView: role=\(role), reason=\(reason), objectID=\(releasedObjectID), snapshot(track=\(lastTrackID?.uuidString.prefix(8) ?? "nil"), ttmlLen=\(lastTTML?.count ?? 0), time=\(lastTime ?? -1), playing=\(lastIsPlaying ?? false))",
             category: .webview
@@ -866,6 +885,9 @@ final class LyricsWebViewStore: NSObject {
             "applyRendererTrackState: len=\(ttml.count), time=\(safeCurrentTime), playing=\(isPlaying), objectID=\(webViewObjectID), isReady=\(isReady)",
             category: .webview
         )
+        AMLLLifecycleDiagnostics.emit(
+            "bridge.applyTrackState role=\(role) ttmlLen=\(ttml.count) playing=\(isPlaying) ready=\(isReady) objectID=\(webViewObjectID)"
+        )
         logTTMLDiagnostics(ttml, stage: "applyRendererTrackState")
         callJSFunction(
             body: "return window.AMLL.applyTrackState(payload);",
@@ -905,6 +927,9 @@ final class LyricsWebViewStore: NSObject {
 
         lastIsPlaying = isPlaying
         Log.debug("setPlaying: \(isPlaying)", category: .webview)
+        AMLLLifecycleDiagnostics.emit(
+            "bridge.setPlaying role=\(role) action=\(isPlaying ? "resume" : "pause") ready=\(isReady) objectID=\(webViewObjectID)"
+        )
         let boolStr = isPlaying ? "true" : "false"
         callJS("window.AMLL.setPlaying(\(boolStr))", debugDescription: "window.AMLL.setPlaying")
     }
@@ -1401,6 +1426,9 @@ final class LyricsWebViewStore: NSObject {
     /// Force reload (for manual recovery).
     func forceReload(recreateWebView: Bool = false) {
         guard !isShutDown else { return }
+        AMLLLifecycleDiagnostics.emit(
+            "bridge.reload role=\(role) recreate=\(recreateWebView) \(debugLayerStateSnapshot)"
+        )
         isReady = false
         displayHealthGeneration &+= 1
         pendingDisplayHealthProbe?.cancel()
@@ -1603,6 +1631,9 @@ final class LyricsWebViewStore: NSObject {
         Log.debug(
             "clearLyricsState: trackID=\(trackID?.uuidString.prefix(8) ?? "nil"), nextTTMLLength=\(nextTTMLLength), objectID=\(webViewObjectID)",
             category: .webview
+        )
+        AMLLLifecycleDiagnostics.emit(
+            "bridge.reset role=\(role) trackID=\(trackID?.uuidString.prefix(8) ?? "nil") nextTTMLLen=\(nextTTMLLength) ready=\(isReady) objectID=\(webViewObjectID)"
         )
         logTrackDiagnostics(
             stage: "clearLyricsState.beforeJS",
@@ -2256,6 +2287,34 @@ final class LyricsWebViewStore: NSObject {
         }
     }
 
+    /// DEBUG-only Swift + JS lifecycle sample. The JS payload reports whether
+    /// rAF / ResizeObserver callbacks accumulated while the document was hidden
+    /// or its viewport was zero-sized.
+    func logLifecycleDiagnostics(reason: String) {
+        guard AMLLLifecycleDiagnostics.isEnabled else { return }
+        guard role == LyricsSurfaceRole.main.rawValue
+                || role == LyricsSurfaceRole.fullscreen.rawValue
+        else { return }
+
+        AMLLLifecycleDiagnostics.emit(
+            "snapshot.swift reason=\(reason) ready=\(isReady) attached=\(isAttached) \(debugLayerStateSnapshot)"
+        )
+        guard isReady, let webView = retainedWebView else { return }
+        webView.evaluateJavaScript(
+            "JSON.stringify(window.AMLL?.collectLifecycleDiagnostics?.() ?? null)"
+        ) { result, error in
+            if let error {
+                AMLLLifecycleDiagnostics.emit(
+                    "snapshot.js role=\(self.role) reason=\(reason) error=\(error.localizedDescription)"
+                )
+                return
+            }
+            AMLLLifecycleDiagnostics.emit(
+                "snapshot.js role=\(self.role) reason=\(reason) payload=\(result as? String ?? "null")"
+            )
+        }
+    }
+
     private func registerMessageHandlers() {
         guard !didRegisterMessageHandlers else { return }
         let contentController = ensureWebView().configuration.userContentController
@@ -2336,8 +2395,9 @@ final class LyricsWebViewStore: NSObject {
             let roleJSONString = String(data: roleData, encoding: .utf8)
         {
             let scrollDiagnostics = Self.scrollDiagnosticsEnabled ? "true" : "false"
+            let lifecycleDiagnostics = AMLLLifecycleDiagnostics.isEnabled ? "true" : "false"
             let roleUserScript = WKUserScript(
-                source: "window.__AMLL_SURFACE_ROLE = \(roleJSONString); window.__AMLL_SCROLL_DIAGNOSTICS = \(scrollDiagnostics);",
+                source: "window.__AMLL_SURFACE_ROLE = \(roleJSONString); window.__AMLL_SCROLL_DIAGNOSTICS = \(scrollDiagnostics); window.__AMLL_LIFECYCLE_DIAGNOSTICS = \(lifecycleDiagnostics);",
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: true
             )
@@ -2355,6 +2415,9 @@ final class LyricsWebViewStore: NSObject {
         applyBackingScaleForRenderQuality(reason: "ensureWebView")
         registerMessageHandlers()
         Log.debug("[LyricsStore:\(role)] Created WebView instance: objectID=\(webViewObjectID)", category: .webview)
+        AMLLLifecycleDiagnostics.emit(
+            "webView.create role=\(role) identity=\(ObjectIdentifier(webView)) objectID=\(webViewObjectID) frame=\(webView.frame) hidden=\(webView.isHidden) alpha=\(webView.alphaValue)"
+        )
         loadAMLLContent()
         FirstUseHitchDiagnostics.end(token, detail: "objectID=\(webViewObjectID)")
         return webView
@@ -2493,6 +2556,12 @@ final class LyricsWebViewStore: NSObject {
 private final class LyricsMouseGatedWebView: WKWebView {
     var eventCoordinateScale: CGFloat = 1
     var onScaledScrollWheel: ((NSEvent, CGFloat) -> Void)?
+
+    deinit {
+        AMLLLifecycleDiagnostics.emit(
+            "webView.deinit identity=\(ObjectIdentifier(self))"
+        )
+    }
 
     var isMouseInteractionSuppressed = false {
         didSet {

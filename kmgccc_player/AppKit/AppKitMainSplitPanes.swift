@@ -818,7 +818,11 @@ struct LyricsFlatDriverView: View {
     }
 
     private var isLyricsSurfaceActive: Bool {
-        uiState.lyricsVisible && !uiState.isWindowPlaybackQueueVisible
+        // uiState stays true across fullscreen only as a restoration marker.
+        // Do not let the hidden flat-host driver keep syncing the window store.
+        LyricsSurfaceManager.shared.targetMode == .main
+            && uiState.lyricsVisible
+            && !uiState.isWindowPlaybackQueueVisible
     }
 
     private func setupSeekCallback() {
@@ -834,6 +838,10 @@ struct LyricsFlatDriverView: View {
         hasTrackOverride: Bool? = nil
     ) {
         setupSeekCallback()
+        guard LyricsSurfaceManager.shared.targetMode == .main else {
+            LyricsSurfaceManager.shared.reportMainVisible(false)
+            return
+        }
         let hasTrack = hasTrackOverride ?? playbackCoordinator.presentation.hasTrack
         guard isVisible, hasTrack else {
             LyricsSurfaceManager.shared.reportMainVisible(false)
