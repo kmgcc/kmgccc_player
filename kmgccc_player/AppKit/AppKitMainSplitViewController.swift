@@ -842,7 +842,11 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
     }
 
     private var shouldAttachLyricsWebView: Bool {
-        appSession.uiState.lyricsVisible
+        // Fullscreen keeps uiState.lyricsVisible mirrored so the pane can be
+        // restored on exit. That mirrored value must not remount the window
+        // WKWebView while the actual target surface is fullscreen.
+        LyricsSurfaceManager.shared.targetMode == .main
+            && appSession.uiState.lyricsVisible
             && !appSession.uiState.isWindowPlaybackQueueVisible
             && view.window != nil
             && webViewHostView.bounds.width > 1
@@ -851,6 +855,9 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
 
     private func syncVisibilityAndAttachment(reason: String) {
         guard isViewLoaded else { return }
+        AMLLLifecycleDiagnostics.emit(
+            "mainHost.sync reason=\(reason) target=\(String(describing: LyricsSurfaceManager.shared.targetMode)) shouldAttach=\(shouldAttachLyricsWebView) viewHidden=\(view.isHidden) hasWindow=\(view.window != nil) hostBounds=\(webViewHostView.bounds)"
+        )
         guard shouldAttachLyricsWebView else {
             reportMainSurfaceVisible(false)
             detachWebView()

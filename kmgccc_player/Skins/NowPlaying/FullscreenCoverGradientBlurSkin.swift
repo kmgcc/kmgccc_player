@@ -98,105 +98,177 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     let config: CoverGradientBlurConfig
 
     @EnvironmentObject private var themeStore: ThemeStore
-    @State private var transitionBlurProgress: CGFloat = 0
-    @State private var blurResetTask: Task<Void, Never>?
+    @State private var displayedCentered: Bool
+    @State private var transitionPosition: CGFloat
+    @State private var transitionBlurRadius: CGFloat = 0
+    @State private var isCoverMoving = false
+    @State private var transitionTask: Task<Void, Never>?
+
+    init(context: SkinContext, config: CoverGradientBlurConfig) {
+        self.context = context
+        self.config = config
+
+        let startsCentered = context.usesFullscreenPlayerLayout && !context.lyricsVisible
+        self._displayedCentered = State(initialValue: startsCentered)
+        self._transitionPosition = State(initialValue: startsCentered ? 1 : 0)
+    }
 
     var body: some View {
         GeometryReader { geometry in
-            let centeredVisible = context.usesFullscreenPlayerLayout && !context.lyricsVisible
+            let targetCentered = context.usesFullscreenPlayerLayout && !context.lyricsVisible
 
             ZStack {
-                backgroundLayers(size: geometry.size, centeredVisible: centeredVisible)
+                staticBackground(size: geometry.size, placement: .leading)
+                    .zIndex(displayedCentered ? 0 : 1)
 
-                backgroundLayers(size: geometry.size, centeredVisible: centeredVisible)
-                    .blur(radius: transitionBlurRadius, opaque: true)
-                    .opacity(Double(transitionBlurOpacity))
+                staticBackground(size: geometry.size, placement: .centeredSymmetric)
+                    .zIndex(displayedCentered ? 1 : 0)
+
+                transitionBackground(size: geometry.size)
+                    .frame(
+                        width: transitionCanvasWidth(for: geometry.size),
+                        height: geometry.size.height
+                    )
+                    .offset(x: transitionCanvasOffset(for: geometry.size))
+                    .zIndex(isCoverMoving ? 2 : -1)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
             .compositingGroup()
-            .animation(layoutAnimation, value: centeredVisible)
-            .onChange(of: centeredVisible) { _, _ in
-                runTransitionBlur()
+            .blur(radius: transitionBlurRadius, opaque: true)
+            .onChange(of: targetCentered) { _, newValue in
+                runLayoutTransition(to: newValue)
             }
         }
         .onDisappear {
-            blurResetTask?.cancel()
+            transitionTask?.cancel()
         }
-    }
-
-    private var layoutAnimation: Animation {
-        if context.theme.reduceMotion {
-            return .easeInOut(duration: 0.42)
-        }
-        return .timingCurve(0.24, 0.72, 0.18, 1.0, duration: 0.82)
     }
 
     private var blurRiseAnimation: Animation {
-        context.theme.reduceMotion
-            ? .easeInOut(duration: 0.14)
-            : .easeOut(duration: 0.28)
+        if context.theme.reduceMotion {
+            return .easeInOut(duration: 0.20)
+        }
+        return .timingCurve(0.22, 0.0, 0.24, 1.0, duration: 0.36)
+    }
+
+    private var coverSpringAnimation: Animation {
+        if context.theme.reduceMotion {
+            return .easeInOut(duration: 0.46)
+        }
+        return .spring(response: 0.88, dampingFraction: 0.86, blendDuration: 0.12)
     }
 
     private var blurFallAnimation: Animation {
         context.theme.reduceMotion
-            ? .easeInOut(duration: 0.26)
-            : .timingCurve(0.18, 0.86, 0.24, 1.0, duration: 0.92)
+            ? .easeInOut(duration: 0.32)
+            : .timingCurve(0.20, 0.78, 0.22, 1.0, duration: 0.94)
     }
 
-    private var transitionBlurRadius: CGFloat {
-        36 * easedTransitionBlurProgress
+    @ViewBuilder
+    private func staticBackground(
+        size: CGSize,
+        placement: CoverGradientBlurArtworkPlacement
+    ) -> some View {
+        CoverGradientBlurBackgroundView(
+            artworkData: context.track?.artworkData,
+            artworkImage: context.track?.artworkImage,
+            artworkChecksum: context.track?.artworkChecksum ?? 0,
+            dominantColor: themeStore.semanticPalette.coverGradientDominant,
+            config: config(for: placement)
+        )
+        .frame(width: size.width, height: size.height)
+        .allowsHitTesting(false)
     }
 
-    private var transitionBlurOpacity: CGFloat {
-        smoothstep(edge0: 0, edge1: 0.25, value: transitionBlurProgress)
+    @ViewBuilder
+    private func transitionBackground(size: CGSize) -> some View {
+        CoverGradientBlurBackgroundView(
+            artworkData: context.track?.artworkData,
+            artworkImage: context.track?.artworkImage,
+            artworkChecksum: context.track?.artworkChecksum ?? 0,
+            dominantColor: themeStore.semanticPalette.coverGradientDominant,
+            config: config(for: .centeredSymmetric)
+        )
+        .allowsHitTesting(false)
     }
 
-    private var easedTransitionBlurProgress: CGFloat {
-        smoothstep(edge0: 0, edge1: 1, value: transitionBlurProgress)
-    }
+    private func runLayoutTransition(to targetCentered: Bool) {
+        transitionTask?.cancel()
 
-    private func runTransitionBlur() {
-        blurResetTask?.cancel()
-        withAnimation(blurRiseAnimation) {
-            transitionBlurProgress = 1
+        guard displayedCentered != targetCentered || isCoverMoving else {
+            withAnimation(blurFallAnimation) {
+                transitionBlurRadius = 0
+            }
+            return
         }
 
-        blurResetTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            guard !Task.isCancelled else { return }
+        isCoverMoving = false
+        transitionPosition = displayedCentered ? 1 : 0
+
+        transitionTask = Task { @MainActor in
+            withAnimation(blurRiseAnimation) {
+                transitionBlurRadius = 44
+            }
+
+            guard await waitForTransitionStage(nanoseconds: 380_000_000) else { return }
+
+            isCoverMoving = true
+            guard await waitForTransitionStage(nanoseconds: 24_000_000) else { return }
+
+            withAnimation(coverSpringAnimation) {
+                transitionPosition = targetCentered ? 1 : 0
+            }
+
+            guard await waitForTransitionStage(nanoseconds: 1_080_000_000) else { return }
+
+            displayedCentered = targetCentered
+            isCoverMoving = false
+
+            guard await waitForTransitionStage(nanoseconds: 80_000_000) else { return }
+
             withAnimation(blurFallAnimation) {
-                transitionBlurProgress = 0
+                transitionBlurRadius = 0
             }
         }
     }
 
-    @ViewBuilder
-    private func backgroundLayers(size: CGSize, centeredVisible: Bool) -> some View {
-        ZStack {
-            CoverGradientBlurBackgroundView(
-                artworkData: context.track?.artworkData,
-                artworkImage: context.track?.artworkImage,
-                artworkChecksum: context.track?.artworkChecksum ?? 0,
-                dominantColor: themeStore.semanticPalette.coverGradientDominant,
-                config: config(for: .leading)
-            )
-            .frame(width: size.width, height: size.height)
-            .opacity(centeredVisible ? 0 : 1)
-
-            CoverGradientBlurBackgroundView(
-                artworkData: context.track?.artworkData,
-                artworkImage: context.track?.artworkImage,
-                artworkChecksum: context.track?.artworkChecksum ?? 0,
-                dominantColor: themeStore.semanticPalette.coverGradientDominant,
-                config: config(for: .centeredSymmetric)
-            )
-            .frame(width: size.width, height: size.height)
-            .opacity(centeredVisible ? 1 : 0)
+    private func waitForTransitionStage(nanoseconds: UInt64) async -> Bool {
+        do {
+            try await Task.sleep(nanoseconds: nanoseconds)
+            return !Task.isCancelled
+        } catch {
+            return false
         }
-        .frame(width: size.width, height: size.height)
-        .clipped()
-        .allowsHitTesting(false)
+    }
+
+    private func transitionCanvasWidth(for size: CGSize) -> CGFloat {
+        size.width + coverCenterShift(for: size) * 2 + transitionOverscan(for: size) * 2
+    }
+
+    private func transitionCanvasOffset(for size: CGSize) -> CGFloat {
+        let shift = coverCenterShift(for: size)
+        return shift * (transitionPosition - 1)
+    }
+
+    private func coverCenterShift(for size: CGSize) -> CGFloat {
+        max(0, (size.width - renderedArtworkWidth(for: size)) * 0.5)
+    }
+
+    private func renderedArtworkWidth(for size: CGSize) -> CGFloat {
+        guard
+            let imageSize = context.track?.artworkImage?.size,
+            imageSize.width > 0,
+            imageSize.height > 0
+        else {
+            return min(size.width, size.height)
+        }
+
+        return min(size.width, size.height * imageSize.width / imageSize.height)
+    }
+
+    private func transitionOverscan(for size: CGSize) -> CGFloat {
+        max(48, min(120, size.width * 0.045))
     }
 
     private func config(
@@ -210,12 +282,6 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             copy.extensionFloorStrength = min(copy.extensionFloorStrength, 0.16)
         }
         return copy
-    }
-
-    private func smoothstep(edge0: CGFloat, edge1: CGFloat, value: CGFloat) -> CGFloat {
-        let span = max(.leastNonzeroMagnitude, edge1 - edge0)
-        let t = max(0, min(1, (value - edge0) / span))
-        return t * t * (3 - 2 * t)
     }
 }
 

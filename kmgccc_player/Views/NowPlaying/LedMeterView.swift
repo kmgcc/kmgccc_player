@@ -443,7 +443,7 @@ private final class LiveLedMeterLayerHostView: NSView {
         _ configuration: LiveLedMeterLayerConfiguration,
         provider: LEDMeterServiceProvider
     ) {
-        Log.warning("[FS-DIAG] LiveLedMeter.configure BEGIN t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
+        FSDiagnostics.emit("LiveLedMeter.configure BEGIN t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
         // Defense-in-depth: skip if configuration hasn't changed.
         // Equatable on LiveLedMeterLayerConfiguration should prevent most
         // redundant updateNSView calls, but this guard catches any remaining
@@ -477,7 +477,7 @@ private final class LiveLedMeterLayerHostView: NSView {
         syncBindingIfPossible()
         provider.updatePlaybackState(isPlaying: configuration.isPlaying)
         updateBreathTimer()
-        Log.warning("[FS-DIAG] LiveLedMeter.configure END t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
+        FSDiagnostics.emit("LiveLedMeter.configure END t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
     }
 
     func unbind() {

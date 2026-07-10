@@ -483,19 +483,26 @@ var InterludeDots = class {
 				const dot0Opacity = clamp(.25, currentDuration * 3 / dotsDuration * .75, 1);
 				const dot1Opacity = clamp(.25, (currentDuration - dotsDuration / 3) * 3 / dotsDuration * .75, 1);
 				const dot2Opacity = clamp(.25, (currentDuration - dotsDuration / 3 * 2) * 3 / dotsDuration * .75, 1);
-				this.dot0.style.opacity = `${clamp01(globalOpacity)}`;
+				const globalOpacityClamped = clamp01(globalOpacity);
+				this.dot0.style.opacity = `${clamp01(globalOpacity * dot0Opacity)}`;
+				this.dot0.style.setProperty("--amll-dot-global-opacity", `${globalOpacityClamped}`);
 				this.dot0.dataset.amllDotWalk = `${dot0Opacity}`;
-				this.dot1.style.opacity = `${clamp01(globalOpacity)}`;
+				this.dot1.style.opacity = `${clamp01(globalOpacity * dot1Opacity)}`;
+				this.dot1.style.setProperty("--amll-dot-global-opacity", `${globalOpacityClamped}`);
 				this.dot1.dataset.amllDotWalk = `${dot1Opacity}`;
-				this.dot2.style.opacity = `${clamp01(globalOpacity)}`;
+				this.dot2.style.opacity = `${clamp01(globalOpacity * dot2Opacity)}`;
+				this.dot2.style.setProperty("--amll-dot-global-opacity", `${globalOpacityClamped}`);
 				this.dot2.dataset.amllDotWalk = `${dot2Opacity}`;
 			} else {
 				curStyle += " scale(0)";
 				this.dot0.style.opacity = "0";
+				this.dot0.style.setProperty("--amll-dot-global-opacity", "0");
 				this.dot0.dataset.amllDotWalk = "0";
 				this.dot1.style.opacity = "0";
+				this.dot1.style.setProperty("--amll-dot-global-opacity", "0");
 				this.dot1.dataset.amllDotWalk = "0";
 				this.dot2.style.opacity = "0";
+				this.dot2.style.setProperty("--amll-dot-global-opacity", "0");
 				this.dot2.dataset.amllDotWalk = "0";
 			}
 			curStyle += ";";
