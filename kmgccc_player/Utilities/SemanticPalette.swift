@@ -165,11 +165,11 @@ nonisolated struct LyricAlphaPolicy: Equatable, Sendable {
         case .artistic:
             return LyricAlphaPolicy(
                 foregroundAlpha: 1,
-                backgroundBaseOpacity: 0.54,
-                backgroundKaraokeOpacity: 0.88,
+                backgroundBaseOpacity: 1.0,
+                backgroundKaraokeOpacity: 1.0,
                 dedicatedCoverBlurBackgroundBaseOpacity: 0.38,
                 dedicatedCoverBlurBackgroundKaraokeOpacity: 0.84,
-                emphasisGlowAlpha: context.scheme == .light ? 0.32 : 0.48
+                emphasisGlowAlpha: context.scheme == .light ? 0.30 : 0.45
             )
         case .coverBlur:
             switch context.coverBlurProfile {
@@ -534,7 +534,15 @@ nonisolated enum LyricPerceptualPolicy {
         }()
         let karaoke = OKColor.oklabLerp(inactiveTone, activeTone, t: karaokeWeight)
         let darkPolarity = expectsLightText(context)
-        let inactiveL = inactiveTone.l + (darkPolarity ? -0.070 : 0.070)
+        // Artistic background lyrics are fully opaque (see LyricAlphaPolicy)
+        // and the BG line is not run through the packed-word layering, so its
+        // whole-line colour is the single visible tier. Anchor it just below
+        // the main active line (a small lightness nudge from mainActive) so it
+        // reads as a fainter companion instead of dropping to the near-inactive
+        // tier. Other modes keep the original mainInactive-anchored offset and
+        // their renderer opacity dimming.
+        let inactiveL = (context.mode == .artistic ? activeTone.l : inactiveTone.l)
+            + (darkPolarity ? -0.070 : 0.070)
         let activeL = foreground.subActive.oklch.lightness + (darkPolarity ? -0.040 : 0.040)
         return BackgroundRoles(
             inactive: role(seed, l: CGFloat(inactiveL), cScale: 0.46, cFloor: 0.012, cCap: 0.052, context: context, hueShift: darkPolarity ? -0.010 : 0.010),

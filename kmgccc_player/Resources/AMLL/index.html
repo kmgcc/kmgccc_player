@@ -873,6 +873,19 @@
             opacity: var(--amll-fs-bg-karaoke-opacity, 0.86) !important;
         }
 
+        /* Artistic fullscreen (classic / rotating / cassette): background
+           lyric lines are not run through the packed-word layering, so the
+           core's per-word karaoke opacity (the semi-transparent "hierarchy"
+           the user saw) applies directly. Force the whole active BG line and
+           its descendants fully opaque and let the line colour (anchored just
+           below mainActive) carry the tier. The non-active BG line stays
+           hidden via the container opacity 0 above. CoverBlur / Apple style
+           keep their own BG opacity handling. */
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-surface-fullscreen-cover-blur-generic) [class*="lyricBgLine"][class*="active"],
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-surface-fullscreen-cover-blur-generic) [class*="lyricBgLine"][class*="active"] * {
+            opacity: 1 !important;
+        }
+
         /* === Task 1: Fullscreen emphasis glow above text layer === */
         /* Create a glow overlay that renders on top of the text in fullscreen mode */
         .amll-lyric-player.amll-surface-fullscreen .amll-fs-glow-layer {
@@ -989,6 +1002,55 @@
                 --amll-fs-main-active,
                 var(--amll-active, var(--amll-lp-color, white))
             ) !important;
+        }
+
+        /* Artistic fullscreen (classic / rotating / cassette skins): interlude
+           dots split the two roles that upstream conflates into one opacity:
+             - lifecycle show/hide + entrance fade -> opacity/visibility on the
+               container and the core's globalOpacity on each dot (restored, so
+               the dot fades in after reaching size and hides during scroll,
+               matching CoverBlur / 大封面 behavior).
+             - per-dot walk lit/unlit -> lightness (color via `.amll-fs-dot-lit`),
+              driven by the adapter observer reading the core's
+              `data-amll-dot-walk` (fork core now exposes walk progress there
+              instead of folding it into opacity).
+           The container uses `visibility` (instant, like CoverBlur) so scrolling
+           away from the interlude hides the dots immediately instead of letting
+           a 0.25s opacity transition drift them off the lyrics. CoverBlur /
+           Apple style keep their own rules above. */
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-surface-fullscreen-cover-blur-generic) [class*="interludeDots"] {
+            visibility: hidden !important;
+            opacity: 1 !important;
+            transition: none !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-surface-fullscreen-cover-blur-generic) [class*="interludeDots"][class*="enabled"] {
+            visibility: visible !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-surface-fullscreen-cover-blur-generic) [class*="interludeDots"] > * {
+            background-color: var(
+                --amll-fs-main-inactive,
+                var(--amll-inactive, var(--amll-lp-color, white))
+            ) !important;
+            transition: background-color 0.35s ease-out !important;
+        }
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-surface-fullscreen-cover-blur-generic) [class*="interludeDots"] > *.amll-fs-dot-lit {
+            background-color: var(
+                --amll-fs-main-active,
+                var(--amll-active, var(--amll-lp-color, white))
+            ) !important;
+        }
+
+        /* Hide the interlude dots while the user is wheel/trackpad-scrolling
+           the lyrics. The dots sit at the layout target (instant transform)
+           while lyric lines spring to it, so without this they drift off the
+           lyrics mid-scroll. The `.amll-fs-user-scrolling` class is toggled by
+           the adapter's wheel listener (debounced reveal); this mirrors the
+           大封面/CoverBlur behavior of hiding dots mid-scroll and revealing them
+           when scrolling stops. Specificity (one extra class) beats the
+           `.enabled` -> `visibility: visible` rule above, and the container's
+           `transition: none` keeps the hide/reveal instant like CoverBlur. */
+        .amll-lyric-player.amll-surface-fullscreen:not(.amll-surface-fullscreen-cover-blur-generic).amll-fs-user-scrolling [class*="interludeDots"][class*="enabled"] {
+            visibility: hidden !important;
         }
 
         .amll-lyric-player.amll-surface-fullscreen.amll-surface-fullscreen-cover-blur-highlight-only [class*="lyricLine"]:not([class*="lyricLineWrapper"]):not([class*="active"]),
@@ -2235,6 +2297,40 @@
         if (window.AMLL) {
             window.AMLL.hostWheel = dispatchHostWheelToAMLL;
         }
+
+        // === Fullscreen art-skin interlude dots: hide during user scroll ===
+        // On macOS the lyric surface receives scroll via the Swift host
+        // forwarding NSEvent scrollWheel -> hostWheel -> a synthesized DOM
+        // "wheel" event. The fork core's scroll module only sets
+        // `isUserScrolling` for *touch* gestures (touchstart), never for wheel,
+        // so any core-side "hide dots while scrolling" check never fires on
+        // macOS. The dots are positioned at the layout target instantly while
+        // lyric lines spring to it, so during a wheel scroll the dots drift
+        // off the lyrics. Mirror the 大封面/CoverBlur behavior here at the
+        // adapter layer (AMLL priority: adapter/CSS before fork core): while
+        // the user is scrolling, hide the dots via `visibility`; when scrolling
+        // stops, reveal them again at their continuously-updated position
+        // (calcLayout keeps calling setTransform during scroll, so they reappear
+        // already aligned). Scoped to the 3 art-background fullscreen skins only
+        // (has `amll-surface-fullscreen`, not the cover-blur-generic class) so
+        // CoverBlur / Apple style / window lyrics are untouched.
+        let fsArtScrollHideTimer = null;
+        const FS_ART_SCROLL_HIDE_DELAY = 220;
+        const markFsArtScrolling = () => {
+            const el = lyricPlayer.getElement?.();
+            if (!(el instanceof HTMLElement)) return;
+            if (!el.classList.contains("amll-surface-fullscreen")
+                || el.classList.contains("amll-surface-fullscreen-cover-blur-generic")) {
+                return;
+            }
+            el.classList.add("amll-fs-user-scrolling");
+            if (fsArtScrollHideTimer) clearTimeout(fsArtScrollHideTimer);
+            fsArtScrollHideTimer = setTimeout(() => {
+                el.classList.remove("amll-fs-user-scrolling");
+                fsArtScrollHideTimer = null;
+            }, FS_ART_SCROLL_HIDE_DELAY);
+        };
+        lyricPlayer.getElement().addEventListener("wheel", markFsArtScrolling, { passive: true });
 
         if (scrollDiagnosticsEnabled) {
             lyricPlayer.getElement().addEventListener("wheel", (event) => {
@@ -3785,6 +3881,34 @@
             }
         };
 
+        // Background lyric lines are not run through the packed-word layering,
+        // so their emphasis text-shadow animations stay on the source word
+        // elements with the upstream white halo. For artistic fullscreen we
+        // retint those source animations in place with the same glow options
+        // (colour + radius multiplier) as the main line, so the BG emphasis
+        // glow matches the retuned main glow instead of the heavy upstream
+        // halo. Idempotent via the per-animation signature cache.
+        const retintFullscreenBackgroundLineEmphasisGlow = () => {
+            if (!fullscreenOpaqueLyricsMode) return;
+            if (isFullscreenCoverBlurGenericMode()) return;
+            const options = resolveFullscreenEmphasisGlowRetintOptions();
+            if (!options) return;
+            const groups = Array.isArray(lyricPlayer.currentLyricGroups)
+                ? lyricPlayer.currentLyricGroups
+                : [];
+            for (const group of groups) {
+                const bgLine = group?.bgLine;
+                const splitWords = Array.isArray(bgLine?.splittedWords) ? bgLine.splittedWords : [];
+                for (const splitWord of splitWords) {
+                    const sourceAnimations = captureFullscreenSourceElementAnimations(splitWord);
+                    for (const animation of sourceAnimations) {
+                        if (!isEmphasisTextShadowAnimation(animation)) continue;
+                        retintFullscreenEmphasisAnimation(animation, options);
+                    }
+                }
+            }
+        };
+
         const syncFullscreenEmphasisGlowForCurrentTheme = (reason = "sync") => {
             if (!isFullscreenSurface) return;
             if (!(fullscreenOpaqueLyricsMode || fullscreenCoverBlurMode)) return;
@@ -3813,6 +3937,7 @@
                 }
                 if (lineAnimationCount > 0) lines += 1;
             }
+            retintFullscreenBackgroundLineEmphasisGlow();
             console.log("[AMLLThemeGlow] fullscreen-sync", {
                 reason,
                 signature: options.signature,
@@ -4267,11 +4392,84 @@
                 clearFullscreenDiscreteLayerLock(element);
             }
         };
+        // === Interlude dots lightness hierarchy (artistic fullscreen) ===
+        // The fork core drives the interlude-dot walk via per-dot inline
+        // opacity (globalOpacity * walkProgress). For the artistic fullscreen
+        // skins we express that hierarchy with lightness, not opacity: every
+        // dot stays fully opaque, the lit dot takes the lyric active color and
+        // the unlit dots take the lyric inactive color. A MutationObserver on
+        // the dots container mirrors the core's inline walk opacity onto an
+        // `amll-fs-dot-lit` class; CSS (scoped to the non-cover-blur
+        // fullscreen surface) supplies the colors. The container's own
+        // `enabled`-class opacity still gates overall show/hide, so forcing
+        // dot opacity to 1 does not leak dots outside an interlude. This keeps
+        // the fork core untouched and degrades to the core opacity walk for
+        // CoverBlur / Apple style surfaces.
+        let fullscreenInterludeDotObserver = null;
+        const FULLSCREEN_INTERLUDE_DOT_LIT_CLASS = "amll-fs-dot-lit";
+        const fullscreenInterludeDotLightnessActive = () =>
+            fullscreenOpaqueLyricsMode === true
+            && !lyricPlayer.getElement?.()?.classList.contains("amll-surface-fullscreen-cover-blur-generic");
+        const syncFullscreenInterludeDotLightness = () => {
+            if (!fullscreenInterludeDotLightnessActive()) return;
+            const dotsContainer = lyricPlayer.getElement?.()?.querySelector('[class*="interludeDots"]');
+            if (!(dotsContainer instanceof HTMLElement)) return;
+            for (const dot of Array.from(dotsContainer.children)) {
+                if (!(dot instanceof HTMLElement)) continue;
+                // The fork core now exposes the per-dot walk progress as a
+                // data attr (`data-amll-dot-walk`) instead of folding it into
+                // opacity; opacity carries only the entrance/lifecycle fade.
+                const walk = parseFloat(dot.dataset.amllDotWalk ?? "");
+                dot.classList.toggle(
+                    FULLSCREEN_INTERLUDE_DOT_LIT_CLASS,
+                    Number.isFinite(walk) && walk >= 0.5,
+                );
+            }
+        };
+        const installFullscreenInterludeDotLightnessObserver = () => {
+            if (!fullscreenInterludeDotLightnessActive()) {
+                if (fullscreenInterludeDotObserver) {
+                    fullscreenInterludeDotObserver.disconnect();
+                    fullscreenInterludeDotObserver = null;
+                }
+                return;
+            }
+            if (fullscreenInterludeDotObserver) {
+                syncFullscreenInterludeDotLightness();
+                return;
+            }
+            const dotsContainer = lyricPlayer.getElement?.()?.querySelector('[class*="interludeDots"]');
+            if (!(dotsContainer instanceof HTMLElement)) return;
+            fullscreenInterludeDotObserver = new MutationObserver(syncFullscreenInterludeDotLightness);
+            fullscreenInterludeDotObserver.observe(dotsContainer, {
+                subtree: true,
+                attributes: true,
+                // `style` fires during the entrance/lifecycle fade (opacity);
+                // `data-amll-dot-walk` fires as the per-dot walk progresses.
+                attributeFilter: ["style", "data-amll-dot-walk"],
+            });
+            syncFullscreenInterludeDotLightness();
+        };
+        const teardownFullscreenInterludeDotLightnessObserver = () => {
+            if (fullscreenInterludeDotObserver) {
+                fullscreenInterludeDotObserver.disconnect();
+                fullscreenInterludeDotObserver = null;
+            }
+            const dotsContainer = lyricPlayer.getElement?.()?.querySelector('[class*="interludeDots"]');
+            if (dotsContainer instanceof HTMLElement) {
+                for (const dot of Array.from(dotsContainer.children)) {
+                    if (dot instanceof HTMLElement) {
+                        dot.classList.remove(FULLSCREEN_INTERLUDE_DOT_LIT_CLASS);
+                    }
+                }
+            }
+        };
         const patchFullscreenLineOpacityBehavior = ({ reason = "patch", forceActiveSync = false } = {}) => {
             if (!fullscreenOpaqueLyricsMode) return;
             if (!Array.isArray(lyricPlayer.currentLyricLineObjects)) return;
 
             installFullscreenLayerLifecycleHooks();
+            installFullscreenInterludeDotLightnessObserver();
             for (let lineIdx = 0; lineIdx < lyricPlayer.currentLyricLineObjects.length; lineIdx++) {
                 const lineObj = lyricPlayer.currentLyricLineObjects[lineIdx];
                 const lineElement = lineObj?.element;
@@ -4348,6 +4546,7 @@
                 }
             }
             updateFullscreenFadingHighlightState();
+            retintFullscreenBackgroundLineEmphasisGlow();
             promoteFullscreenGroupWrapperFilters();
             logActiveHighlightState(`patch-fullscreen:${reason}`);
         };
@@ -6611,6 +6810,7 @@
                             } else {
                                 syncWordFadeWidth();
                                 stopFullscreenCompositingGuard();
+                                teardownFullscreenInterludeDotLightnessObserver();
 	                                playerElement.classList.remove("amll-surface-fullscreen");
 	                                playerElement.classList.remove("amll-surface-fullscreen-apple-style");
 	                                playerElement.classList.remove("fs-color-dodge");
@@ -6742,6 +6942,15 @@
                         applyFullscreenNumberVar("fullscreenBackgroundKaraokeOpacity", "--amll-fs-bg-karaoke-opacity");
                         applyFullscreenNumberVar("coverBlurBackgroundBaseOpacity", "--amll-cb-bg-base-opacity");
                         applyFullscreenNumberVar("coverBlurBackgroundKaraokeOpacity", "--amll-cb-bg-karaoke-opacity");
+                        // Artistic fullscreen (non-cover-blur): tighten the emphasis halo
+                        // radius. The fork core reads this CSS var when building emphasis
+                        // keyframes (`initEmphasizeAnimation`). CoverBlur / Apple style and
+                        // window lyrics leave it unset so the upstream radius is preserved.
+                        if (fullscreenOpaqueLyricsMode && !isFullscreenCoverBlurGenericMode()) {
+                            playerElement.style.setProperty("--amll-emphasis-glow-radius-scale", "0.6");
+                        } else {
+                            playerElement.style.removeProperty("--amll-emphasis-glow-radius-scale");
+                        }
                         syncFullscreenDerivedColors();
                         syncFullscreenCoverBlurGenericRootState();
 	                    if (typeof config.alignAnchor === "string" && typeof lyricPlayer.setAlignAnchor === "function") {

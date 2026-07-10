@@ -527,10 +527,14 @@ nonisolated enum ColorSystemTokens {
         //     text above the artwork layer.
         static let lyricsMainActiveL: CGFloat = 0.935
         static let lyricsSubActiveL: CGFloat = 0.875
-        static let lyricsMainInactiveL: CGFloat = 0.555
-        static let lyricsSubInactiveL: CGFloat = 0.550
-        static let lyricsLineTimingMainInactiveL: CGFloat = 0.530
-        static let lyricsLineTimingSubInactiveL: CGFloat = 0.510
+        // Darkened slightly so the active/inactive contrast reads more clearly
+        // over the artistic background. The night moving-circle ceiling
+        // (Phase63TierFixture.nightDotB.upper = 0.52) must stay below
+        // lyricsMainInactiveL + 0.005, so 0.535 keeps a 0.020 margin.
+        static let lyricsMainInactiveL: CGFloat = 0.535
+        static let lyricsSubInactiveL: CGFloat = 0.530
+        static let lyricsLineTimingMainInactiveL: CGFloat = 0.510
+        static let lyricsLineTimingSubInactiveL: CGFloat = 0.490
 
         static let lyricsUltraDarkActiveTrim: CGFloat = 0.030
         static let lyricsUltraDarkSubActiveTrim: CGFloat = 0.040
