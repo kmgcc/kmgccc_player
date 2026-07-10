@@ -248,6 +248,18 @@ struct FullscreenPlayerView: View {
     @State private var fullscreenLyricsHostMounted = false
     @State private var isLeftActionsExpanded = false
     @State private var isQuickAppearancePanelPresented = false
+    /// Cover Blur fullscreen background readability maps, written by the skin
+    /// background bridge and read here to resolve the local control polarity.
+    @State private var backdropReadabilityState = FullscreenBackdropReadabilityState()
+    /// Cached Cover Blur local polarity. The contrast engine samples up to three
+    /// backdrop maps across three control regions and sorts per-pixel luma /
+    /// contrast arrays per region — far too expensive to run on every body
+    /// evaluation (this view re-evaluates at meter / playback-time / animation
+    /// frequency, and the engine was invoked once per
+    /// `fullscreenMiniPlayerForegroundProfile` access, ~many per body). The
+    /// getter returns this cached value; `.onChange(of: localPolarityInputSignature)`
+    /// refreshes it only when the decision inputs actually change.
+    @State private var resolvedLocalPolarity: ArtworkForegroundPolarity?
     @State private var currentFullscreenScale: CGFloat = 1.0
     @State private var fullscreenViewportSize: CGSize = .zero
     @State private var embeddedInitialThemeUnlocked = false
@@ -424,6 +436,20 @@ struct FullscreenPlayerView: View {
         .sheet(isPresented: $isShowingExternalMatchEditor, content: externalMatchEditorSheet)
         .onAppear(perform: handleFullscreenAppear)
         .onDisappear(perform: handleFullscreenDisappear)
+        .onChange(of: fullscreenLocalArtworkPolarity) { _, newValue in
+            #if DEBUG
+            let source = newValue == nil
+                ? (isCoverBlurFullscreenSkin ? "fallback-global" : "n/a")
+                : "cover-blur-local"
+            FSDiagnostics.emit(
+                "readability polarity source=\(source) polarity=\(newValue?.rawValue ?? "nil") skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
+                category: .fullscreen
+            )
+            #endif
+        }
+        .onChange(of: localPolarityInputSignature, initial: true) { _, _ in
+            recomputeLocalPolarity()
+        }
         .onChange(of: settings.fullscreen.skinID) { oldValue, newValue in
             skinRevision &+= 1
             FSDiagnostics.emit(
@@ -778,6 +804,7 @@ struct FullscreenPlayerView: View {
             if hasRenderableGeometry {
                 fullscreenBackgroundLayer(selectedSkin: selectedSkin, scale: scale)
                     .id("\(skinIdentity)_bg")
+                    .environment(\.fullscreenBackdropReadabilityState, backdropReadabilityState)
                     .onAppear { FSDiagnostics.emit("skinBg onAppear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
                     .onDisappear { FSDiagnostics.emit("skinBg onDisappear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
 
@@ -2303,12 +2330,86 @@ struct FullscreenPlayerView: View {
             settings.fullscreenMiniPlayerGlassMaterial == .normal ? .normal : .clear
         return FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: themeStore.semanticPalette,
+            localArtworkPolarity: fullscreenLocalArtworkPolarity,
             hasArtworkThemeColor: themeStore.hasArtworkThemeColor,
             skinID: settings.fullscreen.skinID,
             colorScheme: colorScheme,
             materialStyle: materialStyle,
             fullscreenArtBackgroundEnabled: settings.fullscreenArtBackgroundEnabled
         )
+    }
+
+    /// Local rendered-region polarity for the Cover Blur fullscreen controls.
+    /// Returns a cached value (`resolvedLocalPolarity`); the contrast engine is
+    /// too expensive to run per body evaluation. `recomputeLocalPolarity()`
+    /// refreshes the cache only when the decision inputs change, driven by
+    /// `.onChange(of: localPolarityInputSignature)`. Nil (fall back to the
+    /// global gate) until a map arrives or for non-Cover-Blur skins.
+    private var fullscreenLocalArtworkPolarity: ArtworkForegroundPolarity? {
+        guard isCoverBlurFullscreenSkin else { return nil }
+        return resolvedLocalPolarity
+    }
+
+    /// Cheap signature over the polarity decision's inputs: skin, artwork,
+    /// the three placement render keys, and the two control-expand flags.
+    /// Compared between body evaluations so the expensive engine only re-runs
+    /// on a real input change instead of on every body / every profile access.
+    /// Candidate foreground colours come from the artwork analysis, which is
+    /// already captured by `artworkChecksum` + the render keys (the render key
+    /// embeds the dominant-colour hash), so no separate palette token is needed.
+    private var localPolarityInputSignature: String {
+        let state = backdropReadabilityState
+        return "\(isCoverBlurFullscreenSkin ? 1 : 0)|\(state.artworkChecksum)"
+            + "|L:\(state.leading?.renderKey ?? "")"
+            + "|C:\(state.centered?.renderKey ?? "")"
+            + "|T:\(state.transition?.renderKey ?? "")"
+            + "|LE:\(isLeftActionsExpanded ? 1 : 0)"
+            + "|VE:\(isVolumeExpanded ? 1 : 0)"
+    }
+
+    /// Recompute and cache the local polarity from the current readability
+    /// maps. Called from `.onChange(of: localPolarityInputSignature, initial: true)`,
+    /// so it runs on the main actor only on artwork / render / layout / skin
+    /// changes - never per frame. The engine work is bounded (a few region
+    /// sorts) and only happens a handful of times per track switch.
+    private func recomputeLocalPolarity() {
+        let state = backdropReadabilityState
+        guard isCoverBlurFullscreenSkin, state.hasAnyMap else {
+            if resolvedLocalPolarity != nil { resolvedLocalPolarity = nil }
+            return
+        }
+        let geometry = FullscreenBottomControlsGeometry.make(
+            isLeftActionsExpanded: isLeftActionsExpanded,
+            isVolumeExpanded: isVolumeExpanded
+        )
+        let canvasSize = CGSize(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight)
+        let regions = geometry.readabilityRegions(
+            canvasSize: canvasSize,
+            expansionPoints: ColorSystemTokens.ReadabilityForeground.regionExpansionPoints
+        )
+        guard !regions.isEmpty else {
+            if resolvedLocalPolarity != nil { resolvedLocalPolarity = nil }
+            return
+        }
+
+        var samples: [(map: RenderedBackdropReadabilityMap, regions: [NormalizedReadabilityRegion])] = []
+        if let leading = state.leading { samples.append((leading.readabilityMap, regions)) }
+        if let centered = state.centered { samples.append((centered.readabilityMap, regions)) }
+        if let transition = state.transition { samples.append((transition.readabilityMap, regions)) }
+        guard !samples.isEmpty else {
+            if resolvedLocalPolarity != nil { resolvedLocalPolarity = nil }
+            return
+        }
+
+        let candidates = FullscreenMiniPlayerForegroundStrategy.artworkCandidateProfiles(
+            palette: themeStore.semanticPalette
+        )
+        let decision = RenderedBackdropReadability.decide(
+            darkForeground: candidates.dark.primary,
+            lightForeground: candidates.light.primary,
+            samples: samples
+        )
+        resolvedLocalPolarity = decision.polarity
     }
 
     private var fullscreenControlsGlassStyle: FullscreenControlsGlassStyle {
@@ -2335,9 +2436,16 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenQueueUsesBrightTextPalette: Bool {
-        // Phase 6.8: queue card text palette must match the MiniPlayer's
-        // foreground judgment, not a hardcoded skin list.
-        fullscreenMiniPlayerForegroundProfile.useScreenBlend
+        // Phase 6.8 + readability plan 8.7: the queue is NOT in the Mini
+        // Player sampling region, so it must not inherit the bottom controls'
+        // local Cover Blur polarity. Cover Blur uses the optimized global gate;
+        // other skins keep their fixed behaviour.
+        FullscreenMiniPlayerForegroundStrategy.resolveQueueUsesBrightText(
+            palette: themeStore.semanticPalette,
+            skinID: settings.fullscreen.skinID,
+            colorScheme: colorScheme,
+            fullscreenArtBackgroundEnabled: settings.fullscreenArtBackgroundEnabled
+        )
     }
 
     private var fullscreenControlsColorScheme: ColorScheme {

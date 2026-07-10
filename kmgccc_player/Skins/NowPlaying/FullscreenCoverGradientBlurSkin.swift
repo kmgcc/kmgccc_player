@@ -98,6 +98,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     let config: CoverGradientBlurConfig
 
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.fullscreenBackdropReadabilityState) private var readabilityState
     @State private var displayedCentered: Bool
     @State private var transitionPosition: CGFloat
     @State private var transitionBlurRadius: CGFloat = 0
@@ -140,9 +141,23 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                 runLayoutTransition(to: newValue)
             }
         }
+        .onAppear { beginReadabilityArtwork() }
+        .onChange(of: context.track?.artworkChecksum ?? 0) { _, _ in beginReadabilityArtwork() }
         .onDisappear {
             transitionTask?.cancel()
         }
+    }
+
+    /// Tell the readability state when a new artwork begins so stale maps from
+    /// the previous track cannot drive the new track's control polarity.
+    private func beginReadabilityArtwork() {
+        readabilityState?.beginArtwork(checksum: context.track?.artworkChecksum ?? 0)
+    }
+
+    /// Forward a rendered readability map to the fullscreen state.
+    @MainActor
+    private func acceptReadability(_ snapshot: CoverGradientBlurReadabilitySnapshot) {
+        readabilityState?.accept(snapshot)
     }
 
     private var blurRiseAnimation: Animation {
@@ -170,12 +185,15 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         size: CGSize,
         placement: CoverGradientBlurArtworkPlacement
     ) -> some View {
+        let readabilityPlacement: CoverGradientBlurReadabilityPlacement = placement == .leading ? .leading : .centeredSymmetric
         CoverGradientBlurBackgroundView(
             artworkData: context.track?.artworkData,
             artworkImage: context.track?.artworkImage,
             artworkChecksum: context.track?.artworkChecksum ?? 0,
             dominantColor: themeStore.semanticPalette.coverGradientDominant,
-            config: config(for: placement)
+            config: config(for: placement),
+            readabilityPlacement: readabilityPlacement,
+            onReadabilitySnapshot: acceptReadability
         )
         .frame(width: size.width, height: size.height)
         .allowsHitTesting(false)
@@ -188,7 +206,9 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             artworkImage: context.track?.artworkImage,
             artworkChecksum: context.track?.artworkChecksum ?? 0,
             dominantColor: themeStore.semanticPalette.coverGradientDominant,
-            config: config(for: .centeredSymmetric)
+            config: config(for: .centeredSymmetric),
+            readabilityPlacement: .transition,
+            onReadabilitySnapshot: acceptReadability
         )
         .allowsHitTesting(false)
     }

@@ -232,6 +232,18 @@ nonisolated enum ColorSystemSelfCheck {
         checkPhase64LightArtisticIgnoresUltraDark(&report)
         checkPhase64DayArtBackgroundAiryBand(&report)
 
+        report.section("Phase 7 - ArtworkForegroundPolarity global gate")
+        checkArtworkForegroundPolarityGlobalPolicy(&report)
+        checkArtworkForegroundPolarityNeutralFallbackLight(&report)
+        checkArtworkForegroundPolarityCacheVersionBumped(&report)
+        checkArtworkReadabilityCandidates(&report)
+
+        report.section("Phase 7.1 - RenderedBackdropReadability local engine")
+        checkRenderedBackdropReadabilityMap(&report)
+        checkRenderedBackdropReadabilityAspectFill(&report)
+        checkFullscreenLocalPolarityRouting(&report)
+        checkFullscreenQueueDecoupled(&report)
+
         report.lines.append(
             "Result: \(report.allPassed ? "ALL PASS" : "FAILURES PRESENT")"
         )
@@ -3564,6 +3576,7 @@ nonisolated enum ColorSystemSelfCheck {
         )
         let artisticDay = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: brightPalette,
+            localArtworkPolarity: nil,
             hasArtworkThemeColor: true,
             skinID: "fullscreen.artisticBackground",
             colorScheme: .light,
@@ -3572,6 +3585,7 @@ nonisolated enum ColorSystemSelfCheck {
         )
         let artisticNight = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: darkPalette,
+            localArtworkPolarity: nil,
             hasArtworkThemeColor: true,
             skinID: "fullscreen.artisticBackground",
             colorScheme: .dark,
@@ -3580,6 +3594,7 @@ nonisolated enum ColorSystemSelfCheck {
         )
         let apple = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: brightPalette,
+            localArtworkPolarity: nil,
             hasArtworkThemeColor: true,
             skinID: "appleStyle",
             colorScheme: .light,
@@ -3588,6 +3603,7 @@ nonisolated enum ColorSystemSelfCheck {
         )
         let coverBright = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: brightPalette,
+            localArtworkPolarity: nil,
             hasArtworkThemeColor: true,
             skinID: "fullscreen.coverGradientBlur",
             colorScheme: .light,
@@ -3596,6 +3612,7 @@ nonisolated enum ColorSystemSelfCheck {
         )
         let coverBorderlineBright = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: borderlineBrightPalette,
+            localArtworkPolarity: nil,
             hasArtworkThemeColor: true,
             skinID: "fullscreen.coverGradientBlur",
             colorScheme: .light,
@@ -3604,6 +3621,7 @@ nonisolated enum ColorSystemSelfCheck {
         )
         let coverDark = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: darkPalette,
+            localArtworkPolarity: nil,
             hasArtworkThemeColor: true,
             skinID: "fullscreen.coverGradientBlur",
             colorScheme: .dark,
@@ -3625,17 +3643,569 @@ nonisolated enum ColorSystemSelfCheck {
             && appleL > 0.80
             && coverBright.role == .coverBlurDarkForeground
             && coverBrightL < 0.55
-            && borderlineBrightAnalysis.usesDarkForeground
-            && coverBorderlineBright.role == .coverBlurDarkForeground
-            && !coverBorderlineBright.useScreenBlend
-            && !coverBorderlineBright.enforceBrightProgressForeground
-            && coverBorderlineBright.spectrumUsesDarkForeground
-            && coverBorderlineBrightL < 0.55
+            // The strict global gate intentionally flips this muted mid-tone
+            // (avgHslL≈0.65, not clearly bright by HSL/luma/brightness) from
+            // dark to light foreground. The profile stays in lockstep: light
+            // primary, screen blend, bright progress, light spectrum.
+            && !borderlineBrightAnalysis.usesDarkForeground
+            && coverBorderlineBright.role == .coverBlurLightForeground
+            && coverBorderlineBright.useScreenBlend
+            && coverBorderlineBright.enforceBrightProgressForeground
+            && !coverBorderlineBright.spectrumUsesDarkForeground
+            && coverBorderlineBrightL > 0.80
             && coverDark.role == .coverBlurLightForeground
             && coverDarkL > 0.80
         report.record(
             "Phase 6.5: MiniPlayer foreground strategy", ok,
             "artDay=\(artisticDay.role.rawValue)/L\(format(artisticDayL)) artNight=\(artisticNight.role.rawValue)/L\(format(artisticNightL)) apple=\(apple.role.rawValue)/L\(format(appleL)) coverBright=\(coverBright.role.rawValue)/L\(format(coverBrightL)) coverBorderline=\(coverBorderlineBright.role.rawValue)/L\(format(coverBorderlineBrightL))/screen=\(coverBorderlineBright.useScreenBlend) coverDark=\(coverDark.role.rawValue)/L\(format(coverDarkL))"
+        )
+    }
+
+    // MARK: - Phase 7 - ArtworkForegroundPolarity global gate
+
+    /// Direct exercise of the strict global polarity gate with the calibrated
+    /// boundary inputs. The gate must keep mid-tone covers on light foreground
+    /// and only commit to dark when one of the three "clearly bright" signals
+    /// fires. See `docs/readability-foreground-region-implementation-plan.md`
+    /// section 11.1 for the calibrated table.
+    private static func checkArtworkForegroundPolarityGlobalPolicy(_ report: inout CheckReport) {
+        let T = ColorSystemTokens.ReadabilityForeground.self
+        struct Case {
+            let name: String
+            let hslL: CGFloat
+            let luma: CGFloat
+            let bri: CGFloat
+            let sat: CGFloat
+            let expected: ArtworkForegroundPolarity
+        }
+        // `luma` is set low unless the case is meant to exercise the
+        // clearlyBrightByLuma signal, so each row isolates exactly one gate.
+        let cases: [Case] = [
+            Case(name: "hsl0.57 bright others", hslL: 0.57, luma: 0.70, bri: 0.85, sat: 0.10,
+                 expected: .lightOnDarkBackground), // below eligibility
+            Case(name: "hsl0.60 luma0.40 mid sat", hslL: 0.60, luma: 0.40, bri: 0.70, sat: 0.40,
+                 expected: .lightOnDarkBackground), // borderline -> light
+            Case(name: "hsl0.70", hslL: 0.70, luma: 0.40, bri: 0.75, sat: 0.40,
+                 expected: .darkOnLightBackground), // clearlyBrightByHSL
+            Case(name: "hsl0.60 luma0.60", hslL: 0.60, luma: 0.60, bri: 0.75, sat: 0.40,
+                 expected: .darkOnLightBackground), // clearlyBrightByLuma
+            Case(name: "hsl0.60 bri0.86 sat0.10", hslL: 0.60, luma: 0.40, bri: 0.86, sat: 0.10,
+                 expected: .darkOnLightBackground), // paleHighBrightness
+            Case(name: "hsl0.60 bri0.86 sat0.45", hslL: 0.60, luma: 0.40, bri: 0.86, sat: 0.45,
+                 expected: .lightOnDarkBackground)  // saturation above pale ceiling
+        ]
+        var allOk = true
+        var details: [String] = []
+        for c in cases {
+            let actual = ArtworkForegroundPolarityPolicy.globalPolarity(
+                avgHslLightness: c.hslL,
+                weightedLuma: c.luma,
+                avgBrightness: c.bri,
+                avgSaturation: c.sat
+            )
+            let reason = ArtworkForegroundPolarityPolicy.globalGateReason(
+                avgHslLightness: c.hslL,
+                weightedLuma: c.luma,
+                avgBrightness: c.bri,
+                avgSaturation: c.sat
+            )
+            let ok = actual == c.expected
+            if !ok { allOk = false }
+            details.append("\(c.name)=\(actual.rawValue)(\(reason.rawValue))")
+        }
+        // Eligibility floor itself: a hair below must be light, a hair at the
+        // clearly-bright HSL line must be dark.
+        let justBelowEligibility = ArtworkForegroundPolarityPolicy.globalPolarity(
+            avgHslLightness: T.eligibilityAvgHslL - 0.001,
+            weightedLuma: 0.99, avgBrightness: 0.99, avgSaturation: 0
+        )
+        let justBelowClearlyBright = ArtworkForegroundPolarityPolicy.globalPolarity(
+            avgHslLightness: T.clearlyBrightAvgHslL - 0.001,
+            weightedLuma: 0.40, avgBrightness: 0.70, avgSaturation: 0.40
+        )
+        let atClearlyBright = ArtworkForegroundPolarityPolicy.globalPolarity(
+            avgHslLightness: T.clearlyBrightAvgHslL,
+            weightedLuma: 0.40, avgBrightness: 0.70, avgSaturation: 0.40
+        )
+        let boundaryOk = justBelowEligibility == .lightOnDarkBackground
+            && justBelowClearlyBright == .lightOnDarkBackground
+            && atClearlyBright == .darkOnLightBackground
+        report.record(
+            "Phase 7: global polarity gate", allOk && boundaryOk,
+            details.joined(separator: " ") + " boundaryOk=\(boundaryOk)"
+        )
+    }
+
+    /// The neutral fallback is not a confirmed-bright real cover, so under the
+    /// "dark needs evidence" policy it must default to light foreground.
+    private static func checkArtworkForegroundPolarityNeutralFallbackLight(_ report: inout CheckReport) {
+        let ok = ArtworkColorAnalysis.neutralFallback.usesDarkForeground == false
+        report.record(
+            "Phase 7: neutral fallback is light foreground", ok,
+            "usesDark=\(ArtworkColorAnalysis.neutralFallback.usesDarkForeground)"
+        )
+    }
+
+    /// The cache version must be bumped so persisted analyses carrying the old
+    /// single-threshold `usesDarkForeground` cannot bleed back into the new
+    /// strict-gate value.
+    private static func checkArtworkForegroundPolarityCacheVersionBumped(_ report: inout CheckReport) {
+        let v = ArtworkColorExtractor.cacheVersion
+        let ok = v.contains("v11") && v.contains("readability")
+        report.record(
+            "Phase 7: analysis cache version bumped", ok,
+            "cacheVersion=\(v)"
+        )
+    }
+
+    /// Both polarity variants must be producible from one analysis, with the
+    /// dark variant landing at low L and the light variant at high L. Near-mono
+    /// covers must neutralise both variants. The candidate accessor must return
+    /// the matching variant, and the global `readabilityProfile` must equal the
+    /// global-polarity candidate (no drift between the two paths).
+    private static func checkArtworkReadabilityCandidates(_ report: inout CheckReport) {
+        // Colourful bright cover: dark variant should be low-L charcoal, light
+        // variant high-L off-white.
+        guard let colorful = analyse(side: 32, fill: (236, 196, 120, 255)) else {
+            report.record("Phase 7: readability candidates", false, "colorful analysis nil")
+            return
+        }
+        let candidates = SemanticPaletteSelfCheck.readabilityCandidates(colorful)
+        guard
+            let darkL = OKColor.nsColorToOKLCH(candidates.darkOnLightBackground.foregroundPrimary)?.l,
+            let lightL = OKColor.nsColorToOKLCH(candidates.lightOnDarkBackground.foregroundPrimary)?.l
+        else {
+            report.record("Phase 7: readability candidates", false, "OKLCH nil")
+            return
+        }
+        let globalProfile = SemanticPaletteSelfCheck.readabilityProfile(colorful)
+        // Read the stored property directly (the `profile(for:)` accessor is
+        // MainActor-isolated; this nonisolated self-check must not call it).
+        let globalCandidate = colorful.usesDarkForeground
+            ? candidates.darkOnLightBackground
+            : candidates.lightOnDarkBackground
+        let globalMatchesCandidate = globalProfile.foregroundPrimary == globalCandidate.foregroundPrimary
+        let polarityConsistency = candidates.darkOnLightBackground.usesDarkForeground
+            && !candidates.lightOnDarkBackground.usesDarkForeground
+        let colorfulOk = darkL < 0.50
+            && lightL > 0.80
+            && polarityConsistency
+            && globalMatchesCandidate
+        report.record(
+            "Phase 7: readability candidates L split", colorfulOk,
+            "darkL=\(format(darkL)) lightL=\(format(lightL)) polarityConsistent=\(polarityConsistency) globalMatches=\(globalMatchesCandidate)"
+        )
+
+        // Near-mono grey cover: both variants must collapse to near-zero chroma.
+        guard let nearMono = analyse(side: 32, fill: (200, 200, 200, 255)) else {
+            report.record("Phase 7: readability candidates near-mono", false, "near-mono analysis nil")
+            return
+        }
+        guard nearMono.isNearMonochrome else {
+            report.record("Phase 7: readability candidates near-mono", false, "sample not near-mono")
+            return
+        }
+        let monoCandidates = SemanticPaletteSelfCheck.readabilityCandidates(nearMono)
+        let monoDarkC = OKColor.nsColorToOKLCH(monoCandidates.darkOnLightBackground.foregroundPrimary)?.c ?? 1
+        let monoLightC = OKColor.nsColorToOKLCH(monoCandidates.lightOnDarkBackground.foregroundPrimary)?.c ?? 1
+        let limit = ColorSystemTokens.ReadabilityProfile.nearMonoChromaAssertion
+        let monoOk = monoDarkC <= limit && monoLightC <= limit
+        report.record(
+            "Phase 7: readability candidates near-mono neutral", monoOk,
+            "darkC=\(format(monoDarkC)) lightC=\(format(monoLightC)) limit=\(format(limit))"
+        )
+
+        // Cover-gradient text candidates: dark variant low-L, light variant
+        // high-L, and the light variant differs from the readability light
+        // variant (different target L / chroma cap).
+        let cgCandidates = SemanticPaletteSelfCheck.coverGradientTextCandidates(colorful)
+        guard
+            let cgDarkL = OKColor.nsColorToOKLCH(cgCandidates.darkOnLightBackground)?.l,
+            let cgLightL = OKColor.nsColorToOKLCH(cgCandidates.lightOnDarkBackground)?.l
+        else {
+            report.record("Phase 7: cover-gradient text candidates", false, "OKLCH nil")
+            return
+        }
+        let cgOk = cgDarkL < 0.50 && cgLightL > 0.80
+        report.record(
+            "Phase 7: cover-gradient text candidates L split", cgOk,
+            "darkL=\(format(cgDarkL)) lightL=\(format(cgLightL))"
+        )
+    }
+
+    // MARK: - Phase 7.1 - RenderedBackdropReadability local engine
+
+    /// Build a synthetic sRGB CGImage from a per-pixel fill closure. Buffer
+    /// row 0 is the top scanline, matching the map's top-left convention.
+    private static func makeReadabilityTestImage(
+        width: Int,
+        height: Int,
+        fill: (_ col: Int, _ row: Int) -> (UInt8, UInt8, UInt8)
+    ) -> CGImage? {
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        for row in 0..<height {
+            for col in 0..<width {
+                let (r, g, b) = fill(col, row)
+                let p = (row * width + col) * 4
+                pixels[p] = r
+                pixels[p + 1] = g
+                pixels[p + 2] = b
+                pixels[p + 3] = 255
+            }
+        }
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let provider = CGDataProvider(data: Data(pixels) as CFData),
+              let image = CGImage(
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bitsPerPixel: 32,
+                bytesPerRow: width * 4,
+                space: space,
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider,
+                decode: nil,
+                shouldInterpolate: false,
+                intent: .defaultIntent
+              ) else {
+            return nil
+        }
+        return image
+    }
+
+    private static func readabilityDecision(
+        dark: NSColor,
+        light: NSColor,
+        mapsRegions: [(map: RenderedBackdropReadabilityMap, regions: [NormalizedReadabilityRegion])]
+    ) -> LocalForegroundDecision {
+        RenderedBackdropReadability.decide(
+            darkForeground: dark,
+            lightForeground: light,
+            samples: mapsRegions
+        )
+    }
+
+    /// Synthetic map + contrast-decision coverage (plan section 11.2).
+    private static func checkRenderedBackdropReadabilityMap(_ report: inout CheckReport) {
+        let darkInk = NSColor(deviceRed: 0.12, green: 0.12, blue: 0.12, alpha: 1)
+        let lightInk = NSColor(deviceRed: 0.96, green: 0.96, blue: 0.96, alpha: 1)
+        let side = 96
+        func fullRegion() -> NormalizedReadabilityRegion {
+            NormalizedReadabilityRegion(x: 0, y: 0, width: 1, height: 1)
+        }
+        func leftRegion() -> NormalizedReadabilityRegion {
+            NormalizedReadabilityRegion(x: 0, y: 0, width: 0.5, height: 1)
+        }
+        func rightRegion() -> NormalizedReadabilityRegion {
+            NormalizedReadabilityRegion(x: 0.5, y: 0, width: 0.5, height: 1)
+        }
+        func topRegion() -> NormalizedReadabilityRegion {
+            NormalizedReadabilityRegion(x: 0, y: 0, width: 1, height: 0.5)
+        }
+        func bottomRegion() -> NormalizedReadabilityRegion {
+            NormalizedReadabilityRegion(x: 0, y: 0.5, width: 1, height: 0.5)
+        }
+
+        // All white -> dark foreground.
+        guard let whiteImage = makeReadabilityTestImage(width: side, height: side, fill: { _, _ in (245, 245, 245) }),
+              let whiteMap = RenderedBackdropReadabilityMap.make(from: whiteImage) else {
+            report.record("Phase 7.1: map build", false, "white image/map nil")
+            return
+        }
+        let whiteDecision = readabilityDecision(dark: darkInk, light: lightInk, mapsRegions: [(whiteMap, [fullRegion()])])
+
+        // All black -> light foreground.
+        guard let blackImage = makeReadabilityTestImage(width: side, height: side, fill: { _, _ in (10, 10, 10) }),
+              let blackMap = RenderedBackdropReadabilityMap.make(from: blackImage) else {
+            report.record("Phase 7.1: map build", false, "black image/map nil")
+            return
+        }
+        let blackDecision = readabilityDecision(dark: darkInk, light: lightInk, mapsRegions: [(blackMap, [fullRegion()])])
+
+        // Left white / right black. Region on left -> dark; region on right -> light.
+        guard let splitImage = makeReadabilityTestImage(width: side, height: side, fill: { col, _ in
+            col < side / 2 ? (245, 245, 245) : (10, 10, 10)
+        }), let splitMap = RenderedBackdropReadabilityMap.make(from: splitImage) else {
+            report.record("Phase 7.1: map build", false, "split image/map nil")
+            return
+        }
+        let leftDecision = readabilityDecision(dark: darkInk, light: lightInk, mapsRegions: [(splitMap, [leftRegion()])])
+        let rightDecision = readabilityDecision(dark: darkInk, light: lightInk, mapsRegions: [(splitMap, [rightRegion()])])
+
+        // Top white / bottom black. Verifies top-left y orientation: a region
+        // in the top half should read bright (dark foreground), bottom half
+        // dark (light foreground). A y-flip would swap these.
+        guard let vSplitImage = makeReadabilityTestImage(width: side, height: side, fill: { _, row in
+            row < side / 2 ? (245, 245, 245) : (10, 10, 10)
+        }), let vSplitMap = RenderedBackdropReadabilityMap.make(from: vSplitImage) else {
+            report.record("Phase 7.1: map build", false, "v-split image/map nil")
+            return
+        }
+        let topDecision = readabilityDecision(dark: darkInk, light: lightInk, mapsRegions: [(vSplitMap, [topRegion()])])
+        let bottomDecision = readabilityDecision(dark: darkInk, light: lightInk, mapsRegions: [(vSplitMap, [bottomRegion()])])
+
+        let orientationOk = whiteDecision.polarity == .darkOnLightBackground
+            && blackDecision.polarity == .lightOnDarkBackground
+            && leftDecision.polarity == .darkOnLightBackground
+            && rightDecision.polarity == .lightOnDarkBackground
+            && topDecision.polarity == .darkOnLightBackground
+            && bottomDecision.polarity == .lightOnDarkBackground
+        report.record(
+            "Phase 7.1: map polarity + top-left orientation", orientationOk,
+            "white=\(whiteDecision.polarity.rawValue) black=\(blackDecision.polarity.rawValue) left=\(leftDecision.polarity.rawValue) right=\(rightDecision.polarity.rawValue) top=\(topDecision.polarity.rawValue) bottom=\(bottomDecision.polarity.rawValue)"
+        )
+
+        // Two regions, one bright one dark, must take the WORST per candidate
+        // (min across regions), not an average. Dark ink fails on the black
+        // half; light ink fails on the white half - so both worst-case scores
+        // collapse below the floor and light wins the fallback tie.
+        let worstDecision = readabilityDecision(dark: darkInk, light: lightInk, mapsRegions: [(splitMap, [leftRegion(), rightRegion()])])
+        let worstOk = worstDecision.polarity == .lightOnDarkBackground
+            && worstDecision.darkForegroundRobustContrast < 3.0
+            && worstDecision.lightForegroundRobustContrast < 3.0
+        report.record(
+            "Phase 7.1: worst-region not average", worstOk,
+            "polarity=\(worstDecision.polarity.rawValue) dark=\(format(worstDecision.darkForegroundRobustContrast)) light=\(format(worstDecision.lightForegroundRobustContrast)) reason=\(worstDecision.reason.rawValue)"
+        )
+
+        // Two maps (e.g. normal + hover), one dark one bright, must take the
+        // worst map.
+        let multiMapDecision = readabilityDecision(
+            dark: darkInk, light: lightInk,
+            mapsRegions: [
+                (whiteMap, [fullRegion()]),
+                (blackMap, [fullRegion()])
+            ]
+        )
+        let multiMapOk = multiMapDecision.polarity == .lightOnDarkBackground
+        report.record(
+            "Phase 7.1: worst-map across backgrounds", multiMapOk,
+            "polarity=\(multiMapDecision.polarity.rawValue) dark=\(format(multiMapDecision.darkForegroundRobustContrast)) light=\(format(multiMapDecision.lightForegroundRobustContrast))"
+        )
+
+        // Insufficient sample count: a tiny region must yield no valid samples
+        // (noValidSamples fallback).
+        let tinyRegion = NormalizedReadabilityRegion(x: 0, y: 0, width: 0.02, height: 0.02)
+        let tinySample = whiteMap.sample(region: tinyRegion)
+        let tinyOk = tinySample == nil
+        report.record(
+            "Phase 7.1: undersized region rejected", tinyOk,
+            "tinySampleNil=\(tinySample == nil)"
+        )
+
+        // p10 boundary: 90% white + 10% black. The dark candidate's p10
+        // contrast should still be high (only 10% of pixels are low-contrast),
+        // so dark wins; light's p10 is dragged down by the 10% black.
+        guard let p10Image = makeReadabilityTestImage(width: side, height: side, fill: { col, _ in
+            // Leftmost 10% columns black, rest white.
+            col < Int(Double(side) * 0.10) ? (10, 10, 10) : (245, 245, 245)
+        }), let p10Map = RenderedBackdropReadabilityMap.make(from: p10Image) else {
+            report.record("Phase 7.1: p10 boundary", false, "image/map nil")
+            return
+        }
+        let p10Decision = readabilityDecision(dark: darkInk, light: lightInk, mapsRegions: [(p10Map, [fullRegion()])])
+        // ~10% dark pixels hurt light ink (low contrast on black) more than
+        // dark ink (still high contrast on the 90% white). With the advantage
+        // bias, dark should win here.
+        let p10Ok = p10Decision.polarity == .darkOnLightBackground
+        report.record(
+            "Phase 7.1: p10 robust contrast boundary", p10Ok,
+            "polarity=\(p10Decision.polarity.rawValue) dark=\(format(p10Decision.darkForegroundRobustContrast)) light=\(format(p10Decision.lightForegroundRobustContrast)) reason=\(p10Decision.reason.rawValue)"
+        )
+    }
+
+    /// Aspect-fill mapping coverage (plan section 7.2): equal aspect, horizontal
+    /// crop (leading), vertical crop (center), and leading alignment offset.
+    private static func checkRenderedBackdropReadabilityAspectFill(_ report: inout CheckReport) {
+        // Equal aspect ratio: full view maps to full image.
+        let equal = AspectFillReadabilityMapping.map(
+            viewRect: CGRect(x: 0, y: 0, width: 100, height: 100),
+            viewSize: CGSize(width: 100, height: 100),
+            imageSize: CGSize(width: 100, height: 100),
+            horizontalAlignment: .leading,
+            verticalAlignment: .center
+        )
+        let equalOk = equal != nil
+            && abs(equal!.x) < 0.001 && abs(equal!.y) < 0.001
+            && abs(equal!.width - 1) < 0.001 && abs(equal!.height - 1) < 0.001
+
+        // View narrower than image aspect (taller view): horizontal overflow,
+        // leading-aligned. The visible image x stays [0, viewW/scaledW].
+        // image 200x100, view 100x100 -> scale = max(0.5, 1.0) = 1.0,
+        // scaledW=200, scaledH=100. offsetX=0 (leading). A view rect spanning
+        // x=[0,100] maps to image x=[0,100]/200 = [0, 0.5].
+        let hCrop = AspectFillReadabilityMapping.map(
+            viewRect: CGRect(x: 0, y: 0, width: 100, height: 100),
+            viewSize: CGSize(width: 100, height: 100),
+            imageSize: CGSize(width: 200, height: 100),
+            horizontalAlignment: .leading,
+            verticalAlignment: .center
+        )
+        let hCropOk = hCrop != nil
+            && abs(hCrop!.x) < 0.001
+            && abs(hCrop!.width - 0.5) < 0.01
+
+        // View shorter than image aspect (wider view): vertical overflow,
+        // center-aligned. image 100x200, view 100x100 -> scale = max(1.0, 0.5)=1.0,
+        // scaledH=200, offsetY=(100-200)/2 = -50. A view rect y=[0,100] maps to
+        // image y=[0-(-50)]/200 = [50,150]/200 = [0.25, 0.75].
+        let vCrop = AspectFillReadabilityMapping.map(
+            viewRect: CGRect(x: 0, y: 0, width: 100, height: 100),
+            viewSize: CGSize(width: 100, height: 100),
+            imageSize: CGSize(width: 100, height: 200),
+            horizontalAlignment: .leading,
+            verticalAlignment: .center
+        )
+        let vCropOk = vCrop != nil
+            && abs(vCrop!.y - 0.25) < 0.01
+            && abs(vCrop!.height - 0.5) < 0.01
+
+        // Leading vs center horizontal alignment produce different x offsets.
+        let center = AspectFillReadabilityMapping.map(
+            viewRect: CGRect(x: 0, y: 0, width: 100, height: 100),
+            viewSize: CGSize(width: 100, height: 100),
+            imageSize: CGSize(width: 200, height: 100),
+            horizontalAlignment: .center,
+            verticalAlignment: .center
+        )
+        let centerOk = center != nil
+            && abs(center!.x - 0.25) < 0.01
+            && abs(center!.width - 0.5) < 0.01
+
+        report.record(
+            "Phase 7.1: aspect-fill mapping", equalOk && hCropOk && vCropOk && centerOk,
+            "equal=\(equalOk) hCrop=\(hCropOk) vCrop=\(vCropOk) center=\(centerOk)"
+        )
+    }
+
+    /// Local-polarity routing (plan section 11.3): only the Cover Blur
+    /// clear/normal branch consumes `localArtworkPolarity`; every other skin
+    /// and the Cover Blur regular material ignore it.
+    private static func checkFullscreenLocalPolarityRouting(_ report: inout CheckReport) {
+        guard let brightAnalysis = analyse(side: 32, fill: (245, 196, 120, 255)),
+              let darkAnalysis = analyse(side: 32, fill: (18, 24, 42, 255)) else {
+            report.record("Phase 7.1: local polarity routing", false, "analysis nil")
+            return
+        }
+        let fallbackAccent = NSColor(deviceRed: 0.30, green: 0.48, blue: 0.95, alpha: 1)
+        let brightPalette = foregroundStrategyPalette(
+            analysis: brightAnalysis, scheme: .light, fallbackAccent: fallbackAccent
+        )
+        let darkPalette = foregroundStrategyPalette(
+            analysis: darkAnalysis, scheme: .dark, fallbackAccent: fallbackAccent
+        )
+
+        // Cover Blur clear + local dark -> dark role, even on a dark cover
+        // whose global gate is light.
+        let coverBlurLocalDark = FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: darkPalette, localArtworkPolarity: .darkOnLightBackground,
+            hasArtworkThemeColor: true, skinID: "fullscreen.coverGradientBlur",
+            colorScheme: .dark, materialStyle: .clear, fullscreenArtBackgroundEnabled: false
+        )
+        // Cover Blur clear + local light -> light role, even on a bright cover
+        // whose global gate is dark.
+        let coverBlurLocalLight = FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: brightPalette, localArtworkPolarity: .lightOnDarkBackground,
+            hasArtworkThemeColor: true, skinID: "fullscreen.coverGradientBlur",
+            colorScheme: .light, materialStyle: .clear, fullscreenArtBackgroundEnabled: false
+        )
+        // Cover Blur normal + local -> reads local, glass scheme follows.
+        let coverBlurNormalLocalDark = FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: brightPalette, localArtworkPolarity: .darkOnLightBackground,
+            hasArtworkThemeColor: true, skinID: "fullscreen.coverGradientBlur",
+            colorScheme: .light, materialStyle: .normal, fullscreenArtBackgroundEnabled: false
+        )
+        // Cover Blur regular material -> ignores local (falls through).
+        let coverBlurRegular = FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: brightPalette, localArtworkPolarity: .darkOnLightBackground,
+            hasArtworkThemeColor: true, skinID: "fullscreen.coverGradientBlur",
+            colorScheme: .light, materialStyle: .regular, fullscreenArtBackgroundEnabled: false
+        )
+        // Apple Style -> ignores local, fixed light.
+        let apple = FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: brightPalette, localArtworkPolarity: .darkOnLightBackground,
+            hasArtworkThemeColor: true, skinID: "appleStyle",
+            colorScheme: .light, materialStyle: .normal, fullscreenArtBackgroundEnabled: true
+        )
+        // coverLed light -> ignores local, chrome dark.
+        let coverLedLight = FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: brightPalette, localArtworkPolarity: .darkOnLightBackground,
+            hasArtworkThemeColor: true, skinID: "coverLed",
+            colorScheme: .light, materialStyle: .normal, fullscreenArtBackgroundEnabled: false
+        )
+        // artistic dark -> ignores local, night light.
+        let artisticDark = FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: darkPalette, localArtworkPolarity: .darkOnLightBackground,
+            hasArtworkThemeColor: true, skinID: "fullscreen.artisticBackground",
+            colorScheme: .dark, materialStyle: .regular, fullscreenArtBackgroundEnabled: true
+        )
+
+        let ok = coverBlurLocalDark.role == .coverBlurDarkForeground
+            && coverBlurLocalLight.role == .coverBlurLightForeground
+            && coverBlurNormalLocalDark.role == .coverBlurDarkForeground
+            && coverBlurRegular.role == .chromeLightForeground
+            && apple.role == .appleFixedLight
+            && coverLedLight.role == .chromeDarkForeground
+            && artisticDark.role == .artisticNightLightForeground
+        report.record(
+            "Phase 7.1: local polarity routing", ok,
+            "cbLocalDark=\(coverBlurLocalDark.role.rawValue) cbLocalLight=\(coverBlurLocalLight.role.rawValue) cbNormal=\(coverBlurNormalLocalDark.role.rawValue) cbRegular=\(coverBlurRegular.role.rawValue) apple=\(apple.role.rawValue) ledLight=\(coverLedLight.role.rawValue) artDark=\(artisticDark.role.rawValue)"
+        )
+
+        // Candidate profiles: dark candidate low-L, light candidate high-L,
+        // and the dark candidate's spectrum flag is set while light's is not.
+        let candidates = FullscreenMiniPlayerForegroundStrategy.artworkCandidateProfiles(palette: brightPalette)
+        let darkL = OKColor.nsColorToOKLCH(candidates.dark.primary)?.l ?? 1
+        let lightL = OKColor.nsColorToOKLCH(candidates.light.primary)?.l ?? 0
+        let candidateOk = darkL < 0.50
+            && lightL > 0.80
+            && candidates.dark.spectrumUsesDarkForeground
+            && !candidates.light.spectrumUsesDarkForeground
+            && !candidates.dark.useScreenBlend
+            && candidates.light.useScreenBlend
+        report.record(
+            "Phase 7.1: cover blur candidate profiles", candidateOk,
+            "darkL=\(format(darkL)) lightL=\(format(lightL)) darkSpec=\(candidates.dark.spectrumUsesDarkForeground) lightScreen=\(candidates.light.useScreenBlend)"
+        )
+    }
+
+    /// Queue text palette is decoupled from the bottom controls' local polarity
+    /// (plan section 8.7): Cover Blur uses the global gate; other skins keep
+    /// fixed behaviour.
+    private static func checkFullscreenQueueDecoupled(_ report: inout CheckReport) {
+        guard let brightAnalysis = analyse(side: 32, fill: (245, 196, 120, 255)) else {
+            report.record("Phase 7.1: queue decoupled", false, "analysis nil")
+            return
+        }
+        let fallbackAccent = NSColor(deviceRed: 0.30, green: 0.48, blue: 0.95, alpha: 1)
+        let palette = foregroundStrategyPalette(
+            analysis: brightAnalysis, scheme: .light, fallbackAccent: fallbackAccent
+        )
+        // Bright cover -> global usesDarkForeground = true -> Cover Blur queue
+        // bright = false (dark text). A local-light polarity must NOT flip this.
+        let coverBlurQueue = FullscreenMiniPlayerForegroundStrategy.resolveQueueUsesBrightText(
+            palette: palette, skinID: "fullscreen.coverGradientBlur",
+            colorScheme: .light, fullscreenArtBackgroundEnabled: false
+        )
+        let appleQueue = FullscreenMiniPlayerForegroundStrategy.resolveQueueUsesBrightText(
+            palette: palette, skinID: "appleStyle",
+            colorScheme: .light, fullscreenArtBackgroundEnabled: false
+        )
+        let ledLightQueue = FullscreenMiniPlayerForegroundStrategy.resolveQueueUsesBrightText(
+            palette: palette, skinID: "coverLed",
+            colorScheme: .light, fullscreenArtBackgroundEnabled: false
+        )
+        let ledDarkQueue = FullscreenMiniPlayerForegroundStrategy.resolveQueueUsesBrightText(
+            palette: palette, skinID: "coverLed",
+            colorScheme: .dark, fullscreenArtBackgroundEnabled: false
+        )
+        let ok = coverBlurQueue == false
+            && appleQueue == true
+            && ledLightQueue == false
+            && ledDarkQueue == true
+        report.record(
+            "Phase 7.1: queue decoupled from local polarity", ok,
+            "coverBlur=\(coverBlurQueue) apple=\(appleQueue) ledLight=\(ledLightQueue) ledDark=\(ledDarkQueue)"
         )
     }
 
@@ -3681,6 +4251,8 @@ nonisolated enum ColorSystemSelfCheck {
             coverGradientDominant: fallbackAccent,
             coverGradientText: readability.foregroundPrimary,
             readabilityProfile: readability,
+            readabilityCandidates: SemanticPaletteSelfCheck.readabilityCandidates(analysis),
+            coverGradientTextCandidates: SemanticPaletteSelfCheck.coverGradientTextCandidates(analysis),
             miniPlayerControl: control,
             appForeground: appForeground,
             lyrics: lyrics

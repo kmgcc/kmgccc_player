@@ -157,6 +157,11 @@ struct CoverGradientBlurBackgroundView: View {
     let dominantColor: NSColor?
     let config: CoverGradientBlurConfig
     let preferAdaptiveArtworkSizing: Bool
+    /// When non-nil, the view publishes a readability snapshot (with a
+    /// luminance map built from the final render) each time a render completes.
+    /// Only the fullscreen Cover Blur bridge sets this.
+    var readabilityPlacement: CoverGradientBlurReadabilityPlacement? = nil
+    var onReadabilitySnapshot: (@MainActor (CoverGradientBlurReadabilitySnapshot) -> Void)? = nil
 
     @State private var sourceCGImage: CGImage?
     @State private var renderedCGImage: CGImage?
@@ -169,7 +174,9 @@ struct CoverGradientBlurBackgroundView: View {
         artworkChecksum: UInt64,
         dominantColor: NSColor?,
         config: CoverGradientBlurConfig,
-        preferAdaptiveArtworkSizing: Bool = false
+        preferAdaptiveArtworkSizing: Bool = false,
+        readabilityPlacement: CoverGradientBlurReadabilityPlacement? = nil,
+        onReadabilitySnapshot: (@MainActor (CoverGradientBlurReadabilitySnapshot) -> Void)? = nil
     ) {
         self.artworkData = artworkData
         self.artworkImage = artworkImage
@@ -177,6 +184,8 @@ struct CoverGradientBlurBackgroundView: View {
         self.dominantColor = dominantColor
         self.config = config
         self.preferAdaptiveArtworkSizing = preferAdaptiveArtworkSizing
+        self.readabilityPlacement = readabilityPlacement
+        self.onReadabilitySnapshot = onReadabilitySnapshot
     }
 
     private var resolvedArtworkChecksum: UInt64 {
@@ -316,7 +325,10 @@ struct CoverGradientBlurBackgroundView: View {
                             preferAdaptiveArtworkSizing: preferAdaptiveArtworkSizing
                         )
                     else { return nil }
-                    return CoverGradientBlurRenderedImageBox(image: image)
+                    // Build the readability map from the final render in the
+                    // same detached task - never on the main thread.
+                    let map = RenderedBackdropReadabilityMap.make(from: image)
+                    return CoverGradientBlurRenderedImageBox(image: image, readabilityMap: map)
                 }
             }.value
         }
@@ -328,10 +340,36 @@ struct CoverGradientBlurBackgroundView: View {
                 renderedImage: renderedImage,
                 forKey: key
             )
+            publishReadabilitySnapshot(
+                image: renderedImage,
+                map: renderedBox?.readabilityMap,
+                forKey: key
+            )
         } else {
             updateSourceImage(preparedArtwork, forKey: key)
             updateRenderedImage(nil, forKey: key)
         }
+    }
+
+    @MainActor
+    private func publishReadabilitySnapshot(
+        image: CGImage,
+        map: RenderedBackdropReadabilityMap?,
+        forKey key: RenderKey
+    ) {
+        guard let placement = readabilityPlacement,
+              let map,
+              let onReadabilitySnapshot else { return }
+        // Stale-render guard: only publish if this render is still current.
+        guard key == renderKey else { return }
+        let snapshot = CoverGradientBlurReadabilitySnapshot(
+            artworkChecksum: resolvedArtworkChecksum,
+            renderKey: key.cacheKey,
+            canvasPixelSize: CGSize(width: image.width, height: image.height),
+            placement: placement,
+            readabilityMap: map
+        )
+        onReadabilitySnapshot(snapshot)
     }
 
     private func updateCurrentSize(_ size: CGSize) {
@@ -1430,10 +1468,12 @@ enum CoverGradientBlurRenderer {
 
 private final class CoverGradientBlurRenderedImageBox: NSObject, @unchecked Sendable {
     nonisolated let image: CGImage
+    nonisolated let readabilityMap: RenderedBackdropReadabilityMap?
     nonisolated let cost: Int
 
-    nonisolated init(image: CGImage) {
+    nonisolated init(image: CGImage, readabilityMap: RenderedBackdropReadabilityMap?) {
         self.image = image
+        self.readabilityMap = readabilityMap
         self.cost = image.bytesPerRow * image.height
         super.init()
     }
