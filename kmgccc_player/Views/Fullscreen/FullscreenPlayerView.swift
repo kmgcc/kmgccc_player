@@ -1009,7 +1009,16 @@ struct FullscreenPlayerView: View {
                 + coverBlurLegacyLyricsRightShift
             minReadableLyricsWidth = legacyLayout.lyricsWidth
         } else {
-            baseLyricsLeadingX = hostLayout.lyricsLeadingX
+            // Mirror the cover group left-bias (Classic / Rotating Cover /
+            // Cassette / AppleStyle) so cover + visualizer + lyrics translate
+            // together without altering their relative spacing. This branch
+            // already excludes the cover-blur skin (which uses the legacy
+            // layout above). `groupLeftBias` is subtracted here to match the
+            // artwork area's `-groupLeftShift` offset.
+            let groupLeftShift: CGFloat = isShowingRightPanel
+                ? FullscreenCoverHorizontalOffset.groupLeftBias
+                : 0
+            baseLyricsLeadingX = hostLayout.lyricsLeadingX - groupLeftShift
             minReadableLyricsWidth = hostLayout.lyricsWidth
         }
 
@@ -2092,6 +2101,16 @@ struct FullscreenPlayerView: View {
 
         let artworkScale = isCoverBlurFullscreenSkin ? 1.0 : settings.fullscreenArtworkScale
 
+        // Shared group left-bias for cover + visualizer + overlay. The lyrics
+        // column (`fullscreenLyricsLayer`) subtracts the same value so the
+        // whole group translates together without changing relative spacing.
+        // Cover-blur is excluded (its artwork is `EmptyView`, cover lives in
+        // the background). Only active when the lyrics column is visible.
+        let groupLeftShift: CGFloat =
+            (!isCoverBlurFullscreenSkin && context.lyricsVisible)
+                ? FullscreenCoverHorizontalOffset.groupLeftBias
+                : 0
+
         ZStack {
             // Main artwork - using user configurable scale
             selectedSkin.makeArtwork(context: context)
@@ -2104,6 +2123,7 @@ struct FullscreenPlayerView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .offset(x: -groupLeftShift)
     }
 
     // MARK: - Lyrics Area (No Material Background)
