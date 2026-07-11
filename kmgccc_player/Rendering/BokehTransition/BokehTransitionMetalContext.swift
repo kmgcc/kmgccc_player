@@ -6,6 +6,7 @@
 import Metal
 import MetalKit
 import Foundation
+import CryptoKit
 import os
 
 struct BokehTransitionMetalManifest: Codable, Equatable, Sendable {
@@ -15,6 +16,7 @@ struct BokehTransitionMetalManifest: Codable, Equatable, Sendable {
     let composeUniformStride: Int
     let bokehUniformStride: Int
     let entryPoints: [String]
+    let librarySHA256: String
 }
 
 /// Contract shared by the public Swift boundary and the private enhancement
@@ -117,7 +119,10 @@ final class BokehTransitionMetalContext {
         }
 
         do {
-            let manifest = try Self.loadAndValidateManifest(from: resource.manifestURL)
+            let manifest = try Self.loadAndValidateManifest(
+                from: resource.manifestURL,
+                libraryURL: resource.libraryURL
+            )
             let library = try device.makeLibrary(URL: resource.libraryURL)
 
             let composeFunction = try Self.requiredFunction(
@@ -213,7 +218,10 @@ final class BokehTransitionMetalContext {
         return nil
     }
 
-    private static func loadAndValidateManifest(from url: URL) throws -> BokehTransitionMetalManifest {
+    private static func loadAndValidateManifest(
+        from url: URL,
+        libraryURL: URL
+    ) throws -> BokehTransitionMetalManifest {
         let data = try Data(contentsOf: url)
         let manifest = try JSONDecoder().decode(BokehTransitionMetalManifest.self, from: data)
 
@@ -234,6 +242,13 @@ final class BokehTransitionMetalContext {
             of: Set(manifest.entryPoints)
         ) else {
             throw BokehTransitionMetalError.invalidManifest("required entry point missing")
+        }
+        let libraryData = try Data(contentsOf: libraryURL)
+        let actualHash = SHA256.hash(data: libraryData)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        guard manifest.librarySHA256.lowercased() == actualHash else {
+            throw BokehTransitionMetalError.invalidManifest("library hash mismatch")
         }
         return manifest
     }

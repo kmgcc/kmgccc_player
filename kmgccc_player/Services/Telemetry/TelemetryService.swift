@@ -370,25 +370,46 @@ final class TelemetryService: NSObject {
         }
     }
 
+    /// If any queued events carry a stale install_id (from before a 409 conflict
+    /// reset), re-tag them with the current install_id and persist the change.
+    /// Returns the events to upload. No-op when IDs already match.
+    private func rewriteInstallIDIfNeeded(events: [TelemetryQueuedEvent], to clientID: String) -> [TelemetryQueuedEvent] {
+        guard events.contains(where: { $0.installID != clientID }) else { return events }
+        let staleCount = events.filter { $0.installID != clientID }.count
+        Log.info("[Telemetry] re-tagging \(staleCount)/\(events.count) events to install_id=\(clientID.prefix(8))", category: .telemetry)
+        var rewritten = events
+        for i in rewritten.indices {
+            rewritten[i].installID = clientID
+        }
+        queue.replaceAll(rewritten)
+        return rewritten
+    }
+
     private func flushQueue() {
         guard consentStore.isEnabled, uploadTask == nil else { return }
         let events = queue.pendingEvents()
         guard !events.isEmpty else { return }
 
         let device = deviceSnapshot
-        let clientID = identityStore.installID
         uploadTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let canSign = await self.ensureRegistered()
-                Log.info("[Telemetry] flushQueue events=\(events.count) canSign=\(canSign)", category: .telemetry)
+                // Re-read install_id AFTER ensureRegistered, because a 409 conflict
+                // may have reset it. Events queued before the reset still carry the
+                // old ID and must be re-tagged, otherwise the server rejects the
+                // signed batch ("Event install_id does not match signer") or the
+                // new install record shows "unknown" (events land on the old ID).
+                let clientID = self.identityStore.installID
+                let eventsToUpload = self.rewriteInstallIDIfNeeded(events: events, to: clientID)
+                Log.info("[Telemetry] flushQueue events=\(eventsToUpload.count) canSign=\(canSign)", category: .telemetry)
                 let response = try await uploader.upload(
-                    events: events, device: device,
+                    events: eventsToUpload, device: device,
                     signer: canSign ? self.signer : nil,
                     clientID: canSign ? clientID : nil)
                 try Task.checkCancellation()
                 await MainActor.run {
-                    self.applyUploadResponse(response, uploadedEvents: events)
+                    self.applyUploadResponse(response, uploadedEvents: eventsToUpload)
                     self.uploadTask = nil
                     if !self.queue.pendingEvents().isEmpty {
                         self.flushQueue()
@@ -416,13 +437,15 @@ final class TelemetryService: NSObject {
         // Sign only if registration already succeeded in a prior run; otherwise the
         // upload goes out unsigned and the server compat path accepts it.
         let isRegistered = UserDefaults.standard.integer(forKey: TelemetryDefaults.signingRegisteredKey) >= 1
-        Log.info("[Telemetry] flushQueueSynchronouslyForTermination events=\(events.count) isRegistered=\(isRegistered) willSign=\(isRegistered)", category: .telemetry)
+        let clientID = identityStore.installID
+        let eventsToUpload = rewriteInstallIDIfNeeded(events: events, to: clientID)
+        Log.info("[Telemetry] flushQueueSynchronouslyForTermination events=\(eventsToUpload.count) isRegistered=\(isRegistered) willSign=\(isRegistered)", category: .telemetry)
         do {
             let response = try uploader.uploadSynchronously(
-                events: events, timeout: 3, device: deviceSnapshot,
+                events: eventsToUpload, timeout: 3, device: deviceSnapshot,
                 signer: isRegistered ? signer : nil,
-                clientID: isRegistered ? identityStore.installID : nil)
-            applyUploadResponse(response, uploadedEvents: events)
+                clientID: isRegistered ? clientID : nil)
+            applyUploadResponse(response, uploadedEvents: eventsToUpload)
         } catch {
             Log.warning("[Telemetry] termination upload failed: \(error)", category: .telemetry)
         }
@@ -433,19 +456,20 @@ final class TelemetryService: NSObject {
         let events = queue.pendingEvents().filter { $0.eventType == "app_install_seen" }
         guard !events.isEmpty else { return }
 
-        let clientID = identityStore.installID
         uploadTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let canSign = await self.ensureRegistered()
+                let clientID = self.identityStore.installID
+                let eventsToUpload = self.rewriteInstallIDIfNeeded(events: events, to: clientID)
                 let response = try await uploader.upload(
-                    events: events,
+                    events: eventsToUpload,
                     signer: canSign ? self.signer : nil,
                     clientID: canSign ? clientID : nil
                 )
                 try Task.checkCancellation()
                 await MainActor.run {
-                    self.applyUploadResponse(response, uploadedEvents: events)
+                    self.applyUploadResponse(response, uploadedEvents: eventsToUpload)
                     self.uploadTask = nil
                 }
             } catch {
@@ -1014,7 +1038,7 @@ private enum TelemetryJSONValue: Codable, Sendable {
 private struct TelemetryQueuedEvent: Codable, Sendable {
     let eventID: String
     let occurredAt: Date
-    let installID: String
+    var installID: String
     let sessionID: String?
     let eventType: String
     let appVersion: String
@@ -1073,6 +1097,12 @@ private final class TelemetryLocalQueue {
 
     func keepOnlyInstallSeenEvents() {
         save(pendingEvents().filter { $0.eventType == "app_install_seen" })
+    }
+
+    /// Replaces all queued events. Used when the install_id changes (e.g. 409
+    /// conflict reset) and queued events need to be re-tagged with the new ID.
+    func replaceAll(_ events: [TelemetryQueuedEvent]) {
+        save(events)
     }
 
     private func save(_ events: [TelemetryQueuedEvent]) {

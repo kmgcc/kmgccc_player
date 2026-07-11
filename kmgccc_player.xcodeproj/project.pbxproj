@@ -27,7 +27,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
-				Rendering/BokehTransition/BokehTransitionShader.metal,
 			);
 			target = 935118912F3231C500766A5F /* kmgccc_player */;
 		};
@@ -124,6 +123,7 @@
 				9396ADAC2FA12C0100000003 /* Embed MediaRemoteAdapter framework */,
 				93D91A122FA5000000010001 /* Copy QQMusic helper */,
 				93D91A132FA5000000010002 /* Copy SACAD helper */,
+				93D91A142FA5000000010003 /* Optional private enhancement resources */,
 			);
 			buildRules = (
 			);
@@ -265,6 +265,30 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
 			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/kmgccc_player/Resources/Tools/sacad/sacad\"\nDST_DIR=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools/sacad\"\nDST=\"${DST_DIR}/sacad\"\nif [ ! -x \"${SRC}\" ]; then\n  echo \"error: SACAD arm64 binary missing or not executable: ${SRC}\"\n  exit 1\nfi\nmkdir -p \"${DST_DIR}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}\" \"${DST}\"\n/usr/bin/xattr -cr \"${DST}\" 2>/dev/null || true\nchmod 755 \"${DST}\"\n/usr/bin/codesign --force --sign - \"${DST}\" >/dev/null 2>&1 || true\n";
+		};
+		93D91A142FA5000000010003 /* Optional private enhancement resources */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/scripts/xcode_optional_private_resources.sh",
+				"$(PRIVATE_REPO_PATH)",
+			);
+			name = "Optional private enhancement resources";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/BKArt.bundle",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/BokehTransitionResources.bundle",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/PrivateArtRuntime.bundle",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -euo pipefail\n\"${PROJECT_DIR}/scripts/xcode_optional_private_resources.sh\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

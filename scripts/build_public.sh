@@ -4,7 +4,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIGURATION="${CONFIGURATION:-Release}"
-DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-${TMPDIR:-/tmp}/kmgccc-player-public-$CONFIGURATION}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
 
 if (($# > 0)); then
@@ -15,6 +14,7 @@ if (($# > 0)); then
     echo "error: unexpected argument: $1" >&2
     exit 2
 fi
+DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-${TMPDIR:-/tmp}/kmgccc-player-public-$CONFIGURATION}"
 case "$CONFIGURATION" in
     Debug|Release) ;;
     *) echo "error: public configuration must be Debug or Release" >&2; exit 2 ;;
@@ -30,6 +30,7 @@ xcodebuild \
     -configuration "$CONFIGURATION" \
     -destination 'platform=macOS,arch=arm64' \
     -derivedDataPath "$DERIVED_DATA_PATH" \
+    PRIVATE_RESOURCE_MODE=disabled \
     CODE_SIGNING_ALLOWED="${CODE_SIGNING_ALLOWED:-NO}" \
     build
 
@@ -38,6 +39,8 @@ xcodebuild \
 if find "$APP" \( -type f -o -type d \) \( \
     -iname '*.metal' -o -name 'EncryptedArtAssets' -o -name 'PrivateArtSources' \
     -o -name 'BKArt.bundle' -o -name 'BKThemes' \
+    -o -name 'BokehTransitionResources.bundle' -o -name 'PrivateArtRuntime.bundle' \
+    -o -iname '*.metallib' \
 \) -print -quit | grep -q .; then
     echo "error: public app contains private source or runtime resources" >&2
     exit 1
@@ -50,4 +53,3 @@ if [ -n "$OUTPUT_DIR" ]; then
     APP="$OUTPUT_DIR/kmgccc_player.app"
 fi
 printf '%s\n' "$APP"
-
