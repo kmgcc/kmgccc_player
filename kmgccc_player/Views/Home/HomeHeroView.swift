@@ -136,12 +136,13 @@ struct HomeHeroView: View {
     }
 
     private var heroHeight: CGFloat {
-        baseHeroHeight + wideExpansion * 56
+        baseHeroHeight + wideExpansion * 80
     }
 
     private var heroTopPadding: CGFloat {
         switch mode {
-        case .wide, .medium: return 36
+        case .wide:          return 36 + wideExpansion * 8
+        case .medium:        return 36
         case .compact:       return 28
         case .narrow:        return 24
         }
@@ -306,7 +307,7 @@ struct HomeHeroView: View {
     /// leading-aligned aspect-fill into normalized image regions.
     private var heroReadabilityRegions: [NormalizedReadabilityRegion] {
         let viewSize = CGSize(width: containerWidth, height: heroHeight)
-        let imageSize = CGSize(width: 1280, height: 380)
+        let imageSize = heroBackdropTargetSize
         let expansion = ColorSystemTokens.ReadabilityForeground.regionExpansionPoints
         var regions: [NormalizedReadabilityRegion] = []
 
@@ -461,12 +462,23 @@ struct HomeHeroView: View {
 
     /// Width the background renderer draws the artwork at (scale-to-height).
     /// Used to push the text content past the visible cover art.
+    /// Uses `heroHeight` so the square cover fills the full card height and
+    /// text/buttons stay in the blurred extension region.
     private var artworkLeadingWidth: CGFloat {
         guard artworkData != nil else { return 0 }
         if let img = coverImage {
-            return baseHeroHeight * (img.size.width / max(1, img.size.height))
+            return heroHeight * (img.size.width / max(1, img.size.height))
         }
-        return baseHeroHeight  // assume square while image is loading
+        return heroHeight  // assume square while image is loading
+    }
+
+    /// Dynamic backdrop render target size matching the actual card aspect
+    /// ratio so the cover area is not cropped by a mismatched fixed size.
+    private var heroBackdropTargetSize: CGSize {
+        let aspect = containerWidth / max(1, heroHeight)
+        let targetHeight: CGFloat = 380
+        let targetWidth = round(targetHeight * aspect)
+        return CGSize(width: max(380, targetWidth), height: targetHeight)
     }
 
     @ViewBuilder
@@ -860,10 +872,11 @@ struct HomeHeroView: View {
         variant: HomeHeroBackdropVariant
     ) async -> HomeHeroBackdropArtifact? {
         let config = heroBlurConfig(variant: variant)
-        let targetSize = CGSize(width: 1280, height: 380)
-        // Bumped to v7: the cache now stores a readability map alongside the
-        // image, so the local polarity pass never needs a main-thread re-read.
-        let cacheKey = "\(checksum)-1280x380-home-hero-\(variant.cacheKey)-v7" as NSString
+        let targetSize = heroBackdropTargetSize
+        let sizeTag = "\(Int(targetSize.width))x\(Int(targetSize.height))"
+        // Bumped to v8: target size is now dynamic (card aspect ratio) so the
+        // cache key includes the resolved size tag.
+        let cacheKey = "\(checksum)-\(sizeTag)-home-hero-\(variant.cacheKey)-v8" as NSString
 
         if let cached = HomeHeroBackdropCache.shared.artifact(for: cacheKey) {
             return cached
