@@ -11,3 +11,15 @@ LDDC_Fetch_Core/** linguist-vendored
 
 # External Python helper tools
 kmgccc_player/Resources/Tools/qqmusic-helper/** linguist-vendored
+
+# Keep accidental private inputs out of source archives. The release audit
+# still rejects these paths in clones and in reachable Git history.
+BKThemes/** export-ignore
+EncryptedArtAssets/** export-ignore
+PrivateArtSources/** export-ignore
+BKArt.bundle/** export-ignore
+kmgccc_player/Resources/BKArt.bundle/** export-ignore
+kmgccc_player/Rendering/BokehTransition/BokehTransitionShader.metal export-ignore
+kmgccc_player/Rendering/BokehTransition/*.metallib export-ignore
+scripts/encrypt_art_assets.swift export-ignore
+scripts/encrypted_asset_allowlist.json export-ignore

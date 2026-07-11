@@ -282,6 +282,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         let configuration = BokehTransitionConfig.load()
         let tier = preferredBokehTier(for: configuration)
         guard configuration.effect == .bokeh,
+              BokehTransitionMetalContext.shared.availability.isReady,
               let frames = BokehTransitionSourceFrames(
                 leading: leadingRenderedFrame,
                 centered: centeredRenderedFrame,
@@ -340,6 +341,14 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         guard configuration.effect == .bokeh else {
             return .gaussianFallback(reason: "selected in settings")
         }
+
+        let metalAvailability = BokehTransitionMetalContext.shared.availability
+        guard metalAvailability.isReady else {
+            return .gaussianFallback(
+                reason: metalAvailability.reason ?? "Bokeh enhancement unavailable"
+            )
+        }
+
         let tier = preferredBokehTier(for: configuration)
         guard let sourceSet = bokehPreparedSourceSet,
               sourceSet.identity.tier == tier else {

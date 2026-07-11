@@ -416,6 +416,17 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         }
         ringLock.unlock()  // Release lock ASAP
 
+        // 1b. Remove DC offset BEFORE metrics and windowing. Decoded music usually
+        // has negligible DC, but any residual offset would concentrate in bin 0
+        // and leak into the Sub band (20-60Hz), spuriously energizing the lowest
+        // capsule. vDSP mean + subtract over 2048 floats is a few microseconds.
+        var dcMean: Float = 0
+        vDSP_meanv(fftInput, 1, &dcMean, vDSP_Length(fftSize))
+        if dcMean != 0 {
+            var negDc = Float(-dcMean)
+            vDSP_vsadd(fftInput, 1, &negDc, &fftInput, 1, vDSP_Length(fftSize))
+        }
+
         // 2. Pre-calculate metrics (Time Domain).
         // Done BEFORE windowing so the envelope reflects the raw signal level.
         var rms: Float = 0

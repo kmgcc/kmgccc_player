@@ -57,6 +57,7 @@ final class SpectrumRecorder {
                 rms: data.rms,
                 peak: data.peak,
                 playerVolume: 1.0,
+                scheduling: (produced: 0, displayed: 0, coalesced: 0, pending: 0, frameAgeMs: 0),
                 dt: 1.0 / 30.0
             )
             let (led, audio) = ledProcessor.process(data: data)
