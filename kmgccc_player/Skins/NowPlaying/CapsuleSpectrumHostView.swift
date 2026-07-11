@@ -202,7 +202,18 @@ final class CapsuleSpectrumHostView: NSView {
     private static let settleHoldFrames = 4
     private static let velocityEpsilon: CGFloat = 0.0016
     private static let positionEpsilon: CGFloat = 0.0008
-    private static let renderFrameRateCap: Float = 60
+    /// Maximum display-link rate. 120 lets ProMotion screens render the spring
+    /// at full speed; on a 60Hz screen the display link is naturally capped at
+    /// 60 by the screen, so this is harmless. The 30Hz upstream sampling is
+    /// unchanged - only the spring interpolation/render rate rises. Tune down
+    /// (e.g. 60) to halve Core Animation commits on battery.
+    private var maxFrameRate: Float = 120
+    /// Per-bar position values committed in the last `renderHeights` pass. Used
+    /// to skip sub-pixel renders: at 120Hz the dominant per-frame cost is the
+    /// CATransaction commit, so when no bar moved enough to change its on-screen
+    /// height we skip the commit entirely. Bars still advance every frame; only
+    /// the layer write-back is gated.
+    private var lastRenderedPositions: [CGFloat] = []
     // Geometry is constant between resizes/config changes; cache it so the
     // per-frame path only rewrites each bar's height, not its full frame.
     private var cachedMetrics: CapsuleSpectrumMetrics?
@@ -396,7 +407,6 @@ final class CapsuleSpectrumHostView: NSView {
         dt = min(max(dt, 1.0 / 240.0), 1.0 / 15.0)
 
         advanceFollowers(dt: CGFloat(dt))
-        renderHeights()
 
         if followersSettled() {
             settledFrames += 1
@@ -408,11 +418,35 @@ final class CapsuleSpectrumHostView: NSView {
                     velocity[index] = 0
                 }
                 renderHeights()
+                lastRenderedPositions = position
                 pauseDisplayLink()
             }
         } else {
             settledFrames = 0
+            // Only commit a render when something visibly moved. At 120Hz the
+            // CATransaction commit is the dominant per-frame cost; skipping
+            // sub-pixel frames halves commits during gentle motion with no
+            // visible difference. Bars still advance every frame via the spring.
+            if shouldCommitRender() {
+                renderHeights()
+                lastRenderedPositions = position
+            }
         }
+    }
+
+    /// True when at least one bar moved enough since the last committed render
+    /// to change its on-screen height. Gates `renderHeights` so a 120Hz display
+    /// link stays smooth without doubling Core Animation commits on quiet frames.
+    private func shouldCommitRender() -> Bool {
+        guard let metrics = cachedMetrics, lastRenderedPositions.count == count else { return true }
+        let span = metrics.maxBarHeight - metrics.minHeight
+        // Sub-pixel threshold: below this the height delta is invisible.
+        let pixelThreshold: CGFloat = 0.15
+        let valueThreshold = span > 0 ? pixelThreshold / span : 0
+        for index in 0..<count {
+            if abs(position[index] - lastRenderedPositions[index]) > valueThreshold { return true }
+        }
+        return false
     }
 
     private func advanceFollowers(dt: CGFloat) {
@@ -510,17 +544,21 @@ final class CapsuleSpectrumHostView: NSView {
     private func ensureDisplayLink() {
         guard frameLink == nil, window != nil else { return }
         let link = displayLink(target: self, selector: #selector(handleFrame(_:)))
-        // Cap at 60Hz. The spring's motion is well below ~8Hz, so 60Hz samples it
-        // ~8× — visually identical to 120Hz — but on a ProMotion display this
-        // halves the per-frame Core Animation commits (the dominant cost).
+        // Allow the display link to run up to `maxFrameRate` (120 on ProMotion)
+        // so the spring interpolation is silk-smooth on high-end displays, but
+        // never drop below 60 while active - the spring's overshoot needs dense
+        // sampling to look right. On a 60Hz screen the maximum is harmlessly
+        // clamped by the screen's own refresh rate. The 30Hz upstream sampling
+        // is untouched; only the render/interpolation rate rises.
         link.preferredFrameRateRange = CAFrameRateRange(
-            minimum: Self.renderFrameRateCap,
-            maximum: Self.renderFrameRateCap,
-            preferred: Self.renderFrameRateCap
+            minimum: 60,
+            maximum: maxFrameRate,
+            preferred: maxFrameRate
         )
         link.add(to: .current, forMode: .common)
         lastTickTimestamp = 0
         settledFrames = 0
+        lastRenderedPositions = []
         frameLink = link
     }
 
@@ -538,6 +576,7 @@ final class CapsuleSpectrumHostView: NSView {
         frameLink?.invalidate()
         frameLink = nil
         lastTickTimestamp = 0
+        lastRenderedPositions = []
     }
 
     override func viewDidMoveToWindow() {

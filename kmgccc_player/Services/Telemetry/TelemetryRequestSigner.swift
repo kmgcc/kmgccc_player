@@ -28,13 +28,18 @@ struct TelemetryRequestSigner {
         let ok = nonceBytes.withUnsafeMutableBytes {
             SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!)
         }
-        guard ok == errSecSuccess else { return nil }
+        guard ok == errSecSuccess else {
+            Log.warning("[TelemetrySigner] sign() failed: SecRandomCopyBytes error=\(ok)", category: .telemetry)
+            return nil
+        }
         let nonce = nonceBytes.base64EncodedString()
         let canonical = Self.canonicalString(method: method, path: path,
                                              timestamp: timestamp, nonce: nonce, body: body)
         guard let signature = keyStore.signBase64(message: Data(canonical.utf8)) else {
+            Log.warning("[TelemetrySigner] sign() failed: keyStore.signBase64 returned nil for \(method) \(path)", category: .telemetry)
             return nil
         }
+        Log.info("[TelemetrySigner] sign() success \(method) \(path) ts=\(timestamp) client=\(clientID.prefix(8))", category: .telemetry)
         return SignedHeaders(clientID: clientID, timestamp: timestamp,
                              nonce: nonce, signature: signature)
     }
