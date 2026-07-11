@@ -319,17 +319,55 @@ final class TelemetryService: NSObject {
     /// no-ops once UserDefaults records success. Safe for install-seen-only uploads
     /// because those are already sent even when usage telemetry is disabled.
     private func ensureRegistered() async -> Bool {
-        if UserDefaults.standard.integer(forKey: TelemetryDefaults.signingRegisteredKey) >= 1 {
-            if TelemetrySigningKeyStore.shared.publicKeyBase64() != nil {
-                return true
-            }
+        // Force key load/generation first. publicKeyBase64() calls privateKey()
+        // internally, which generates a new software key and sets
+        // needsRegistration if the file is absent/corrupted (new install or
+        // migration from the old Secure Enclave / Keychain-backed store).
+        guard TelemetrySigningKeyStore.shared.publicKeyBase64() != nil else {
+            Log.error("[Telemetry] ensureRegistered: publicKeyBase64() returned nil, cannot register", category: .telemetry)
+            return false
+        }
+
+        // If a new key was just generated, force re-registration regardless of
+        // the stored UserDefaults flag - the server has no record of this key.
+        if TelemetrySigningKeyStore.shared.needsRegistration {
+            Log.info("[Telemetry] ensureRegistered: new key generated, forcing re-registration", category: .telemetry)
             UserDefaults.standard.set(0, forKey: TelemetryDefaults.signingRegisteredKey)
         }
-        let ok = await uploader.registerSigningKey(clientID: identityStore.installID, signer: signer)
-        if ok {
-            UserDefaults.standard.set(1, forKey: TelemetryDefaults.signingRegisteredKey)
+
+        let registeredVersion = UserDefaults.standard.integer(forKey: TelemetryDefaults.signingRegisteredKey)
+        if registeredVersion >= 1 {
+            Log.info("[Telemetry] ensureRegistered fast-path ok (registeredVersion=\(registeredVersion))", category: .telemetry)
+            return true
         }
-        return ok
+        Log.info("[Telemetry] ensureRegistered calling registerSigningKey (registeredVersion was \(registeredVersion))", category: .telemetry)
+        let outcome = await uploader.registerSigningKey(clientID: identityStore.installID, signer: signer)
+        switch outcome {
+        case .success:
+            UserDefaults.standard.set(1, forKey: TelemetryDefaults.signingRegisteredKey)
+            Log.info("[Telemetry] ensureRegistered registerSigningKey succeeded, registeredVersion=1", category: .telemetry)
+            return true
+        case .conflict:
+            // HTTP 409: a different key is already bound to this client_id on the
+            // server. This happens during migration (SE -> software key), reinstall,
+            // or restore-from-backup. Reset the install_id so the next registration
+            // uses a fresh TOFU first-bind, then retry once.
+            Log.warning("[Telemetry] ensureRegistered: 409 key conflict, resetting install_id for fresh TOFU", category: .telemetry)
+            UserDefaults.standard.removeObject(forKey: TelemetryDefaults.installIDKey)
+            let newClientID = identityStore.installID
+            Log.info("[Telemetry] ensureRegistered: retrying with new install_id=\(newClientID.prefix(8))", category: .telemetry)
+            let retry = await uploader.registerSigningKey(clientID: newClientID, signer: signer)
+            if retry == .success {
+                UserDefaults.standard.set(1, forKey: TelemetryDefaults.signingRegisteredKey)
+                Log.info("[Telemetry] ensureRegistered: retry succeeded, registeredVersion=1", category: .telemetry)
+                return true
+            }
+            Log.warning("[Telemetry] ensureRegistered: retry returned \(retry)", category: .telemetry)
+            return false
+        case .failure:
+            Log.warning("[Telemetry] ensureRegistered registerSigningKey returned failure", category: .telemetry)
+            return false
+        }
     }
 
     private func flushQueue() {
@@ -343,6 +381,7 @@ final class TelemetryService: NSObject {
             guard let self else { return }
             do {
                 let canSign = await self.ensureRegistered()
+                Log.info("[Telemetry] flushQueue events=\(events.count) canSign=\(canSign)", category: .telemetry)
                 let response = try await uploader.upload(
                     events: events, device: device,
                     signer: canSign ? self.signer : nil,
@@ -377,6 +416,7 @@ final class TelemetryService: NSObject {
         // Sign only if registration already succeeded in a prior run; otherwise the
         // upload goes out unsigned and the server compat path accepts it.
         let isRegistered = UserDefaults.standard.integer(forKey: TelemetryDefaults.signingRegisteredKey) >= 1
+        Log.info("[Telemetry] flushQueueSynchronouslyForTermination events=\(events.count) isRegistered=\(isRegistered) willSign=\(isRegistered)", category: .telemetry)
         do {
             let response = try uploader.uploadSynchronously(
                 events: events, timeout: 3, device: deviceSnapshot,
@@ -1149,6 +1189,13 @@ private struct TelemetryRejectedEvent: Decodable, Sendable {
 
 enum TelemetryUploadError: Error { case unauthorized }
 
+/// Outcome of a TOFU public-key registration attempt.
+enum TelemetryRegistrationOutcome: Sendable {
+    case success       // HTTP 200 (registered or already_registered)
+    case conflict      // HTTP 409 - a different key is already bound to this client_id
+    case failure       // transport error, nil key/signature, or other non-200
+}
+
 private final class TelemetryUploader {
     private let endpoint = URL(string: "https://player.kmgccc.cn/api/v1/telemetry/events/batch")!
     private let registerEndpoint = URL(string: "https://player.kmgccc.cn/api/v1/telemetry/register")!
@@ -1161,10 +1208,14 @@ private final class TelemetryUploader {
         session = URLSession(configuration: configuration)
     }
 
-    /// Registers this install's public key (TOFU). Returns true on HTTP 200
-    /// (registered or already_registered), false on transport error or non-200.
-    func registerSigningKey(clientID: String, signer: TelemetryRequestSigner) async -> Bool {
-        guard let publicKey = TelemetrySigningKeyStore.shared.publicKeyBase64() else { return false }
+    /// Registers this install's public key (TOFU). Returns .success on HTTP 200
+    /// (registered or already_registered), .conflict on HTTP 409 (different key
+    /// already bound), .failure on transport error or other non-200.
+    func registerSigningKey(clientID: String, signer: TelemetryRequestSigner) async -> TelemetryRegistrationOutcome {
+        guard let publicKey = TelemetrySigningKeyStore.shared.publicKeyBase64() else {
+            Log.warning("[Telemetry] registerSigningKey: publicKeyBase64() returned nil, aborting registration", category: .telemetry)
+            return .failure
+        }
         let payload: [String: Any] = [
             "client_id": clientID,
             "public_key": publicKey,
@@ -1172,10 +1223,13 @@ private final class TelemetryUploader {
             "key_version": 1,
         ]
         guard let body = try? JSONSerialization.data(withJSONObject: payload,
-                                                     options: [.sortedKeys]) else { return false }
+                                                     options: [.sortedKeys]) else { return .failure }
         guard let headers = signer.sign(method: "POST",
                                         path: "/api/v1/telemetry/register",
-                                        body: body, clientID: clientID) else { return false }
+                                        body: body, clientID: clientID) else {
+            Log.warning("[Telemetry] registerSigningKey: signer.sign() returned nil, aborting registration", category: .telemetry)
+            return .failure
+        }
         var request = URLRequest(url: registerEndpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = 8
@@ -1190,10 +1244,22 @@ private final class TelemetryUploader {
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
         do {
-            let (_, response) = try await session.data(for: request)
-            return (response as? HTTPURLResponse)?.statusCode == 200
+            let (data, response) = try await session.data(for: request)
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let bodySnippet = String(data: data.prefix(200), encoding: .utf8) ?? "<binary>"
+            if statusCode == 200 {
+                Log.info("[Telemetry] registerSigningKey HTTP 200 body=\(bodySnippet)", category: .telemetry)
+                return .success
+            }
+            if statusCode == 409 {
+                Log.warning("[Telemetry] registerSigningKey HTTP 409 body=\(bodySnippet)", category: .telemetry)
+                return .conflict
+            }
+            Log.warning("[Telemetry] registerSigningKey HTTP \(statusCode) body=\(bodySnippet)", category: .telemetry)
+            return .failure
         } catch {
-            return false
+            Log.warning("[Telemetry] registerSigningKey transport error: \(error)", category: .telemetry)
+            return .failure
         }
     }
 
@@ -1302,6 +1368,11 @@ private final class TelemetryUploader {
             request.setValue(headers.timestamp, forHTTPHeaderField: "X-Timestamp")
             request.setValue(headers.nonce, forHTTPHeaderField: "X-Nonce")
             request.setValue(headers.signature, forHTTPHeaderField: "X-Signature")
+            Log.info("[Telemetry] makeRequest signed: 4 headers added (X-Client-Id, X-Timestamp, X-Nonce, X-Signature) client=\(clientID.prefix(8))", category: .telemetry)
+        } else {
+            let signerNil = signer == nil
+            let clientIDNil = clientID == nil
+            Log.warning("[Telemetry] makeRequest UNSIGNED: signerNil=\(signerNil) clientIDNil=\(clientIDNil) - no signature headers will be sent", category: .telemetry)
         }
         return request
     }
@@ -1325,14 +1396,19 @@ private final class TelemetryUploader {
         response: URLResponse
     ) throws -> TelemetryUploadResponse {
         guard let httpResponse = response as? HTTPURLResponse else {
+            Log.warning("[Telemetry] upload response: not an HTTPURLResponse", category: .telemetry)
             throw URLError(.badServerResponse)
         }
+        let bodySnippet = String(data: data.prefix(200), encoding: .utf8) ?? "<binary>"
         if httpResponse.statusCode == 401 {
+            Log.warning("[Telemetry] upload HTTP 401 body=\(bodySnippet) — server rejected signature (or requires signed)", category: .telemetry)
             throw TelemetryUploadError.unauthorized
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
+            Log.warning("[Telemetry] upload HTTP \(httpResponse.statusCode) body=\(bodySnippet)", category: .telemetry)
             throw URLError(.badServerResponse)
         }
+        Log.info("[Telemetry] upload HTTP \(httpResponse.statusCode) accepted (signed/unsigned determined server-side)", category: .telemetry)
         let decoder = JSONDecoder()
         return try decoder.decode(TelemetryUploadResponse.self, from: data)
     }

@@ -898,6 +898,15 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         static let sharedMotionTau: Float = 1.5
         static let sharedMotionMinDb: Float = 3.0
         static let sharedMotionMaxDb: Float = 16.0
+        // Warmup: lock the shared motion scale onto the song's actual motion
+        // level quickly at startup so the first seconds aren't under/over-
+        // amplified, then switch to the slow steady tau so the scale doesn't
+        // pump with the beat. The seed is a typical value (was (min+max)/2 =
+        // 9.5, too high -> motion under-amplified for the first ~3.5s while it
+        // crept down to the real level, which read as a "wrong" startup pose).
+        static let sharedMotionWarmupTau: Float = 0.18
+        static let sharedMotionWarmupSeconds: Float = 1.5
+        static let sharedMotionSeedDb: Float = 6.0
 
         // Common-mode removal: subtract a fraction of the cross-band median so a
         // broadband onset doesn't throw every band up. Sub/Bass use a STRONGER
@@ -951,6 +960,10 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
     private var crestDb: Float = 12
 
     private var sharedMotionScaleDb: Float = 8
+    /// Elapsed audio time since the processor was seeded. Drives the warmup
+    /// fast-lock on `sharedMotionScaleDb` so the motion amplitude is correct
+    /// within ~0.5s of playback start instead of ~4s.
+    private var warmupElapsed: Float = 0
 
     // Two independent per-band envelopes.
     private var baseCurrent: [Float] = Array(repeating: 0, count: Constants.bandCount)
@@ -998,6 +1011,7 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         shortTermPeakDbFS = Constants.noiseFloorDb
         crestDb = 12
         sharedMotionScaleDb = 8
+        warmupElapsed = 0
         baseCurrent = Array(repeating: 0, count: Constants.bandCount)
         motionCurrent = Array(repeating: 0, count: Constants.bandCount)
         diagnostics.reset()
@@ -1039,6 +1053,8 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
             initialized = true
             return targetBuffer
         }
+
+        warmupElapsed += dtClamped
 
         if hasInput {
             computeTarget()
@@ -1169,7 +1185,8 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
             localMeanDb[i] = bandDb[i]
             previousBandDb[i] = bandDb[i]
         }
-        sharedMotionScaleDb = (Constants.sharedMotionMinDb + Constants.sharedMotionMaxDb) * 0.5
+        warmupElapsed = 0
+        sharedMotionScaleDb = Constants.sharedMotionSeedDb
     }
 
     // MARK: - Classification
@@ -1282,9 +1299,14 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         }
 
         // 3c. Shared motion scale (ALL bands share ONE; no per-band AGC). Track
-        //     a high percentile slowly, clamped to a sane range.
+        //     a high percentile slowly, clamped to a sane range. During the
+        //     startup warmup window, use a fast tau so the scale locks onto the
+        //     song's actual motion level within ~0.5s; after that, switch to the
+        //     slow tau so it doesn't pump with the beat.
         let percentile = percentileValue(motionDbBuffer, fraction: Constants.sharedMotionPercentile)
-        let scaleAlpha = 1 - exp(-lastDt / Constants.sharedMotionTau)
+        let isWarmup = warmupElapsed < Constants.sharedMotionWarmupSeconds
+        let scaleTau = isWarmup ? Constants.sharedMotionWarmupTau : Constants.sharedMotionTau
+        let scaleAlpha = 1 - exp(-lastDt / scaleTau)
         let targetScale = clamp(percentile, min: Constants.sharedMotionMinDb, max: Constants.sharedMotionMaxDb)
         sharedMotionScaleDb += scaleAlpha * (targetScale - sharedMotionScaleDb)
         sharedMotionScaleDb = clamp(sharedMotionScaleDb, min: Constants.sharedMotionMinDb, max: Constants.sharedMotionMaxDb)
