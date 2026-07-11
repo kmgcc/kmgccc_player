@@ -8,6 +8,21 @@
 import SwiftUI
 
 enum FullscreenCoverHorizontalOffset {
+    /// Shared left-bias for the whole cover group (artwork + visualizer +
+    /// overlay + lyrics) across all non-cover-blur fullscreen skins
+    /// (Classic, Rotating Cover, Cassette, AppleStyle).
+    ///
+    /// Applied identically to the artwork area
+    /// (`FullscreenPlayerView.skinArtworkArea`) and the lyrics column
+    /// (`FullscreenPlayerView.fullscreenLyricsLayer`) so cover, visualizer,
+    /// and lyrics translate together without altering their relative spacing.
+    /// Both call sites subtract this value, i.e. shift left.
+    ///
+    /// Kept in base-canvas points so it scales proportionally with the
+    /// fullscreen canvas and stays balanced across window sizes and aspect
+    /// ratios - never a fixed screen-pixel value.
+    static let groupLeftBias: CGFloat = 36
+
     static func artworkOffsetX(
         for context: SkinContext,
         baseOffset: CGFloat = 0

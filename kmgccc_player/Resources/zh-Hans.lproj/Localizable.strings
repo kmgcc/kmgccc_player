@@ -56,19 +56,19 @@
 // MARK: - Settings Now Playing
 "settings.now_playing.select_skin" = "选择外观";
 "settings.now_playing.skin_options" = "%@ 选项";
-"skin.classic_led.name" = "经典";
+"skin.classic_led.name" = "画框";
 "skin.classic_led.detail" = "封面";
 "skin.classic_led.show_led" = "显示 LED 电平表";
 "skin.classic_led.show_spectrum" = "显示频谱";
 "skin.apple_style.name" = "Apple 风格";
-"skin.apple_style.detail" = "AMLL Mesh Gradient 流体背景 + 经典封面";
-"skin.rotating_cover.name" = "旋转";
-"skin.rotating_cover.detail" = "黑胶风格旋转";
-"skin.kmgccc_cassette.name" = "kmgccc 磁带";
+"skin.apple_style.detail" = "AMLL Mesh Gradient 流体背景 + 画框封面";
+"skin.rotating_cover.name" = "光碟";
+"skin.rotating_cover.detail" = "黑胶风格光碟";
+"skin.kmgccc_cassette.name" = "磁带";
 "skin.kmgccc_cassette.detail" = "磁带卡座";
 "skin.kmgccc_cassette.show_led" = "显示 LED";
 "skin.kmgccc_cassette.show_kmg" = "显示 kmg";
-"skin.cover_gradient_blur.name" = "大封面";
+"skin.cover_gradient_blur.name" = "全景";
 "skin.cover_gradient_blur.detail" = "封面铺满 + 渐进模糊 + 主色渐变背景（全屏专用）";
 
 // MARK: - Settings Lyrics
