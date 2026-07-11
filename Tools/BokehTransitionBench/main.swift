@@ -54,13 +54,13 @@ struct BokehTransitionBench {
         let pipeline = try device.makeComputePipelineState(function: function)
 
         let cases: [BenchmarkCase] = [
-            .init(width: 960, height: 540, samples: 64),
-            .init(width: 960, height: 540, samples: 96),
             .init(width: 960, height: 540, samples: 128),
-            .init(width: 960, height: 540, samples: 160),
-            .init(width: 960, height: 600, samples: 128),
-            .init(width: 1280, height: 360, samples: 128),
-            .init(width: 720, height: 720, samples: 128)
+            .init(width: 960, height: 540, samples: 192),
+            .init(width: 960, height: 540, samples: 256),
+            .init(width: 1280, height: 704, samples: 256),
+            .init(width: 960, height: 600, samples: 256),
+            .init(width: 1280, height: 360, samples: 256),
+            .init(width: 720, height: 720, samples: 256)
         ]
 
         for benchmark in cases {
@@ -70,7 +70,7 @@ struct BokehTransitionBench {
                 queue: queue,
                 pipeline: pipeline,
                 outputDirectory: outputDirectory,
-                writeImage: benchmark.width == 960 && benchmark.height == 540 && (benchmark.samples == 64 || benchmark.samples == 128)
+                writeImage: false
             )
             print("\(benchmark.width)x\(benchmark.height) / \(benchmark.samples) samples: median \(String(format: "%.2f", result.median * 1_000))ms, P95 \(String(format: "%.2f", result.p95 * 1_000))ms")
         }

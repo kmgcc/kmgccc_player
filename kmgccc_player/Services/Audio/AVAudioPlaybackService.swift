@@ -33,6 +33,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         didSet {
             playerNode.volume = Float(volume)
             AppSettings.shared.volume = volume
+            // Forward to the spectrum service so it can volume-compensate its
+            // time-domain loudness measurement; otherwise the quiet/normal/loud
+            // classification would shift with the volume slider.
+            AudioVisualizationService.shared.updateVolume(Float(volume))
         }
     }
 
@@ -275,6 +279,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         AudioAnalysisHub.shared.attachToMixer(playbackMixer)
 
         playerNode.volume = Float(volume)
+        // Seed the spectrum service with the initial volume (didSet does not fire
+        // during init, so the first classification would otherwise use the 1.0
+        // default and mis-classify until the first manual volume change).
+        AudioVisualizationService.shared.updateVolume(Float(volume))
         engine.prepare()
 
         NotificationCenter.default.addObserver(

@@ -151,22 +151,22 @@ enum BokehTransitionRenderTier: String, Sendable {
 
     nonisolated var sampleBudget: UInt32 {
         switch self {
-        case .low: 64
-        case .balanced: 128
+        case .low: 128
+        case .balanced: 256
         }
     }
 
     nonisolated var pixelBudget: Int {
         switch self {
-        case .low: 350_000
-        case .balanced: 550_000
+        case .low: 500_000
+        case .balanced: 900_000
         }
     }
 
     nonisolated var shortEdgeRange: ClosedRange<Int> {
         switch self {
-        case .low: 270...420
-        case .balanced: 360...540
+        case .low: 360...540
+        case .balanced: 540...720
         }
     }
 }
@@ -243,6 +243,7 @@ struct BokehTransitionSnapshot: Equatable, Sendable {
     var transitionOpacity: CGFloat
     var bokehRadius: CGFloat
     var surfaceOpacity: CGFloat
+    var opticalOpacity: CGFloat
     var transitionCanvasSizeRatio: CGSize
     var transitionCanvasOffsetRatio: CGFloat
     var configuration: BokehTransitionConfig
@@ -255,6 +256,7 @@ struct BokehTransitionSnapshot: Equatable, Sendable {
         transitionOpacity: 0,
         bokehRadius: 0,
         surfaceOpacity: 0,
+        opticalOpacity: 0,
         transitionCanvasSizeRatio: CGSize(width: 1, height: 1),
         transitionCanvasOffsetRatio: 0,
         configuration: BokehTransitionConfig(),

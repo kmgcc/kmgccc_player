@@ -43,7 +43,9 @@ struct BokehTransitionSurface: NSViewRepresentable {
         context.coordinator.renderer.update(snapshot: snapshot)
         // surfaceOpacity is a lifecycle gate, not an optical animation. Bokeh
         // intensity is represented exclusively by the animated radius.
-        view.alphaValue = snapshot.surfaceOpacity > 0.5 ? 1 : 0
+        if snapshot.surfaceOpacity <= 0.5 {
+            view.alphaValue = 0
+        }
         let shouldDraw = snapshot.isActive && context.coordinator.renderer.isAvailable
         view.isPaused = !shouldDraw
         if shouldDraw {

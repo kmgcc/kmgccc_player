@@ -19,7 +19,7 @@ xcrun swiftc Tools/BokehTransitionBench/main.swift -framework Foundation -framew
   /tmp/BokehTransitionBench/BokehTransitionShader.metallib /tmp/BokehTransitionBench/output
 ```
 
-The tool prints 64/96/128/160 sample sweeps using the app's actual linear
+The tool prints 128/192/256 sample sweeps using the app's actual linear
 `rgba16Float` gather target. Visual export belongs after the sRGB present pass;
 the benchmark deliberately does not reinterpret half-float working pixels as a
 display image.
