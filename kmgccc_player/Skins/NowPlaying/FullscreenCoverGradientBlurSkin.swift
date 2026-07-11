@@ -106,6 +106,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     @State private var transitionBlurRadius: CGFloat = 0
     @State private var bokehRadius: CGFloat = 0
     @State private var bokehSurfaceOpacity: CGFloat = 0
+    @State private var bokehOpticalOpacity: CGFloat = 0
     @State private var activeTransitionMode: BokehTransitionMode = .unmaskedFallback(reason: "idle")
     @State private var activeBokehConfiguration = BokehTransitionConfig()
     @State private var isTransitionActive = false
@@ -257,6 +258,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         withoutSwiftUIAnimation {
             bokehRadius = 0
             bokehSurfaceOpacity = 0
+            bokehOpticalOpacity = 0
             transitionBlurRadius = 0
         }
     }
@@ -322,6 +324,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             transitionOpacity: transitionLayerOpacity,
             bokehRadius: bokehRadius,
             surfaceOpacity: bokehSurfaceOpacity,
+            opticalOpacity: bokehOpticalOpacity,
             transitionCanvasSizeRatio: canvasRatio,
             // A constant travel distance; Metal combines it with the animated
             // transitionPosition every frame. Sending the already-evaluated
@@ -471,7 +474,15 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
 
             retireTransitionEffect()
 
-            guard await waitForTransitionStage(nanoseconds: transitionCompletionDelay) else { return }
+            if activeTransitionMode.usesBokeh {
+                guard await waitForTransitionStage(nanoseconds: bokehTailFadeDelay) else { return }
+                withoutSwiftUIAnimation {
+                    bokehOpticalOpacity = 0
+                }
+                guard await waitForTransitionStage(nanoseconds: bokehTailRetirementDelay) else { return }
+            } else {
+                guard await waitForTransitionStage(nanoseconds: transitionCompletionDelay) else { return }
+            }
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
@@ -489,17 +500,20 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             transitionBlurRadius = 0
             withoutSwiftUIAnimation {
                 bokehSurfaceOpacity = 1
+                bokehOpticalOpacity = 1
                 bokehRadius = configuration.radiusAt1080
             }
         case .gaussianFallback:
             bokehRadius = 0
             bokehSurfaceOpacity = 0
+            bokehOpticalOpacity = 0
             withAnimation(blurRiseAnimation) {
                 transitionBlurRadius = 44
             }
         case .unmaskedFallback:
             bokehRadius = 0
             bokehSurfaceOpacity = 0
+            bokehOpticalOpacity = 0
             transitionBlurRadius = 0
         }
     }
@@ -525,6 +539,14 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
 
     private var transitionCompletionDelay: UInt64 {
         context.theme.reduceMotion ? 320_000_000 : 820_000_000
+    }
+
+    private var bokehTailFadeDelay: UInt64 {
+        context.theme.reduceMotion ? 180_000_000 : 520_000_000
+    }
+
+    private var bokehTailRetirementDelay: UInt64 {
+        context.theme.reduceMotion ? 140_000_000 : 300_000_000
     }
 
     private func retargetTransition(to targetPosition: CGFloat) {

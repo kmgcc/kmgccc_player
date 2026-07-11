@@ -53,7 +53,11 @@ final class SpectrumRecorder {
             let wave = spectrumProcessor.process(
                 magnitudes: data.magnitudes,
                 fftSize: data.fftSize,
-                sampleRate: data.sampleRate
+                sampleRate: data.sampleRate,
+                rms: data.rms,
+                peak: data.peak,
+                playerVolume: 1.0,
+                dt: 1.0 / 30.0
             )
             let (led, audio) = ledProcessor.process(data: data)
             lock.lock()

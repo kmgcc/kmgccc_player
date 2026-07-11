@@ -155,6 +155,7 @@ private struct BokehTransitionPresentationState {
     private var centeredOpacity = TimedTransitionScalar(0)
     private var transitionOpacity = TimedTransitionScalar(0)
     private var radius = TimedTransitionScalar(0)
+    private var opticalOpacity = TimedTransitionScalar(0)
 
     mutating func retarget(to newTarget: BokehTransitionSnapshot, at time: CFTimeInterval) {
         // Keep the dormant renderer exactly aligned with whichever static layout
@@ -166,6 +167,7 @@ private struct BokehTransitionPresentationState {
             centeredOpacity = TimedTransitionScalar(newTarget.centeredOpacity)
             transitionOpacity = TimedTransitionScalar(newTarget.transitionOpacity)
             radius = TimedTransitionScalar(newTarget.bokehRadius)
+            opticalOpacity = TimedTransitionScalar(newTarget.opticalOpacity)
             return
         }
         let reduceMotion = newTarget.reduceMotion
@@ -198,6 +200,15 @@ private struct BokehTransitionPresentationState {
                 curve: rising ? .blurRise : .blurFall
             )
         }
+        if abs(newTarget.opticalOpacity - target.opticalOpacity) > 0.0001 {
+            let rising = newTarget.opticalOpacity > target.opticalOpacity
+            opticalOpacity.retarget(
+                to: newTarget.opticalOpacity,
+                at: time,
+                duration: reduceMotion ? 0.10 : (rising ? 0.08 : 0.20),
+                curve: rising ? .layerFadeIn : .layerFadeOut
+            )
+        }
         target = newTarget
     }
 
@@ -206,11 +217,13 @@ private struct BokehTransitionPresentationState {
         centeredOpacity.advance(to: time)
         transitionOpacity.advance(to: time)
         radius.advance(to: time)
+        opticalOpacity.advance(to: time)
         var result = target
         result.transitionPosition = position.value
         result.centeredOpacity = centeredOpacity.value
         result.transitionOpacity = transitionOpacity.value
         result.bokehRadius = radius.value
+        result.opticalOpacity = opticalOpacity.value
         return result
     }
 }
@@ -388,6 +401,7 @@ final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
         commandBuffer.label = "Fullscreen Cover Bokeh Transition"
 
         let presentation = presentationState.snapshot(at: CACurrentMediaTime())
+        view.alphaValue = presentation.opticalOpacity
         let canvasRatio = presentation.transitionCanvasSizeRatio
         var composeUniforms = TransitionComposeUniforms(
             viewportSize: SIMD2(Float(intermediate.size.width), Float(intermediate.size.height)),

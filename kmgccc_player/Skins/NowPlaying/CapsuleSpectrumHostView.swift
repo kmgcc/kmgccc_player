@@ -45,17 +45,19 @@ struct CapsuleSpectrumDynamics: Equatable {
     /// 0…1 underdamped → springy overshoot ("Q弹"); 1 = critical (no bounce).
     var dampingFraction: CGFloat
 
-    /// Agile and elastic: a fast spring with a lively, controlled bounce.
-    static let standard = CapsuleSpectrumDynamics(response: 0.05 , dampingFraction: 0.52)
+    /// Under-damped playback spring. The upstream processor now owns the fast
+    /// attack/release envelope, so the spring's job is purely visual: add a
+    /// short, clear overshoot on transients and a crisp rebound, without
+    /// smoothing over the signal's own fast decay.
+    static let standard = CapsuleSpectrumDynamics(response: 0.18, dampingFraction: 0.56)
     /// Tighter, less bounce — quick and composed.
     static let tight = CapsuleSpectrumDynamics(response: 0.10, dampingFraction: 0.80)
     /// Looser and bouncier — bigger overshoot.
     static let bouncy = CapsuleSpectrumDynamics(response: 0.18, dampingFraction: 0.50)
-    /// Gentle, monotonic settle for the pause transition. Critically damped (no
-    /// overshoot) and deliberately slow so the bars "缓缓落下" to their paused pose
-    /// instead of snapping — the playback spring above is intentionally agile,
-    /// which on its own would make the pause fall look instantaneous.
-    static let pauseFall = CapsuleSpectrumDynamics(response: 0.62, dampingFraction: 1.0)
+    /// Slow, critically-damped pause fall. Bars ease down to the paused pose
+    /// over ~500-700 ms instead of snapping or continuing the fast playback
+    /// release.
+    static let pauseFall = CapsuleSpectrumDynamics(response: 0.60, dampingFraction: 1.0)
 }
 
 /// What the bars do while playback is paused.
@@ -108,9 +110,10 @@ struct CapsuleSpectrumConfiguration {
         var gamma: CGFloat
         var ceiling: CGFloat
         var isIdentity: Bool { gamma == 1 && ceiling == 1 }
-        /// Default: lift quiet (~0.7) and leave headroom at the top (~0.8) so
-        /// ordinary songs don't peg while quiet passages stay visible.
-        static let standard = LevelShaping(gamma: 0.7, ceiling: 0.8)
+        /// Identity by default: the adaptive upstream processor now owns the
+        /// dynamic-range shaping, so the display layer must not compress or lift
+        /// the values again.
+        static let standard = LevelShaping(gamma: 1, ceiling: 1)
         static let identity = LevelShaping(gamma: 1, ceiling: 1)
     }
 

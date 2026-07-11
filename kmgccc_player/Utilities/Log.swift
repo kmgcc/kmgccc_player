@@ -119,7 +119,11 @@ enum LogConfig {
     nonisolated static var miniPlayerFGDebugEnabled: Bool {
         ProcessInfo.processInfo.environment["KMGCCC_DEBUG_MINIPLAYER_FG"] == "1"
     }
-    
+
+    nonisolated static var spectrumDebugEnabled: Bool {
+        ProcessInfo.processInfo.environment["KMGCCC_DEBUG_SPECTRUM"] == "1"
+    }
+
     nonisolated static var debugEnabledCategories: Set<LogCategory> {
         _logConfigLock.lock()
         defer { _logConfigLock.unlock() }
