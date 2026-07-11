@@ -148,27 +148,38 @@ final class BKThemeAssets: @unchecked Sendable {
             return cached.images
         }
 
-        let images = backgroundEntries.compactMap { downsampledImage(from: $0, maxPixel: maxPixel) }
+        let images: [CGImage]
+        if backgroundEntries.isEmpty {
+            images = Self.programmaticBackgroundIndices.map {
+                Self.programmaticImage(kind: .background, index: $0, maxPixel: maxPixel)
+            }
+        } else {
+            images = backgroundEntries.enumerated().compactMap { index, entry in
+                downsampledImage(from: entry, maxPixel: maxPixel)
+                    ?? Self.programmaticImage(kind: .background, index: index, maxPixel: maxPixel)
+            }
+        }
         let box = ImageArrayBox(images: images)
         backgroundCache.setObject(box, forKey: key, cost: Self.byteCost(for: images))
         return images
     }
 
     nonisolated var backgroundCount: Int {
-        backgroundEntries.count
+        backgroundEntries.isEmpty ? Self.programmaticBackgroundIndices.count : backgroundEntries.count
     }
 
     nonisolated func background(at index: Int, maxPixel: Int) -> CGImage? {
-        guard index >= 0, index < backgroundEntries.count else { return nil }
+        guard index >= 0, index < backgroundCount else { return nil }
 
         let key = "background-\(index)-\(maxPixel)" as NSString
         if let cached = backgroundCache.object(forKey: key) {
             return cached.images.first
         }
 
-        guard let image = downsampledImage(from: backgroundEntries[index], maxPixel: maxPixel) else {
-            return nil
-        }
+        let image = index < backgroundEntries.count
+            ? downsampledImage(from: backgroundEntries[index], maxPixel: maxPixel)
+                ?? Self.programmaticImage(kind: .background, index: index, maxPixel: maxPixel)
+            : Self.programmaticImage(kind: .background, index: index, maxPixel: maxPixel)
 
         let box = ImageArrayBox(images: [image])
         backgroundCache.setObject(box, forKey: key, cost: Self.byteCost(for: image))
@@ -186,15 +197,14 @@ final class BKThemeAssets: @unchecked Sendable {
         var edgePinnedIndices = Set<Int>()
         var fileNames: [String] = []
 
-        for entry in shapeEntries {
+        for (index, entry) in shapeEntries.enumerated() {
             let asset = AssetEntry(
                 logicalName: entry.logicalName,
                 plainURL: entry.plainURL,
                 fileName: entry.fileName
             )
-            guard let image = downsampledImage(from: asset, maxPixel: maxPixel) else {
-                continue
-            }
+            let image = downsampledImage(from: asset, maxPixel: maxPixel)
+                ?? Self.programmaticImage(kind: .shape, index: index, maxPixel: maxPixel)
             images.append(image)
             fileNames.append(entry.fileName)
             if entry.sourceIndex == 10 {
@@ -203,6 +213,13 @@ final class BKThemeAssets: @unchecked Sendable {
             }
             if entry.sourceIndex == 11 {
                 scaleByIndex[images.count - 1] = 2.0
+            }
+        }
+
+        if images.isEmpty {
+            for index in Self.programmaticShapeIndices {
+                images.append(Self.programmaticImage(kind: .shape, index: index, maxPixel: maxPixel))
+                fileNames.append("programmatic-shape-\(index + 1)")
             }
         }
 
@@ -223,11 +240,17 @@ final class BKThemeAssets: @unchecked Sendable {
             return cached.images
         }
 
-        let frames = maskFrameEntries.compactMap { entry -> CGImage? in
-            guard let sampled = downsampledImage(from: entry, maxPixel: maxPixel) else {
-                return nil
+        let frames: [CGImage]
+        if maskFrameEntries.isEmpty {
+            frames = Self.programmaticMaskIndices.map {
+                Self.programmaticImage(kind: .mask, index: $0, maxPixel: maxPixel)
             }
-            return Self.maskAlphaImage(from: sampled) ?? sampled
+        } else {
+            frames = maskFrameEntries.enumerated().compactMap { index, entry -> CGImage? in
+                let sampled = downsampledImage(from: entry, maxPixel: maxPixel)
+                    ?? Self.programmaticImage(kind: .mask, index: index, maxPixel: maxPixel)
+                return Self.maskAlphaImage(from: sampled) ?? sampled
+            }
         }
 
         let box = ImageArrayBox(images: frames)
@@ -241,20 +264,21 @@ final class BKThemeAssets: @unchecked Sendable {
     }
 
     nonisolated var artworkFrameCount: Int {
-        artworkFrameEntries.count
+        artworkFrameEntries.isEmpty ? Self.programmaticFrameIndices.count : artworkFrameEntries.count
     }
 
     nonisolated func artworkFrame(at index: Int, maxPixel: Int) -> CGImage? {
-        guard index >= 0, index < artworkFrameEntries.count else { return nil }
+        guard index >= 0, index < artworkFrameCount else { return nil }
 
         let key = "artwork-frame-\(index)-\(maxPixel)" as NSString
         if let cached = artworkFrameCache.object(forKey: key) {
             return cached.images.first
         }
 
-        guard let image = downsampledImage(from: artworkFrameEntries[index], maxPixel: maxPixel) else {
-            return nil
-        }
+        let image = index < artworkFrameEntries.count
+            ? downsampledImage(from: artworkFrameEntries[index], maxPixel: maxPixel)
+                ?? Self.programmaticImage(kind: .frame, index: index, maxPixel: maxPixel)
+            : Self.programmaticImage(kind: .frame, index: index, maxPixel: maxPixel)
 
         let box = ImageArrayBox(images: [image])
         artworkFrameCache.setObject(box, forKey: key, cost: Self.byteCost(for: image))
@@ -267,11 +291,28 @@ final class BKThemeAssets: @unchecked Sendable {
             return cached.result
         }
 
-        let outerImages = fullscreenCircleOuterEntries.compactMap {
-            downsampledImage(from: $0, maxPixel: maxPixel)
+        let outerImages: [CGImage]
+        if fullscreenCircleOuterEntries.isEmpty {
+            outerImages = Self.programmaticCircleIndices.map {
+                Self.programmaticImage(kind: .circleOuter, index: $0, maxPixel: maxPixel)
+            }
+        } else {
+            outerImages = fullscreenCircleOuterEntries.enumerated().compactMap { index, entry in
+                downsampledImage(from: entry, maxPixel: maxPixel)
+                    ?? Self.programmaticImage(kind: .circleOuter, index: index, maxPixel: maxPixel)
+            }
         }
-        let innerImages = fullscreenCircleInnerEntries.compactMap {
-            downsampledImage(from: $0, maxPixel: maxPixel)
+
+        let innerImages: [CGImage]
+        if fullscreenCircleInnerEntries.isEmpty {
+            innerImages = Self.programmaticCircleIndices.map {
+                Self.programmaticImage(kind: .circleInner, index: $0, maxPixel: maxPixel)
+            }
+        } else {
+            innerImages = fullscreenCircleInnerEntries.enumerated().compactMap { index, entry in
+                downsampledImage(from: entry, maxPixel: maxPixel)
+                    ?? Self.programmaticImage(kind: .circleInner, index: index, maxPixel: maxPixel)
+            }
         }
         let result = FullscreenCircleLoadResult(outerImages: outerImages, innerImages: innerImages)
         let box = FullscreenCircleLoadResultBox(result: result)
@@ -288,6 +329,52 @@ final class BKThemeAssets: @unchecked Sendable {
         fullscreenCircleCache.removeAllObjects()
         Self.maskProcessingContext.clearCaches()
         encryptedLoader.purgeCache()
+    }
+
+    private nonisolated static let programmaticBackgroundIndices = [0, 1]
+    private nonisolated static let programmaticShapeIndices = [0, 1, 2, 3]
+    private nonisolated static let programmaticMaskIndices = [0, 1]
+    private nonisolated static let programmaticFrameIndices = [0, 1, 2, 3]
+    private nonisolated static let programmaticCircleIndices = [0, 1]
+
+    private nonisolated static func programmaticImage(
+        kind: ArtworkRenderingFallback.ImageKind,
+        index: Int,
+        maxPixel: Int
+    ) -> CGImage {
+        let side = max(1, maxPixel)
+        let pixelSize: CGSize
+        switch kind {
+        case .background:
+            pixelSize = CGSize(width: side, height: max(1, Int(CGFloat(side) * 9.0 / 16.0)))
+        default:
+            pixelSize = CGSize(width: side, height: side)
+        }
+        return ArtworkRenderingFallback.image(
+            kind: kind,
+            seed: UInt64(max(0, index)) &* 0x9E37_79B9_7F4A_7C15,
+            pixelSize: pixelSize,
+            isDark: false,
+            themeColor: nil
+        ) ?? transparentImage()
+    }
+
+    private nonisolated static func transparentImage() -> CGImage {
+        let data = Data([0, 0, 0, 0])
+        let provider = CGDataProvider(data: data as CFData)
+        return CGImage(
+            width: 1,
+            height: 1,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider!,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )!
     }
 
     private static func resolveBundle() -> Bundle? {

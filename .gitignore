@@ -3,17 +3,21 @@
 docs/
 
 # Manual exclusions
-# BKThemes PNGs are local development master art assets. Ship encrypted
-# EncryptedArtAssets/*.kmgasset instead.
+# Private distribution art inputs and encrypted runtime assets must never enter
+# the public source history. The public build supplies procedural fallbacks.
 /BKThemes/
-# Migrated xcassets and cassette skin source images are local master art assets.
-# Ship encrypted EncryptedArtAssets/*.kmgasset instead. Runtime audio assets
-# belong under kmgccc_player/Resources/Audio/ and must remain tracked.
 /PrivateArtSources/
-# Encryption tools, allowlist, and manifest live in PrivateArtSources/ sub-repo.
+# Migrated art masters stay private; runtime audio remains tracked under
+# kmgccc_player/Resources/Audio/.
+/EncryptedArtAssets/
+/BKArt.bundle/
+/kmgccc_player/Resources/BKArt.bundle/
+# Private Bokeh source is compiled only by the private distribution workspace.
+/kmgccc_player/Rendering/BokehTransition/BokehTransitionShader.metal
+/kmgccc_player/Rendering/BokehTransition/*.metallib
+# Encryption tools and allowlists live in the private resources repository.
 scripts/encrypt_art_assets.swift
 scripts/encrypted_asset_allowlist.json
-EncryptedArtAssets/manifest.json
 apple-audio-visualization-main/
 # AMLL source worktrees live in ../amll-sources/.
 applemusic-like-lyrics-full-refractor/
@@ -86,4 +90,3 @@ Tools/lddc-server/
 .claude/worktrees/
 .worktrees/
 superteam/
-

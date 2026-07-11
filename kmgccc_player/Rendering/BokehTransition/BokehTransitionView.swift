@@ -47,6 +47,11 @@ struct BokehTransitionSurface: NSViewRepresentable {
             view.alphaValue = 0
         }
         let shouldDraw = snapshot.isActive && context.coordinator.renderer.isAvailable
+        if !shouldDraw {
+            // A missing or rejected private library must never leave a stale
+            // drawable above the public Gaussian fallback.
+            view.alphaValue = 0
+        }
         view.isPaused = !shouldDraw
         if shouldDraw {
             view.setNeedsDisplay(view.bounds)

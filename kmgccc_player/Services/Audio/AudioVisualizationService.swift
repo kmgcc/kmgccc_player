@@ -9,6 +9,7 @@
 
 import Accelerate
 import Foundation
+import os
 
 nonisolated final class AudioVisualizationService: @unchecked Sendable {
 
@@ -79,6 +80,24 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     /// loudness instead of the slider position. Updated from the playback
     /// service; defaults to 1.0 (no compensation) until then.
     private var playerVolume: Float = 1.0
+
+    // Latest-frame mailbox: coalesce main-actor publishes so a stalled main
+    // thread can't backlog dozens of stale frames (which would replay old
+    // spectrum state after recovery). The producer overwrites the latest wave;
+    // at most one main-actor drain is in flight. OSAllocatedUnfairLock is
+    // async-safe (unlike NSLock, which is banned from async contexts in Swift 6)
+    // and touched from both processingQueue and the main actor.
+    private struct MailboxState {
+        var wave: [Float] = []
+        var scheduled: Bool = false
+        var producedUptime: TimeInterval = 0
+        var displayedCount: UInt64 = 0
+        var lastAgeMs: Float = -1
+    }
+    private let mailbox = OSAllocatedUnfairLock(initialState: MailboxState())
+    // Producer-side counters (processingQueue only - no lock needed).
+    private var producedFrameCount: UInt64 = 0
+    private var coalescedFrameCount: UInt64 = 0
 
     private var poseBlend: Float = 0.0
     private let idlePattern: [Float] = [0.37, 0.20, 0.40, 0.20, 0.65, 0.20, 0.40, 0.20, 0.37]
@@ -228,6 +247,12 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         lastTickTime = now
         lastPublishTime = 0
         lastRestartAttemptTime = 0
+        // Reset the latest-frame mailbox + scheduling counters.
+        mailbox.withLock { state in
+            state = MailboxState()
+        }
+        producedFrameCount = 0
+        coalescedFrameCount = 0
 
         hub.start()
         hubConsumerId = hub.addConsumer { [weak self] data in
@@ -412,14 +437,52 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
 
         guard callbacks.isEmpty == false else { return }
 
-        // Coalesce into a single main-actor hop instead of one Task per
-        // consumer (skin spectrum + mesh background + fullscreen can be active
-        // together). Same wave delivered to each callback, order preserved.
-        Task { @MainActor in
+        producedFrameCount &+= 1
+        let now = ProcessInfo.processInfo.systemUptime
+
+        // Latest-frame mailbox: overwrite the pending wave. If a main-actor
+        // drain is already scheduled, it will deliver this latest wave - don't
+        // queue another Task. This caps pending main updates at 1, so a stalled
+        // main thread can't backlog stale frames that would replay old state.
+        let alreadyScheduled = mailbox.withLock { state -> Bool in
+            state.wave = wave
+            state.producedUptime = now
+            let wasScheduled = state.scheduled
+            state.scheduled = true
+            return wasScheduled
+        }
+
+        if alreadyScheduled {
+            coalescedFrameCount &+= 1
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let snapshot = self.mailbox.withLock { state -> (wave: [Float], producedAt: TimeInterval) in
+                let wave = state.wave
+                let producedAt = state.producedUptime
+                state.scheduled = false
+                state.displayedCount &+= 1
+                return (wave, producedAt)
+            }
+            let ageMs = Float((ProcessInfo.processInfo.systemUptime - snapshot.producedAt) * 1000)
+            self.mailbox.withLock { state in state.lastAgeMs = ageMs }
+            // Single coalesced main-actor hop: deliver the same latest wave to
+            // every consumer (skin spectrum + mesh background + fullscreen).
             for callback in callbacks {
-                callback(wave)
+                callback(snapshot.wave)
             }
         }
+    }
+
+    /// Snapshot of the scheduling counters for diagnostics. Called on the
+    /// processingQueue; the lock is async-safe.
+    private func schedulingStats() -> (produced: UInt64, displayed: UInt64, coalesced: UInt64, pending: Int, frameAgeMs: Float) {
+        let (displayed, pending, age) = mailbox.withLock { state -> (UInt64, Int, Float) in
+            (state.displayedCount, state.scheduled ? 1 : 0, state.lastAgeMs)
+        }
+        return (producedFrameCount, displayed, coalescedFrameCount, pending, age)
     }
 
     private func restartAnalysisChainLocked(now: TimeInterval) {
@@ -447,6 +510,7 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         playerVolume: Float,
         dt: Float
     ) -> [Float] {
+        let scheduling = schedulingStats()
         #if DEBUG
         if useLegacySpectrum {
             return legacyProcessor.process(
@@ -463,6 +527,7 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
             rms: rms,
             peak: peak,
             playerVolume: playerVolume,
+            scheduling: scheduling,
             dt: dt
         )
     }
@@ -702,49 +767,72 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
 
     struct Constants {
         static let bandCount = 9
-        static let frequencyEdges: [Float] = [20, 60, 140, 260, 420, 650, 1000, 3500, 12000, 20000]
+        // v5: high end redistributed. High+ (band 7) now covers the sibilance
+        // core (3.5-8kHz) so vocal 呲呲 reads; Air (band 8) is the single
+        // ultra-high bar (8-20kHz). Mid bands nudged so MTreb reaches 1.3kHz.
+        static let frequencyEdges: [Float] = [20, 60, 140, 260, 420, 700, 1300, 3500, 8000, 20000]
 
         // dB math
         static let epsilon: Float = 1e-12
         static let noiseFloorDb: Float = -96
 
-        // Fixed "gourd" silhouette: low-freq high, dip at low-mid, second hump
-        // at low/mid-treble, gradual fall to air. Applied as a per-band gain so
-        // the display keeps this shape with NO per-band adaptive trim. For an
-        // equal-energy input the output reproduces this curve directly.
-        //   Sub  Bass  LowMid  Mid  LowTreb MidTreb HighTreb High+  Air
-        static let baseShapeWeight: [Float] = [
-            0.85,  // 0: Sub
-            1.00,  // 1: Bass      (first hump)
-            0.65,  // 2: Low-Mid   (dip)
-            0.75,  // 3: Mid
-            0.90,  // 4: Low-Treble (second hump)
-            0.82,  // 5: Mid-Treble
-            0.55,  // 6: High-Treble
-            0.38,  // 7: High+
-            0.25,  // 8: Air
+        // Fixed spectral tilt (dB). Counteracts the natural high-frequency
+        // falloff of real music so highs stay visible WITHOUT adaptive per-band
+        // flattening. Constant; never tracks song history. Mid is the 0 reference.
+        // Tuned via the deterministic harness so Mid stays the peak in both the
+        // equal-band and pink-spectrum cases.
+        //   Sub  Bass  LMid  Mid  LTreb MTreb HTreb High+ Air
+        static let fixedSpectralTiltDb: [Float] = [
+            -3.0,  // 0: Sub
+            -2.0,  // 1: Bass
+            -1.0,  // 2: LMid   (extra-suppressed waist)
+             0.0,  // 3: Mid      (reference)
+            +0.8,  // 4: LTreb
+            +1.8,  // 5: MTreb
+            +3.0,  // 6: HTreb
+            +5.0,  // 7: High+  (sibilance 3.5-8kHz, boosted for visibility)
+            +6.0,  // 8: Air
         ]
-        // Motion silhouette: same shape but more restrained at the extremes so a
-        // sub/air-band onset does not fling the whole spectrum up.
+
+        // "Mid-peak" silhouette: Mid is the highest, LMid is the waist (low
+        // sensitivity), a small left hump at Bass, a second hump at LTreb,
+        // gradual fall to Air. High+ (sibilance) kept visible. Tuned via the
+        // harness so Mid peaks in both equal-band and pink-spectrum cases.
+        static let baseShapeWeight: [Float] = [
+            0.70,  // 0: Sub
+            0.78,  // 1: Bass   (left hump)
+            0.38,  // 2: LMid   (waist - low sensitivity)
+            1.00,  // 3: Mid    (main peak)
+            0.88,  // 4: LTreb  (second hump)
+            0.78,  // 5: MTreb
+            0.68,  // 6: HTreb
+            0.66,  // 7: High+  (sibilance)
+            0.45,  // 8: Air    (ultra-high, single bar)
+        ]
+        // Motion silhouette: low-freq extra-restrained, High+ (sibilance) kept
+        // responsive so 呲呲 lifts band 7. v6: low-freq more sensitive (Sub/Bass
+        // up), mid jumps less but stays tall (Mid/LTreb/MTreb motion weight down;
+        // base weight unchanged so mid height holds).
         static let motionShapeWeight: [Float] = [
-            0.75, 0.88, 0.68, 0.74, 0.82, 0.75, 0.55, 0.40, 0.30
+            0.55, 0.68, 0.50, 0.75, 0.76, 0.72, 0.74, 0.78, 0.50
         ]
 
         // --- Absolute loudness (time-domain RMS, volume-compensated) ---
         // These are TRUE dBFS values (20*log10(rms)) of the pre-volume signal.
         // Calibrate via KMGCCC_DEBUG_SPECTRUM=1 (watch rms=/state=).
         static let loudnessTau: Float = 0.60       // slow; modes must not flip per beat
-        static let quietFloorDbFS: Float = -36     // below = pure quiet
-        static let quietToNormalDbFS: Float = -28  // quiet -> normal transition
+        static let quietFloorDbFS: Float = -38     // below = pure quiet
+        static let quietToNormalDbFS: Float = -30  // quiet -> normal transition
         static let normalToLoudDbFS: Float = -20   // normal -> loud transition
         static let loudFloorDbFS: Float = -14      // above = pure loud
 
-        // Three-segment display budgets. Quiet suppresses motion (15-35% band);
-        // loud raises motion and slightly lowers base so beats have headroom.
-        static let baseScaleQuiet: Float = 0.24
+        // Three-segment display budgets. v5: quiet is much shorter (was 0.24)
+        // so quiet music reads as genuinely low bars, not lifted by the mapping.
+        // v6: quiet lowered further (0.12 -> 0.09).
+        static let baseScaleQuiet: Float = 0.09
         static let baseScaleNormal: Float = 0.39
         static let baseScaleLoud: Float = 0.33
-        static let motionScaleQuiet: Float = 0.10
+        static let motionScaleQuiet: Float = 0.04
         static let motionScaleNormal: Float = 0.28
         static let motionScaleLoud: Float = 0.50
         // Fraction of motion retained at quiet (15-35% per spec).
@@ -760,10 +848,36 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
 
         // --- Base layer ---
         // Band dB relative to the global mean band power (volume-invariant: both
-        // come from the same FFT tap). offset/range map typical bands to [0,1].
+        // come from the same FFT tap). The offset is deliberately large/negative
+        // so the reference sits below most bands; the shape weight then becomes
+        // the dominant contour factor (Mid weight 1.0 wins) and the tilt can
+        // lift highs without exceeding Mid. Tuned via the harness.
         static let fftMeanPowerTau: Float = 0.50
-        static let baseReferenceOffsetDb: Float = -6.0
-        static let baseRangeDb: Float = 20.0
+        static let baseReferenceOffsetDb: Float = -16.0
+        static let baseRangeDb: Float = 26.0
+
+        // --- Low-frequency prominence gate (motion) ---
+        // Low-freq motion is only allowed when the Sub/Bass energy actually
+        // exceeds the vocal-body bands (LMid/Mid) by a clear margin. Without
+        // this, vocal fundamentals, spectral leakage, and broadband common-mode
+        // changes flap the left side. Real kicks/bass still rise because their
+        // energy dominates. v6: thresholds raised (+3/+10) and floors lowered
+        // (0.10/0.15) so small/quiet low-freq energy barely moves but big
+        // obvious kicks still punch (ceil 0.85/0.92).
+        static let lowProminenceStartDb: Float = 3.0    // below = minimal low motion
+        static let lowProminenceFullDb: Float = 10.0    // above = full low motion
+        static let subMotionFloor: Float = 0.10         // retained when not prominent
+        static let subMotionCeil: Float = 0.85          // v6: was 0.65, boost real kicks
+        static let bassMotionFloor: Float = 0.15        // v6: was 0.30
+        static let bassMotionCeil: Float = 0.92         // v6: was 0.78, boost real kicks
+
+        // --- High-frequency visibility (base + motion) ---
+        // Highs need a noise gate (no fake floor when silent) plus a one-shot soft
+        // gamma so they read as visible-but-low. No global gamma < 1.
+        static let highBandStartIndex: Int = 6          // HTreb, High+, Air
+        static let highBandNoiseFloorDb: Float = -30.0  // relative to global mean: below = silent
+        static let highBandVisibleDb: Float = -16.0     // relative to global mean: above = full
+        static let highBandGamma: Float = 0.88          // one-shot soft shaping (>= 1 would crush)
 
         // --- Motion extraction (relative dB, volume-invariant) ---
         static let fluxWeight: Float = 0.45
@@ -786,24 +900,34 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         static let sharedMotionMaxDb: Float = 16.0
 
         // Common-mode removal: subtract a fraction of the cross-band median so a
-        // broadband onset doesn't throw every band up. A small residual global
-        // pulse is kept so the spectrum still breathes with the mix.
-        static let commonModeRemoval: Float = 0.55
+        // broadband onset doesn't throw every band up. Sub/Bass use a STRONGER
+        // removal so a broadband vocal onset doesn't average into a row of low-freq
+        // pulses. A small residual global pulse is kept so the spectrum breathes.
+        static let commonModeRemoval: [Float] = [
+            0.75,  // 0: Sub   (stronger)
+            0.70,  // 1: Bass  (stronger)
+            0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55
+        ]
         static let globalPulseGain: Float = 0.12
         static let globalPulseCapDb: Float = 2.0
 
-        // Separate base / motion envelopes (frame-rate-independent).
-        static let baseAttackTau: Float = 0.10
-        static let baseReleaseTau: Float = 0.19
-        static let motionAttackTau: Float = 0.028
-        static let motionReleaseTau: Float = 0.090
+        // Separate base / motion envelopes (frame-rate-independent). v5 shortens
+        // release so peaks fall more crisply; attack is barely changed.
+        static let baseAttackTau: Float = 0.095
+        static let baseReleaseTau: Float = 0.165
+        // v5: per-band motion taus. Low (Sub/Bass) faster so kicks punch and
+        // release quickly; Mid (LMid..MTreb) slower so the body doesn't flicker;
+        // High medium. v6: low-freq attack snappier (0.018) for more sensitivity.
+        static let motionAttackTau: [Float] =  [0.018, 0.018, 0.030, 0.030, 0.030, 0.030, 0.026, 0.026, 0.026]
+        static let motionReleaseTau: [Float] = [0.050, 0.050, 0.090, 0.090, 0.090, 0.090, 0.065, 0.065, 0.065]
         // Slow fade when the stream stalls (no input): a brief glitch doesn't
         // freeze bars, but a dead stream still fades.
         static let stallDecayTau: Float = 0.35
 
-        // Spatial smoothing: base keeps a weak kernel; motion is unsmoothed so
-        // per-band contrast survives.
-        static let baseSpatialKernel: [Float] = [0.08, 0.84, 0.08]
+        // Spatial smoothing: base keeps a weak kernel (tuned down so neighbors
+        // don't pull LTreb up toward Mid and blur the Mid-peak); motion is
+        // unsmoothed so per-band contrast survives.
+        static let baseSpatialKernel: [Float] = [0.05, 0.90, 0.05]
 
         // Diagnostics emitted every N seconds when KMGCCC_DEBUG_SPECTRUM=1
         static let diagnosticsInterval: TimeInterval = 2.0
@@ -834,6 +958,7 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
 
     // Reusable scratch buffers (avoid per-frame allocations).
     private var rawBaseBuffer: [Float] = Array(repeating: 0, count: Constants.bandCount)
+    private var calibratedBandDbBuffer: [Float] = Array(repeating: Constants.noiseFloorDb, count: Constants.bandCount)
     private var rawMotionDbBuffer: [Float] = Array(repeating: 0, count: Constants.bandCount)
     private var motionDbBuffer: [Float] = Array(repeating: 0, count: Constants.bandCount)
     private var normalizedMotionBuffer: [Float] = Array(repeating: 0, count: Constants.bandCount)
@@ -847,7 +972,12 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
     private var lastGlobalMotionGate: Float = 0
     private var lastCompressionBoost: Float = 1
     private var lastCommonMotionDb: Float = 0
+    private var lastLowProminenceGate: Float = 0
     private var lastLoudnessState: String = "-"
+    // Volume-compensation diagnostics (raw vs compensated RMS).
+    private var lastRawRms: Float = 0
+    private var lastPlayerVolume: Float = 1
+    private var lastCompensatedRms: Float = 0
 
     private var diagnostics = SpectrumDiagnostics()
 
@@ -880,6 +1010,7 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         rms: Float,
         peak: Float,
         playerVolume: Float,
+        scheduling: (produced: UInt64, displayed: UInt64, coalesced: UInt64, pending: Int, frameAgeMs: Float),
         dt: Float
     ) -> [Float] {
         let dtClamped = max(0.001, min(0.1, dt))
@@ -927,6 +1058,11 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
                 compressionBoost: lastCompressionBoost,
                 sharedMotionScaleDb: sharedMotionScaleDb,
                 commonMotionDb: lastCommonMotionDb,
+                lowProminenceGate: lastLowProminenceGate,
+                rawRms: lastRawRms,
+                playerVolume: lastPlayerVolume,
+                compensatedRms: lastCompensatedRms,
+                scheduling: scheduling,
                 baseBands: baseCurrent,
                 motionBands: motionCurrent,
                 finalBands: targetBuffer
@@ -972,12 +1108,17 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         // Compensate for the player volume so the classification tracks the
         // source loudness, not the slider position. The tap sits on
         // playbackMixer (downstream of playerNode.volume); dividing by the
-        // known volume recovers the pre-volume level. When muted (volume ~ 0)
-        // the tap sees silence; hold the last classification instead of
-        // snapping to "quiet".
-        if playerVolume > 0.02 {
-            let compRms = rms / playerVolume
-            let compPeak = peak / playerVolume
+        // known volume recovers the pre-volume level. Below 5% the tap signal is
+        // too close to the noise floor to divide safely, so hold the last
+        // classification (muted/very-quiet must not amplify noise into "loud").
+        // Compensated values are clamped to full-scale so a tiny divisor can't
+        // explode a noise floor into a high-level signal.
+        lastRawRms = rms
+        lastPlayerVolume = playerVolume
+        if playerVolume > 0.05 {
+            let compRms = min(rms / playerVolume, 1.0)
+            let compPeak = min(peak / playerVolume, 1.0)
+            lastCompensatedRms = compRms
             let instantRmsDb = 20 * log10(compRms + Constants.epsilon)
             let instantPeakDb = 20 * log10(compPeak + Constants.epsilon)
 
@@ -1013,9 +1154,14 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         fftMeanPower = meanPower
         fftMeanPowerDb = 10 * log10(fftMeanPower + Constants.epsilon)
 
-        let comp = playerVolume > 0.02 ? playerVolume : 1.0
-        shortTermRmsDbFS = 20 * log10((rms / comp) + Constants.epsilon)
-        shortTermPeakDbFS = 20 * log10((peak / comp) + Constants.epsilon)
+        lastRawRms = rms
+        lastPlayerVolume = playerVolume
+        let comp = playerVolume > 0.05 ? min(playerVolume, 1.0) : 1.0
+        let compRms = min(rms / comp, 1.0)
+        let compPeak = min(peak / comp, 1.0)
+        lastCompensatedRms = compRms
+        shortTermRmsDbFS = 20 * log10(compRms + Constants.epsilon)
+        shortTermPeakDbFS = 20 * log10(compPeak + Constants.epsilon)
         crestDb = shortTermPeakDbFS - shortTermRmsDbFS
 
         for i in 0..<Constants.bandCount {
@@ -1067,21 +1213,38 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         // 1. Three-segment loudness -> budgets + gates.
         classifyLoudness()
 
-        // 2. Base: band dB relative to global mean power, shaped by the gourd.
+        // 2. Calibrate band dB with the fixed (non-adaptive) spectral tilt. This
+        //    counteracts real music's high-frequency falloff so highs stay
+        //    visible; it never tracks song history (no per-band AGC).
+        for i in 0..<Constants.bandCount {
+            calibratedBandDbBuffer[i] = bandDb[i] + Constants.fixedSpectralTiltDb[i]
+        }
+
+        // 3. Base: calibrated band dB relative to global mean power, shaped by
+        //    the mid-peak silhouette. High bands get an absolute noise gate (no
+        //    fake floor when silent) plus a one-shot soft gamma so they read as
+        //    visible-but-low. No global gamma < 1.
         let baseReferenceDb = fftMeanPowerDb + Constants.baseReferenceOffsetDb
         for i in 0..<Constants.bandCount {
-            let rawBase = clamp((bandDb[i] - baseReferenceDb) / Constants.baseRangeDb, min: 0, max: 1)
-            rawBaseBuffer[i] = rawBase * Constants.baseShapeWeight[i]
+            let rawBase = clamp((calibratedBandDbBuffer[i] - baseReferenceDb) / Constants.baseRangeDb, min: 0, max: 1)
+            var shaped = rawBase * Constants.baseShapeWeight[i]
+            if i >= Constants.highBandStartIndex {
+                let rel = calibratedBandDbBuffer[i] - fftMeanPowerDb
+                let highGate = smoothstep(Constants.highBandNoiseFloorDb, Constants.highBandVisibleDb, rel)
+                shaped *= highGate
+                shaped = pow(shaped, Constants.highBandGamma)
+            }
+            rawBaseBuffer[i] = shaped
         }
         spatialSmooth(&rawBaseBuffer, kernel: Constants.baseSpatialKernel)
         for i in 0..<Constants.bandCount {
             baseFinalBuffer[i] = rawBaseBuffer[i] * lastBaseScale
         }
 
-        // 3. Motion (separate path).
+        // 4. Motion (separate path).
         computeMotion()
 
-        // 4. Advance previous-frame band dB for next tick's flux.
+        // 5. Advance previous-frame band dB for next tick's flux.
         for i in 0..<Constants.bandCount {
             previousBandDb[i] = bandDb[i]
         }
@@ -1107,14 +1270,14 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
             rawMotionDbBuffer[i] = m
         }
 
-        // 3b. Common-mode removal: subtract a fraction of the cross-band median
-        //     so a broadband onset doesn't throw every band up. Keep a small
-        //     global pulse so the spectrum still breathes.
+        // 3b. Common-mode removal (per-band factor; Sub/Bass stronger so a
+        //     broadband vocal onset doesn't average into low-freq pulses). A
+        //     small residual global pulse is kept so the spectrum breathes.
         let commonMotionDb = median(rawMotionDbBuffer)
         lastCommonMotionDb = commonMotionDb
         let globalPulseDb = min(commonMotionDb * Constants.globalPulseGain, Constants.globalPulseCapDb)
         for i in 0..<Constants.bandCount {
-            let specific = max(0, rawMotionDbBuffer[i] - commonMotionDb * Constants.commonModeRemoval)
+            let specific = max(0, rawMotionDbBuffer[i] - commonMotionDb * Constants.commonModeRemoval[i])
             motionDbBuffer[i] = specific + globalPulseDb
         }
 
@@ -1126,19 +1289,41 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         sharedMotionScaleDb += scaleAlpha * (targetScale - sharedMotionScaleDb)
         sharedMotionScaleDb = clamp(sharedMotionScaleDb, min: Constants.sharedMotionMinDb, max: Constants.sharedMotionMaxDb)
 
-        // 3d. Normalize, then apply per-band energy gate, global quiet gate, and
-        //     compression boost. Motion shape weight is applied at the end (3e).
+        // 3d. Low-frequency prominence gate: only let Sub/Bass move when their
+        //     energy actually exceeds the vocal-body bands (LMid/Mid). Vocal
+        //     fundamentals, leakage, and broadband common-mode then can't flap
+        //     the left side; real kicks/bass still rise.
+        let lowEnergy = max(bandDb[0], bandDb[1])
+        let neighborEnergy = (bandDb[2] + bandDb[3]) * 0.5
+        let lowProminenceDb = lowEnergy - neighborEnergy
+        lastLowProminenceGate = smoothstep(
+            Constants.lowProminenceStartDb, Constants.lowProminenceFullDb, lowProminenceDb
+        )
+
+        // 3e. Normalize, then apply: per-band energy gate (absolute silence),
+        //     global quiet gate, compression boost, low-prominence restraint
+        //     (Sub/Bass), and high-band noise gate. Shape weight is applied last.
         for i in 0..<Constants.bandCount {
             var norm = clamp(motionDbBuffer[i] / sharedMotionScaleDb, min: 0, max: 1)
-            let relativeDb = bandDb[i] - fftMeanPowerDb
-            let energyGate = smoothstep(Constants.bandEnergyGateFloorDb, Constants.bandEnergyGateCeilDb, relativeDb)
+            let relRaw = bandDb[i] - fftMeanPowerDb
+            let energyGate = smoothstep(Constants.bandEnergyGateFloorDb, Constants.bandEnergyGateCeilDb, relRaw)
             norm *= energyGate
             norm *= lastGlobalMotionGate
             norm *= lastCompressionBoost
+            if i == 0 {
+                norm *= lerp(Constants.subMotionFloor, Constants.subMotionCeil, t: lastLowProminenceGate)
+            } else if i == 1 {
+                norm *= lerp(Constants.bassMotionFloor, Constants.bassMotionCeil, t: lastLowProminenceGate)
+            }
+            if i >= Constants.highBandStartIndex {
+                let relCal = calibratedBandDbBuffer[i] - fftMeanPowerDb
+                let highGate = smoothstep(Constants.highBandNoiseFloorDb, Constants.highBandVisibleDb, relCal)
+                norm *= highGate
+            }
             normalizedMotionBuffer[i] = norm
         }
 
-        // 3e. Final motion target = normalized * motionScale * motionShapeWeight.
+        // 3f. Final motion target = normalized * motionScale * motionShapeWeight.
         //     No spatial smoothing on motion (keeps per-band contrast).
         for i in 0..<Constants.bandCount {
             motionFinalBuffer[i] = normalizedMotionBuffer[i] * lastMotionScale * Constants.motionShapeWeight[i]
@@ -1151,8 +1336,6 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         if hasInput {
             let baseAttack = 1 - exp(-dt / Constants.baseAttackTau)
             let baseRelease = 1 - exp(-dt / Constants.baseReleaseTau)
-            let motionAttack = 1 - exp(-dt / Constants.motionAttackTau)
-            let motionRelease = 1 - exp(-dt / Constants.motionReleaseTau)
             for i in 0..<Constants.bandCount {
                 let bt = baseFinalBuffer[i]
                 let bc = baseCurrent[i]
@@ -1161,9 +1344,11 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
                     : bc + (bt - bc) * baseRelease
                 let mt = motionFinalBuffer[i]
                 let mc = motionCurrent[i]
+                let mAttack = 1 - exp(-dt / Constants.motionAttackTau[i])
+                let mRelease = 1 - exp(-dt / Constants.motionReleaseTau[i])
                 motionCurrent[i] = mt > mc
-                    ? mc + (mt - mc) * motionAttack
-                    : mc + (mt - mc) * motionRelease
+                    ? mc + (mt - mc) * mAttack
+                    : mc + (mt - mc) * mRelease
             }
         } else {
             // Slow fade on stall so a glitch doesn't freeze bars.
@@ -1244,6 +1429,12 @@ nonisolated private struct SpectrumDiagnostics {
     var sumCompressionBoost: Float = 0
     var sumSharedMotionScale: Float = 0
     var sumCommonMotion: Float = 0
+    var sumLowProminence: Float = 0
+
+    // Volume-compensation diagnostics.
+    var sumRawRms: Float = 0
+    var sumPlayerVolume: Float = 0
+    var sumCompensatedRms: Float = 0
 
     var sumBaseMean: Float = 0
     var basePeak: Float = 0
@@ -1252,6 +1443,17 @@ nonisolated private struct SpectrumDiagnostics {
     var sumFinalMean: Float = 0
     var finalPeak: Float = 0
     var sumBandStdDev: Float = 0
+
+    // Scheduling diagnostics.
+    var sumPending: Float = 0
+    var maxFrameAgeMs: Float = -1
+    var firstProduced: UInt64 = 0
+    var firstDisplayed: UInt64 = 0
+    var firstCoalesced: UInt64 = 0
+    var lastProduced: UInt64 = 0
+    var lastDisplayed: UInt64 = 0
+    var lastCoalesced: UInt64 = 0
+    var schedulingCaptured = false
 
     var loudnessCounts: [String: Int] = [:]
 
@@ -1271,6 +1473,10 @@ nonisolated private struct SpectrumDiagnostics {
         sumCompressionBoost = 0
         sumSharedMotionScale = 0
         sumCommonMotion = 0
+        sumLowProminence = 0
+        sumRawRms = 0
+        sumPlayerVolume = 0
+        sumCompensatedRms = 0
         sumBaseMean = 0
         basePeak = 0
         sumMotionMean = 0
@@ -1278,6 +1484,15 @@ nonisolated private struct SpectrumDiagnostics {
         sumFinalMean = 0
         finalPeak = 0
         sumBandStdDev = 0
+        sumPending = 0
+        maxFrameAgeMs = -1
+        firstProduced = 0
+        firstDisplayed = 0
+        firstCoalesced = 0
+        lastProduced = 0
+        lastDisplayed = 0
+        lastCoalesced = 0
+        schedulingCaptured = false
         loudnessCounts.removeAll()
         perBandBaseSum = Array(repeating: 0, count: SpectrumProcessor.Constants.bandCount)
         perBandMotionSum = Array(repeating: 0, count: SpectrumProcessor.Constants.bandCount)
@@ -1295,6 +1510,11 @@ nonisolated private struct SpectrumDiagnostics {
         compressionBoost: Float,
         sharedMotionScaleDb: Float,
         commonMotionDb: Float,
+        lowProminenceGate: Float,
+        rawRms: Float,
+        playerVolume: Float,
+        compensatedRms: Float,
+        scheduling: (produced: UInt64, displayed: UInt64, coalesced: UInt64, pending: Int, frameAgeMs: Float),
         baseBands: [Float],
         motionBands: [Float],
         finalBands: [Float]
@@ -1309,7 +1529,25 @@ nonisolated private struct SpectrumDiagnostics {
         sumCompressionBoost += compressionBoost
         sumSharedMotionScale += sharedMotionScaleDb
         sumCommonMotion += commonMotionDb
+        sumLowProminence += lowProminenceGate
+        sumRawRms += rawRms
+        sumPlayerVolume += playerVolume
+        sumCompensatedRms += compensatedRms
         loudnessCounts[loudnessState, default: 0] += 1
+
+        // Scheduling: capture the window-start cumulative counters on the first
+        // frame so the emit can report per-window deltas.
+        if !schedulingCaptured {
+            firstProduced = scheduling.produced
+            firstDisplayed = scheduling.displayed
+            firstCoalesced = scheduling.coalesced
+            schedulingCaptured = true
+        }
+        lastProduced = scheduling.produced
+        lastDisplayed = scheduling.displayed
+        lastCoalesced = scheduling.coalesced
+        sumPending += Float(scheduling.pending)
+        if scheduling.frameAgeMs > maxFrameAgeMs { maxFrameAgeMs = scheduling.frameAgeMs }
 
         let bands = SpectrumProcessor.Constants.bandCount
         var baseSum: Float = 0
@@ -1359,10 +1597,18 @@ nonisolated private struct SpectrumDiagnostics {
         let avgBoost = sumCompressionBoost / n
         let avgSharedScale = sumSharedMotionScale / n
         let avgCommon = sumCommonMotion / n
+        let avgLowProm = sumLowProminence / n
+        let avgRawRms = sumRawRms / n
+        let avgVol = sumPlayerVolume / n
+        let avgCompRms = sumCompensatedRms / n
         let avgBaseMean = sumBaseMean / n
         let avgMotionMean = sumMotionMean / n
         let avgFinalMean = sumFinalMean / n
         let avgBandStd = sumBandStdDev / n
+        let avgPending = sumPending / n
+        let dProduced = lastProduced &- firstProduced
+        let dDisplayed = lastDisplayed &- firstDisplayed
+        let dCoalesced = lastCoalesced &- firstCoalesced
 
         let state = loudnessCounts.max { $0.value < $1.value }?.key ?? "-"
 
@@ -1373,11 +1619,17 @@ nonisolated private struct SpectrumDiagnostics {
         Log.debug(
             "[Spectrum] rms=\(fmt(avgRms)) peak=\(fmt(avgPeak)) crest=\(fmt(avgCrest)) state=\(state) " +
             "baseScale=\(fmt(avgBaseScale)) motionScale=\(fmt(avgMotionScale)) " +
-            "gate=\(fmt(avgGate)) boost=\(fmt(avgBoost)) sharedScale=\(fmt(avgSharedScale)) common=\(fmt(avgCommon)) " +
+            "gate=\(fmt(avgGate)) boost=\(fmt(avgBoost)) lowProm=\(fmt(avgLowProm)) " +
+            "sharedScale=\(fmt(avgSharedScale)) common=\(fmt(avgCommon)) " +
+            "rawRms=\(sci(avgRawRms)) vol=\(fmt(avgVol)) compRms=\(sci(avgCompRms)) " +
             "baseMean=\(fmt(avgBaseMean)) basePeak=\(fmt(basePeak)) " +
             "motionMean=\(fmt(avgMotionMean)) motionPeak=\(fmt(motionPeak)) " +
-            "finalMean=\(fmt(avgFinalMean)) finalPeak=\(fmt(finalPeak)) bandStd=\(fmt(avgBandStd)) " +
-            "frames=\(frameCount)",
+            "finalMean=\(fmt(avgFinalMean)) finalPeak=\(fmt(finalPeak)) bandStd=\(fmt(avgBandStd))",
+            category: .audio
+        )
+        Log.debug(
+            "[Spectrum] sched: produced=\(dProduced) displayed=\(dDisplayed) coalesced=\(dCoalesced) " +
+            "avgPending=\(fmt(avgPending)) maxAgeMs=\(fmt(maxFrameAgeMs)) frames=\(frameCount)",
             category: .audio
         )
         Log.debug(
@@ -1391,5 +1643,8 @@ nonisolated private struct SpectrumDiagnostics {
 
     private func fmt(_ value: Float) -> String {
         String(format: "%.2f", value)
+    }
+    private func sci(_ value: Float) -> String {
+        String(format: "%.3g", value)
     }
 }

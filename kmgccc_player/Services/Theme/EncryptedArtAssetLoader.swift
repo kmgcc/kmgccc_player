@@ -67,10 +67,19 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
 
     private nonisolated init() {}
 
-    nonisolated func cgImage(logicalName: String, in bundle: Bundle?, maxPixel: Int) -> CGImage? {
+    nonisolated func cgImage(
+        logicalName: String,
+        in bundle: Bundle?,
+        maxPixel: Int,
+        fallbackToProgrammaticArt: Bool = false
+    ) -> CGImage? {
         guard maxPixel > 0 else { return nil }
         let cacheKey = "\(logicalName)|px:\(maxPixel)" as NSString
         if let cached = imageCache.object(forKey: cacheKey) {
+            return cached.image
+        }
+        let fallbackCacheKey = "\(cacheKey)|programmatic" as NSString
+        if fallbackToProgrammaticArt, let cached = imageCache.object(forKey: fallbackCacheKey) {
             return cached.image
         }
 
@@ -79,20 +88,57 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
             imageCache.setObject(CGImageBox(image), forKey: cacheKey, cost: byteCost(for: image))
             return image
         } catch {
-            Log.error("[EncryptedArtAssetLoader] \(error)", category: .theme)
-            return nil
+            if !fallbackToProgrammaticArt {
+                Log.error("[EncryptedArtAssetLoader] \(error)", category: .theme)
+            }
+            guard fallbackToProgrammaticArt else { return nil }
+            guard let fallback = ArtworkRenderingFallback.image(
+                kind: .artwork,
+                seed: stableSeed(for: logicalName),
+                pixelSize: CGSize(width: maxPixel, height: maxPixel),
+                isDark: false,
+                themeColor: nil
+            ) else {
+                return nil
+            }
+            imageCache.setObject(
+                CGImageBox(fallback),
+                forKey: fallbackCacheKey,
+                cost: byteCost(for: fallback)
+            )
+            return fallback
         }
     }
 
-    nonisolated func nsImage(logicalName: String, in bundle: Bundle? = nil, maxPixel: Int) -> NSImage? {
-        guard let cgImage = cgImage(logicalName: logicalName, in: bundle, maxPixel: maxPixel) else {
+    nonisolated func nsImage(
+        logicalName: String,
+        in bundle: Bundle? = nil,
+        maxPixel: Int,
+        fallbackToProgrammaticArt: Bool = false
+    ) -> NSImage? {
+        guard let cgImage = cgImage(
+            logicalName: logicalName,
+            in: bundle,
+            maxPixel: maxPixel,
+            fallbackToProgrammaticArt: fallbackToProgrammaticArt
+        ) else {
             return nil
         }
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 
-    nonisolated func xcAssetImage(named name: String, in bundle: Bundle? = nil, maxPixel: Int) -> NSImage? {
-        nsImage(logicalName: "XCAssets/\(name)", in: bundle, maxPixel: maxPixel)
+    nonisolated func xcAssetImage(
+        named name: String,
+        in bundle: Bundle? = nil,
+        maxPixel: Int,
+        fallbackToProgrammaticArt: Bool = false
+    ) -> NSImage? {
+        nsImage(
+            logicalName: "XCAssets/\(name)",
+            in: bundle,
+            maxPixel: maxPixel,
+            fallbackToProgrammaticArt: fallbackToProgrammaticArt
+        )
     }
 
     nonisolated func assetURL(logicalName: String, in bundle: Bundle?) -> URL? {
@@ -273,6 +319,12 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
     private nonisolated func byteCost(for image: CGImage) -> Int {
         max(1, image.bytesPerRow * image.height)
     }
+
+    private nonisolated func stableSeed(for value: String) -> UInt64 {
+        value.utf8.reduce(UInt64(0xcbf29ce484222325)) { hash, byte in
+            (hash ^ UInt64(byte)) &* UInt64(0x100000001b3)
+        }
+    }
 }
 
 struct EncryptedAssetImage: View {
@@ -281,7 +333,11 @@ struct EncryptedAssetImage: View {
     var fallbackSystemName: String = "photo"
 
     var body: some View {
-        if let image = EncryptedArtAssetLoader.shared.xcAssetImage(named: name, maxPixel: maxPixel) {
+        if let image = EncryptedArtAssetLoader.shared.xcAssetImage(
+            named: name,
+            maxPixel: maxPixel,
+            fallbackToProgrammaticArt: true
+        ) {
             Image(nsImage: image)
         } else {
             Image(systemName: fallbackSystemName)
@@ -291,7 +347,11 @@ struct EncryptedAssetImage: View {
 
 enum EncryptedAssetImages {
     static func image(named name: String, maxPixel: Int = 1_600, fallbackSystemName: String = "photo") -> Image {
-        if let image = EncryptedArtAssetLoader.shared.xcAssetImage(named: name, maxPixel: maxPixel) {
+        if let image = EncryptedArtAssetLoader.shared.xcAssetImage(
+            named: name,
+            maxPixel: maxPixel,
+            fallbackToProgrammaticArt: true
+        ) {
             return Image(nsImage: image)
         }
         return Image(systemName: fallbackSystemName)

@@ -7,28 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		933AAE3F2F3CCBBB0081B59C /* BKArt.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 933AADFD2F3CC8D40081B59C /* BKArt.bundle */; };
-		9340EE102FA6000000010001 /* EncryptedArtAssets in Resources */ = {isa = PBXBuildFile; fileRef = 9340EE0F2FA6000000010001 /* EncryptedArtAssets */; };
 		9351198E2F33149A00766A5F /* AMLL in Resources */ = {isa = PBXBuildFile; fileRef = 9351198D2F33149A00766A5F /* AMLL */; };
 		938818D32F7925E800880C23 /* WhatsNewKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000002 /* WhatsNewKit */; };
 		9396ADAB2FA12C0100000002 /* mediaremote-adapter in Resources */ = {isa = PBXBuildFile; fileRef = 9396ADAB2FA12C0100000001 /* mediaremote-adapter */; };
 		93CF3F832F344E9F0004C8E3 /* lddc-server in Resources */ = {isa = PBXBuildFile; fileRef = 93CF3F822F344E9F0004C8E3 /* lddc-server */; };
 /* End PBXBuildFile section */
 
-/* Begin PBXContainerItemProxy section */
-		933AAE3D2F3CCB9C0081B59C /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 9351188A2F3231C500766A5F /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 933AADFC2F3CC8D40081B59C;
-			remoteInfo = BKArt;
-		};
-/* End PBXContainerItemProxy section */
-
 /* Begin PBXFileReference section */
 		933AADFD2F3CC8D40081B59C /* BKArt.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BKArt.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
-		933AAE412F3CCCDF0081B59C /* BKThemes */ = {isa = PBXFileReference; lastKnownFileType = folder; path = BKThemes; sourceTree = "<group>"; };
-		9340EE0F2FA6000000010001 /* EncryptedArtAssets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = EncryptedArtAssets; sourceTree = "<group>"; };
 		935118922F3231C500766A5F /* kmgccc_player.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = kmgccc_player.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9351198D2F33149A00766A5F /* AMLL */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMLL; path = kmgccc_player/Resources/AMLL; sourceTree = "<group>"; };
 		9396ADAB2FA12C0100000001 /* mediaremote-adapter */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "mediaremote-adapter"; path = "kmgccc_player/Resources/mediaremote-adapter"; sourceTree = "<group>"; };
@@ -41,6 +27,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				Rendering/BokehTransition/BokehTransitionShader.metal,
 			);
 			target = 935118912F3231C500766A5F /* kmgccc_player */;
 		};
@@ -79,8 +66,6 @@
 		935118892F3231C500766A5F = {
 			isa = PBXGroup;
 			children = (
-				933AAE412F3CCCDF0081B59C /* BKThemes */,
-				9340EE0F2FA6000000010001 /* EncryptedArtAssets */,
 				93CF3F822F344E9F0004C8E3 /* lddc-server */,
 				93D91A102FA5000000010001 /* Tools */,
 				9351198D2F33149A00766A5F /* AMLL */,
@@ -143,7 +128,6 @@
 			buildRules = (
 			);
 			dependencies = (
-				933AAE3E2F3CCB9C0081B59C /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				935118942F3231C500766A5F /* kmgccc_player */,
@@ -203,7 +187,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				9340EE102FA6000000010001 /* EncryptedArtAssets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -211,7 +194,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				933AAE3F2F3CCBBB0081B59C /* BKArt.bundle in Resources */,
 				9351198E2F33149A00766A5F /* AMLL in Resources */,
 				9396ADAB2FA12C0100000002 /* mediaremote-adapter in Resources */,
 				93CF3F832F344E9F0004C8E3 /* lddc-server in Resources */,
@@ -302,14 +284,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
-
-/* Begin PBXTargetDependency section */
-		933AAE3E2F3CCB9C0081B59C /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 933AADFC2F3CC8D40081B59C /* BKArt */;
-			targetProxy = 933AAE3D2F3CCB9C0081B59C /* PBXContainerItemProxy */;
-		};
-/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		933AADFF2F3CC8D40081B59C /* Debug */ = {
@@ -501,7 +475,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 7;
 				DEAD_CODE_STRIPPING = YES;
-				DEVELOPMENT_TEAM = UZ65CA967F;
+				DEVELOPMENT_TEAM = TYU73KR9WW;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -651,6 +625,156 @@
 			};
 			name = Release;
 		};
+		93C215843002257B00D3073F /* PrivateDistribution */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = bkMask;
+			};
+			name = PrivateDistribution;
+		};
+		93F0B0012FA7000000010001 /* PrivateDistribution */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = TYU73KR9WW;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.2;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = PrivateDistribution;
+		};
+		93F0B0022FA7000000010001 /* PrivateDistribution */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ARCHS = "$(ARCHS_STANDARD)";
+				ASSETCATALOG_COMPILER_APPICON_NAME = kmgccc;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
+				AUTOMATION_APPLE_EVENTS = NO;
+				CODE_SIGN_ENTITLEMENTS = kmgccc_player/kmgccc_player.release.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 7;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_TEAM = UZ65CA967F;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				EXCLUDED_SOURCE_FILE_NAMES = (
+					"$(inherited)",
+					.venv,
+					".qqmusic-helper-venv",
+					".build-arm64",
+					".build-universal",
+					"venv-arm64",
+					"_internal*.bundle",
+					_internal,
+					2.bundle,
+					_internal,
+					3.bundle,
+					_internal,
+					_internal.bundle,
+					.DS_Store,
+					"qqmusic-helper*",
+					"qqmusic-helper",
+					__pycache__,
+					"*.bak*",
+					"*.pyc",
+					build,
+					dist,
+					"*.spec",
+					"build-universal.sh",
+					main.py,
+					requirements.txt,
+				);
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/kmgccc_player/Resources/mediaremote-adapter/build",
+				);
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = kmgccc_player/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = kmgccc_player;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				LIBRARY_SEARCH_PATHS = "$(inherited)";
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 2.2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.player;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				REGISTER_APP_GROUPS = YES;
+				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
+				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
+				RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY = NO;
+				RUNTIME_EXCEPTION_DEBUGGING_TOOL = NO;
+				RUNTIME_EXCEPTION_DISABLE_EXECUTABLE_PAGE_PROTECTION = NO;
+				RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION = NO;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "PRIVATE_DISTRIBUTION $(inherited)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = PrivateDistribution;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -659,6 +783,7 @@
 			buildConfigurations = (
 				933AADFF2F3CC8D40081B59C /* Debug */,
 				933AAE002F3CC8D40081B59C /* Release */,
+				93C215843002257B00D3073F /* PrivateDistribution */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -668,6 +793,7 @@
 			buildConfigurations = (
 				9351189B2F3231C700766A5F /* Debug */,
 				9351189C2F3231C700766A5F /* Release */,
+				93F0B0012FA7000000010001 /* PrivateDistribution */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -677,6 +803,7 @@
 			buildConfigurations = (
 				9351189E2F3231C700766A5F /* Debug */,
 				9351189F2F3231C700766A5F /* Release */,
+				93F0B0022FA7000000010001 /* PrivateDistribution */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -49,7 +49,7 @@ struct CapsuleSpectrumDynamics: Equatable {
     /// attack/release envelope, so the spring's job is purely visual: add a
     /// short, clear overshoot on transients and a crisp rebound, without
     /// smoothing over the signal's own fast decay.
-    static let standard = CapsuleSpectrumDynamics(response: 0.18, dampingFraction: 0.56)
+    static let standard = CapsuleSpectrumDynamics(response: 0.165, dampingFraction: 0.54)
     /// Tighter, less bounce — quick and composed.
     static let tight = CapsuleSpectrumDynamics(response: 0.10, dampingFraction: 0.80)
     /// Looser and bouncier — bigger overshoot.
@@ -389,9 +389,11 @@ final class CapsuleSpectrumHostView: NSView {
         let now = link.timestamp
         var dt = lastTickTimestamp > 0 ? now - lastTickTimestamp : (1.0 / 60.0)
         lastTickTimestamp = now
-        // The analytic spring step below is unconditionally stable, so this clamp
-        // is only to keep a long hitch from snapping the bars in one visible jump.
-        dt = min(max(dt, 1.0 / 240.0), 1.0 / 30.0)
+        // Allow up to 1/15s of catch-up after a stalled frame, then sub-step the
+        // spring (advanceFollowers) so the bars reach the correct position
+        // instead of freezing or jumping in one big step. Below 1/240s would be
+        // noise; clamp the floor too.
+        dt = min(max(dt, 1.0 / 240.0), 1.0 / 15.0)
 
         advanceFollowers(dt: CGFloat(dt))
         renderHeights()
@@ -424,17 +426,27 @@ final class CapsuleSpectrumHostView: NSView {
         let dynamics = isPlaying ? configuration.dynamics : configuration.pauseDynamics
         let omega = (2 * CGFloat.pi) / max(0.01, dynamics.response)
         let zeta = max(0, dynamics.dampingFraction)
-        for index in 0..<count {
-            let (newPos, newVel) = Self.dampedSpringStep(
-                position: position[index],
-                velocity: velocity[index],
-                target: targetWave[index],
-                omega: omega,
-                zeta: zeta,
-                dt: dt
-            )
-            position[index] = newPos
-            velocity[index] = newVel
+        // Sub-step when dt is large (e.g. after a stalled display-link frame) so
+        // the bars catch up to the correct position instead of freezing. The
+        // closed-form step is exact for any dt, but capping each step keeps the
+        // visible motion smooth and avoids a single huge jump.
+        let maxStep: CGFloat = 1.0 / 120.0
+        var remaining = dt
+        while remaining > 0 {
+            let step = min(remaining, maxStep)
+            for index in 0..<count {
+                let (newPos, newVel) = Self.dampedSpringStep(
+                    position: position[index],
+                    velocity: velocity[index],
+                    target: targetWave[index],
+                    omega: omega,
+                    zeta: zeta,
+                    dt: step
+                )
+                position[index] = newPos
+                velocity[index] = newVel
+            }
+            remaining -= step
         }
     }
 
