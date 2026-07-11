@@ -99,12 +99,24 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
 
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenBackdropReadabilityState) private var readabilityState
+    @Environment(\.displayScale) private var displayScale
     @State private var transitionPosition: CGFloat
     @State private var centeredLayerOpacity: CGFloat
     @State private var transitionLayerOpacity: CGFloat = 0
     @State private var transitionBlurRadius: CGFloat = 0
+    @State private var bokehRadius: CGFloat = 0
+    @State private var bokehSurfaceOpacity: CGFloat = 0
+    @State private var activeTransitionMode: BokehTransitionMode = .unmaskedFallback(reason: "idle")
+    @State private var activeBokehConfiguration = BokehTransitionConfig()
     @State private var isTransitionActive = false
     @State private var transitionTask: Task<Void, Never>?
+    @State private var leadingRenderedFrame: CoverGradientBlurRenderedFrame?
+    @State private var centeredRenderedFrame: CoverGradientBlurRenderedFrame?
+    @State private var transitionRenderedFrame: CoverGradientBlurRenderedFrame?
+    @State private var bokehPreparedSourceSet: BokehTransitionPreparedSourceSet?
+    @State private var activeBokehSourceSet: BokehTransitionPreparedSourceSet?
+    @State private var bokehViewportSize: CGSize = .zero
+    @State private var bokehSourcePreparer = BokehTransitionSourcePreparer()
 
     init(context: SkinContext, config: CoverGradientBlurConfig) {
         self.context = context
@@ -135,6 +147,14 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                     .offset(x: transitionCanvasOffset(for: geometry.size))
                     .opacity(Double(transitionLayerOpacity))
                     .zIndex(2)
+
+                BokehTransitionSurface(
+                    snapshot: bokehSnapshot(for: geometry.size),
+                    sourceSet: activeBokehSourceSet
+                )
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .allowsHitTesting(false)
+                .zIndex(3)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
@@ -143,11 +163,24 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             .onChange(of: targetCentered) { _, newValue in
                 runLayoutTransition(to: newValue)
             }
+            .onAppear {
+                updateBokehViewport(geometry.size)
+            }
+            .onChange(of: geometry.size) { _, newSize in
+                updateBokehViewport(newSize)
+            }
         }
         .onAppear { beginReadabilityArtwork() }
-        .onChange(of: context.track?.artworkChecksum ?? 0) { _, _ in beginReadabilityArtwork() }
+        .onChange(of: context.track?.artworkChecksum ?? 0) { _, _ in
+            beginReadabilityArtwork()
+            handleArtworkChange()
+        }
+        .onChange(of: displayScale) { _, _ in
+            prepareBokehSourcesIfPossible()
+        }
         .onDisappear {
             transitionTask?.cancel()
+            bokehSourcePreparer.invalidate()
         }
     }
 
@@ -177,6 +210,141 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                 transitionReadabilityFrames(for: viewportSize)
             )
         )
+    }
+
+    @MainActor
+    private func acceptRenderedFrame(_ frame: CoverGradientBlurRenderedFrame) {
+        guard frame.artworkChecksum == (context.track?.artworkChecksum ?? 0) else { return }
+        switch frame.placement {
+        case .leading:
+            leadingRenderedFrame = frame
+        case .centeredSymmetric:
+            centeredRenderedFrame = frame
+        case .transition:
+            transitionRenderedFrame = frame
+        }
+        prepareBokehSourcesIfPossible()
+    }
+
+    private func handleArtworkChange() {
+        bokehSourcePreparer.invalidate()
+        leadingRenderedFrame = nil
+        centeredRenderedFrame = nil
+        transitionRenderedFrame = nil
+        bokehPreparedSourceSet = nil
+
+        // A running Bokeh surface may only ever show a complete, one-artwork
+        // source set. On a track change retire it rather than combining frames
+        // from the outgoing and incoming tracks; the high-resolution Gaussian
+        // path remains underneath for this exceptional interruption.
+        retireBokehWithoutOpticalFallback(reason: "artwork changed during transition")
+        activeBokehSourceSet = nil
+    }
+
+    private func updateBokehViewport(_ size: CGSize) {
+        guard size.width > 1, size.height > 1 else { return }
+        bokehViewportSize = size
+        // Keep the active source set stable until the transition completes.
+        // A resize prepares the next set but never replaces Bokeh with a sudden
+        // full-surface Gaussian blur.
+        prepareBokehSourcesIfPossible()
+    }
+
+    private func retireBokehWithoutOpticalFallback(reason: String) {
+        guard activeTransitionMode.usesBokeh else { return }
+        activeTransitionMode = .unmaskedFallback(reason: reason)
+        BokehTransitionPerformancePolicy.shared.finish()
+        withoutSwiftUIAnimation {
+            bokehRadius = 0
+            bokehSurfaceOpacity = 0
+            transitionBlurRadius = 0
+        }
+    }
+
+    private func preferredBokehTier(for configuration: BokehTransitionConfig) -> BokehTransitionRenderTier {
+        switch configuration.quality {
+        case .low:
+            return .low
+        case .balanced:
+            return .balanced
+        case .automatic:
+            let thermal = ProcessInfo.processInfo.thermalState
+            if ProcessInfo.processInfo.isLowPowerModeEnabled || thermal == .serious || thermal == .critical {
+                return .low
+            }
+            return BokehTransitionPerformancePolicy.shared.nextAutomaticDecision().tier
+        }
+    }
+
+    private func prepareBokehSourcesIfPossible() {
+        let configuration = BokehTransitionConfig.load()
+        let tier = preferredBokehTier(for: configuration)
+        guard configuration.effect == .bokeh,
+              let frames = BokehTransitionSourceFrames(
+                leading: leadingRenderedFrame,
+                centered: centeredRenderedFrame,
+                transition: transitionRenderedFrame
+              ),
+              bokehViewportSize.width > 1,
+              bokehViewportSize.height > 1,
+              abs(frames.leading.logicalCanvasSize.width - bokehViewportSize.width) <= 12,
+              abs(frames.leading.logicalCanvasSize.height - bokehViewportSize.height) <= 12,
+              let renderSize = BokehTransitionRenderSize.make(
+                backingPixelSize: CGSize(
+                    width: bokehViewportSize.width * displayScale,
+                    height: bokehViewportSize.height * displayScale
+                ),
+                tier: tier
+              ) else {
+            return
+        }
+
+        bokehSourcePreparer.prepare(
+            frames: frames,
+            renderSize: renderSize,
+            tier: tier
+        ) { sourceSet in
+            bokehPreparedSourceSet = sourceSet
+            // A source prepared during a transition is intentionally held for
+            // the next one; no mid-animation resolution/identity swap.
+            if !isTransitionActive {
+                activeBokehSourceSet = sourceSet
+            }
+        }
+    }
+
+    private func bokehSnapshot(for size: CGSize) -> BokehTransitionSnapshot {
+        let sourceSet = activeBokehSourceSet
+        let canvasRatio = sourceSet?.transitionCanvasSizeRatio ?? CGSize(width: 1, height: 1)
+        return BokehTransitionSnapshot(
+            transitionPosition: transitionPosition,
+            centeredOpacity: centeredLayerOpacity,
+            transitionOpacity: transitionLayerOpacity,
+            bokehRadius: bokehRadius,
+            surfaceOpacity: bokehSurfaceOpacity,
+            transitionCanvasSizeRatio: canvasRatio,
+            // A constant travel distance; Metal combines it with the animated
+            // transitionPosition every frame. Sending the already-evaluated
+            // offset here bypassed AnimatableData and caused a hard position cut.
+            transitionCanvasOffsetRatio: size.width > 1 ? coverCenterShift(for: size) / size.width : 0,
+            configuration: activeTransitionMode.usesBokeh ? activeBokehConfiguration : BokehTransitionConfig.load(),
+            tier: sourceSet?.identity.tier ?? .balanced,
+            reduceMotion: context.theme.reduceMotion
+        )
+    }
+
+    private func selectTransitionMode(configuration: BokehTransitionConfig) -> BokehTransitionMode {
+        guard configuration.effect == .bokeh else {
+            return .gaussianFallback(reason: "selected in settings")
+        }
+        let tier = preferredBokehTier(for: configuration)
+        guard let sourceSet = bokehPreparedSourceSet,
+              sourceSet.identity.tier == tier else {
+            prepareBokehSourcesIfPossible()
+            return .unmaskedFallback(reason: "Bokeh source set not ready")
+        }
+        activeBokehSourceSet = sourceSet
+        return .bokeh
     }
 
     private var blurRiseAnimation: Animation {
@@ -230,7 +398,8 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             dominantColor: themeStore.semanticPalette.coverGradientDominant,
             config: config(for: placement),
             readabilityPlacement: readabilityPlacement,
-            onReadabilitySnapshot: acceptReadability
+            onReadabilitySnapshot: acceptReadability,
+            onRenderedFrame: acceptRenderedFrame
         )
         .frame(width: size.width, height: size.height)
         .allowsHitTesting(false)
@@ -247,7 +416,8 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             readabilityPlacement: .transition,
             onReadabilitySnapshot: { snapshot in
                 acceptTransitionReadability(snapshot, viewportSize: size)
-            }
+            },
+            onRenderedFrame: acceptRenderedFrame
         )
         .allowsHitTesting(false)
     }
@@ -257,22 +427,30 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
 
         let targetPosition: CGFloat = targetCentered ? 1 : 0
         let shouldRetargetImmediately = isTransitionActive
+        let bokehConfiguration = BokehTransitionConfig.load()
 
         guard transitionPosition != targetPosition || isTransitionActive else {
-            withAnimation(blurFallAnimation) {
-                transitionBlurRadius = 0
-            }
+            retireTransitionEffect()
             return
         }
 
         isTransitionActive = true
 
-        withAnimation(blurRiseAnimation) {
-            transitionBlurRadius = 44
+        if !shouldRetargetImmediately {
+            // The mode is deliberately locked for this whole transition. A
+            // source set that becomes ready later is reserved for the next
+            // toggle, avoiding an in-flight Gaussian/Bokeh quality jump.
+            activeBokehConfiguration = bokehConfiguration
+            activeTransitionMode = selectTransitionMode(configuration: activeBokehConfiguration)
+            if activeTransitionMode.usesBokeh {
+                BokehTransitionPerformancePolicy.shared.begin(
+                    tier: activeBokehSourceSet?.identity.tier ?? .balanced
+                )
+            }
         }
-        withAnimation(transitionLayerFadeInAnimation) {
-            transitionLayerOpacity = 1
-        }
+
+        startTransitionEffect(configuration: activeBokehConfiguration)
+        setTransitionLayerOpacity(1, rising: true)
 
         if shouldRetargetImmediately {
             retargetTransition(to: targetPosition)
@@ -287,18 +465,57 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
 
             guard await waitForTransitionStage(nanoseconds: movementSettleDelay) else { return }
 
-            withAnimation(transitionLayerFadeOutAnimation) {
-                transitionLayerOpacity = 0
-            }
+            setTransitionLayerOpacity(0, rising: false)
 
             guard await waitForTransitionStage(nanoseconds: 120_000_000) else { return }
 
+            retireTransitionEffect()
+
+            guard await waitForTransitionStage(nanoseconds: transitionCompletionDelay) else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                bokehSurfaceOpacity = 0
+            }
+            isTransitionActive = false
+            BokehTransitionPerformancePolicy.shared.finish()
+            activeBokehSourceSet = bokehPreparedSourceSet
+        }
+    }
+
+    private func startTransitionEffect(configuration: BokehTransitionConfig) {
+        switch activeTransitionMode {
+        case .bokeh:
+            transitionBlurRadius = 0
+            withoutSwiftUIAnimation {
+                bokehSurfaceOpacity = 1
+                bokehRadius = configuration.radiusAt1080
+            }
+        case .gaussianFallback:
+            bokehRadius = 0
+            bokehSurfaceOpacity = 0
+            withAnimation(blurRiseAnimation) {
+                transitionBlurRadius = 44
+            }
+        case .unmaskedFallback:
+            bokehRadius = 0
+            bokehSurfaceOpacity = 0
+            transitionBlurRadius = 0
+        }
+    }
+
+    private func retireTransitionEffect() {
+        switch activeTransitionMode {
+        case .bokeh:
+            withoutSwiftUIAnimation {
+                bokehRadius = 0
+            }
+        case .gaussianFallback:
             withAnimation(blurFallAnimation) {
                 transitionBlurRadius = 0
             }
-
-            guard await waitForTransitionStage(nanoseconds: transitionCompletionDelay) else { return }
-            isTransitionActive = false
+        case .unmaskedFallback:
+            transitionBlurRadius = 0
         }
     }
 
@@ -311,12 +528,40 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     }
 
     private func retargetTransition(to targetPosition: CGFloat) {
-        withAnimation(coverSpringAnimation) {
-            transitionPosition = targetPosition
+        if activeTransitionMode.usesBokeh {
+            // Metal is the sole animation authority in Bokeh mode. SwiftUI only
+            // publishes new targets; the renderer preserves spring velocity and
+            // generates every presentation frame, including interruptions.
+            withoutSwiftUIAnimation {
+                transitionPosition = targetPosition
+                centeredLayerOpacity = targetPosition
+            }
+        } else {
+            withAnimation(coverSpringAnimation) {
+                transitionPosition = targetPosition
+            }
+            withAnimation(backgroundCrossfadeAnimation) {
+                centeredLayerOpacity = targetPosition
+            }
         }
-        withAnimation(backgroundCrossfadeAnimation) {
-            centeredLayerOpacity = targetPosition
+    }
+
+    private func setTransitionLayerOpacity(_ value: CGFloat, rising: Bool) {
+        if activeTransitionMode.usesBokeh {
+            withoutSwiftUIAnimation {
+                transitionLayerOpacity = value
+            }
+        } else {
+            withAnimation(rising ? transitionLayerFadeInAnimation : transitionLayerFadeOutAnimation) {
+                transitionLayerOpacity = value
+            }
         }
+    }
+
+    private func withoutSwiftUIAnimation(_ updates: () -> Void) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction, updates)
     }
 
     private func waitForTransitionStage(nanoseconds: UInt64) async -> Bool {
@@ -514,9 +759,29 @@ private struct CoverGradientBlurSettingsView: View {
     @AppStorage("skin.coverGradientBlur.maxBlurRadius") private var maxBlurRadius: Double = 1600
     @AppStorage("skin.coverGradientBlur.edgeFillMode") private var edgeFillMode: String = CoverEdgeFillMode.pixelStretch.rawValue
     @AppStorage("fullscreenDimmingIntensity") private var fullscreenDimmingIntensity: Double = 0.15
+    @AppStorage(BokehTransitionConfig.Keys.effect) private var transitionEffect: String = CoverBlurTransitionEffect.bokeh.rawValue
+    @AppStorage(BokehTransitionConfig.Keys.quality) private var transitionQuality: String = BokehTransitionQuality.automatic.rawValue
+    @AppStorage(BokehTransitionConfig.Keys.radiusAt1080) private var bokehRadiusAt1080: Double = BokehTransitionConfig.defaultRadiusAt1080
+    @AppStorage(BokehTransitionConfig.Keys.highlightPower) private var bokehHighlightPower: Double = BokehTransitionConfig.defaultHighlightPower
+    @AppStorage(BokehTransitionConfig.Keys.highlightThreshold) private var bokehHighlightThreshold: Double = BokehTransitionConfig.defaultHighlightThreshold
+    @AppStorage(BokehTransitionConfig.Keys.aperture) private var bokehAperture: String = BokehApertureShape.circle.rawValue
+    @AppStorage(BokehTransitionConfig.Keys.apertureRotationDegrees) private var bokehApertureRotationDegrees: Double = 0
+    @AppStorage(BokehTransitionConfig.Keys.apertureRoundness) private var bokehApertureRoundness: Double = 0
 
     private var currentEdgeFillMode: CoverEdgeFillMode {
         CoverEdgeFillMode(rawValue: edgeFillMode) ?? .pixelStretch
+    }
+
+    private var currentTransitionEffect: CoverBlurTransitionEffect {
+        CoverBlurTransitionEffect(rawValue: transitionEffect) ?? .bokeh
+    }
+
+    private var currentTransitionQuality: BokehTransitionQuality {
+        BokehTransitionQuality(rawValue: transitionQuality) ?? .automatic
+    }
+
+    private var currentAperture: BokehApertureShape {
+        BokehApertureShape(rawValue: bokehAperture) ?? .circle
     }
 
     private var slidingKnobColor: Color {
@@ -534,6 +799,10 @@ private struct CoverGradientBlurSettingsView: View {
             edgeFillModePicker
 
             blurRadiusSlider
+
+            transitionEffectPicker
+
+            bokehControls
 
             dimmingIntensitySlider
         }
@@ -615,6 +884,171 @@ private struct CoverGradientBlurSettingsView: View {
         }
     }
 
+    private var transitionEffectPicker: some View {
+        HStack(spacing: 8) {
+            Text("切换效果")
+                .font(presentationStyle.rowLabelFont)
+                .foregroundStyle(presentationStyle.primaryTextColor)
+
+            Spacer()
+
+            SlidingSelector(
+                segments: CoverBlurTransitionEffect.allCases,
+                selection: Binding(
+                    get: { currentTransitionEffect },
+                    set: { transitionEffect = $0.rawValue }
+                ),
+                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
+                hSpacing: 0,
+                background: { Color.clear },
+                knob: {
+                    Capsule()
+                        .fill(slidingKnobColor.opacity(0.18))
+                },
+                content: { effect, isSelected in
+                    Text(effect.displayName)
+                        .font(presentationStyle.segmentedLabelFont.weight(isSelected ? .medium : .regular))
+                        .padding(.horizontal, presentationStyle.segmentedHorizontalPadding)
+                        .padding(.vertical, presentationStyle.segmentedVerticalPadding)
+                        .foregroundStyle(
+                            isSelected
+                                ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
+                                : presentationStyle.secondaryTextColor
+                        )
+                }
+            )
+            .padding(.horizontal, presentationStyle.segmentedTrackHorizontalPadding)
+            .padding(.vertical, presentationStyle.segmentedTrackVerticalPadding)
+            .background(
+                Capsule()
+                    .fill(presentationStyle.segmentedTrackColor)
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(
+                                presentationStyle.segmentedTrackStrokeColor,
+                                lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear ? 0 : 0.5
+                            )
+                            .allowsHitTesting(false)
+                    )
+            )
+            .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private var bokehControls: some View {
+        VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
+            menuRow(
+                title: "散景质量",
+                selection: Binding(
+                    get: { currentTransitionQuality },
+                    set: { transitionQuality = $0.rawValue }
+                )
+            )
+
+            sliderRow(
+                title: "散景半径",
+                value: $bokehRadiusAt1080,
+                range: 16...72,
+                step: 1,
+                valueText: "\(Int(bokehRadiusAt1080))"
+            )
+
+            sliderRow(
+                title: "高光力度",
+                value: $bokehHighlightPower,
+                range: 1...5,
+                step: 0.1,
+                valueText: String(format: "%.1f", bokehHighlightPower)
+            )
+
+            sliderRow(
+                title: "高光阈值",
+                value: $bokehHighlightThreshold,
+                range: 0.40...0.95,
+                step: 0.01,
+                valueText: String(format: "%.2f", bokehHighlightThreshold)
+            )
+
+            menuRow(
+                title: "光圈形状",
+                selection: Binding(
+                    get: { currentAperture },
+                    set: { bokehAperture = $0.rawValue }
+                )
+            )
+
+            sliderRow(
+                title: "光圈旋转",
+                value: $bokehApertureRotationDegrees,
+                range: 0...180,
+                step: 1,
+                valueText: "\(Int(bokehApertureRotationDegrees))°"
+            )
+            .disabled(!currentAperture.supportsPolygonControls)
+
+            sliderRow(
+                title: "光圈圆度",
+                value: $bokehApertureRoundness,
+                range: -1...1,
+                step: 0.05,
+                valueText: String(format: "%.2f", bokehApertureRoundness)
+            )
+            .disabled(!currentAperture.supportsPolygonControls)
+        }
+        .disabled(currentTransitionEffect != .bokeh)
+        .opacity(currentTransitionEffect == .bokeh ? 1 : 0.55)
+    }
+
+    private func menuRow<Option: CaseIterable & Hashable>(
+        title: String,
+        selection: Binding<Option>
+    ) -> some View where Option.AllCases: RandomAccessCollection, Option: BokehTransitionMenuOption {
+        HStack(spacing: 12) {
+            Text(title)
+                .font(presentationStyle.rowLabelFont)
+                .foregroundStyle(presentationStyle.primaryTextColor)
+                .frame(width: 84, alignment: .leading)
+
+            Spacer()
+
+            Picker(title, selection: selection) {
+                ForEach(Array(Option.allCases), id: \.self) { option in
+                    Text(option.displayName).tag(option)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(minWidth: 120, alignment: .trailing)
+        }
+    }
+
+    private func sliderRow(
+        title: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        step: Double,
+        valueText: String
+    ) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+                .font(presentationStyle.rowLabelFont)
+                .foregroundStyle(presentationStyle.primaryTextColor)
+                .frame(width: 84, alignment: .leading)
+
+            Slider(value: value, in: range, step: step)
+                .tint(themeStore.accentColor)
+                .frame(maxWidth: .infinity)
+
+            Text(valueText)
+                .font(presentationStyle.rowValueFont)
+                .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
+                .frame(minWidth: 52, alignment: .trailing)
+        }
+    }
+
     private var dimmingIntensitySlider: some View {
         HStack(spacing: 12) {
             Text("背景压暗强度")
@@ -636,3 +1070,10 @@ private struct CoverGradientBlurSettingsView: View {
         }
     }
 }
+
+private protocol BokehTransitionMenuOption {
+    var displayName: String { get }
+}
+
+extension BokehTransitionQuality: BokehTransitionMenuOption {}
+extension BokehApertureShape: BokehTransitionMenuOption {}
