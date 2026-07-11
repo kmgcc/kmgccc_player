@@ -118,6 +118,10 @@ path_risk() {
       printf '%s\n' 'private-art-master-or-theme'
       return
       ;;
+    */privateartruntime.bundle|*/privateartruntime.bundle/*|privateartruntime.bundle)
+      printf '%s\n' 'private-art-runtime-bundle'
+      return
+      ;;
     */bkart.bundle|*/bkart.bundle/*|bkart.bundle)
       printf '%s\n' 'private-art-bundle'
       return
@@ -129,6 +133,11 @@ path_risk() {
   esac
 
   case "$lower" in
+    */privateartruntimeloader.swift)
+      # Public loader boundary; the private implementation remains in the
+      # separately packaged runtime bundle.
+      return
+      ;;
     *bokeh*.metal|*bokeh*.metallib|*/bokehtransition/*.metal|*/bokehtransition/*.metallib|*/privateshaders/*|*/privatebokeh/*)
       printf '%s\n' 'private-bokeh-metal-library'
       return
@@ -179,14 +188,15 @@ scan_known_private_worktree_roots() {
     'PrivateArtSources' \
     'EncryptedArtAssets' \
     'BKArt.bundle' \
-    'kmgccc_player/Resources/BKArt.bundle' \
-    'kmgccc_player/Assets.xcassets'; do
+    'PrivateArtRuntime.bundle' \
+    'kmgccc_player/Resources/BKArt.bundle'; do
     [[ -e "$path" ]] || continue
     risk="$(path_risk "$path" || true)"
     case "$path" in
-      BKThemes|kmgccc_player/Assets.xcassets) risk='private-art-master-or-theme' ;;
+      BKThemes) risk='private-art-master-or-theme' ;;
       PrivateArtSources) risk='private-art-source' ;;
       EncryptedArtAssets) risk='encrypted-art-runtime-resource' ;;
+      PrivateArtRuntime.bundle) risk='private-art-runtime-bundle' ;;
       *) risk='private-art-bundle' ;;
     esac
     record_failure 'worktree' 'WORKTREE' '-' "$path" "$risk"
@@ -241,16 +251,43 @@ collect_commits() {
 }
 
 scan_history() {
-  local commit ref path risk
-  while IFS=$'\t' read -r commit ref; do
-    while IFS= read -r path; do
-      [[ -n "$path" ]] || continue
-      risk="$(path_risk "$path" || true)"
-      if [[ -n "$risk" ]]; then
-        record_failure 'history' "$ref" "$commit" "$path" "$risk"
-      fi
-    done < <(git diff-tree --root --no-commit-id --name-only -r "$commit")
-  done < "$commit_refs"
+  local commit path risk
+  local -a history_args=()
+
+  if ((all_refs)); then
+    history_args+=(--all)
+  elif ((${#selected_refs[@]})); then
+    history_args+=("${selected_refs[@]}")
+  else
+    history_args+=(HEAD)
+  fi
+  ((include_reflogs)) && history_args+=(--reflog)
+
+  # Walk the selected history in one Git process, and classify paths in one
+  # awk process. Calling `tr` once per historical path made large audits slow.
+  while IFS=$'\t' read -r commit path risk; do
+    [[ -n "$commit" && -n "$path" && -n "$risk" ]] || continue
+    record_failure 'history' 'reachable-history' "$commit" "$path" "$risk"
+  done < <(
+    git log --no-color --no-renames --format='COMMIT %H' --name-only "${history_args[@]}" |
+      awk '
+        /^COMMIT / { commit = $0; sub(/^COMMIT /, "", commit); next }
+        NF {
+          lower = tolower($0)
+          risk = ""
+          if (lower ~ /(^|\/)privateartsources(\/|$)/) risk = "private-art-source"
+          else if (lower ~ /(^|\/)encryptedartassets(\/|$)/) risk = "encrypted-art-runtime-resource"
+          else if (lower ~ /(^|\/)bkthemes(\/|$)/) risk = "private-art-master-or-theme"
+          else if (lower ~ /(^|\/)bkart\.bundle(\/|$)/) risk = "private-art-bundle"
+          else if (lower ~ /(^|\/)scripts\/encrypt_art_assets\.swift$/ || lower ~ /(^|\/)scripts\/encrypted_asset_allowlist\.json$/) risk = "private-art-encryption-tooling"
+          else if (lower ~ /bokeh.*\.met(al|allib)$/ || lower ~ /(^|\/)bokehtransition\/.*\.met(al|allib)$/ || lower ~ /(^|\/)privateshaders(\/|$)/ || lower ~ /(^|\/)privatebokeh(\/|$)/) risk = "private-bokeh-metal-library"
+          else if (lower ~ /(^|\/)privateartruntimeloader\.swift$/) risk = ""
+          else if (lower ~ /privateart|private_art|privateartwork|private_artwork|privateassets|private_assets/) risk = "legacy-private-art-path"
+          else if (lower ~ /(bokeh|bktheme|bkart|encryptedart|privateart).*(backup|archive|copy|old|orig)/ || lower ~ /(backup|archive|copy|old|orig).*(bokeh|bktheme|bkart|encryptedart|privateart)/) risk = "private-material-backup-or-archive"
+          if (risk != "") print commit "\t" $0 "\t" risk
+        }
+      '
+  )
 }
 
 scan_unreachable_objects() {

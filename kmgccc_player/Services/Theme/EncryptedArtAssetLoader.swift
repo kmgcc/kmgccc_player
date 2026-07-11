@@ -6,20 +6,12 @@
 //
 
 import AppKit
-import CryptoKit
 import Foundation
 import ImageIO
 import SwiftUI
 
 final class EncryptedArtAssetLoader: @unchecked Sendable {
     nonisolated static let shared = EncryptedArtAssetLoader()
-
-    private enum Constants {
-        nonisolated static let magic = Array("KMGASSET".utf8)
-        nonisolated static let version: UInt8 = 1
-        nonisolated static let algorithmAESGCM256: UInt8 = 1
-        nonisolated static let headerLength = 23
-    }
 
     enum LoadError: Error, CustomStringConvertible {
         case missingFile(String)
@@ -28,6 +20,7 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
         case unsupportedAlgorithm(UInt8)
         case malformedHeader(String)
         case authenticationFailed(String)
+        case privateRuntimeUnavailable(String)
         case imageDecodeFailed(String)
 
         var description: String {
@@ -44,6 +37,8 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
                 return "malformed encrypted art header: \(logicalName)"
             case .authenticationFailed(let logicalName):
                 return "encrypted art authentication failed: \(logicalName)"
+            case .privateRuntimeUnavailable(let reason):
+                return "private art runtime unavailable: \(reason)"
             case .imageDecodeFailed(let logicalName):
                 return "encrypted art image decode failed: \(logicalName)"
             }
@@ -159,7 +154,15 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
             throw LoadError.missingFile(logicalName)
         }
         let fileData = try Data(contentsOf: url)
-        let plaintext = try decrypt(fileData, logicalName: logicalName)
+        let plaintext: Data
+        do {
+            plaintext = try PrivateArtRuntimeLoader.shared.decrypt(
+                fileData,
+                logicalName: logicalName
+            )
+        } catch {
+            throw LoadError.privateRuntimeUnavailable(error.localizedDescription)
+        }
         guard let source = CGImageSourceCreateWithData(plaintext as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else {
             throw LoadError.imageDecodeFailed(logicalName)
         }
@@ -181,96 +184,6 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
         let fileName = ((normalized as NSString).lastPathComponent as NSString).deletingPathExtension
         let subdirectory = directory.isEmpty ? "EncryptedArtAssets" : "EncryptedArtAssets/\(directory)"
         return bundle.url(forResource: fileName, withExtension: "kmgasset", subdirectory: subdirectory)
-    }
-
-    private nonisolated func decrypt(_ data: Data, logicalName: String) throws -> Data {
-        guard data.count >= Constants.headerLength else {
-            throw LoadError.malformedHeader(logicalName)
-        }
-        let bytes = [UInt8](data)
-        guard Array(bytes[0..<Constants.magic.count]) == Constants.magic else {
-            throw LoadError.badMagic(logicalName)
-        }
-        let version = bytes[8]
-        guard version == Constants.version else {
-            throw LoadError.unsupportedVersion(version)
-        }
-        let algorithm = bytes[9]
-        guard algorithm == Constants.algorithmAESGCM256 else {
-            throw LoadError.unsupportedAlgorithm(algorithm)
-        }
-
-        let nonceLength = Int(readUInt16(bytes, at: 11))
-        let tagLength = Int(readUInt16(bytes, at: 13))
-        let ciphertextLength = Int(readUInt64(bytes, at: 15))
-        let expectedLength = Constants.headerLength + nonceLength + ciphertextLength + tagLength
-        guard nonceLength > 0,
-              tagLength > 0,
-              ciphertextLength >= 0,
-              expectedLength == data.count
-        else {
-            throw LoadError.malformedHeader(logicalName)
-        }
-
-        let nonceStart = Constants.headerLength
-        let cipherStart = nonceStart + nonceLength
-        let tagStart = cipherStart + ciphertextLength
-        let nonceData = Data(bytes[nonceStart..<cipherStart])
-        let ciphertext = Data(bytes[cipherStart..<tagStart])
-        let tag = Data(bytes[tagStart..<expectedLength])
-
-        do {
-            let sealedBox = try AES.GCM.SealedBox(
-                nonce: AES.GCM.Nonce(data: nonceData),
-                ciphertext: ciphertext,
-                tag: tag
-            )
-            return try AES.GCM.open(sealedBox, using: Self.assetKey())
-        } catch {
-            throw LoadError.authenticationFailed(logicalName)
-        }
-    }
-
-    private nonisolated static func assetKey() -> SymmetricKey {
-        #if DEBUG
-        if let key = keyFromEnvironment() {
-            return key
-        }
-        #endif
-        return publicKeyMaterial()
-    }
-
-    private nonisolated static func keyFromEnvironment() -> SymmetricKey? {
-        guard let hex = ProcessInfo.processInfo.environment["KMG_ART_ASSET_KEY_HEX"],
-              hex.count == 64
-        else {
-            return nil
-        }
-        var bytes: [UInt8] = []
-        bytes.reserveCapacity(32)
-        var index = hex.startIndex
-        while index < hex.endIndex {
-            let next = hex.index(index, offsetBy: 2)
-            guard let byte = UInt8(hex[index..<next], radix: 16) else {
-                return nil
-            }
-            bytes.append(byte)
-            index = next
-        }
-        return SymmetricKey(data: Data(bytes))
-    }
-
-    private nonisolated static func publicKeyMaterial() -> SymmetricKey {
-        let : [UInt8] = []
-        let : [UInt8] = []
-        let : [UInt8] = []
-        let : [UInt8] = []
-        var material: [UInt8] = []
-        for (index, byte) in (a + c + b + d).enumerated() {
-            material.append(byte ^ UInt8((index &* 29 + 0x5d) & 0xff))
-        }
-        let digest = SHA256.hash(data: Data(material + Array("public-art-assets-v1".utf8)))
-        return SymmetricKey(data: Data(digest))
     }
 
     private nonisolated func candidateBundles(preferred: Bundle?) -> [Bundle] {
@@ -303,16 +216,6 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
             if !partial.contains(where: { $0.bundleURL == item.bundleURL }) {
                 partial.append(item)
             }
-        }
-    }
-
-    private nonisolated func readUInt16(_ bytes: [UInt8], at offset: Int) -> UInt16 {
-        (UInt16(bytes[offset]) << 8) | UInt16(bytes[offset + 1])
-    }
-
-    private nonisolated func readUInt64(_ bytes: [UInt8], at offset: Int) -> UInt64 {
-        bytes[offset..<(offset + 8)].reduce(UInt64(0)) { partial, byte in
-            (partial << 8) | UInt64(byte)
         }
     }
 
