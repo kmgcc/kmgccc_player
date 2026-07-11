@@ -148,6 +148,19 @@ private struct RenderKey: Equatable {
     }
 }
 
+// MARK: - Rendered frame publication
+
+/// A guarded final render that may be downsampled and uploaded by the
+/// fullscreen Bokeh transition. The render-store actor remains private; this
+/// value is published only after the existing artwork/render-key guards pass.
+struct CoverGradientBlurRenderedFrame: @unchecked Sendable {
+    let artworkChecksum: UInt64
+    let renderKey: String
+    let placement: CoverGradientBlurReadabilityPlacement
+    let image: CGImage
+    let logicalCanvasSize: CGSize
+}
+
 // MARK: - Main View
 
 struct CoverGradientBlurBackgroundView: View {
@@ -162,6 +175,9 @@ struct CoverGradientBlurBackgroundView: View {
     /// Only the fullscreen Cover Blur bridge sets this.
     var readabilityPlacement: CoverGradientBlurReadabilityPlacement? = nil
     var onReadabilitySnapshot: (@MainActor (CoverGradientBlurReadabilitySnapshot) -> Void)? = nil
+    /// Optional final-frame hook for the low-resolution fullscreen transition
+    /// surface. It receives no cache or mutable render-store references.
+    var onRenderedFrame: (@MainActor (CoverGradientBlurRenderedFrame) -> Void)? = nil
 
     @State private var sourceCGImage: CGImage?
     @State private var renderedCGImage: CGImage?
@@ -176,7 +192,8 @@ struct CoverGradientBlurBackgroundView: View {
         config: CoverGradientBlurConfig,
         preferAdaptiveArtworkSizing: Bool = false,
         readabilityPlacement: CoverGradientBlurReadabilityPlacement? = nil,
-        onReadabilitySnapshot: (@MainActor (CoverGradientBlurReadabilitySnapshot) -> Void)? = nil
+        onReadabilitySnapshot: (@MainActor (CoverGradientBlurReadabilitySnapshot) -> Void)? = nil,
+        onRenderedFrame: (@MainActor (CoverGradientBlurRenderedFrame) -> Void)? = nil
     ) {
         self.artworkData = artworkData
         self.artworkImage = artworkImage
@@ -186,6 +203,7 @@ struct CoverGradientBlurBackgroundView: View {
         self.preferAdaptiveArtworkSizing = preferAdaptiveArtworkSizing
         self.readabilityPlacement = readabilityPlacement
         self.onReadabilitySnapshot = onReadabilitySnapshot
+        self.onRenderedFrame = onRenderedFrame
     }
 
     private var resolvedArtworkChecksum: UInt64 {
@@ -345,6 +363,7 @@ struct CoverGradientBlurBackgroundView: View {
                 map: renderedBox?.readabilityMap,
                 forKey: key
             )
+            publishRenderedFrame(image: renderedImage, forKey: key)
         } else {
             updateSourceImage(preparedArtwork, forKey: key)
             updateRenderedImage(nil, forKey: key)
@@ -370,6 +389,24 @@ struct CoverGradientBlurBackgroundView: View {
             readabilityMap: map
         )
         onReadabilitySnapshot(snapshot)
+    }
+
+    @MainActor
+    private func publishRenderedFrame(image: CGImage, forKey key: RenderKey) {
+        guard let placement = readabilityPlacement,
+              let onRenderedFrame else { return }
+        // Match the readability hand-off contract: never publish a result from
+        // a render that became stale while its background task was running.
+        guard key == renderKey else { return }
+        onRenderedFrame(
+            CoverGradientBlurRenderedFrame(
+                artworkChecksum: resolvedArtworkChecksum,
+                renderKey: key.cacheKey,
+                placement: placement,
+                image: image,
+                logicalCanvasSize: key.size
+            )
+        )
     }
 
     private func updateCurrentSize(_ size: CGSize) {
