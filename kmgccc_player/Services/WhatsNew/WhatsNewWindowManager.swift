@@ -38,10 +38,8 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
 
     /// Show the What's New window with specific content.
     private func show(whatsNew: WhatsNew) {
-        // Create the WhatsNewKit view
         let whatsNewView = WhatsNewView(whatsNew: whatsNew)
 
-        // Create an NSPanel (floating window) with solid background
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 620),
             styleMask: [.titled, .closable, .fullSizeContentView],
@@ -49,7 +47,6 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
             defer: false
         )
 
-        // Configure window appearance - invisible titlebar
         panel.title = ""
         panel.titlebarAppearsTransparent = true
         panel.titleVisibility = .hidden
@@ -61,37 +58,29 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
         panel.delegate = self
         panel.center()
 
-        // Hide standard window buttons (traffic lights)
         panel.standardWindowButton(.closeButton)?.isHidden = true
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
         panel.standardWindowButton(.zoomButton)?.isHidden = true
 
-        // Set minimum size
         panel.minSize = NSSize(width: 480, height: 560)
 
-        // Inject app environment into SwiftUI view
         let themedView = whatsNewView
             .environment(AppSettings.shared)
             .environmentObject(ThemeStore.shared)
             .tint(ThemeStore.shared.accentColor)
             .accentColor(ThemeStore.shared.accentColor)
 
-        // Set the SwiftUI content
         let hostingView = NSHostingView(rootView: themedView)
         panel.contentView = hostingView
 
-        // Apply current app appearance to the window
         applyCurrentAppearance(to: panel)
 
-        // Store reference and show
         whatsNewWindow = panel
         isPresented = true
 
-        // Make it a normal, focused window
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
 
-        // Animate in
         panel.alphaValue = 0
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.25
@@ -118,7 +107,6 @@ final class WhatsNewWindowManager: NSObject, NSWindowDelegate, ObservableObject 
         
         WhatsNewConfig.markAsSeen()
 
-        // Animate out
         NSAnimationContext.runAnimationGroup(
             { context in
                 context.duration = 0.2
