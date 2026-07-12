@@ -1,6 +1,10 @@
 # docs/ contains private working notes, AI-generated docs, and local web assets.
 # Tracked by its own Git repo inside docs/ for local version control.
 docs/
+# The public release notes live in the tracked, case-sensitive app Docs path.
+!kmgccc_player/Docs/
+kmgccc_player/Docs/*
+!kmgccc_player/Docs/ReleaseBoundary.md
 
 # Manual exclusions
 # Private distribution art inputs and encrypted runtime assets must never enter

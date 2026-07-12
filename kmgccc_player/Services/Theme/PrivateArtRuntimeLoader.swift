@@ -2,8 +2,8 @@
 //  PrivateArtRuntimeLoader.swift
 //  myPlayer2
 //
-//  Loads the optional private art runtime without making it a public build
-//  dependency. Missing or invalid private resources are a normal fallback.
+//  Loads an optional external art runtime without making it a public build
+//  dependency. Missing or invalid external resources are a normal fallback.
 //
 
 import CryptoKit
@@ -81,7 +81,7 @@ final class PrivateArtRuntimeLoader: @unchecked Sendable {
     nonisolated func decrypt(_ data: Data, logicalName: String) throws -> Data {
         guard let decryptFunction, let freeFunction else {
             throw PrivateArtRuntimeError.unavailable(
-                availabilityReason ?? "private art runtime is unavailable"
+                availabilityReason ?? "external art runtime is unavailable"
             )
         }
 

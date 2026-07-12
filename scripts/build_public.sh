@@ -42,7 +42,7 @@ if find "$APP" \( -type f -o -type d \) \( \
     -o -name 'BokehTransitionResources.bundle' -o -name 'PrivateArtRuntime.bundle' \
     -o -iname '*.metallib' \
 \) -print -quit | grep -q .; then
-    echo "error: public app contains private source or runtime resources" >&2
+    echo "error: public app contains disallowed external source or runtime resources" >&2
     exit 1
 fi
 
