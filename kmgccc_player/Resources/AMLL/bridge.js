@@ -408,17 +408,10 @@
             isReady = true;
             if (window.updateDebugStatus) window.updateDebugStatus("Renderer Ready");
 
-            // Notify Swift that we're ready
-            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.onReady) {
-                window.webkit.messageHandlers.onReady.postMessage({
-                    version: window.AMLL.version,
-                    capabilities: window.AMLL.capabilities
-                });
-            } else {
-                console.warn("[Bridge] Cannot Notify Swift (onReady handler missing)");
-            }
-
-            // Flush pending calls
+            // Flush bridge-local calls before notifying Swift. Swift's ready
+            // handler immediately replays the authoritative cross-surface
+            // snapshot; notifying first would let these older calls execute
+            // after that replay and resurrect an empty/previous track.
             console.log('[Bridge] Flushing ' + pendingCalls.length + ' calls');
 
             const callsToFlush = pendingCalls.slice();
@@ -429,6 +422,20 @@
             });
 
             console.log('[Bridge] Ready and flushed');
+
+            // Notify Swift only after the bridge queue is drained. The native
+            // store can now safely deliver the current track snapshot without
+            // racing a stale page-local call.
+            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.onReady) {
+                const pageToken = new URL(window.location.href).searchParams.get('pageToken') || '';
+                window.webkit.messageHandlers.onReady.postMessage({
+                    version: window.AMLL.version,
+                    capabilities: window.AMLL.capabilities,
+                    pageToken,
+                });
+            } else {
+                console.warn("[Bridge] Cannot Notify Swift (onReady handler missing)");
+            }
         },
 
         /**
