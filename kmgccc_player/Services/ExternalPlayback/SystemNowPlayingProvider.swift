@@ -324,6 +324,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     private var sourcePreferenceTask: Task<Void, Never>?
 
     private(set) var presentation: NowPlayingPresentation = .emptySystemNowPlaying
+    private(set) var isRefetchingLyrics: Bool = false
     var capabilities: ExternalPlaybackCapabilities { currentCapabilities }
 
     init(
@@ -534,6 +535,29 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             await artworkResolver.clearCache()
         }
         invalidateCurrentResolution()
+    }
+
+    func forceRefetchLyrics() async {
+        guard let identity = latestIdentity else { return }
+
+        isRefetchingLyrics = true
+        defer { isRefetchingLyrics = false }
+
+        ExternalPlaybackMetadataStore.shared.clearAutoLyricsCache(for: identity)
+        invalidateCurrentResolution()
+
+        await withTaskCancellationHandler {
+            let resolutionTask = self.resolutionTask
+            await resolutionTask?.value
+            let lyricsTask = self.lyricsTask
+            await lyricsTask?.value
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelPerTrackTasks()
+                self?.resolutionTask?.cancel()
+                self?.resolutionTask = nil
+            }
+        }
     }
 
     func checkAdapterAvailability() async -> ExternalPlaybackPermissionState {
@@ -1941,6 +1965,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             artworkIdentity: artwork.presentationIdentity,
             artworkDisplayTrackID: artwork.displayTrackID,
             isArtworkLoading: pendingArtworkIdentity == identity,
+            isRefetchingLyrics: isRefetchingLyrics,
             duration: progressBaseline?.duration ?? payload.duration ?? 0,
             currentTime: computedCurrentTime,
             isPlaying: progressBaseline?.isPlaying ?? isPayloadPlaying(payload),

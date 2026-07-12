@@ -68,6 +68,7 @@ struct MiniPlayerView: View {
                 artworkImage: artworkImage,
                 contextMenuRefreshTrigger: libraryVM.refreshTrigger,
                 isFullscreenPresented: fullscreenWindowManager.isFullscreenPlayerPresented,
+                isRefetchingLyrics: playbackCoordinator.presentation.isRefetchingLyrics,
                 trackToEdit: $trackToEdit,
                 isShowingExternalMatchEditor: $isShowingExternalMatchEditor,
                 onFullscreen: { fullscreenWindowManager.showFullscreenPlayerInWindow() },
@@ -484,6 +485,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
     let artworkImage: NSImage?
     let contextMenuRefreshTrigger: Int
     let isFullscreenPresented: Bool
+    let isRefetchingLyrics: Bool
 
     @Binding var trackToEdit: Track?
     @Binding var isShowingExternalMatchEditor: Bool
@@ -508,6 +510,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
             && lhs.artworkImage === rhs.artworkImage
             && lhs.contextMenuRefreshTrigger == rhs.contextMenuRefreshTrigger
             && lhs.isFullscreenPresented == rhs.isFullscreenPresented
+            && lhs.isRefetchingLyrics == rhs.isRefetchingLyrics
     }
 
     var body: some View {
@@ -523,7 +526,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
             .disabled(!hasTrack || isFullscreenPresented)
 
             Button { onToggleNowPlaying() } label: {
-                trackInfoView
+                trackInfoContainer
                     .frame(height: 36, alignment: .leading)
                     .contentShape(Rectangle())
             }
@@ -592,31 +595,42 @@ private struct MiniPlayerLeftSection: View, Equatable {
     }
 
     @ViewBuilder
-    private var trackInfoView: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if hasTrack {
-                SeamlessMarqueeText(
-                    text: displayTitle,
-                    style: .subheadline,
-                    fontWeight: .medium,
-                    color: .primary,
-                    enablesContentTransition: true
-                )
+    private var trackInfoContainer: some View {
+        ZStack(alignment: .leading) {
+            VStack(alignment: .leading, spacing: 4) {
+                if hasTrack {
+                    SeamlessMarqueeText(
+                        text: displayTitle,
+                        style: .subheadline,
+                        fontWeight: .medium,
+                        color: .primary,
+                        enablesContentTransition: true
+                    )
 
-                SeamlessMarqueeText(
-                    text: displayArtist.isEmpty
-                        ? NSLocalizedString("library.unknown_artist", comment: "")
-                        : displayArtist,
-                    style: .caption,
-                    fontWeight: .regular,
-                    color: .secondary,
-                    enablesContentTransition: true
-                )
-            } else {
-                Text(LocalizedStringKey(emptyTitleKey))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    SeamlessMarqueeText(
+                        text: displayArtist.isEmpty
+                            ? NSLocalizedString("library.unknown_artist", comment: "")
+                            : displayArtist,
+                        style: .caption,
+                        fontWeight: .regular,
+                        color: .secondary,
+                        enablesContentTransition: true
+                    )
+                } else {
+                    Text(LocalizedStringKey(emptyTitleKey))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.trailing, isRefetchingLyrics ? 20 : 0)
+
+            ProgressView()
+                .controlSize(.small)
+                .frame(width: 12, height: 12)
+                .opacity(isRefetchingLyrics ? 1 : 0)
+                .allowsHitTesting(false)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
         }
         .frame(
             minWidth: trackInfoMinWidth,
@@ -625,6 +639,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
             alignment: .leading
         )
         .clipped()
+        .animation(.easeInOut(duration: 0.15), value: isRefetchingLyrics)
     }
 
     @ViewBuilder

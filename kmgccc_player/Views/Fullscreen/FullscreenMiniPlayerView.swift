@@ -118,6 +118,7 @@ struct FullscreenMiniPlayerView: View {
                 displayArtist: playbackCoordinator.presentation.artist,
                 emptyTitleKey: playbackCoordinator.presentation.emptyTitleKey,
                 artworkImage: artworkImage,
+                isRefetchingLyrics: playbackCoordinator.presentation.isRefetchingLyrics,
                 scale: scale,
                 primaryColor: lyricsDynamicPrimaryColor,
                 secondaryColor: lyricsDynamicSecondaryColor,
@@ -593,6 +594,7 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
     let displayArtist: String
     let emptyTitleKey: String
     let artworkImage: NSImage?
+    let isRefetchingLyrics: Bool
     let scale: CGFloat
     let primaryColor: Color
     let secondaryColor: Color
@@ -619,6 +621,7 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
             && lhs.displayArtist == rhs.displayArtist
             && lhs.emptyTitleKey == rhs.emptyTitleKey
             && lhs.artworkImage === rhs.artworkImage
+            && lhs.isRefetchingLyrics == rhs.isRefetchingLyrics
             && lhs.scale == rhs.scale
             && lhs.primaryColor == rhs.primaryColor
             && lhs.secondaryColor == rhs.secondaryColor
@@ -633,35 +636,47 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
         HStack(spacing: trackInfoHSpacing) {
             artworkView
 
-            VStack(alignment: .leading, spacing: trackInfoVSpacing) {
-                if hasTrack {
-                    SeamlessMarqueeText(
-                        text: displayTitle,
-                        fontSize: titleFontSize,
-                        fontWeight: .semibold,
-                        color: primaryColor,
-                        enablesContentTransition: true
-                    )
+            ZStack(alignment: .leading) {
+                VStack(alignment: .leading, spacing: trackInfoVSpacing) {
+                    if hasTrack {
+                        SeamlessMarqueeText(
+                            text: displayTitle,
+                            fontSize: titleFontSize,
+                            fontWeight: .semibold,
+                            color: primaryColor,
+                            enablesContentTransition: true
+                        )
 
-                    SeamlessMarqueeText(
-                        text: displayArtist.isEmpty
-                            ? NSLocalizedString("library.unknown_artist", comment: "")
-                            : displayArtist,
-                        fontSize: artistFontSize,
-                        fontWeight: .medium,
-                        color: secondaryColor,
-                        enablesContentTransition: true
-                    )
-                } else {
-                    Text(LocalizedStringKey(emptyTitleKey))
-                        .font(.system(size: titleFontSize, weight: .semibold))
-                        .foregroundStyle(secondaryColor)
+                        SeamlessMarqueeText(
+                            text: displayArtist.isEmpty
+                                ? NSLocalizedString("library.unknown_artist", comment: "")
+                                : displayArtist,
+                            fontSize: artistFontSize,
+                            fontWeight: .medium,
+                            color: secondaryColor,
+                            enablesContentTransition: true
+                        )
+                    } else {
+                        Text(LocalizedStringKey(emptyTitleKey))
+                            .font(.system(size: titleFontSize, weight: .semibold))
+                            .foregroundStyle(secondaryColor)
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.trailing, isRefetchingLyrics ? 20 * scale : 0)
+
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(width: 12, height: 12)
+                    .scaleEffect(scale)
+                    .opacity(isRefetchingLyrics ? 1 : 0)
+                    .allowsHitTesting(false)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+        .animation(.easeInOut(duration: 0.15), value: isRefetchingLyrics)
         .contextMenu {
             // Closure is lazy — evaluated only when NSMenu appears, not during body computation.
             nowPlayingInfoContextMenu

@@ -27,6 +27,7 @@ struct NowPlayingPresentation {
     var artworkIdentity: String?
     var artworkDisplayTrackID: UUID?
     var isArtworkLoading: Bool
+    var isRefetchingLyrics: Bool
     var duration: Double
     var currentTime: Double
     var audioOutputDelay: Double = 0
@@ -65,6 +66,7 @@ struct NowPlayingPresentation {
         artworkIdentity: nil,
         artworkDisplayTrackID: nil,
         isArtworkLoading: false,
+        isRefetchingLyrics: false,
         duration: 0,
         currentTime: 0,
         isPlaying: false,
@@ -103,6 +105,7 @@ struct NowPlayingPresentation {
         artworkIdentity: nil,
         artworkDisplayTrackID: nil,
         isArtworkLoading: false,
+        isRefetchingLyrics: false,
         duration: 0,
         currentTime: 0,
         isPlaying: false,
@@ -141,6 +144,7 @@ struct NowPlayingPresentation {
         artworkIdentity: nil,
         artworkDisplayTrackID: nil,
         isArtworkLoading: false,
+        isRefetchingLyrics: false,
         duration: 0,
         currentTime: 0,
         isPlaying: false,
@@ -201,6 +205,7 @@ extension NowPlayingPresentation {
         artworkIdentity == other.artworkIdentity &&
         artworkDisplayTrackID == other.artworkDisplayTrackID &&
         isArtworkLoading == other.isArtworkLoading &&
+        isRefetchingLyrics == other.isRefetchingLyrics &&
         duration == other.duration &&
         currentTime == other.currentTime &&
         audioOutputDelay == other.audioOutputDelay &&
