@@ -11,23 +11,15 @@ import SwiftData
 
 @Model
 final class Playlist {
-    // MARK: - Identifiers
-
     @Attribute(.unique) var id: UUID
-
-    // MARK: - Properties
 
     var name: String
     var userDescription: String = ""
     var createdAt: Date
 
-    // MARK: - Relationships
-
     /// Tracks in this playlist (ordered).
     /// Using array for ordered relationship.
     @Relationship var tracks: [Track] = []
-
-    // MARK: - Initializer
 
     init(
         id: UUID = UUID(),

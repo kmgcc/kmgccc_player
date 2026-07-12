@@ -26,8 +26,6 @@ final class LyricsViewModel {
         LyricsSurfaceManager.shared.mainStore
     }
 
-    // MARK: - State
-
     /// Current track (source of lyrics).
     private(set) var currentTrack: Track?
     private var lastAppliedTrackId: UUID?
@@ -62,8 +60,6 @@ final class LyricsViewModel {
             rebindSeekCallback()
         }
     }
-
-    // MARK: - Initialization
 
     init(settings: AppSettings? = nil) {
         self.settings = settings ?? AppSettings.shared

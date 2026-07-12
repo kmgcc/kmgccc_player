@@ -19,8 +19,6 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
     private var allTracks: [Track] = []
     private var changeHandler: LibraryRepositoryChangeHandler?
 
-    // MARK: - Initialization
-
     init() {
         setupFakeData()
     }
