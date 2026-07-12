@@ -75,7 +75,7 @@ private extension TimedTransitionScalar.Curve {
         case .blurFall:
             return cubicBezier(x: x, x1: 0.20, y1: 0.78, x2: 0.22, y2: 1)
         case .background:
-            return cubicBezier(x: x, x1: 0.24, y1: 0.62, x2: 0.22, y2: 1)
+            return cubicBezier(x: x, x1: 0.36, y1: 0.0, x2: 0.64, y2: 1.0)
         case .layerFadeIn:
             return cubicBezier(x: x, x1: 0.42, y1: 0, x2: 0.58, y2: 1)
         case .layerFadeOut:
@@ -178,7 +178,7 @@ private struct BokehTransitionPresentationState {
             centeredOpacity.retarget(
                 to: newTarget.centeredOpacity,
                 at: time,
-                duration: reduceMotion ? 0.28 : 0.58,
+                duration: reduceMotion ? 0.34 : 0.72,
                 curve: .background
             )
         }
@@ -187,7 +187,7 @@ private struct BokehTransitionPresentationState {
             transitionOpacity.retarget(
                 to: newTarget.transitionOpacity,
                 at: time,
-                duration: reduceMotion ? (rising ? 0.12 : 0.18) : (rising ? 0.22 : 0.32),
+                duration: reduceMotion ? (rising ? 0.16 : 0.22) : (rising ? 0.32 : 0.42),
                 curve: rising ? .layerFadeIn : .layerFadeOut
             )
         }

@@ -137,7 +137,11 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                     .zIndex(0)
 
                 staticBackground(size: geometry.size, placement: .centeredSymmetric)
-                    .opacity(Double(centeredLayerOpacity))
+                    // Bokeh owns the complete transition composite. Keeping
+                    // the SwiftUI centered layer underneath would expose its
+                    // target opacity before Metal's interruptible crossfade
+                    // reaches the same presentation value.
+                    .opacity(activeTransitionMode.usesBokeh ? 0 : Double(centeredLayerOpacity))
                     .zIndex(1)
 
                 transitionBackground(size: geometry.size)
@@ -146,7 +150,10 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                         height: geometry.size.height
                     )
                     .offset(x: transitionCanvasOffset(for: geometry.size))
-                    .opacity(Double(transitionLayerOpacity))
+                    // The moving source is already one of the three textures
+                    // inside the Bokeh surface. Do not show a second copy
+                    // below it during the handoff or interruption.
+                    .opacity(activeTransitionMode.usesBokeh ? 0 : Double(transitionLayerOpacity))
                     .zIndex(2)
 
                 BokehTransitionSurface(
@@ -353,7 +360,11 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         guard let sourceSet = bokehPreparedSourceSet,
               sourceSet.identity.tier == tier else {
             prepareBokehSourcesIfPossible()
-            return .unmaskedFallback(reason: "Bokeh source set not ready")
+            // A first-click or resize preparation miss must retain the old
+            // opaque transition path. An unmasked switch reveals the static
+            // target layer before the source set is ready, which reads as a
+            // one-frame flash during reversal.
+            return .gaussianFallback(reason: "Bokeh source set not ready")
         }
         activeBokehSourceSet = sourceSet
         return .bokeh
@@ -375,8 +386,8 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
 
     private var backgroundCrossfadeAnimation: Animation {
         context.theme.reduceMotion
-            ? .easeInOut(duration: 0.28)
-            : .timingCurve(0.24, 0.62, 0.22, 1.0, duration: 0.58)
+            ? .easeInOut(duration: 0.34)
+            : .timingCurve(0.36, 0.0, 0.64, 1.0, duration: 0.72)
     }
 
     private var transitionLayerFadeInAnimation: Animation {
@@ -498,6 +509,12 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                 bokehSurfaceOpacity = 0
             }
             isTransitionActive = false
+            // Reveal the authoritative static layer only after the Metal
+            // surface has fully retired. It already carries the final target
+            // opacity, so this is a no-op visually rather than a second fade.
+            if activeTransitionMode.usesBokeh {
+                activeTransitionMode = .unmaskedFallback(reason: "idle")
+            }
             BokehTransitionPerformancePolicy.shared.finish()
             activeBokehSourceSet = bokehPreparedSourceSet
         }

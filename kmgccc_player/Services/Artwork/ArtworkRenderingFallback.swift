@@ -12,7 +12,7 @@ import ImageIO
 import UniformTypeIdentifiers
 
 enum ArtworkRenderingFallback {
-    nonisolated static let identity = "rendering-fallback:programmatic-v1"
+    nonisolated static let identity = "rendering-fallback:v2"
     nonisolated static let defaultTrackID = UUID(uuidString: "7E9E8E9D-1B19-4D9B-B89C-1041F87D55E8")!
 
     enum ImageKind: String, Sendable {
@@ -26,6 +26,11 @@ enum ArtworkRenderingFallback {
     }
 
     private nonisolated static let artworkPixelSize = 1_024
+    private nonisolated static let encryptedFallbackMaxPixel = 1_600
+    private nonisolated static let encryptedFallbackAssetNames = [
+        "artworkFallback1",
+        "artworkFallback2",
+    ]
     private nonisolated(unsafe) static let dataCache: NSCache<NSString, NSData> = {
         let cache = NSCache<NSString, NSData>()
         cache.countLimit = 32
@@ -43,9 +48,15 @@ enum ArtworkRenderingFallback {
 
     nonisolated static func data(for preferredTrackID: UUID?) -> Data? {
         let trackID = resolvedTrackID(preferredTrackID)
-        let key = "artwork-v1-\(trackID.uuidString)" as NSString
+        let assetName = selectedEncryptedFallbackAssetName(for: trackID)
+        let key = "artwork-v2-\(assetName)-\(trackID.uuidString)" as NSString
         if let cached = dataCache.object(forKey: key) {
             return cached as Data
+        }
+
+        if let encryptedData = encryptedFallbackData(named: assetName) {
+            dataCache.setObject(encryptedData as NSData, forKey: key, cost: encryptedData.count)
+            return encryptedData
         }
 
         guard let image = image(
@@ -67,8 +78,17 @@ enum ArtworkRenderingFallback {
     }
 
     nonisolated static func identity(for preferredTrackID: UUID?) -> String {
-        let seed = stableIndexSeed(for: resolvedTrackID(preferredTrackID))
-        return "\(identity):\(String(format: "%016llX", seed))"
+        let trackID = resolvedTrackID(preferredTrackID)
+        let assetName = selectedEncryptedFallbackAssetName(for: trackID)
+        if EncryptedArtAssetLoader.shared.assetURL(
+            logicalName: "XCAssets/\(assetName)",
+            in: nil
+        ) != nil {
+            return "\(identity):XCAssets/\(assetName)"
+        }
+
+        let seed = stableIndexSeed(for: trackID)
+        return "\(identity):programmatic:\(String(format: "%016llX", seed))"
     }
 
     nonisolated static func shouldUse(for artworkData: Data?, isArtworkLoading: Bool) -> Bool {
@@ -77,6 +97,22 @@ enum ArtworkRenderingFallback {
 
     nonisolated static func resolvedTrackID(_ preferredTrackID: UUID?) -> UUID {
         preferredTrackID ?? defaultTrackID
+    }
+
+    private nonisolated static func selectedEncryptedFallbackAssetName(for trackID: UUID) -> String {
+        let index = Int(stableIndexSeed(for: trackID) % UInt64(encryptedFallbackAssetNames.count))
+        return encryptedFallbackAssetNames[index]
+    }
+
+    private nonisolated static func encryptedFallbackData(named assetName: String) -> Data? {
+        guard let image = EncryptedArtAssetLoader.shared.cgImage(
+            logicalName: "XCAssets/\(assetName)",
+            in: nil,
+            maxPixel: encryptedFallbackMaxPixel
+        ) else {
+            return nil
+        }
+        return pngData(for: image)
     }
 
     /// Generates a stable bitmap at an exact pixel size. Callers should pass
