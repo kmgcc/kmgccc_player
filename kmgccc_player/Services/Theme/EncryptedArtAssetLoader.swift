@@ -38,7 +38,7 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
             case .authenticationFailed(let logicalName):
                 return "encrypted art authentication failed: \(logicalName)"
             case .privateRuntimeUnavailable(let reason):
-                return "private art runtime unavailable: \(reason)"
+                return "external art runtime unavailable: \(reason)"
             case .imageDecodeFailed(let logicalName):
                 return "encrypted art image decode failed: \(logicalName)"
             }

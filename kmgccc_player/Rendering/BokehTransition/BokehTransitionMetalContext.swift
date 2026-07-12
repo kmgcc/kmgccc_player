@@ -19,9 +19,9 @@ struct BokehTransitionMetalManifest: Codable, Equatable, Sendable {
     let librarySHA256: String
 }
 
-/// Contract shared by the public Swift boundary and the private enhancement
-/// resource. The public target never loads its default Metal library; a private
-/// build injects these two files into a bundle or nested resource bundle.
+/// Contract shared by the public Swift boundary and an optional enhancement
+/// resource. The public target never loads its default Metal library; an
+/// enhanced distribution injects these two files into a bundle.
 enum BokehTransitionMetalResourceContract {
     static let manifestSchemaVersion = 1
     static let libraryVersion = "1.0.0"

@@ -13,12 +13,12 @@ PRIVATE_ART_BUNDLE="$RESOURCES/BKArt.bundle"
 PRIVATE_BOKEH_BUNDLE="$RESOURCES/BokehTransitionResources.bundle"
 PRIVATE_RUNTIME_BUNDLE="$RESOURCES/PrivateArtRuntime.bundle"
 
-# Prevent a previous private build in the same DerivedData directory from
-# silently turning a later public build into a private build.
+# Prevent a previous enhanced build in the same DerivedData directory from
+# silently turning a later public build into an enhanced build.
 rm -rf "$PRIVATE_ART_BUNDLE" "$PRIVATE_BOKEH_BUNDLE" "$PRIVATE_RUNTIME_BUNDLE"
 
 if [ "$PRIVATE_RESOURCE_MODE" = disabled ]; then
-    echo "note: private enhancement injection disabled for this build"
+    echo "note: external enhancement injection disabled for this build"
     exit 0
 fi
 
@@ -34,17 +34,17 @@ else
 fi
 
 if [ ! -d "$PRIVATE_REPO_PATH" ]; then
-    echo "note: private enhancement repository not found; using public fallback"
+    echo "note: external enhancement source not found; using public fallback"
     exit 0
 fi
 
 PRIVATE_BUILDER="$PRIVATE_REPO_PATH/scripts/build_private_resources.sh"
 if [ ! -x "$PRIVATE_BUILDER" ]; then
     if [ "$STRICT" = YES ]; then
-        echo "error: private enhancement builder is missing: $PRIVATE_BUILDER" >&2
+        echo "error: external enhancement builder is missing: $PRIVATE_BUILDER" >&2
         exit 1
     fi
-    echo "warning: private enhancement builder is unavailable; using public fallback"
+    echo "warning: external enhancement builder is unavailable; using public fallback"
     exit 0
 fi
 
@@ -59,7 +59,7 @@ trap 'rm -rf "$STAGING_DIR"' EXIT
 "$PRIVATE_BUILDER" --output "$STAGING_DIR"
 for bundle in BKArt.bundle BokehTransitionResources.bundle PrivateArtRuntime.bundle; do
     [ -d "$STAGING_DIR/$bundle" ] || {
-        echo "error: private builder did not produce $bundle" >&2
+        echo "error: external builder did not produce $bundle" >&2
         exit 1
     }
     cp -R "$STAGING_DIR/$bundle" "$RESOURCES/$bundle"
@@ -107,4 +107,4 @@ PY
     fi
 fi
 
-echo "note: private Bokeh, art runtime, and encrypted art resources injected"
+echo "note: external Bokeh, art runtime, and encrypted art resources injected"
