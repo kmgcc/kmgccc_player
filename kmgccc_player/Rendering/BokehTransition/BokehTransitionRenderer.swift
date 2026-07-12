@@ -205,11 +205,45 @@ private struct BokehTransitionPresentationState {
             opticalOpacity.retarget(
                 to: newTarget.opticalOpacity,
                 at: time,
-                duration: reduceMotion ? 0.10 : (rising ? 0.08 : 0.20),
+                duration: reduceMotion ? 0.10 : (rising ? 0.08 : 0.60),
                 curve: rising ? .layerFadeIn : .layerFadeOut
             )
         }
         target = newTarget
+    }
+
+    /// Snap layout values to the current target and prepare the optical
+    /// opacity for an instant-appear-then-fade-out. Called when a new source
+    /// set is installed so:
+    ///  1. The first draw does not animate from stale dormant position values
+    ///     (which caused the new artwork to flash to a wrong position).
+    ///  2. The overlay surface appears at full opacity instantly (no fade-in)
+    ///     and, if the target opacity is below full, immediately begins fading
+    ///     out - all in a single update, so the blur decrease and the overlay
+    ///     fade-out start on the same frame.
+    /// The blur radius is intentionally left alone so an in-flight blur
+    /// animation is not interrupted.
+    mutating func snapAfterInstall(
+        targetOpticalOpacity: CGFloat,
+        reduceMotion: Bool,
+        at time: CFTimeInterval
+    ) {
+        let t = target
+        position = InterruptibleSpringScalar(t.transitionPosition)
+        centeredOpacity = TimedTransitionScalar(t.centeredOpacity)
+        transitionOpacity = TimedTransitionScalar(t.transitionOpacity)
+        // Snap to full so the surface is visible immediately (no fade-in).
+        opticalOpacity = TimedTransitionScalar(1)
+        // If the target is below full, set up the fade-out animation from
+        // full to the target in the same update.
+        if targetOpticalOpacity < 0.999 {
+            opticalOpacity.retarget(
+                to: targetOpticalOpacity,
+                at: time,
+                duration: reduceMotion ? 0.10 : 0.60,
+                curve: .layerFadeOut
+            )
+        }
     }
 
     mutating func snapshot(at time: CFTimeInterval) -> BokehTransitionSnapshot {
@@ -280,6 +314,9 @@ final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
     private var intermediateTextures: IntermediateTextures?
     private var snapshot = BokehTransitionSnapshot.inactive
     private var presentationState = BokehTransitionPresentationState()
+    /// Set by `install` so the next `update` snaps layout/opacity to the new
+    /// target instead of animating from stale dormant values.
+    private var needsSnapAfterInstall = false
     private var gpuSamples: [Double] = []
     private var rendererMetrics = BokehTransitionRendererMetrics()
     private(set) var failureReason: String?
@@ -297,7 +334,16 @@ final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
 
     func update(snapshot: BokehTransitionSnapshot) {
         self.snapshot = snapshot
-        presentationState.retarget(to: snapshot, at: CACurrentMediaTime())
+        let time = CACurrentMediaTime()
+        presentationState.retarget(to: snapshot, at: time)
+        if needsSnapAfterInstall {
+            presentationState.snapAfterInstall(
+                targetOpticalOpacity: snapshot.opticalOpacity,
+                reduceMotion: snapshot.reduceMotion,
+                at: time
+            )
+            needsSnapAfterInstall = false
+        }
     }
 
     func isReady(for identity: BokehTransitionSourceIdentity) -> Bool {
@@ -334,6 +380,10 @@ final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
             sourceLock.lock()
             sources = uploaded
             sourceLock.unlock()
+            // Snap layout/opacity to the current target on the next update so
+            // the first frame after a source set change does not animate from
+            // stale dormant values (position flash on the new artwork).
+            needsSnapAfterInstall = true
             failureReason = nil
             #if DEBUG
             logger.debug("Bokeh source textures uploaded for \(sourceSet.identity.artworkChecksum, privacy: .public)")

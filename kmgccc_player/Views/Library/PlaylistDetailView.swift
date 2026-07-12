@@ -212,6 +212,12 @@ struct PlaylistDetailView: View {
             },
             set: { trackID in
                 guard !pageController.isManualTrackReorderActive else { return }
+                // While a reveal scroll is armed/animating, ignore position
+                // updates from the scroll view. A freshly-created ScrollView
+                // (after a playlist switch) can report nil or the first visible
+                // row before the target is scrolled to, which would clobber the
+                // reveal target.
+                if pageController.isRevealScrollArmed { return }
                 pageController.updateScrollPosition(trackID)
             }
         )

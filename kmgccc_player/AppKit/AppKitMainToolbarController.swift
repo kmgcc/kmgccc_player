@@ -381,6 +381,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
         case Identifier.homePillGroup:
             let playLabel = NSLocalizedString("context.play_all", comment: "Play All")
+            let revealLabel = "定位正在播放"
             let importLabel = NSLocalizedString("context.import", comment: "Import")
 
             let group = NSToolbarItemGroup(
@@ -388,11 +389,13 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                 images: [
                     NSImage(systemSymbolName: "play.fill", accessibilityDescription: playLabel)
                         ?? NSImage(),
+                    NSImage(systemSymbolName: "list.bullet.below.rectangle", accessibilityDescription: revealLabel)
+                        ?? NSImage(),
                     NSImage(systemSymbolName: "plus", accessibilityDescription: importLabel)
                         ?? NSImage()
                 ],
                 selectionMode: .momentary,
-                labels: [playLabel, importLabel],
+                labels: [playLabel, revealLabel, importLabel],
                 target: self,
                 action: #selector(handleHomePillGroupAction(_:))
             )
@@ -407,9 +410,14 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                 group.subitems[0].toolTip = playLabel
             }
             if group.subitems.indices.contains(1) {
-                self.importItem = group.subitems[1]
-                group.subitems[1].toolTip = importLabel
+                self.revealNowPlayingItem = group.subitems[1]
+                group.subitems[1].toolTip = revealLabel
             }
+            if group.subitems.indices.contains(2) {
+                self.importItem = group.subitems[2]
+                group.subitems[2].toolTip = importLabel
+            }
+            syncRevealNowPlayingItemPresentation()
             return group
 
         case Identifier.search:
@@ -915,7 +923,17 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             playerVM: playerVM
         )
 
-        pageController.requestRevealTrack(track.id, animated: true)
+        // If the target lives in a different selection (e.g. the user is on
+        // Home, whose rows contain every track), defer the reveal until the
+        // selection switch triggers a rebuild for the target page. Otherwise
+        // the reveal would be consumed by the current page's rows and the
+        // target playlist would never scroll.
+        let needsSelectionSwitch = libraryVM.currentSelection != targetSelection
+        pageController.requestRevealTrack(
+            track.id,
+            animated: true,
+            deferUntilRebuild: needsSelectionSwitch
+        )
         appSession?.uiState.showLibrary()
         libraryVM.selectOrResetCurrentSelection(targetSelection)
         syncSearchPlaceholder()
@@ -1030,6 +1048,10 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         case 0:
             handlePlayFromToolbar(playItem ?? NSToolbarItem(itemIdentifier: Identifier.play))
         case 1:
+            handleRevealNowPlaying(
+                revealNowPlayingItem ?? NSToolbarItem(itemIdentifier: Identifier.revealNowPlaying)
+            )
+        case 2:
             handleImportToPlaylist(importItem ?? NSToolbarItem(itemIdentifier: Identifier.import))
         default:
             break
@@ -1431,7 +1453,10 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                     playItem = group.subitems[0]
                 }
                 if group.subitems.indices.contains(1) {
-                    importItem = group.subitems[1]
+                    revealNowPlayingItem = group.subitems[1]
+                }
+                if group.subitems.indices.contains(2) {
+                    importItem = group.subitems[2]
                 }
 
             case Identifier.homeNavPill:

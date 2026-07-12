@@ -18,7 +18,15 @@ final class HeaderHaloState {
     private(set) var anchor: CGPoint?
     private(set) var scrollDelta: CGFloat = 0
 
-    private var initialScrollOffset: CGFloat?
+    /// Scroll offset at the moment the anchor was first captured. The halo's
+    /// vertical position is normalized against this so it stays aligned with
+    /// the header artwork even if the anchor is captured while the list is
+    /// already scrolled (e.g. after a reveal scroll or a scroll-position
+    /// restore). Without this, `anchor.y` would reflect a scrolled position
+    /// while the parallax baseline assumed scroll 0, pinning the halo too low.
+    private var anchorCaptureOffset: CGFloat = 0
+    /// Latest raw scroll offset reported by `updateScroll`.
+    private var latestScrollOffset: CGFloat = 0
 
     private static let parallaxFraction: CGFloat = 0.6
     private static let baseScale: CGFloat = 0.72
@@ -30,7 +38,11 @@ final class HeaderHaloState {
     }
 
     var contentSpaceOffset: CGFloat {
-        scrollDelta * Self.parallaxFraction
+        // haloY = anchor.y + contentSpaceOffset, and we want:
+        //   haloY = (anchor.y - anchorCaptureOffset) + latestScrollOffset * parallaxFraction
+        // where (anchor.y - anchorCaptureOffset) is the artwork's Y at scroll 0.
+        // Solving: contentSpaceOffset = latestScrollOffset * parallaxFraction - anchorCaptureOffset
+        latestScrollOffset * Self.parallaxFraction - anchorCaptureOffset
     }
 
     var scale: CGFloat {
@@ -43,14 +55,16 @@ final class HeaderHaloState {
     func beginSession(selectionIdentity: String) {
         self.selectionIdentity = selectionIdentity
         self.anchor = nil
-        self.initialScrollOffset = nil
+        self.anchorCaptureOffset = 0
+        self.latestScrollOffset = 0
         self.scrollDelta = 0
     }
 
     func clear() {
         selectionIdentity = nil
         anchor = nil
-        initialScrollOffset = nil
+        anchorCaptureOffset = 0
+        latestScrollOffset = 0
         scrollDelta = 0
     }
 
@@ -64,15 +78,24 @@ final class HeaderHaloState {
             return true
         }
         anchor = nextAnchor
+        // Record the scroll offset at capture time as the parallax baseline.
+        // The anchor's Y corresponds to this scroll position, so contentSpaceOffset
+        // normalizes against it. This fixes the halo being pinned at the wrong Y
+        // when the anchor is captured while the list is scrolled.
+        anchorCaptureOffset = latestScrollOffset
         return true
     }
 
     @discardableResult
     func updateScroll(offset: CGFloat) -> Bool {
-        if initialScrollOffset == nil {
-            initialScrollOffset = offset
-        }
-        let nextDelta = offset - (initialScrollOffset ?? offset)
+        latestScrollOffset = offset
+        // scrollDelta is the absolute scroll from the top (baseline = 0), used
+        // by `scale`. Previously this was `offset - initialScrollOffset`, where
+        // initialScrollOffset was captured on the first updateScroll call —
+        // which fires when isHeaderEffectsEnabled becomes true (potentially
+        // mid-reveal-scroll), producing a wrong baseline for both the parallax
+        // and the scale.
+        let nextDelta = offset
         if abs(nextDelta - scrollDelta) < Self.scrollEpsilon {
             return false
         }
