@@ -501,8 +501,21 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
 
             if activeTransitionMode.usesBokeh {
                 guard await waitForTransitionStage(nanoseconds: bokehTailFadeDelay) else { return }
+                // Snap the high-resolution centered floor to the target layout
+                // at the same instant the surface begins its optical fade-out.
+                // By this point the position spring has already settled at
+                // targetPosition, so the surface's final frames and the floor
+                // depict the same layout. The floor is fully occluded by the
+                // surface while opticalOpacity is still near 1, then the
+                // ~200 ms optical fade reveals it. Updating settled here rather
+                // than at retirement closes the gap where the surface had
+                // already gone transparent but settled still held the old
+                // endpoint: that gap exposed layer 0 (leading = old layout)
+                // for ~100 ms and was the "flash back to the old side, then
+                // return to the new side" glitch.
                 withoutSwiftUIAnimation {
                     bokehOpticalOpacity = 0
+                    settledCenteredLayerOpacity = targetPosition
                 }
                 guard await waitForTransitionStage(nanoseconds: bokehTailRetirementDelay) else { return }
             } else {
@@ -511,6 +524,13 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
+                // Gaussian/unmasked paths have no optical fade, so the settled
+                // floor is synced here at retirement. For Bokeh this is a
+                // no-op: the floor was already synced at the start of the
+                // optical fade above. The assignment is kept here so a
+                // non-Bokeh transition still leaves settled consistent with
+                // the visible layout, otherwise the next Bokeh transition's
+                // 0.08 s optical rise would briefly reveal a stale floor.
                 settledCenteredLayerOpacity = targetPosition
                 bokehSurfaceOpacity = 0
                 isTransitionActive = false

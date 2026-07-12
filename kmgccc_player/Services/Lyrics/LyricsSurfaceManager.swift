@@ -322,6 +322,13 @@ final class LyricsSurfaceManager {
     /// Notify that a store is ready - called by LyricsWebViewStore
     @discardableResult
     func notifyStoreReady(_ role: LyricsSurfaceRole, store: LyricsWebViewStore) -> Bool {
+        guard stores[role] === store else {
+            Log.debug(
+                "LyricsSurfaceManager: ignoring ready callback for stale store role=\(role), objectID=\(store.webViewObjectID)",
+                category: .webview
+            )
+            return false
+        }
         guard let handler = onStoreReadyHandlers.removeValue(forKey: role) else { return false }
         Log.debug("LyricsSurfaceManager: store ready for \(role), triggering ready handler", category: .webview)
         handler(store)

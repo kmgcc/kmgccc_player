@@ -148,6 +148,10 @@ final class LyricsWebViewStore: NSObject {
     private var lastRecoveryAttempt: Date = .distantPast
     private let recoveryDebounceInterval: TimeInterval = 1.0
     private var contentLoadRevision: Int = 0
+    /// Identifies the document load that is allowed to complete this store.
+    /// WKWebView can deliver a late onReady from a page that was just released
+    /// or replaced; accepting it would replay state into the wrong document.
+    private var expectedPageToken: String?
     private var lastContentLoadStartedAtUptime: TimeInterval?
     private var trackSwitchesSinceLastWebViewRecycle: Int = 0
 
@@ -160,6 +164,7 @@ final class LyricsWebViewStore: NSObject {
 
     /// Track change debounce (prevents transient nil clearing).
     private var pendingApplyTrack: DispatchWorkItem?
+    private var pendingApplyTrackGeneration: Int = 0
     private var pendingVisibleLayerProbe: DispatchWorkItem?
     private var pendingTrackDiagnosticsProbe: DispatchWorkItem?
     private var pendingTrackProfileCollection: DispatchWorkItem?
@@ -635,7 +640,9 @@ final class LyricsWebViewStore: NSObject {
         }
 
         let amllDir = indexURL.deletingLastPathComponent()
-        let loadURL = resolvedAMLLLoadURL(from: indexURL)
+        let pageToken = UUID().uuidString
+        expectedPageToken = pageToken
+        let loadURL = resolvedAMLLLoadURL(from: indexURL, pageToken: pageToken)
         lastContentLoadStartedAtUptime = ProcessInfo.processInfo.systemUptime
         Log.info("Loading AMLL from: \(loadURL.absoluteString) role=\(role), objectID=\(webViewObjectID)", category: .webview)
         webView.loadFileURL(loadURL, allowingReadAccessTo: amllDir)
@@ -656,6 +663,7 @@ final class LyricsWebViewStore: NSObject {
         // Cancel all pending operations
         pendingApplyTrack?.cancel()
         pendingApplyTrack = nil
+        pendingApplyTrackGeneration &+= 1
         pendingVisibleLayerProbe?.cancel()
         pendingVisibleLayerProbe = nil
         displayHealthGeneration &+= 1
@@ -690,6 +698,7 @@ final class LyricsWebViewStore: NSObject {
         queuedTimeSync = nil
         isTimeSyncInFlight = false
         contentLoadRevision = 0
+        expectedPageToken = nil
         trackSwitchesSinceLastWebViewRecycle = 0
         displayHealthGeneration = 0
         didRegisterMessageHandlers = false
@@ -787,6 +796,7 @@ final class LyricsWebViewStore: NSObject {
     /// Releases the concrete WKWebView while keeping the Swift-side playback snapshot.
     /// The next attach will lazily create a new WebView and replay config/lyrics/time/playing.
     func releasePreparedWebViewPreservingSnapshot(reason: String) {
+        cancelPendingApplyTrack()
         pendingVisibleLayerProbe?.cancel()
         pendingVisibleLayerProbe = nil
         displayHealthGeneration &+= 1
@@ -812,6 +822,7 @@ final class LyricsWebViewStore: NSObject {
         awaitingValidLayoutBounds = false
         activeAttachmentID = nil
         isAttached = false
+        expectedPageToken = nil
 
         guard let webView = retainedWebView else {
             Log.debug("Release skipped, no prepared WebView: role=\(role), reason=\(reason)", category: .webview)
@@ -1086,6 +1097,9 @@ final class LyricsWebViewStore: NSObject {
     }
 
     private func bridgeCategory(for debugDescription: String) -> String {
+        if debugDescription.contains("applyTrackState") {
+            return "applyTrackState"
+        }
         if debugDescription.contains("setLyricsTTML") {
             return "setLyricsTTML"
         }
@@ -1111,7 +1125,8 @@ final class LyricsWebViewStore: NSObject {
     }
 
     private func isLayoutSensitiveJavaScriptCall(_ debugDescription: String) -> Bool {
-        debugDescription.contains("setLyricsTTML")
+        debugDescription.contains("applyTrackState")
+            || debugDescription.contains("setLyricsTTML")
             || debugDescription.contains("clearState")
             || debugDescription.contains("setConfig")
     }
@@ -1147,6 +1162,20 @@ final class LyricsWebViewStore: NSObject {
 
     private func handleOnReady(_ body: Any) {
         guard let dict = body as? [String: Any] else { return }
+
+        guard !isShutDown,
+              retainedWebView != nil,
+              let expectedPageToken,
+              dict["pageToken"] as? String == expectedPageToken
+        else {
+            let expectedTokenDescription = self.expectedPageToken?.prefix(8) ?? "nil"
+            let receivedTokenDescription = (dict["pageToken"] as? String)?.prefix(8) ?? "nil"
+            Log.debug(
+                "Ignoring stale AMLL ready callback: role=\(role), expectedToken=\(expectedTokenDescription), receivedToken=\(receivedTokenDescription), objectID=\(webViewObjectID)",
+                category: .webview
+            )
+            return
+        }
 
         let version = dict["version"] as? String ?? "unknown"
         let capabilities = dict["capabilities"] as? [String] ?? []
@@ -1220,7 +1249,8 @@ final class LyricsWebViewStore: NSObject {
         discardPendingCalls(
             reason: reason,
             shouldDiscard: { description in
-                description.contains("setLyricsTTML")
+                description.contains("applyTrackState")
+                    || description.contains("setLyricsTTML")
                     || description.contains("clearState")
                     || description.contains("setPlaying")
                     || description.contains("beginTrackProfileSession")
@@ -1233,7 +1263,8 @@ final class LyricsWebViewStore: NSObject {
         discardPendingCalls(
             reason: reason,
             shouldDiscard: { description in
-                description.contains("setLyricsTTML")
+                description.contains("applyTrackState")
+                    || description.contains("setLyricsTTML")
                     || description.contains("clearState")
                     || description.contains("setPlaying")
                     || description.contains("setConfig")
@@ -1426,6 +1457,7 @@ final class LyricsWebViewStore: NSObject {
     /// Force reload (for manual recovery).
     func forceReload(recreateWebView: Bool = false) {
         guard !isShutDown else { return }
+        cancelPendingApplyTrack()
         AMLLLifecycleDiagnostics.emit(
             "bridge.reload role=\(role) recreate=\(recreateWebView) \(debugLayerStateSnapshot)"
         )
@@ -1450,6 +1482,12 @@ final class LyricsWebViewStore: NSObject {
 
     // MARK: - Track Change (Task D: Race-safe)
 
+    private func cancelPendingApplyTrack() {
+        pendingApplyTrackGeneration &+= 1
+        pendingApplyTrack?.cancel()
+        pendingApplyTrack = nil
+    }
+
     /// Apply a new track with debounce to prevent transient nil clearing.
     /// - Note: `nil` means transition state and is debounced.
     ///         Empty string means concrete "no lyrics" and should clear immediately.
@@ -1460,13 +1498,20 @@ final class LyricsWebViewStore: NSObject {
         isPlaying: Bool,
         forceLyricsReload: Bool = false
     ) {
-        // Cancel any pending apply
-        pendingApplyTrack?.cancel()
+        // Cancel any pending apply. The generation check also protects against
+        // a work item that was already enqueued when the surface was hidden or
+        // a reload began.
+        cancelPendingApplyTrack()
 
         // Debounce only transitional nil (e.g. oldTrack -> nil -> newTrack)
         if ttml == nil {
+            let pendingGeneration = pendingApplyTrackGeneration
             let workItem = DispatchWorkItem { [weak self] in
-                self?.executeApplyTrack(
+                guard let self,
+                      self.pendingApplyTrackGeneration == pendingGeneration
+                else { return }
+                self.pendingApplyTrack = nil
+                self.executeApplyTrack(
                     trackID: trackID,
                     ttml: ttml,
                     currentTime: currentTime,
@@ -1916,8 +1961,7 @@ final class LyricsWebViewStore: NSObject {
         Log.info("teardown: objectID=\(webViewObjectID), role=\(role)", category: .webview)
 
         // Cancel pending operations
-        pendingApplyTrack?.cancel()
-        pendingApplyTrack = nil
+        cancelPendingApplyTrack()
         pendingVisibleLayerProbe?.cancel()
         pendingVisibleLayerProbe = nil
         displayHealthGeneration &+= 1
@@ -1946,6 +1990,7 @@ final class LyricsWebViewStore: NSObject {
         queuedTimeSync = nil
         isTimeSyncInFlight = false
         contentLoadRevision = 0
+        expectedPageToken = nil
         trackSwitchesSinceLastWebViewRecycle = 0
         lastAppliedBackingScale = nil
         lastAppliedLayoutSignature = nil
@@ -2423,7 +2468,7 @@ final class LyricsWebViewStore: NSObject {
         return webView
     }
 
-    private func resolvedAMLLLoadURL(from indexURL: URL) -> URL {
+    private func resolvedAMLLLoadURL(from indexURL: URL, pageToken: String) -> URL {
         guard var components = URLComponents(url: indexURL, resolvingAgainstBaseURL: false) else {
             return indexURL
         }
@@ -2431,6 +2476,7 @@ final class LyricsWebViewStore: NSObject {
         components.queryItems = [
             URLQueryItem(name: "surface", value: role),
             URLQueryItem(name: "rev", value: "\(contentLoadRevision)"),
+            URLQueryItem(name: "pageToken", value: pageToken),
         ]
         return components.url ?? indexURL
     }
