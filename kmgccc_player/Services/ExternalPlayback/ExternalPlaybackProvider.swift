@@ -52,6 +52,8 @@ protocol ExternalPlaybackProvider: AnyObject {
     func invalidateCurrentResolution()
     func clearRuntimeResolutionCaches()
     func updateLyricsOffsetOnly()
+    var isRefetchingLyrics: Bool { get }
+    func forceRefetchLyrics() async
 }
 
 extension ExternalPlaybackProvider {
@@ -59,6 +61,8 @@ extension ExternalPlaybackProvider {
     func tickPresentation() {}
     func setVolume(_ volume: Double) {}
     func updateLyricsOffsetOnly() {}
+    var isRefetchingLyrics: Bool { false }
+    func forceRefetchLyrics() async {}
 }
 
 extension AppleMusicPlaybackAdapter: ExternalPlaybackProvider {
