@@ -63,7 +63,18 @@ final class PlaylistPageController {
     }
 
     private enum RevealScroll {
-        static let animation: Animation = .timingCurve(0.22, 0.88, 0.24, 1.0, duration: 0.42)
+        /// Aggressive ease-out with a long, gentle tail: the scroll leaps forward
+        /// almost immediately (fast acceleration) then creeps the last few percent
+        /// into the target row over a long deceleration. Slower and more non-linear
+        /// than a plain easeOut for a silkier reveal.
+        static let animation: Animation = .timingCurve(0.1, 1.0, 0.3, 1.0, duration: 0.75)
+        /// Delay after the scroll is triggered before the highlight pulse fires,
+        /// chosen to land near the end of the scroll animation.
+        static let highlightDelayMilliseconds: UInt64 = 620
+        /// Delay before applying the scroll position, so a freshly-created scroll
+        /// view (after a playlist switch) has time to lay out its rows. Without
+        /// this, the new ScrollView may ignore the initial scrollPosition binding.
+        static let scrollStabilizationDelayMilliseconds: UInt64 = 50
     }
 
     private(set) var phase: PlaylistPagePhase = .idle
@@ -118,6 +129,10 @@ final class PlaylistPageController {
     var rendersHeaderBackgroundInWindowLayer = false
     private(set) var isManualTrackReorderActive = false
 
+    /// Track ID that should show a brief reveal-highlight pulse.
+    /// Set after the scroll-to-now-playing animation lands, cleared automatically.
+    private(set) var revealHighlightTrackID: UUID?
+
     let haloState = HeaderHaloState()
 
     private var libraryVM: LibraryViewModel?
@@ -133,6 +148,8 @@ final class PlaylistPageController {
     private var headerFadeTask: Task<Void, Never>?
     private var haloFadeTask: Task<Void, Never>?
     private var phaseTask: Task<Void, Never>?
+    private var revealHighlightTask: Task<Void, Never>?
+    private var revealScrollTask: Task<Void, Never>?
     private var deferredDisappearTask: Task<Void, Never>?
     private var activeLoadToken = UUID()
     private var phaseToken = UUID()
@@ -160,6 +177,11 @@ final class PlaylistPageController {
     private var pendingRevealTrackID: UUID?
     @ObservationIgnored
     private var pendingRevealAnimated = true
+    /// True while a reveal scroll is armed (scheduled or animating). The scroll
+    /// view's position binding checks this to avoid clobbering the target with
+    /// intermediate/nil positions reported by a freshly-created ScrollView.
+    @ObservationIgnored
+    private(set) var isRevealScrollArmed = false
 
     func bind(
         libraryVM: LibraryViewModel,
@@ -254,11 +276,18 @@ final class PlaylistPageController {
         scheduleSnapshotUpdate()
     }
 
-    func requestRevealTrack(_ trackID: UUID, animated: Bool) {
+    func requestRevealTrack(_ trackID: UUID, animated: Bool, deferUntilRebuild: Bool = false) {
         guard !isManualTrackReorderActive else { return }
         pendingRevealTrackID = trackID
         pendingRevealAnimated = animated
-        revealPendingTrackIfPossible()
+        // When the caller is about to switch to a different selection (e.g.
+        // from the Home page, whose rows contain every track), skip the
+        // immediate reveal: it would consume the pending target in the wrong
+        // page. The next `applyPageModel` for the target selection will pick
+        // up `pendingRevealTrackID` and scroll then.
+        if !deferUntilRebuild {
+            revealPendingTrackIfPossible()
+        }
     }
 
     func refreshHeaderArtwork() {
@@ -635,6 +664,9 @@ final class PlaylistPageController {
         latestTrackLookup.removeAll()
         snapshotUpdateTask?.cancel()
         rebuildTask?.cancel()
+        revealScrollTask?.cancel()
+        revealHighlightTask?.cancel()
+        isRevealScrollArmed = false
         phaseToken = UUID()
         headerResolveToken = UUID()
         isManualTrackReorderActive = false
@@ -1748,19 +1780,59 @@ final class PlaylistPageController {
             return false
         }
 
-        let applyReveal = {
-            self.listScrollPositionID = targetID
-        }
-        if pendingRevealAnimated {
-            withAnimation(RevealScroll.animation) {
-                applyReveal()
-            }
-        } else {
-            applyReveal()
-        }
         pendingRevealTrackID = nil
+        isRevealScrollArmed = true
+        scheduleRevealScroll(for: targetID, animated: pendingRevealAnimated)
         scheduleSnapshotUpdate()
         return true
+    }
+
+    /// Scroll to the reveal target. The short stabilization delay is essential
+    /// for the cross-playlist case: `applyPageModel` runs in the same transaction
+    /// that swaps the ProgressView for a freshly-created ScrollView, and a
+    /// brand-new ScrollView with a LazyVStack does not reliably honor an initial
+    /// `scrollPosition` binding (the target row may not be realized yet, and the
+    /// binding's setter can fire with nil/first-row, clobbering the target). By
+    /// deferring the position change to after the scroll view exists, the change
+    /// becomes a normal animated state update on an existing view.
+    private func scheduleRevealScroll(for trackID: UUID, animated: Bool) {
+        revealScrollTask?.cancel()
+        let delay = RevealScroll.scrollStabilizationDelayMilliseconds
+        revealScrollTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(delay))
+            guard !Task.isCancelled else { return }
+            guard let self else { return }
+
+            if animated {
+                withAnimation(RevealScroll.animation) {
+                    self.listScrollPositionID = trackID
+                }
+                self.scheduleRevealHighlight(for: trackID)
+            } else {
+                self.listScrollPositionID = trackID
+                self.isRevealScrollArmed = false
+            }
+        }
+    }
+
+    /// Fire the reveal-highlight pulse after the scroll animation settles, and
+    /// release the scroll-position guard.
+    private func scheduleRevealHighlight(for trackID: UUID) {
+        revealHighlightTask?.cancel()
+        revealHighlightTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(RevealScroll.highlightDelayMilliseconds))
+            guard !Task.isCancelled else { return }
+            guard let self else { return }
+            self.isRevealScrollArmed = false
+            self.revealHighlightTrackID = trackID
+        }
+    }
+
+    /// Called by the row view after its highlight animation ends.
+    func clearRevealHighlight(for trackID: UUID) {
+        if revealHighlightTrackID == trackID {
+            revealHighlightTrackID = nil
+        }
     }
 
     private func updateLibrarySnapshot() {

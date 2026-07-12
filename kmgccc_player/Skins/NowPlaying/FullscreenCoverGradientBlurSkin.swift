@@ -19,6 +19,11 @@ struct FullscreenCoverGradientBlurSkin: NowPlayingSkin {
     func makeBackground(context: SkinContext) -> AnyView {
         AnyView(
             CoverGradientBlurSkinBackgroundBridge(context: context, config: makeConfigFromSettings())
+                // Stabilize identity across track switches so @State survives
+                // and the targetCentered onChange can animate position/opacity.
+                // Artwork changes are still observed via artworkChecksum and
+                // handled by handleArtworkChange.
+                .id("fullscreen.coverGradientBlur.backgroundBridge")
         )
     }
 
@@ -107,18 +112,35 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     @State private var transitionBlurRadius: CGFloat = 0
     @State private var bokehRadius: CGFloat = 0
     @State private var bokehSurfaceOpacity: CGFloat = 0
-    @State private var bokehOpticalOpacity: CGFloat = 0
+    /// Per-surface optical opacity for the two persistent Bokeh surfaces.
+    /// Surface 0 is the "base" (current artwork, always full opacity while
+    /// active). Surface 1 is the "overlay" (previous artwork that fades out
+    /// on top of the base to reveal the new artwork underneath). Only the
+    /// old artwork fades out; the new artwork is never faded in, so no
+    /// semi-transparent surface pair can expose transparent canvas edges.
+    @State private var bokehOpticalOpacities: [CGFloat] = [0, 0]
+    @State private var bokehSourceSets: [BokehTransitionPreparedSourceSet?] = [nil, nil]
     @State private var activeTransitionMode: BokehTransitionMode = .unmaskedFallback(reason: "idle")
     @State private var activeBokehConfiguration = BokehTransitionConfig()
     @State private var isTransitionActive = false
     @State private var transitionTask: Task<Void, Never>?
+    /// Live track artwork checksum, updated in onChange. The transitionTask
+    /// captures `self` at creation time, so `context.track` inside the task
+    /// can be stale if the track changes during the transition. This @State
+    /// variable always holds the latest checksum (SwiftUI @State storage is
+    /// identity-based, so the task reads the current value).
+    @State private var latestTrackArtworkChecksum: UInt64 = 0
     @State private var leadingRenderedFrame: CoverGradientBlurRenderedFrame?
     @State private var centeredRenderedFrame: CoverGradientBlurRenderedFrame?
     @State private var transitionRenderedFrame: CoverGradientBlurRenderedFrame?
     @State private var bokehPreparedSourceSet: BokehTransitionPreparedSourceSet?
-    @State private var activeBokehSourceSet: BokehTransitionPreparedSourceSet?
     @State private var bokehViewportSize: CGSize = .zero
     @State private var bokehSourcePreparer = BokehTransitionSourcePreparer()
+
+    /// Read-only accessor for the base surface's source set.
+    private var activeBokehSourceSet: BokehTransitionPreparedSourceSet? {
+        bokehSourceSets[0]
+    }
 
     init(context: SkinContext, config: CoverGradientBlurConfig) {
         self.context = context
@@ -161,19 +183,35 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                     .opacity(activeTransitionMode.usesBokeh ? 0 : Double(transitionLayerOpacity))
                     .zIndex(2)
 
+                // Two persistent Bokeh surfaces. They are never removed from
+                // the hierarchy (only paused / alpha-zeroed when dormant) so
+                // dismantling a mid-flight MTKView can never crash the app.
+                // During a track change the incoming artwork is installed on
+                // the dormant surface and the two crossfade optical opacity;
+                // both carry the same blur so the swap reads as a smooth
+                // dissolved crossfade, not a hard texture cut.
                 BokehTransitionSurface(
-                    snapshot: bokehSnapshot(for: geometry.size),
-                    sourceSet: activeBokehSourceSet
+                    snapshot: bokehSnapshot(for: geometry.size, surfaceIndex: 0),
+                    sourceSet: bokehSourceSets[0]
                 )
                 .frame(width: geometry.size.width, height: geometry.size.height)
                 .allowsHitTesting(false)
                 .zIndex(3)
+
+                BokehTransitionSurface(
+                    snapshot: bokehSnapshot(for: geometry.size, surfaceIndex: 1),
+                    sourceSet: bokehSourceSets[1]
+                )
+                .frame(width: geometry.size.width, height: geometry.size.height)
+                .allowsHitTesting(false)
+                .zIndex(4)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
             .compositingGroup()
             .blur(radius: transitionBlurRadius, opaque: true)
             .onChange(of: targetCentered) { _, newValue in
+                print("[CoverBlur] targetCentered changed to \(newValue), current pos=\(transitionPosition) isActive=\(isTransitionActive)")
                 runLayoutTransition(to: newValue)
             }
             .onAppear {
@@ -184,7 +222,8 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             }
         }
         .onAppear { beginReadabilityArtwork() }
-        .onChange(of: context.track?.artworkChecksum ?? 0) { _, _ in
+        .onChange(of: context.track?.artworkChecksum ?? 0) { _, newValue in
+            latestTrackArtworkChecksum = newValue
             beginReadabilityArtwork()
             handleArtworkChange()
         }
@@ -236,22 +275,62 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         case .transition:
             transitionRenderedFrame = frame
         }
+        print("[CoverBlur] frame arrived: \(frame.placement) cs=\(frame.artworkChecksum) leading=\(leadingRenderedFrame != nil) centered=\(centeredRenderedFrame != nil) transition=\(transitionRenderedFrame != nil) isActive=\(isTransitionActive)")
         prepareBokehSourcesIfPossible()
     }
 
     private func handleArtworkChange() {
+        let wasBokeh = activeTransitionMode.usesBokeh
+
+        // Invalidate the preparer and clear stale rendered frames / prepared
+        // source sets. The new artwork's frames will arrive via
+        // acceptRenderedFrame and trigger prepareBokehSourcesIfPossible for
+        // the next transition.
         bokehSourcePreparer.invalidate()
         leadingRenderedFrame = nil
         centeredRenderedFrame = nil
         transitionRenderedFrame = nil
         bokehPreparedSourceSet = nil
 
-        // A running Bokeh surface may only ever show a complete, one-artwork
-        // source set. On a track change retire it rather than combining frames
-        // from the outgoing and incoming tracks; the high-resolution Gaussian
-        // path remains underneath for this exceptional interruption.
-        retireBokehWithoutOpticalFallback(reason: "artwork changed during transition")
-        activeBokehSourceSet = nil
+        if isTransitionActive {
+            // A transition is in progress. Do NOT disrupt it - killing the
+            // Bokeh and switching to Gaussian here was the root cause of the
+            // "Bokeh shows briefly -> Gaussian fallback" jank and choppiness
+            // during auto track switching. The position/blur animation must
+            // run to completion.
+            if wasBokeh {
+                // The base surface holds textures from the previous artwork,
+                // but the Metal renderer is still animating position/opacity
+                // and its blur is visually acceptable for the remainder of
+                // this transition. Keep it running; do NOT clear the base
+                // source set or switch to Gaussian. New sources for the new
+                // artwork are prepared in the background
+                // (acceptRenderedFrame -> prepareBokehSourcesIfPossible) and
+                // stored in bokehPreparedSourceSet. The actual swap is
+                // deferred to retirement (after the position settles) so the
+                // texture upload does not cause frame drops during the
+                // position animation and the blur decrease + overlay fade-out
+                // start simultaneously.
+                print("[CoverBlur] artwork changed during Bokeh transition: keeping Bokeh, pos=\(transitionPosition)")
+            } else {
+                print("[CoverBlur] artwork changed during non-Bokeh transition: letting it continue pos=\(transitionPosition)")
+            }
+        } else {
+            // No transition active. Clear the source sets (old artwork
+            // textures) so the next transition prepares fresh sources.
+            if wasBokeh {
+                bokehSourceSets = [nil, nil]
+                bokehOpticalOpacities = [0, 0]
+            }
+            let targetCentered = context.usesFullscreenPlayerLayout && !context.lyricsVisible
+            let targetPosition: CGFloat = targetCentered ? 1 : 0
+            if abs(transitionPosition - targetPosition) > 0.001 {
+                print("[CoverBlur] artwork changed: no transition, starting one pos=\(transitionPosition)->\(targetPosition)")
+                runLayoutTransition(to: targetCentered)
+            } else {
+                print("[CoverBlur] artwork changed: already at target pos=\(targetPosition)")
+            }
+        }
     }
 
     private func updateBokehViewport(_ size: CGSize) {
@@ -261,18 +340,6 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         // A resize prepares the next set but never replaces Bokeh with a sudden
         // full-surface Gaussian blur.
         prepareBokehSourcesIfPossible()
-    }
-
-    private func retireBokehWithoutOpticalFallback(reason: String) {
-        guard activeTransitionMode.usesBokeh else { return }
-        activeTransitionMode = .unmaskedFallback(reason: reason)
-        BokehTransitionPerformancePolicy.shared.finish()
-        withoutSwiftUIAnimation {
-            bokehRadius = 0
-            bokehSurfaceOpacity = 0
-            bokehOpticalOpacity = 0
-            transitionBlurRadius = 0
-        }
     }
 
     private func preferredBokehTier(for configuration: BokehTransitionConfig) -> BokehTransitionRenderTier {
@@ -293,6 +360,9 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     private func prepareBokehSourcesIfPossible() {
         let configuration = BokehTransitionConfig.load()
         let tier = preferredBokehTier(for: configuration)
+        let hasAllFrames = leadingRenderedFrame != nil
+            && centeredRenderedFrame != nil
+            && transitionRenderedFrame != nil
         guard configuration.effect == .bokeh,
               BokehTransitionMetalContext.shared.availability.isReady,
               let frames = BokehTransitionSourceFrames(
@@ -311,25 +381,36 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                 ),
                 tier: tier
               ) else {
+            if hasAllFrames {
+                let leadingW = leadingRenderedFrame?.logicalCanvasSize.width ?? 0
+                let leadingH = leadingRenderedFrame?.logicalCanvasSize.height ?? 0
+                print("[CoverBlur] prepare skipped despite all frames: effect=\(configuration.effect.rawValue) metal=\(BokehTransitionMetalContext.shared.availability.isReady) viewport=\(bokehViewportSize) leadingSize=\(leadingW)x\(leadingH) tier=\(tier.rawValue)")
+            }
             return
         }
 
+        print("[CoverBlur] preparing Bokeh source set: cs=\(frames.leading.artworkChecksum) tier=\(tier.rawValue) isActive=\(isTransitionActive)")
         bokehSourcePreparer.prepare(
             frames: frames,
             renderSize: renderSize,
             tier: tier
         ) { sourceSet in
             bokehPreparedSourceSet = sourceSet
-            // A source prepared during a transition is intentionally held for
-            // the next one; no mid-animation resolution/identity swap.
             if !isTransitionActive {
-                activeBokehSourceSet = sourceSet
+                bokehSourceSets[0] = sourceSet
             }
+            // Do NOT swap mid-transition. The artwork swap is deferred to
+            // retirement so it runs in the transitionTask (no separate
+            // overlayFadeTask that can race a subsequent swap and cause the
+            // disappear->flashback->fade flicker on rapid track switching) and
+            // so the texture upload does not cause frame drops during the
+            // position animation. At retirement the swap, blur decrease, and
+            // overlay fade-out all start together.
         }
     }
 
-    private func bokehSnapshot(for size: CGSize) -> BokehTransitionSnapshot {
-        let sourceSet = activeBokehSourceSet
+    private func bokehSnapshot(for size: CGSize, surfaceIndex: Int) -> BokehTransitionSnapshot {
+        let sourceSet = bokehSourceSets[surfaceIndex]
         let canvasRatio = sourceSet?.transitionCanvasSizeRatio ?? CGSize(width: 1, height: 1)
         return BokehTransitionSnapshot(
             transitionPosition: transitionPosition,
@@ -337,7 +418,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             transitionOpacity: transitionLayerOpacity,
             bokehRadius: bokehRadius,
             surfaceOpacity: bokehSurfaceOpacity,
-            opticalOpacity: bokehOpticalOpacity,
+            opticalOpacity: bokehOpticalOpacities[surfaceIndex],
             transitionCanvasSizeRatio: canvasRatio,
             // A constant travel distance; Metal combines it with the animated
             // transitionPosition every frame. Sending the already-evaluated
@@ -349,30 +430,45 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         )
     }
 
+    private func transitionModeLabel(_ mode: BokehTransitionMode) -> String {
+        switch mode {
+        case .bokeh: return "bokeh"
+        case .gaussianFallback: return "gaussian"
+        case .unmaskedFallback: return "unmasked"
+        }
+    }
+
     private func selectTransitionMode(configuration: BokehTransitionConfig) -> BokehTransitionMode {
         guard configuration.effect == .bokeh else {
+            Log.info("CoverBlur transition: Gaussian (effect=\(configuration.effect.rawValue))", category: .fullscreen)
             return .gaussianFallback(reason: "selected in settings")
         }
 
         let metalAvailability = BokehTransitionMetalContext.shared.availability
         guard metalAvailability.isReady else {
+            Log.info("CoverBlur transition: Gaussian (Metal unavailable: \(metalAvailability.reason ?? "unknown"))", category: .fullscreen)
             return .gaussianFallback(
                 reason: metalAvailability.reason ?? "Bokeh enhancement unavailable"
             )
         }
 
         let tier = preferredBokehTier(for: configuration)
-        guard let sourceSet = bokehPreparedSourceSet,
-              sourceSet.identity.tier == tier else {
-            prepareBokehSourcesIfPossible()
-            // A first-click or resize preparation miss must retain the old
-            // opaque transition path. An unmasked switch reveals the static
-            // target layer before the source set is ready, which reads as a
-            // one-frame flash during reversal.
-            return .gaussianFallback(reason: "Bokeh source set not ready")
+        if let sourceSet = bokehPreparedSourceSet {
+            // A prepared source set is usable even if the performance policy
+            // has since decided on a different tier; tier only affects sample
+            // budget, and the shader reads the actual tier from the snapshot.
+            // Rejecting here caused frequent Bokeh->Gaussian fallback when the
+            // automatic quality policy oscillated between .low and .balanced.
+            if sourceSet.identity.tier != tier {
+                Log.debug("CoverBlur transition: tier mismatch, using prepared \(sourceSet.identity.tier.rawValue) source set while decision is \(tier.rawValue)", category: .fullscreen)
+            }
+            bokehSourceSets[0] = bokehPreparedSourceSet
+            return .bokeh
         }
-        activeBokehSourceSet = sourceSet
-        return .bokeh
+
+        prepareBokehSourcesIfPossible()
+        Log.info("CoverBlur transition: Gaussian (source set not ready, tier=\(tier.rawValue))", category: .fullscreen)
+        return .gaussianFallback(reason: "Bokeh source set not ready")
     }
 
     private var blurRiseAnimation: Animation {
@@ -457,7 +553,10 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         let shouldRetargetImmediately = isTransitionActive
         let bokehConfiguration = BokehTransitionConfig.load()
 
+        print("[CoverBlur] runLayoutTransition: target=\(targetPosition) pos=\(transitionPosition) isActive=\(isTransitionActive)")
+
         guard transitionPosition != targetPosition || isTransitionActive else {
+            print("[CoverBlur] runLayoutTransition: guard returned, already at target")
             retireTransitionEffect()
             return
         }
@@ -475,6 +574,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                     tier: activeBokehSourceSet?.identity.tier ?? .balanced
                 )
             }
+            Log.info("CoverBlur transition starting: mode=\(transitionModeLabel(activeTransitionMode)) target=\(targetPosition)", category: .fullscreen)
         }
 
         startTransitionEffect(configuration: activeBokehConfiguration)
@@ -497,28 +597,79 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
 
             guard await waitForTransitionStage(nanoseconds: 120_000_000) else { return }
 
-            retireTransitionEffect()
-
             if activeTransitionMode.usesBokeh {
-                guard await waitForTransitionStage(nanoseconds: bokehTailFadeDelay) else { return }
-                // Snap the high-resolution centered floor to the target layout
-                // at the same instant the surface begins its optical fade-out.
-                // By this point the position spring has already settled at
-                // targetPosition, so the surface's final frames and the floor
-                // depict the same layout. The floor is fully occluded by the
-                // surface while opticalOpacity is still near 1, then the
-                // ~200 ms optical fade reveals it. Updating settled here rather
-                // than at retirement closes the gap where the surface had
-                // already gone transparent but settled still held the old
-                // endpoint: that gap exposed layer 0 (leading = old layout)
-                // for ~100 ms and was the "flash back to the old side, then
-                // return to the new side" glitch.
+                // Use the live checksum (latestTrackArtworkChecksum) instead
+                // of context.track, which is captured at task creation time
+                // and can be stale if the track changed during the transition.
+                let targetChecksum = latestTrackArtworkChecksum
+                let activeChecksum = activeBokehSourceSet?.identity.artworkChecksum
+                let artworkChanged = activeChecksum != nil
+                    && activeChecksum != targetChecksum
+
+                // Start the blur decrease IMMEDIATELY (user-requested timing:
+                // position settles -> blur starts decreasing). The artwork
+                // swap + overlay fade-out happen as soon as the new source set
+                // is ready, which may be slightly after the blur starts
+                // decreasing (source preparation is async). This is better
+                // than skipping the swap entirely (which caused the hard-cut
+                // "old artwork disappears, new artwork appears" the user saw
+                // when the source set wasn't ready at a fixed check point).
+                //
+                // When the swap lands mid-blur-fall, the overlay snaps to
+                // full opacity showing the OLD artwork - which is exactly
+                // what was already visible on the base - so the snap is
+                // invisible. The overlay then fades out, revealing the new
+                // artwork underneath while the blur continues decreasing.
                 withoutSwiftUIAnimation {
-                    bokehOpticalOpacity = 0
+                    bokehRadius = 0
                     settledCenteredLayerOpacity = targetPosition
                 }
-                guard await waitForTransitionStage(nanoseconds: bokehTailRetirementDelay) else { return }
+
+                if artworkChanged {
+                    print("[CoverBlur] retirement: polling for source set, active=\(activeChecksum ?? 0) target=\(targetChecksum) prepared=\(bokehPreparedSourceSet?.identity.artworkChecksum ?? 0)")
+                    // Poll for the source set during the blur fall. When
+                    // ready, swap + start the overlay fade-out.
+                    let pollInterval: UInt64 = 16_000_000
+                    var elapsed: UInt64 = 0
+                    var swapped = false
+                    while elapsed < bokehBlurFallDuration {
+                        guard await waitForTransitionStage(nanoseconds: pollInterval) else { return }
+                        elapsed += pollInterval
+                        if let prepared = bokehPreparedSourceSet,
+                           prepared.identity.artworkChecksum == targetChecksum {
+                            print("[CoverBlur] retirement swap+fade at +\(elapsed / 1_000_000)ms: \(activeChecksum ?? 0) -> \(targetChecksum)")
+                            let oldSourceSet = bokehSourceSets[0]
+                            withoutSwiftUIAnimation {
+                                bokehSourceSets[1] = oldSourceSet
+                                bokehSourceSets[0] = prepared
+                                bokehOpticalOpacities[0] = 1
+                                bokehOpticalOpacities[1] = 0
+                            }
+                            swapped = true
+                            break
+                        }
+                    }
+                    if !swapped {
+                        print("[CoverBlur] retirement: source set not ready within blur fall, no swap")
+                    }
+                    // Wait for the overlay fade-out to complete. If the swap
+                    // happened late in the blur fall, the fade-out (0.60 s)
+                    // may extend past the blur fall (0.78 s); wait for the
+                    // longer of the two so the fade-out is not cut short by
+                    // cleanup.
+                    let remainingBlur = bokehBlurFallDuration > elapsed
+                        ? bokehBlurFallDuration - elapsed : 0
+                    let remainingFade = swapped ? bokehOverlayFadeDuration : 0
+                    let waitNanos = max(remainingBlur, remainingFade)
+                    if waitNanos > 0 {
+                        guard await waitForTransitionStage(nanoseconds: waitNanos) else { return }
+                    }
+                } else {
+                    // No artwork change; just wait for the blur fall.
+                    guard await waitForTransitionStage(nanoseconds: bokehBlurFallDuration) else { return }
+                }
             } else {
+                retireTransitionEffect()
                 guard await waitForTransitionStage(nanoseconds: transitionCompletionDelay) else { return }
             }
             var transaction = Transaction()
@@ -526,17 +677,22 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             withTransaction(transaction) {
                 // Gaussian/unmasked paths have no optical fade, so the settled
                 // floor is synced here at retirement. For Bokeh this is a
-                // no-op: the floor was already synced at the start of the
-                // optical fade above. The assignment is kept here so a
-                // non-Bokeh transition still leaves settled consistent with
-                // the visible layout, otherwise the next Bokeh transition's
-                // 0.08 s optical rise would briefly reveal a stale floor.
+                // no-op: the floor was already synced above.
                 settledCenteredLayerOpacity = targetPosition
                 bokehSurfaceOpacity = 0
                 isTransitionActive = false
             }
             BokehTransitionPerformancePolicy.shared.finish()
-            activeBokehSourceSet = bokehPreparedSourceSet
+            // Sync the base surface to the latest prepared source set for the
+            // next transition and clear the overlay. Both optical opacities
+            // are zeroed (the surfaces are dormant); the next
+            // startTransitionEffect raises the base again.
+            bokehSourceSets[0] = bokehPreparedSourceSet
+            bokehSourceSets[1] = nil
+            withoutSwiftUIAnimation {
+                bokehOpticalOpacities[0] = 0
+                bokehOpticalOpacities[1] = 0
+            }
         }
     }
 
@@ -546,20 +702,24 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             transitionBlurRadius = 0
             withoutSwiftUIAnimation {
                 bokehSurfaceOpacity = 1
-                bokehOpticalOpacity = 1
+                // Raise the base surface; ensure the overlay is dark. The
+                // overlay hosts the old artwork during a fade-out and must
+                // start hidden.
+                bokehOpticalOpacities[0] = 1
+                bokehOpticalOpacities[1] = 0
                 bokehRadius = configuration.radiusAt1080
             }
         case .gaussianFallback:
             bokehRadius = 0
             bokehSurfaceOpacity = 0
-            bokehOpticalOpacity = 0
+            bokehOpticalOpacities = [0, 0]
             withAnimation(blurRiseAnimation) {
                 transitionBlurRadius = 44
             }
         case .unmaskedFallback:
             bokehRadius = 0
             bokehSurfaceOpacity = 0
-            bokehOpticalOpacity = 0
+            bokehOpticalOpacities = [0, 0]
             transitionBlurRadius = 0
         }
     }
@@ -587,12 +747,19 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         context.theme.reduceMotion ? 320_000_000 : 820_000_000
     }
 
-    private var bokehTailFadeDelay: UInt64 {
-        context.theme.reduceMotion ? 180_000_000 : 520_000_000
+    /// Matches the renderer's blur-fall duration (TimedTransitionScalar
+    /// `.blurFall` curve: 0.78 s normal, 0.28 s reduce-motion). The retirement
+    /// waits this long so the full blur decrease is visible before the surface
+    /// is hidden.
+    private var bokehBlurFallDuration: UInt64 {
+        context.theme.reduceMotion ? 280_000_000 : 780_000_000
     }
 
-    private var bokehTailRetirementDelay: UInt64 {
-        context.theme.reduceMotion ? 140_000_000 : 300_000_000
+    /// Matches the renderer's optical-opacity fade-out duration (0.60 s normal,
+    /// 0.10 s reduce-motion). The retirement waits this long after the overlay
+    /// swap so the fade-out is not cut short by cleanup.
+    private var bokehOverlayFadeDuration: UInt64 {
+        context.theme.reduceMotion ? 100_000_000 : 600_000_000
     }
 
     private func retargetTransition(to targetPosition: CGFloat) {

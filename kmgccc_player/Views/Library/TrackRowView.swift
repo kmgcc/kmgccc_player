@@ -45,6 +45,14 @@ struct TrackRowSelectionContinuity: Equatable {
     )
 }
 
+private enum RevealHighlightTiming {
+    static let peakOpacity: Double = 0.32
+    /// Total visible duration of the pulse: ~0.30s (rise) + ~0.10s (hold) + ~0.50s (fall)
+    static let riseDuration: Double = 0.30
+    static let holdDuration: Double = 0.10
+    static let fallDuration: Double = 0.50
+}
+
 /// Row view for displaying a track in a list.
 struct TrackRowView<MenuContent: View>: View {
     let model: TrackRowModel
@@ -54,9 +62,11 @@ struct TrackRowView<MenuContent: View>: View {
     let showsSelectionBackground: Bool
     let enableSecondaryInteractions: Bool
     let enableArtworkLoading: Bool
+    let revealHighlight: Bool
     let onTap: (_ isShiftPressed: Bool) -> Void
     let onLyricSnippetTap: (() -> Void)?
     let onRowAppear: (() -> Void)?
+    let onRevealHighlightFinished: (() -> Void)?
     /// Optional palette override from parent. Defaults to system colors so
     /// callers that have no ThemeStore access still work correctly.
     var rowPrimaryColor: Color = ColorTokens.textPrimary
@@ -67,6 +77,12 @@ struct TrackRowView<MenuContent: View>: View {
     @State private var isHovering = false
     @State private var artworkImage: NSImage?
     @State private var isArtworkReady = false
+    @State private var revealHighlightOpacity: Double = 0
+    /// Animation to apply to the reveal-highlight overlay. The playlist scroll
+    /// container strips animations via `.transaction { tx.animation = nil }`, so
+    /// the overlay re-applies its intended animation from here (see
+    /// `revealHighlightOverlay`). `nil` = no animation (used for the instant reset).
+    @State private var revealCurrentAnimation: Animation? = nil
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -81,9 +97,11 @@ struct TrackRowView<MenuContent: View>: View {
         showsSelectionBackground: Bool = true,
         enableSecondaryInteractions: Bool = true,
         enableArtworkLoading: Bool = true,
+        revealHighlight: Bool = false,
         onTap: @escaping (_ isShiftPressed: Bool) -> Void,
         onLyricSnippetTap: (() -> Void)? = nil,
         onRowAppear: (() -> Void)? = nil,
+        onRevealHighlightFinished: (() -> Void)? = nil,
         rowPrimaryColor: Color = ColorTokens.textPrimary,
         rowSecondaryColor: Color = ColorTokens.textSecondary,
         rowTertiaryColor: Color = ColorTokens.textTertiary,
@@ -96,9 +114,11 @@ struct TrackRowView<MenuContent: View>: View {
         self.showsSelectionBackground = showsSelectionBackground
         self.enableSecondaryInteractions = enableSecondaryInteractions
         self.enableArtworkLoading = enableArtworkLoading
+        self.revealHighlight = revealHighlight
         self.onTap = onTap
         self.onLyricSnippetTap = onLyricSnippetTap
         self.onRowAppear = onRowAppear
+        self.onRevealHighlightFinished = onRevealHighlightFinished
         self.rowPrimaryColor = rowPrimaryColor
         self.rowSecondaryColor = rowSecondaryColor
         self.rowTertiaryColor = rowTertiaryColor
@@ -209,6 +229,9 @@ struct TrackRowView<MenuContent: View>: View {
             LyricsRuntimeProfile.increment("TrackRowView.onAppear")
             LyricsRuntimeProfile.insertUniqueValue("TrackRowView.onAppear.trackID", value: model.id.uuidString)
             onRowAppear?()
+            if revealHighlight {
+                playRevealHighlightAnimation()
+            }
         }
         .task(id: artworkTaskIdentity) {
             await loadArtwork()
@@ -216,6 +239,11 @@ struct TrackRowView<MenuContent: View>: View {
         .onChange(of: enableSecondaryInteractions) { _, enabled in
             if !enabled {
                 isHovering = false
+            }
+        }
+        .onChange(of: revealHighlight) { _, shouldHighlight in
+            if shouldHighlight {
+                playRevealHighlightAnimation()
             }
         }
     }
@@ -325,7 +353,70 @@ struct TrackRowView<MenuContent: View>: View {
         if isSelected {
             return Color.clear
         }
+        if isPlaying {
+            return Color.accentColor.opacity(colorScheme == .dark ? 0.08 : 0.06)
+        }
         return isHovering ? Color.primary.opacity(0.04) : Color.clear
+    }
+
+    // MARK: - Reveal Highlight Animation
+
+    private var revealHighlightOverlay: some View {
+        RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.cornerRadius)
+            .fill(Color.accentColor)
+            .opacity(revealHighlightOpacity)
+            // The playlist scroll container applies `.transaction { tx.animation = nil }`
+            // to suppress scroll-driven layout animations. That also strips the pulse
+            // animation from state changes. Re-apply the intended animation here: a
+            // child `.transaction` runs after the parent's, so this restores the
+            // animation for this overlay leaf only, without un-blocking scroll layout.
+            .transaction { tx in
+                if let animation = revealCurrentAnimation {
+                    tx.animation = animation
+                }
+            }
+            .allowsHitTesting(false)
+    }
+
+    @State private var revealAnimationTask: Task<Void, Never>?
+
+    private func playRevealHighlightAnimation() {
+        revealAnimationTask?.cancel()
+
+        // Instantly reset to baseline without animation. Setting
+        // revealCurrentAnimation = nil means the overlay's `.transaction` won't
+        // re-apply any animation, so this jump is immediate.
+        revealCurrentAnimation = nil
+        revealHighlightOpacity = 0
+
+        revealAnimationTask = Task { @MainActor in
+            // Yield a frame so the unanimated reset lands on screen before the rise begins.
+            try? await Task.sleep(for: .milliseconds(15))
+            guard !Task.isCancelled else { return }
+
+            // Phase 1: Rise - quick attack with an ease-out curve.
+            revealCurrentAnimation = .easeOut(duration: RevealHighlightTiming.riseDuration)
+            revealHighlightOpacity = RevealHighlightTiming.peakOpacity
+
+            // Wait for rise + brief hold at peak.
+            try? await Task.sleep(for: .milliseconds(
+                Int(RevealHighlightTiming.riseDuration * 1000)
+                + Int(RevealHighlightTiming.holdDuration * 1000)
+            ))
+            guard !Task.isCancelled else { return }
+
+            // Phase 2: Fall - slower decay with an ease-in curve.
+            revealCurrentAnimation = .easeIn(duration: RevealHighlightTiming.fallDuration)
+            revealHighlightOpacity = 0
+
+            try? await Task.sleep(for: .milliseconds(
+                Int(RevealHighlightTiming.fallDuration * 1000)
+            ))
+            guard !Task.isCancelled else { return }
+
+            revealCurrentAnimation = nil
+            onRevealHighlightFinished?()
+        }
     }
 
     @ViewBuilder
@@ -339,9 +430,11 @@ struct TrackRowView<MenuContent: View>: View {
             .fill(backgroundFill)
             .padding(.top, selectionContinuity.connectsToPrevious ? -0.75 : 0)
             .padding(.bottom, selectionContinuity.connectsToNext ? -0.75 : 0)
+            .overlay(revealHighlightOverlay)
         } else {
             RoundedRectangle(cornerRadius: Constants.Layout.TrackRow.cornerRadius)
                 .fill(backgroundFill)
+                .overlay(revealHighlightOverlay)
         }
     }
 
@@ -508,6 +601,7 @@ extension TrackRowView: Equatable where MenuContent: View {
             && lhs.showsSelectionBackground == rhs.showsSelectionBackground
             && lhs.enableSecondaryInteractions == rhs.enableSecondaryInteractions
             && lhs.enableArtworkLoading == rhs.enableArtworkLoading
+            && lhs.revealHighlight == rhs.revealHighlight
             && (lhs.onLyricSnippetTap == nil) == (rhs.onLyricSnippetTap == nil)
             && lhs.rowPrimaryColor == rhs.rowPrimaryColor
             && lhs.rowSecondaryColor == rhs.rowSecondaryColor

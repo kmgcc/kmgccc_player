@@ -76,6 +76,7 @@ struct PlaylistTrackRowsSection: View {
             showsSelectionBackground: false,
             enableSecondaryInteractions: pageController.areRowSecondaryInteractionsEnabled,
             enableArtworkLoading: pageController.areRowArtworkLoadsEnabled,
+            revealHighlight: pageController.revealHighlightTrackID == row.id,
             onTap: { isShiftPressed in
                 if pageController.isMultiselectMode {
                     pageController.handleMultiselectRowTap(
@@ -125,6 +126,9 @@ struct PlaylistTrackRowsSection: View {
             },
             onRowAppear: {
                 pageController.prefetchAroundTrackID(row.id)
+            },
+            onRevealHighlightFinished: {
+                pageController.clearRevealHighlight(for: row.id)
             },
             rowPrimaryColor: rowPrimaryColor,
             rowSecondaryColor: rowSecondaryColor,

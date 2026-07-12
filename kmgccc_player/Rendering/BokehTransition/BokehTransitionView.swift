@@ -42,7 +42,10 @@ struct BokehTransitionSurface: NSViewRepresentable {
         installSourceIfNeeded(in: view, coordinator: context.coordinator)
         context.coordinator.renderer.update(snapshot: snapshot)
         // surfaceOpacity is a lifecycle gate, not an optical animation. Bokeh
-        // intensity is represented exclusively by the animated radius.
+        // intensity is represented exclusively by the animated radius. The
+        // renderer's draw(in:) sets view.alphaValue to the animated
+        // opticalOpacity each frame; here we only ensure it is 0 when the
+        // surface should be fully hidden (dormant or unavailable).
         if snapshot.surfaceOpacity <= 0.5 {
             view.alphaValue = 0
         }
