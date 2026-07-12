@@ -417,23 +417,17 @@ nonisolated struct FirstUseHitchToken: Sendable {
 }
 
 nonisolated enum FirstUseHitchDiagnostics {
-    // MARK: - Stack entry
-
     private struct StackEntry: Sendable {
         let id: UUID
         let description: String
         let startedAtUptime: TimeInterval
     }
 
-    // MARK: - Ring buffer entry
-
     struct RingEvent: Sendable {
         let timestamp: TimeInterval
         let description: String
         let isBegin: Bool
     }
-
-    // MARK: - State
 
     private static let lock = NSLock()
     private nonisolated(unsafe) static var countsByKey: [String: Int] = [:]

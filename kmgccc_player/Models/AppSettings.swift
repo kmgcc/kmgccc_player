@@ -55,7 +55,6 @@ extension Notification.Name {
 }
 
 /// Observable app settings using AppStorage for persistence.
-/// Observable app settings using AppStorage for persistence.
 @Observable
 public final class AppSettings {
 
