@@ -28,8 +28,6 @@ final class SmartPlaybackController {
     var onPlayTrack: ((Track) -> Void)?
     var onTrackChanged: ((Track?) -> Void)?
 
-    // MARK: - State
-
     /// Whether shuffle mode is enabled.
     private(set) var isShuffleEnabled: Bool = false
 
@@ -41,8 +39,6 @@ final class SmartPlaybackController {
 
     /// Last track in the explicit play-next block for sequential queues.
     private var playNextInsertionAnchorID: UUID?
-
-    // MARK: - Initialization
 
     init() {
         setupNotifications()

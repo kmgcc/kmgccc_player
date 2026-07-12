@@ -76,8 +76,6 @@ final class AMLLDBRawIndexCache: ObservableObject {
     /// Background update task
     private var updateTask: Task<Void, Never>?
 
-    // MARK: - Initialization
-
     private init() {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60

@@ -45,8 +45,6 @@ final class PreferenceStatsService {
         return recentSkipTimestamps.count >= Self.browsingBurstThreshold
     }
 
-    // MARK: - Initialization
-
     private init() {}
 
     // MARK: - Stats Access
