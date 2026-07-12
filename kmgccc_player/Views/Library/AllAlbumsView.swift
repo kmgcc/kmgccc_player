@@ -24,7 +24,6 @@ private struct AlbumDeletionRequest: Identifiable {
     var id: String { entry.id.uuidString }
 }
 
-// MARK: - View
 
 struct AllAlbumsView: View {
     let pageController: PlaylistPageController

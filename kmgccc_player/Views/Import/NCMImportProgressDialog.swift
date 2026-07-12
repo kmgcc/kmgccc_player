@@ -39,7 +39,6 @@ final class NCMProgressItemModel: Identifiable {
     }
 }
 
-// MARK: - View Model
 
 @MainActor
 @Observable

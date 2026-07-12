@@ -34,8 +34,6 @@ struct LDDCSearchSection: View {
     // MARK: - Logger
     private static let logger = Logger(subsystem: "com.kmgccc.player", category: "LyricsSearch")
     
-    // MARK: - State
-    
     @State private var searchTitle = ""
     @State private var searchArtist = ""
     @State private var searchAlbum = ""
@@ -131,8 +129,6 @@ struct LDDCSearchSection: View {
         self.onApplyLyrics = onApplyLyrics
         _includeTranslation = State(initialValue: includeTranslationDefault)
     }
-    
-    // MARK: - Body
     
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
