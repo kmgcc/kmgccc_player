@@ -24,7 +24,6 @@ private struct ArtistDeletionRequest: Identifiable {
     var id: String { entry.id.uuidString }
 }
 
-// MARK: - View
 
 struct AllArtistsView: View {
     let pageController: PlaylistPageController

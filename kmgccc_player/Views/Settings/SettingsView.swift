@@ -25,8 +25,6 @@ struct SettingsView: View {
 
 
 
-    // MARK: - Body
-
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             SettingsSidebarView(selection: $selection)

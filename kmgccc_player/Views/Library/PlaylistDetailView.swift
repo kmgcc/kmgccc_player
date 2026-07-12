@@ -29,7 +29,6 @@ struct PlaylistDetailView: View {
 
     let pageController: PlaylistPageController
 
-    // MARK: - State
 
     @State private var trackToEdit: Track?
     @State private var batchEditRequest: BatchEditRequest?

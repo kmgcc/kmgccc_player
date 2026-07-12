@@ -81,7 +81,6 @@ struct NumericTimeText: View {
     }
 }
 
-// MARK: - View Extension Helpers
 
 extension View {
     /// Conditional modifier helper
