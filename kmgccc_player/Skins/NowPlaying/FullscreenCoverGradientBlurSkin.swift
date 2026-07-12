@@ -102,6 +102,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     @Environment(\.displayScale) private var displayScale
     @State private var transitionPosition: CGFloat
     @State private var centeredLayerOpacity: CGFloat
+    @State private var settledCenteredLayerOpacity: CGFloat
     @State private var transitionLayerOpacity: CGFloat = 0
     @State private var transitionBlurRadius: CGFloat = 0
     @State private var bokehRadius: CGFloat = 0
@@ -126,6 +127,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         let startsCentered = context.usesFullscreenPlayerLayout && !context.lyricsVisible
         self._transitionPosition = State(initialValue: startsCentered ? 1 : 0)
         self._centeredLayerOpacity = State(initialValue: startsCentered ? 1 : 0)
+        self._settledCenteredLayerOpacity = State(initialValue: startsCentered ? 1 : 0)
     }
 
     var body: some View {
@@ -137,11 +139,14 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                     .zIndex(0)
 
                 staticBackground(size: geometry.size, placement: .centeredSymmetric)
-                    // Bokeh owns the complete transition composite. Keeping
-                    // the SwiftUI centered layer underneath would expose its
-                    // target opacity before Metal's interruptible crossfade
-                    // reaches the same presentation value.
-                    .opacity(activeTransitionMode.usesBokeh ? 0 : Double(centeredLayerOpacity))
+                    // Bokeh transition targets move ahead of their rendered
+                    // presentation values. Keep the high-resolution floor at
+                    // the last completed layout until the surface retires.
+                    .opacity(Double(
+                        activeTransitionMode.usesBokeh
+                            ? settledCenteredLayerOpacity
+                            : centeredLayerOpacity
+                    ))
                     .zIndex(1)
 
                 transitionBackground(size: geometry.size)
@@ -150,9 +155,9 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                         height: geometry.size.height
                     )
                     .offset(x: transitionCanvasOffset(for: geometry.size))
-                    // The moving source is already one of the three textures
-                    // inside the Bokeh surface. Do not show a second copy
-                    // below it during the handoff or interruption.
+                    // Metal already contains this moving source. Showing the
+                    // SwiftUI copy too leaves a stationary translucent ghost
+                    // when an opacity fade is interrupted.
                     .opacity(activeTransitionMode.usesBokeh ? 0 : Double(transitionLayerOpacity))
                     .zIndex(2)
 
@@ -506,14 +511,9 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
+                settledCenteredLayerOpacity = targetPosition
                 bokehSurfaceOpacity = 0
-            }
-            isTransitionActive = false
-            // Reveal the authoritative static layer only after the Metal
-            // surface has fully retired. It already carries the final target
-            // opacity, so this is a no-op visually rather than a second fade.
-            if activeTransitionMode.usesBokeh {
-                activeTransitionMode = .unmaskedFallback(reason: "idle")
+                isTransitionActive = false
             }
             BokehTransitionPerformancePolicy.shared.finish()
             activeBokehSourceSet = bokehPreparedSourceSet
@@ -577,9 +577,8 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
 
     private func retargetTransition(to targetPosition: CGFloat) {
         if activeTransitionMode.usesBokeh {
-            // Metal is the sole animation authority in Bokeh mode. SwiftUI only
-            // publishes new targets; the renderer preserves spring velocity and
-            // generates every presentation frame, including interruptions.
+            // Targets are published atomically; the renderer retargets from
+            // its current presentation frame and preserves spring velocity.
             withoutSwiftUIAnimation {
                 transitionPosition = targetPosition
                 centeredLayerOpacity = targetPosition
