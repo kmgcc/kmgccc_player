@@ -232,8 +232,6 @@ final class LyricsSurfaceManager {
         Log.debug("LyricsSurfaceManager: switch complete to \(mode), gen=\(generation), previousMode=\(oldMode)", category: .webview)
     }
 
-    // MARK: - View Visibility Reporting (Views call these, NOT requestMode)
-
     /// Report main view visibility change
     /// This may trigger a mode switch if fullscreen is not requested
     func reportMainVisible(_ visible: Bool) {

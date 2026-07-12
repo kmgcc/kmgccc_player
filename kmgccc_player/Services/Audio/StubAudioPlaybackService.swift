@@ -15,8 +15,6 @@ import Observation
 @MainActor
 final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
 
-    // MARK: - State
-
     private(set) var isPlaying: Bool = false
     var volume: Double = 0.8
     private(set) var currentTime: Double = 0

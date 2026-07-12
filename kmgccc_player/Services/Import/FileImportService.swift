@@ -2715,14 +2715,10 @@ final class FileImportService: FileImportServiceProtocol {
 
     static let supportedUTTypes: [UTType] = AudioFormatSupport.openPanelContentTypes
 
-    // MARK: - Properties
-
     private let repository: LibraryRepositoryProtocol
     private let libraryService: LocalLibraryService
     private let importEnrichmentService: ImportEnrichmentService
     private var importInProgress = false
-
-    // MARK: - Initialization
 
     init(
         repository: LibraryRepositoryProtocol,

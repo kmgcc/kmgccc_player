@@ -122,8 +122,6 @@ final class LyricsWebViewStore: NSObject {
     /// Whether an attach has occurred (prevents duplicate attach in updateNSView).
     private(set) var isAttached: Bool = false
 
-    // MARK: - State
-
     private(set) var isReady: Bool = false
 
     /// Last known state for replay after recovery (NEVER cleared on terminate).
@@ -187,8 +185,6 @@ final class LyricsWebViewStore: NSObject {
     // MARK: - Callbacks
 
     var onUserSeek: ((Double) -> Void)?
-
-    // MARK: - Initialization
 
     init(role: String = "main") {
         self.role = role
