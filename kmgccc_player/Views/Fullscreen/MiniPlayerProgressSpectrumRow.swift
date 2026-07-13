@@ -16,7 +16,7 @@ import SwiftUI
 @MainActor
 struct MiniPlayerProgressSpectrumRow: View {
     let scale: CGFloat
-    let isSpectrumEnabled: Bool
+    let visualization: AudioVisualizationKind
     let isPlaying: Bool
     let isSpectrumActive: Bool
     let accentColor: Color?
@@ -25,6 +25,8 @@ struct MiniPlayerProgressSpectrumRow: View {
     let enforceBrightForeground: Bool
     let spectrumArtworkColors: [NSColor]
     let spectrumUsesDarkForeground: Bool
+    let ledToneVariant: PerceptualToneLadder.LEDToneVariant
+    let usesVisualizationAsCompactProgress: Bool
     
     // Progress bar state
     let progress: Double
@@ -51,7 +53,7 @@ struct MiniPlayerProgressSpectrumRow: View {
 
     init(
         scale: CGFloat,
-        isSpectrumEnabled: Bool,
+        visualization: AudioVisualizationKind,
         isPlaying: Bool,
         isSpectrumActive: Bool = true,
         accentColor: Color?,
@@ -60,6 +62,8 @@ struct MiniPlayerProgressSpectrumRow: View {
         enforceBrightForeground: Bool = true,
         spectrumArtworkColors: [NSColor] = [],
         spectrumUsesDarkForeground: Bool = false,
+        ledToneVariant: PerceptualToneLadder.LEDToneVariant = .retuned,
+        usesVisualizationAsCompactProgress: Bool = false,
         progress: Double,
         duration: Double,
         isSeekEnabled: Bool = true,
@@ -70,7 +74,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         onDragStateChanged: @escaping (Bool) -> Void = { _ in }
     ) {
         self.scale = scale
-        self.isSpectrumEnabled = isSpectrumEnabled
+        self.visualization = visualization
         self.isPlaying = isPlaying
         self.isSpectrumActive = isSpectrumActive
         self.accentColor = accentColor
@@ -79,6 +83,8 @@ struct MiniPlayerProgressSpectrumRow: View {
         self.enforceBrightForeground = enforceBrightForeground
         self.spectrumArtworkColors = spectrumArtworkColors
         self.spectrumUsesDarkForeground = spectrumUsesDarkForeground
+        self.ledToneVariant = ledToneVariant
+        self.usesVisualizationAsCompactProgress = usesVisualizationAsCompactProgress
         self.progress = progress
         self.duration = duration
         self.isSeekEnabled = isSeekEnabled
@@ -90,15 +96,21 @@ struct MiniPlayerProgressSpectrumRow: View {
     }
     
     var body: some View {
-        // Single unified hover region covering the entire progress+spectrum area
-        HStack(spacing: 2 * scale) {
-            // Progress bar section - expands when spectrum collapses
-            progressBarSection
-                .layoutPriority(isRowHovered && isSpectrumEnabled ? 1 : 0)
-            
-            // Spectrum section - only if enabled
-            if isSpectrumEnabled {
-                spectrumSection
+        GeometryReader { geometry in
+            if usesVisualizationAsCompactProgress,
+               visualization != .off,
+               geometry.size.width < 170 {
+                compactVisualizationProgress(size: geometry.size)
+            } else {
+                HStack(alignment: .center, spacing: 2 * scale) {
+                    progressBarSection
+                        .layoutPriority(isRowHovered && visualization != .off ? 1 : 0)
+
+                    if visualization != .off {
+                        visualizationSection(availableHeight: geometry.size.height)
+                    }
+                }
+                .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
             }
         }
         .frame(maxHeight: .infinity)
@@ -192,25 +204,107 @@ struct MiniPlayerProgressSpectrumRow: View {
     
     // MARK: - Spectrum Section
     
-    private var spectrumSection: some View {
-        MiniPlayerSpectrumView(
-            isPlaying: isPlaying,
-            isActive: isSpectrumActive,
-            accentColor: spectrumFallbackColor,
-            artworkColors: spectrumArtworkColors,
-            usesDarkForeground: resolvedSpectrumUsesDarkForeground,
-            scale: scale,
-            isHovered: isRowHovered,
-            pausedBehavior: .minimalDots
+    private func visualizationSection(availableHeight: CGFloat) -> some View {
+        let height = min(spectrumHeight, availableHeight)
+        return visualizationContent(
+            count: visualization == .led ? 5 : 9,
+            width: spectrumExpandedWidth,
+            height: height
         )
-        // Width animates between expanded and collapsed
-        .frame(width: isRowHovered ? spectrumCollapsedWidth : spectrumExpandedWidth, height: spectrumHeight)
-        // Opacity fades out when collapsed
+        .frame(width: isRowHovered ? spectrumCollapsedWidth : spectrumExpandedWidth, height: height)
+        .frame(maxHeight: .infinity, alignment: .center)
         .opacity(isRowHovered ? 0 : 1)
-        // CRITICAL: Disable hit testing when collapsed/hidden to not block progress bar
         .allowsHitTesting(!isRowHovered)
-        // Single animation for all properties
         .animation(.spring(response: 0.35, dampingFraction: 0.75, blendDuration: 0.1), value: isRowHovered)
+    }
+
+    private func compactVisualizationProgress(size: CGSize) -> some View {
+        let count = adaptiveSegmentCount(for: size.width)
+        let filledWidth = progressWidth(in: size.width)
+        let contentHeight = min(spectrumHeight, size.height)
+        return ZStack {
+            visualizationContent(count: count, width: size.width, height: contentHeight)
+                .opacity(0.30)
+
+            visualizationContent(count: count, width: size.width, height: contentHeight)
+                .mask(alignment: .leading) {
+                    Rectangle()
+                        .frame(width: filledWidth)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                }
+        }
+        .frame(width: size.width, height: size.height, alignment: .center)
+        .clipped()
+        .contentShape(Rectangle())
+        .gesture(seekGesture(width: size.width))
+    }
+
+    @ViewBuilder
+    private func visualizationContent(count: Int, width: CGFloat, height: CGFloat) -> some View {
+        switch visualization {
+        case .off:
+            EmptyView()
+        case .spectrum:
+            MiniPlayerSpectrumView(
+                isPlaying: isPlaying,
+                isActive: isSpectrumActive,
+                accentColor: spectrumFallbackColor,
+                artworkColors: spectrumArtworkColors,
+                usesDarkForeground: resolvedSpectrumUsesDarkForeground,
+                scale: scale,
+                isHovered: false,
+                pausedBehavior: .minimalDots,
+                capsuleCount: count,
+                preferredWidth: width,
+                preferredHeight: height
+            )
+        case .led:
+            LiveLedMeterView(
+                dotSize: 10 * scale,
+                spacing: 6 * scale,
+                pillTint: nil,
+                isPlaying: isPlaying,
+                forceBrightLEDColors: false,
+                colorSchemeOverride: ledToneVariant == .appleStyleBright
+                    ? .dark
+                    : (resolvedLEDUsesDarkForeground ? .light : .dark),
+                levelToneVariant: ledToneVariant,
+                ledCountOverride: count,
+                showsStatusLight: true,
+                overlaysStatusLightOnFirstLED: true,
+                fillDirection: .leftToRight,
+                drawsPill: false,
+                horizontalPadding: 0,
+                verticalPadding: 0
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func adaptiveSegmentCount(for width: CGFloat) -> Int {
+        let elementWidth = visualization == .led ? 10 * scale : 5.8 * scale
+        let spacing = visualization == .led ? 6 * scale : 4 * scale
+        return max(3, Int((width + spacing) / (elementWidth + spacing)))
+    }
+
+    private func seekGesture(width: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                guard isSeekEnabled else { return }
+                onInteraction()
+                onDragStart()
+                onDragStateChanged(true)
+                onSeek(max(0, min(1, value.location.x / width)) * duration)
+            }
+            .onEnded { value in
+                guard isSeekEnabled else {
+                    onDragStateChanged(false)
+                    return
+                }
+                onSeek(max(0, min(1, value.location.x / width)) * duration)
+                onDragEnd()
+                onDragStateChanged(false)
+            }
     }
     
     // MARK: - Color Helpers
@@ -267,6 +361,10 @@ struct MiniPlayerProgressSpectrumRow: View {
 
     private var resolvedSpectrumUsesDarkForeground: Bool {
         foregroundProfile?.spectrumUsesDarkForeground ?? spectrumUsesDarkForeground
+    }
+
+    private var resolvedLEDUsesDarkForeground: Bool {
+        foregroundProfile?.isDarkForeground ?? resolvedSpectrumUsesDarkForeground
     }
 
     // MARK: - HSL Color Processing
@@ -358,7 +456,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         // With spectrum
         MiniPlayerProgressSpectrumRow(
             scale: 1.0,
-            isSpectrumEnabled: true,
+            visualization: .spectrum,
             isPlaying: true,
             accentColor: .blue,
             progress: 45,
@@ -373,7 +471,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         // Without spectrum
         MiniPlayerProgressSpectrumRow(
             scale: 1.0,
-            isSpectrumEnabled: false,
+            visualization: .off,
             isPlaying: true,
             accentColor: .blue,
             progress: 45,

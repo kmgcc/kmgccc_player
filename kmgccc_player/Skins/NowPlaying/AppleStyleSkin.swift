@@ -118,8 +118,7 @@ private struct AppleStyleSettingsView: View {
 
     @AppStorage("skin.appleStyle.dynamicBackgroundEnabled") private var dynamicBackgroundEnabled: Bool = true
     @AppStorage("skin.appleStyle.flowSpeed") private var flowSpeed: String = AppleMeshBackgroundSpeed.standard.rawValue
-    @AppStorage("skin.appleStyle.visualizerMode") private var normalVisualizerMode: String = "led"
-    @AppStorage("skin.appleStyle.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "led"
+    @State private var visualizationPreferences = AudioVisualizationPreferences.shared
 
     private var speedSelection: Binding<AppleMeshBackgroundSpeed> {
         Binding(
@@ -149,75 +148,36 @@ private struct AppleStyleSettingsView: View {
 
             speedPicker
 
-            SettingsSwitchRow(
-                title: "LED 电平表",
-                isOn: Binding(
-                    get: { visualizerMode == "led" },
-                    set: { isOn in
-                        if isOn {
-                            visualizerMode = "led"
-                            if mode == .fullscreen {
-                                FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
-                            }
-                        } else if visualizerMode == "led" {
-                            visualizerMode = "off"
-                            if mode == .fullscreen {
-                                FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
-                            } else {
-                                ledMeterProvider.releaseNowPlayingResources()
-                            }
-                        }
-                    }
-                ),
-                titleFont: presentationStyle.rowLabelFont,
-                titleColor: presentationStyle.primaryTextColor
-            )
-
-            SettingsSwitchRow(
-                title: "频谱动画",
-                isOn: Binding(
-                    get: { visualizerMode == "spectrum" },
-                    set: { isOn in
-                        if isOn {
-                            visualizerMode = "spectrum"
-                            if mode == .fullscreen {
-                                FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
-                            } else {
-                                ledMeterProvider.releaseNowPlayingResources()
-                            }
-                        } else if visualizerMode == "spectrum" {
-                            visualizerMode = "off"
-                            if mode == .fullscreen {
-                                FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
-                            }
-                        }
-                    }
-                ),
-                titleFont: presentationStyle.rowLabelFont,
-                titleColor: presentationStyle.primaryTextColor
+            AudioVisualizationSelectorRow(
+                title: "音频可视化",
+                selection: visualizationBinding
             )
         }
     }
 
-    private var visualizerMode: String {
-        get {
-            switch mode {
-            case .nowPlaying: return normalVisualizerMode
-            case .fullscreen:
-                guard FullscreenPresentationCoordinator.shared.isSkinVisualizerEnabled else {
-                    return "off"
+    private var visualizationBinding: Binding<AudioVisualizationKind> {
+        Binding(
+            get: {
+                switch mode {
+                case .nowPlaying:
+                    return visualizationPreferences.selection(
+                        for: AppleStyleSkin.skinID,
+                        scope: .window
+                    ).skinKind
+                case .fullscreen:
+                    return FullscreenPresentationCoordinator.shared.skinVisualizerKind
                 }
-                return fullscreenVisualizerMode
+            },
+            set: { kind in
+                switch mode {
+                case .nowPlaying:
+                    visualizationPreferences.setSkinKind(kind, for: AppleStyleSkin.skinID, scope: .window)
+                    if kind != .led { ledMeterProvider.releaseNowPlayingResources() }
+                case .fullscreen:
+                    FullscreenPresentationCoordinator.shared.setSkinVisualizer(kind)
+                }
             }
-        }
-        nonmutating set {
-            switch mode {
-            case .nowPlaying:
-                normalVisualizerMode = newValue
-            case .fullscreen:
-                fullscreenVisualizerMode = newValue
-            }
-        }
+        )
     }
 
     private var speedPicker: some View {

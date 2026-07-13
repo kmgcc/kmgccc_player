@@ -148,6 +148,7 @@ struct FullscreenMiniPlayerView: View {
             // Progress bar
             progressArea
                 .frame(minWidth: minProgressWidth, maxWidth: .infinity)
+                .frame(height: barHeight - vPadding * 2, alignment: .center)
 
             // Volume removed - now external component
         }
@@ -298,7 +299,7 @@ struct FullscreenMiniPlayerView: View {
     private var progressArea: some View {
         MiniPlayerProgressSpectrumRow(
             scale: scale,
-            isSpectrumEnabled: settings.fullscreen.isMiniPlayerSpectrumEnabled,
+            visualization: settings.fullscreen.miniPlayerVisualization,
             isPlaying: playbackCoordinator.presentation.isPlaying,
             isSpectrumActive: isSpectrumActive,
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
@@ -307,6 +308,9 @@ struct FullscreenMiniPlayerView: View {
             enforceBrightForeground: resolvedForegroundProfile.enforceBrightProgressForeground,
             spectrumArtworkColors: spectrumArtworkColors,
             spectrumUsesDarkForeground: resolvedForegroundProfile.spectrumUsesDarkForeground,
+            ledToneVariant: settings.fullscreen.skinID == AppleStyleSkin.skinID
+                ? .appleStyleBright
+                : .retuned,
             progress: progressDisplayTime,
             duration: playbackCoordinator.presentation.duration,
             isSeekEnabled: playbackCoordinator.presentation.isSeekEnabled,

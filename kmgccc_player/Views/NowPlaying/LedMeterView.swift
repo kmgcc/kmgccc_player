@@ -34,6 +34,7 @@ struct LedMeterView: View {
 
     var isPlaying: Bool = false
     var forceBrightLEDColors: Bool = false
+    var levelToneVariant: PerceptualToneLadder.LEDToneVariant = .retuned
 
     // MARK: - Settings (from AppSettings)
 
@@ -52,7 +53,8 @@ struct LedMeterView: View {
             accentColor: themeStore.accentColor,
             colorScheme: forceBrightLEDColors ? .dark : colorScheme,
             brightnessLevels: brightnessLevels,
-            palette: themeStore.semanticPalette
+            palette: themeStore.semanticPalette,
+            levelToneVariant: levelToneVariant
         )
     }
 
@@ -210,6 +212,11 @@ struct LedMeterView: View {
 /// parent SwiftUI views do not observe 30Hz LED metrics just to redraw the same
 /// skin layout. SwiftUI still owns the static material shell and color policy.
 struct LiveLedMeterView: View {
+    enum FillDirection: Equatable {
+        case centerOut
+        case leftToRight
+    }
+
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
@@ -219,9 +226,18 @@ struct LiveLedMeterView: View {
     var pillTint: Color? = nil
     var isPlaying: Bool = false
     var forceBrightLEDColors: Bool = false
+    var colorSchemeOverride: ColorScheme? = nil
+    var levelToneVariant: PerceptualToneLadder.LEDToneVariant = .retuned
+    var ledCountOverride: Int? = nil
+    var showsStatusLight: Bool = true
+    var overlaysStatusLightOnFirstLED: Bool = false
+    var fillDirection: FillDirection = .centerOut
+    var drawsPill: Bool = true
+    var horizontalPadding: CGFloat = 14
+    var verticalPadding: CGFloat = 10
 
     private var ledCount: Int {
-        AppSettings.shared.ledCount
+        max(1, ledCountOverride ?? AppSettings.shared.ledCount)
     }
 
     private var brightnessLevels: Int {
@@ -229,32 +245,41 @@ struct LiveLedMeterView: View {
     }
 
     private var contentWidth: CGFloat {
-        dotSize * CGFloat(ledCount + 1) + 1 + spacing * CGFloat(ledCount + 1)
+        let meterWidth = dotSize * CGFloat(ledCount) + spacing * CGFloat(max(0, ledCount - 1))
+        return showsStatusLight && !overlaysStatusLightOnFirstLED
+            ? meterWidth + dotSize + 1 + spacing * 2
+            : meterWidth
+    }
+
+    private var resolvedColorScheme: ColorScheme {
+        colorSchemeOverride ?? (forceBrightLEDColors ? .dark : colorScheme)
     }
 
     private var resolver: LEDColorResolver {
         LEDColorResolver(
             accentColor: themeStore.accentColor,
-            colorScheme: forceBrightLEDColors ? .dark : colorScheme,
+            colorScheme: resolvedColorScheme,
             brightnessLevels: brightnessLevels,
-            palette: themeStore.semanticPalette
+            palette: themeStore.semanticPalette,
+            levelToneVariant: levelToneVariant
         )
     }
 
     var body: some View {
-        let horizontalPadding: CGFloat = 14
-        let verticalPadding: CGFloat = 10
         let configuration = LiveLedMeterLayerConfiguration(
             ledCount: ledCount,
             brightnessLevels: brightnessLevels,
             dotSize: dotSize,
             spacing: spacing,
             isPlaying: isPlaying,
+            showsStatusLight: showsStatusLight,
+            overlaysStatusLightOnFirstLED: overlaysStatusLightOnFirstLED,
+            fillDirection: fillDirection,
             colors: LiveLedMeterLayerColors(
                 resolver: resolver,
                 count: ledCount,
                 brightnessLevels: brightnessLevels,
-                scheme: forceBrightLEDColors ? .dark : colorScheme
+                scheme: resolvedColorScheme
             )
         )
 
@@ -265,16 +290,18 @@ struct LiveLedMeterView: View {
         .frame(width: contentWidth, height: dotSize)
         .padding(.horizontal, horizontalPadding)
         .padding(.vertical, verticalPadding)
-        .background(
-            Capsule()
-                .fill(Color.clear)
-                .liquidGlassPill(
-                    colorScheme: colorScheme,
-                    accentColor: pillTint,
-                    prominence: pillTint != nil ? .prominent : .standard,
-                    isFloating: false
-                )
-        )
+        .background {
+            if drawsPill {
+                Capsule()
+                    .fill(Color.clear)
+                    .liquidGlassPill(
+                        colorScheme: colorScheme,
+                        accentColor: pillTint,
+                        prominence: pillTint != nil ? .prominent : .standard,
+                        isFloating: false
+                    )
+            }
+        }
     }
 }
 
@@ -284,12 +311,17 @@ private struct LiveLedMeterLayerConfiguration: Equatable {
     let dotSize: CGFloat
     let spacing: CGFloat
     let isPlaying: Bool
+    let showsStatusLight: Bool
+    let overlaysStatusLightOnFirstLED: Bool
+    let fillDirection: LiveLedMeterView.FillDirection
     let colors: LiveLedMeterLayerColors
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.ledCount == rhs.ledCount && lhs.brightnessLevels == rhs.brightnessLevels
             && lhs.dotSize == rhs.dotSize && lhs.spacing == rhs.spacing
-            && lhs.isPlaying == rhs.isPlaying && lhs.colors == rhs.colors
+            && lhs.isPlaying == rhs.isPlaying && lhs.showsStatusLight == rhs.showsStatusLight
+            && lhs.overlaysStatusLightOnFirstLED == rhs.overlaysStatusLightOnFirstLED
+            && lhs.fillDirection == rhs.fillDirection && lhs.colors == rhs.colors
     }
 }
 
@@ -315,30 +347,28 @@ private struct LiveLedMeterLayerColors: Equatable {
         dividerFill = baseNS.withAlphaComponent(0.12).cgColor
 
         statusFill = (0..<safeLevels).map { level in
-            resolver.statusLightNSColor(level: level)
-                .withAlphaComponent(Self.opacity(for: level, levels: safeLevels, scheme: scheme))
-                .cgColor
+            resolver.statusLightLayerFillNSColor(level: level).cgColor
         }
         statusStroke = (0..<safeLevels).map { level in
-            let opacity = min(0.50, Self.opacity(for: level, levels: safeLevels, scheme: scheme) * 0.55)
-            return resolver.statusLightStrokeNSColor(level: level)
-                .withAlphaComponent(opacity)
-                .cgColor
+            resolver.statusLightLayerStrokeNSColor(level: level).cgColor
         }
 
         ledFill = (0..<safeCount).map { index in
             (0..<safeLevels).map { level in
-                resolver.volumeLEDNSColor(index: index, count: safeCount, level: level)
-                    .withAlphaComponent(Self.opacity(for: level, levels: safeLevels, scheme: scheme))
-                    .cgColor
+                resolver.volumeLEDLayerFillNSColor(
+                    index: index,
+                    count: safeCount,
+                    level: level
+                ).cgColor
             }
         }
         ledStroke = (0..<safeCount).map { index in
             (0..<safeLevels).map { level in
-                let opacity = min(0.50, Self.opacity(for: level, levels: safeLevels, scheme: scheme) * 0.55)
-                return resolver.volumeLEDStrokeNSColor(index: index, count: safeCount, level: level)
-                    .withAlphaComponent(opacity)
-                    .cgColor
+                resolver.volumeLEDLayerStrokeNSColor(
+                    index: index,
+                    count: safeCount,
+                    level: level
+                ).cgColor
             }
         }
 
@@ -351,15 +381,6 @@ private struct LiveLedMeterLayerColors: Equatable {
         ledFill.flatMap { $0 }.forEach { Self.append($0, to: &hasher) }
         ledStroke.flatMap { $0 }.forEach { Self.append($0, to: &hasher) }
         signature = hasher.finalize()
-    }
-
-    private static func opacity(for level: Int, levels: Int, scheme: ColorScheme) -> CGFloat {
-        guard level > 0, levels > 1 else { return 0 }
-        let t = CGFloat(level) / CGFloat(levels - 1)
-        if scheme == .dark {
-            return 0.08 + pow(t, 1.55) * 0.92
-        }
-        return 0.06 + pow(t, 1.65) * 0.94
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
@@ -460,6 +481,9 @@ private final class LiveLedMeterLayerHostView: NSView {
             || self.configuration?.brightnessLevels != configuration.brightnessLevels
         let geometryChanged = self.configuration?.dotSize != configuration.dotSize
             || self.configuration?.spacing != configuration.spacing
+            || self.configuration?.showsStatusLight != configuration.showsStatusLight
+            || self.configuration?.overlaysStatusLightOnFirstLED
+                != configuration.overlaysStatusLightOnFirstLED
 
         self.configuration = configuration
 
@@ -517,22 +541,45 @@ private final class LiveLedMeterLayerHostView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
 
-        layoutCircleLayers(
-            [statusBaseLayer, statusFillLayer, statusStrokeLayer].compactMap { $0 },
-            center: CGPoint(x: x, y: centerY),
-            size: dotSize
-        )
-
-        x += dotSize * 0.5 + spacing
-        dividerLayer.frame = CGRect(
-            x: x,
-            y: centerY - dotSize * 0.30,
-            width: 1,
-            height: dotSize * 0.60
-        )
-
-        x += 1 + spacing + dotSize * 0.5
+        if configuration.showsStatusLight && configuration.overlaysStatusLightOnFirstLED {
+            statusBaseLayer?.isHidden = false
+            statusFillLayer?.isHidden = false
+            statusStrokeLayer?.isHidden = false
+            dividerLayer.isHidden = true
+            layoutCircleLayers(
+                [statusBaseLayer, statusFillLayer, statusStrokeLayer].compactMap { $0 },
+                center: CGPoint(x: x, y: centerY),
+                size: dotSize
+            )
+        } else if configuration.showsStatusLight {
+            statusBaseLayer?.isHidden = false
+            statusFillLayer?.isHidden = false
+            statusStrokeLayer?.isHidden = false
+            dividerLayer.isHidden = false
+            layoutCircleLayers(
+                [statusBaseLayer, statusFillLayer, statusStrokeLayer].compactMap { $0 },
+                center: CGPoint(x: x, y: centerY),
+                size: dotSize
+            )
+            x += dotSize * 0.5 + spacing
+            dividerLayer.frame = CGRect(
+                x: x,
+                y: centerY - dotSize * 0.30,
+                width: 1,
+                height: dotSize * 0.60
+            )
+            x += 1 + spacing + dotSize * 0.5
+        } else {
+            statusBaseLayer?.isHidden = true
+            statusFillLayer?.isHidden = true
+            statusStrokeLayer?.isHidden = true
+            dividerLayer.isHidden = true
+        }
         for index in 0..<ledBaseLayers.count {
+            let isCoveredByStatusLight = configuration.overlaysStatusLightOnFirstLED && index == 0
+            ledBaseLayers[index].isHidden = isCoveredByStatusLight
+            ledFillLayers[index].isHidden = isCoveredByStatusLight
+            ledStrokeLayers[index].isHidden = isCoveredByStatusLight
             let center = CGPoint(
                 x: x + CGFloat(index) * (dotSize + spacing),
                 y: centerY
@@ -629,6 +676,19 @@ private final class LiveLedMeterLayerHostView: NSView {
         audio: AudioMetrics,
         configuration: LiveLedMeterLayerConfiguration
     ) -> [Int] {
+        if configuration.fillDirection == .leftToRight {
+            let totalSlots = configuration.ledCount * configuration.brightnessLevels
+            let currentSlot = Double(max(0, min(1, audio.smoothedLevel))) * Double(totalSlots)
+            return (0..<configuration.ledCount).map { index in
+                let start = Double(index * configuration.brightnessLevels)
+                if currentSlot < start { return 0 }
+                if currentSlot >= start + Double(configuration.brightnessLevels) {
+                    return configuration.brightnessLevels - 1
+                }
+                return min(configuration.brightnessLevels - 1, Int(currentSlot - start))
+            }
+        }
+
         if !led.leds.isEmpty {
             return (0..<configuration.ledCount).map { index in
                 let value = index < led.leds.count ? Double(led.leds[index]) : 0
@@ -701,7 +761,7 @@ private final class LiveLedMeterLayerHostView: NSView {
 
     private func updateBreathTimer() {
         guard let configuration else { return }
-        if configuration.isPlaying, window != nil {
+        if configuration.showsStatusLight, configuration.isPlaying, window != nil {
             if breathTimer == nil {
                 let timer = Timer(timeInterval: 0.10, repeats: true) { [weak self] _ in
                     Task { @MainActor [weak self] in
@@ -714,7 +774,9 @@ private final class LiveLedMeterLayerHostView: NSView {
         } else {
             breathTimer?.invalidate()
             breathTimer = nil
-            applyStatusLevel(max(0, configuration.brightnessLevels - 1))
+            if configuration.showsStatusLight {
+                applyStatusLevel(max(0, configuration.brightnessLevels - 1))
+            }
         }
     }
 

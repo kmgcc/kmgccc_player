@@ -253,11 +253,12 @@ nonisolated enum PerceptualToneLadder {
 
     // MARK: LED
 
-    enum LEDToneVariant: String, Sendable {
+    enum LEDToneVariant: String, Sendable, Equatable {
 #if DEBUG
         case migrationReference = "current-candidate"
 #endif
         case retuned = "retuned-candidate"
+        case appleStyleBright = "apple-style-bright"
     }
 
     struct LEDLevelStylePolicy: Sendable {
@@ -330,10 +331,14 @@ nonisolated enum PerceptualToneLadder {
         }
 #endif
 
-        let lowL = isDark ? T.ledDarkMinL : T.ledLightMinL
-        var peakL = isDark
-            ? (isUltraDark ? T.ledUltraDarkPeakL : T.ledDarkPeakL)
-            : T.ledLightPeakL
+        let lowL = variant == .appleStyleBright
+            ? T.ledAppleStyleMinL
+            : (isDark ? T.ledDarkMinL : T.ledLightMinL)
+        var peakL = variant == .appleStyleBright
+            ? T.ledAppleStylePeakL
+            : (isDark
+                ? (isUltraDark ? T.ledUltraDarkPeakL : T.ledDarkPeakL)
+                : T.ledLightPeakL)
         if !isNearMonochrome {
             peakL -= ledLevelPeakLightnessTrim(base.h, scheme: scheme)
         }

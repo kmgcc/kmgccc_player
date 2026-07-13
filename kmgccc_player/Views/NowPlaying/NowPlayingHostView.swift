@@ -62,6 +62,7 @@ struct NowPlayingHostView: View {
             .frame(width: mainContentWidth, height: proxy.size.height, alignment: .topLeading)
         }
         .onChange(of: selectedSkinID) { oldValue, newValue in
+            AudioVisualizationPreferences.shared.synchronizeLegacyState(for: newValue, scope: .window)
             skinRevision &+= 1
             if oldValue == "kmgccc.cassette", newValue != oldValue {
                 Task {
@@ -73,6 +74,7 @@ struct NowPlayingHostView: View {
             }
         }
         .onAppear {
+            AudioVisualizationPreferences.shared.synchronizeLegacyState(for: selectedSkinID, scope: .window)
             TelemetryService.shared.setWindowNowPlayingVisible(true)
         }
         .onDisappear {
