@@ -29,10 +29,10 @@ applemusic-like-lyrics-full-refractor/
 applemusic-like-lyrics-full-custom-core/
 LDDC-main/
 skills/
-ARCHITECTURE.md
-AGENTS.md
-CLAUDE.md
-GEMINI.md
+/ARCHITECTURE.md
+/AGENTS.md
+/CLAUDE.md
+/GEMINI.md
 kmgccc_player_demo.pptx
 scan_ui.py
 ui_candidates.txt
