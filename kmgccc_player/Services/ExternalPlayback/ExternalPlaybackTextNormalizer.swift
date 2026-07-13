@@ -129,6 +129,26 @@ nonisolated enum ExternalPlaybackTextNormalizer {
     /// while near-variant spellings of different lengths (e.g. Color/Colour ratio ≈ 0.833) pass.
     static let shortTitleFuzzyFloor: Double = 0.82
 
+    static func titleAccepted(
+        source: NormalizedText,
+        candidate: NormalizedText
+    ) -> Bool {
+        if !candidate.compact.isEmpty, hasShortTitleConflict(source, candidate) {
+            return false
+        }
+
+        let score = stringSimilarity(source, candidate)
+        let bothShort = isShortSingleToken(source) && isShortSingleToken(candidate)
+        let floor = bothShort ? shortTitleFuzzyFloor : 0.50
+        return score >= floor
+            || candidate.compact.contains(source.compact)
+            || source.compact.contains(candidate.compact)
+    }
+
+    static func titleAccepted(query: String?, candidate: String?) -> Bool {
+        titleAccepted(source: normalize(query), candidate: normalize(candidate))
+    }
+
     private static func fold(_ value: String) -> String {
         var result = value
             .precomposedStringWithCompatibilityMapping

@@ -3,7 +3,7 @@
 //  kmgccc_player
 //
 //  Development tool: records real app spectrum output from a local audio file.
-//  Run with KMGCCC_RECORD_SPECTRUM=1 to regenerate SpectrumFrames.swift.
+//  Set KMGCCC_SPECTRUM_SOURCE and KMGCCC_SPECTRUM_OUTPUT before running.
 //
 
 import AVFoundation
@@ -18,7 +18,16 @@ final class SpectrumRecorder {
     }
 
     private func _run() {
-        let fileURL = URL(fileURLWithPath: "/Users/kmg/Music/网易云音乐/new/Tabata Songs - Tabata Wod.mp3")
+        let environment = ProcessInfo.processInfo.environment
+        guard
+            let sourcePath = environment["KMGCCC_SPECTRUM_SOURCE"], !sourcePath.isEmpty,
+            let outputPath = environment["KMGCCC_SPECTRUM_OUTPUT"], !outputPath.isEmpty
+        else {
+            print("[Recorder] Set KMGCCC_SPECTRUM_SOURCE and KMGCCC_SPECTRUM_OUTPUT")
+            return
+        }
+
+        let fileURL = URL(fileURLWithPath: sourcePath)
         let startTime: Double = 15.0
         let duration: Double = 20.0
 
@@ -99,17 +108,17 @@ final class SpectrumRecorder {
         self.export(
             waveFrames: trimmedWave,
             ledFrames: trimmedLed,
-            audioFrames: trimmedAudio
+            audioFrames: trimmedAudio,
+            outputPath: outputPath
         )
     }
 
     private func export(
         waveFrames: [[Float]],
         ledFrames: [LEDMeterMetrics],
-        audioFrames: [AudioMetrics]
+        audioFrames: [AudioMetrics],
+        outputPath: String
     ) {
-        let dstPath = "/Users/kmg/Documents/vscode/player/myPlayer2/kmgccc_player/Models/SpectrumFrames.swift"
-
         let frameCount = waveFrames.count
         let waveBandCount = 9
         let audioBandCount = 8
@@ -126,8 +135,8 @@ final class SpectrumRecorder {
         lines.append("//  kmgccc_player")
         lines.append("//")
         lines.append("//  Auto-generated from real app spectrum chain playback.")
-        lines.append("//  Source: Tabata Songs - Tabata Wod.mp3 [15s-35s]")
-        lines.append("//  Regenerate: KMGCCC_RECORD_SPECTRUM=1 <app_binary>")
+        lines.append("//  Source: local audio sample [15s-35s]")
+        lines.append("//  Regenerate with KMGCCC_SPECTRUM_SOURCE and KMGCCC_SPECTRUM_OUTPUT")
         lines.append("//")
         lines.append("")
         lines.append("nonisolated struct SpectrumFrameData {")
@@ -227,8 +236,8 @@ final class SpectrumRecorder {
         let content = lines.joined(separator: "\n") + "\n"
 
         do {
-            try content.write(toFile: dstPath, atomically: true, encoding: .utf8)
-            print("[Recorder] Exported to \(dstPath)")
+            try content.write(toFile: outputPath, atomically: true, encoding: .utf8)
+            print("[Recorder] Exported to \(outputPath)")
         } catch {
             print("[Recorder] Export failed: \(error)")
         }

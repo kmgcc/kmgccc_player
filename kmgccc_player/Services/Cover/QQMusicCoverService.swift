@@ -482,10 +482,10 @@ actor QQMusicCoverService {
                 ? ExternalPlaybackTextNormalizer.shortTitleFuzzyFloor
                 : 0.50
 
-            guard titleScore >= titleFloor
-                    || candidateTitle.compact.contains(sourceTitle.compact)
-                    || sourceTitle.compact.contains(candidateTitle.compact)
-            else {
+            guard ExternalPlaybackTextNormalizer.titleAccepted(
+                source: sourceTitle,
+                candidate: candidateTitle
+            ) else {
                 rejectReason = "title mismatch: score=\(String(format: "%.2f", titleScore)) floor=\(String(format: "%.2f", titleFloor)) query=\"\(queryTitle)\" candidate=\"\(candidate.title ?? "-")\""
                 return nil
             }

@@ -7,43 +7,115 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C02000000000000000000001 /* MetadataMatchScorerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000011 /* MetadataMatchScorerTests.swift */; };
+		C02000000000000000000002 /* SkinRoutePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000012 /* SkinRoutePolicyTests.swift */; };
+		C02000000000000000000003 /* ExternalPlaybackTextNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000013 /* ExternalPlaybackTextNormalizer.swift */; };
+		C02000000000000000000004 /* SkinRoutePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000014 /* SkinRoutePolicy.swift */; };
 		9351198E2F33149A00766A5F /* AMLL in Resources */ = {isa = PBXBuildFile; fileRef = 9351198D2F33149A00766A5F /* AMLL */; };
 		938818D32F7925E800880C23 /* WhatsNewKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000002 /* WhatsNewKit */; };
-		9396ADAB2FA12C0100000002 /* mediaremote-adapter in Resources */ = {isa = PBXBuildFile; fileRef = 9396ADAB2FA12C0100000001 /* mediaremote-adapter */; };
-		93CF3F832F344E9F0004C8E3 /* lddc-server in Resources */ = {isa = PBXBuildFile; fileRef = 93CF3F822F344E9F0004C8E3 /* lddc-server */; };
+		A01000000000000000000001 /* youdowhat.wav in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000001 /* youdowhat.wav */; };
+		A01000000000000000000002 /* youdowhatreversed.wav in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000002 /* youdowhatreversed.wav */; };
+		A01000000000000000000003 /* AGPL-3.0.txt in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000003 /* AGPL-3.0.txt */; };
+		A01000000000000000000004 /* GPL-3.0.txt in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000004 /* GPL-3.0.txt */; };
+		A01000000000000000000005 /* LDDC.txt in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000005 /* LDDC.txt */; };
+		A01000000000000000000006 /* QQMusicApi.txt in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000006 /* QQMusicApi.txt */; };
+		A01000000000000000000007 /* SACAD-MPL-2.0.txt in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000007 /* SACAD-MPL-2.0.txt */; };
+		A01000000000000000000008 /* apple-audio-visualization.txt in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000008 /* apple-audio-visualization.txt */; };
+		A01000000000000000000009 /* applemusic-like-lyrics.txt in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000009 /* applemusic-like-lyrics.txt */; };
+		A0100000000000000000000A /* zh-Hans.lproj in Resources */ = {isa = PBXBuildFile; fileRef = B0100000000000000000000A /* zh-Hans.lproj */; };
+		A0100000000000000000000B /* kmgccc.icon in Resources */ = {isa = PBXBuildFile; fileRef = B0100000000000000000000B /* kmgccc.icon */; };
+		F01000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000001 /* AppDelegate.swift */; };
+		F01000000000000000000002 /* DockController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000002 /* DockController.swift */; };
+		F01000000000000000000003 /* PlaybackCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000003 /* PlaybackCommands.swift */; };
+		F01000000000000000000004 /* SettingsRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000004 /* SettingsRootView.swift */; };
+		F01000000000000000000005 /* SettingsSceneDependencies.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000005 /* SettingsSceneDependencies.swift */; };
+		F01000000000000000000006 /* kmgccc_playerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000006 /* kmgccc_playerApp.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		C02000000000000000000010 /* kmgccc_playerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = kmgccc_playerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C02000000000000000000011 /* MetadataMatchScorerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/MetadataMatchScorerTests.swift; sourceTree = "<group>"; };
+		C02000000000000000000012 /* SkinRoutePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/SkinRoutePolicyTests.swift; sourceTree = "<group>"; };
+		C02000000000000000000013 /* ExternalPlaybackTextNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ExternalPlaybackTextNormalizer.swift; path = kmgccc_player/Services/ExternalPlayback/ExternalPlaybackTextNormalizer.swift; sourceTree = "<group>"; };
+		C02000000000000000000014 /* SkinRoutePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SkinRoutePolicy.swift; path = kmgccc_player/Skins/NowPlaying/SkinRoutePolicy.swift; sourceTree = "<group>"; };
 		933AADFD2F3CC8D40081B59C /* BKArt.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BKArt.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		935118922F3231C500766A5F /* kmgccc_player.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = kmgccc_player.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9351198D2F33149A00766A5F /* AMLL */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMLL; path = kmgccc_player/Resources/AMLL; sourceTree = "<group>"; };
-		9396ADAB2FA12C0100000001 /* mediaremote-adapter */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "mediaremote-adapter"; path = "kmgccc_player/Resources/mediaremote-adapter"; sourceTree = "<group>"; };
-		93CF3F822F344E9F0004C8E3 /* lddc-server */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "lddc-server"; path = "Tools/lddc-server"; sourceTree = "<group>"; };
-		93D91A102FA5000000010001 /* Tools */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Tools; path = kmgccc_player/Resources/Tools; sourceTree = "<group>"; };
+		B01000000000000000000001 /* youdowhat.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = youdowhat.wav; path = kmgccc_player/Resources/Audio/youdowhat.wav; sourceTree = "<group>"; };
+		B01000000000000000000002 /* youdowhatreversed.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = youdowhatreversed.wav; path = kmgccc_player/Resources/Audio/youdowhatreversed.wav; sourceTree = "<group>"; };
+		B01000000000000000000003 /* AGPL-3.0.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "AGPL-3.0.txt"; path = "kmgccc_player/Resources/Licenses/AGPL-3.0.txt"; sourceTree = "<group>"; };
+		B01000000000000000000004 /* GPL-3.0.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "GPL-3.0.txt"; path = "kmgccc_player/Resources/Licenses/GPL-3.0.txt"; sourceTree = "<group>"; };
+		B01000000000000000000005 /* LDDC.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = LDDC.txt; path = kmgccc_player/Resources/Licenses/LDDC.txt; sourceTree = "<group>"; };
+		B01000000000000000000006 /* QQMusicApi.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = QQMusicApi.txt; path = kmgccc_player/Resources/Licenses/QQMusicApi.txt; sourceTree = "<group>"; };
+		B01000000000000000000007 /* SACAD-MPL-2.0.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "SACAD-MPL-2.0.txt"; path = "kmgccc_player/Resources/Licenses/SACAD-MPL-2.0.txt"; sourceTree = "<group>"; };
+		B01000000000000000000008 /* apple-audio-visualization.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "apple-audio-visualization.txt"; path = "kmgccc_player/Resources/Licenses/apple-audio-visualization.txt"; sourceTree = "<group>"; };
+		B01000000000000000000009 /* applemusic-like-lyrics.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "applemusic-like-lyrics.txt"; path = "kmgccc_player/Resources/Licenses/applemusic-like-lyrics.txt"; sourceTree = "<group>"; };
+		B0100000000000000000000A /* zh-Hans.lproj */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "zh-Hans.lproj"; path = "kmgccc_player/Resources/zh-Hans.lproj"; sourceTree = "<group>"; };
+		B0100000000000000000000B /* kmgccc.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; name = kmgccc.icon; path = kmgccc_player/kmgccc.icon; sourceTree = "<group>"; };
+		E01000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = kmgccc_player/AppDelegate.swift; sourceTree = "<group>"; };
+		E01000000000000000000002 /* DockController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DockController.swift; path = kmgccc_player/DockController.swift; sourceTree = "<group>"; };
+		E01000000000000000000003 /* PlaybackCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlaybackCommands.swift; path = kmgccc_player/PlaybackCommands.swift; sourceTree = "<group>"; };
+		E01000000000000000000004 /* SettingsRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsRootView.swift; path = kmgccc_player/SettingsRootView.swift; sourceTree = "<group>"; };
+		E01000000000000000000005 /* SettingsSceneDependencies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsSceneDependencies.swift; path = kmgccc_player/SettingsSceneDependencies.swift; sourceTree = "<group>"; };
+		E01000000000000000000006 /* kmgccc_playerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = kmgccc_playerApp.swift; path = kmgccc_player/kmgccc_playerApp.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		9351197F2F33130A00766A5F /* Exceptions for "kmgccc_player" folder in "kmgccc_player" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = 935118912F3231C500766A5F /* kmgccc_player */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		935118942F3231C500766A5F /* kmgccc_player */ = {
+		D01000000000000000000001 /* kmgccc_player/AppKit */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				9351197F2F33130A00766A5F /* Exceptions for "kmgccc_player" folder in "kmgccc_player" target */,
-			);
-			path = kmgccc_player;
+			path = kmgccc_player/AppKit;
+			sourceTree = "<group>";
+		};
+		D01000000000000000000002 /* kmgccc_player/Models */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = kmgccc_player/Models;
+			sourceTree = "<group>";
+		};
+		D01000000000000000000003 /* kmgccc_player/Rendering */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = kmgccc_player/Rendering;
+			sourceTree = "<group>";
+		};
+		D01000000000000000000004 /* kmgccc_player/Repositories */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = kmgccc_player/Repositories;
+			sourceTree = "<group>";
+		};
+		D01000000000000000000005 /* kmgccc_player/Services */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = kmgccc_player/Services;
+			sourceTree = "<group>";
+		};
+		D01000000000000000000006 /* kmgccc_player/Skins */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = kmgccc_player/Skins;
+			sourceTree = "<group>";
+		};
+		D01000000000000000000007 /* kmgccc_player/Utilities */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = kmgccc_player/Utilities;
+			sourceTree = "<group>";
+		};
+		D01000000000000000000008 /* kmgccc_player/ViewModels */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = kmgccc_player/ViewModels;
+			sourceTree = "<group>";
+		};
+		D01000000000000000000009 /* kmgccc_player/Views */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = kmgccc_player/Views;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		C02000000000000000000020 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		933AADFA2F3CC8D40081B59C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -65,11 +137,19 @@
 		935118892F3231C500766A5F = {
 			isa = PBXGroup;
 			children = (
-				93CF3F822F344E9F0004C8E3 /* lddc-server */,
-				93D91A102FA5000000010001 /* Tools */,
+				C02000000000000000000015 /* Tests */,
+				C01000000000000000000002 /* App Sources */,
+				D01000000000000000000001 /* kmgccc_player/AppKit */,
+				D01000000000000000000002 /* kmgccc_player/Models */,
+				D01000000000000000000003 /* kmgccc_player/Rendering */,
+				D01000000000000000000004 /* kmgccc_player/Repositories */,
+				D01000000000000000000005 /* kmgccc_player/Services */,
+				D01000000000000000000006 /* kmgccc_player/Skins */,
+				D01000000000000000000007 /* kmgccc_player/Utilities */,
+				D01000000000000000000008 /* kmgccc_player/ViewModels */,
+				D01000000000000000000009 /* kmgccc_player/Views */,
+				C01000000000000000000001 /* Runtime Resources */,
 				9351198D2F33149A00766A5F /* AMLL */,
-				9396ADAB2FA12C0100000001 /* mediaremote-adapter */,
-				935118942F3231C500766A5F /* kmgccc_player */,
 				935118932F3231C500766A5F /* Products */,
 				93EBF7BA2F8A113D007F15E3 /* Recovered References */,
 			);
@@ -80,6 +160,7 @@
 			children = (
 				935118922F3231C500766A5F /* kmgccc_player.app */,
 				933AADFD2F3CC8D40081B59C /* BKArt.bundle */,
+				C02000000000000000000010 /* kmgccc_playerTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -87,13 +168,74 @@
 		93EBF7BA2F8A113D007F15E3 /* Recovered References */ = {
 			isa = PBXGroup;
 			children = (
+				B0100000000000000000000B /* kmgccc.icon */,
 			);
 			name = "Recovered References";
+			sourceTree = "<group>";
+		};
+		C01000000000000000000001 /* Runtime Resources */ = {
+			isa = PBXGroup;
+			children = (
+				B01000000000000000000001 /* youdowhat.wav */,
+				B01000000000000000000002 /* youdowhatreversed.wav */,
+				B01000000000000000000003 /* AGPL-3.0.txt */,
+				B01000000000000000000004 /* GPL-3.0.txt */,
+				B01000000000000000000005 /* LDDC.txt */,
+				B01000000000000000000006 /* QQMusicApi.txt */,
+				B01000000000000000000007 /* SACAD-MPL-2.0.txt */,
+				B01000000000000000000008 /* apple-audio-visualization.txt */,
+				B01000000000000000000009 /* applemusic-like-lyrics.txt */,
+				B0100000000000000000000A /* zh-Hans.lproj */,
+			);
+			name = "Runtime Resources";
+			sourceTree = "<group>";
+		};
+		C01000000000000000000002 /* App Sources */ = {
+			isa = PBXGroup;
+			children = (
+				E01000000000000000000001 /* AppDelegate.swift */,
+				E01000000000000000000002 /* DockController.swift */,
+				E01000000000000000000003 /* PlaybackCommands.swift */,
+				E01000000000000000000004 /* SettingsRootView.swift */,
+				E01000000000000000000005 /* SettingsSceneDependencies.swift */,
+				E01000000000000000000006 /* kmgccc_playerApp.swift */,
+			);
+			name = "App Sources";
+			sourceTree = "<group>";
+		};
+		C02000000000000000000015 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				C02000000000000000000011 /* MetadataMatchScorerTests.swift */,
+				C02000000000000000000012 /* SkinRoutePolicyTests.swift */,
+				C02000000000000000000013 /* ExternalPlaybackTextNormalizer.swift */,
+				C02000000000000000000014 /* SkinRoutePolicy.swift */,
+			);
+			name = Tests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		C02000000000000000000030 /* kmgccc_playerTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C02000000000000000000043 /* Build configuration list for PBXNativeTarget "kmgccc_playerTests" */;
+			buildPhases = (
+				C02000000000000000000022 /* Sources */,
+				C02000000000000000000020 /* Frameworks */,
+				C02000000000000000000021 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = kmgccc_playerTests;
+			packageProductDependencies = (
+			);
+			productName = kmgccc_playerTests;
+			productReference = C02000000000000000000010 /* kmgccc_playerTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		933AADFC2F3CC8D40081B59C /* BKArt */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 933AADFE2F3CC8D40081B59C /* Build configuration list for PBXNativeTarget "BKArt" */;
@@ -120,7 +262,8 @@
 				9351188E2F3231C500766A5F /* Sources */,
 				9351188F2F3231C500766A5F /* Frameworks */,
 				935118902F3231C500766A5F /* Resources */,
-				9396ADAC2FA12C0100000003 /* Embed MediaRemoteAdapter framework */,
+				9396ADAC2FA12C0100000003 /* Copy MediaRemoteAdapter runtime */,
+				93CF3F842F344E9F0004C8E4 /* Copy LDDC runtime */,
 				93D91A122FA5000000010001 /* Copy QQMusic helper */,
 				93D91A132FA5000000010002 /* Copy SACAD helper */,
 				93D91A142FA5000000010003 /* Optional private enhancement resources */,
@@ -130,7 +273,15 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				935118942F3231C500766A5F /* kmgccc_player */,
+				D01000000000000000000001 /* kmgccc_player/AppKit */,
+				D01000000000000000000002 /* kmgccc_player/Models */,
+				D01000000000000000000003 /* kmgccc_player/Rendering */,
+				D01000000000000000000004 /* kmgccc_player/Repositories */,
+				D01000000000000000000005 /* kmgccc_player/Services */,
+				D01000000000000000000006 /* kmgccc_player/Skins */,
+				D01000000000000000000007 /* kmgccc_player/Utilities */,
+				D01000000000000000000008 /* kmgccc_player/ViewModels */,
+				D01000000000000000000009 /* kmgccc_player/Views */,
 			);
 			name = kmgccc_player;
 			packageProductDependencies = (
@@ -150,6 +301,9 @@
 				LastSwiftUpdateCheck = 2620;
 				LastUpgradeCheck = 2650;
 				TargetAttributes = {
+					C02000000000000000000030 = {
+						CreatedOnToolsVersion = 26.5;
+					};
 					933AADFC2F3CC8D40081B59C = {
 						CreatedOnToolsVersion = 26.2;
 					};
@@ -178,11 +332,19 @@
 			targets = (
 				935118912F3231C500766A5F /* kmgccc_player */,
 				933AADFC2F3CC8D40081B59C /* BKArt */,
+				C02000000000000000000030 /* kmgccc_playerTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		C02000000000000000000021 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		933AADFB2F3CC8D40081B59C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -195,56 +357,94 @@
 			buildActionMask = 2147483647;
 			files = (
 				9351198E2F33149A00766A5F /* AMLL in Resources */,
-				9396ADAB2FA12C0100000002 /* mediaremote-adapter in Resources */,
-				93CF3F832F344E9F0004C8E3 /* lddc-server in Resources */,
+				A01000000000000000000001 /* youdowhat.wav in Resources */,
+				A01000000000000000000002 /* youdowhatreversed.wav in Resources */,
+				A01000000000000000000003 /* AGPL-3.0.txt in Resources */,
+				A01000000000000000000004 /* GPL-3.0.txt in Resources */,
+				A01000000000000000000005 /* LDDC.txt in Resources */,
+				A01000000000000000000006 /* QQMusicApi.txt in Resources */,
+				A01000000000000000000007 /* SACAD-MPL-2.0.txt in Resources */,
+				A01000000000000000000008 /* apple-audio-visualization.txt in Resources */,
+				A01000000000000000000009 /* applemusic-like-lyrics.txt in Resources */,
+				A0100000000000000000000A /* zh-Hans.lproj in Resources */,
+				A0100000000000000000000B /* kmgccc.icon in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		9396ADAC2FA12C0100000003 /* Embed MediaRemoteAdapter framework */ = {
+		9396ADAC2FA12C0100000003 /* Copy MediaRemoteAdapter runtime */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(PROJECT_DIR)/kmgccc_player/Resources/mediaremote-adapter/build/MediaRemoteAdapter.framework",
+				"$(PROJECT_DIR)/.build/products/mediaremote/bin/mediaremote-adapter.pl",
+				"$(PROJECT_DIR)/.build/products/mediaremote/build/MediaRemoteAdapter.framework",
+				"$(PROJECT_DIR)/.build/products/mediaremote/build/MediaRemoteAdapterTestClient",
+				"$(PROJECT_DIR)/.build/products/mediaremote/LICENSE",
 			);
-			name = "Embed MediaRemoteAdapter framework";
+			name = "Copy MediaRemoteAdapter runtime";
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/MediaRemoteAdapter.framework",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Licenses/MediaRemoteAdapter-BSD-3-Clause.txt",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/mediaremote-adapter/bin/mediaremote-adapter.pl",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/mediaremote-adapter/build/MediaRemoteAdapter.framework",
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/mediaremote-adapter/build/MediaRemoteAdapterTestClient",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
-			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/kmgccc_player/Resources/mediaremote-adapter/build/MediaRemoteAdapter.framework\"\nDST_DIR=\"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\nDST=\"${DST_DIR}/MediaRemoteAdapter.framework\"\nif [ ! -d \"${SRC}\" ]; then\n  echo \"error: MediaRemoteAdapter.framework missing: ${SRC}\"\n  exit 1\nfi\nmkdir -p \"${DST_DIR}\"\nrm -rf \"${DST}\"\nCOPYFILE_DISABLE=1 /usr/bin/ditto \"${SRC}\" \"${DST}\"\n/usr/bin/xattr -cr \"${DST}\" 2>/dev/null || true\n/usr/bin/codesign --force --deep --sign - \"${DST}\" >/dev/null 2>&1 || true\n";
+			shellScript = "set -euo pipefail\nSRC_ROOT=\"${PROJECT_DIR}/.build/products/mediaremote\"\nFRAMEWORK_SRC=\"${SRC_ROOT}/build/MediaRemoteAdapter.framework\"\nCLIENT_SRC=\"${SRC_ROOT}/build/MediaRemoteAdapterTestClient\"\nSCRIPT_SRC=\"${SRC_ROOT}/bin/mediaremote-adapter.pl\"\nLICENSE_SRC=\"${SRC_ROOT}/LICENSE\"\nRESOURCE_ROOT=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nDST_ROOT=\"${RESOURCE_ROOT}/mediaremote-adapter\"\nif [ ! -d \"${FRAMEWORK_SRC}\" ] || [ ! -x \"${CLIENT_SRC}\" ] || [ ! -f \"${SCRIPT_SRC}\" ] || [ ! -f \"${LICENSE_SRC}\" ]; then\n  echo \"error: Missing MediaRemoteAdapter build product.\"\n  echo \"error: Run ./scripts/bootstrap.sh before building.\"\n  exit 1\nfi\nrm -rf \"${DST_ROOT}\"\nmkdir -p \"${DST_ROOT}/bin\" \"${DST_ROOT}/build\" \"${RESOURCE_ROOT}/Licenses\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SCRIPT_SRC}\" \"${DST_ROOT}/bin/mediaremote-adapter.pl\"\nCOPYFILE_DISABLE=1 /usr/bin/ditto \"${FRAMEWORK_SRC}\" \"${DST_ROOT}/build/MediaRemoteAdapter.framework\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${CLIENT_SRC}\" \"${DST_ROOT}/build/MediaRemoteAdapterTestClient\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${LICENSE_SRC}\" \"${RESOURCE_ROOT}/Licenses/MediaRemoteAdapter-BSD-3-Clause.txt\"\nchmod 755 \"${DST_ROOT}/bin/mediaremote-adapter.pl\" \"${DST_ROOT}/build/MediaRemoteAdapterTestClient\"\n/usr/bin/xattr -cr \"${DST_ROOT}\" 2>/dev/null || true\n/usr/bin/codesign --force --deep --sign - \"${DST_ROOT}/build/MediaRemoteAdapter.framework\" >/dev/null 2>&1 || true\n/usr/bin/codesign --force --sign - \"${DST_ROOT}/build/MediaRemoteAdapterTestClient\" >/dev/null 2>&1 || true\n";
 		};
-		93D91A122FA5000000010001 /* Copy QQMusic helper */ = {
+		93CF3F842F344E9F0004C8E4 /* Copy LDDC runtime */ = {
 			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(PROJECT_DIR)/kmgccc_player/Resources/Tools/qqmusic-helper/qqmusic-helper",
-				"$(PROJECT_DIR)/kmgccc_player/Resources/Tools/qqmusic-helper/_internal.bundle",
+				"$(PROJECT_DIR)/.build/products/lddc/lddc-server",
+				"$(PROJECT_DIR)/.build/products/lddc/_internal",
+			);
+			name = "Copy LDDC runtime";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Tools/lddc-server",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/.build/products/lddc\"\nDST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools/lddc-server\"\nif [ ! -x \"${SRC}/lddc-server\" ] || [ ! -d \"${SRC}/_internal\" ]; then\n  echo \"error: Missing LDDC build product.\"\n  echo \"error: Run ./scripts/bootstrap.sh before building.\"\n  exit 1\nfi\nrm -rf \"${DST}\"\nmkdir -p \"$(dirname \"${DST}\")\"\nCOPYFILE_DISABLE=1 /usr/bin/ditto \"${SRC}\" \"${DST}\"\nchmod 755 \"${DST}/lddc-server\"\n/usr/bin/xattr -cr \"${DST}\" 2>/dev/null || true\nwhile IFS= read -r -d '' item; do\n  if /usr/bin/file \"${item}\" | /usr/bin/grep -q 'Mach-O'; then\n    /usr/bin/codesign --force --sign - \"${item}\" >/dev/null 2>&1 || true\n  fi\ndone < <(/usr/bin/find \"${DST}\" -type f -print0)\n";
+		};
+		93D91A122FA5000000010001 /* Copy QQMusic helper */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/.build/products/qqmusic-helper/qqmusic-helper",
+				"$(PROJECT_DIR)/.build/products/qqmusic-helper/_internal.bundle",
 			);
 			name = "Copy QQMusic helper";
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Tools/qqmusic-helper",
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Tools/qqmusic-helper/qqmusic-helper",
 				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Tools/qqmusic-helper/_internal.bundle",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
-			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/kmgccc_player/Resources/Tools/qqmusic-helper\"\nDST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools/qqmusic-helper\"\nAPP=\"${TARGET_BUILD_DIR}/${WRAPPER_NAME}\"\nclean_xattrs() {\n  local root=\"$1\"\n  while IFS= read -r -d '' item; do\n    /usr/bin/xattr -d com.apple.FinderInfo \"${item}\" 2>/dev/null || true\n    /usr/bin/xattr -d 'com.apple.fileprovider.fpfs#P' \"${item}\" 2>/dev/null || true\n    /usr/bin/xattr -d com.apple.ResourceFork \"${item}\" 2>/dev/null || true\n  done < <(/usr/bin/find \"${root}\" -print0)\n  /usr/bin/xattr -cr \"${root}\" 2>/dev/null || true\n}\nif [ ! -x \"${SRC}/qqmusic-helper\" ]; then\n  echo \"warning: QQMusic helper binary missing or not executable: ${SRC}/qqmusic-helper\"\n  exit 0\nfi\nmkdir -p \"${DST}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}/qqmusic-helper\" \"${DST}/qqmusic-helper\"\nif [ -d \"${SRC}/_internal.bundle\" ]; then\n  mkdir -p \"${DST}/_internal.bundle\"\n  COPYFILE_DISABLE=1 /bin/cp -R \"${SRC}/_internal.bundle/.\" \"${DST}/_internal.bundle/\"\nfi\nclean_xattrs \"${DST}\"\nchmod 755 \"${DST}/qqmusic-helper\"\ncodesign --force --deep --sign - \"${DST}/qqmusic-helper\" >/dev/null 2>&1 || true\nclean_xattrs \"${APP}\"\n";
+			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/.build/products/qqmusic-helper\"\nDST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools/qqmusic-helper\"\nAPP=\"${TARGET_BUILD_DIR}/${WRAPPER_NAME}\"\nclean_xattrs() {\n  local root=\"$1\"\n  while IFS= read -r -d '' item; do\n    /usr/bin/xattr -d com.apple.FinderInfo \"${item}\" 2>/dev/null || true\n    /usr/bin/xattr -d 'com.apple.fileprovider.fpfs#P' \"${item}\" 2>/dev/null || true\n    /usr/bin/xattr -d com.apple.ResourceFork \"${item}\" 2>/dev/null || true\n  done < <(/usr/bin/find \"${root}\" -print0)\n  /usr/bin/xattr -cr \"${root}\" 2>/dev/null || true\n}\nif [ ! -x \"${SRC}/qqmusic-helper\" ] || [ ! -d \"${SRC}/_internal.bundle\" ]; then\n  echo \"error: Missing QQMusic helper build product.\"\n  echo \"error: Run ./scripts/bootstrap.sh before building.\"\n  exit 1\nfi\nrm -rf \"${DST}\"\nmkdir -p \"${DST}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}/qqmusic-helper\" \"${DST}/qqmusic-helper\"\nCOPYFILE_DISABLE=1 /usr/bin/ditto \"${SRC}/_internal.bundle\" \"${DST}/_internal.bundle\"\nclean_xattrs \"${DST}\"\nchmod 755 \"${DST}/qqmusic-helper\"\ncodesign --force --deep --sign - \"${DST}/qqmusic-helper\" >/dev/null 2>&1 || true\nclean_xattrs \"${APP}\"\n";
 		};
 		93D91A132FA5000000010002 /* Copy SACAD helper */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -254,7 +454,7 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(PROJECT_DIR)/kmgccc_player/Resources/Tools/sacad/sacad",
+				"$(PROJECT_DIR)/.build/products/sacad/sacad",
 			);
 			name = "Copy SACAD helper";
 			outputFileListPaths = (
@@ -264,7 +464,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
-			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/kmgccc_player/Resources/Tools/sacad/sacad\"\nDST_DIR=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools/sacad\"\nDST=\"${DST_DIR}/sacad\"\nif [ ! -x \"${SRC}\" ]; then\n  echo \"error: SACAD arm64 binary missing or not executable: ${SRC}\"\n  exit 1\nfi\nmkdir -p \"${DST_DIR}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}\" \"${DST}\"\n/usr/bin/xattr -cr \"${DST}\" 2>/dev/null || true\nchmod 755 \"${DST}\"\n/usr/bin/codesign --force --sign - \"${DST}\" >/dev/null 2>&1 || true\n";
+			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/.build/products/sacad/sacad\"\nDST_DIR=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools/sacad\"\nDST=\"${DST_DIR}/sacad\"\nif [ ! -x \"${SRC}\" ]; then\n  echo \"error: Missing SACAD build product.\"\n  echo \"error: Run ./scripts/bootstrap.sh before building.\"\n  exit 1\nfi\nmkdir -p \"${DST_DIR}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}\" \"${DST}\"\n/usr/bin/xattr -cr \"${DST}\" 2>/dev/null || true\nchmod 755 \"${DST}\"\n/usr/bin/codesign --force --sign - \"${DST}\" >/dev/null 2>&1 || true\n";
 		};
 		93D91A142FA5000000010003 /* Optional private enhancement resources */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -293,6 +493,17 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		C02000000000000000000022 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C02000000000000000000003 /* ExternalPlaybackTextNormalizer.swift in Sources */,
+				C02000000000000000000004 /* SkinRoutePolicy.swift in Sources */,
+				C02000000000000000000001 /* MetadataMatchScorerTests.swift in Sources */,
+				C02000000000000000000002 /* SkinRoutePolicyTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		933AADF92F3CC8D40081B59C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -304,12 +515,51 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F01000000000000000000001 /* AppDelegate.swift in Sources */,
+				F01000000000000000000002 /* DockController.swift in Sources */,
+				F01000000000000000000003 /* PlaybackCommands.swift in Sources */,
+				F01000000000000000000004 /* SettingsRootView.swift in Sources */,
+				F01000000000000000000005 /* SettingsSceneDependencies.swift in Sources */,
+				F01000000000000000000006 /* kmgccc_playerApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
+		C02000000000000000000040 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.player.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		C02000000000000000000041 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.player.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
 		933AADFF2F3CC8D40081B59C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -392,6 +642,7 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COMPILATION_CACHE_ENABLE_CACHING = NO;
 				COPY_PHASE_STRIP = NO;
 				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
@@ -506,37 +757,6 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				EXCLUDED_SOURCE_FILE_NAMES = (
-					"$(inherited)",
-					.venv,
-					".qqmusic-helper-venv",
-					".build-arm64",
-					".build-universal",
-					"venv-arm64",
-					"_internal*.bundle",
-					_internal,
-					2.bundle,
-					_internal,
-					3.bundle,
-					_internal,
-					_internal.bundle,
-					.DS_Store,
-					"qqmusic-helper*",
-					"qqmusic-helper",
-					__pycache__,
-					"*.bak*",
-					"*.pyc",
-					build,
-					dist,
-					"*.spec",
-					"build-universal.sh",
-					main.py,
-					requirements.txt,
-				);
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/kmgccc_player/Resources/mediaremote-adapter/build",
-				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = kmgccc_player/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = kmgccc_player;
@@ -588,37 +808,6 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				EXCLUDED_SOURCE_FILE_NAMES = (
-					"$(inherited)",
-					.venv,
-					".qqmusic-helper-venv",
-					".build-arm64",
-					".build-universal",
-					"venv-arm64",
-					"_internal*.bundle",
-					_internal,
-					2.bundle,
-					_internal,
-					3.bundle,
-					_internal,
-					_internal.bundle,
-					.DS_Store,
-					"qqmusic-helper*",
-					"qqmusic-helper",
-					__pycache__,
-					"*.bak*",
-					"*.pyc",
-					build,
-					dist,
-					"*.spec",
-					"build-universal.sh",
-					main.py,
-					requirements.txt,
-				);
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/kmgccc_player/Resources/mediaremote-adapter/build",
-				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = kmgccc_player/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = kmgccc_player;
@@ -738,37 +927,6 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				EXCLUDED_SOURCE_FILE_NAMES = (
-					"$(inherited)",
-					.venv,
-					".qqmusic-helper-venv",
-					".build-arm64",
-					".build-universal",
-					"venv-arm64",
-					"_internal*.bundle",
-					_internal,
-					2.bundle,
-					_internal,
-					3.bundle,
-					_internal,
-					_internal.bundle,
-					.DS_Store,
-					"qqmusic-helper*",
-					"qqmusic-helper",
-					__pycache__,
-					"*.bak*",
-					"*.pyc",
-					build,
-					dist,
-					"*.spec",
-					"build-universal.sh",
-					main.py,
-					requirements.txt,
-				);
-				FRAMEWORK_SEARCH_PATHS = (
-					"$(inherited)",
-					"$(PROJECT_DIR)/kmgccc_player/Resources/mediaremote-adapter/build",
-				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = kmgccc_player/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = kmgccc_player;
@@ -804,6 +962,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		C02000000000000000000043 /* Build configuration list for PBXNativeTarget "kmgccc_playerTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C02000000000000000000040 /* Debug */,
+				C02000000000000000000041 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		933AADFE2F3CC8D40081B59C /* Build configuration list for PBXNativeTarget "BKArt" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -841,8 +1008,8 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/SvenTiigi/WhatsNewKit.git";
 			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.0.0;
+				kind = exactVersion;
+				version = 2.2.1;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
