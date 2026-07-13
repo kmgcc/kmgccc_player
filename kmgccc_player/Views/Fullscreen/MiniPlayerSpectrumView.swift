@@ -31,6 +31,9 @@ struct MiniPlayerSpectrumView: View {
     let scale: CGFloat
     let isHovered: Bool
     let pausedBehavior: MiniPlayerSpectrumPausedBehavior
+    let capsuleCount: Int
+    let preferredWidth: CGFloat?
+    let preferredHeight: CGFloat?
 
     init(
         isPlaying: Bool,
@@ -40,7 +43,10 @@ struct MiniPlayerSpectrumView: View {
         usesDarkForeground: Bool = false,
         scale: CGFloat,
         isHovered: Bool,
-        pausedBehavior: MiniPlayerSpectrumPausedBehavior
+        pausedBehavior: MiniPlayerSpectrumPausedBehavior,
+        capsuleCount: Int = 9,
+        preferredWidth: CGFloat? = nil,
+        preferredHeight: CGFloat? = nil
     ) {
         self.isPlaying = isPlaying
         self.isActive = isActive
@@ -50,6 +56,9 @@ struct MiniPlayerSpectrumView: View {
         self.scale = scale
         self.isHovered = isHovered
         self.pausedBehavior = pausedBehavior
+        self.capsuleCount = max(1, capsuleCount)
+        self.preferredWidth = preferredWidth
+        self.preferredHeight = preferredHeight
     }
 
     // Layout constants (scaled)
@@ -62,8 +71,8 @@ struct MiniPlayerSpectrumView: View {
 
     private var dotSize: CGFloat { baseDotSize * scale }
     private var spacing: CGFloat { baseSpacing * scale }
-    private var height: CGFloat { baseHeight * scale }
-    private var expandedWidth: CGFloat { baseWidth * scale }
+    private var height: CGFloat { preferredHeight ?? baseHeight * scale }
+    private var expandedWidth: CGFloat { preferredWidth ?? baseWidth * scale }
     private var collapsedWidthScaled: CGFloat { collapsedWidth * scale }
 
     /// Current width based on hover state
@@ -91,7 +100,8 @@ struct MiniPlayerSpectrumView: View {
             usesDarkForeground: usesDarkForeground,
             dotSize: dotSize,
             spacing: spacing,
-            pausedBehavior: pausedBehavior
+            pausedBehavior: pausedBehavior,
+            capsuleCount: capsuleCount
         )
         .frame(width: currentWidth, height: height)
         .opacity(currentOpacity)
@@ -126,6 +136,7 @@ private struct MiniPlayerSpectrumContainer: NSViewRepresentable {
     let dotSize: CGFloat
     let spacing: CGFloat
     let pausedBehavior: MiniPlayerSpectrumPausedBehavior
+    let capsuleCount: Int
 
     func makeNSView(context: Context) -> CapsuleSpectrumHostView {
         let view = CapsuleSpectrumHostView(configuration: makeConfiguration())
@@ -148,6 +159,7 @@ private struct MiniPlayerSpectrumContainer: NSViewRepresentable {
 
     private func makeConfiguration() -> CapsuleSpectrumConfiguration {
         .centeredBars(
+            capsuleCount: capsuleCount,
             capsuleWidth: dotSize,
             capsuleSpacing: spacing,
             strokeWidth: 0.5,
@@ -159,13 +171,15 @@ private struct MiniPlayerSpectrumContainer: NSViewRepresentable {
         let signature = SpectrumColorResolver.colorSignature(
             artworkColors: artworkColors,
             accentColor: accentColor,
-            usesDarkForeground: usesDarkForeground
+            usesDarkForeground: usesDarkForeground,
+            capsuleCount: capsuleCount
         )
         view.updateColors(signature: signature) {
             let resolved = SpectrumColorResolver.resolveArtworkFaithfulColors(
                 from: artworkColors,
                 fallback: accentColor,
-                usesDarkForeground: usesDarkForeground
+                usesDarkForeground: usesDarkForeground,
+                capsuleCount: capsuleCount
             )
             return (resolved.fillColors, resolved.strokeColors)
         }
@@ -179,6 +193,7 @@ extension MiniPlayerSpectrumContainer: Equatable {
             && lhs.dotSize == rhs.dotSize
             && lhs.spacing == rhs.spacing
             && lhs.pausedBehavior == rhs.pausedBehavior
+            && lhs.capsuleCount == rhs.capsuleCount
             && lhs.accentColor.isVisuallyEqual(to: rhs.accentColor)
             && lhs.usesDarkForeground == rhs.usesDarkForeground
             && lhs.artworkColors.isVisuallyEqual(to: rhs.artworkColors)
@@ -205,7 +220,8 @@ nonisolated enum SpectrumColorResolver {
         from artworkColors: [NSColor],
         fallback accentColor: NSColor,
         usesDarkForeground: Bool,
-        lightModeDarkening: Bool = false
+        lightModeDarkening: Bool = false,
+        capsuleCount: Int = 9
     ) -> (fillColors: [CGColor], strokeColors: [CGColor]) {
         // Both reasons to darken the fill share the same brightness treatment.
         let darken = usesDarkForeground || lightModeDarkening
@@ -234,15 +250,17 @@ nonisolated enum SpectrumColorResolver {
                 alpha: 0.80
             )
         else {
-            return (Array(repeating: CGColor(gray: 0.6, alpha: 0.85), count: 9),
-                    Array(repeating: CGColor(gray: 0.5, alpha: 0.7), count: 9))
+            let count = max(1, capsuleCount)
+            return (Array(repeating: CGColor(gray: 0.6, alpha: 0.85), count: count),
+                    Array(repeating: CGColor(gray: 0.5, alpha: 0.7), count: count))
         }
 
-        let total = max(1, 9 - 1)
+        let count = max(1, capsuleCount)
+        let total = max(1, count - 1)
         var fillColors: [CGColor] = []
         var strokeColors: [CGColor] = []
 
-        for index in 0..<9 {
+        for index in 0..<count {
             let t = CGFloat(index) / CGFloat(total)
             let r = leftBase.redComponent + (rightBase.redComponent - leftBase.redComponent) * t
             let g = leftBase.greenComponent + (rightBase.greenComponent - leftBase.greenComponent) * t
@@ -362,11 +380,13 @@ nonisolated enum SpectrumColorResolver {
         artworkColors: [NSColor],
         accentColor: NSColor,
         usesDarkForeground: Bool,
-        lightModeDarkening: Bool = false
+        lightModeDarkening: Bool = false,
+        capsuleCount: Int = 9
     ) -> Int {
         var hasher = Hasher()
         hasher.combine(usesDarkForeground)
         hasher.combine(lightModeDarkening)
+        hasher.combine(capsuleCount)
         for color in artworkColors.prefix(2) { appendColor(color, to: &hasher) }
         appendColor(accentColor, to: &hasher)
         return hasher.finalize()

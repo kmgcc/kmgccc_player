@@ -1085,36 +1085,28 @@ private struct RotatingCoverArtwork: View {
 }
 private struct RotatingCoverSkinNormalSettingsView: View {
     @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = false
-    @AppStorage("skin.rotatingCover.visualizerMode") private var visualizerMode: String = "off"
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
+    @State private var visualizationPreferences = AudioVisualizationPreferences.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             SettingsSwitchRow(title: "CD 模式", isOn: $cdMode)
 
-            SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
-                get: { visualizerMode == "led" },
-                set: { isOn in
-                    if isOn {
-                        visualizerMode = "led"
-                    } else if visualizerMode == "led" {
-                        visualizerMode = "off"
-                        ledMeterProvider.releaseNowPlayingResources()
+            AudioVisualizationSelectorRow(
+                title: "音频可视化",
+                selection: Binding(
+                    get: {
+                        visualizationPreferences.selection(
+                            for: RotatingCoverSkin.id,
+                            scope: .window
+                        ).skinKind
+                    },
+                    set: { kind in
+                        visualizationPreferences.setSkinKind(kind, for: RotatingCoverSkin.id, scope: .window)
+                        if kind != .led { ledMeterProvider.releaseNowPlayingResources() }
                     }
-                }
-            ))
-
-            SettingsSwitchRow(title: "频谱动画", isOn: Binding(
-                get: { visualizerMode == "spectrum" },
-                set: { isOn in
-                    if isOn {
-                        visualizerMode = "spectrum"
-                        ledMeterProvider.releaseNowPlayingResources()
-                    } else if visualizerMode == "spectrum" {
-                        visualizerMode = "off"
-                    }
-                }
-            ))
+                )
+            )
         }
     }
 }
@@ -1143,37 +1135,13 @@ private struct RotatingCoverSkinFullscreenSettingsView: View {
                 titleColor: presentationStyle.primaryTextColor
             )
 
-            SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
-                get: {
-                    FullscreenPresentationCoordinator.shared.isSkinVisualizerEnabled
-                    && UserDefaults.standard.string(forKey: "skin.rotatingCover.fullscreen.visualizerMode") == "led"
-                },
-                set: { isOn in
-                    if isOn {
-                        UserDefaults.standard.set("led", forKey: "skin.rotatingCover.fullscreen.visualizerMode")
-                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
-                    } else {
-                        UserDefaults.standard.set("off", forKey: "skin.rotatingCover.fullscreen.visualizerMode")
-                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
-                    }
-                }
-            ), titleFont: presentationStyle.rowLabelFont, titleColor: presentationStyle.primaryTextColor)
-
-            SettingsSwitchRow(title: "频谱动画", isOn: Binding(
-                get: {
-                    FullscreenPresentationCoordinator.shared.isSkinVisualizerEnabled
-                    && UserDefaults.standard.string(forKey: "skin.rotatingCover.fullscreen.visualizerMode") == "spectrum"
-                },
-                set: { isOn in
-                    if isOn {
-                        UserDefaults.standard.set("spectrum", forKey: "skin.rotatingCover.fullscreen.visualizerMode")
-                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
-                    } else {
-                        UserDefaults.standard.set("off", forKey: "skin.rotatingCover.fullscreen.visualizerMode")
-                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
-                    }
-                }
-            ), titleFont: presentationStyle.rowLabelFont, titleColor: presentationStyle.primaryTextColor)
+            AudioVisualizationSelectorRow(
+                title: "音频可视化",
+                selection: Binding(
+                    get: { FullscreenPresentationCoordinator.shared.skinVisualizerKind },
+                    set: { FullscreenPresentationCoordinator.shared.setSkinVisualizer($0) }
+                )
+            )
         }
     }
 }

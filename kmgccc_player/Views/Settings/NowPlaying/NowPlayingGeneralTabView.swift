@@ -16,6 +16,7 @@ struct NowPlayingGeneralTabView: View {
 
     @State private var nowPlayingSkin: String = AppSettings.shared.selectedNowPlayingSkinID
     @State private var nowPlayingArtBackgroundEnabled: Bool = AppSettings.shared.nowPlayingArtBackgroundEnabled
+    @State private var visualizationPreferences = AudioVisualizationPreferences.shared
 
     @AppStorage("skin.classicLED.visualizerMode") private var classicVisualizerMode: String = "off"
     @AppStorage("skin.kmgcccCassette.visualizerMode") private var cassetteVisualizerMode: String = "off"
@@ -55,13 +56,37 @@ struct NowPlayingGeneralTabView: View {
                     }
                 }
             }
+
+            SettingsSection("Mini Player") {
+                AudioVisualizationSelectorRow(
+                    title: "音频可视化",
+                    selection: Binding(
+                        get: {
+                            visualizationPreferences.selection(
+                                for: nowPlayingSkin,
+                                scope: .window
+                            ).miniPlayerKind
+                        },
+                        set: { kind in
+                            visualizationPreferences.setMiniPlayerKind(
+                                kind,
+                                for: nowPlayingSkin,
+                                scope: .window
+                            )
+                            playerVM.refreshLedMeterStateFromSettings()
+                        }
+                    )
+                )
+            }
         }
         .onAppear {
             nowPlayingSkin = settings.selectedNowPlayingSkinID
             nowPlayingArtBackgroundEnabled = settings.nowPlayingArtBackgroundEnabled
+            visualizationPreferences.synchronizeLegacyState(for: nowPlayingSkin, scope: .window)
         }
         .onChange(of: nowPlayingSkin) { _, newValue in
             settings.selectedNowPlayingSkinID = newValue
+            visualizationPreferences.synchronizeLegacyState(for: newValue, scope: .window)
             playerVM.refreshLedMeterStateFromSettings()
         }
         .onChange(of: nowPlayingArtBackgroundEnabled) { _, newValue in

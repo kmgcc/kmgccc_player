@@ -25,6 +25,7 @@ struct MiniPlayerView: View {
     @ObservedObject private var fullscreenWindowManager = FullscreenWindowManager.shared
 
     @State private var settings = AppSettings.shared
+    @State private var visualizationPreferences = AudioVisualizationPreferences.shared
 
     /// For drag-to-seek
     @State private var isDragging = false
@@ -317,36 +318,36 @@ struct MiniPlayerView: View {
     }
 
     private var progressArea: some View {
-        ZStack {
-            progressBar
-        }
-        .overlay(alignment: .top) {
-            HStack {
-                NumericTimeText(
-                    time: progressDisplayTime,
-                    fontSize: 10,
-                    fontWeight: .medium,
-                    color: .secondary
-                )
-                .opacity(isProgressHovering ? 1 : 0)
-
-                Spacer()
-
-                NumericTimeText(
-                    time: playbackCoordinator.presentation.duration,
-                    fontSize: 10,
-                    fontWeight: .medium,
-                    color: .secondary
-                )
-                .opacity(isProgressHovering ? 1 : 0)
+        MiniPlayerProgressSpectrumRow(
+            scale: 0.66,
+            visualization: windowMiniPlayerVisualization,
+            isPlaying: playbackCoordinator.presentation.isPlaying,
+            accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
+            foregroundColor: controlPrimaryColor,
+            enforceBrightForeground: false,
+            spectrumUsesDarkForeground: colorScheme == .light,
+            ledToneVariant: settings.selectedNowPlayingSkinID == AppleStyleSkin.skinID
+                ? .appleStyleBright
+                : .retuned,
+            usesVisualizationAsCompactProgress: true,
+            progress: progressDisplayTime,
+            duration: playbackCoordinator.presentation.duration,
+            isSeekEnabled: playbackCoordinator.presentation.isSeekEnabled,
+            onSeek: { dragProgress = $0 },
+            onDragStart: { isDragging = true },
+            onDragEnd: {
+                playbackCoordinator.seek(to: dragProgress)
+                isDragging = false
             }
-            .offset(y: -8)
-            .animation(.easeInOut(duration: 0.12), value: isProgressHovering)
-        }
-        .frame(height: 18)
-        .onHover { hovering in
-            isProgressHovering = hovering
-        }
+        )
+        .frame(height: 34)
+    }
+
+    private var windowMiniPlayerVisualization: AudioVisualizationKind {
+        visualizationPreferences.selection(
+            for: settings.selectedNowPlayingSkinID,
+            scope: .window
+        ).miniPlayerKind
     }
 
     private var progressDisplayTime: Double {

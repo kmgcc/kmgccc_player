@@ -16,6 +16,7 @@ import SwiftUI
 public enum FullscreenVisualizerMode: String, CaseIterable, Identifiable, Codable {
     case off = "off"
     case miniPlayerSpectrum = "miniPlayerSpectrum"
+    case miniPlayerLED = "miniPlayerLED"
     case skinVisualizer = "skinVisualizer"
 
     public var id: String { rawValue }
@@ -24,6 +25,7 @@ public enum FullscreenVisualizerMode: String, CaseIterable, Identifiable, Codabl
         switch self {
         case .off: return "关闭"
         case .miniPlayerSpectrum: return "MiniPlayer 频谱"
+        case .miniPlayerLED: return "MiniPlayer LED"
         case .skinVisualizer: return "全屏皮肤频谱"
         }
     }
@@ -47,7 +49,7 @@ public enum FullscreenSkinID: String, CaseIterable, Identifiable {
         }
     }
 
-    public var supportsMiniPlayerSpectrum: Bool {
+    public var supportsMiniPlayerVisualization: Bool {
         switch self {
         case .coverLed, .appleStyle, .rotatingCover, .coverGradientBlur, .kmgcccCassette: return true
         }
@@ -55,8 +57,8 @@ public enum FullscreenSkinID: String, CaseIterable, Identifiable {
 
     public var defaultsMiniPlayerSpectrumOn: Bool {
         switch self {
-        case .coverGradientBlur, .kmgcccCassette: return true
-        case .coverLed, .appleStyle, .rotatingCover: return false
+        case .coverGradientBlur: return true
+        case .coverLed, .appleStyle, .rotatingCover, .kmgcccCassette: return false
         }
     }
 
@@ -83,6 +85,18 @@ public struct FullscreenPresentationConfiguration: Equatable, Codable {
         visualizerMode == .miniPlayerSpectrum
     }
 
+    public var isMiniPlayerLEDEnabled: Bool {
+        visualizerMode == .miniPlayerLED
+    }
+
+    public var miniPlayerVisualization: AudioVisualizationKind {
+        switch visualizerMode {
+        case .miniPlayerSpectrum: return .spectrum
+        case .miniPlayerLED: return .led
+        case .off, .skinVisualizer: return .off
+        }
+    }
+
     public var isSkinVisualizerEnabled: Bool {
         visualizerMode == .skinVisualizer
     }
@@ -96,13 +110,13 @@ public struct FullscreenPresentationConfiguration: Equatable, Codable {
 
         if let skin = FullscreenSkinID(rawValue: normalizedSkinID) {
             switch visualizerMode {
-            case .miniPlayerSpectrum:
-                if !skin.supportsMiniPlayerSpectrum {
+            case .miniPlayerSpectrum, .miniPlayerLED:
+                if !skin.supportsMiniPlayerVisualization {
                     self.skinID = "coverLed"
-                    self.visualizerMode = .miniPlayerSpectrum
+                    self.visualizerMode = visualizerMode
                 } else {
                     self.skinID = normalizedSkinID
-                    self.visualizerMode = .miniPlayerSpectrum
+                    self.visualizerMode = visualizerMode
                 }
 
             case .skinVisualizer:
@@ -179,6 +193,7 @@ public final class FullscreenPresentationCoordinator {
             _configuration = newValue
             saveConfiguration(newValue)
             syncLegacySettings(newValue)
+            persistSelection(newValue)
         }
         TelemetryService.shared.updateSkinState()
     }
@@ -186,6 +201,8 @@ public final class FullscreenPresentationCoordinator {
     public var skinID: String { configuration.skinID }
     public var visualizerMode: FullscreenVisualizerMode { configuration.visualizerMode }
     public var isMiniPlayerSpectrumEnabled: Bool { configuration.isMiniPlayerSpectrumEnabled }
+    public var isMiniPlayerLEDEnabled: Bool { configuration.isMiniPlayerLEDEnabled }
+    public var miniPlayerVisualization: AudioVisualizationKind { configuration.miniPlayerVisualization }
     public var isSkinVisualizerEnabled: Bool { configuration.isSkinVisualizerEnabled }
 
     private init() {
@@ -197,23 +214,9 @@ public final class FullscreenPresentationCoordinator {
         let previousID = currentConfig.skinID
         guard previousID != skinID else { return }
 
-        var targetVisualizerMode = currentConfig.visualizerMode
-
-        let defaults = UserDefaults.standard
-        switch skinID {
-        case FullscreenSkinID.coverLed.rawValue:
-            defaults.set("led", forKey: Keys.classicLEDVisualizer)
-            targetVisualizerMode = .skinVisualizer
-        case FullscreenSkinID.appleStyle.rawValue:
-            defaults.set("led", forKey: Keys.appleStyleVisualizer)
-            targetVisualizerMode = .skinVisualizer
-        case FullscreenSkinID.rotatingCover.rawValue:
-            defaults.set("led", forKey: Keys.rotatingCoverVisualizer)
-            defaults.set(true, forKey: "skin.rotatingCover.cdMode")
-            targetVisualizerMode = .skinVisualizer
-        default:
-            break
-        }
+        let selection = AudioVisualizationPreferences.shared.selection(for: skinID, scope: .fullscreen)
+        let targetVisualizerMode = Self.mode(for: selection)
+        AudioVisualizationPreferences.shared.synchronizeLegacyState(for: skinID, scope: .fullscreen)
 
         let proposed = FullscreenPresentationConfiguration(
             skinID: skinID,
@@ -231,12 +234,37 @@ public final class FullscreenPresentationCoordinator {
         ))
     }
 
+    public func setMiniPlayerVisualization(_ kind: AudioVisualizationKind) {
+        AudioVisualizationPreferences.shared.setMiniPlayerKind(
+            kind,
+            for: configuration.skinID,
+            scope: .fullscreen
+        )
+        setVisualizerMode(Self.mode(for: .miniPlayer(kind)))
+    }
+
+    public func setSkinVisualizer(_ kind: AudioVisualizationKind) {
+        AudioVisualizationPreferences.shared.setSkinKind(
+            kind,
+            for: configuration.skinID,
+            scope: .fullscreen
+        )
+        setVisualizerMode(kind == .off ? .off : .skinVisualizer)
+    }
+
+    public var skinVisualizerKind: AudioVisualizationKind {
+        AudioVisualizationPreferences.shared.selection(
+            for: configuration.skinID,
+            scope: .fullscreen
+        ).skinKind
+    }
+
     public func toggleMiniPlayerSpectrum() {
         let currentConfig = configuration
 
         if currentConfig.isMiniPlayerSpectrumEnabled {
             if let skin = FullscreenSkinID(rawValue: currentConfig.skinID),
-               skin.supportsMiniPlayerSpectrum {
+               skin.supportsMiniPlayerVisualization {
                 UserDefaults.standard.set(true, forKey: Keys.userExplicitlyDisabledMiniPlayerSpectrum)
             }
             updateConfiguration(FullscreenPresentationConfiguration(
@@ -300,53 +328,56 @@ public final class FullscreenPresentationCoordinator {
     private func loadConfiguration() -> FullscreenPresentationConfiguration {
         if let data = UserDefaults.standard.data(forKey: Keys.configuration),
            let config = try? JSONDecoder().decode(FullscreenPresentationConfiguration.self, from: data) {
-            let normalized = FullscreenPresentationConfiguration(
-                skinID: config.skinID,
-                visualizerMode: config.visualizerMode
+            let legacySelection: AudioVisualizationPlacement
+            switch config.visualizerMode {
+            case .off:
+                legacySelection = .off
+            case .miniPlayerSpectrum:
+                legacySelection = .miniPlayerSpectrum
+            case .miniPlayerLED:
+                legacySelection = .miniPlayerLED
+            case .skinVisualizer:
+                let kind = legacySkinVisualizerKind(for: config.skinID)
+                legacySelection = .skin(kind == .off ? .led : kind)
+            }
+            AudioVisualizationPreferences.shared.migrateSelectionIfNeeded(
+                legacySelection,
+                for: config.skinID,
+                scope: .fullscreen
             )
-            return applyingMiniPlayerSpectrumDefaultIfNeeded(to: normalized)
+            let selection = AudioVisualizationPreferences.shared.selection(
+                for: config.skinID,
+                scope: .fullscreen
+            )
+            return FullscreenPresentationConfiguration(
+                skinID: config.skinID,
+                visualizerMode: Self.mode(for: selection)
+            )
         }
         return loadLegacyConfiguration()
     }
 
     private func loadLegacyConfiguration() -> FullscreenPresentationConfiguration {
         let skinID = UserDefaults.standard.string(forKey: Keys.skinID) ?? "coverLed"
-        let hasExplicitMiniPlayerSpectrum = UserDefaults.standard.object(forKey: Keys.miniPlayerSpectrumEnabled) != nil
-        let miniPlayerSpectrum = hasExplicitMiniPlayerSpectrum
-            ? shouldUseLegacyMiniPlayerSpectrumValue(for: skinID)
-            : shouldDefaultMiniPlayerSpectrumOn(for: skinID)
-        let classicMode = UserDefaults.standard.string(forKey: Keys.classicLEDVisualizer) ?? "off"
-        let appleStyleMode = UserDefaults.standard.string(forKey: Keys.appleStyleVisualizer) ?? "off"
-        let cassetteMode = UserDefaults.standard.string(forKey: Keys.kmgcccCassetteVisualizer) ?? "off"
-        let rotatingMode = UserDefaults.standard.string(forKey: Keys.rotatingCoverVisualizer) ?? "off"
-        let skinVisualizerEnabled = classicMode != "off"
-            || appleStyleMode != "off"
-            || cassetteMode != "off"
-            || rotatingMode != "off"
-
+        let selection = AudioVisualizationPreferences.shared.selection(
+            for: skinID,
+            scope: .fullscreen
+        )
         return FullscreenPresentationConfiguration(
-            fromLegacy: skinID,
-            miniPlayerSpectrum: miniPlayerSpectrum,
-            skinVisualizerEnabled: skinVisualizerEnabled
+            skinID: skinID,
+            visualizerMode: Self.mode(for: selection)
         )
     }
 
     private func applyingMiniPlayerSpectrumDefaultIfNeeded(
         to config: FullscreenPresentationConfiguration
     ) -> FullscreenPresentationConfiguration {
-        guard config.visualizerMode == .off,
-              shouldDefaultMiniPlayerSpectrumOn(for: config.skinID) else {
-            return config
-        }
-        return FullscreenPresentationConfiguration(
-            skinID: config.skinID,
-            visualizerMode: .miniPlayerSpectrum
-        )
+        config
     }
 
     private func shouldDefaultMiniPlayerSpectrumOn(for skinID: String) -> Bool {
         guard let skin = FullscreenSkinID(rawValue: skinID),
-              skin.supportsMiniPlayerSpectrum,
+              skin.supportsMiniPlayerVisualization,
               skin.defaultsMiniPlayerSpectrumOn else {
             return false
         }
@@ -374,6 +405,19 @@ public final class FullscreenPresentationCoordinator {
         case .coverGradientBlur:
             break
         }
+    }
+
+    private func legacySkinVisualizerKind(for skinID: String) -> AudioVisualizationKind {
+        guard let skin = FullscreenSkinID(rawValue: skinID) else { return .off }
+        let key: String
+        switch skin {
+        case .coverLed: key = Keys.classicLEDVisualizer
+        case .appleStyle: key = Keys.appleStyleVisualizer
+        case .rotatingCover: key = Keys.rotatingCoverVisualizer
+        case .kmgcccCassette: key = Keys.kmgcccCassetteVisualizer
+        case .coverGradientBlur: return .off
+        }
+        return AudioVisualizationKind(rawValue: UserDefaults.standard.string(forKey: key) ?? "off") ?? .off
     }
 
     private func saveConfiguration(_ config: FullscreenPresentationConfiguration) {
@@ -408,6 +452,48 @@ public final class FullscreenPresentationCoordinator {
             case .coverLed, .appleStyle, .kmgcccCassette, .coverGradientBlur:
                 break
             }
+        }
+    }
+
+    private func persistSelection(_ config: FullscreenPresentationConfiguration) {
+        switch config.visualizerMode {
+        case .off:
+            AudioVisualizationPreferences.shared.setMiniPlayerKind(
+                .off,
+                for: config.skinID,
+                scope: .fullscreen
+            )
+        case .miniPlayerSpectrum:
+            AudioVisualizationPreferences.shared.setMiniPlayerKind(
+                .spectrum,
+                for: config.skinID,
+                scope: .fullscreen
+            )
+        case .miniPlayerLED:
+            AudioVisualizationPreferences.shared.setMiniPlayerKind(
+                .led,
+                for: config.skinID,
+                scope: .fullscreen
+            )
+        case .skinVisualizer:
+            let kind = AudioVisualizationPreferences.shared.selection(
+                for: config.skinID,
+                scope: .fullscreen
+            ).skinKind
+            AudioVisualizationPreferences.shared.setSkinKind(
+                kind == .off ? .led : kind,
+                for: config.skinID,
+                scope: .fullscreen
+            )
+        }
+    }
+
+    private static func mode(for selection: AudioVisualizationPlacement) -> FullscreenVisualizerMode {
+        switch selection {
+        case .off: return .off
+        case .skinSpectrum, .skinLED: return .skinVisualizer
+        case .miniPlayerSpectrum: return .miniPlayerSpectrum
+        case .miniPlayerLED: return .miniPlayerLED
         }
     }
 
