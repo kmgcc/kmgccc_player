@@ -79,11 +79,7 @@ git filter-branch --force --prune-empty \
             .derivedDataCodexRename \
             .derivedDataCodexResourceAudit \
             .derivedDataLocal2 \
-            LDDC_Fetch_Core/.venv_arm64 \
-            LDDC_Fetch_Core/.venv_x86_64 \
-            LDDC_Fetch_Core/build_arm64 \
-            LDDC_Fetch_Core/build_x86_64 \
-            build \
+			build \
             kmgccc_player/Resources/BKArt.bundle \
             kmgccc_player/Rendering/BokehTransition/BokehTransitionShader.metal \
             scripts/encrypt_art_assets.swift \
