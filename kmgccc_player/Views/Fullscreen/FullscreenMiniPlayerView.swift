@@ -310,7 +310,7 @@ struct FullscreenMiniPlayerView: View {
             spectrumUsesDarkForeground: resolvedForegroundProfile.spectrumUsesDarkForeground,
             ledToneVariant: settings.fullscreen.skinID == AppleStyleSkin.skinID
                 ? .appleStyleBright
-                : .retuned,
+                : .miniPlayer,
             progress: progressDisplayTime,
             duration: playbackCoordinator.presentation.duration,
             isSeekEnabled: playbackCoordinator.presentation.isSeekEnabled,

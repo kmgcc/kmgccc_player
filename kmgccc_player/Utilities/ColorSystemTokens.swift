@@ -476,7 +476,9 @@ nonisolated enum ColorSystemTokens {
         // wider chroma ramp, while peak returns closest to the semantic seed.
         // Light foreground LEDs gain a stronger night glow. Dark foreground
         // LEDs reverse the L ramp so increasing signal reads as progressively
-        // darker ink against bright glass instead of a brighter tint.
+        // darker ink against bright glass instead of a brighter tint. Skin and
+        // MiniPlayer keep separate light-mode endpoints because the compact
+        // progress surface needs a slightly tighter dark register.
         //
         // v3 widened the L band substantially so the OKLCH
         // lightness delta is visible *after* the opacity ramp (which is
@@ -488,8 +490,10 @@ nonisolated enum ColorSystemTokens {
         static let ledDarkMinL: CGFloat = 0.680
         static let ledDarkPeakL: CGFloat = 0.855
         static let ledUltraDarkPeakL: CGFloat = 0.845
-        static let ledLightMinL: CGFloat = 0.580
-        static let ledLightPeakL: CGFloat = 0.220
+        static let ledLightMinL: CGFloat = 0.610
+        static let ledLightPeakL: CGFloat = 0.300
+        static let ledMiniPlayerLightMinL: CGFloat = 0.595
+        static let ledMiniPlayerLightPeakL: CGFloat = 0.270
         static let ledAppleStyleMinL: CGFloat = 0.820
         static let ledAppleStylePeakL: CGFloat = 0.970
         static let ledLowChromaScale: CGFloat = 0.74
