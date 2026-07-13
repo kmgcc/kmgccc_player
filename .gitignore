@@ -92,6 +92,7 @@ dist/
 .derivedDataLocalBuild/
 *.flac
 *.bak
+*.profraw
 .claude/worktrees/
 .worktrees/
 superteam/

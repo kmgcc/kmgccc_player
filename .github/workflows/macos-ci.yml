@@ -1,0 +1,51 @@
+name: macOS CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick-verify:
+    runs-on: macos-26
+    timeout-minutes: 75
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Select Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Select Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Environment
+        run: |
+          uname -m
+          sw_vers
+          xcodebuild -version
+          python3.12 --version
+          node --version
+          corepack --version
+          cmake --version | head -1
+
+      - name: Quick verification
+        run: KMGCCC_ARM_PYTHON="$(command -v python3.12)" ./scripts/verify.sh
