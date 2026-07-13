@@ -446,6 +446,12 @@ private struct MusicPreferenceResetDialogView: View {
                         .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(.primary)
 
+                    if result.didClearPlaybackHistory {
+                        Text("播放历史已同步清空。")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.primary)
+                    }
+
                     Text("本次未触发额外整库重复扫描，仅对对应歌曲的 meta.json 做了定点写回。")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)

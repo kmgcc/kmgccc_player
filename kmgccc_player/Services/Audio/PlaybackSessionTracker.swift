@@ -96,6 +96,7 @@ final class PlaybackSessionTracker {
 
     private let track: Track
     private let trackDuration: Double
+    private(set) var startedAt: Date
 
     private var lastProgressTime: Double = 0
     private var maxProgressReached: Double = 0
@@ -125,6 +126,7 @@ final class PlaybackSessionTracker {
     init(track: Track) {
         self.track = track
         self.trackDuration = track.duration
+        self.startedAt = Date()
         self.lastProgressTime = 0
     }
 

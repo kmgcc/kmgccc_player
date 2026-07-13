@@ -765,7 +765,7 @@ struct PlaylistDetailView: View {
     private var bottomFadeHeight: CGFloat { 32 }
 }
 
-private final class PlaylistTopChromeInsetReaderView: NSView {
+final class PlaylistTopChromeInsetReaderView: NSView {
     var onTopInsetChange: ((CGFloat) -> Void)?
     private var lastTopInset: CGFloat = -1
 
@@ -796,7 +796,7 @@ private final class PlaylistTopChromeInsetReaderView: NSView {
     }
 }
 
-private struct PlaylistTopChromeInsetReader: NSViewRepresentable {
+struct PlaylistTopChromeInsetReader: NSViewRepresentable {
     @Binding var topInset: CGFloat
 
     func makeNSView(context: Context) -> PlaylistTopChromeInsetReaderView {

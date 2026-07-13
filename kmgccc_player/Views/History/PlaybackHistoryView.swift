@@ -1,0 +1,443 @@
+//
+//  PlaybackHistoryView.swift
+//  myPlayer2
+//
+//  Timeline view for effective local-library playback sessions.
+//
+
+import AppKit
+import SwiftUI
+
+struct PlaybackHistoryView: View {
+    @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(PlaybackHistoryStore.self) private var historyStore
+    @Environment(PlaybackHistoryViewModel.self) private var historyVM
+    @Environment(UIStateViewModel.self) private var uiState
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    @State private var toolbarTopInset: CGFloat = 0
+    @State private var trackToEdit: Track?
+
+    var body: some View {
+        let filterDate = uiState.playbackHistoryDate
+        let visibleItems = historyVM.visibleItems
+        let tracksByID = Dictionary(uniqueKeysWithValues: libraryVM.allTracks.map { ($0.id, $0) })
+        let queueTracks = uniquePlayableTracks(from: visibleItems, tracksByID: tracksByID)
+        let sections = makeSections(visibleItems, filteredTo: filterDate)
+
+        Group {
+            if historyVM.isLoading {
+                ProgressView()
+                    .controlSize(.large)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if sections.isEmpty {
+                VStack(spacing: 18) {
+                    emptyState(filterDate: filterDate)
+                    olderHistoryControl(filterDate: filterDate)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                historyList(
+                    sections: sections,
+                    tracksByID: tracksByID,
+                    queueTracks: queueTracks,
+                    filterDate: filterDate
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(
+            PlaylistTopChromeInsetReader(topInset: $toolbarTopInset)
+                .allowsHitTesting(false)
+        )
+        .sheet(item: $trackToEdit) { track in
+            TrackEditSheet(track: track)
+        }
+        .task(id: loadToken(filterDate: filterDate)) {
+            historyVM.load(using: historyStore, filterDate: filterDate)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
+            historyVM.notePlaybackTrackChanged(to: playerVM.currentTrack?.id)
+        }
+        .onChange(of: uiState.playbackHistoryDate) { _, _ in
+            historyVM.clearMultiselectState()
+        }
+    }
+
+    private func historyList(
+        sections: [PlaybackHistorySection],
+        tracksByID: [UUID: Track],
+        queueTracks: [Track],
+        filterDate: Date?
+    ) -> some View {
+        GeometryReader { proxy in
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: 24) {
+                    ForEach(sections) { section in
+                        sectionView(
+                            section,
+                            tracksByID: tracksByID,
+                            queueTracks: queueTracks
+                        )
+                    }
+
+                    olderHistoryControl(filterDate: filterDate)
+                }
+                // This is intentionally a blank chrome placeholder. The
+                // toolbar is AppKit-owned and overlays the center pane just as
+                // it does for All Songs, so rows must start below that inset.
+                .padding(.top, 16 + toolbarTopInset)
+                .padding(.horizontal)
+                .padding(.bottom, 160)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height + toolbarTopInset)
+            .offset(y: -toolbarTopInset)
+            .scrollIndicators(.automatic)
+        }
+    }
+
+    private func sectionView(
+        _ section: PlaybackHistorySection,
+        tracksByID: [UUID: Track],
+        queueTracks: [Track]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(section.title)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                .padding(.horizontal, 4)
+
+            // Keep this shell identical to the All Songs row shell: no lyric
+            // snippet and no extra divider inserted into the row height.
+            LazyVStack(spacing: 0) {
+                ForEach(section.items) { item in
+                    PlaybackHistoryTrackRow(
+                        item: item,
+                        track: tracksByID[item.trackID],
+                        queueTracks: queueTracks,
+                        isPlaying: historyVM.activeEventID == item.id
+                            && playerVM.currentTrack?.id == item.trackID,
+                        isSelected: historyVM.selectedEventIDs.contains(item.id),
+                        isMultiselectMode: historyVM.isMultiselectMode,
+                        playbackCoordinator: playbackCoordinator,
+                        onToggleSelection: {
+                            historyVM.toggleSelection(for: item.id)
+                        },
+                        onPlay: {
+                            guard let track = tracksByID[item.trackID], track.availability != .missing else {
+                                return
+                            }
+                            historyVM.setActiveEvent(item.id)
+                            playbackCoordinator.playTrack(
+                                track,
+                                inQueueFrom: queueTracks,
+                                libraryQueueSource: .librarySelection("playback-history")
+                            )
+                        },
+                        onDelete: {
+                            historyVM.delete(eventID: item.id, using: historyStore)
+                        },
+                        onEditTrack: { trackToEdit = $0 },
+                        rowPrimaryColor: themeStore.appForegroundPalette.primaryColor,
+                        rowSecondaryColor: themeStore.appForegroundPalette.secondaryColor,
+                        rowTertiaryColor: themeStore.appForegroundPalette.tertiaryColor
+                    )
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func olderHistoryControl(filterDate: Date?) -> some View {
+        let canShow = filterDate == nil
+            && !historyVM.hasActiveSearch
+            && historyVM.searchRange == .all
+            && (historyVM.olderItemsLoaded || historyVM.olderItemCount > 0)
+        if canShow {
+            Button {
+                historyVM.setOlderItemsLoaded(!historyVM.olderItemsLoaded)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: historyVM.olderItemsLoaded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(historyVM.olderItemsLoaded ? "收起更早记录" : "加载更早记录")
+                    if !historyVM.olderItemsLoaded {
+                        Text("· (historyVM.olderItemCount) 条")
+                            .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
+                    }
+                    Spacer()
+                }
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func emptyState(filterDate: Date?) -> some View {
+        let hasOlderRecords = filterDate == nil
+            && !historyVM.hasActiveSearch
+            && historyVM.olderItemCount > 0
+        return VStack(spacing: 10) {
+            Image(systemName: filterDate == nil ? "clock.arrow.circlepath" : "calendar.badge.exclamationmark")
+                .font(.system(size: 30, weight: .medium))
+                .foregroundStyle(.tertiary)
+            Text(
+                filterDate == nil
+                    ? (hasOlderRecords ? "最近没有播放记录" : "还没有播放记录")
+                    : "这一天没有播放记录"
+            )
+                .font(.headline)
+                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+            Text(
+                filterDate == nil
+                    ? (hasOlderRecords ? "更早的记录已折叠在下面" : "播放满两秒后会自动记录在这里")
+                    : "可以换一个日期看看"
+            )
+                .font(.callout)
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func loadToken(filterDate: Date?) -> String {
+        let dateToken = filterDate.map { String($0.timeIntervalSince1970) } ?? "all"
+        return [
+            String(historyStore.revision),
+            dateToken,
+            historyVM.olderItemsLoaded ? "expanded" : "collapsed",
+            historyVM.searchRange.rawValue,
+            historyVM.hasActiveSearch ? "search" : "idle"
+        ].joined(separator: "-")
+    }
+
+    private func uniquePlayableTracks(
+        from items: [PlaybackHistoryItem],
+        tracksByID: [UUID: Track]
+    ) -> [Track] {
+        var seen = Set<UUID>()
+        return items.compactMap { item in
+            guard let track = tracksByID[item.trackID], track.availability != .missing else {
+                return nil
+            }
+            guard seen.insert(track.id).inserted else { return nil }
+            return track
+        }
+    }
+
+    private func makeSections(
+        _ items: [PlaybackHistoryItem],
+        filteredTo date: Date?
+    ) -> [PlaybackHistorySection] {
+        let calendar = Calendar.current
+        if let date {
+            let day = calendar.startOfDay(for: date)
+            return items.isEmpty
+                ? []
+                : [PlaybackHistorySection(
+                    id: "day-\(day.timeIntervalSince1970)",
+                    title: HistoryDateFormatting.fullDate.string(from: day),
+                    sortDate: day,
+                    items: items
+                )]
+        }
+
+        let currentWeekStart = calendar.dateInterval(of: .weekOfYear, for: Date())?.start
+            ?? calendar.startOfDay(for: Date())
+        let previousWeekStart = calendar.date(
+            byAdding: .weekOfYear,
+            value: -1,
+            to: currentWeekStart
+        ) ?? currentWeekStart
+
+        var grouped: [PlaybackHistoryBucket: [PlaybackHistoryItem]] = [:]
+        for item in items {
+            let day = calendar.startOfDay(for: item.playedAt)
+            let bucket: PlaybackHistoryBucket
+            if day >= currentWeekStart {
+                bucket = .day(day)
+            } else if day >= previousWeekStart {
+                bucket = .week(previousWeekStart)
+            } else {
+                bucket = .month(calendar.date(
+                    from: calendar.dateComponents([.year, .month], from: day)
+                ) ?? day)
+            }
+            grouped[bucket, default: []].append(item)
+        }
+
+        return grouped
+            .map { bucket, bucketItems in
+                PlaybackHistorySection(
+                    id: bucket.id,
+                    title: bucket.title,
+                    sortDate: bucket.sortDate,
+                    items: bucketItems.sorted { $0.playedAt > $1.playedAt }
+                )
+            }
+            .sorted { $0.sortDate > $1.sortDate }
+    }
+}
+
+private struct PlaybackHistoryTrackRow: View {
+    let item: PlaybackHistoryItem
+    let track: Track?
+    let queueTracks: [Track]
+    let isPlaying: Bool
+    let isSelected: Bool
+    let isMultiselectMode: Bool
+    let playbackCoordinator: PlaybackCoordinator
+    let onToggleSelection: () -> Void
+    let onPlay: () -> Void
+    let onDelete: () -> Void
+    let onEditTrack: (Track) -> Void
+    let rowPrimaryColor: Color
+    let rowSecondaryColor: Color
+    let rowTertiaryColor: Color
+
+    private var rowModel: TrackRowModel {
+        let title = track?.title ?? item.title
+        let artist = track?.artist ?? item.artist
+        let duration = track?.duration ?? item.duration
+        let artworkData = track?.artworkData
+        let artworkFileURL = track?.resolvedArtworkURL()
+        return TrackRowModel(
+            id: item.id,
+            title: title,
+            artist: artist,
+            lyricSnippetLine: nil,
+            lyricSnippetStartTime: nil,
+            lyricHighlightRanges: [],
+            durationText: Self.formatDuration(duration),
+            artworkData: artworkData,
+            artworkFileURL: artworkFileURL,
+            artworkIdentity: PlaylistArtworkPipeline.rowSourceIdentity(
+                trackID: item.trackID,
+                artworkData: artworkData,
+                artworkFileURL: artworkFileURL
+            ),
+            isMissing: track == nil || track?.availability == .missing,
+            artworkTrackID: item.trackID
+        )
+    }
+
+    var body: some View {
+        TrackRowView(
+            model: rowModel,
+            isPlaying: isPlaying,
+            isSelected: isSelected,
+            enableSecondaryInteractions: true,
+            allowsMissingRowTap: true,
+            onTap: { _ in
+                if isMultiselectMode {
+                    onToggleSelection()
+                } else {
+                    onPlay()
+                }
+            },
+            rowPrimaryColor: rowPrimaryColor,
+            rowSecondaryColor: rowSecondaryColor,
+            rowTertiaryColor: rowTertiaryColor
+        ) {
+            if let track, track.availability != .missing {
+                TrackActionMenuContent(
+                    track: track,
+                    onPlay: onPlay,
+                    onPlayNext: playbackCoordinator.canInsertTracksAfterCurrent
+                        ? { playbackCoordinator.insertTracksAfterCurrent([track]) }
+                        : nil,
+                    onEditTrack: onEditTrack,
+                    showsDeleteFromLibrary: false,
+                    diagnosticSurface: "PlaybackHistory"
+                )
+                Divider()
+            }
+
+            Button(role: .destructive, action: onDelete) {
+                Label("从播放历史删除", systemImage: "trash")
+            }
+        }
+    }
+
+    private static func formatDuration(_ duration: Double) -> String {
+        let totalSeconds = max(0, Int(duration))
+        return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60)
+    }
+}
+
+private struct PlaybackHistorySection: Identifiable {
+    let id: String
+    let title: String
+    let sortDate: Date
+    let items: [PlaybackHistoryItem]
+}
+
+private enum PlaybackHistoryBucket: Hashable {
+    case day(Date)
+    case week(Date)
+    case month(Date)
+
+    var id: String {
+        switch self {
+        case .day(let date): return "day-\(date.timeIntervalSince1970)"
+        case .week(let date): return "week-\(date.timeIntervalSince1970)"
+        case .month(let date): return "month-\(date.timeIntervalSince1970)"
+        }
+    }
+
+    var sortDate: Date {
+        switch self {
+        case .day(let date), .week(let date), .month(let date): return date
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .day(let date): return HistoryDateFormatting.relativeSectionTitle(for: date)
+        case .week: return "上周"
+        case .month(let date):
+            let calendar = Calendar.current
+            let currentMonth = calendar.dateInterval(of: .month, for: Date())?.start
+                ?? calendar.startOfDay(for: Date())
+            if let previousMonth = calendar.date(byAdding: .month, value: -1, to: currentMonth),
+               calendar.isDate(date, equalTo: previousMonth, toGranularity: .month) {
+                return "上个月"
+            }
+            return HistoryDateFormatting.month.string(from: date)
+        }
+    }
+}
+
+private enum HistoryDateFormatting {
+    static let fullDate: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日"
+        return formatter
+    }()
+
+    static let month: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月"
+        return formatter
+    }()
+
+    static func relativeSectionTitle(for date: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) { return "今天" }
+        if calendar.isDateInYesterday(date) { return "昨日" }
+
+        let today = calendar.startOfDay(for: Date())
+        let days = calendar.dateComponents([.day], from: date, to: today).day ?? 0
+        if days > 1, days < 7 {
+            return "\(days)天前"
+        }
+        return fullDate.string(from: date)
+    }
+}

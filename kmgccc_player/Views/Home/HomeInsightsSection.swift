@@ -35,6 +35,8 @@ struct HomeInsightsSection: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(PlaybackHistoryStore.self) private var historyStore
+    @Environment(UIStateViewModel.self) private var uiState
 
     /// Width threshold below which the side-by-side ranking + calendar would
     /// crowd each other and we switch to the horizontal-summary narrow layout.
@@ -53,6 +55,20 @@ struct HomeInsightsSection: View {
     private var stacksVertically: Bool {
         if containerWidth > 0 { return containerWidth < sideBySideThreshold }
         return mode == .compact || mode == .narrow
+    }
+
+    private var calendarDailyMap: [Date: Int] {
+        // Preserve the old aggregate heatmap for upgrades. Once event records
+        // exist, their exact per-day counts replace the aggregate for that day.
+        let _ = historyStore.revision
+        let recorded = historyStore.dailyPlayCounts()
+        guard !recorded.isEmpty else { return homeVM.dailyListeningMap }
+
+        var merged = homeVM.dailyListeningMap
+        for (date, count) in recorded {
+            merged[date] = count
+        }
+        return merged
     }
 
     // MARK: - Wide layout
@@ -90,10 +106,11 @@ struct HomeInsightsSection: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: rowHeight)
             ListeningCalendarCard(
-                dailyMap: homeVM.dailyListeningMap,
+                dailyMap: calendarDailyMap,
                 renderWidth: heatmapWidth,
                 fixedHeight: rowHeight,
-                accentColor: accentColor
+                accentColor: accentColor,
+                onSelectDay: { uiState.showPlaybackHistory(for: $0) }
             )
             .frame(width: heatmapWidth)
             .frame(height: rowHeight)
@@ -177,11 +194,12 @@ struct HomeInsightsSection: View {
 
     private func compactCalendar(width: CGFloat) -> some View {
         ListeningCalendarCard(
-            dailyMap: homeVM.dailyListeningMap,
+            dailyMap: calendarDailyMap,
             compact: true,
             renderWidth: width,
             fixedHeight: CompactSummaryRowMetrics.rowHeight,
-            accentColor: accentColor
+            accentColor: accentColor,
+            onSelectDay: { uiState.showPlaybackHistory(for: $0) }
         )
         .frame(width: width, height: CompactSummaryRowMetrics.rowHeight)
     }
@@ -774,6 +792,7 @@ private struct ListeningCalendarCard: View {
     var renderWidth: CGFloat? = nil
     var fixedHeight: CGFloat? = nil
     var accentColor: Color = .accentColor
+    var onSelectDay: ((Date) -> Void)? = nil
 
     var body: some View {
         HomeListeningHeatmapView(
@@ -781,7 +800,8 @@ private struct ListeningCalendarCard: View {
             compact: compact,
             renderWidth: renderWidth,
             fixedHeight: fixedHeight,
-            accentColor: accentColor
+            accentColor: accentColor,
+            onSelectDay: onSelectDay
         )
     }
 }
@@ -795,6 +815,7 @@ struct HomeListeningHeatmapView: View {
     /// heatmap doesn't re-evaluate on unrelated ThemeStore changes (this
     /// view caches its render model and only the accent input matters).
     let accentColor: Color
+    var onSelectDay: ((Date) -> Void)? = nil
 
     @Environment(\.colorScheme) private var colorScheme
     @State private var displayedMonth: Date
@@ -807,13 +828,15 @@ struct HomeListeningHeatmapView: View {
         compact: Bool = false,
         renderWidth: CGFloat? = nil,
         fixedHeight: CGFloat? = nil,
-        accentColor: Color = .accentColor
+        accentColor: Color = .accentColor,
+        onSelectDay: ((Date) -> Void)? = nil
     ) {
         self.dailyMap = dailyMap
         self.compact = compact
         self.renderWidth = renderWidth
         self.fixedHeight = fixedHeight
         self.accentColor = accentColor
+        self.onSelectDay = onSelectDay
         _displayedMonth = State(initialValue: CalendarHeatmapData.currentMonthStart())
     }
 
@@ -830,13 +853,12 @@ struct HomeListeningHeatmapView: View {
             VStack(alignment: .leading, spacing: headerGridSpacing) {
                 header(monthTitle: model.monthTitle)
                 ZStack {
-                    ListeningCalendarRenderView(model: model)
+                    ListeningCalendarRenderView(model: model, onSelectDay: onSelectDay)
                         .id(model.monthIdentity)
                         .transition(monthTransition)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
-                .allowsHitTesting(false)
                 .animation(.smooth(duration: 0.32), value: model.monthIdentity)
             }
             .padding(compact ? 0 : 2)
@@ -929,6 +951,7 @@ struct HomeListeningHeatmapView: View {
 
 private struct ListeningCalendarRenderView: NSViewRepresentable {
     let model: ListeningCalendarRenderModel
+    var onSelectDay: ((Date) -> Void)?
 
     func makeNSView(context: Context) -> ListeningCalendarNSView {
         let view = ListeningCalendarNSView()
@@ -937,11 +960,13 @@ private struct ListeningCalendarRenderView: NSViewRepresentable {
         view.layerContentsRedrawPolicy = .onSetNeedsDisplay
         view.layer?.needsDisplayOnBoundsChange = true
         view.model = model
+        view.onSelectDay = onSelectDay
         return view
     }
 
     func updateNSView(_ nsView: ListeningCalendarNSView, context: Context) {
         nsView.layer?.backgroundColor = NSColor.clear.cgColor
+        nsView.onSelectDay = onSelectDay
         guard nsView.model != model else { return }
         nsView.model = model
         nsView.needsDisplay = true
@@ -950,6 +975,7 @@ private struct ListeningCalendarRenderView: NSViewRepresentable {
 
 private final class ListeningCalendarNSView: NSView {
     var model: ListeningCalendarRenderModel?
+    var onSelectDay: ((Date) -> Void)?
     private let dayNumberVisualCorrectionY: CGFloat = 0.35
 
     override var isFlipped: Bool { true }
@@ -980,6 +1006,26 @@ private final class ListeningCalendarNSView: NSView {
             metrics: metrics,
             model: model
         )
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let model, let onSelectDay else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        let point = convert(event.locationInWindow, from: nil)
+        let layout = makeLayout(for: model, metrics: Metrics(compact: model.isCompact))
+        guard let day = model.days.first(where: { day in
+            dayCellRect(day, layout: layout).contains(point)
+        }) else {
+            super.mouseDown(with: event)
+            return
+        }
+
+        let today = Calendar.current.startOfDay(for: Date())
+        guard day.date <= today else { return }
+        onSelectDay(day.date)
     }
 
     private func makeLayout(
@@ -1025,7 +1071,20 @@ private final class ListeningCalendarNSView: NSView {
             weekdayRect: weekdayRect,
             gridRect: gridRect,
             cellSize: cellSize,
+            cellSpacing: metrics.cellSpacing,
             rowCount: rowCount
+        )
+    }
+
+    private func dayCellRect(
+        _ day: ListeningCalendarRenderModel.Day,
+        layout: CalendarLayout
+    ) -> CGRect {
+        CGRect(
+            x: layout.gridRect.minX + CGFloat(day.column) * (layout.cellSize + layout.cellSpacing),
+            y: layout.gridRect.minY + CGFloat(day.row) * (layout.cellSize + layout.cellSpacing),
+            width: layout.cellSize,
+            height: layout.cellSize
         )
     }
 
@@ -1324,6 +1383,7 @@ private final class ListeningCalendarNSView: NSView {
         let weekdayRect: CGRect
         let gridRect: CGRect
         let cellSize: CGFloat
+        let cellSpacing: CGFloat
         let rowCount: Int
     }
 
@@ -1356,6 +1416,7 @@ private final class ListeningCalendarNSView: NSView {
 
 private struct ListeningCalendarRenderModel: Equatable {
     struct Day: Equatable {
+        let date: Date
         let dayNumber: Int
         let column: Int
         let row: Int
@@ -1484,6 +1545,7 @@ private enum CalendarHeatmapData {
                 let count = normalizedDailyMap[day] ?? 0
                 days.append(
                     ListeningCalendarRenderModel.Day(
+                        date: day,
                         dayNumber: calendar.component(.day, from: day),
                         column: column,
                         row: row,

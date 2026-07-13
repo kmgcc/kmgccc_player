@@ -24,6 +24,10 @@ final class AppSessionHost: ObservableObject {
     let uiState = UIStateViewModel()
     /// Stable across HomeView lifetime so the random Hero pick survives navigation.
     let homeVM = HomeViewModel()
+    let playbackHistoryStore: PlaybackHistoryStore
+    /// Shared by the history page and AppKit's main-window toolbar so search,
+    /// range, multiselect, and destructive actions have one source of truth.
+    let playbackHistoryViewModel: PlaybackHistoryViewModel
 
     private let modelContainer: ModelContainer
     private var hasSetupDependencies = false
@@ -38,9 +42,13 @@ final class AppSessionHost: ObservableObject {
     private var didAttemptPlaybackMemoryRestore = false
 
     init(
-        modelContainer: ModelContainer
+        modelContainer: ModelContainer,
+        playbackHistoryStore: PlaybackHistoryStore = .shared,
+        playbackHistoryViewModel: PlaybackHistoryViewModel = PlaybackHistoryViewModel()
     ) {
         self.modelContainer = modelContainer
+        self.playbackHistoryStore = playbackHistoryStore
+        self.playbackHistoryViewModel = playbackHistoryViewModel
     }
 
     var sharedModelContainer: ModelContainer {
@@ -252,6 +260,7 @@ final class AppSessionHost: ObservableObject {
                 // NotificationCenter delivers this observer on .main; keep the restart synchronous.
                 MainActor.assumeIsolated {
                     guard let self, let repository = self.repository else { return }
+                    self.playbackHistoryStore.reconfigureForCurrentLibrary()
                     self.libraryService?.restartMonitoring(repository: repository)
                     Log.info(
                         "[AppSessionHost] Restarted library monitoring after location change",
