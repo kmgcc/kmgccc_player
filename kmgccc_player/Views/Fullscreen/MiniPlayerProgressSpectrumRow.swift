@@ -26,6 +26,7 @@ struct MiniPlayerProgressSpectrumRow: View {
     let spectrumArtworkColors: [NSColor]
     let spectrumUsesDarkForeground: Bool
     let ledToneVariant: PerceptualToneLadder.LEDToneVariant
+    let adaptsWideVisualizationSegments: Bool
     let usesVisualizationAsCompactProgress: Bool
     
     // Progress bar state
@@ -47,6 +48,14 @@ struct MiniPlayerProgressSpectrumRow: View {
     private var progressYOffset: CGFloat { 13 * scale }
     private var hPadding: CGFloat { 8 * scale }
     private var timeSpacing: CGFloat { 10 * scale }
+    // A window row should not gain extra dots while it is still in its normal
+    // compact range; once it is genuinely wide, grow the right-hand visualizer
+    // so the progress track does not consume empty space.
+    private var baseVisualizationCount: Int { visualization == .led ? 5 : 9 }
+    private var wideVisualizationStartWidth: CGFloat { max(260, 300 * scale) }
+    private var wideVisualizationMaximumWidth: CGFloat {
+        max(spectrumExpandedWidth, 220 * scale)
+    }
     
     /// Unified hover state for the entire row
     @State private var isRowHovered = false
@@ -63,6 +72,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         spectrumArtworkColors: [NSColor] = [],
         spectrumUsesDarkForeground: Bool = false,
         ledToneVariant: PerceptualToneLadder.LEDToneVariant = .retuned,
+        adaptsWideVisualizationSegments: Bool = false,
         usesVisualizationAsCompactProgress: Bool = false,
         progress: Double,
         duration: Double,
@@ -84,6 +94,7 @@ struct MiniPlayerProgressSpectrumRow: View {
         self.spectrumArtworkColors = spectrumArtworkColors
         self.spectrumUsesDarkForeground = spectrumUsesDarkForeground
         self.ledToneVariant = ledToneVariant
+        self.adaptsWideVisualizationSegments = adaptsWideVisualizationSegments
         self.usesVisualizationAsCompactProgress = usesVisualizationAsCompactProgress
         self.progress = progress
         self.duration = duration
@@ -107,7 +118,10 @@ struct MiniPlayerProgressSpectrumRow: View {
                         .layoutPriority(isRowHovered && visualization != .off ? 1 : 0)
 
                     if visualization != .off {
-                        visualizationSection(availableHeight: geometry.size.height)
+                        visualizationSection(
+                            availableWidth: geometry.size.width,
+                            availableHeight: geometry.size.height
+                        )
                     }
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
@@ -204,14 +218,20 @@ struct MiniPlayerProgressSpectrumRow: View {
     
     // MARK: - Spectrum Section
     
-    private func visualizationSection(availableHeight: CGFloat) -> some View {
+    private func visualizationSection(availableWidth: CGFloat, availableHeight: CGFloat) -> some View {
         let height = min(spectrumHeight, availableHeight)
+        let expandedWidth = resolvedVisualizationWidth(for: availableWidth)
+        let shouldAdaptWideSegments = adaptsWideVisualizationSegments
+            && availableWidth > wideVisualizationStartWidth
+        let count = shouldAdaptWideSegments
+            ? max(baseVisualizationCount, adaptiveSegmentCount(for: expandedWidth))
+            : baseVisualizationCount
         return visualizationContent(
-            count: visualization == .led ? 5 : 9,
-            width: spectrumExpandedWidth,
+            count: count,
+            width: expandedWidth,
             height: height
         )
-        .frame(width: isRowHovered ? spectrumCollapsedWidth : spectrumExpandedWidth, height: height)
+        .frame(width: isRowHovered ? spectrumCollapsedWidth : expandedWidth, height: height)
         .frame(maxHeight: .infinity, alignment: .center)
         .opacity(isRowHovered ? 0 : 1)
         .allowsHitTesting(!isRowHovered)
@@ -285,6 +305,13 @@ struct MiniPlayerProgressSpectrumRow: View {
         let elementWidth = visualization == .led ? 10 * scale : 5.8 * scale
         let spacing = visualization == .led ? 6 * scale : 4 * scale
         return max(3, Int((width + spacing) / (elementWidth + spacing)))
+    }
+
+    private func resolvedVisualizationWidth(for availableWidth: CGFloat) -> CGFloat {
+        guard adaptsWideVisualizationSegments else { return spectrumExpandedWidth }
+        let extraWidth = max(0, availableWidth - wideVisualizationStartWidth)
+        let grownWidth = spectrumExpandedWidth + extraWidth * 0.38
+        return min(wideVisualizationMaximumWidth, grownWidth)
     }
 
     private func seekGesture(width: CGFloat) -> some Gesture {

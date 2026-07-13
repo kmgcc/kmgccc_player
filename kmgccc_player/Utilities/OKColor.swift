@@ -258,6 +258,7 @@ nonisolated enum PerceptualToneLadder {
         case migrationReference = "current-candidate"
 #endif
         case retuned = "retuned-candidate"
+        case miniPlayer = "mini-player-candidate"
         case appleStyleBright = "apple-style-bright"
     }
 
@@ -331,14 +332,35 @@ nonisolated enum PerceptualToneLadder {
         }
 #endif
 
-        let lowL = variant == .appleStyleBright
-            ? T.ledAppleStyleMinL
-            : (isDark ? T.ledDarkMinL : T.ledLightMinL)
-        var peakL = variant == .appleStyleBright
-            ? T.ledAppleStylePeakL
-            : (isDark
+        let lowL: CGFloat
+        var peakL: CGFloat
+        switch variant {
+        case .appleStyleBright:
+            lowL = T.ledAppleStyleMinL
+            peakL = T.ledAppleStylePeakL
+        case .miniPlayer:
+            // Keep the compact progress visualizer independent from skin-only
+            // dark-foreground tuning. Its light-foreground path deliberately
+            // shares the unchanged night ladder.
+            lowL = isDark ? T.ledDarkMinL : T.ledMiniPlayerLightMinL
+            peakL = isDark
                 ? (isUltraDark ? T.ledUltraDarkPeakL : T.ledDarkPeakL)
-                : T.ledLightPeakL)
+                : T.ledMiniPlayerLightPeakL
+        case .retuned:
+            lowL = isDark ? T.ledDarkMinL : T.ledLightMinL
+            peakL = isDark
+                ? (isUltraDark ? T.ledUltraDarkPeakL : T.ledDarkPeakL)
+                : T.ledLightPeakL
+#if DEBUG
+        case .migrationReference:
+            // The debug migration branch returns above; keep the switch
+            // exhaustive for DEBUG builds without changing that reference.
+            lowL = isDark ? T.ledDarkMinL : T.ledLightMinL
+            peakL = isDark
+                ? (isUltraDark ? T.ledUltraDarkPeakL : T.ledDarkPeakL)
+                : T.ledLightPeakL
+#endif
+        }
         if !isNearMonochrome {
             peakL -= ledLevelPeakLightnessTrim(base.h, scheme: scheme)
         }

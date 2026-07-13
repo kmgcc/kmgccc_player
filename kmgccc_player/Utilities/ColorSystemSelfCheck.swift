@@ -182,6 +182,7 @@ nonisolated enum ColorSystemSelfCheck {
         checkArtisticLyricsSubInactiveCloseToMainInactive(&report)
         checkLEDLevelStylePolicyContinuous(&report)
         checkLEDLightModeLevelOrderReversed(&report)
+        checkLEDMiniPlayerLightModeIsolation(&report)
         checkLEDAppleStyleBrightnessIsolation(&report)
         checkLEDLevelHueDriftVisible(&report)
         checkLEDToneStepsPerceptual(&report)
@@ -538,6 +539,50 @@ nonisolated enum ColorSystemSelfCheck {
             "LED: Apple style only lifts lightness",
             ok,
             "standardL=\(format(standard.lightness)) appleL=\(format(apple.lightness)) hueDrift=\(format(apple.hueDrift)) chromaScale=\(format(apple.chromaScale))"
+        )
+    }
+
+    private static func checkLEDMiniPlayerLightModeIsolation(_ report: inout CheckReport) {
+        let base = OKColor.OKLCH(l: 0.48, c: 0.100, h: 0.69)
+        let skinLightPeak = PerceptualToneLadder.ledLevelStylePolicy(
+            base: base,
+            level: 9,
+            maxLevel: 9,
+            scheme: .light,
+            isNearMonochrome: false,
+            variant: .retuned
+        )
+        let miniLightPeak = PerceptualToneLadder.ledLevelStylePolicy(
+            base: base,
+            level: 9,
+            maxLevel: 9,
+            scheme: .light,
+            isNearMonochrome: false,
+            variant: .miniPlayer
+        )
+        let skinDarkPeak = PerceptualToneLadder.ledLevelStylePolicy(
+            base: base,
+            level: 9,
+            maxLevel: 9,
+            scheme: .dark,
+            isNearMonochrome: false,
+            variant: .retuned
+        )
+        let miniDarkPeak = PerceptualToneLadder.ledLevelStylePolicy(
+            base: base,
+            level: 9,
+            maxLevel: 9,
+            scheme: .dark,
+            isNearMonochrome: false,
+            variant: .miniPlayer
+        )
+        let lightModeSeparated = skinLightPeak.lightness > miniLightPeak.lightness + 0.01
+        let nightPathUnchanged = abs(skinDarkPeak.lightness - miniDarkPeak.lightness) <= 0.0001
+            && abs(skinDarkPeak.chromaScale - miniDarkPeak.chromaScale) <= 0.0001
+        report.record(
+            "LED: MiniPlayer dark-foreground path is isolated",
+            lightModeSeparated && nightPathUnchanged,
+            "skinLightL=\(format(skinLightPeak.lightness)) miniLightL=\(format(miniLightPeak.lightness)) darkΔL=\(format(abs(skinDarkPeak.lightness - miniDarkPeak.lightness)))"
         )
     }
 

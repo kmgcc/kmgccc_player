@@ -328,7 +328,8 @@ struct MiniPlayerView: View {
             spectrumUsesDarkForeground: colorScheme == .light,
             ledToneVariant: settings.selectedNowPlayingSkinID == AppleStyleSkin.skinID
                 ? .appleStyleBright
-                : .retuned,
+                : .miniPlayer,
+            adaptsWideVisualizationSegments: true,
             usesVisualizationAsCompactProgress: true,
             progress: progressDisplayTime,
             duration: playbackCoordinator.presentation.duration,
