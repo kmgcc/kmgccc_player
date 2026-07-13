@@ -3146,92 +3146,29 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
     private func discoverAdapterPaths() -> AdapterPaths? {
         let fileManager = FileManager.default
-        let bundle = Bundle.main
+        guard let resourceURL = Bundle.main.resourceURL else { return nil }
+        let base = resourceURL.appendingPathComponent("mediaremote-adapter", isDirectory: true)
+        let script = base.appendingPathComponent("bin/mediaremote-adapter.pl").path
+        let framework = base.appendingPathComponent("build/MediaRemoteAdapter.framework").path
+        let testClient = base.appendingPathComponent("build/MediaRemoteAdapterTestClient").path
 
-        var scriptCandidates: [String] = []
-        var frameworkCandidates: [String] = []
-        var testClientCandidates: [String] = []
-
-        // 1) Bundle resourceURL with the adapter dropped under Resources/mediaremote-adapter/.
-        if let resourceURL = bundle.resourceURL {
-            let base = resourceURL.appendingPathComponent("mediaremote-adapter", isDirectory: true)
-            scriptCandidates.append(base.appendingPathComponent("bin/mediaremote-adapter.pl").path)
-            frameworkCandidates.append(base.appendingPathComponent("build/MediaRemoteAdapter.framework").path)
-            testClientCandidates.append(base.appendingPathComponent("build/MediaRemoteAdapterTestClient").path)
-        }
-
-        // 2) Direct lookup at the bundle root (in case the file copy phase flattens names).
-        if let path = bundle.path(forResource: "mediaremote-adapter", ofType: "pl") {
-            scriptCandidates.append(path)
-        }
-        if let path = bundle.path(forResource: "MediaRemoteAdapter", ofType: "framework") {
-            frameworkCandidates.append(path)
-        }
-        if let path = bundle.path(forResource: "MediaRemoteAdapterTestClient", ofType: nil) {
-            testClientCandidates.append(path)
-        }
-
-        // 3) Lookup with the adapter directory hint, in case Xcode preserves a one-level subdir.
-        if let path = bundle.path(forResource: "mediaremote-adapter", ofType: "pl", inDirectory: "mediaremote-adapter/bin") {
-            scriptCandidates.append(path)
-        }
-        if let path = bundle.path(forResource: "MediaRemoteAdapter", ofType: "framework", inDirectory: "mediaremote-adapter/build") {
-            frameworkCandidates.append(path)
-        }
-        if let path = bundle.path(forResource: "MediaRemoteAdapterTestClient", ofType: nil, inDirectory: "mediaremote-adapter/build") {
-            testClientCandidates.append(path)
-        }
-
-        // 4) Developer fallbacks – /tmp clone and the project tree, only used when the bundle
-        //    is missing the resources (e.g. running from an old build).
-        var devBases: [String] = ["/tmp/mediaremote-adapter"]
-        if let home = ProcessInfo.processInfo.environment["HOME"] {
-            devBases.append("\(home)/Documents/vscode/player/myPlayer2/kmgccc_player/Resources/mediaremote-adapter")
-        }
-        for base in devBases {
-            scriptCandidates.append("\(base)/bin/mediaremote-adapter.pl")
-            frameworkCandidates.append("\(base)/build/MediaRemoteAdapter.framework")
-            testClientCandidates.append("\(base)/build/MediaRemoteAdapterTestClient")
-        }
-
-        // De-duplicate while preserving order so logs stay readable.
-        scriptCandidates = Self.uniqued(scriptCandidates)
-        frameworkCandidates = Self.uniqued(frameworkCandidates)
-        testClientCandidates = Self.uniqued(testClientCandidates)
-
-        let firstExisting: ([String]) -> String? = { candidates in
-            candidates.first { fileManager.fileExists(atPath: $0) }
-        }
-        let scriptHit = firstExisting(scriptCandidates)
-        let frameworkHit = firstExisting(frameworkCandidates)
-        let testClientHit = firstExisting(testClientCandidates)
-
-        if let script = scriptHit, let framework = frameworkHit {
+        if fileManager.fileExists(atPath: script), fileManager.fileExists(atPath: framework) {
+            let existingTestClient = fileManager.fileExists(atPath: testClient) ? testClient : nil
             if !hasLoggedAdapterResolution {
                 Log.info("[SystemNowPlaying] adapter script found: \(script)", category: .playback)
                 Log.info("[SystemNowPlaying] adapter framework found: \(framework)", category: .playback)
-                if let testClient = testClientHit {
-                    Log.info("[SystemNowPlaying] adapter test client found: \(testClient)", category: .playback)
+                if let existingTestClient {
+                    Log.info("[SystemNowPlaying] adapter test client found: \(existingTestClient)", category: .playback)
                 } else {
                     Log.info("[SystemNowPlaying] adapter test client missing (optional); health check will be skipped", category: .playback)
                 }
                 hasLoggedAdapterResolution = true
             }
-            return AdapterPaths(script: script, framework: framework, testClient: testClientHit)
+            return AdapterPaths(script: script, framework: framework, testClient: existingTestClient)
         }
 
         if !hasLoggedAdapterResolution {
-            Log.warning("[SystemNowPlaying] adapter resources missing; tried candidates:", category: .playback)
-            for path in scriptCandidates {
-                Log.warning("[SystemNowPlaying]   script candidate exists=\(fileManager.fileExists(atPath: path)): \(path)", category: .playback)
-            }
-            for path in frameworkCandidates {
-                Log.warning("[SystemNowPlaying]   framework candidate exists=\(fileManager.fileExists(atPath: path)): \(path)", category: .playback)
-            }
-            for path in testClientCandidates {
-                Log.warning("[SystemNowPlaying]   test client candidate exists=\(fileManager.fileExists(atPath: path)): \(path)", category: .playback)
-            }
-            Log.warning("[SystemNowPlaying] place mediaremote-adapter.pl + MediaRemoteAdapter.framework under kmgccc_player/Resources/mediaremote-adapter/{bin,build}/ and rebuild", category: .playback)
+            Log.warning("[SystemNowPlaying] adapter resources are missing from the app bundle", category: .playback)
             hasLoggedAdapterResolution = true
         }
         return nil

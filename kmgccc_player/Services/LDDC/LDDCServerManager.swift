@@ -166,231 +166,32 @@ final class LDDCServerManager: ObservableObject {
     }
 
     private func buildLaunchCandidates(port: Int) -> [LaunchCandidate] {
-        var candidates: [LaunchCandidate] = []
-
-        candidates.append(contentsOf: findBundledBinaryCandidates(port: port))
-
-        if let pythonCandidate = findPythonCandidate(port: port) {
-            candidates.append(pythonCandidate)
+        guard let resourceURL = Bundle.main.resourceURL else {
+            Log.error("App resource directory is unavailable", category: .lddc)
+            return []
         }
 
-        return candidates
-    }
-
-    private func findBundledBinaryCandidates(port: Int) -> [LaunchCandidate] {
-        Log.debug("Searching for lddc-server binary", category: .lddc)
-        Log.debug("Bundle path: \(Bundle.main.bundlePath)", category: .lddc)
-        Log.debug("Resource path: \(Bundle.main.resourcePath ?? "nil")", category: .lddc)
-
-        var urls: [URL] = []
-
-        // Path 0: Resources root (folder reference named "lddc-server")
-        if let url = Bundle.main.url(forResource: "lddc-server", withExtension: nil) {
-            urls.append(url)
+        let executableURL = resourceURL
+            .appendingPathComponent("Tools", isDirectory: true)
+            .appendingPathComponent("lddc-server", isDirectory: true)
+            .appendingPathComponent("lddc-server", isDirectory: false)
+        guard FileManager.default.fileExists(atPath: executableURL.path) else {
+            Log.error("Bundled LDDC executable is missing: \(executableURL.path)", category: .lddc)
+            return []
         }
 
-        // Path 1: Tools subdirectory
-        if let url = Bundle.main.url(
-            forResource: "lddc-server", withExtension: nil, subdirectory: "Tools")
-        {
-            urls.append(url)
-        }
-
-        // Path 2: kmgccc_player/Resources/Tools (Xcode might preserve structure)
-        if let url = Bundle.main.url(
-            forResource: "lddc-server", withExtension: nil,
-            subdirectory: "kmgccc_player/Resources/Tools")
-        {
-            urls.append(url)
-        }
-
-        // Path 3: Resources/Tools
-        if let url = Bundle.main.url(
-            forResource: "lddc-server", withExtension: nil, subdirectory: "Resources/Tools")
-        {
-            urls.append(url)
-        }
-
-        // Path 4: resourcePath direct
-        if let resourcePath = Bundle.main.resourcePath {
-            let candidates = [
-                "\(resourcePath)/Tools/lddc-server",
-                "\(resourcePath)/lddc-server",
-                "\(resourcePath)/kmgccc_player/Resources/Tools/lddc-server",
-            ]
-            for candidate in candidates {
-                if FileManager.default.fileExists(atPath: candidate) {
-                    urls.append(URL(fileURLWithPath: candidate))
-                }
-            }
-        }
-
-        // Path 5: Development paths
-        let devRoot =
-            Bundle.main.bundlePath
-            .replacingOccurrences(of: "/Build/Products/Debug/kmgccc_player.app", with: "")
-            .replacingOccurrences(of: "/kmgccc_player.app", with: "")
-
-        let devCandidates = [
-            "\(devRoot)/kmgccc_player/Resources/Tools/lddc-server",
-            "\(devRoot)/LDDC_Fetch_Core/dist/lddc-server",
-        ]
-        for candidate in devCandidates {
-            if FileManager.default.fileExists(atPath: candidate) {
-                urls.append(URL(fileURLWithPath: candidate))
-            }
-        }
-
-        var launchCandidates: [LaunchCandidate] = []
-
-        for url in urls {
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else {
-                continue
-            }
-
-            if isDir.boolValue {
-                let execURL = url.appendingPathComponent("lddc-server")
-                if FileManager.default.fileExists(atPath: execURL.path) {
-                    ensureExecutable(execURL)
-                    var environment = ProcessInfo.processInfo.environment
-                    environment["PYTHONUNBUFFERED"] = "1"
-                    launchCandidates.append(
-                        LaunchCandidate(
-                            name: "lddc-server (onedir) \(execURL.path)",
-                            executableURL: execURL,
-                            arguments: ["--host", "127.0.0.1", "--port", String(port)],
-                            environment: environment,
-                            currentDirectoryURL: FileManager.default.temporaryDirectory
-                        )
-                    )
-                }
-                continue
-            }
-
-            ensureExecutable(url)
-            var environment = ProcessInfo.processInfo.environment
-            environment["PYTHONUNBUFFERED"] = "1"
-            launchCandidates.append(
-                LaunchCandidate(
-                    name: "lddc-server \(url.path)",
-                    executableURL: url,
-                    arguments: ["--host", "127.0.0.1", "--port", String(port)],
-                    environment: environment,
-                    currentDirectoryURL: FileManager.default.temporaryDirectory
-                )
-            )
-        }
-
-        if launchCandidates.isEmpty, let resourcePath = Bundle.main.resourcePath {
-            Log.debug("Binary not found; listing Resources directory", category: .lddc)
-            if let contents = try? FileManager.default.contentsOfDirectory(atPath: resourcePath) {
-                for item in contents.prefix(20) {
-                    Log.debug("Resource item: \(item)", category: .lddc)
-                }
-            }
-        }
-
-        return launchCandidates
-    }
-
-    private func findPythonCandidate(port: Int) -> LaunchCandidate? {
-        guard let coreRoot = locateLDDCCoreRoot() else {
-            Log.debug("Python fallback could not locate LDDC_Fetch_Core on disk", category: .lddc)
-            return nil
-        }
-
-        guard let pythonURL = findPythonExecutable(coreRoot: coreRoot) else {
-            return nil
-        }
-
+        ensureExecutable(executableURL)
         var environment = ProcessInfo.processInfo.environment
-        let pythonPathRoot = coreRoot.appendingPathComponent("src", isDirectory: true)
-        let existing = environment["PYTHONPATH"] ?? ""
-        environment["PYTHONPATH"] =
-            existing.isEmpty ? pythonPathRoot.path : "\(pythonPathRoot.path):\(existing)"
         environment["PYTHONUNBUFFERED"] = "1"
-        let pythonPathValue = environment["PYTHONPATH"] ?? ""
-        Log.debug("Python fallback coreRoot=\(coreRoot.path)", category: .lddc)
-        Log.debug("Python fallback python=\(pythonURL.path)", category: .lddc)
-        Log.debug("Python fallback PYTHONPATH=\(pythonPathValue)", category: .lddc)
-
-        return LaunchCandidate(
-            name: "python -m lddc_fetch_core.server",
-            executableURL: pythonURL,
-            arguments: [
-                "-m", "lddc_fetch_core.server", "--host", "127.0.0.1", "--port", String(port),
-            ],
-            environment: environment,
-            currentDirectoryURL: coreRoot
-        )
-    }
-
-    private func findPythonExecutable(coreRoot: URL) -> URL? {
-        let venvPaths = [
-            coreRoot.appendingPathComponent(".venv/bin/python").path,
-            coreRoot.appendingPathComponent(".venv/bin/python3").path,
+        return [
+            LaunchCandidate(
+                name: "bundled lddc-server",
+                executableURL: executableURL,
+                arguments: ["--host", "127.0.0.1", "--port", String(port)],
+                environment: environment,
+                currentDirectoryURL: FileManager.default.temporaryDirectory
+            )
         ]
-        let pythonPaths = [
-            "/usr/local/bin/python3.12",
-            "/usr/local/bin/python3.11",
-            "/usr/local/bin/python3",
-            "/opt/homebrew/bin/python3",
-            "/usr/bin/python3",
-        ]
-
-        for path in (venvPaths + pythonPaths)
-        where FileManager.default.isExecutableFile(atPath: path) {
-            return URL(fileURLWithPath: path)
-        }
-
-        return nil
-    }
-
-    private func locateLDDCCoreRoot() -> URL? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let candidates: [URL] = [
-            URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
-            home.appendingPathComponent("Documents/vscode/player/myPlayer2", isDirectory: true),
-            home.appendingPathComponent("Documents", isDirectory: true),
-            home,
-        ]
-
-        let relativeCandidates = [
-            "LDDC_Fetch_Core",
-            "LDDC-main/LDDC_Fetch_Core",
-        ]
-
-        for base in candidates {
-            for rel in relativeCandidates {
-                let root = base.appendingPathComponent(rel, isDirectory: true)
-                let marker =
-                    root
-                    .appendingPathComponent("src", isDirectory: true)
-                    .appendingPathComponent("lddc_fetch_core", isDirectory: true)
-                if FileManager.default.fileExists(atPath: marker.path) {
-                    return root
-                }
-            }
-        }
-
-        // Walk up a few levels from current directory (common when running from a subfolder).
-        var cur = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        for _ in 0..<6 {
-            for rel in relativeCandidates {
-                let root = cur.appendingPathComponent(rel, isDirectory: true)
-                let marker =
-                    root
-                    .appendingPathComponent("src", isDirectory: true)
-                    .appendingPathComponent("lddc_fetch_core", isDirectory: true)
-                if FileManager.default.fileExists(atPath: marker.path) {
-                    return root
-                }
-            }
-            cur.deleteLastPathComponent()
-        }
-
-        return nil
     }
 
     private func ensureExecutable(_ url: URL) {
