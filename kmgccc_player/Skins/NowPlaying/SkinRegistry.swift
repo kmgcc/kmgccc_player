@@ -38,17 +38,24 @@ enum SkinRegistry {
     }
 
     static func skin(for id: String) -> any NowPlayingSkin {
-        if let match = skins.first(where: { $0.id == id }) {
-            return match
-        }
-        if let fallback = skins.first(where: { $0.id == defaultSkinID }) {
-            return fallback
-        }
-        return skins.first ?? ClassicLEDSkin()
+        let resolvedID = SkinRoutePolicy.resolvedID(
+            requestedID: id,
+            availableIDs: skins.map(\.id),
+            defaultID: defaultSkinID,
+            fallbackID: ClassicLEDSkin().id
+        )
+        return skins.first(where: { $0.id == resolvedID }) ?? ClassicLEDSkin()
     }
 
     static func fullscreenSkin(for id: String) -> any NowPlayingSkin {
-        fullscreenSkins.first { $0.id == id } ?? ClassicLEDSkin()
+        let fallbackID = ClassicLEDSkin().id
+        let resolvedID = SkinRoutePolicy.resolvedID(
+            requestedID: id,
+            availableIDs: fullscreenSkins.map(\.id),
+            defaultID: fallbackID,
+            fallbackID: fallbackID
+        )
+        return fullscreenSkins.first { $0.id == resolvedID } ?? ClassicLEDSkin()
     }
 
     static var options: [SkinOption] {
@@ -76,9 +83,11 @@ enum SkinRegistry {
     }
 
     private static func fullscreenSortRank(for id: String) -> Int {
-        id == "fullscreen.coverGradientBlur"
-            ? -1
-            : (skins.firstIndex { $0.id == id } ?? Int.max)
+        SkinRoutePolicy.sortRank(
+            for: id,
+            prioritizedID: "fullscreen.coverGradientBlur",
+            orderedIDs: skins.map(\.id)
+        )
     }
 
     static var nowPlayingOptions: [SkinOption] {
