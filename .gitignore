@@ -1,6 +1,8 @@
-# docs/ contains private working notes, AI-generated docs, and local web assets.
-# Tracked by its own Git repo inside docs/ for local version control.
-docs/
+# docs-private/ contains private working notes, AI-generated docs, audits, and
+# local web assets. Tracked by its own Git repo inside docs-private/ for local
+# version control. Must never enter the public source history.
+/docs-private/
+# Public documentation lives under docs/ and is tracked by the main repo.
 # The public release notes live in the tracked, case-sensitive app Docs path.
 !kmgccc_player/Docs/
 kmgccc_player/Docs/*
@@ -22,7 +24,6 @@ kmgccc_player/Docs/*
 # Encryption tools and allowlists live in the private resources repository.
 scripts/encrypt_art_assets.swift
 scripts/encrypted_asset_allowlist.json
-apple-audio-visualization-main/
 # AMLL source worktrees live in ../amll-sources/.
 applemusic-like-lyrics-full-refractor/
 applemusic-like-lyrics-full-custom-core/
@@ -40,6 +41,11 @@ kmgccc_player/ui_candidates.txt
 # Local asset catalog masters are ignored after the image-art encryption
 # migration. Do not store runtime audio resources here.
 kmgccc_player/Assets.xcassets/
+# ColorGoldenMaster is a maintainer-only diagnostic tool. Its baselines and
+# fixtures embed absolute /Users/... library paths and reference local artwork
+# that is not in the repo, so it cannot run on other machines and must not
+# leak machine-specific paths into public history.
+Tools/ColorGoldenMaster/
 
 # Tool working directories
 .opencode/
@@ -52,6 +58,7 @@ kmgccc_player/Assets.xcassets/
 
 # Xcode
 build/
+/.build/
 *.project/xcuserdata
 *.project/xcshareddata
 *.project/project.xcworkspace/xcuserdata
@@ -79,15 +86,9 @@ __pycache__/
 env/
 dist/
 *.spec
-kmgccc_player/Resources/Tools/qqmusic-helper/.venv/
-kmgccc_player/Resources/Tools/qqmusic-helper/.build-arm64/
-kmgccc_player/Resources/Tools/qqmusic-helper/.build-universal/
-kmgccc_player/Resources/Tools/qqmusic-helper/qqmusic-helper
-kmgccc_player/Resources/Tools/qqmusic-helper/_internal.bundle/
 .qqmusic-helper-venv/
 
-# Tools / Binary distributions
-Tools/lddc-server/
+# Local build outputs
 .derivedDataLocalBuild/
 *.flac
 *.bak
