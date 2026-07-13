@@ -106,7 +106,28 @@ struct SidebarView: View {
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 14)
-            .padding(.bottom, 16)
+            .padding(.bottom, 4)
+
+            // Playback History Link
+            Button {
+                uiState.clearHomeNavigationContext()
+                uiState.showPlaybackHistory()
+            } label: {
+                HStack {
+                    Label("播放历史", systemImage: "clock.arrow.circlepath")
+                    Spacer()
+                }
+                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(
+                    selectionFill(isSelected: currentSelection == .history)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 14)
+            .padding(.bottom, 12)
 
             // Playlists List
             List {
@@ -660,6 +681,9 @@ struct SidebarView: View {
             libraryVM.selectOrResetCurrentSelection(.home)
         case .allSongs:
             libraryVM.selectOrResetCurrentSelection(.allSongs)
+        case .history:
+            uiState.showPlaybackHistory()
+            return
         case .allPlaylists:
             uiState.pushSelectionInHomeContext(.allPlaylists, libraryVM: libraryVM)
             return
@@ -680,6 +704,10 @@ struct SidebarView: View {
     }
 
     private var currentSelection: SidebarSelection {
+        if uiState.contentMode == .playbackHistory {
+            return .history
+        }
+
         // Use the explicit currentSelection from LibraryViewModel
         switch libraryVM.currentSelection {
         case .home:
@@ -740,6 +768,7 @@ struct SidebarView: View {
 private enum SidebarSelection: Hashable {
     case home
     case allSongs
+    case history
     case allPlaylists
     case allAlbums
     case allArtists

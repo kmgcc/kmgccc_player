@@ -159,6 +159,10 @@ struct AppKitMainContentPaneRoot: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-library")
                     }
+                case .playbackHistory:
+                    PlaybackHistoryView()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .id("appkit-main-playback-history")
                 case .nowPlaying:
                     GeometryReader { proxy in
                         NowPlayingHostView(
@@ -306,6 +310,8 @@ struct AppKitMainContentPaneRoot: View {
             .environment(AppSettings.shared)
             .environment(appSession.uiState)
             .environment(appSession.homeVM)
+            .environment(appSession.playbackHistoryStore)
+            .environment(appSession.playbackHistoryViewModel)
             .environment(libraryVM)
             .environment(playerVM)
             .environment(playbackCoordinator)
@@ -848,9 +854,19 @@ struct LyricsFlatDriverView: View {
             return
         }
 
+        let shouldRevealExistingLyrics =
+            LyricsSurfaceManager.shared.currentMode == .main
+            && LyricsSurfaceManager.shared.switchState == .idle
+            && LyricsSurfaceManager.shared.existingStore(for: .main)?.isReady == true
+
         LyricsSurfaceManager.shared.reportMainVisible(true)
         reloadLyrics(reason: reason)
-        lyricsVM.revealExistingLyrics(reason: reason)
+        // A mode switch/new WebView already receives the full AMLL
+        // setLyricLines entrance from snapshot replay. Only a ready, already
+        // active main surface uses the lightweight existing-line relayout.
+        if shouldRevealExistingLyrics {
+            lyricsVM.revealExistingLyrics(reason: reason)
+        }
     }
 
     private func reloadLyrics(reason: String, forceWebReload: Bool = false, forceLyricsReload: Bool = false) {
