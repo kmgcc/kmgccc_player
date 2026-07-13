@@ -1,3 +1,3 @@
-[submodule "applemusic-like-lyrics-kmgcccplayer-integration"]
-	path = applemusic-like-lyrics-kmgcccplayer-integration
+[submodule "Dependencies/Submodules/AMLLIntegration"]
+	path = Dependencies/Submodules/AMLLIntegration
 	url = https://github.com/kmgcc/applemusic-like-lyrics-kmgcccplayer-integration

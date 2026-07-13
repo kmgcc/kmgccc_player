@@ -2,12 +2,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BUILD_DIR="${SCRIPT_DIR}/.build-arm64"
+BUILD_DIR="${QQMUSIC_HELPER_BUILD_DIR:-${SCRIPT_DIR}/.build-arm64}"
+OUTPUT_DIR="${QQMUSIC_HELPER_OUTPUT_DIR:-$SCRIPT_DIR}"
 ARM_PYTHON="${QQMUSIC_HELPER_ARM_PYTHON:-/opt/homebrew/bin/python3.12}"
 APP_NAME="qqmusic-helper"
 INTERNAL_DIR_NAME="_internal.bundle"
-FINAL_EXE="${SCRIPT_DIR}/${APP_NAME}"
-FINAL_INTERNAL="${SCRIPT_DIR}/${INTERNAL_DIR_NAME}"
+FINAL_EXE="${OUTPUT_DIR}/${APP_NAME}"
+FINAL_INTERNAL="${OUTPUT_DIR}/${INTERNAL_DIR_NAME}"
 
 log() {
   printf '[QQMusicHelperBuild] %s\n' "$*"
@@ -36,8 +37,9 @@ install_and_build_arch() {
   log "building ${arch_name} with ${python_bin}"
   rm -rf "${venv_dir}" "${dist_root}" "${work_root}"
   arch "-${arch_name}" "${python_bin}" -m venv "${venv_dir}"
-  arch "-${arch_name}" "${venv_dir}/bin/python" -m pip install --upgrade pip
-  arch "-${arch_name}" "${venv_dir}/bin/python" -m pip install -r "${SCRIPT_DIR}/requirements.txt" pyinstaller
+  arch "-${arch_name}" "${venv_dir}/bin/python" -m pip install \
+    -r "${SCRIPT_DIR}/requirements.txt" \
+    "pyinstaller==6.21.0"
   arch "-${arch_name}" "${venv_dir}/bin/python" -m PyInstaller \
     --noconfirm \
     --clean \
@@ -65,9 +67,8 @@ is_macho() {
 install_arm64_output() {
   local arm_dir="${BUILD_DIR}/dist-arm64/${APP_NAME}"
 
-  rm -rf "${FINAL_EXE}" "${FINAL_INTERNAL}" "${SCRIPT_DIR}/_internal"
-  find "${SCRIPT_DIR}" -maxdepth 1 -type d -name '_internal *.bundle' -exec rm -rf {} +
-  find "${SCRIPT_DIR}" -maxdepth 1 -type f -name 'qqmusic-helper [0-9]*' -exec rm -f {} +
+  mkdir -p "${OUTPUT_DIR}"
+  rm -rf "${FINAL_EXE}" "${FINAL_INTERNAL}" "${OUTPUT_DIR}/_internal"
   ditto --noextattr --norsrc "${arm_dir}/${APP_NAME}" "${FINAL_EXE}"
   if [[ -d "${arm_dir}/${INTERNAL_DIR_NAME}" ]]; then
     ditto --noextattr --norsrc "${arm_dir}/${INTERNAL_DIR_NAME}" "${FINAL_INTERNAL}"
@@ -113,12 +114,14 @@ smoke_test() {
 
 require_python arm64 "${ARM_PYTHON}"
 rm -rf "${BUILD_DIR}"
-mkdir -p "${BUILD_DIR}"
+mkdir -p "${BUILD_DIR}" "${OUTPUT_DIR}"
 install_and_build_arch arm64 "${ARM_PYTHON}"
 install_arm64_output
 chmod 755 "${FINAL_EXE}"
 sign_outputs
-smoke_test
+if [[ "${QQMUSIC_HELPER_SKIP_SMOKE_TEST:-0}" != "1" ]]; then
+  smoke_test
+fi
 if [[ "${KEEP_QQMUSIC_HELPER_BUILD:-0}" != "1" ]]; then
   rm -rf "${BUILD_DIR}"
 fi
