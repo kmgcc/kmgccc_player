@@ -22,17 +22,18 @@
 
 ## 权重模型
 
-每首候选曲目先得到基础权重，再叠加偏好、负向衰减、新鲜度和再曝光因子：
+每首候选曲目先由长期行为得到 `baseWeight`。完整播放、收听比例、跳过、快速跳过、手动喜欢以及 `negativeDamping` 都在这一步合成；抽样时再加入会话内近邻惩罚、新鲜度和偶发的再曝光放大：
 
 ```text
-weight = base
-       × positivePreference
-       × negativeDamping
-       × freshness
-       × rediscovery
+runtimeWeight = baseWeight
+              × runtimePenalty
+              × freshnessMultiplier
+              (× rediscoveryBoost，满足触发条件时)
+
+runtimeWeight >= 0.1
 ```
 
-所有因子都有限幅。最低权重保证曲目不会被永久排除，最高权重防止少数曲目长期垄断队列。手动喜欢可以显著提高概率，但仍受最近播放和队列去重约束。
+基础偏好和运行时权重都有边界。`baseWeight` 当前限制在 `0.65...1.35`，最终运行时权重最低为 `0.1`；手动喜欢提高基础偏好，但仍受同曲、同歌手、同专辑的会话内近邻惩罚与候选排除规则约束。再曝光只在部分权重计算中触发，不是每次抽样的常驻乘子。
 
 ## 负向衰减
 
