@@ -33,9 +33,10 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		933AADFD2F3CC8D40081B59C /* BKArt.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BKArt.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
 		935118922F3231C500766A5F /* kmgccc_player.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = kmgccc_player.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9351198D2F33149A00766A5F /* AMLL */ = {isa = PBXFileReference; lastKnownFileType = folder; name = AMLL; path = kmgccc_player/Resources/AMLL; sourceTree = "<group>"; };
+		A10000000000000000000001 /* Project.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Project.xcconfig; sourceTree = "<group>"; };
+		A10000000000000000000002 /* LocalOverrides.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = LocalOverrides.xcconfig.example; sourceTree = "<group>"; };
 		B01000000000000000000001 /* youdowhat.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = youdowhat.wav; path = kmgccc_player/Resources/Audio/youdowhat.wav; sourceTree = "<group>"; };
 		B01000000000000000000002 /* youdowhatreversed.wav */ = {isa = PBXFileReference; lastKnownFileType = audio.wav; name = youdowhatreversed.wav; path = kmgccc_player/Resources/Audio/youdowhatreversed.wav; sourceTree = "<group>"; };
 		B01000000000000000000003 /* AGPL-3.0.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "AGPL-3.0.txt"; path = "kmgccc_player/Resources/Licenses/AGPL-3.0.txt"; sourceTree = "<group>"; };
@@ -58,8 +59,6 @@
 		E01000000000000000000004 /* SettingsRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsRootView.swift; path = kmgccc_player/SettingsRootView.swift; sourceTree = "<group>"; };
 		E01000000000000000000005 /* SettingsSceneDependencies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsSceneDependencies.swift; path = kmgccc_player/SettingsSceneDependencies.swift; sourceTree = "<group>"; };
 		E01000000000000000000006 /* kmgccc_playerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = kmgccc_playerApp.swift; path = kmgccc_player/kmgccc_playerApp.swift; sourceTree = "<group>"; };
-		A10000000000000000000001 /* Project.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Project.xcconfig; sourceTree = "<group>"; };
-		A10000000000000000000002 /* LocalOverrides.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = LocalOverrides.xcconfig.example; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -111,13 +110,6 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		933AADFA2F3CC8D40081B59C /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		9351188F2F3231C500766A5F /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -162,7 +154,6 @@
 			isa = PBXGroup;
 			children = (
 				935118922F3231C500766A5F /* kmgccc_player.app */,
-				933AADFD2F3CC8D40081B59C /* BKArt.bundle */,
 				C02000000000000000000010 /* kmgccc_playerTests.xctest */,
 			);
 			name = Products;
@@ -174,6 +165,15 @@
 				B0100000000000000000000B /* kmgccc.icon */,
 			);
 			name = "Recovered References";
+			sourceTree = "<group>";
+		};
+		A10000000000000000000003 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000001 /* Project.xcconfig */,
+				A10000000000000000000002 /* LocalOverrides.xcconfig.example */,
+			);
+			path = Config;
 			sourceTree = "<group>";
 		};
 		C01000000000000000000001 /* Runtime Resources */ = {
@@ -217,37 +217,9 @@
 			name = Tests;
 			sourceTree = "<group>";
 		};
-		A10000000000000000000003 /* Config */ = {
-			isa = PBXGroup;
-			children = (
-				A10000000000000000000001 /* Project.xcconfig */,
-				A10000000000000000000002 /* LocalOverrides.xcconfig.example */,
-			);
-			path = Config;
-			sourceTree = "<group>";
-		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		933AADFC2F3CC8D40081B59C /* BKArt */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 933AADFE2F3CC8D40081B59C /* Build configuration list for PBXNativeTarget "BKArt" */;
-			buildPhases = (
-				933AADF92F3CC8D40081B59C /* Sources */,
-				933AADFA2F3CC8D40081B59C /* Frameworks */,
-				933AADFB2F3CC8D40081B59C /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = BKArt;
-			packageProductDependencies = (
-			);
-			productName = bkMask;
-			productReference = 933AADFD2F3CC8D40081B59C /* BKArt.bundle */;
-			productType = "com.apple.product-type.bundle";
-		};
 		935118912F3231C500766A5F /* kmgccc_player */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 9351189D2F3231C700766A5F /* Build configuration list for PBXNativeTarget "kmgccc_player" */;
@@ -259,7 +231,7 @@
 				93CF3F842F344E9F0004C8E4 /* Copy LDDC runtime */,
 				93D91A122FA5000000010001 /* Copy QQMusic helper */,
 				93D91A132FA5000000010002 /* Copy SACAD helper */,
-				93D91A142FA5000000010003 /* Prepare Runtime Resources */,
+				93D91A142FA5000000010003 /* Run Optional Build Hook */,
 			);
 			buildRules = (
 			);
@@ -313,9 +285,6 @@
 				LastSwiftUpdateCheck = 2620;
 				LastUpgradeCheck = 2650;
 				TargetAttributes = {
-					933AADFC2F3CC8D40081B59C = {
-						CreatedOnToolsVersion = 26.2;
-					};
 					935118912F3231C500766A5F = {
 						CreatedOnToolsVersion = 26.2;
 					};
@@ -343,20 +312,12 @@
 			projectRoot = "";
 			targets = (
 				935118912F3231C500766A5F /* kmgccc_player */,
-				933AADFC2F3CC8D40081B59C /* BKArt */,
 				C02000000000000000000030 /* kmgccc_playerTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		933AADFB2F3CC8D40081B59C /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		935118902F3231C500766A5F /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -478,7 +439,7 @@
 			shellPath = /bin/bash;
 			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/.build/products/sacad/sacad\"\nDST_DIR=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools/sacad\"\nDST=\"${DST_DIR}/sacad\"\nif [ ! -x \"${SRC}\" ]; then\n  echo \"error: Missing SACAD build product.\"\n  echo \"error: Run ./scripts/bootstrap.sh before building.\"\n  exit 1\nfi\nmkdir -p \"${DST_DIR}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}\" \"${DST}\"\n/usr/bin/xattr -cr \"${DST}\" 2>/dev/null || true\nchmod 755 \"${DST}\"\n/usr/bin/codesign --force --sign - \"${DST}\" >/dev/null 2>&1 || true\n";
 		};
-		93D91A142FA5000000010003 /* Prepare Runtime Resources */ = {
+		93D91A142FA5000000010003 /* Run Optional Build Hook */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			buildActionMask = 2147483647;
@@ -487,31 +448,21 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
-				"$(PROJECT_DIR)/scripts/prepare_runtime_resources.sh",
-				"$(AUXILIARY_RESOURCE_ROOT)",
+				"$(PROJECT_DIR)/scripts/run_build_extension.sh",
+				"$(BUILD_EXTENSION_HOOK)",
 			);
-			name = "Prepare Runtime Resources";
+			name = "Run Optional Build Hook";
 			outputFileListPaths = (
 			);
 			outputPaths = (
-				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/BKArt.bundle",
-				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/BokehTransitionResources.bundle",
-				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ArtRuntime.bundle",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/bash;
-			shellScript = "set -euo pipefail\n\"${PROJECT_DIR}/scripts/prepare_runtime_resources.sh\"\n";
+			shellScript = "set -euo pipefail\n\"${PROJECT_DIR}/scripts/run_build_extension.sh\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		933AADF92F3CC8D40081B59C /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		9351188E2F3231C500766A5F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -539,54 +490,6 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
-		933AADFF2F3CC8D40081B59C /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ARCHS = "$(ARCHS_STANDARD)";
-				CODE_SIGN_STYLE = Automatic;
-				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
-				DEAD_CODE_STRIPPING = YES;
-				DEVELOPMENT_TEAM = UZ65CA967F;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSPrincipalClass = "";
-				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.bkMask;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SKIP_INSTALL = YES;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
-				WRAPPER_EXTENSION = bundle;
-			};
-			name = Debug;
-		};
-		933AAE002F3CC8D40081B59C /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ARCHS = "$(ARCHS_STANDARD)";
-				CODE_SIGN_STYLE = Automatic;
-				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
-				DEAD_CODE_STRIPPING = YES;
-				DEVELOPMENT_TEAM = UZ65CA967F;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSPrincipalClass = "";
-				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Bundles";
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = kmgccc.bkMask;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SKIP_INSTALL = YES;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
-				WRAPPER_EXTENSION = bundle;
-			};
-			name = Release;
-		};
 		9351189B2F3231C700766A5F /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = A10000000000000000000001 /* Project.xcconfig */;
@@ -856,15 +759,6 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		933AADFE2F3CC8D40081B59C /* Build configuration list for PBXNativeTarget "BKArt" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				933AADFF2F3CC8D40081B59C /* Debug */,
-				933AAE002F3CC8D40081B59C /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
 		9351188D2F3231C500766A5F /* Build configuration list for PBXProject "kmgccc_player" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

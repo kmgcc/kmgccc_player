@@ -1,4 +1,6 @@
-// Optional local build inputs.
-// Copy this file to LocalOverrides.xcconfig and set a local path if needed.
-// The file is optional and is not required for building the project.
-AUXILIARY_RESOURCE_ROOT =
+// Optional machine-specific build extension.
+// Copy this file to LocalOverrides.xcconfig and set an executable hook path.
+// Clean checkouts do not require this file.
+BUILD_EXTENSION_HOOK =
+// BUILD_EXTENSION_MODE = auto
+// BUILD_EXTENSION_STRICT = NO
