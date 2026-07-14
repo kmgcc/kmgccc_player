@@ -334,18 +334,6 @@ struct FullscreenMiniPlayerView: View {
         )
     }
 
-    // MARK: - Legacy Progress Views (kept for reference, no longer used)
-    
-    @available(*, deprecated, message: "Replaced by MiniPlayerProgressSpectrumRow")
-    private var progressBarWithSpectrum: some View {
-        EmptyView()
-    }
-    
-    @available(*, deprecated, message: "Replaced by MiniPlayerProgressSpectrumRow")
-    private var progressBar: some View {
-        EmptyView()
-    }
-    
     private var currentArtworkTaskKey: String {
         let presentation = playbackCoordinator.presentation
         if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
