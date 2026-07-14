@@ -48,7 +48,19 @@ git submodule update --init --recursive
 
 `verify.sh` 在提交改动前运行，依次执行 bootstrap、ARM64 Debug 构建、LRC 回归测试、单元测试和 App bundle 检查。
 
-本地构建输入可以通过 `Config/LocalOverrides.xcconfig` 配置。该文件可选，缺省时工程照常构建。
+构建并运行 Debug App：
+
+```sh
+./scripts/build_and_run.sh
+```
+
+验证 Release 构建及 App bundle 完整性：
+
+```sh
+./scripts/build_app.sh Release
+```
+
+本机可选构建输入通过 `Config/LocalOverrides.xcconfig` 配置；可从同目录的 `.example` 复制。该文件缺失时工程照常构建，`verify.sh` 与 `build_app.sh` 会显式禁用本机构建扩展，确保结果可由 clean clone 复现。
 
 开发环境需要：
 
