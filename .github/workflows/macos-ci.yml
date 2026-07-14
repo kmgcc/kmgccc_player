@@ -22,14 +22,27 @@ jobs:
   quick-verify:
     runs-on: macos-26
     timeout-minutes: 75
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Select Xcode
+        run: |
+          # Select the newest versioned Xcode installed on the runner.
+          # The project requires Xcode 26.2+; newer toolchains resolve
+          # Swift 6 concurrency diagnostics (NonisolatedNonsendingByDefault)
+          # that are false positives in earlier 26.x releases.
+          echo "Available Xcode installations:"
+          ls -d /Applications/Xcode*.app 2>/dev/null || true
+          LATEST="$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)"
+          if [ -z "$LATEST" ]; then
+            LATEST="/Applications/Xcode.app"
+          fi
+          echo "Selected: $LATEST"
+          echo "DEVELOPER_DIR=${LATEST}/Contents/Developer" >> "$GITHUB_ENV"
 
       - name: Select Python 3.12
         uses: actions/setup-python@v5
