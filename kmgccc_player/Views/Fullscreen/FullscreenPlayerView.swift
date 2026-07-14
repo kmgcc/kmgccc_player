@@ -4031,6 +4031,15 @@ struct FullscreenPlayerView: View {
         fullscreenViewportSize = size
 
         guard hostContext == .embeddedWindow else { return }
+        guard isEmbeddedFullscreenPresentationActive else {
+            if EmbeddedFullscreenTrace.enabled {
+                Log.info(
+                    "[EFS t=\(EmbeddedFullscreenTrace.stamp())] FullscreenPlayerView.ignoreViewport reason=\(reason) mode=\(FullscreenWindowManager.shared.presentationMode)",
+                    category: .fullscreen
+                )
+            }
+            return
+        }
         guard size.width > 1, size.height > 1 else { return }
 
         currentFullscreenScale = min(
@@ -4085,7 +4094,7 @@ struct FullscreenPlayerView: View {
     }
 
     private func currentEmbeddedHostWindowContentSize() -> CGSize? {
-        guard hostContext == .embeddedWindow else { return nil }
+        guard isEmbeddedFullscreenPresentationActive else { return nil }
 
         let candidateWindow = NSApp.keyWindow ?? NSApp.mainWindow
         guard let window = candidateWindow else { return nil }
@@ -4095,7 +4104,7 @@ struct FullscreenPlayerView: View {
     }
 
     private func beginEmbeddedFullscreenStartupIfNeeded(reason: String) {
-        guard hostContext == .embeddedWindow else { return }
+        guard isEmbeddedFullscreenPresentationActive else { return }
         guard !embeddedInitialThemeUnlocked else { return }
         guard isValidEmbeddedFullscreenGeometry(fullscreenViewportSize, scale: currentFullscreenScale) else {
             return
@@ -4120,12 +4129,14 @@ struct FullscreenPlayerView: View {
     }
 
     private func scheduleEmbeddedFullscreenStartupRetry(reason: String) {
+        guard isEmbeddedFullscreenPresentationActive else { return }
         guard embeddedStartupRetryCount < 20 else { return }
         pendingEmbeddedStartupRetry?.cancel()
         embeddedStartupRetryCount += 1
 
         let workItem = DispatchWorkItem {
             pendingEmbeddedStartupRetry = nil
+            guard isEmbeddedFullscreenPresentationActive else { return }
             if let fallbackSize = currentEmbeddedHostWindowContentSize() {
                 handleEmbeddedFullscreenViewportChange(fallbackSize, reason: "\(reason)-retry")
             } else {
@@ -4134,6 +4145,11 @@ struct FullscreenPlayerView: View {
         }
         pendingEmbeddedStartupRetry = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: workItem)
+    }
+
+    private var isEmbeddedFullscreenPresentationActive: Bool {
+        hostContext == .embeddedWindow
+            && FullscreenWindowManager.shared.presentationMode == .embeddedInWindow
     }
 
     private func isValidEmbeddedFullscreenGeometry(_ size: CGSize, scale: CGFloat) -> Bool {
