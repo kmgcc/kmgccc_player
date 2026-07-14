@@ -1,13 +1,13 @@
-# docs-private/ is a local-only Git worktree for notes, docs, and audits.
+# Local working copy of notes and documentation (excluded from the published source).
 /docs-private/
-# Public documentation lives under docs/ and is tracked by the main repo.
+# Documentation is tracked under docs/ as part of the published source.
 !kmgccc_player/Docs/
 kmgccc_player/Docs/*
 
 # Local-only build configuration (the .example is committed)
 /Config/LocalOverrides.xcconfig
 
-# Local-only art and resource worktrees
+# Local-only source materials (excluded from the published source).
 /BKThemes/
 /PrivateArtSources/
 /EncryptedArtAssets/
@@ -18,12 +18,12 @@ kmgccc_player/Docs/*
 scripts/encrypt_art_assets.swift
 scripts/encrypted_asset_allowlist.json
 
-# AMLL source worktrees
+# Local source checkouts (excluded from the published source).
 applemusic-like-lyrics-full-refractor/
 applemusic-like-lyrics-full-custom-core/
 LDDC-main/
 
-# Local AI instruction files and working notes
+# Local editor and tooling configuration (excluded from the published source).
 skills/
 /ARCHITECTURE.md
 /AGENTS.md
