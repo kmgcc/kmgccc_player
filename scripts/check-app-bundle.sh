@@ -38,6 +38,7 @@ RESOURCES="$CONTENTS/Resources"
 
 require_directory "$APP" "App bundle"
 require_executable "$CONTENTS/MacOS/kmgccc_player" "App executable"
+require_file "$CONTENTS/Info.plist" "App Info.plist"
 require_file "$RESOURCES/Assets.car" "Asset catalog"
 
 require_file "$RESOURCES/AMLL/index.html" "AMLL entry page"

@@ -104,6 +104,7 @@ run_step "ARM64 unsigned Debug build" 2400 \
     -destination 'platform=macOS,arch=arm64' \
     -derivedDataPath "$DERIVED_DATA" \
     -clonedSourcePackagesDirPath "$PACKAGE_CACHE" \
+    BUILD_EXTENSION_MODE=disabled \
     CODE_SIGNING_ALLOWED=NO \
     build
 
@@ -123,6 +124,7 @@ run_step "XCTest" 1800 \
     -destination 'platform=macOS,arch=arm64' \
     -derivedDataPath "$DERIVED_DATA" \
     -clonedSourcePackagesDirPath "$PACKAGE_CACHE" \
+    BUILD_EXTENSION_MODE=disabled \
     CODE_SIGNING_ALLOWED=NO \
     test
 
