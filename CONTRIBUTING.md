@@ -46,6 +46,8 @@ open kmgccc_player.xcodeproj
 
 组件名：`amll`、`lddc`、`qqmusic-helper`、`mediaremote`、`sacad`。
 
+需要实际启动 App 时运行 `./scripts/build_and_run.sh`。需要验证 Release 产物时运行 `./scripts/build_app.sh Release`。
+
 ## 提交 Pull Request
 
 PR 描述至少写清：
@@ -56,6 +58,8 @@ PR 描述至少写清：
 - 相关 Issue。
 
 UI 改动附修改前后截图。动画、全屏或歌词改动最好附短视频，并说明测试过的窗口状态和播放来源。新功能或新增文案需要检查现有本地化，不要把用户可见字符串直接散落在代码里。
+
+PR 会自动触发 macOS CI（复现 `verify.sh`）。CI 绿是合并前提；CI 失败时先本地 `./scripts/verify.sh` 复现，不要在远端反复试。
 
 ## 高风险区域
 
