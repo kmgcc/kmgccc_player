@@ -304,7 +304,7 @@ actor PlaylistArtworkGenerator {
         // Try primary first, then the others as fallbacks
         for offset in 0..<4 {
             let name = baseNames[(primaryIndex + offset) % 4]
-            if let image = EncryptedArtAssetLoader.shared.xcAssetImage(
+            if let image = ArtAssetLoader.shared.xcAssetImage(
                 named: name,
                 maxPixel: 2048,
                 fallbackToProgrammaticArt: true

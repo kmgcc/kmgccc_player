@@ -80,7 +80,7 @@ enum ArtworkRenderingFallback {
     nonisolated static func identity(for preferredTrackID: UUID?) -> String {
         let trackID = resolvedTrackID(preferredTrackID)
         let assetName = selectedEncryptedFallbackAssetName(for: trackID)
-        if EncryptedArtAssetLoader.shared.assetURL(
+        if ArtAssetLoader.shared.assetURL(
             logicalName: "XCAssets/\(assetName)",
             in: nil
         ) != nil {
@@ -105,7 +105,7 @@ enum ArtworkRenderingFallback {
     }
 
     private nonisolated static func encryptedFallbackData(named assetName: String) -> Data? {
-        guard let image = EncryptedArtAssetLoader.shared.cgImage(
+        guard let image = ArtAssetLoader.shared.cgImage(
             logicalName: "XCAssets/\(assetName)",
             in: nil,
             maxPixel: encryptedFallbackMaxPixel

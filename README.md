@@ -48,6 +48,8 @@ git submodule update --init --recursive
 
 `verify.sh` 在提交改动前运行，依次执行 bootstrap、ARM64 Debug 构建、LRC 回归测试、单元测试和 App bundle 检查。
 
+本地构建输入可以通过 `Config/LocalOverrides.xcconfig` 配置。该文件可选，缺省时工程照常构建。
+
 开发环境需要：
 
 - Xcode 26.2 或更新版本（Swift 6）

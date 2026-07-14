@@ -4,6 +4,9 @@
 !kmgccc_player/Docs/
 kmgccc_player/Docs/*
 
+# Local-only build configuration (the .example is committed)
+/Config/LocalOverrides.xcconfig
+
 # Local-only art and resource worktrees
 /BKThemes/
 /PrivateArtSources/

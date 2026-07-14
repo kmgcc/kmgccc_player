@@ -1,8 +1,10 @@
 //
-//  EncryptedArtAssetLoader.swift
+//  ArtAssetLoader.swift
 //  myPlayer2
 //
-//  Loads encrypted first-party art assets from .kmgasset files.
+//  Loads art assets from .kmgasset files. When a local art runtime is present
+//  the assets are decoded through it; otherwise callers fall back to the
+//  in-repo programmatic artwork. A missing asset is a normal state.
 //
 
 import AppKit
@@ -10,8 +12,8 @@ import Foundation
 import ImageIO
 import SwiftUI
 
-final class EncryptedArtAssetLoader: @unchecked Sendable {
-    nonisolated static let shared = EncryptedArtAssetLoader()
+final class ArtAssetLoader: @unchecked Sendable {
+    nonisolated static let shared = ArtAssetLoader()
 
     enum LoadError: Error, CustomStringConvertible {
         case missingFile(String)
@@ -20,28 +22,33 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
         case unsupportedAlgorithm(UInt8)
         case malformedHeader(String)
         case authenticationFailed(String)
-        case privateRuntimeUnavailable(String)
+        case runtimeUnavailable(String)
         case imageDecodeFailed(String)
 
         var description: String {
             switch self {
             case .missingFile(let logicalName):
-                return "missing encrypted art asset: \(logicalName)"
+                return "art asset is unavailable: \(logicalName)"
             case .badMagic(let logicalName):
-                return "invalid encrypted art magic: \(logicalName)"
+                return "art asset is invalid: \(logicalName)"
             case .unsupportedVersion(let version):
-                return "unsupported encrypted art version: \(version)"
+                return "art asset version is unsupported: \(version)"
             case .unsupportedAlgorithm(let algorithm):
-                return "unsupported encrypted art algorithm: \(algorithm)"
+                return "art asset algorithm is unsupported: \(algorithm)"
             case .malformedHeader(let logicalName):
-                return "malformed encrypted art header: \(logicalName)"
+                return "art asset header is malformed: \(logicalName)"
             case .authenticationFailed(let logicalName):
-                return "encrypted art authentication failed: \(logicalName)"
-            case .privateRuntimeUnavailable(let reason):
-                return "external art runtime unavailable: \(reason)"
+                return "art asset could not be authenticated: \(logicalName)"
+            case .runtimeUnavailable(let reason):
+                return "art runtime is unavailable: \(reason)"
             case .imageDecodeFailed(let logicalName):
-                return "encrypted art image decode failed: \(logicalName)"
+                return "art asset image could not be decoded: \(logicalName)"
             }
+        }
+
+        var isMissing: Bool {
+            if case .missingFile = self { return true }
+            return false
         }
     }
 
@@ -83,25 +90,34 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
             imageCache.setObject(CGImageBox(image), forKey: cacheKey, cost: byteCost(for: image))
             return image
         } catch {
-            if !fallbackToProgrammaticArt {
-                Log.error("[EncryptedArtAssetLoader] \(error)", category: .theme)
+            let isMissing = (error as? LoadError)?.isMissing ?? false
+            if fallbackToProgrammaticArt {
+                if !isMissing {
+                    Log.warning(
+                        "[ArtAssets] Resource could not be decoded; using built-in artwork: \(logicalName)",
+                        category: .theme
+                    )
+                }
+                guard let fallback = ArtworkRenderingFallback.image(
+                    kind: .artwork,
+                    seed: stableSeed(for: logicalName),
+                    pixelSize: CGSize(width: maxPixel, height: maxPixel),
+                    isDark: false,
+                    themeColor: nil
+                ) else {
+                    return nil
+                }
+                imageCache.setObject(
+                    CGImageBox(fallback),
+                    forKey: fallbackCacheKey,
+                    cost: byteCost(for: fallback)
+                )
+                return fallback
             }
-            guard fallbackToProgrammaticArt else { return nil }
-            guard let fallback = ArtworkRenderingFallback.image(
-                kind: .artwork,
-                seed: stableSeed(for: logicalName),
-                pixelSize: CGSize(width: maxPixel, height: maxPixel),
-                isDark: false,
-                themeColor: nil
-            ) else {
-                return nil
+            if !isMissing {
+                Log.warning("[ArtAssets] Resource could not be decoded: \(error)", category: .theme)
             }
-            imageCache.setObject(
-                CGImageBox(fallback),
-                forKey: fallbackCacheKey,
-                cost: byteCost(for: fallback)
-            )
-            return fallback
+            return nil
         }
     }
 
@@ -138,7 +154,7 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
 
     nonisolated func assetURL(logicalName: String, in bundle: Bundle?) -> URL? {
         for source in candidateBundles(preferred: bundle) {
-            if let url = encryptedURL(logicalName: logicalName, in: source) {
+            if let url = assetFileURL(logicalName: logicalName, in: source) {
                 return url
             }
         }
@@ -156,12 +172,12 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
         let fileData = try Data(contentsOf: url)
         let plaintext: Data
         do {
-            plaintext = try PrivateArtRuntimeLoader.shared.decrypt(
+            plaintext = try ArtRuntimeLoader.shared.decrypt(
                 fileData,
                 logicalName: logicalName
             )
         } catch {
-            throw LoadError.privateRuntimeUnavailable(error.localizedDescription)
+            throw LoadError.runtimeUnavailable(error.localizedDescription)
         }
         guard let source = CGImageSourceCreateWithData(plaintext as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else {
             throw LoadError.imageDecodeFailed(logicalName)
@@ -178,7 +194,7 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
         return image
     }
 
-    private nonisolated func encryptedURL(logicalName: String, in bundle: Bundle) -> URL? {
+    private nonisolated func assetFileURL(logicalName: String, in bundle: Bundle) -> URL? {
         let normalized = logicalName.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let directory = (normalized as NSString).deletingLastPathComponent
         let fileName = ((normalized as NSString).lastPathComponent as NSString).deletingPathExtension
@@ -191,8 +207,8 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
             preferred,
             Bundle.main,
             nestedBKArtBundle(in: Bundle.main),
-            Bundle(for: EncryptedArtAssetLoader.self),
-            nestedBKArtBundle(in: Bundle(for: EncryptedArtAssetLoader.self)),
+            Bundle(for: ArtAssetLoader.self),
+            nestedBKArtBundle(in: Bundle(for: ArtAssetLoader.self)),
         ]
         if let preferred {
             bundles.append(nestedBKArtBundle(in: preferred))
@@ -230,13 +246,13 @@ final class EncryptedArtAssetLoader: @unchecked Sendable {
     }
 }
 
-struct EncryptedAssetImage: View {
+struct ArtAssetImage: View {
     let name: String
     var maxPixel: Int = 1_600
     var fallbackSystemName: String = "photo"
 
     var body: some View {
-        if let image = EncryptedArtAssetLoader.shared.xcAssetImage(
+        if let image = ArtAssetLoader.shared.xcAssetImage(
             named: name,
             maxPixel: maxPixel,
             fallbackToProgrammaticArt: true
@@ -248,9 +264,9 @@ struct EncryptedAssetImage: View {
     }
 }
 
-enum EncryptedAssetImages {
+enum ArtAssetImages {
     static func image(named name: String, maxPixel: Int = 1_600, fallbackSystemName: String = "photo") -> Image {
-        if let image = EncryptedArtAssetLoader.shared.xcAssetImage(
+        if let image = ArtAssetLoader.shared.xcAssetImage(
             named: name,
             maxPixel: maxPixel,
             fallbackToProgrammaticArt: true
