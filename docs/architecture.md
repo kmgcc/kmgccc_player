@@ -101,7 +101,7 @@ TTML 歌词文本
 
 ## 封面、颜色和频谱
 
-本地曲目的封面来自曲库与缓存，外部播放由相应 provider 解析。在线封面候选可来自 QQ Music Helper 和 SACAD，候选进入共享 cover pipeline 后才由上层决定是否采用，helper 不直接写曲库。
+本地曲目的封面来自曲库与缓存，外部播放由相应 provider 解析。在线封面候选可来自 QQ Music Helper、网易云音乐 API 和 SACAD，候选进入共享 cover pipeline 后才由上层决定是否采用；候选来源不直接写曲库。
 
 `NowPlayingPresentation` 发布当前封面数据和 identity，`NowPlayingHostView` 等待完整图片解码后保持封面图片、checksum 和 track identity 原子切换。`ThemeStore` 是颜色状态 owner：按封面 identity/checksum 去重，复用 `ArtworkAssetStore` 或执行颜色分析，生成 `SemanticPalette`。普通皮肤、全屏和 AMLL 都消费这套语义颜色。新封面尚未完成分析时暂时保留上一张封面的主题，避免切歌时闪回默认色。
 
