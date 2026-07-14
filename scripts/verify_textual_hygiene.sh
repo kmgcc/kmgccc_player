@@ -39,7 +39,6 @@ allowlist=(
   '.gitattributes'
   'scripts/audit_release_contents.sh'
   'scripts/build_app.sh'
-  'scripts/build_runtime_resources.sh'
   'scripts/verify_textual_hygiene.sh'
 )
 
