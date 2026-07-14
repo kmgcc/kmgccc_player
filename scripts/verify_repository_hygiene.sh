@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Strict release gate for a clean public clone.
+# Strict repository hygiene verification across all refs.
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,7 +12,7 @@ for argument in "$@"; do
 done
 
 if ((has_selected_ref)); then
-  exec "$script_dir/audit_public_release.sh" --reflogs "$@"
+  exec "$script_dir/audit_release_contents.sh" --reflogs "$@"
 fi
 
-exec "$script_dir/audit_public_release.sh" --all-refs --reflogs "$@"
+exec "$script_dir/audit_release_contents.sh" --all-refs --reflogs "$@"

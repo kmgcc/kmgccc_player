@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Audits publishable paths and Git history without printing file contents.
+# Audits release contents and Git history without printing file contents.
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -13,9 +13,9 @@ cd "$repo_root"
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/audit_public_release.sh [options]
+Usage: scripts/audit_release_contents.sh [options]
 
-Audits publishable source paths, selected Git history, and optional .app bundles.
+Audits release contents: tracked paths, selected Git history, and optional .app bundles.
 The audit prints only commit/ref/path/object metadata, never file contents.
 
 Options:
@@ -81,7 +81,7 @@ for app in "${app_paths[@]:-}"; do
 done
 app_paths=("${normalized_app_paths[@]:-}")
 
-tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/myplayer-public-audit.XXXXXX")"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/myplayer-release-audit.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT
 ref_tips="$tmpdir/ref-tips.tsv"
 commit_refs="$tmpdir/commit-refs.tsv"
@@ -107,7 +107,7 @@ path_risk() {
 
   case "/$lower/" in
     */privateartsources/*)
-      printf '%s\n' 'private-art-source'
+      printf '%s\n' 'art-source'
       return
       ;;
     */encryptedartassets/*)
@@ -115,46 +115,45 @@ path_risk() {
       return
       ;;
     */bkthemes/*)
-      printf '%s\n' 'private-art-master-or-theme'
+      printf '%s\n' 'art-master-or-theme'
       return
       ;;
     */privateartruntime.bundle|*/privateartruntime.bundle/*|privateartruntime.bundle)
-      printf '%s\n' 'private-art-runtime-bundle'
+      printf '%s\n' 'art-runtime-bundle'
       return
       ;;
     */bkart.bundle|*/bkart.bundle/*|bkart.bundle)
-      printf '%s\n' 'private-art-bundle'
+      printf '%s\n' 'art-bundle'
       return
       ;;
     */scripts/encrypt_art_assets.swift|*/scripts/encrypted_asset_allowlist.json)
-      printf '%s\n' 'private-art-encryption-tooling'
+      printf '%s\n' 'art-encryption-tooling'
       return
       ;;
   esac
 
   case "$lower" in
     */privateartruntimeloader.swift)
-      # Public loader boundary; the private implementation remains in the
-      # separately packaged runtime bundle.
+      # Loader boundary; the runtime implementation is packaged separately.
       return
       ;;
     *bokeh*.metal|*bokeh*.metallib|*/bokehtransition/*.metal|*/bokehtransition/*.metallib|*/privateshaders/*|*/privatebokeh/*)
-      printf '%s\n' 'private-bokeh-metal-library'
+      printf '%s\n' 'bokeh-metal-library'
       return
       ;;
     *privateart*|*private_art*|*privateartwork*|*private_artwork*|*privateassets*|*private_assets*)
-      printf '%s\n' 'legacy-private-art-path'
+      printf '%s\n' 'legacy-art-path'
       return
       ;;
     *encrypt_art_assets.swift|*encrypted_asset_allowlist.json|*encrypted*allowlist*.json)
-      printf '%s\n' 'private-art-encryption-tooling'
+      printf '%s\n' 'art-encryption-tooling'
       return
       ;;
   esac
 
   if [[ "$lower" =~ (bokeh|bktheme|bkart|encryptedart|privateart).*(backup|archive|copy|old|orig) ]] || \
      [[ "$lower" =~ (backup|archive|copy|old|orig).*(bokeh|bktheme|bkart|encryptedart|privateart) ]]; then
-    printf '%s\n' 'private-material-backup-or-archive'
+    printf '%s\n' 'art-material-backup-or-archive'
   fi
 }
 
@@ -181,7 +180,7 @@ scan_worktree() {
   done < <(git ls-files -co --exclude-standard -z)
 }
 
-scan_known_private_worktree_roots() {
+scan_known_restricted_worktree_roots() {
   local path risk
   for path in \
     'BKThemes' \
@@ -193,11 +192,11 @@ scan_known_private_worktree_roots() {
     [[ -e "$path" ]] || continue
     risk="$(path_risk "$path" || true)"
     case "$path" in
-      BKThemes) risk='private-art-master-or-theme' ;;
-      PrivateArtSources) risk='private-art-source' ;;
+      BKThemes) risk='art-master-or-theme' ;;
+      PrivateArtSources) risk='art-source' ;;
       EncryptedArtAssets) risk='encrypted-art-runtime-resource' ;;
       ArtRuntime.bundle) risk='auxiliary-runtime-bundle' ;;
-      *) risk='private-art-bundle' ;;
+      *) risk='art-bundle' ;;
     esac
     record_failure 'worktree' 'WORKTREE' '-' "$path" "$risk"
   done
@@ -275,15 +274,15 @@ scan_history() {
         NF {
           lower = tolower($0)
           risk = ""
-          if (lower ~ /(^|\/)privateartsources(\/|$)/) risk = "private-art-source"
+          if (lower ~ /(^|\/)privateartsources(\/|$)/) risk = "art-source"
           else if (lower ~ /(^|\/)encryptedartassets(\/|$)/) risk = "encrypted-art-runtime-resource"
-          else if (lower ~ /(^|\/)bkthemes(\/|$)/) risk = "private-art-master-or-theme"
-          else if (lower ~ /(^|\/)bkart\.bundle(\/|$)/) risk = "private-art-bundle"
-          else if (lower ~ /(^|\/)scripts\/encrypt_art_assets\.swift$/ || lower ~ /(^|\/)scripts\/encrypted_asset_allowlist\.json$/) risk = "private-art-encryption-tooling"
-          else if (lower ~ /bokeh.*\.met(al|allib)$/ || lower ~ /(^|\/)bokehtransition\/.*\.met(al|allib)$/ || lower ~ /(^|\/)privateshaders(\/|$)/ || lower ~ /(^|\/)privatebokeh(\/|$)/) risk = "private-bokeh-metal-library"
+          else if (lower ~ /(^|\/)bkthemes(\/|$)/) risk = "art-master-or-theme"
+          else if (lower ~ /(^|\/)bkart\.bundle(\/|$)/) risk = "art-bundle"
+          else if (lower ~ /(^|\/)scripts\/encrypt_art_assets\.swift$/ || lower ~ /(^|\/)scripts\/encrypted_asset_allowlist\.json$/) risk = "art-encryption-tooling"
+          else if (lower ~ /bokeh.*\.met(al|allib)$/ || lower ~ /(^|\/)bokehtransition\/.*\.met(al|allib)$/ || lower ~ /(^|\/)privateshaders(\/|$)/ || lower ~ /(^|\/)privatebokeh(\/|$)/) risk = "bokeh-metal-library"
           else if (lower ~ /(^|\/)privateartruntimeloader\.swift$/) risk = ""
-          else if (lower ~ /privateart|private_art|privateartwork|private_artwork|privateassets|private_assets/) risk = "legacy-private-art-path"
-          else if (lower ~ /(bokeh|bktheme|bkart|encryptedart|privateart).*(backup|archive|copy|old|orig)/ || lower ~ /(backup|archive|copy|old|orig).*(bokeh|bktheme|bkart|encryptedart|privateart)/) risk = "private-material-backup-or-archive"
+          else if (lower ~ /privateart|private_art|privateartwork|private_artwork|privateassets|private_assets/) risk = "legacy-art-path"
+          else if (lower ~ /(bokeh|bktheme|bkart|encryptedart|privateart).*(backup|archive|copy|old|orig)/ || lower ~ /(backup|archive|copy|old|orig).*(bokeh|bktheme|bkart|encryptedart|privateart)/) risk = "art-material-backup-or-archive"
           if (risk != "") print commit "\t" $0 "\t" risk
         }
       '
@@ -334,7 +333,7 @@ scan_app_bundles() {
 }
 
 scan_worktree
-scan_known_private_worktree_roots
+scan_known_restricted_worktree_roots
 collect_ref_tips
 collect_commits
 scan_history
@@ -347,4 +346,4 @@ if ((violations)); then
   exit 1
 fi
 
-echo 'RESULT: PASS (no prohibited publishable paths, selected-history paths, or app-bundle entries found)'
+echo 'RESULT: PASS (no prohibited paths, selected-history paths, or app-bundle entries found)'
