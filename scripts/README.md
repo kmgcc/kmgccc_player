@@ -75,7 +75,7 @@ OLD_AMLL_CORE=path/to/old-core.js node scripts/verify-amll-parser-shape.mjs
 
 可选的本地构建输入通过 `Config/LocalOverrides.xcconfig` 配置。该文件在标准构建中不是必需的。
 
-**`build_runtime_resources.sh`** — 命令行构建完整 App（含本地运行时资源）。
+**`build_runtime_resources.sh`** — 命令行构建包含本地运行时资源的 App。
 
 ```sh
 ./scripts/build_runtime_resources.sh Debug

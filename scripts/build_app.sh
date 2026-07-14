@@ -4,8 +4,8 @@ set -euo pipefail
 # Build the app without local runtime resources.
 #
 # Forces auxiliary resources off even when Config/LocalOverrides.xcconfig is
-# present on this machine, and verifies that no runtime resources leaked into
-# the bundle. A fresh clone with no local override produces the same result
+# present on this machine, and verifies that no runtime resources are included
+# in the bundle. A fresh clone with no local override produces the same result
 # through a normal Xcode build.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
