@@ -72,6 +72,10 @@ git submodule update --init --recursive
 
 外部组件的详细说明见 `docs/dependencies.md`。
 
+## 技术文档
+
+公开技术文档从 [`docs/README.md`](docs/README.md) 开始，涵盖应用架构、歌词渲染、OKLCH 色彩系统、资料库存储、曲库搜索和偏好随机播放。文档只描述可公开复用的原理、API 与工程设计。
+
 ## 常见问题
 
 - **AMLL submodule 缺失或 commit 不一致**：运行 `git submodule sync --recursive`，再 `git submodule update --init --recursive`。

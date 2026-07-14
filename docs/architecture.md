@@ -1,6 +1,6 @@
-# 架构概览
+# 应用架构
 
-kmgccc_player 不是纯 SwiftUI 应用。SwiftUI 提供场景和大部分内容视图，而主窗口、歌词宿主和部分窗口行为由 AppKit 管理；播放、歌词、主题和全屏状态则由各自的服务或 ViewModel 持有。
+kmgccc_player 使用 SwiftUI 构建场景和大部分内容视图，主窗口、歌词宿主和部分桌面行为由 AppKit 补足。播放、歌词、主题和全屏状态分别由明确的服务或 ViewModel 持有。
 
 核心设计原则：控制命令进入 `PlaybackCoordinator`，当前播放内容由 `NowPlayingPresentation` 统一向外发布。歌词、皮肤、主题和频谱消费这个稳定表示，不各自猜测当前播放来源。
 
@@ -120,7 +120,7 @@ App 依赖五个外部运行组件，都由 `bootstrap.sh` 构建，产物通过
 | MediaRemoteAdapter | Perl launcher + framework | `SystemNowPlayingProvider` | 系统外部播放不可用，本地和 Apple Music 独立 |
 | SACAD | 单次命令行进程 | `CoverDownloadService` | SACAD 封面候选失败，其他来源独立 |
 
-详细的版本、构建方式和许可证见 `docs/dependencies.md`。
+详细的组件说明和许可证见 [外部组件与构建依赖](dependencies.md)。
 
 ## 修改代码时需要注意的边界
 
@@ -132,3 +132,11 @@ App 依赖五个外部运行组件，都由 `bootstrap.sh` 构建，产物通过
 - **主题颜色**：`ThemeStore` 是唯一的状态 owner。界面消费 `SemanticPalette`，不要各自执行颜色分析。
 - **频谱**：所有可视化视图共享 `LEDMeterServiceProvider`，不要各自给 AVAudioEngine 安装 tap。
 - **曲库持久化**：Track 和 Playlist 的持久化路径有多个方法（meta only、meta+lyrics、meta+artwork、全部），匹配方法到改动范围，不要为只改元数据而重写封面和歌词 sidecar。
+
+## 相关文档
+
+- [歌词渲染系统](lyric-rendering.md)
+- [色彩系统](color-system.md)
+- [资料库存储](library-storage.md)
+- [曲库搜索](search.md)
+- [偏好随机播放](smart-shuffle.md)
