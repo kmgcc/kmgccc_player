@@ -1,6 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
+# Build the app without local runtime resources.
+#
+# Forces auxiliary resources off even when Config/LocalOverrides.xcconfig is
+# present on this machine, and verifies that no runtime resources leaked into
+# the bundle. A fresh clone with no local override produces the same result
+# through a normal Xcode build.
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIGURATION="${CONFIGURATION:-Release}"
@@ -14,12 +21,12 @@ if (($# > 0)); then
     echo "error: unexpected argument: $1" >&2
     exit 2
 fi
-DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-${TMPDIR:-/tmp}/kmgccc-player-public-$CONFIGURATION}"
 case "$CONFIGURATION" in
     Debug|Release) ;;
-    *) echo "error: public configuration must be Debug or Release" >&2; exit 2 ;;
+    *) echo "error: configuration must be Debug or Release" >&2; exit 2 ;;
 esac
 
+DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-${TMPDIR:-/tmp}/kmgccc-player-$CONFIGURATION}"
 PROJECT="$REPO_ROOT/kmgccc_player.xcodeproj"
 APP="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION/kmgccc_player.app"
 rm -rf "$DERIVED_DATA_PATH"
@@ -30,19 +37,19 @@ xcodebuild \
     -configuration "$CONFIGURATION" \
     -destination 'platform=macOS,arch=arm64' \
     -derivedDataPath "$DERIVED_DATA_PATH" \
-    PRIVATE_RESOURCE_MODE=disabled \
+    AUXILIARY_RESOURCE_MODE=disabled \
     CODE_SIGNING_ALLOWED="${CODE_SIGNING_ALLOWED:-NO}" \
     build
 
-[ -d "$APP" ] || { echo "error: public app was not produced: $APP" >&2; exit 1; }
+[ -d "$APP" ] || { echo "error: app was not produced: $APP" >&2; exit 1; }
 
 if find "$APP" \( -type f -o -type d \) \( \
     -iname '*.metal' -o -name 'EncryptedArtAssets' -o -name 'PrivateArtSources' \
     -o -name 'BKArt.bundle' -o -name 'BKThemes' \
-    -o -name 'BokehTransitionResources.bundle' -o -name 'PrivateArtRuntime.bundle' \
+    -o -name 'BokehTransitionResources.bundle' -o -name 'ArtRuntime.bundle' \
     -o -iname '*.metallib' \
 \) -print -quit | grep -q .; then
-    echo "error: public app contains disallowed external source or runtime resources" >&2
+    echo "error: app contains disallowed runtime resources" >&2
     exit 1
 fi
 

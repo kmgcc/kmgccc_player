@@ -70,7 +70,7 @@ git filter-branch --force --prune-empty \
             EncryptedArtAssets \
             PrivateArtSources \
             BKArt.bundle \
-            PrivateArtRuntime.bundle \
+            ArtRuntime.bundle \
             .derivedData \
             .derivedDataAudioAudit \
             .derivedDataLocal \
@@ -97,7 +97,7 @@ git filter-branch --force --prune-empty \
         fi
 
         for loader in $(
-            git ls-files | grep -E "(^|/)Services/Theme/EncryptedArtAssetLoader\\.swift$" || true
+            git ls-files | grep -E "(^|/)Services/Theme/(EncryptedArtAssetLoader|ArtAssetLoader)\\.swift$" || true
         ); do
             [ -n "$loader" ] || continue
             temporary_blob="$(mktemp)"

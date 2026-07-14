@@ -1,16 +1,16 @@
 //
-//  PrivateArtRuntimeLoader.swift
+//  ArtRuntimeLoader.swift
 //  myPlayer2
 //
-//  Loads an optional external art runtime without making it a public build
-//  dependency. Missing or invalid external resources are a normal fallback.
+//  Loads an optional local art runtime when one is present. A missing or
+//  invalid runtime is a normal fallback, not an error.
 //
 
 import CryptoKit
 import Darwin
 import Foundation
 
-nonisolated private struct PrivateArtRuntimeManifest: Decodable, Sendable {
+nonisolated private struct ArtRuntimeManifest: Decodable, Sendable {
     let schemaVersion: Int
     let runtimeVersion: String
     let abiVersion: Int
@@ -19,22 +19,22 @@ nonisolated private struct PrivateArtRuntimeManifest: Decodable, Sendable {
     let librarySHA256: String
 }
 
-private enum PrivateArtRuntimeContract {
-    nonisolated static let bundleName = "PrivateArtRuntime"
-    nonisolated static let runtimeFileName = "PrivateArtRuntime"
-    nonisolated static let manifestFileName = "PrivateArtRuntime.manifest.json"
+private enum ArtRuntimeContract {
+    nonisolated static let bundleName = "ArtRuntime"
+    nonisolated static let runtimeFileName = "ArtRuntime"
+    nonisolated static let manifestFileName = "ArtRuntime.manifest.json"
     nonisolated static let schemaVersion = 1
     nonisolated static let runtimeVersion = "1.0.0"
     nonisolated static let abiVersion: Int32 = 1
     nonisolated static let requiredEntryPoints = [
-        "kmg_private_art_runtime_abi_version",
-        "kmg_private_art_runtime_decrypt",
-        "kmg_private_art_runtime_free"
+        "kmg_art_runtime_abi_version",
+        "kmg_art_runtime_decrypt",
+        "kmg_art_runtime_free"
     ]
 }
 
-final class PrivateArtRuntimeLoader: @unchecked Sendable {
-    nonisolated static let shared = PrivateArtRuntimeLoader()
+final class ArtRuntimeLoader: @unchecked Sendable {
+    nonisolated static let shared = ArtRuntimeLoader()
 
     enum Availability: Equatable {
         case ready
@@ -80,8 +80,8 @@ final class PrivateArtRuntimeLoader: @unchecked Sendable {
 
     nonisolated func decrypt(_ data: Data, logicalName: String) throws -> Data {
         guard let decryptFunction, let freeFunction else {
-            throw PrivateArtRuntimeError.unavailable(
-                availabilityReason ?? "external art runtime is unavailable"
+            throw ArtRuntimeError.unavailable(
+                availabilityReason ?? "art runtime is unavailable"
             )
         }
 
@@ -97,7 +97,7 @@ final class PrivateArtRuntimeLoader: @unchecked Sendable {
         }
 
         guard status == 0, let output, outputLength >= 0 else {
-            throw PrivateArtRuntimeError.decryptionFailed(logicalName)
+            throw ArtRuntimeError.decodingFailed(logicalName)
         }
         defer { freeFunction(output, outputLength) }
         return Data(bytes: output, count: outputLength)
@@ -116,39 +116,39 @@ final class PrivateArtRuntimeLoader: @unchecked Sendable {
 
     nonisolated private static func loadRuntime() throws -> LoadedRuntime {
         guard let bundleURL = Bundle.main.url(
-            forResource: PrivateArtRuntimeContract.bundleName,
+            forResource: ArtRuntimeContract.bundleName,
             withExtension: "bundle"
         ),
         let bundle = Bundle(url: bundleURL),
         let resourceURL = bundle.resourceURL else {
-            throw PrivateArtRuntimeError.missingBundle
+            throw ArtRuntimeError.missingBundle
         }
 
         let manifestURL = resourceURL.appendingPathComponent(
-            PrivateArtRuntimeContract.manifestFileName
+            ArtRuntimeContract.manifestFileName
         )
         let runtimeURL = bundle.executableURL
             ?? resourceURL
                 .appendingPathComponent("../MacOS", isDirectory: true)
-                .appendingPathComponent(PrivateArtRuntimeContract.runtimeFileName)
+                .appendingPathComponent(ArtRuntimeContract.runtimeFileName)
 
         guard FileManager.default.fileExists(atPath: manifestURL.path),
               FileManager.default.fileExists(atPath: runtimeURL.path) else {
-            throw PrivateArtRuntimeError.missingBundle
+            throw ArtRuntimeError.missingBundle
         }
 
         let manifest = try JSONDecoder().decode(
-            PrivateArtRuntimeManifest.self,
+            ArtRuntimeManifest.self,
             from: Data(contentsOf: manifestURL)
         )
-        guard manifest.schemaVersion == PrivateArtRuntimeContract.schemaVersion,
-              manifest.runtimeVersion == PrivateArtRuntimeContract.runtimeVersion,
-              manifest.abiVersion == Int(PrivateArtRuntimeContract.abiVersion),
+        guard manifest.schemaVersion == ArtRuntimeContract.schemaVersion,
+              manifest.runtimeVersion == ArtRuntimeContract.runtimeVersion,
+              manifest.abiVersion == Int(ArtRuntimeContract.abiVersion),
               manifest.architectures.contains(Self.currentArchitecture),
-              Set(PrivateArtRuntimeContract.requiredEntryPoints).isSubset(
+              Set(ArtRuntimeContract.requiredEntryPoints).isSubset(
                   of: Set(manifest.entryPoints)
               ) else {
-            throw PrivateArtRuntimeError.invalidManifest
+            throw ArtRuntimeError.invalidManifest
         }
 
         let runtimeData = try Data(contentsOf: runtimeURL)
@@ -156,30 +156,30 @@ final class PrivateArtRuntimeLoader: @unchecked Sendable {
             .map { String(format: "%02x", $0) }
             .joined()
         guard hash.caseInsensitiveCompare(manifest.librarySHA256) == .orderedSame else {
-            throw PrivateArtRuntimeError.invalidManifest
+            throw ArtRuntimeError.invalidManifest
         }
 
         guard let handle = dlopen(runtimeURL.path, RTLD_NOW | RTLD_LOCAL) else {
-            throw PrivateArtRuntimeError.loadFailed(String(cString: dlerror()))
+            throw ArtRuntimeError.loadFailed(String(cString: dlerror()))
         }
 
         guard let abiVersion = symbol(
-            "kmg_private_art_runtime_abi_version",
+            "kmg_art_runtime_abi_version",
             in: handle,
             as: ABIVersionFunction.self
         ),
         let decrypt = symbol(
-            "kmg_private_art_runtime_decrypt",
+            "kmg_art_runtime_decrypt",
             in: handle,
             as: DecryptFunction.self
         ),
         let free = symbol(
-            "kmg_private_art_runtime_free",
+            "kmg_art_runtime_free",
             in: handle,
             as: FreeFunction.self
         ),
-        abiVersion() == PrivateArtRuntimeContract.abiVersion else {
-            throw PrivateArtRuntimeError.missingEntryPoint
+        abiVersion() == ArtRuntimeContract.abiVersion else {
+            throw ArtRuntimeError.missingEntryPoint
         }
 
         return LoadedRuntime(handle: handle, decrypt: decrypt, free: free)
@@ -202,28 +202,28 @@ final class PrivateArtRuntimeLoader: @unchecked Sendable {
         #endif
     }
 
-    private enum PrivateArtRuntimeError: LocalizedError {
+    private enum ArtRuntimeError: LocalizedError {
         case missingBundle
         case invalidManifest
         case missingEntryPoint
         case loadFailed(String)
         case unavailable(String)
-        case decryptionFailed(String)
+        case decodingFailed(String)
 
         var errorDescription: String? {
             switch self {
             case .missingBundle:
-                return "PrivateArtRuntime bundle is unavailable"
+                return "art runtime bundle is unavailable"
             case .invalidManifest:
-                return "PrivateArtRuntime manifest is invalid"
+                return "art runtime manifest is invalid"
             case .missingEntryPoint:
-                return "PrivateArtRuntime entry point is unavailable"
+                return "art runtime entry point is unavailable"
             case let .loadFailed(reason):
-                return "PrivateArtRuntime failed to load: (reason)"
+                return "art runtime failed to load: \(reason)"
             case let .unavailable(reason):
                 return reason
-            case let .decryptionFailed(logicalName):
-                return "PrivateArtRuntime failed to decrypt (logicalName)"
+            case let .decodingFailed(logicalName):
+                return "art runtime could not decode asset: \(logicalName)"
             }
         }
     }

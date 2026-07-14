@@ -188,7 +188,7 @@ scan_known_private_worktree_roots() {
     'PrivateArtSources' \
     'EncryptedArtAssets' \
     'BKArt.bundle' \
-    'PrivateArtRuntime.bundle' \
+    'ArtRuntime.bundle' \
     'kmgccc_player/Resources/BKArt.bundle'; do
     [[ -e "$path" ]] || continue
     risk="$(path_risk "$path" || true)"
@@ -196,7 +196,7 @@ scan_known_private_worktree_roots() {
       BKThemes) risk='private-art-master-or-theme' ;;
       PrivateArtSources) risk='private-art-source' ;;
       EncryptedArtAssets) risk='encrypted-art-runtime-resource' ;;
-      PrivateArtRuntime.bundle) risk='private-art-runtime-bundle' ;;
+      ArtRuntime.bundle) risk='auxiliary-runtime-bundle' ;;
       *) risk='private-art-bundle' ;;
     esac
     record_failure 'worktree' 'WORKTREE' '-' "$path" "$risk"
