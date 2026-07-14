@@ -12,7 +12,6 @@ import Accelerate
 import Foundation
 
 /// Raw FFT data provided to consumers.
-/// Raw FFT data provided to consumers.
 nonisolated public struct AudioAnalysisData: Sendable {
     public let magnitudes: [Float]  // Frequency domain (0...Nyquist)
     public let sampleRate: Float

@@ -18,6 +18,7 @@ struct TrackActionMenuContent: View {
     var onRemoveFromCurrentPlaylist: ((Track) -> Void)?
     var showsPlay: Bool = true
     var showsNavigation: Bool = true
+    var showsDeleteFromLibrary: Bool = true
     var diagnosticSurface: String = "TrackContextMenu"
 
     @Environment(LibraryViewModel.self) private var libraryVM
@@ -34,6 +35,7 @@ struct TrackActionMenuContent: View {
         onRemoveFromCurrentPlaylist: ((Track) -> Void)? = nil,
         showsPlay: Bool = true,
         showsNavigation: Bool = true,
+        showsDeleteFromLibrary: Bool = true,
         diagnosticSurface: String = "TrackContextMenu"
     ) {
         let token = FirstUseHitchDiagnostics.begin(
@@ -52,6 +54,7 @@ struct TrackActionMenuContent: View {
         self.onRemoveFromCurrentPlaylist = onRemoveFromCurrentPlaylist
         self.showsPlay = showsPlay
         self.showsNavigation = showsNavigation
+        self.showsDeleteFromLibrary = showsDeleteFromLibrary
         self.diagnosticSurface = diagnosticSurface
     }
 
@@ -166,19 +169,21 @@ struct TrackActionMenuContent: View {
             }
         }
 
-        Divider()
+        if showsDeleteFromLibrary {
+            Divider()
 
-        Button(role: .destructive) {
-            let token = ContextMenuDiagnostics.beginActionInvoke(
-                surface: diagnosticSurface,
-                detail: "action=deleteTrack, track=\(trackIDPrefix)"
-            )
-            Task {
-                await libraryVM.deleteTrack(track)
-                ContextMenuDiagnostics.end(token)
+            Button(role: .destructive) {
+                let token = ContextMenuDiagnostics.beginActionInvoke(
+                    surface: diagnosticSurface,
+                    detail: "action=deleteTrack, track=\(trackIDPrefix)"
+                )
+                Task {
+                    await libraryVM.deleteTrack(track)
+                    ContextMenuDiagnostics.end(token)
+                }
+            } label: {
+                Label("从资料库删除", systemImage: "trash")
             }
-        } label: {
-            Label("从资料库删除", systemImage: "trash")
         }
     }
 

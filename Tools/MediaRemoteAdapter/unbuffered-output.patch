@@ -1,0 +1,11 @@
+diff --git a/bin/mediaremote-adapter.pl b/bin/mediaremote-adapter.pl
+--- a/bin/mediaremote-adapter.pl
++++ b/bin/mediaremote-adapter.pl
+@@ -6,6 +6,7 @@
+ 
+ use strict;
+ use warnings;
++$| = 1;
+ use DynaLoader;
+ use File::Spec;
+ use File::Basename;

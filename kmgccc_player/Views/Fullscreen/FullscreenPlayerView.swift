@@ -1612,20 +1612,36 @@ struct FullscreenPlayerView: View {
     ) {
         syncFullscreenLyricsHostMount()
 
+        if newState == .lyrics {
+            fullscreenStore.resumeRendererIfNeeded(reason: "fullscreen lyrics panel shown")
+        } else {
+            fullscreenStore.suspendRendererPreservingSnapshot(
+                reason: "fullscreen lyrics panel hidden: \(String(describing: newState))"
+            )
+        }
+
         if newState == .lyrics, oldState != .lyrics {
             let trackID = currentDisplayContext.trackID
+            let canRevealExistingLyrics =
+                LyricsSurfaceManager.shared.currentMode == .fullscreen
+                && LyricsSurfaceManager.shared.switchState == .idle
+                && LyricsSurfaceManager.shared.existingStore(for: .fullscreen)?.isReady == true
             let isEndingAutoRestore = trackID != nil && fullscreenLyricsRestoreInitialZeroTrackID == trackID
             if isEndingAutoRestore {
                 if pendingFullscreenLyricsAutoRestoreTrackID == trackID {
                     scheduleFullscreenLyricsAutoRestorePreload(trackID: trackID)
                 } else {
-                    revealFullscreenExistingLyrics(reason: fullscreenLyricsAutoRestoreReason)
+                    if canRevealExistingLyrics {
+                        revealFullscreenExistingLyrics(reason: fullscreenLyricsAutoRestoreReason)
+                    }
                     scheduleFullscreenLyricsAutoRestoreMarkerClear(trackID: trackID)
                 }
             } else {
                 let reason = "fullscreen lyrics shown"
                 reloadLyricsSurface(reason: reason, forceLyricsReload: false)
-                revealFullscreenExistingLyrics(reason: reason)
+                if canRevealExistingLyrics {
+                    revealFullscreenExistingLyrics(reason: reason)
+                }
             }
         }
 
@@ -2580,11 +2596,11 @@ struct FullscreenPlayerView: View {
 
     private func startFullscreenLyricsSurface(reason: String) {
         // Report visibility to manager first so a newly materialized surface can
-        // replay the latest snapshot, then push the same payload directly through
-        // the fullscreen reload path. Embedded fullscreen calls this after its
-        // geometry gate opens; system fullscreen calls it on appear.
+        // replay the latest snapshot. The reload path still refreshes the
+        // fullscreen payload/theme, but must not force a second AMLL lyric
+        // entrance after the manager has replayed the snapshot.
         LyricsSurfaceManager.shared.reportFullscreenVisible(true)
-        reloadLyricsSurface(reason: reason, forceLyricsReload: true)
+        reloadLyricsSurface(reason: reason, forceLyricsReload: false)
     }
 
     private func revealFullscreenExistingLyrics(reason: String) {
@@ -3236,6 +3252,16 @@ struct FullscreenPlayerView: View {
         }
         setupSeekCallback()
 
+        if let palette = ThemeStore.shared.palette {
+            store.applyTheme(palette)
+        }
+
+        // AMLL's setLyricLines entrance uses the spring/font/alignment config
+        // that is active at call time. Apply the final fullscreen config first
+        // so a newly materialized surface does not animate once with defaults
+        // and then jump when setConfig arrives.
+        applyFullscreenLyricsTheme()
+
         store.applyTrack(
             trackID: playbackPayload.trackID,
             ttml: playbackPayload.ttml,
@@ -3245,10 +3271,6 @@ struct FullscreenPlayerView: View {
         )
         setupSeekCallback()
 
-        if let palette = ThemeStore.shared.palette {
-            store.applyTheme(palette)
-        }
-
         syncCoverBlurHighlightSurface(
             playbackPayload: playbackPayload,
             forceWebReload: forceWebReload,
@@ -3257,7 +3279,6 @@ struct FullscreenPlayerView: View {
         if !pendingFullscreenLyricsBackgroundCapture {
             captureFullscreenLyricsBackgroundSnapshot()
         }
-        applyFullscreenLyricsTheme()
     }
 
     private struct FullscreenPlaybackPayload {

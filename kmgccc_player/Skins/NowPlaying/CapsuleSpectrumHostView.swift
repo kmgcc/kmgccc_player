@@ -383,15 +383,39 @@ final class CapsuleSpectrumHostView: NSView {
         // service's idle-pose frames so they don't fight the collapse target.
         if !isPlaying, configuration.pausedBehavior == .collapseToDots { return }
 
+        let sampledWave = Self.resampledWave(wave, targetCount: count)
         var changed = false
         for index in 0..<count {
-            let value: CGFloat = index < wave.count
-                ? CGFloat(min(1, max(0, wave[index])))
-                : 0
+            let value = sampledWave[index]
             if abs(value - targetWave[index]) > 0.0004 { changed = true }
             targetWave[index] = value
         }
         if changed { wakeDisplayLink() }
+    }
+
+    private static func resampledWave(_ wave: [Float], targetCount: Int) -> [CGFloat] {
+        let targetCount = max(1, targetCount)
+        guard !wave.isEmpty else { return Array(repeating: 0, count: targetCount) }
+        if targetCount == 1 {
+            let average = wave.reduce(Float(0), +) / Float(wave.count)
+            return [CGFloat(min(1, max(0, average)))]
+        }
+        if wave.count == 1 {
+            let value = CGFloat(min(1, max(0, wave[0])))
+            return Array(repeating: value, count: targetCount)
+        }
+
+        let sourceSpan = CGFloat(wave.count - 1)
+        let targetSpan = CGFloat(targetCount - 1)
+        return (0..<targetCount).map { targetIndex in
+            let sourcePosition = CGFloat(targetIndex) * sourceSpan / targetSpan
+            let lowerIndex = min(wave.count - 1, Int(floor(sourcePosition)))
+            let upperIndex = min(wave.count - 1, lowerIndex + 1)
+            let fraction = sourcePosition - CGFloat(lowerIndex)
+            let lower = CGFloat(min(1, max(0, wave[lowerIndex])))
+            let upper = CGFloat(min(1, max(0, wave[upperIndex])))
+            return lower + (upper - lower) * fraction
+        }
     }
 
     // MARK: Follower integration (display-link driven)

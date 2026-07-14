@@ -42,7 +42,7 @@ struct AboutSettingsView: View {
             Spacer(minLength: 40)
 
             (showEasterEggImage
-                ? EncryptedAssetImages.image(named: "jntm", maxPixel: 800)
+                ? ArtAssetImages.image(named: "jntm", maxPixel: 800)
                 : Image("EmptyLyric"))
                 .resizable()
                 .scaledToFit()

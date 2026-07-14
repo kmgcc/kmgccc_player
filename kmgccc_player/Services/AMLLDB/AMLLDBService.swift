@@ -44,8 +44,6 @@ final class AMLLDBService: ObservableObject {
     private let cache = AMLLDBRawIndexCache.shared
     private let client = AMLLDBClient()
 
-    // MARK: - Initialization
-
     private init() {
         // Observe cache state
         Task {

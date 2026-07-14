@@ -206,7 +206,7 @@ private final class CassetteThemeAssetCache {
     }
 
     private func loadImage(resource: Resource, maxPixel: Int) -> NSImage? {
-        EncryptedArtAssetLoader.shared.xcAssetImage(named: resource.rawValue, maxPixel: max(1, maxPixel))
+        ArtAssetLoader.shared.xcAssetImage(named: resource.rawValue, maxPixel: max(1, maxPixel))
     }
 
     private func estimatedCost(for imageSet: CassetteThemeImageSet) -> Int {
@@ -295,7 +295,7 @@ private struct CassetteArtwork: View, Equatable {
         }
         .overlay(alignment: .bottomTrailing) {
             if showKmgLook {
-                EncryptedAssetImages.image(
+                ArtAssetImages.image(
                     named: "kmglook",
                     maxPixel: Int(ceil(kmgLookWidth(for: size) * displayScale * 2))
                 )
@@ -371,7 +371,7 @@ private struct CassetteArtwork: View, Equatable {
         if let image = context.track?.artworkImage {
             return Image(nsImage: image)
         }
-        if let image = EncryptedArtAssetLoader.shared.xcAssetImage(named: "seasons", maxPixel: 1_600) {
+        if let image = ArtAssetLoader.shared.xcAssetImage(named: "seasons", maxPixel: 1_600) {
             return Image(nsImage: image)
         }
         return Image(systemName: "music.note")
@@ -539,7 +539,7 @@ private struct CassetteArtwork: View, Equatable {
         if let image {
             return Image(nsImage: image)
         }
-        if let image = EncryptedArtAssetLoader.shared.xcAssetImage(named: name, maxPixel: 1_600) {
+        if let image = ArtAssetLoader.shared.xcAssetImage(named: name, maxPixel: 1_600) {
             return Image(nsImage: image)
         }
         return Image(systemName: "photo")
@@ -1190,7 +1190,7 @@ private struct HolesOverlay: View {
                     }
                 } symbols: {
                     // Symbol definition (drawn once, rasterized if grouped)
-                    EncryptedAssetImages.image(named: imgName, maxPixel: Int(ceil(holeSize * 2)))
+                    ArtAssetImages.image(named: imgName, maxPixel: Int(ceil(holeSize * 2)))
                         .resizable()
                         .frame(width: holeSize, height: holeSize)
                         .tag("hole")

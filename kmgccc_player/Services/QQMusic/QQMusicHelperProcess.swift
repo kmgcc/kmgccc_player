@@ -375,21 +375,11 @@ actor QQMusicMetadataProvider: MetadataDetailProvider {
                 // 1. Title validation
                 let sourceTitle = ExternalPlaybackTextNormalizer.normalize(title)
                 let candidateTitle = ExternalPlaybackTextNormalizer.normalize(candidate.title)
-
-                if !candidateTitle.compact.isEmpty,
-                   ExternalPlaybackTextNormalizer.hasShortTitleConflict(sourceTitle, candidateTitle) {
-                    continue
-                }
-
                 let titleScore = ExternalPlaybackTextNormalizer.stringSimilarity(sourceTitle, candidateTitle)
-                let bothShort = ExternalPlaybackTextNormalizer.isShortSingleToken(sourceTitle)
-                    && ExternalPlaybackTextNormalizer.isShortSingleToken(candidateTitle)
-                let titleFloor = bothShort ? ExternalPlaybackTextNormalizer.shortTitleFuzzyFloor : 0.50
-
-                guard titleScore >= titleFloor
-                      || candidateTitle.compact.contains(sourceTitle.compact)
-                      || sourceTitle.compact.contains(candidateTitle.compact)
-                else { continue }
+                guard ExternalPlaybackTextNormalizer.titleAccepted(
+                    source: sourceTitle,
+                    candidate: candidateTitle
+                ) else { continue }
 
                 // 2. Artist validation
                 let sourceArtist = ExternalPlaybackTextNormalizer.normalizeArtist(artist)

@@ -234,6 +234,10 @@ struct LyricsPanelView: View {
             return
         }
         let hasTrack = hasTrackOverride ?? playbackCoordinator.presentation.hasTrack
+        let shouldRevealExistingLyrics =
+            LyricsSurfaceManager.shared.currentMode == .main
+            && LyricsSurfaceManager.shared.switchState == .idle
+            && LyricsSurfaceManager.shared.existingStore(for: .main)?.isReady == true
         updateLyricsWebViewHosting(
             shouldHost: isVisible && hasTrack,
             reason: reason
@@ -246,7 +250,13 @@ struct LyricsPanelView: View {
 
         LyricsSurfaceManager.shared.reportMainVisible(true)
         reloadLyricsSurface(reason: reason)
-        lyricsVM.revealExistingLyrics(reason: reason)
+        // A mode switch/new WebView already receives the native AMLL loading
+        // entrance from LyricsSurfaceManager's snapshot replay. Only ask for
+        // the existing-line reveal when this main surface was already ready
+        // and stable; otherwise it would animate the same lyric twice.
+        if shouldRevealExistingLyrics {
+            lyricsVM.revealExistingLyrics(reason: reason)
+        }
     }
 
     private func updateLyricsWebViewHosting(shouldHost: Bool, reason: String) {

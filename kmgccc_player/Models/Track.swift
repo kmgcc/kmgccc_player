@@ -124,8 +124,6 @@ final class Track {
     /// Deprecated: Use ttmlLyricText instead.
     var lyricsText: String?
 
-    // MARK: - Initializer
-
     init(
         id: UUID = UUID(),
         title: String,

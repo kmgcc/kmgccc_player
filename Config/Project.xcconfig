@@ -1,0 +1,15 @@
+// Project-wide build configuration shared across all targets and configurations.
+//
+// Local build inputs are optional. When Config/LocalOverrides.xcconfig is
+// present on this machine, its values are picked up here; when it is absent
+// (for example on a fresh clone), the include is silently skipped and builds
+// proceed using the in-repo resources and programmatic implementations.
+//
+// The auxiliary resource mode defaults to "auto": local runtime resources are
+// prepared only when AUXILIARY_RESOURCE_ROOT resolves to a valid local path.
+// A build can override this on the command line, for example
+// AUXILIARY_RESOURCE_MODE=disabled.
+
+#include? "LocalOverrides.xcconfig"
+
+AUXILIARY_RESOURCE_MODE = auto

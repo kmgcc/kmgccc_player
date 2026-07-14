@@ -17,6 +17,7 @@ extension Notification.Name {
 /// Content mode for main area
 enum ContentMode: Equatable {
     case library
+    case playbackHistory
     case nowPlaying
 }
 
@@ -118,8 +119,11 @@ final class UIStateViewModel {
 
     // MARK: - Content Mode
 
-    /// Current content mode (library or now playing)
+    /// Current content mode (library, playback history, or now playing)
     var contentMode: ContentMode = .library
+
+    /// Optional day filter used when Home's listening calendar opens History.
+    var playbackHistoryDate: Date?
 
     /// Compact, transient notice shown in the sidebar bottom status area.
     var sidebarNotice: SidebarNotice?
@@ -323,7 +327,15 @@ final class UIStateViewModel {
 
     func showLibrary() {
         withAnimation(.easeInOut(duration: 0.3)) {
+            playbackHistoryDate = nil
             contentMode = .library
+        }
+    }
+
+    func showPlaybackHistory(for date: Date? = nil) {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            playbackHistoryDate = date.map { Calendar.current.startOfDay(for: $0) }
+            contentMode = .playbackHistory
         }
     }
 

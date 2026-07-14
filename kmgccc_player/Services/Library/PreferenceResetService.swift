@@ -54,6 +54,7 @@ struct MusicPreferenceResetResult: Sendable {
     let failureCount: Int
     let failures: [MusicPreferenceResetFailure]
     let updatedTrackIDs: [UUID]
+    let didClearPlaybackHistory: Bool
 }
 
 private struct PreferenceResetTrackSnapshot: Sendable {
@@ -335,12 +336,23 @@ final class PreferenceResetService {
             )
         }
 
+        let didClearPlaybackHistory: Bool
+        if options.resetPlaybackStatsAndPreference {
+            // The timeline is the event-level counterpart of per-track
+            // preferenceStats. Reset both in one user-visible operation so a
+            // reset cannot leave old history contradicting zeroed counters.
+            didClearPlaybackHistory = PlaybackHistoryStore.shared.clearAll()
+        } else {
+            didClearPlaybackHistory = false
+        }
+
         return MusicPreferenceResetResult(
             totalCount: snapshots.count,
             successCount: workerResult.updatedTracks.count,
             failureCount: workerResult.failures.count,
             failures: workerResult.failures,
-            updatedTrackIDs: workerResult.updatedTracks.map(\.trackID)
+            updatedTrackIDs: workerResult.updatedTracks.map(\.trackID),
+            didClearPlaybackHistory: didClearPlaybackHistory
         )
     }
 }

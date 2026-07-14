@@ -474,21 +474,28 @@ nonisolated enum ColorSystemTokens {
         // LED ladder. v4 keeps the v3 visible L band but makes the level
         // language explicit: lower levels carry stronger style drift and a
         // wider chroma ramp, while peak returns closest to the semantic seed.
-        // Dark peak is lifted for a clearer night glow without crossing the
-        // white-wash ceiling.
+        // Light foreground LEDs gain a stronger night glow. Dark foreground
+        // LEDs reverse the L ramp so increasing signal reads as progressively
+        // darker ink against bright glass instead of a brighter tint. Skin and
+        // MiniPlayer keep separate light-mode endpoints because the compact
+        // progress surface needs a slightly tighter dark register.
         //
         // v3 widened the L band substantially so the OKLCH
         // lightness delta is visible *after* the opacity ramp (which is
         // the dominant brightness driver). v2's narrow 0.78–0.92 band was
         // visually flat because the perceived lightness difference between
-        // levels was dominated by opacity alone. Chroma now climbs
-        // monotonically with level, then lets the family cap flatten the
-        // highest-risk hues instead of using a mid-level bump / peak rollback.
-        static let ledDarkMinL: CGFloat = 0.610
-        static let ledDarkPeakL: CGFloat = 0.835
-        static let ledUltraDarkPeakL: CGFloat = 0.820
-        static let ledLightMinL: CGFloat = 0.335
-        static let ledLightPeakL: CGFloat = 0.650
+        // levels was dominated by opacity alone. Chroma climbs toward peak;
+        // the output boundary may apply only a small final gamut shoulder for
+        // high-risk hues at the brighter lightness target.
+        static let ledDarkMinL: CGFloat = 0.680
+        static let ledDarkPeakL: CGFloat = 0.855
+        static let ledUltraDarkPeakL: CGFloat = 0.845
+        static let ledLightMinL: CGFloat = 0.610
+        static let ledLightPeakL: CGFloat = 0.300
+        static let ledMiniPlayerLightMinL: CGFloat = 0.595
+        static let ledMiniPlayerLightPeakL: CGFloat = 0.270
+        static let ledAppleStyleMinL: CGFloat = 0.820
+        static let ledAppleStylePeakL: CGFloat = 0.970
         static let ledLowChromaScale: CGFloat = 0.74
         static let ledPeakChromaScale: CGFloat = 0.96
         static let ledLightLowChromaScale: CGFloat = 0.70

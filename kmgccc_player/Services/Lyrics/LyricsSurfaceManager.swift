@@ -186,6 +186,10 @@ final class LyricsSurfaceManager {
             mainSurfaceSnapshotRefreshHandler?("surface switch to main: \(reason)")
         }
 
+        // A persistent surface may have been renderer-suspended while hidden.
+        // Resume before replaying the switch snapshot so the normal
+        // setLyricLines full-load entrance remains the sole switch animation.
+        store.resumeRendererIfNeeded(reason: "surface switch to \(targetRole.rawValue)")
         replayCurrentSnapshot(
             to: targetRole,
             store: store,
@@ -232,8 +236,6 @@ final class LyricsSurfaceManager {
         Log.debug("LyricsSurfaceManager: switch complete to \(mode), gen=\(generation), previousMode=\(oldMode)", category: .webview)
     }
 
-    // MARK: - View Visibility Reporting (Views call these, NOT requestMode)
-
     /// Report main view visibility change
     /// This may trigger a mode switch if fullscreen is not requested
     func reportMainVisible(_ visible: Bool) {
@@ -246,10 +248,10 @@ final class LyricsSurfaceManager {
             activeRoles.remove(.main)
 
             if let store = stores[.main] {
-                store.releasePreparedWebViewPreservingSnapshot(reason: "main surface hidden")
-            }
-            if currentMode == .main {
-                currentMode = activeRoles.contains(.fullscreen) ? .fullscreen : .none
+                // Main is a persistent role. Keep the concrete WKWebView and
+                // AMLL line groups for manual hide/show; only suspend its
+                // renderer loop while it is detached from the visible host.
+                store.suspendRendererPreservingSnapshot(reason: "main surface hidden")
             }
             if targetMode == .main {
                 switchState = .idle
@@ -265,6 +267,19 @@ final class LyricsSurfaceManager {
             // This could be a transient state during transition, ignore
             Log.debug("LyricsSurfaceManager: main visible but fullscreen is active, ignoring", category: .webview)
             return
+        }
+
+        if visible && currentMode == .main && switchState == .idle {
+            if let store = stores[.main], store.isReady {
+                activate(role: .main)
+                store.resumeRendererIfNeeded(reason: "main surface shown")
+                return
+            }
+
+            // A logical main mode without a ready store cannot complete the
+            // persistent reattach path. Re-enter the normal ready-gated switch
+            // so the store receives a fresh snapshot once its page is valid.
+            currentMode = .none
         }
 
         if visible && currentMode != .main && switchState == .idle {

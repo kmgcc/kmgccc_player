@@ -28,8 +28,6 @@ final class SmartPlaybackController {
     var onPlayTrack: ((Track) -> Void)?
     var onTrackChanged: ((Track?) -> Void)?
 
-    // MARK: - State
-
     /// Whether shuffle mode is enabled.
     private(set) var isShuffleEnabled: Bool = false
 
@@ -41,8 +39,6 @@ final class SmartPlaybackController {
 
     /// Last track in the explicit play-next block for sequential queues.
     private var playNextInsertionAnchorID: UUID?
-
-    // MARK: - Initialization
 
     init() {
         setupNotifications()
@@ -456,6 +452,18 @@ final class SmartPlaybackController {
         let accumulatedSeconds = tracker.totalPlayedSeconds
         let isValidPlay = tracker.isValidPlay
         let isCompleted = tracker.isCompleted
+
+        if case .tooShort = outcome {
+            // Keep the history timeline aligned with the existing effective-play
+            // threshold. Merely opening a track or scrubbing briefly is not a
+            // playback-history event.
+        } else {
+            PlaybackHistoryStore.shared.record(
+                track: track,
+                playedAt: tracker.startedAt,
+                playedSeconds: accumulatedSeconds
+            )
+        }
 
         // Apply to stats
         let didChangeStats = PreferenceStatsService.shared.applyPlaybackOutcome(

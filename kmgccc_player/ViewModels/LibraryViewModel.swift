@@ -438,8 +438,6 @@ final class LibraryViewModel {
         let order: String
     }
 
-    // MARK: - Initialization
-
     init(
         repository: LibraryRepositoryProtocol,
         libraryService _: LocalLibraryService? = nil,

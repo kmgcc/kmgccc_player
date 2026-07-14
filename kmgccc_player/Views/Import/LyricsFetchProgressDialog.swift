@@ -65,7 +65,6 @@ final class LyricsFetchProgressItemModel: Identifiable {
     }
 }
 
-// MARK: - View Model
 
 @MainActor
 @Observable

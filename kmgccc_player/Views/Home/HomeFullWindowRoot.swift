@@ -41,6 +41,8 @@ struct HomeFullWindowRoot: View {
                         .environment(AppSettings.shared)
                         .environment(appSession.uiState)
                         .environment(appSession.homeVM)
+                        .environment(appSession.playbackHistoryStore)
+                        .environment(appSession.playbackHistoryViewModel)
                         .environment(libraryVM)
                         .environment(playerVM)
                         .environment(playbackCoordinator)

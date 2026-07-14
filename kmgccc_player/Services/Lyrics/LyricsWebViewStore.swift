@@ -122,9 +122,12 @@ final class LyricsWebViewStore: NSObject {
     /// Whether an attach has occurred (prevents duplicate attach in updateNSView).
     private(set) var isAttached: Bool = false
 
-    // MARK: - State
-
     private(set) var isReady: Bool = false
+
+    /// Retain AMLL's WKWebView and DOM across manual hide/show while pausing
+    /// the renderer loop to avoid spending playback resources on a hidden
+    /// surface. Full surface switches still use explicit teardown.
+    private(set) var isRendererSuspended: Bool = false
 
     /// Last known state for replay after recovery (NEVER cleared on terminate).
     private var lastTTML: String?
@@ -187,8 +190,6 @@ final class LyricsWebViewStore: NSObject {
     // MARK: - Callbacks
 
     var onUserSeek: ((Double) -> Void)?
-
-    // MARK: - Initialization
 
     init(role: String = "main") {
         self.role = role
@@ -683,6 +684,7 @@ final class LyricsWebViewStore: NSObject {
         activeAttachmentID = nil
         isAttached = false
         isReady = false
+        isRendererSuspended = false
         isRecoveryInProgress = false
         isWebContentTerminated = false
         lastTTML = nil
@@ -814,6 +816,7 @@ final class LyricsWebViewStore: NSObject {
         isTimeSyncInFlight = false
         lastDeliveredTime = nil
         isReady = false
+        isRendererSuspended = false
         isRecoveryInProgress = false
         isWebContentTerminated = false
         didRegisterMessageHandlers = false
@@ -893,7 +896,7 @@ final class LyricsWebViewStore: NSObject {
         lastDeliveredTime = safeCurrentTime
 
         Log.debug(
-            "applyRendererTrackState: len=\(ttml.count), time=\(safeCurrentTime), playing=\(isPlaying), objectID=\(webViewObjectID), isReady=\(isReady)",
+            "applyRendererTrackState: len=\(ttml.count), time=\(safeCurrentTime), playing=\(isPlaying), rendererPlaying=\(!isRendererSuspended && isPlaying), objectID=\(webViewObjectID), isReady=\(isReady)",
             category: .webview
         )
         AMLLLifecycleDiagnostics.emit(
@@ -906,7 +909,7 @@ final class LyricsWebViewStore: NSObject {
                 "payload": [
                     "ttmlText": ttml,
                     "currentTime": safeCurrentTime,
-                    "isPlaying": isPlaying,
+                    "isPlaying": !isRendererSuspended && isPlaying,
                 ]
             ],
             debugDescription: "window.AMLL.applyTrackState(setLyricsTTML,setPlaying,len=\(ttml.count))"
@@ -923,6 +926,7 @@ final class LyricsWebViewStore: NSObject {
         }
 
         lastTime = seconds
+        if isRendererSuspended { return }
         // Time updates are not queued (too frequent), only sent if ready
         guard isReady else { return }
         scheduleTimeSync(seconds, force: force)
@@ -941,8 +945,48 @@ final class LyricsWebViewStore: NSObject {
         AMLLLifecycleDiagnostics.emit(
             "bridge.setPlaying role=\(role) action=\(isPlaying ? "resume" : "pause") ready=\(isReady) objectID=\(webViewObjectID)"
         )
+        if isRendererSuspended { return }
         let boolStr = isPlaying ? "true" : "false"
         callJS("window.AMLL.setPlaying(\(boolStr))", debugDescription: "window.AMLL.setPlaying")
+    }
+
+    /// Pause AMLL without releasing the WKWebView or clearing its DOM/state.
+    /// The Swift-side playback snapshot remains the real playback state so a
+    /// later resume can restore it exactly.
+    func suspendRendererPreservingSnapshot(reason: String) {
+        guard !isShutDown, !isRendererSuspended else { return }
+        isRendererSuspended = true
+        AMLLLifecycleDiagnostics.emit(
+            "renderer.suspend role=\(role) reason=\(reason) ready=\(isReady) objectID=\(webViewObjectID)"
+        )
+        Log.debug(
+            "Suspending AMLL renderer while retaining WebView: role=\(role), reason=\(reason), objectID=\(webViewObjectID)",
+            category: .webview
+        )
+        guard isReady else { return }
+        callJS(
+            "window.AMLL.setPlaying(false)",
+            debugDescription: "window.AMLL.setPlaying(false):surface-suspend"
+        )
+    }
+
+    /// Resume a renderer previously suspended for a hidden surface.
+    func resumeRendererIfNeeded(reason: String) {
+        guard !isShutDown, isRendererSuspended else { return }
+        isRendererSuspended = false
+        AMLLLifecycleDiagnostics.emit(
+            "renderer.resume role=\(role) reason=\(reason) ready=\(isReady) objectID=\(webViewObjectID)"
+        )
+        Log.debug(
+            "Resuming retained AMLL renderer: role=\(role), reason=\(reason), playing=\(lastIsPlaying ?? false), objectID=\(webViewObjectID)",
+            category: .webview
+        )
+        guard isReady else { return }
+        let boolStr = (lastIsPlaying ?? false) ? "true" : "false"
+        callJS(
+            "window.AMLL.setPlaying(\(boolStr))",
+            debugDescription: "window.AMLL.setPlaying:\(reason)"
+        )
     }
 
     func revealExistingLyrics(reason: String, currentTime: Double? = nil) {
@@ -1253,6 +1297,7 @@ final class LyricsWebViewStore: NSObject {
                     || description.contains("setLyricsTTML")
                     || description.contains("clearState")
                     || description.contains("setPlaying")
+                    || description.contains("revealExistingLyrics")
                     || description.contains("beginTrackProfileSession")
                     || description.contains("collectTrackProfileSession")
             }
@@ -1267,6 +1312,7 @@ final class LyricsWebViewStore: NSObject {
                     || description.contains("setLyricsTTML")
                     || description.contains("clearState")
                     || description.contains("setPlaying")
+                    || description.contains("revealExistingLyrics")
                     || description.contains("setConfig")
                     || description.contains("applyEffectiveTheme.css")
                     || description.contains("beginTrackProfileSession")
@@ -1319,7 +1365,8 @@ final class LyricsWebViewStore: NSObject {
                 isPlaying: lastIsPlaying ?? false
             )
         } else if let playing = lastIsPlaying {
-            let js = "window.AMLL.setPlaying(\(playing ? "true" : "false"))"
+            let rendererPlaying = !isRendererSuspended && playing
+            let js = "window.AMLL.setPlaying(\(rendererPlaying ? "true" : "false"))"
             webView.evaluateJavaScript(js, completionHandler: nil)
             if let time = lastTime {
                 queuedTimeSync = nil
@@ -1981,6 +2028,7 @@ final class LyricsWebViewStore: NSObject {
         lastTrackID = nil
         lastTime = nil
         lastIsPlaying = nil
+        isRendererSuspended = false
         lastConfigJSON = nil
         lastThemeConfigPatchJSON = nil
         lastThemeCSSScript = nil

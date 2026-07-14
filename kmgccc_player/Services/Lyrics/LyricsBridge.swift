@@ -58,8 +58,6 @@ final class LyricsBridge: NSObject, LyricsBridgeServiceProtocol {
         Log.warning("Web content invalidated: \(reason)", category: .webview)
     }
 
-    // MARK: - Initialization
-
     override init() {
         super.init()
         Log.debug("initialized", category: .lyrics)

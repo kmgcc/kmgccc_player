@@ -55,7 +55,6 @@ extension Notification.Name {
 }
 
 /// Observable app settings using AppStorage for persistence.
-/// Observable app settings using AppStorage for persistence.
 @Observable
 public final class AppSettings {
 
@@ -646,23 +645,12 @@ public final class AppSettings {
         }
     }
 
-    /// Applies one-shot defaults when the user enters Classic / RotatingCover
-    /// from a different skin. Re-entering refreshes the defaults so the LED
-    /// (and CD mode for RotatingCover) come back on, but staying on the same
-    /// skin and toggling the keys manually is left untouched.
+    /// Visualizer choices are retained per skin by AudioVisualizationPreferences;
+    /// only the rotating-cover presentation mode still has an entry default.
     private func applySkinEntryDefaults(previous: String, new: String) {
         guard previous != new else { return }
-        let defaults = UserDefaults.standard
-        switch new {
-        case ClassicLEDSkin.id:
-            defaults.set("led", forKey: "skin.classicLED.visualizerMode")
-        case AppleStyleSkin.skinID:
-            defaults.set("led", forKey: "skin.appleStyle.visualizerMode")
-        case "rotatingCover":
-            defaults.set("led", forKey: "skin.rotatingCover.visualizerMode")
-            defaults.set(true, forKey: "skin.rotatingCover.cdMode")
-        default:
-            break
+        if new == "rotatingCover" {
+            UserDefaults.standard.set(true, forKey: "skin.rotatingCover.cdMode")
         }
     }
 

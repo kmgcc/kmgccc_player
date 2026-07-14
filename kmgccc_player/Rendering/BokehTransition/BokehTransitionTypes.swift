@@ -23,123 +23,33 @@ enum CoverBlurTransitionEffect: String, CaseIterable, Sendable {
     }
 }
 
-enum BokehTransitionQuality: String, CaseIterable, Sendable {
-    case automatic
-    case low
-    case balanced
-
-    var displayName: String {
-        switch self {
-        case .automatic: "自动"
-        case .low: "低"
-        case .balanced: "均衡"
-        }
-    }
-}
-
-enum BokehApertureShape: String, CaseIterable, Sendable {
-    case circle
-    case square
-    case pentagon
-    case hexagon
-    case heptagon
-    case octagon
-
-    var displayName: String {
-        switch self {
-        case .circle: "圆形"
-        case .square: "四边形"
-        case .pentagon: "五边形"
-        case .hexagon: "六边形"
-        case .heptagon: "七边形"
-        case .octagon: "八边形"
-        }
-    }
-
-    var bladeCount: Int {
-        switch self {
-        case .circle: 0
-        case .square: 4
-        case .pentagon: 5
-        case .hexagon: 6
-        case .heptagon: 7
-        case .octagon: 8
-        }
-    }
-
-    var supportsPolygonControls: Bool { self != .circle }
-}
-
-/// Persisted settings for the temporary Metal transition surface. Static Cover
-/// Gradient Blur rendering deliberately does not consult this type.
+/// The only persisted choice is whether the transition uses Bokeh or Gaussian.
+/// Bokeh's visual and performance parameters are intentionally fixed so every
+/// installation uses the same transition result.
 struct BokehTransitionConfig: Equatable, Sendable {
-    static let defaultRadiusAt1080 = 44.0
-    static let defaultHighlightPower = 3.0
+    static let defaultRadiusAt1080 = 60.0
+    static let defaultHighlightPower = 5.0
     static let defaultHighlightThreshold = 0.70
+    static let defaultApertureBlades: Int32 = 0
+    static let defaultApertureRotationRadians = 0.0
+    static let defaultApertureRoundness = 0.0
 
     var effect: CoverBlurTransitionEffect
-    var quality: BokehTransitionQuality
-    var radiusAt1080: Double
-    var highlightPower: Double
-    var highlightThreshold: Double
-    var aperture: BokehApertureShape
-    var apertureRotationDegrees: Double
-    var apertureRoundness: Double
 
     init(
-        effect: CoverBlurTransitionEffect = .bokeh,
-        quality: BokehTransitionQuality = .automatic,
-        radiusAt1080: Double = BokehTransitionConfig.defaultRadiusAt1080,
-        highlightPower: Double = BokehTransitionConfig.defaultHighlightPower,
-        highlightThreshold: Double = BokehTransitionConfig.defaultHighlightThreshold,
-        aperture: BokehApertureShape = .circle,
-        apertureRotationDegrees: Double = 0,
-        apertureRoundness: Double = 0
+        effect: CoverBlurTransitionEffect = .bokeh
     ) {
         self.effect = effect
-        self.quality = quality
-        self.radiusAt1080 = radiusAt1080.clamped(to: 16...72)
-        self.highlightPower = highlightPower.clamped(to: 1...5)
-        self.highlightThreshold = highlightThreshold.clamped(to: 0.40...0.95)
-        self.aperture = aperture
-        self.apertureRotationDegrees = apertureRotationDegrees.clamped(to: 0...180)
-        self.apertureRoundness = apertureRoundness.clamped(to: -1...1)
     }
 
     static func load(from defaults: UserDefaults = .standard) -> Self {
         Self(
-            effect: CoverBlurTransitionEffect(rawValue: defaults.string(forKey: Keys.effect) ?? "") ?? .bokeh,
-            quality: BokehTransitionQuality(rawValue: defaults.string(forKey: Keys.quality) ?? "") ?? .automatic,
-            radiusAt1080: defaults.doubleValue(forKey: Keys.radiusAt1080, fallback: defaultRadiusAt1080),
-            highlightPower: defaults.doubleValue(forKey: Keys.highlightPower, fallback: defaultHighlightPower),
-            highlightThreshold: defaults.doubleValue(forKey: Keys.highlightThreshold, fallback: defaultHighlightThreshold),
-            aperture: BokehApertureShape(rawValue: defaults.string(forKey: Keys.aperture) ?? "") ?? .circle,
-            apertureRotationDegrees: defaults.doubleValue(forKey: Keys.apertureRotationDegrees, fallback: 0),
-            apertureRoundness: defaults.doubleValue(forKey: Keys.apertureRoundness, fallback: 0)
+            effect: CoverBlurTransitionEffect(rawValue: defaults.string(forKey: Keys.effect) ?? "") ?? .bokeh
         )
     }
 
     enum Keys {
         static let effect = "skin.coverGradientBlur.transitionBokeh.effect"
-        static let quality = "skin.coverGradientBlur.transitionBokeh.quality"
-        static let radiusAt1080 = "skin.coverGradientBlur.transitionBokeh.radiusAt1080"
-        static let highlightPower = "skin.coverGradientBlur.transitionBokeh.highlightPower"
-        static let highlightThreshold = "skin.coverGradientBlur.transitionBokeh.highlightThreshold"
-        static let aperture = "skin.coverGradientBlur.transitionBokeh.aperture"
-        static let apertureRotationDegrees = "skin.coverGradientBlur.transitionBokeh.apertureRotationDegrees"
-        static let apertureRoundness = "skin.coverGradientBlur.transitionBokeh.apertureRoundness"
-    }
-}
-
-private extension Double {
-    func clamped(to range: ClosedRange<Double>) -> Double {
-        min(max(self, range.lowerBound), range.upperBound)
-    }
-}
-
-private extension UserDefaults {
-    func doubleValue(forKey key: String, fallback: Double) -> Double {
-        object(forKey: key) == nil ? fallback : double(forKey: key)
     }
 }
 

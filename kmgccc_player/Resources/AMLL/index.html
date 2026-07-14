@@ -1508,6 +1508,14 @@
         let wordHighlightMode = "smooth";
         let alignAnchor = "top";
         let alignPosition = 0.2;
+        // A manual surface reveal must keep AMLL's existing line objects. The
+        // full setLyricLines() path is reserved for a real lyric payload change.
+        let pendingAMLLNativeRelayoutFrameId = null;
+        const cancelPendingAMLLNativeRelayout = () => {
+            if (pendingAMLLNativeRelayoutFrameId === null) return;
+            cancelAnimationFrame(pendingAMLLNativeRelayoutFrameId);
+            pendingAMLLNativeRelayoutFrameId = null;
+        };
         const SPRING_DURATION_MIN = 0.30;
         const SPRING_DURATION_MAX = 1.20;
         const SPRING_BOUNCE_MIN = -0.25;
@@ -5794,6 +5802,7 @@
 
         const clearRendererState = (reason = "clearState") => {
             const clearStart = performance.now();
+            cancelPendingAMLLNativeRelayout();
             stopFirstVisibleLineProbe();
             if (activeTrackProfileSession) {
                 activeTrackProfileSession.clearRendererStateCount += 1;
@@ -6351,15 +6360,30 @@
             };
         };
 
-        const triggerExistingLinePositionSpringReveal = async (options = {}) => {
+        // AMLL has no separate public "reveal" method. Its two relevant public
+        // paths are intentionally kept distinct:
+        //   * setLyricLines(lines, initialTime) creates new DOM line groups and
+        //     owns the full new-lyric entrance from the bottom.
+        //   * setCurrentTime(...)+calcLayout(false, false) keeps the existing
+        //     groups and lets AMLL's own posY springs converge to their targets.
+        // The latter is the lightweight manual re-display path. Do not mutate
+        // currentLyricLineObjects or any protected line transform here.
+        const triggerAMLLNativeLyricRelayout = async (options = {}) => {
+            cancelPendingAMLLNativeRelayout();
             const reason = typeof options.reason === "string"
                 ? options.reason
                 : "surface-attached";
+            const playerElement = lyricPlayer.getElement?.();
             const lineObjects = Array.isArray(lyricPlayer.currentLyricLineObjects)
                 ? lyricPlayer.currentLyricLineObjects
                 : [];
-            const playerElement = lyricPlayer.getElement?.();
-            if (!(playerElement instanceof HTMLElement) || lineObjects.length === 0 || !lastTTML) {
+            if (
+                !(playerElement instanceof HTMLElement)
+                || lineObjects.length === 0
+                || !lastTTML
+                || lyricPlayer.initialLayoutFinished === false
+                || typeof lyricPlayer.calcLayout !== "function"
+            ) {
                 return {
                     status: "skipped",
                     reason,
@@ -6367,6 +6391,7 @@
                     lineObjects: lineObjects.length,
                 };
             }
+
             const springIsEnabled =
                 typeof lyricPlayer.getEnableSpring === "function"
                     ? lyricPlayer.getEnableSpring() !== false
@@ -6384,100 +6409,66 @@
             const revealTimeMs = Number.isFinite(optionSeconds)
                 ? Math.max(0, Math.floor(optionSeconds * 1000))
                 : (Number.isFinite(lastKnownTimeMs) ? lastKnownTimeMs : 0);
-            originalSetCurrentTime(revealTimeMs, true);
-            if (typeof lyricPlayer.calcLayout === "function") {
+
+            try {
+                // Keep the current lyric groups. AMLL's public calcLayout path
+                // updates their spring targets and the normal render loop
+                // performs the entrance animation.
+                originalSetCurrentTime(revealTimeMs, false);
                 await lyricPlayer.calcLayout(false, false);
+                lastKnownTimeMs = revealTimeMs;
+                externalTimeMs = revealTimeMs;
+                externalTimeAnchorPerfMs = performance.now();
+                wakeRenderer();
+                emitParallelEmphasisNormalizationTrace();
+                installWindowEmphasisGlowLifecycleHooks();
+                syncWindowEmphasisGlowForCurrentScheme("native-existing-line-reveal");
+
+                requestAnimationFrame(() => {
+                    if (fullscreenOpaqueLyricsMode) {
+                        enforceFullscreenNormalCompositing();
+                        patchFullscreenLineOpacityBehavior({
+                            reason: `existing-line-reveal:${reason}`,
+                            forceActiveSync: true,
+                        });
+                    } else if (fullscreenCoverBlurMode) {
+                        syncCoverBlurRootState();
+                        patchCoverBlurLineBehavior({
+                            reason: `existing-line-reveal:${reason}`,
+                            forceActiveSync: true,
+                        });
+                    }
+                    logActiveHighlightState(`existing-line-reveal:${reason}`, { important: true });
+                });
+
+                const summary = {
+                    status: "revealed",
+                    reason,
+                    cause: "amll-native-calcLayout-relayout",
+                    lineObjects: lineObjects.length,
+                    currentTimeMs: revealTimeMs,
+                };
+                console.log("[AMLLLineReveal]", summary);
+                return summary;
+            } catch (error) {
+                console.error("[AMLLLineReveal] native entrance failed", error);
+                return {
+                    status: "error",
+                    reason,
+                    cause: "amll-native-calcLayout-relayout",
+                    currentTimeMs: revealTimeMs,
+                    error: String(error),
+                };
             }
-
-            const timelineState = lyricPlayer.timelineState ?? {};
-            const focusIndex = Number.isFinite(timelineState.scrollToIndex)
-                ? timelineState.scrollToIndex
-                : (Number.isFinite(lyricPlayer.scrollToIndex) ? lyricPlayer.scrollToIndex : 0);
-            const viewportHeight = Math.max(
-                1,
-                Number(lyricPlayer.size?.[1]) || playerElement.clientHeight || window.innerHeight || 1
-            );
-            const overscan = Math.max(
-                0,
-                Number(lyricPlayer.getOverscanPx?.()) || Number(overscanPx) || 0
-            );
-            const centerY = viewportHeight * 0.5;
-            const baseDistance = Math.max(72, Math.min(viewportHeight * 0.18, 180));
-            const extraDistance = Math.min(viewportHeight * 0.16, 160);
-            let touched = 0;
-
-            for (let lineIndex = 0; lineIndex < lineObjects.length; lineIndex++) {
-                const lineObj = lineObjects[lineIndex];
-                const lineTransforms = lineObj?.lineTransforms;
-                const posY = lineTransforms?.posY;
-                if (
-                    !posY
-                    || typeof posY.setPosition !== "function"
-                    || typeof posY.getCurrentPosition !== "function"
-                ) {
-                    continue;
-                }
-                const targetTop = Number.isFinite(lineObj?.top)
-                    ? lineObj.top
-                    : Number(posY.getCurrentPosition());
-                if (!Number.isFinite(targetTop)) continue;
-                const lineHeight = Number(lyricPlayer.lyricLinesSize?.get?.(lineObj)?.[1]) || viewportHeight / 5;
-                const targetBottom = targetTop + lineHeight;
-                const nearViewport = !(targetTop > viewportHeight + overscan || targetBottom < -overscan);
-                const nearFocus = Math.abs(lineIndex - focusIndex) <= 8;
-                if (!nearViewport && !nearFocus) continue;
-
-                const focusDistance = Math.min(1, Math.abs(lineIndex - focusIndex) / 8);
-                const revealDistance = baseDistance + focusDistance * extraDistance;
-                let direction;
-                if (lineIndex < focusIndex) {
-                    direction = -1;
-                } else if (lineIndex > focusIndex) {
-                    direction = 1;
-                } else {
-                    direction = targetTop + lineHeight * 0.5 < centerY ? -1 : 1;
-                }
-                posY.setPosition(targetTop + direction * revealDistance);
-                touched += 1;
-            }
-
-            if (touched > 0 && typeof lyricPlayer.calcLayout === "function") {
-                await lyricPlayer.calcLayout(false, false);
-            }
-            requestAnimationFrame(() => {
-                if (fullscreenOpaqueLyricsMode) {
-                    patchFullscreenLineOpacityBehavior({
-                        reason: `existing-line-reveal:${reason}`,
-                        forceActiveSync: true,
-                    });
-                } else if (fullscreenCoverBlurMode) {
-                    patchCoverBlurLineBehavior({
-                        reason: `existing-line-reveal:${reason}`,
-                        forceActiveSync: true,
-                    });
-                }
-                logActiveHighlightState(`existing-line-reveal:${reason}`, { important: true });
-            });
-
-            const summary = {
-                status: touched > 0 ? "revealed" : "skipped",
-                reason,
-                cause: touched > 0 ? "line-position-spring" : "no-nearby-lines",
-                focusIndex,
-                touched,
-                lineObjects: lineObjects.length,
-                currentTimeMs: revealTimeMs,
-            };
-            console.log("[AMLLLineReveal]", summary);
-            return summary;
         };
 
         // Define the Renderer Implementation for Bridge
         window.LyricsRenderer = {
-	            setLyrics: (ttml, options = {}) => {
-	                const setLyricsStart = performance.now();
+            setLyrics: (ttml, options = {}) => {
+                const setLyricsStart = performance.now();
 	                // Idle-CPU: new lyrics must render even if paused/idle.
 	                wakeRenderer();
+	                cancelPendingAMLLNativeRelayout();
                 if (activeTrackProfileSession) {
                     activeTrackProfileSession.setLyricsCount += 1;
                 }
@@ -6515,9 +6506,9 @@
 			                    : NaN;
 			            });
 			            lines.forEach(applyTimeOffset);
-			            const nextLineTimingOnlyMode = normalizeMainLinesForLineTimingMode(lines);
+                        const nextLineTimingOnlyMode = normalizeMainLinesForLineTimingMode(lines);
                         const timingPreprocessSummary = applyAppTimingPreprocessing(lines);
-			            const nextParallelSourceLines = structuredClone(lines);
+                        const nextParallelSourceLines = structuredClone(lines);
 			            const nextParallelPairs = buildParallelEmphasisDiagnosticPairs(
 			                nextParallelSourceLines
 			            );
@@ -6531,7 +6522,7 @@
 
 		                lastTTML = ttml;
                         lastParsedLineCount = lines.length;
-			            seekLineStartTimesMs = nextSeekLineStartTimesMs;
+		            seekLineStartTimesMs = nextSeekLineStartTimesMs;
 			            lineTimingOnlyMode = nextLineTimingOnlyMode;
 			            parallelEmphasisDiagnosticsSourceLines = nextParallelSourceLines;
 			            parallelEmphasisDiagnosticPairs = nextParallelPairs;
@@ -6634,7 +6625,7 @@
                 revealExistingLyrics: (options = {}) => {
                     // Idle-CPU: the spring reveal needs frames to animate.
                     wakeRenderer();
-                    return triggerExistingLinePositionSpringReveal(options);
+                    return triggerAMLLNativeLyricRelayout(options);
                 },
 	            
 	            setPlaying: (isPlaying) => {
@@ -6712,8 +6703,10 @@
                                     springDuration = nextSpringDuration;
                                     springBounce = nextSpringBounce;
                                     applyLyricSpringParams(springDuration, springBounce);
-                                    requestAnimationFrame(() => {
-                                        triggerExistingLinePositionSpringReveal({
+                                    cancelPendingAMLLNativeRelayout();
+                                    pendingAMLLNativeRelayoutFrameId = requestAnimationFrame(() => {
+                                        pendingAMLLNativeRelayoutFrameId = null;
+                                        triggerAMLLNativeLyricRelayout({
                                             reason: "spring-config-change",
                                         });
                                     });

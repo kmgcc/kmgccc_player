@@ -13,8 +13,6 @@ import Foundation
 @MainActor
 protocol AudioPlaybackServiceProtocol: AnyObject {
 
-    // MARK: - State
-
     /// Whether audio is currently playing.
     var isPlaying: Bool { get }
 
