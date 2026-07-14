@@ -40,8 +40,6 @@ final class AMLLDBIndexEntry {
     /// When this entry was last updated in the local database
     var lastUpdated: Date
     
-    // MARK: - Initializer
-    
     init(
         ncmMusicId: String,
         musicName: String,

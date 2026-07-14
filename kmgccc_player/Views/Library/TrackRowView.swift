@@ -21,6 +21,38 @@ struct TrackRowModel: Identifiable, Equatable {
     let artworkFileURL: URL?
     let artworkIdentity: String
     let isMissing: Bool
+    /// Row identity can differ from the track identity for event timelines
+    /// (for example, two history records for the same song). Artwork requests
+    /// must still use the real track ID for cache reuse.
+    let artworkTrackID: UUID
+
+    init(
+        id: UUID,
+        title: String,
+        artist: String,
+        lyricSnippetLine: String?,
+        lyricSnippetStartTime: Double?,
+        lyricHighlightRanges: [SearchHighlightRange],
+        durationText: String,
+        artworkData: Data?,
+        artworkFileURL: URL?,
+        artworkIdentity: String,
+        isMissing: Bool,
+        artworkTrackID: UUID? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.artist = artist
+        self.lyricSnippetLine = lyricSnippetLine
+        self.lyricSnippetStartTime = lyricSnippetStartTime
+        self.lyricHighlightRanges = lyricHighlightRanges
+        self.durationText = durationText
+        self.artworkData = artworkData
+        self.artworkFileURL = artworkFileURL
+        self.artworkIdentity = artworkIdentity
+        self.isMissing = isMissing
+        self.artworkTrackID = artworkTrackID ?? id
+    }
 
     static func == (lhs: TrackRowModel, rhs: TrackRowModel) -> Bool {
         lhs.id == rhs.id
@@ -32,6 +64,7 @@ struct TrackRowModel: Identifiable, Equatable {
             && lhs.durationText == rhs.durationText
             && lhs.artworkIdentity == rhs.artworkIdentity
             && lhs.isMissing == rhs.isMissing
+            && lhs.artworkTrackID == rhs.artworkTrackID
     }
 }
 
@@ -62,6 +95,7 @@ struct TrackRowView<MenuContent: View>: View {
     let showsSelectionBackground: Bool
     let enableSecondaryInteractions: Bool
     let enableArtworkLoading: Bool
+    let allowsMissingRowTap: Bool
     let revealHighlight: Bool
     let onTap: (_ isShiftPressed: Bool) -> Void
     let onLyricSnippetTap: (() -> Void)?
@@ -97,6 +131,7 @@ struct TrackRowView<MenuContent: View>: View {
         showsSelectionBackground: Bool = true,
         enableSecondaryInteractions: Bool = true,
         enableArtworkLoading: Bool = true,
+        allowsMissingRowTap: Bool = false,
         revealHighlight: Bool = false,
         onTap: @escaping (_ isShiftPressed: Bool) -> Void,
         onLyricSnippetTap: (() -> Void)? = nil,
@@ -114,6 +149,7 @@ struct TrackRowView<MenuContent: View>: View {
         self.showsSelectionBackground = showsSelectionBackground
         self.enableSecondaryInteractions = enableSecondaryInteractions
         self.enableArtworkLoading = enableArtworkLoading
+        self.allowsMissingRowTap = allowsMissingRowTap
         self.revealHighlight = revealHighlight
         self.onTap = onTap
         self.onLyricSnippetTap = onLyricSnippetTap
@@ -216,7 +252,7 @@ struct TrackRowView<MenuContent: View>: View {
             isHovering = hover
         }
         .onTapGesture {
-            if !model.isMissing {
+            if !model.isMissing || allowsMissingRowTap {
                 onTap(Self.isShiftPressed)
             }
         }
@@ -489,7 +525,7 @@ struct TrackRowView<MenuContent: View>: View {
 
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         let lowRequest = PlaylistArtworkPipeline.rowLowRequest(
-            trackID: model.id,
+            trackID: model.artworkTrackID,
             artworkData: model.artworkData,
             artworkFileURL: model.artworkFileURL,
             artworkIdentity: model.artworkIdentity,
@@ -497,7 +533,7 @@ struct TrackRowView<MenuContent: View>: View {
             scale: scale
         )
         let highRequest = PlaylistArtworkPipeline.rowHighRequest(
-            trackID: model.id,
+            trackID: model.artworkTrackID,
             artworkData: model.artworkData,
             artworkFileURL: model.artworkFileURL,
             artworkIdentity: model.artworkIdentity,
@@ -601,6 +637,7 @@ extension TrackRowView: Equatable where MenuContent: View {
             && lhs.showsSelectionBackground == rhs.showsSelectionBackground
             && lhs.enableSecondaryInteractions == rhs.enableSecondaryInteractions
             && lhs.enableArtworkLoading == rhs.enableArtworkLoading
+            && lhs.allowsMissingRowTap == rhs.allowsMissingRowTap
             && lhs.revealHighlight == rhs.revealHighlight
             && (lhs.onLyricSnippetTap == nil) == (rhs.onLyricSnippetTap == nil)
             && lhs.rowPrimaryColor == rhs.rowPrimaryColor

@@ -114,8 +114,6 @@ final class BackgroundAnimationClock: ObservableObject {
         }
     }
     
-    // MARK: - State
-    
     private var timer: Timer?
     private var tickCount: UInt64 = 0
     private var isRunning = false
@@ -135,8 +133,6 @@ final class BackgroundAnimationClock: ObservableObject {
     let dotHighRatePublisher = PassthroughSubject<Void, Never>()
     let transitionPublisher = PassthroughSubject<Void, Never>()
     let speedRampPublisher = PassthroughSubject<Void, Never>()
-    
-    // MARK: - Initialization
     
     private init() {}
     

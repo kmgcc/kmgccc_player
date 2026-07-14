@@ -481,6 +481,16 @@ struct LEDColorResolver {
         }
     }
 
+    func statusLightLayerFillNSColor(level: Int) -> NSColor {
+        statusLightNSColor(level: level)
+            .withAlphaComponent(CGFloat(opacityForLevel(level: level)))
+    }
+
+    func statusLightLayerStrokeNSColor(level: Int) -> NSColor {
+        statusLightStrokeNSColor(level: level)
+            .withAlphaComponent(CGFloat(min(0.50, opacityForLevel(level: level) * 0.55)))
+    }
+
     // MARK: - Volume LED
 
     func volumeLEDNSColor(index: Int, count: Int, level: Int) -> NSColor {
@@ -529,6 +539,16 @@ struct LEDColorResolver {
                 .opacity(min(0.50, opacityForLevel(level: level) * 0.55))
 #endif
         }
+    }
+
+    func volumeLEDLayerFillNSColor(index: Int, count: Int, level: Int) -> NSColor {
+        volumeLEDNSColor(index: index, count: count, level: level)
+            .withAlphaComponent(CGFloat(opacityForLevel(level: level)))
+    }
+
+    func volumeLEDLayerStrokeNSColor(index: Int, count: Int, level: Int) -> NSColor {
+        volumeLEDStrokeNSColor(index: index, count: count, level: level)
+            .withAlphaComponent(CGFloat(min(0.50, opacityForLevel(level: level) * 0.55)))
     }
 
     // MARK: - OKLCH production helpers

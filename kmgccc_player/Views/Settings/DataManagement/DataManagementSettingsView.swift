@@ -194,7 +194,7 @@ struct DataManagementSettingsView: View {
 
     private var musicPreferenceResetControl: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Button("重置音乐播放数据", role: .destructive) {
+            Button("重置播放统计数据", role: .destructive) {
                 MusicPreferenceResetDialogPresenter.present(
                     libraryVM: libraryVM,
                     playerVM: playerVM
@@ -203,7 +203,7 @@ struct DataManagementSettingsView: View {
             .buttonStyle(.borderedProminent)
             .clipShape(Capsule())
 
-            Text("清除播放统计数据，包括歌曲聆听计数、播放时长等")
+            Text("清除音乐播放记录，包括歌曲聆听计数、播放时长等")
                 .settingsDescriptionStyle()
         }
     }

@@ -5,11 +5,11 @@ import { pathToFileURL } from "node:url";
 
 const repoRoot = path.resolve(new URL("..", import.meta.url).pathname);
 const amllSourceRoot = process.env.AMLL_SOURCE
-	? path.resolve(process.env.AMLL_SOURCE)
-	: "/Users/kmg/Documents/vscode/player/myPlayer2/applemusic-like-lyrics-kmgcccplayer-integration";
+		? path.resolve(process.env.AMLL_SOURCE)
+		: path.join(repoRoot, "Dependencies", "Submodules", "AMLLIntegration");
 const appAMLLDir = process.env.APP_AMLL_DIR
-	? path.resolve(process.env.APP_AMLL_DIR)
-	: path.join(repoRoot, "myPlayer2", "Resources", "AMLL");
+		? path.resolve(process.env.APP_AMLL_DIR)
+		: path.join(repoRoot, "kmgccc_player", "Resources", "AMLL");
 const oldBundlePath = process.env.OLD_AMLL_CORE
 	? path.resolve(process.env.OLD_AMLL_CORE)
 	: (() => { throw new Error("OLD_AMLL_CORE env var required — backup bundle was deleted 2026-06-04. Point to a historical amll-core.js from Git or an explicit path."); })();

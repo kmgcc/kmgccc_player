@@ -942,8 +942,6 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         static let diagnosticsInterval: TimeInterval = 2.0
     }
 
-    // MARK: - State
-
     private var initialized = false
     private var lastDt: Float = 1.0 / 30.0
 

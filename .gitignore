@@ -1,45 +1,47 @@
-# docs/ contains private working notes, AI-generated docs, and local web assets.
-# Tracked by its own Git repo inside docs/ for local version control.
-docs/
-# The public release notes live in the tracked, case-sensitive app Docs path.
+# docs-private/ is a local-only Git worktree for notes, docs, and audits.
+/docs-private/
+# Public documentation lives under docs/ and is tracked by the main repo.
 !kmgccc_player/Docs/
 kmgccc_player/Docs/*
-!kmgccc_player/Docs/ReleaseBoundary.md
 
-# Manual exclusions
-# Private distribution art inputs and encrypted runtime assets must never enter
-# the public source history. The public build supplies procedural fallbacks.
+# Local-only build configuration (the .example is committed)
+/Config/LocalOverrides.xcconfig
+
+# Local-only art and resource worktrees
 /BKThemes/
 /PrivateArtSources/
-# Migrated art masters stay private; runtime audio remains tracked under
-# kmgccc_player/Resources/Audio/.
 /EncryptedArtAssets/
 /BKArt.bundle/
 /kmgccc_player/Resources/BKArt.bundle/
-# Private Bokeh source is compiled only by the private distribution workspace.
 /kmgccc_player/Rendering/BokehTransition/BokehTransitionShader.metal
 /kmgccc_player/Rendering/BokehTransition/*.metallib
-# Encryption tools and allowlists live in the private resources repository.
 scripts/encrypt_art_assets.swift
 scripts/encrypted_asset_allowlist.json
-apple-audio-visualization-main/
-# AMLL source worktrees live in ../amll-sources/.
+
+# AMLL source worktrees
 applemusic-like-lyrics-full-refractor/
 applemusic-like-lyrics-full-custom-core/
 LDDC-main/
+
+# Local AI instruction files and working notes
 skills/
-ARCHITECTURE.md
-AGENTS.md
-CLAUDE.md
-GEMINI.md
+/ARCHITECTURE.md
+/AGENTS.md
+/CLAUDE.md
+/GEMINI.md
+
+# Presentation and scratch files
 kmgccc_player_demo.pptx
 scan_ui.py
 ui_candidates.txt
 kmgccc_player/scan_ui.py
 kmgccc_player/ui_candidates.txt
-# Local asset catalog masters are ignored after the image-art encryption
-# migration. Do not store runtime audio resources here.
+
+# Local asset catalog masters
 kmgccc_player/Assets.xcassets/
+
+# Local diagnostic tools with machine-specific paths
+Tools/ColorGoldenMaster/
 
 # Tool working directories
 .opencode/
@@ -52,6 +54,7 @@ kmgccc_player/Assets.xcassets/
 
 # Xcode
 build/
+/.build/
 *.project/xcuserdata
 *.project/xcshareddata
 *.project/project.xcworkspace/xcuserdata
@@ -63,9 +66,9 @@ build/
 DerivedData
 .derivedData/
 .derivedDataAudioAudit/
+.derivedDataLocal/
 .derivedDataCodex/
 .derivedDataCodex*/
-.derivedDataLocal/
 .derivedDataLocal2/
 *.hmap
 *.ipa
@@ -79,18 +82,13 @@ __pycache__/
 env/
 dist/
 *.spec
-kmgccc_player/Resources/Tools/qqmusic-helper/.venv/
-kmgccc_player/Resources/Tools/qqmusic-helper/.build-arm64/
-kmgccc_player/Resources/Tools/qqmusic-helper/.build-universal/
-kmgccc_player/Resources/Tools/qqmusic-helper/qqmusic-helper
-kmgccc_player/Resources/Tools/qqmusic-helper/_internal.bundle/
 .qqmusic-helper-venv/
 
-# Tools / Binary distributions
-Tools/lddc-server/
+# Local build outputs
 .derivedDataLocalBuild/
 *.flac
 *.bak
+*.profraw
 .claude/worktrees/
 .worktrees/
 superteam/

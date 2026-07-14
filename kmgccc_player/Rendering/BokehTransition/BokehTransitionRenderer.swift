@@ -463,12 +463,12 @@ final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
         )
         var bokehUniforms = TransitionBokehUniforms(
             radiusAt1080: Float(presentation.bokehRadius),
-            highlightPower: Float(presentation.configuration.highlightPower),
-            highlightThreshold: Float(presentation.configuration.highlightThreshold),
+            highlightPower: Float(BokehTransitionConfig.defaultHighlightPower),
+            highlightThreshold: Float(BokehTransitionConfig.defaultHighlightThreshold),
             sampleBudget: presentation.tier.sampleBudget,
-            apertureBlades: Int32(presentation.configuration.aperture.bladeCount),
-            apertureRotationRadians: Float(presentation.configuration.apertureRotationDegrees * .pi / 180),
-            apertureRoundness: Float(presentation.configuration.apertureRoundness)
+            apertureBlades: BokehTransitionConfig.defaultApertureBlades,
+            apertureRotationRadians: Float(BokehTransitionConfig.defaultApertureRotationRadians),
+            apertureRoundness: Float(BokehTransitionConfig.defaultApertureRoundness)
         )
 
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
@@ -502,11 +502,14 @@ final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
         }
 
         commandBuffer.present(drawable)
-        commandBuffer.addCompletedHandler { [weak self] buffer in
+        let completionSemaphore = inFlight
+        commandBuffer.addCompletedHandler { [weak self, completionSemaphore] buffer in
+            // Return the permit on the Metal completion thread. The renderer
+            // may be dismantled before its main-actor metrics task runs.
+            completionSemaphore.signal()
             let gpuSeconds = buffer.gpuEndTime - buffer.gpuStartTime
             Task { @MainActor [weak self] in
                 self?.recordCompletedFrame(gpuSeconds: gpuSeconds)
-                self?.inFlight.signal()
             }
         }
         commandBuffer.commit()

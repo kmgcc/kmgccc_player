@@ -100,8 +100,8 @@ struct BokehTransitionBench {
         )
         uploadSyntheticHighlights(to: input)
         var uniforms = TransitionBokehUniforms(
-            radiusAt1080: 44,
-            highlightPower: 3,
+            radiusAt1080: 60,
+            highlightPower: 5,
             highlightThreshold: 0.70,
             sampleBudget: benchmark.samples,
             apertureBlades: 0,

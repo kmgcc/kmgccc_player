@@ -98,7 +98,7 @@ final class BKThemeAssets: @unchecked Sendable {
     private nonisolated(unsafe) let maskCache = NSCache<NSString, ImageArrayBox>()
     private nonisolated(unsafe) let artworkFrameCache = NSCache<NSString, ImageArrayBox>()
     private nonisolated(unsafe) let fullscreenCircleCache = NSCache<NSString, FullscreenCircleLoadResultBox>()
-    private let encryptedLoader = EncryptedArtAssetLoader.shared
+    private let assetLoader = ArtAssetLoader.shared
 
     private nonisolated static let maskProcessingContext = CIContext(options: [.cacheIntermediates: false])
 
@@ -328,7 +328,7 @@ final class BKThemeAssets: @unchecked Sendable {
         artworkFrameCache.removeAllObjects()
         fullscreenCircleCache.removeAllObjects()
         Self.maskProcessingContext.clearCaches()
-        encryptedLoader.purgeCache()
+        assetLoader.purgeCache()
     }
 
     private nonisolated static let programmaticBackgroundIndices = [0, 1]
@@ -401,7 +401,7 @@ final class BKThemeAssets: @unchecked Sendable {
             }
         }
 
-        if EncryptedArtAssetLoader.shared.assetURL(logicalName: "BKThemes/Backgrounds/bk1", in: Bundle.main)
+        if ArtAssetLoader.shared.assetURL(logicalName: "BKThemes/Backgrounds/bk1", in: Bundle.main)
             != nil
         {
             return Bundle.main
@@ -433,7 +433,7 @@ final class BKThemeAssets: @unchecked Sendable {
         let entries = names.compactMap { name -> AssetEntry? in
             let logicalName = "BKThemes/Backgrounds/\(name)"
             let encryptedExists = searchBundles.contains {
-                EncryptedArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
+                ArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
             }
             let plainURL = preferPlain ? backgroundURL(named: name, in: searchBundles) : nil
             guard encryptedExists || plainURL != nil else { return nil }
@@ -508,7 +508,7 @@ final class BKThemeAssets: @unchecked Sendable {
             let name = "shape\(index)"
             let logicalName = "BKThemes/Shapes/\(name)"
             let encryptedExists = searchBundles.contains {
-                EncryptedArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
+                ArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
             }
             let plainURL = preferPlain
                 ? debugPlainAssetURL(relativePath: "Shapes/\(name).png")
@@ -538,7 +538,7 @@ final class BKThemeAssets: @unchecked Sendable {
             let name = String(format: "frame_%02d", index)
             let logicalName = "BKThemes/Mask/\(name)"
             let encryptedExists = searchBundles.contains {
-                EncryptedArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
+                ArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
             }
             let plainURL = preferPlain
                 ? debugPlainAssetURL(relativePath: "Mask/\(name).png")
@@ -565,7 +565,7 @@ final class BKThemeAssets: @unchecked Sendable {
             let name = "artworkframe\(index)"
             let logicalName = "BKThemes/ArtworkFrame/\(name)"
             let encryptedExists = searchBundles.contains {
-                EncryptedArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
+                ArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
             }
             let plainURL = preferPlain
                 ? debugPlainAssetURL(relativePath: "ArtworkFrame/\(name).png")
@@ -592,7 +592,7 @@ final class BKThemeAssets: @unchecked Sendable {
             names.compactMap { name in
                 let logicalName = "BKThemes/FullscreenCircle/\(name)"
                 let encryptedExists = searchBundles.contains {
-                    EncryptedArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
+                    ArtAssetLoader.shared.assetURL(logicalName: logicalName, in: $0) != nil
                 }
                 let plainURL = preferPlain
                     ? debugPlainAssetURL(relativePath: "FullscreenCircle/\(name).png")
@@ -621,14 +621,14 @@ final class BKThemeAssets: @unchecked Sendable {
             return Self.downsampledImage(from: plainURL, maxPixel: maxPixel)
         }
 
-        if let encrypted = encryptedLoader.cgImage(logicalName: entry.logicalName, in: bundle, maxPixel: maxPixel) {
-            return encrypted
+        if let image = assetLoader.cgImage(logicalName: entry.logicalName, in: bundle, maxPixel: maxPixel) {
+            return image
         }
 
         #if DEBUG
         if let plainURL = entry.plainURL {
             Log.warning(
-                "[BKThemeAssets] Falling back to plaintext art asset after encrypted load failed: \(entry.logicalName)",
+                "[BKThemeAssets] Using local plaintext asset; decoded asset unavailable: \(entry.logicalName)",
                 category: .theme
             )
             return Self.downsampledImage(from: plainURL, maxPixel: maxPixel)

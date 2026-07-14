@@ -81,8 +81,6 @@ nonisolated struct TrackPreferenceStats: Codable, Equatable, Sendable {
         case effectiveWeightCache
     }
 
-    // MARK: - Initialization
-
     init(
         playCount: Int = 0,
         completePlayCount: Int = 0,

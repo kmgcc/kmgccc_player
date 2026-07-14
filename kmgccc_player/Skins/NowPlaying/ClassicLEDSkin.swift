@@ -115,7 +115,8 @@ struct ClassicCoverArtworkView: View {
                     spacing: spacing,
                     pillTint: context.theme.artworkAccentColor,
                     isPlaying: context.playback.isPlaying,
-                    forceBrightLEDColors: forceBrightLEDColors || context.theme.artBackgroundIsUltraDark
+                    forceBrightLEDColors: forceBrightLEDColors || context.theme.artBackgroundIsUltraDark,
+                    levelToneVariant: presentation == .appleStyle ? .appleStyleBright : .retuned
                 )
             } else if visualizerMode == "spectrum" {
                 PillSpectrumView(
@@ -207,7 +208,11 @@ private struct ClassicArtworkCoverContainer: View {
         ) else {
             return nil
         }
-        let targetPixel = max(1, Int(ceil(size * max(1, displayScale))))
+        // The completed mask stack is scaled after rasterization for frame-specific
+        // visual tuning. Include that scale here so the final transform does not
+        // enlarge a lower-resolution frame asset a second time.
+        let finalScale = ClassicArtworkFrameCoverTuning.finalMaskedArtworkScale(for: index)
+        let targetPixel = max(1, Int(ceil(size * max(1, displayScale) * finalScale)))
         let maxPixel = ((targetPixel + 127) / 128) * 128
         guard let image = assets.artworkFrame(at: index, maxPixel: maxPixel) else {
             return nil
@@ -269,9 +274,9 @@ private enum ClassicArtworkFrameCoverTuning {
     ]
 
     static let fallbackFinalMaskedArtworkScale: CGFloat = 1.0
-    /// v5: border de-fringe is now relative to interior content and walks
-    /// through multi-pixel fringes (catches pale/2-3px white & black edges).
-    static let rendererVersion = 5
+    /// v6: raster budgets include the final post-mask scale so enlarged frames
+    /// retain their source detail instead of being upsampled at the last step.
+    static let rendererVersion = 6
 
     static func artworkScale(for frameIndex: Int) -> CGFloat {
         min(1.0, max(0.50, artworkScaleByFrameIndex[frameIndex] ?? fallbackArtworkScale))
@@ -388,7 +393,10 @@ private struct ArtworkFrameMaskedImageView: View {
     }
 
     private var targetPixel: Int {
-        let rawPixel = max(1, Int(ceil(size * max(1, displayScale))))
+        // Keep the reflected artwork at the same backing-pixel density as the
+        // final masked stack. The outer extension is otherwise rasterized at the
+        // pre-scale size and then enlarged together with the mask.
+        let rawPixel = max(1, Int(ceil(size * max(1, displayScale) * finalMaskedArtworkScale)))
         return ((rawPixel + 63) / 64) * 64
     }
 
@@ -399,6 +407,7 @@ private struct ArtworkFrameMaskedImageView: View {
             "frame:\(frameIndex)",
             "px:\(targetPixel)",
             "scale:\(String(format: "%.3f", Double(artworkScale)))",
+            "final:\(String(format: "%.3f", Double(finalMaskedArtworkScale)))",
             "blur:\(edgeBlurEnabled)",
         ].joined(separator: "|")
     }
@@ -958,10 +967,10 @@ private enum ClassicArtworkFrameExtendedArtworkRenderer {
 }
 
 private struct ClassicLEDSkinNormalSettingsView: View {
-    @AppStorage("skin.classicLED.visualizerMode") private var visualizerMode: String = "off"
     @AppStorage("skin.classicLED.artworkFrameMaskEnabled") private var artworkFrameMaskEnabled: Bool = true
     @AppStorage("skin.classicLED.edgeBlurEnabled") private var edgeBlurEnabled: Bool = true
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
+    @State private var visualizationPreferences = AudioVisualizationPreferences.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -981,35 +990,26 @@ private struct ClassicLEDSkinNormalSettingsView: View {
                 SettingsSwitchRow(title: "边缘模糊", isOn: $edgeBlurEnabled)
             }
 
-            SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
-                get: { visualizerMode == "led" },
-                set: { isOn in
-                    if isOn {
-                        visualizerMode = "led"
-                    } else if visualizerMode == "led" {
-                        visualizerMode = "off"
-                        ledMeterProvider.releaseNowPlayingResources()
+            AudioVisualizationSelectorRow(
+                title: "音频可视化",
+                selection: Binding(
+                    get: {
+                        visualizationPreferences.selection(
+                            for: ClassicLEDSkin.id,
+                            scope: .window
+                        ).skinKind
+                    },
+                    set: { kind in
+                        visualizationPreferences.setSkinKind(kind, for: ClassicLEDSkin.id, scope: .window)
+                        if kind != .led { ledMeterProvider.releaseNowPlayingResources() }
                     }
-                }
-            ))
-
-            SettingsSwitchRow(title: "频谱动画", isOn: Binding(
-                get: { visualizerMode == "spectrum" },
-                set: { isOn in
-                    if isOn {
-                        visualizerMode = "spectrum"
-                        ledMeterProvider.releaseNowPlayingResources()
-                    } else if visualizerMode == "spectrum" {
-                        visualizerMode = "off"
-                    }
-                }
-            ))
+                )
+            )
         }
     }
 }
 
 private struct ClassicLEDSkinFullscreenSettingsView: View {
-    @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
     @AppStorage("skin.classicLED.artworkFrameMaskEnabled") private var artworkFrameMaskEnabled: Bool = true
     @AppStorage("fullscreenArtBackgroundEnabled") private var fullscreenArtBackgroundEnabled: Bool = true
@@ -1053,37 +1053,13 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
                 )
             }
 
-            SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
-                get: {
-                    FullscreenPresentationCoordinator.shared.isSkinVisualizerEnabled
-                    && UserDefaults.standard.string(forKey: "skin.classicLED.fullscreen.visualizerMode") == "led"
-                },
-                set: { isOn in
-                    if isOn {
-                        UserDefaults.standard.set("led", forKey: "skin.classicLED.fullscreen.visualizerMode")
-                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
-                    } else {
-                        UserDefaults.standard.set("off", forKey: "skin.classicLED.fullscreen.visualizerMode")
-                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
-                    }
-                }
-            ), titleFont: presentationStyle.rowLabelFont, titleColor: presentationStyle.primaryTextColor)
-
-            SettingsSwitchRow(title: "频谱动画", isOn: Binding(
-                get: {
-                    FullscreenPresentationCoordinator.shared.isSkinVisualizerEnabled
-                    && UserDefaults.standard.string(forKey: "skin.classicLED.fullscreen.visualizerMode") == "spectrum"
-                },
-                set: { isOn in
-                    if isOn {
-                        UserDefaults.standard.set("spectrum", forKey: "skin.classicLED.fullscreen.visualizerMode")
-                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.skinVisualizer)
-                    } else {
-                        UserDefaults.standard.set("off", forKey: "skin.classicLED.fullscreen.visualizerMode")
-                        FullscreenPresentationCoordinator.shared.setVisualizerMode(.off)
-                    }
-                }
-            ), titleFont: presentationStyle.rowLabelFont, titleColor: presentationStyle.primaryTextColor)
+            AudioVisualizationSelectorRow(
+                title: "音频可视化",
+                selection: Binding(
+                    get: { FullscreenPresentationCoordinator.shared.skinVisualizerKind },
+                    set: { FullscreenPresentationCoordinator.shared.setSkinVisualizer($0) }
+                )
+            )
         }
     }
 }

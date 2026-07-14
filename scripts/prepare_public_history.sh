@@ -70,7 +70,7 @@ git filter-branch --force --prune-empty \
             EncryptedArtAssets \
             PrivateArtSources \
             BKArt.bundle \
-            PrivateArtRuntime.bundle \
+            ArtRuntime.bundle \
             .derivedData \
             .derivedDataAudioAudit \
             .derivedDataLocal \
@@ -79,11 +79,7 @@ git filter-branch --force --prune-empty \
             .derivedDataCodexRename \
             .derivedDataCodexResourceAudit \
             .derivedDataLocal2 \
-            LDDC_Fetch_Core/.venv_arm64 \
-            LDDC_Fetch_Core/.venv_x86_64 \
-            LDDC_Fetch_Core/build_arm64 \
-            LDDC_Fetch_Core/build_x86_64 \
-            build \
+			build \
             kmgccc_player/Resources/BKArt.bundle \
             kmgccc_player/Rendering/BokehTransition/BokehTransitionShader.metal \
             scripts/encrypt_art_assets.swift \
@@ -101,7 +97,7 @@ git filter-branch --force --prune-empty \
         fi
 
         for loader in $(
-            git ls-files | grep -E "(^|/)Services/Theme/EncryptedArtAssetLoader\\.swift$" || true
+            git ls-files | grep -E "(^|/)Services/Theme/(EncryptedArtAssetLoader|ArtAssetLoader)\\.swift$" || true
         ); do
             [ -n "$loader" ] || continue
             temporary_blob="$(mktemp)"

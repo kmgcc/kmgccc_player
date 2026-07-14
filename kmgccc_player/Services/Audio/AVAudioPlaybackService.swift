@@ -236,8 +236,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         analysisMixerNode
     }
 
-    // MARK: - Initialization
-
     init() {
         self.volume = AppSettings.shared.volume
         // Engine is now lazily initialized on first access (see `engine` property)

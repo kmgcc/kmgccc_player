@@ -74,8 +74,6 @@ final class ShuffleSession {
     /// Callback for loading track metadata (injected dependency).
     var trackLoader: ((UUID) -> Track?)?
 
-    // MARK: - Initialization
-
     init(sourceTrackIDs: [UUID]) {
         self.sourceSnapshotTrackIDs = sourceTrackIDs
     }

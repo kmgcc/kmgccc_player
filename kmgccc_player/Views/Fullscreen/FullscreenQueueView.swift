@@ -86,7 +86,6 @@ struct FullscreenQueueView: View {
         }
     }
 
-    // MARK: - Body
 
     var body: some View {
         VStack(spacing: 0) {

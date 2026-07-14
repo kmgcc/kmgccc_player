@@ -5,137 +5,96 @@
 <h1 align="center">kmgccc_player</h1>
 
 <p align="center">
-  面向 <strong>macOS 26</strong> 的本地音乐播放器<br>
-  原生开发、专注美学，致力于沉浸式且富有特色的播放体验
+  面向 macOS 26 的本地音乐播放器。<br>
+  原生开发，注重美学与沉浸式体验。
 </p>
 
-
 > [!WARNING]
-> kmgccc_player 为个人项目，可能存在 Bug、未完成特性或行为变动。  
-> 不建议在重要环境中作为唯一播放器使用，欢迎通过官网表单或者 Issue 反馈问题。也欢迎提出你的意见和创意～
-> 代码使用 AI 生成，可能存在问题。
+> kmgccc_player 是个人项目，可能存在缺陷、未完成特性或行为变动。不建议在重要环境中作为唯一播放器使用。欢迎通过官网或 Issue 反馈问题。
 
-[看看 kmgccc_player](https://player.kmgccc.cn)
+[kmgccc_player 官网](https://player.kmgccc.cn)
 
-## Clone
+## 主要功能
 
-本项目使用 Git submodule 管理 AMLL integration 源码。
+- **本地曲库**：管理本地音乐文件，支持按专辑、歌手、播放列表浏览和搜索，批量编辑元数据。
+- **歌词显示**：基于 AMLL 实现类 Apple Music 的逐词歌词渲染，支持窗口、全屏和 MiniPlayer 多种歌词表面。
+- **外部播放**：读取 Apple Music 和系统正在播放的信息，自动匹配歌词和封面。
+- **多种皮肤**：内置多种 Now Playing 皮肤，支持全屏和多种可视化效果。
+- **动态主题**：从封面提取色彩，自动生成界面主题和歌词颜色。
+- **音频可视化**：实时频谱和波形显示，支持多种可视化样式。
 
-**推荐 clone 方式：**
+## 系统要求
 
-```bash
+- macOS 26.0 或更新版本
+- Apple Silicon Mac
+
+## 从源码构建
+
+```sh
 git clone --recurse-submodules https://github.com/kmgcc/kmgccc_player.git
 cd kmgccc_player
+./scripts/bootstrap.sh
+./scripts/verify.sh
+open kmgccc_player.xcodeproj
 ```
 
-如果已经普通 clone，需要初始化 submodule：
+如果已经用普通 `git clone` 下载，先补齐 submodule：
 
-```bash
+```sh
 git submodule update --init --recursive
 ```
 
-或者运行 bootstrap 脚本，它会自动检查并初始化：
+`bootstrap.sh` 会下载并构建 AMLL、LDDC Fetch Core、QQ Music Helper、MediaRemoteAdapter 和 SACAD 五个外部运行组件。首次运行需要下载依赖并编译多个 ARM64 产物，耗时较长；之后会比对源码和工具链状态，未变化的组件直接复用缓存。
 
-```bash
-./scripts/bootstrap.sh
-```
+`verify.sh` 在提交改动前运行，依次执行 bootstrap、ARM64 Debug 构建、LRC 回归测试、单元测试和 App bundle 检查。
 
-AMLL integration 源码位于：
+本地构建输入可以通过 `Config/LocalOverrides.xcconfig` 配置。该文件可选，缺省时工程照常构建。
 
-```
-applemusic-like-lyrics-kmgcccplayer-integration/
-```
+开发环境需要：
 
-如果该目录为空或缺少文件，请在构建前初始化 submodule。
+- Xcode 26.2 或更新版本（Swift 6）
+- Node.js 22（含 Corepack）
+- ARM64 Python 3.12
+- CMake 3.15 或更新版本
+- Git、curl 和 Xcode Command Line Tools
 
-> [!NOTE]
-> GitHub "Download ZIP" **不会**包含 submodule 内容。如需从源码构建，请使用 `git clone --recurse-submodules`。
+外部组件的详细说明见 `docs/dependencies.md`。
 
-## 构建与运行 (Build)
+## 常见问题
 
-由于使用了 macOS 26 的新系统特性，构建环境要求如下：
+- **AMLL submodule 缺失或 commit 不一致**：运行 `git submodule sync --recursive`，再 `git submodule update --init --recursive`。
+- **找不到 node 或 corepack**：安装 Node.js 22，确认两个命令都在 PATH 中。
+- **Python 版本或架构不符**：安装 ARM64 Python 3.12，或用 `KMGCCC_ARM_PYTHON=/path/to/python3.12 ./scripts/bootstrap.sh` 指定。
+- **找不到 CMake**：安装 CMake 3.15 或更新版本（MediaRemoteAdapter 需要）。
+- **Xcode 报外部组件产物缺失**：回到仓库根目录运行 `./scripts/bootstrap.sh`。
+- **产物被判定为 stale**：用 `./scripts/bootstrap.sh --force --component <name>` 重建对应组件。失败时查看 `.build/logs/`。
+- **Swift Package 解析失败**：确认网络可访问 GitHub 后重试。
 
-- **系统要求**：macOS 26.0 或更新版本  
-- **开发工具**：建议使用最新版本的 Xcode
+## 参与贡献
 
-**构建步骤：**
+缺陷和功能建议可提交到 [GitHub Issues](https://github.com/kmgcc/kmgccc_player/issues)。请先搜索已有 Issue，附上 macOS 版本、Mac 架构、复现步骤和预期结果。安全问题不要发公开 Issue，请按 `SECURITY.md` 的私密渠道报告。
 
-1. 克隆本仓库代码（参见上方 Clone 说明，确保包含 submodule）  
-2. 使用 Xcode 打开 `kmgccc_player.xcodeproj`  
-3. 打包外部工具（如需完整功能）：
-   - **LDDC Server**：使用脚本打包，输出到 `Tools/lddc-server`
-   - **ncmdump**：从 [taurusxin/ncmdump](https://github.com/taurusxin/ncmdump) 下载 arm64-compatible macOS binary，放入 `Tools/ncmdump/`
-   - **sacad**：从 [desbma/sacad](https://github.com/desbma/sacad) 下载或通过 `cargo install sacad` 安装
-   - **QQMusic helper**：运行 `kmgccc_player/Resources/Tools/qqmusic-helper/build-universal.sh` 生成并 ad-hoc sign bundled macOS binary。app 只调用 `Resources/Tools/qqmusic-helper/qqmusic-helper`，不依赖本机 Python/venv。
-4. 选择 `kmgccc_player` Scheme 并运行。公开构建不依赖 checkout 之外的资源；缺失可选增强资源时会自动使用公开 fallback，不会导致构建失败。
-
-公开构建脚本会显式关闭外部资源注入：
-
-```sh
-./scripts/build_public.sh Debug
-./scripts/build_public.sh Release
-```
-
-## 第三方运行时
-
-本项目内置少量第三方运行时组件，用于元数据、封面、歌词和 AMLL 渲染等功能。Release 构建默认面向 Apple Silicon arm64。
-第三方工具需要先构建出二进制，仓库内附有打包构建脚本。
-
-## 注意事项
-
-- app的数据文件存默认放在`/Users/username/Music/kmgccc_player Library`中, 删除、替换 app 不会删除数据文件
-
-- 可以使用 `AMLL TTML Tool` 手动编辑 ttml 格式的歌词，操作更精准且可以启用 amll 的高级功能如背景歌词、对唱歌词。
-项目地址：https://github.com/amll-dev/amll-ttml-tool 
-在线使用：https://amll-ttml-tool.stevexmh.net/ 
-也欢迎给 AMLL DB 贡献歌词。
+贡献代码前请阅读 `CONTRIBUTING.md`。
 
 ## 致谢
 
 本项目在开发过程中使用并修改了以下开源项目：
 
-- **applemusic-like-lyrics (AMLL)**  
-  提供歌词渲染能力，实现类 Apple Music 的歌词显示效果。  
-  https://github.com/amll-dev/applemusic-like-lyrics  
-  AMLL DB 歌词库：https://github.com/amll-dev/amll-ttml-db
-
-- **LDDC (Lyrics Data Digging Core)**  
-  提供歌词获取与匹配能力。  
-  https://github.com/chenmozhijin/LDDC
-
-- **apple-audio-visualization**  
-  提供音频频谱分析与可视化算法，本项目在播放界面与磁带视图中使用并修改了其部分实现。  
-  https://github.com/taterboom/apple-audio-visualization
-
-- **ncmdump**  
-  提供 NCM 格式解密能力，支持导入网易云音乐加密文件。  
-  https://github.com/taurusxin/ncmdump
-
-- **sacad**  
-  提供专辑封面搜索与下载能力。  
-  https://github.com/desbma/sacad
-
-- **QQMusicApi**  
-  提供 QQ 音乐元数据与封面候选查询能力。  
-  https://github.com/L-1124/QQMusicApi
-
-- **WhatsNewKit**  
-  提供应用更新说明展示组件。  
-  https://github.com/SvenTiigi/WhatsNewKit
-
+- **[applemusic-like-lyrics (AMLL)](https://github.com/amll-dev/applemusic-like-lyrics)** — 歌词渲染引擎，通过项目维护的 [integration fork](https://github.com/kmgcc/applemusic-like-lyrics-kmgcccplayer-integration) 集成
+- **[LDDC](https://github.com/chenmozhijin/LDDC)** — 歌词获取与匹配
+- **[apple-audio-visualization](https://github.com/taterboom/apple-audio-visualization)** — 音频频谱分析与可视化算法
+- **[ncmdump](https://github.com/taurusxin/ncmdump)** — NCM 格式解密
+- **[sacad](https://github.com/desbma/sacad)** — 专辑封面搜索与下载
+- **[QQMusicApi](https://github.com/L-1124/QQMusicApi)** — QQ 音乐元数据与封面查询
+- **[MediaRemote Adapter](https://github.com/ungive/mediaremote-adapter)** — macOS 外部播放状态读取与控制
+- **[WhatsNewKit](https://github.com/SvenTiigi/WhatsNewKit)** — 应用更新说明展示
 
 ## 美术素材版权声明
 
-除代码及另有说明的第三方内容外，本项目相关的美术素材，包括但不限于界面插画、UI 装饰、皮肤、贴图、角色设计、图形元素、图像资源及其他视觉素材，均为作者原创作品，其著作权及其他相关权利均由作者保留。
+除代码及另有说明的第三方内容外，本项目相关的美术素材（包括界面插画、UI 装饰、皮肤、贴图、角色设计、图形元素及其他视觉素材）均为作者原创作品，著作权及相关权利均由作者保留。未经作者事先书面授权，不得复制、转载、分发、修改、改编、商用、二次创作、提取，或用于机器学习与生成式 AI 相关用途。
 
-前述美术素材**不构成本项目开源代码的一部分**，**亦不适用本仓库所采用的 AGPL-3.0 或其他任何开源许可证**。任何个人或组织，未经作者事先书面授权，不得以**任何形式**对该等素材进行复制、转载、分发、修改、改编、商用、二次创作、数据集收录、抓取、提取，或用于机器学习、生成式 AI 训练、微调、推理输入集构建及其他类似用途。
+保留一切权利。Copyright © kmg. All rights reserved.
 
-本仓库当前不包含上述原创美术素材。任何需要相关素材的使用者，均应自行制作或另行取得作者的明确书面许可。
+## 许可证
 
-保留一切权利。
-Copyright © kmg. All rights reserved.
-
-## 许可证 (License)
-
-本项目为开源软件，**代码** 基于 **GNU Affero General Public License v3.0 (AGPL-3.0)** 发布。  
-项目中所使用的第三方组件遵循其各自的开源许可证，详见应用内 About 页面及 `Licenses` 目录。
+代码基于 GNU Affero General Public License v3.0 (AGPL-3.0) 发布。第三方组件遵循各自的开源许可证，详见应用内 About 页面及 `Licenses` 目录。

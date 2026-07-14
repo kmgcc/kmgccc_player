@@ -408,24 +408,33 @@
             isReady = true;
             if (window.updateDebugStatus) window.updateDebugStatus("Renderer Ready");
 
-            // Flush bridge-local calls before notifying Swift. Swift's ready
-            // handler immediately replays the authoritative cross-surface
-            // snapshot; notifying first would let these older calls execute
-            // after that replay and resurrect an empty/previous track.
-            console.log('[Bridge] Flushing ' + pendingCalls.length + ' calls');
-
+            // The native store owns the authoritative track/config snapshot.
+            // Calls queued while this page was loading can belong to an older
+            // surface state, so replaying them here would make AMLL enter once
+            // with stale/default parameters and then enter again when Swift
+            // sends the current snapshot from onReady.
+            const snapshotManagedMethods = new Set([
+                'setLyricsTTML',
+                'applyTrackState',
+                'setPlaying',
+                'setConfig',
+                'revealExistingLyrics',
+                'beginTrackProfileSession',
+            ]);
             const callsToFlush = pendingCalls.slice();
             pendingCalls.length = 0;
-
-            callsToFlush.forEach(function(call) {
-                window.AMLL[call.method].apply(window.AMLL, call.args);
+            let callsAfterReady = callsToFlush.filter(function(call) {
+                return !snapshotManagedMethods.has(call.method);
             });
+            const coalescedCount = callsToFlush.length - callsAfterReady.length;
 
-            console.log('[Bridge] Ready and flushed');
+            if (coalescedCount > 0) {
+                console.log(
+                    '[Bridge] Coalesced ' + coalescedCount
+                    + ' stale snapshot calls; native onReady replay is authoritative'
+                );
+            }
 
-            // Notify Swift only after the bridge queue is drained. The native
-            // store can now safely deliver the current track snapshot without
-            // racing a stale page-local call.
             if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.onReady) {
                 const pageToken = new URL(window.location.href).searchParams.get('pageToken') || '';
                 window.webkit.messageHandlers.onReady.postMessage({
@@ -435,7 +444,16 @@
                 });
             } else {
                 console.warn("[Bridge] Cannot Notify Swift (onReady handler missing)");
+                // Keep the bridge useful in a non-WebKit embedding where no
+                // native snapshot owner exists.
+                callsAfterReady = callsToFlush;
             }
+
+            callsAfterReady.forEach(function(call) {
+                window.AMLL[call.method].apply(window.AMLL, call.args);
+            });
+
+            console.log('[Bridge] Ready and flushed ' + callsAfterReady.length + ' non-snapshot calls');
         },
 
         /**

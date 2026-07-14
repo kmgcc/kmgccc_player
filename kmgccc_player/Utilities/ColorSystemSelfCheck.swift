@@ -181,6 +181,9 @@ nonisolated enum ColorSystemSelfCheck {
         checkArtisticLyricsNeutralFallbackStaysNeutral(&report)
         checkArtisticLyricsSubInactiveCloseToMainInactive(&report)
         checkLEDLevelStylePolicyContinuous(&report)
+        checkLEDLightModeLevelOrderReversed(&report)
+        checkLEDMiniPlayerLightModeIsolation(&report)
+        checkLEDAppleStyleBrightnessIsolation(&report)
         checkLEDLevelHueDriftVisible(&report)
         checkLEDToneStepsPerceptual(&report)
         checkLEDColorfulNotPale(&report)
@@ -487,6 +490,102 @@ nonisolated enum ColorSystemSelfCheck {
         )
     }
 
+    private static func checkLEDLightModeLevelOrderReversed(_ report: inout CheckReport) {
+        let base = OKColor.OKLCH(l: 0.48, c: 0.100, h: 0.69)
+        let maxLevel = 9
+        let styles = (1...maxLevel).map {
+            PerceptualToneLadder.ledLevelStylePolicy(
+                base: base,
+                level: $0,
+                maxLevel: maxLevel,
+                scheme: .light,
+                isNearMonochrome: false
+            )
+        }
+        let perceivedOnWhite = zip(styles, 1...maxLevel).map { style, level in
+            let alpha = ledOpacity(level: level, levels: maxLevel + 1, scheme: .light)
+            return 1 - (1 - style.lightness) * alpha
+        }
+        let toneDarkens = isNonIncreasing(styles.map(\.lightness), tolerance: 0.0006)
+        let renderedDarkens = isNonIncreasing(perceivedOnWhite, tolerance: 0.0006)
+        report.record(
+            "LED: light-mode levels darken as signal rises",
+            toneDarkens && renderedDarkens,
+            "L=\(styles.map { format($0.lightness) }.joined(separator: "/")) whiteComposite=\(perceivedOnWhite.map(format).joined(separator: "/"))"
+        )
+    }
+
+    private static func checkLEDAppleStyleBrightnessIsolation(_ report: inout CheckReport) {
+        let base = OKColor.OKLCH(l: 0.82, c: 0.100, h: 0.09)
+        let standard = PerceptualToneLadder.ledLevelStylePolicy(
+            base: base,
+            level: 9,
+            maxLevel: 9,
+            scheme: .dark,
+            isNearMonochrome: false
+        )
+        let apple = PerceptualToneLadder.ledLevelStylePolicy(
+            base: base,
+            level: 9,
+            maxLevel: 9,
+            scheme: .dark,
+            isNearMonochrome: false,
+            variant: .appleStyleBright
+        )
+        let ok = apple.lightness >= standard.lightness + 0.05
+            && abs(apple.hueDrift - standard.hueDrift) <= 0.0001
+            && abs(apple.chromaScale - standard.chromaScale) <= 0.0001
+        report.record(
+            "LED: Apple style only lifts lightness",
+            ok,
+            "standardL=\(format(standard.lightness)) appleL=\(format(apple.lightness)) hueDrift=\(format(apple.hueDrift)) chromaScale=\(format(apple.chromaScale))"
+        )
+    }
+
+    private static func checkLEDMiniPlayerLightModeIsolation(_ report: inout CheckReport) {
+        let base = OKColor.OKLCH(l: 0.48, c: 0.100, h: 0.69)
+        let skinLightPeak = PerceptualToneLadder.ledLevelStylePolicy(
+            base: base,
+            level: 9,
+            maxLevel: 9,
+            scheme: .light,
+            isNearMonochrome: false,
+            variant: .retuned
+        )
+        let miniLightPeak = PerceptualToneLadder.ledLevelStylePolicy(
+            base: base,
+            level: 9,
+            maxLevel: 9,
+            scheme: .light,
+            isNearMonochrome: false,
+            variant: .miniPlayer
+        )
+        let skinDarkPeak = PerceptualToneLadder.ledLevelStylePolicy(
+            base: base,
+            level: 9,
+            maxLevel: 9,
+            scheme: .dark,
+            isNearMonochrome: false,
+            variant: .retuned
+        )
+        let miniDarkPeak = PerceptualToneLadder.ledLevelStylePolicy(
+            base: base,
+            level: 9,
+            maxLevel: 9,
+            scheme: .dark,
+            isNearMonochrome: false,
+            variant: .miniPlayer
+        )
+        let lightModeSeparated = skinLightPeak.lightness > miniLightPeak.lightness + 0.01
+        let nightPathUnchanged = abs(skinDarkPeak.lightness - miniDarkPeak.lightness) <= 0.0001
+            && abs(skinDarkPeak.chromaScale - miniDarkPeak.chromaScale) <= 0.0001
+        report.record(
+            "LED: MiniPlayer dark-foreground path is isolated",
+            lightModeSeparated && nightPathUnchanged,
+            "skinLightL=\(format(skinLightPeak.lightness)) miniLightL=\(format(miniLightPeak.lightness)) darkΔL=\(format(abs(skinDarkPeak.lightness - miniDarkPeak.lightness)))"
+        )
+    }
+
     private static func checkToneLadderNearMonoNeutral(_ report: inout CheckReport) {
         // v3 contract: neutralisation only fires when BOTH the analysis bit
         // is true AND the seed itself has trivial chroma. Use a genuinely
@@ -675,7 +774,10 @@ nonisolated enum ColorSystemSelfCheck {
         }
         let lch = levels.compactMap { OKColor.nsColorToOKLCH($0) }
         let lOK = isNonDecreasing(lch.map(\.l), tolerance: 0.0015)
-        let cOK = isNonDecreasing(lch.map(\.c), tolerance: 0.0025)
+        // A brighter peak can touch the Display P3 boundary. Permit only the
+        // small final gamut shoulder produced by ColorRenderingAdapter; hue
+        // identity and the visible chroma floor remain independently guarded.
+        let cOK = isNonDecreasing(lch.map(\.c), tolerance: 0.006)
         let hueOK: Bool
         if let peak = lch.last {
             hueOK = lch.allSatisfy {
@@ -727,9 +829,9 @@ nonisolated enum ColorSystemSelfCheck {
         let p3 = colors.compactMap { resolvedLCH($0, target: .displayP3) }
         let srgb = colors.compactMap { resolvedLCH($0, target: .sRGB) }
         let p3OK = isNonDecreasing(p3.map(\.l), tolerance: 0.002)
-            && isNonDecreasing(p3.map(\.c), tolerance: 0.003)
+            && isNonDecreasing(p3.map(\.c), tolerance: 0.006)
         let srgbOK = isNonDecreasing(srgb.map(\.l), tolerance: 0.002)
-            && isNonDecreasing(srgb.map(\.c), tolerance: 0.003)
+            && isNonDecreasing(srgb.map(\.c), tolerance: 0.006)
         let p3LSteps = p3.map { format($0.l) }.joined(separator: "/")
         let p3CSteps = p3.map { format($0.c) }.joined(separator: "/")
         let srgbLSteps = srgb.map { format($0.l) }.joined(separator: "/")
@@ -1129,13 +1231,20 @@ nonisolated enum ColorSystemSelfCheck {
 
     // MARK: Phase 6 v2 helpers
 
-    private static func ledOpacity(level: Int, levels: Int) -> CGFloat {
-        // Mirrors `LEDColorResolver.opacityForLevel` in dark scheme so the
-        // self-check stays an accurate model of what the user actually sees.
+    private static func ledOpacity(
+        level: Int,
+        levels: Int,
+        scheme: ColorScheme = .dark
+    ) -> CGFloat {
+        // Mirrors `LEDColorResolver.opacityForLevel` so the self-check models
+        // the final tone after it is composited against its target surface.
         guard level > 0, levels > 1 else { return 0 }
         let maxLevel = levels - 1
         let t = CGFloat(level) / CGFloat(maxLevel)
-        return 0.08 + pow(t, 1.55) * 0.92
+        if scheme == .dark {
+            return 0.08 + pow(t, 1.55) * 0.92
+        }
+        return 0.06 + pow(t, 1.65) * 0.94
     }
 
     private static func circularHueDelta(_ a: CGFloat, _ b: CGFloat) -> CGFloat {

@@ -19,9 +19,9 @@ struct BokehTransitionMetalManifest: Codable, Equatable, Sendable {
     let librarySHA256: String
 }
 
-/// Contract shared by the public Swift boundary and an optional enhancement
-/// resource. The public target never loads its default Metal library; an
-/// enhanced distribution injects these two files into a bundle.
+/// Contract shared by the Swift boundary and an optional local runtime
+/// resource. The Metal library and manifest are optional; when they are
+/// absent, transitions use the in-repo Gaussian renderer.
 enum BokehTransitionMetalResourceContract {
     static let manifestSchemaVersion = 1
     static let libraryVersion = "1.0.0"
@@ -105,9 +105,9 @@ final class BokehTransitionMetalContext {
             return
         }
 
-        guard let resource = Self.locateExternalResource() else {
+        guard let resource = Self.locateRuntimeResource() else {
             availability = .unavailable(
-                "External Bokeh manifest/library is unavailable; using Gaussian fallback"
+                "runtime renderer is unavailable; using default renderer"
             )
             self.device = device
             self.commandQueue = commandQueue
@@ -162,26 +162,26 @@ final class BokehTransitionMetalContext {
             self.manifest = manifest
             availability = .ready
             logger.debug(
-                "Bokeh Metal enhancement loaded, version=\(manifest.libraryVersion, privacy: .public)"
+                "Bokeh Metal renderer loaded, version=\(manifest.libraryVersion, privacy: .public)"
             )
         } catch {
-            availability = .unavailable("Metal pipeline creation failed: \(error.localizedDescription)")
+            availability = .unavailable("Metal pipeline could not be created: \(error.localizedDescription)")
             self.device = device
             self.commandQueue = commandQueue
             composePipeline = nil
             gatherPipeline = nil
             presentPipeline = nil
             manifest = nil
-            logger.error("Bokeh Metal initialization failed: \(error.localizedDescription, privacy: .public)")
+            logger.error("Bokeh Metal renderer could not be initialized: \(error.localizedDescription, privacy: .public)")
         }
     }
 
-    private struct ExternalResource {
+    private struct RuntimeResource {
         let manifestURL: URL
         let libraryURL: URL
     }
 
-    private static func locateExternalResource() -> ExternalResource? {
+    private static func locateRuntimeResource() -> RuntimeResource? {
         let fileManager = FileManager.default
         var bundles = [Bundle.main]
 
@@ -211,7 +211,7 @@ final class BokehTransitionMetalContext {
                 guard fileManager.fileExists(atPath: libraryURL.path) else {
                     continue
                 }
-                return ExternalResource(manifestURL: manifestURL, libraryURL: libraryURL)
+                return RuntimeResource(manifestURL: manifestURL, libraryURL: libraryURL)
             }
         }
 

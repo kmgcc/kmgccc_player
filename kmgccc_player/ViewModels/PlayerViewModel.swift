@@ -72,8 +72,6 @@ final class PlayerViewModel {
         levelMeter.normalizedLevel
     }
 
-    // MARK: - Initialization
-
     init(
         playbackService: AudioPlaybackServiceProtocol,
         levelMeter: AudioLevelMeterProtocol,

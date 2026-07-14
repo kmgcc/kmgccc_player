@@ -26,7 +26,6 @@ struct ArtworkPlaceholderView: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
-    // MARK: - Initialization
 
     /// Creates a unified artwork placeholder view.
     /// - Parameters:
@@ -55,7 +54,6 @@ struct ArtworkPlaceholderView: View {
         self.themeColor = themeColor
     }
 
-    // MARK: - Body
 
     var body: some View {
         applyClipShape(to: placeholderContent

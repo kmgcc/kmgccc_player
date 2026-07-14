@@ -123,8 +123,6 @@ struct KmgcccPlayerApp: App {
         }
     }
 
-    // MARK: - Body
-
     var body: some Scene {
         Settings {
             EmptyView()

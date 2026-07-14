@@ -31,14 +31,12 @@ struct SeamlessMarqueeText: View {
     var shouldAnimate: Bool = true
     var enablesContentTransition: Bool = false
 
-    // MARK: - State
 
     @State private var textWidth: CGFloat = 0
     @State private var containerWidth: CGFloat = 0
     @State private var offset: CGFloat = 0
     @State private var loopTask: Task<Void, Never>? = nil
 
-    // MARK: - Body
 
     var body: some View {
         GeometryReader { proxy in

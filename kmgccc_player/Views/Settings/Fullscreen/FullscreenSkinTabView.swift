@@ -73,14 +73,12 @@ struct FullscreenSkinTabView: View {
 
             SettingsSection("Mini Player") {
                 VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                    SettingsSwitchRow(
-                        title: "频谱动画",
-                        isOn: Binding(
-                            get: { settings.fullscreen.isMiniPlayerSpectrumEnabled },
-                            set: { _ in settings.fullscreen.toggleMiniPlayerSpectrum() }
-                        ),
-                        titleFont: presentationStyle.rowLabelFont,
-                        titleColor: presentationStyle.primaryTextColor
+                    AudioVisualizationSelectorRow(
+                        title: "音频可视化",
+                        selection: Binding(
+                            get: { settings.fullscreen.miniPlayerVisualization },
+                            set: { settings.fullscreen.setMiniPlayerVisualization($0) }
+                        )
                     )
 
                     miniPlayerAutoHidePicker
