@@ -11,9 +11,15 @@ import Accelerate
 import Foundation
 import os
 
+nonisolated struct SpectrumWaveFrame: Sendable {
+    let legacy: [Float]
+    let detailed: [Float]
+}
+
 nonisolated final class AudioVisualizationService: @unchecked Sendable {
 
     typealias Consumer = @MainActor ([Float]) -> Void
+    typealias AdaptiveConsumer = @MainActor (SpectrumWaveFrame) -> Void
 
     private enum Constants {
         static let bandCount = 9
@@ -33,6 +39,7 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     }
 
     private let processor = SpectrumProcessor()
+    private let detailedProcessor = DetailedSpectrumProcessor()
     #if DEBUG
     private let legacyProcessor = LegacySpectrumProcessor()
     private let useLegacySpectrum = ProcessInfo.processInfo.environment["KMGCCC_LEGACY_SPECTRUM"] == "1"
@@ -45,6 +52,7 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     private let consumerLock = NSLock()
 
     private var consumers: [UUID: Consumer] = [:]
+    private var adaptiveConsumers: [UUID: AdaptiveConsumer] = [:]
     private var hubConsumerId: UUID?
     private var timer: DispatchSourceTimer?
     private var activeRefs = 0
@@ -67,6 +75,9 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     private var liveWave: [Float] = Array(repeating: 0, count: Constants.bandCount)
     private var outputWave: [Float] = Array(repeating: 0, count: Constants.bandCount)
     private var lastPublishedWave: [Float] = Array(repeating: 0, count: Constants.bandCount)
+    private var liveDetailedWave: [Float] = DetailedSpectrumProcessor.zeroWave
+    private var outputDetailedWave: [Float] = DetailedSpectrumProcessor.zeroWave
+    private var lastPublishedDetailedWave: [Float] = DetailedSpectrumProcessor.zeroWave
 
     private var pendingMagnitudes: [Float] = []
     private var pendingFFTSize: Int = Constants.defaultFFTSize
@@ -88,7 +99,7 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     // async-safe (unlike NSLock, which is banned from async contexts in Swift 6)
     // and touched from both processingQueue and the main actor.
     private struct MailboxState {
-        var wave: [Float] = []
+        var frame = SpectrumWaveFrame(legacy: [], detailed: [])
         var scheduled: Bool = false
         var producedUptime: TimeInterval = 0
         var displayedCount: UInt64 = 0
@@ -101,6 +112,9 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
 
     private var poseBlend: Float = 0.0
     private let idlePattern: [Float] = [0.37, 0.20, 0.40, 0.20, 0.65, 0.20, 0.40, 0.20, 0.37]
+    private let detailedIdlePattern = DetailedSpectrumProcessor.resampledLegacyWave(
+        [0.37, 0.20, 0.40, 0.20, 0.65, 0.20, 0.40, 0.20, 0.37]
+    )
 
     private var lastDataTime: TimeInterval = 0
     private var lastTickTime: TimeInterval = 0
@@ -205,9 +219,30 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         return id
     }
 
+    func addAdaptiveConsumer(_ callback: @escaping AdaptiveConsumer) -> UUID {
+        let id = UUID()
+
+        consumerLock.lock()
+        adaptiveConsumers[id] = callback
+        consumerLock.unlock()
+
+        let initialFrame = processingQueue.sync {
+            SpectrumWaveFrame(
+                legacy: lastPublishedWave,
+                detailed: lastPublishedDetailedWave
+            )
+        }
+        Task { @MainActor in
+            callback(initialFrame)
+        }
+
+        return id
+    }
+
     func removeConsumer(_ id: UUID) {
         consumerLock.lock()
         consumers.removeValue(forKey: id)
+        adaptiveConsumers.removeValue(forKey: id)
         consumerLock.unlock()
     }
 
@@ -230,12 +265,16 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
             )
         }
         processor.reset()
+        detailedProcessor.reset()
         #if DEBUG
         legacyProcessor.reset()
         #endif
         liveWave = Array(repeating: 0, count: Constants.bandCount)
         outputWave = Array(repeating: 0, count: Constants.bandCount)
         lastPublishedWave = Array(repeating: 0, count: Constants.bandCount)
+        liveDetailedWave = DetailedSpectrumProcessor.zeroWave
+        outputDetailedWave = DetailedSpectrumProcessor.zeroWave
+        lastPublishedDetailedWave = DetailedSpectrumProcessor.zeroWave
         pendingMagnitudes = []
         pendingFFTSize = Constants.defaultFFTSize
         pendingSampleRate = Constants.defaultSampleRate
@@ -276,12 +315,16 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
 
         isRunning = false
         processor.reset()
+        detailedProcessor.reset()
         #if DEBUG
         legacyProcessor.reset()
         #endif
         liveWave = zeroWave
         outputWave = zeroWave
         lastPublishedWave = zeroWave
+        liveDetailedWave = DetailedSpectrumProcessor.zeroWave
+        outputDetailedWave = DetailedSpectrumProcessor.zeroWave
+        lastPublishedDetailedWave = DetailedSpectrumProcessor.zeroWave
         pendingMagnitudes = []
         pendingRms = 0
         pendingPeak = 0
@@ -291,7 +334,12 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         lastPublishTime = 0
 
         if shouldPublishZero {
-            publish(zeroWave)
+            publish(
+                SpectrumWaveFrame(
+                    legacy: zeroWave,
+                    detailed: DetailedSpectrumProcessor.zeroWave
+                )
+            )
         }
     }
 
@@ -361,6 +409,13 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
 
         if isExternalMode {
             liveWave = ExternalPlaybackSpectrumSimulator.shared.lastWave
+            liveDetailedWave = detailedProcessor.process(
+                magnitudes: [],
+                fftSize: pendingFFTSize,
+                sampleRate: pendingSampleRate,
+                legacyWave: liveWave,
+                dt: dt
+            )
             lastDataTime = now
         } else if hasPendingFFT {
             liveWave = processWave(
@@ -370,6 +425,13 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
                 rms: pendingRms,
                 peak: pendingPeak,
                 playerVolume: playerVolume,
+                dt: dt
+            )
+            liveDetailedWave = detailedProcessor.process(
+                magnitudes: pendingMagnitudes,
+                fftSize: pendingFFTSize,
+                sampleRate: pendingSampleRate,
+                legacyWave: liveWave,
                 dt: dt
             )
             hasPendingFFT = false
@@ -384,6 +446,13 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
                 rms: 0,
                 peak: 0,
                 playerVolume: playerVolume,
+                dt: dt
+            )
+            liveDetailedWave = detailedProcessor.process(
+                magnitudes: [],
+                fftSize: pendingFFTSize,
+                sampleRate: pendingSampleRate,
+                legacyWave: liveWave,
                 dt: dt
             )
         }
@@ -413,9 +482,24 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
             let pose = idlePattern[index]
             outputWave[index] = live + (pose - live) * poseBlend
         }
+        for index in outputDetailedWave.indices {
+            let live = liveDetailedWave[index]
+            let pose = detailedIdlePattern[index]
+            outputDetailedWave[index] = live + (pose - live) * poseBlend
+        }
 
-        let maxDelta = zip(outputWave, lastPublishedWave).reduce(Float.zero) { partial, pair in
+        var maxDelta = zip(outputWave, lastPublishedWave).reduce(Float.zero) { partial, pair in
             max(partial, abs(pair.0 - pair.1))
+        }
+        consumerLock.lock()
+        let hasAdaptiveConsumers = adaptiveConsumers.isEmpty == false
+        consumerLock.unlock()
+        if hasAdaptiveConsumers {
+            let detailedDelta = zip(outputDetailedWave, lastPublishedDetailedWave)
+                .reduce(Float.zero) { partial, pair in
+                    max(partial, abs(pair.0 - pair.1))
+                }
+            maxDelta = max(maxDelta, detailedDelta)
         }
         let uiColdPathActive = FirstUseHitchDiagnostics.currentMainOperationDescription() != nil
         let minPublishInterval = uiColdPathActive ? (1.0 / 15.0) : 0
@@ -427,15 +511,22 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         guard shouldPublish else { return }
         lastPublishTime = now
         lastPublishedWave = outputWave
-        publish(outputWave)
+        lastPublishedDetailedWave = outputDetailedWave
+        publish(
+            SpectrumWaveFrame(
+                legacy: outputWave,
+                detailed: outputDetailedWave
+            )
+        )
     }
 
-    private func publish(_ wave: [Float]) {
+    private func publish(_ frame: SpectrumWaveFrame) {
         consumerLock.lock()
         let callbacks = Array(consumers.values)
+        let adaptiveCallbacks = Array(adaptiveConsumers.values)
         consumerLock.unlock()
 
-        guard callbacks.isEmpty == false else { return }
+        guard callbacks.isEmpty == false || adaptiveCallbacks.isEmpty == false else { return }
 
         producedFrameCount &+= 1
         let now = ProcessInfo.processInfo.systemUptime
@@ -445,7 +536,7 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         // queue another Task. This caps pending main updates at 1, so a stalled
         // main thread can't backlog stale frames that would replay old state.
         let alreadyScheduled = mailbox.withLock { state -> Bool in
-            state.wave = wave
+            state.frame = frame
             state.producedUptime = now
             let wasScheduled = state.scheduled
             state.scheduled = true
@@ -459,19 +550,22 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let snapshot = self.mailbox.withLock { state -> (wave: [Float], producedAt: TimeInterval) in
-                let wave = state.wave
+            let snapshot = self.mailbox.withLock { state -> (frame: SpectrumWaveFrame, producedAt: TimeInterval) in
+                let frame = state.frame
                 let producedAt = state.producedUptime
                 state.scheduled = false
                 state.displayedCount &+= 1
-                return (wave, producedAt)
+                return (frame, producedAt)
             }
             let ageMs = Float((ProcessInfo.processInfo.systemUptime - snapshot.producedAt) * 1000)
             self.mailbox.withLock { state in state.lastAgeMs = ageMs }
             // Single coalesced main-actor hop: deliver the same latest wave to
             // every consumer (skin spectrum + mesh background + fullscreen).
             for callback in callbacks {
-                callback(snapshot.wave)
+                callback(snapshot.frame.legacy)
+            }
+            for callback in adaptiveCallbacks {
+                callback(snapshot.frame)
             }
         }
     }
@@ -530,6 +624,175 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
             scheduling: scheduling,
             dt: dt
         )
+    }
+}
+
+// MARK: - Detailed Spectrum Processor
+
+/// Adds sub-band detail for adaptive spectrum surfaces without changing the
+/// established nine-band processor. The legacy values remain the contour and
+/// loudness authority; raw FFT energy within each band adds bounded local detail.
+nonisolated final class DetailedSpectrumProcessor: @unchecked Sendable {
+    private static let subdivisionsPerLegacyBand = 4
+    private static let legacyBandCount = SpectrumProcessor.Constants.bandCount
+    static let bandCount = legacyBandCount * subdivisionsPerLegacyBand
+    static var zeroWave: [Float] { Array(repeating: 0, count: bandCount) }
+
+    private static let frequencyEdges: [Float] = {
+        let legacyEdges = SpectrumProcessor.Constants.frequencyEdges
+        var result: [Float] = []
+        result.reserveCapacity(bandCount + 1)
+        for band in 0..<legacyBandCount {
+            let start = legacyEdges[band]
+            let end = legacyEdges[band + 1]
+            if result.isEmpty { result.append(start) }
+            for subdivision in 1...subdivisionsPerLegacyBand {
+                let fraction = Float(subdivision) / Float(subdivisionsPerLegacyBand)
+                result.append(start * pow(end / start, fraction))
+            }
+        }
+        return result
+    }()
+
+    private var smoothedContrast = zeroWave
+    private var rawDb = Array(
+        repeating: SpectrumProcessor.Constants.noiseFloorDb,
+        count: bandCount
+    )
+    private var targetContrast = zeroWave
+    private var output = zeroWave
+
+    func reset() {
+        smoothedContrast = Self.zeroWave
+        rawDb = Array(
+            repeating: SpectrumProcessor.Constants.noiseFloorDb,
+            count: Self.bandCount
+        )
+        targetContrast = Self.zeroWave
+        output = Self.zeroWave
+    }
+
+    func process(
+        magnitudes: [Float],
+        fftSize: Int,
+        sampleRate: Float,
+        legacyWave: [Float],
+        dt: Float
+    ) -> [Float] {
+        let baseWave = Self.resampledLegacyWave(legacyWave)
+        let dtClamped = max(0.001, min(0.1, dt))
+        let hasInput = magnitudes.isEmpty == false && fftSize > 0 && sampleRate > 0
+
+        if hasInput {
+            computeRawBandDb(magnitudes: magnitudes, fftSize: fftSize, sampleRate: sampleRate)
+            computeContrastTargets()
+        } else {
+            targetContrast.indices.forEach { targetContrast[$0] = 0 }
+        }
+
+        for index in smoothedContrast.indices {
+            let target = targetContrast[index]
+            let current = smoothedContrast[index]
+            let tau: Float = abs(target) > abs(current) ? 0.045 : 0.11
+            let alpha = 1 - exp(-dtClamped / tau)
+            smoothedContrast[index] += (target - current) * alpha
+
+            let base = baseWave[index]
+            let visibility = smoothstep(0.02, 0.18, base)
+            let detailRange = min(0.20, 0.035 + base * 0.22) * visibility
+            output[index] = clamp(
+                base + smoothedContrast[index] * detailRange,
+                min: 0,
+                max: 1
+            )
+        }
+        return output
+    }
+
+    static func resampledLegacyWave(_ wave: [Float]) -> [Float] {
+        guard wave.isEmpty == false else { return zeroWave }
+        guard wave.count > 1 else {
+            return Array(repeating: clamp(wave[0], min: 0, max: 1), count: bandCount)
+        }
+
+        var result = zeroWave
+        for detailIndex in result.indices {
+            let legacyPosition = Float(detailIndex) / Float(subdivisionsPerLegacyBand)
+            let lowerIndex = min(wave.count - 1, Int(floor(legacyPosition)))
+            let upperIndex = min(wave.count - 1, lowerIndex + 1)
+            let fraction = legacyPosition - Float(lowerIndex)
+            let lower = clamp(wave[lowerIndex], min: 0, max: 1)
+            let upper = clamp(wave[upperIndex], min: 0, max: 1)
+            result[detailIndex] = lower + (upper - lower) * fraction
+        }
+        return result
+    }
+
+    private func computeRawBandDb(
+        magnitudes: [Float],
+        fftSize: Int,
+        sampleRate: Float
+    ) {
+        let binHz = sampleRate / Float(fftSize)
+        guard binHz > 0 else { return }
+
+        for index in rawDb.indices {
+            let startPosition = Self.frequencyEdges[index] / binHz
+            let endPosition = Self.frequencyEdges[index + 1] / binHz
+            let firstBin = max(0, Int(floor(startPosition)))
+            let endBin = min(magnitudes.count, Int(ceil(endPosition)))
+            var weightedPower: Float = 0
+            var totalWeight: Float = 0
+
+            if endBin > firstBin {
+                for bin in firstBin..<endBin {
+                    let overlapStart = max(startPosition, Float(bin))
+                    let overlapEnd = min(endPosition, Float(bin + 1))
+                    let weight = max(0, overlapEnd - overlapStart)
+                    guard weight > 0 else { continue }
+                    weightedPower += magnitudes[bin] * weight
+                    totalWeight += weight
+                }
+            }
+
+            let power = totalWeight > 0
+                ? weightedPower / totalWeight
+                : SpectrumProcessor.Constants.epsilon
+            rawDb[index] = 10 * log10(power + SpectrumProcessor.Constants.epsilon)
+        }
+    }
+
+    private func computeContrastTargets() {
+        for legacyBand in 0..<Self.legacyBandCount {
+            let start = legacyBand * Self.subdivisionsPerLegacyBand
+            let end = start + Self.subdivisionsPerLegacyBand
+            let meanDb = rawDb[start..<end].reduce(Float.zero, +)
+                / Float(Self.subdivisionsPerLegacyBand)
+            var meanTarget: Float = 0
+
+            for index in start..<end {
+                let relativeDb = clamp(rawDb[index] - meanDb, min: -12, max: 12)
+                targetContrast[index] = tanh(relativeDb / 6)
+                meanTarget += targetContrast[index]
+            }
+            meanTarget /= Float(Self.subdivisionsPerLegacyBand)
+            for index in start..<end {
+                targetContrast[index] -= meanTarget
+            }
+        }
+    }
+
+    private static func clamp(_ value: Float, min lower: Float, max upper: Float) -> Float {
+        Swift.min(upper, Swift.max(lower, value))
+    }
+
+    private func clamp(_ value: Float, min lower: Float, max upper: Float) -> Float {
+        Self.clamp(value, min: lower, max: upper)
+    }
+
+    private func smoothstep(_ edge0: Float, _ edge1: Float, _ value: Float) -> Float {
+        let t = clamp((value - edge0) / max(0.000_001, edge1 - edge0), min: 0, max: 1)
+        return t * t * (3 - 2 * t)
     }
 }
 

@@ -163,7 +163,8 @@ private struct MiniPlayerSpectrumContainer: NSViewRepresentable {
             capsuleWidth: dotSize,
             capsuleSpacing: spacing,
             strokeWidth: 0.5,
-            pausedBehavior: pausedBehavior == .minimalDots ? .collapseToDots : .idlePose
+            pausedBehavior: pausedBehavior == .minimalDots ? .collapseToDots : .idlePose,
+            usesDetailedSampling: capsuleCount > 9
         )
     }
 
