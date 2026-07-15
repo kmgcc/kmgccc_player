@@ -51,15 +51,6 @@ final class AMLLDBService: ObservableObject {
         }
     }
 
-    // MARK: - Setup
-
-    /// Setup with SwiftData context (optional, for backward compatibility)
-    func setupModelContext(_ context: ModelContext) {
-        Self.logger.info("[AMLLDB] Model context setup (SwiftData is optional storage)")
-        // We don't require SwiftData for search anymore
-        // But we keep this for backward compatibility
-    }
-
     // MARK: - Index Availability
 
     /// Check if index is available (either from cache or SwiftData)

@@ -4,13 +4,12 @@
 //
 //  Debug-only self-check entry point for the colour decision engine.
 //
-//  Why this exists (and not XCTest): the Xcode project has no test
-//  target, and Phase 2 of the OKLCH colour-system migration explicitly
+//  Why this exists (in addition to XCTest): self-check is used for env-var
+//  triggered color system introspection, complementing the XCTest target.
+//  Phase 2 of the OKLCH colour-system migration explicitly
 //  requires repeatable pass/fail coverage of the new orthogonal axes
 //  (UltraDark / NearMonochrome) and structured palettes
-//  (salientHighlightPalette / displayPalette). Adding a full test
-//  target would touch shared `.pbxproj` configuration, which the
-//  Phase 2 brief asks us to avoid. This file is the agreed fallback:
+//  (salientHighlightPalette / displayPalette). This file allows
 //  synthetic RGBA buffers fed straight into `analyzeSyntheticSample`,
 //  with assertions reported via stderr / stdout and the process exit
 //  code.
