@@ -764,18 +764,18 @@ struct LyricsSettingsObserver: ViewModifier {
     var lyricsVM: LyricsViewModel
     var isActive: Bool = true
 
-    @AppStorage("lyricsFontSize") private var lyricsFontSize: Double = 26.0
-    @AppStorage("lyricsFontNameZh") private var lyricsFontNameZh: String = "PingFang SC"
+    @AppStorage("lyricsFontSize") private var lyricsFontSize: Double = 32.0
+    @AppStorage("lyricsFontNameZh") private var lyricsFontNameZh: String = "SF Pro Text"
     @AppStorage("lyricsFontNameEn") private var lyricsFontNameEn: String = "SF Pro Text"
     @AppStorage("lyricsTranslationFontName") private var lyricsTranslationFontName: String =
         "SF Pro Text"
     @AppStorage("lyricsFontWeightLight") private var lyricsFontWeightLight: Int = 600
-    @AppStorage("lyricsFontWeightDark") private var lyricsFontWeightDark: Int = 600
-    @AppStorage("lyricsTranslationFontSize") private var lyricsTranslationFontSize: Double = 16.0
+    @AppStorage("lyricsFontWeightDark") private var lyricsFontWeightDark: Int = 100
+    @AppStorage("lyricsTranslationFontSize") private var lyricsTranslationFontSize: Double = 18.0
     @AppStorage("lyricsTranslationFontWeightLight") private var lyricsTranslationFontWeightLight:
-        Int = 400
+        Int = 500
     @AppStorage("lyricsTranslationFontWeightDark") private var lyricsTranslationFontWeightDark:
-        Int = 400
+        Int = 100
     @AppStorage("lyricsLeadInMs") private var lyricsLeadInMs: Double = 300
     @AppStorage("lyricsNearSwitchGapMs") private var lyricsNearSwitchGapMs: Double = 70
     @AppStorage("lyricsGlobalAdvanceMs") private var lyricsGlobalAdvanceMs: Double = 0

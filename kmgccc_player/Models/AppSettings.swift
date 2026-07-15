@@ -50,6 +50,31 @@ struct LyricSpringUserSettings: Equatable {
     var bounce: Double
 }
 
+/// Typography used by fullscreen lyrics.
+///
+/// The global fullscreen typography remains separate from the optional
+/// per-skin profiles so switching that mode never destroys either set of
+/// user-edited values.
+struct FullscreenLyricsTypography: Codable, Equatable {
+    var mainFontNameZh: String
+    var mainFontNameEn: String
+    var translationFontName: String
+    var mainFontWeight: Int
+    var translationFontWeight: Int
+    var mainFontSize: Double
+    var translationFontSize: Double
+
+    static let defaultValue = FullscreenLyricsTypography(
+        mainFontNameZh: "SF Pro Text",
+        mainFontNameEn: "SF Pro Text",
+        translationFontName: "SF Pro Text",
+        mainFontWeight: 700,
+        translationFontWeight: 600,
+        mainFontSize: 50,
+        translationFontSize: 25
+    )
+}
+
 extension Notification.Name {
     static let lyricSpringSettingsDidSettle = Notification.Name("kmgccc_player.lyricSpringSettingsDidSettle")
 }
@@ -400,11 +425,11 @@ public final class AppSettings {
 
     /// Lyrics font name
     @ObservationIgnored
-    @AppStorage("lyricsFontName") var lyricsFontName: String = "SF Pro"
+    @AppStorage("lyricsFontName") var lyricsFontName: String = "SF Pro Text"
 
     /// Lyrics font name (Chinese/CJK)
     @ObservationIgnored
-    @AppStorage("lyricsFontNameZh") var lyricsFontNameZh: String = "PingFang SC"
+    @AppStorage("lyricsFontNameZh") var lyricsFontNameZh: String = "SF Pro Text"
 
     /// Lyrics font name (Latin/English)
     @ObservationIgnored
@@ -436,7 +461,7 @@ public final class AppSettings {
 
     /// Lyrics font size
     @ObservationIgnored
-    @AppStorage("lyricsFontSize") var lyricsFontSize: Double = 30.0
+    @AppStorage("lyricsFontSize") var lyricsFontSize: Double = 32.0
 
     /// Lead-in milliseconds for near-switch lyric line advance
     @ObservationIgnored
@@ -976,6 +1001,8 @@ public final class AppSettings {
     // MARK: - Fullscreen Player Settings
 
     private enum FullscreenLyricsKeys {
+        static let perSkinTypographyEnabled = "fullscreenLyricsPerSkinTypographyEnabled"
+        static let perSkinTypographyProfiles = "fullscreenLyricsPerSkinTypographyProfiles_v1"
         static let fontNameZh = "fullscreenLyricsFontNameZh"
         static let fontNameEn = "fullscreenLyricsFontNameEn"
         static let translationFontName = "fullscreenLyricsTranslationFontName"
@@ -991,13 +1018,40 @@ public final class AppSettings {
         static let dimmingIntensity: Double = 0.15
         static let miniplayerHeight: Double = 60
 
-        static let lyricsFontNameZh = "PingFang SC"
-        static let lyricsFontNameEn = "SF Pro Text"
-        static let lyricsTranslationFontName = "SF Pro Text"
-        static let lyricsFontWeight = 700
-        static let lyricsTranslationFontWeight = 600
-        static let lyricsFontSize: Double = 48
-        static let lyricsTranslationFontSize: Double = 24
+        static let lyricsFontNameZh = FullscreenLyricsTypography.defaultValue.mainFontNameZh
+        static let lyricsFontNameEn = FullscreenLyricsTypography.defaultValue.mainFontNameEn
+        static let lyricsTranslationFontName = FullscreenLyricsTypography.defaultValue.translationFontName
+        static let lyricsFontWeight = FullscreenLyricsTypography.defaultValue.mainFontWeight
+        static let lyricsTranslationFontWeight = FullscreenLyricsTypography.defaultValue.translationFontWeight
+        static let lyricsFontSize: Double = FullscreenLyricsTypography.defaultValue.mainFontSize
+        static let lyricsTranslationFontSize: Double = FullscreenLyricsTypography.defaultValue.translationFontSize
+    }
+
+    /// Observation-only revision used by fullscreen surfaces to reapply AMLL
+    /// when a per-skin profile changes without changing the global keys.
+    var fullscreenLyricsTypographyRevision: UInt64 = 0
+
+    /// Whether fullscreen lyrics typography is stored independently per skin.
+    /// The global fullscreen typography is retained while this is enabled, so
+    /// turning the switch off and on never loses either configuration set.
+    var fullscreenLyricsUsesPerSkinTypography: Bool {
+        get {
+            access(keyPath: \.fullscreenLyricsUsesPerSkinTypography)
+            return UserDefaults.standard.bool(forKey: FullscreenLyricsKeys.perSkinTypographyEnabled)
+        }
+        set {
+            guard newValue != fullscreenLyricsUsesPerSkinTypography else { return }
+            if newValue {
+                snapshotMissingFullscreenLyricsTypographyProfiles()
+            }
+            withMutation(keyPath: \.fullscreenLyricsUsesPerSkinTypography) {
+                UserDefaults.standard.set(
+                    newValue,
+                    forKey: FullscreenLyricsKeys.perSkinTypographyEnabled
+                )
+            }
+            markFullscreenLyricsTypographyDidChange()
+        }
     }
 
     enum FullscreenMiniPlayerGlassMaterial: String, CaseIterable, Identifiable {
@@ -1106,6 +1160,100 @@ public final class AppSettings {
         }
     }
 
+    /// The shared fullscreen typography edited when per-skin mode is off.
+    var globalFullscreenLyricsTypography: FullscreenLyricsTypography {
+        access(keyPath: \.globalFullscreenLyricsTypography)
+        return FullscreenLyricsTypography(
+            mainFontNameZh: fullscreenLyricsFontNameZh,
+            mainFontNameEn: fullscreenLyricsFontNameEn,
+            translationFontName: fullscreenLyricsTranslationFontName,
+            mainFontWeight: fullscreenLyricsFontWeight,
+            translationFontWeight: fullscreenLyricsTranslationFontWeight,
+            mainFontSize: fullscreenLyricsFontSize,
+            translationFontSize: fullscreenLyricsTranslationFontSize
+        )
+    }
+
+    /// Typography saved for one fullscreen skin. Missing profiles inherit the
+    /// current global typography until per-skin mode is first enabled.
+    func fullscreenLyricsTypography(for skinID: String) -> FullscreenLyricsTypography {
+        let normalizedSkinID = skinID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedSkinID.isEmpty,
+              let stored = loadFullscreenLyricsTypographyProfiles()[normalizedSkinID]
+        else {
+            return globalFullscreenLyricsTypography
+        }
+        return stored
+    }
+
+    /// Typography currently consumed by the fullscreen AMLL surface.
+    var effectiveFullscreenLyricsTypography: FullscreenLyricsTypography {
+        access(keyPath: \.effectiveFullscreenLyricsTypography)
+        if fullscreenLyricsUsesPerSkinTypography {
+            return fullscreenLyricsTypography(for: fullscreen.skinID)
+        }
+        return globalFullscreenLyricsTypography
+    }
+
+    /// Persist one fullscreen skin's typography without touching the global
+    /// values or any other skin profile.
+    func setFullscreenLyricsTypography(
+        _ typography: FullscreenLyricsTypography,
+        for skinID: String
+    ) {
+        let normalizedSkinID = skinID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedSkinID.isEmpty else { return }
+
+        var profiles = loadFullscreenLyricsTypographyProfiles()
+        guard profiles[normalizedSkinID] != typography else { return }
+        profiles[normalizedSkinID] = typography
+        saveFullscreenLyricsTypographyProfiles(profiles)
+        markFullscreenLyricsTypographyDidChange()
+    }
+
+    private func loadFullscreenLyricsTypographyProfiles()
+        -> [String: FullscreenLyricsTypography]
+    {
+        guard let data = UserDefaults.standard.data(
+            forKey: FullscreenLyricsKeys.perSkinTypographyProfiles
+        ) else {
+            return [:]
+        }
+        return (try? JSONDecoder().decode(
+            [String: FullscreenLyricsTypography].self,
+            from: data
+        )) ?? [:]
+    }
+
+    private func saveFullscreenLyricsTypographyProfiles(
+        _ profiles: [String: FullscreenLyricsTypography]
+    ) {
+        guard let data = try? JSONEncoder().encode(profiles) else { return }
+        UserDefaults.standard.set(data, forKey: FullscreenLyricsKeys.perSkinTypographyProfiles)
+    }
+
+    private func snapshotMissingFullscreenLyricsTypographyProfiles() {
+        var profiles = loadFullscreenLyricsTypographyProfiles()
+        let globalTypography = globalFullscreenLyricsTypography
+        var didChange = false
+
+        for skinID in FullscreenSkinID.allCases.map(\.rawValue) {
+            guard profiles[skinID] == nil else { continue }
+            profiles[skinID] = globalTypography
+            didChange = true
+        }
+
+        if didChange {
+            saveFullscreenLyricsTypographyProfiles(profiles)
+        }
+    }
+
+    private func markFullscreenLyricsTypographyDidChange() {
+        withMutation(keyPath: \.fullscreenLyricsTypographyRevision) {
+            fullscreenLyricsTypographyRevision &+= 1
+        }
+    }
+
     /// Fullscreen lyrics font name (Chinese/CJK).
     var fullscreenLyricsFontNameZh: String {
         get {
@@ -1117,6 +1265,7 @@ public final class AppSettings {
             withMutation(keyPath: \.fullscreenLyricsFontNameZh) {
                 UserDefaults.standard.set(newValue, forKey: FullscreenLyricsKeys.fontNameZh)
             }
+            markFullscreenLyricsTypographyDidChange()
         }
     }
 
@@ -1131,6 +1280,7 @@ public final class AppSettings {
             withMutation(keyPath: \.fullscreenLyricsFontNameEn) {
                 UserDefaults.standard.set(newValue, forKey: FullscreenLyricsKeys.fontNameEn)
             }
+            markFullscreenLyricsTypographyDidChange()
         }
     }
 
@@ -1148,6 +1298,7 @@ public final class AppSettings {
                     forKey: FullscreenLyricsKeys.translationFontName
                 )
             }
+            markFullscreenLyricsTypographyDidChange()
         }
     }
 
@@ -1162,6 +1313,7 @@ public final class AppSettings {
             withMutation(keyPath: \.fullscreenLyricsFontWeight) {
                 UserDefaults.standard.set(newValue, forKey: FullscreenLyricsKeys.fontWeight)
             }
+            markFullscreenLyricsTypographyDidChange()
         }
     }
 
@@ -1180,6 +1332,7 @@ public final class AppSettings {
                     forKey: FullscreenLyricsKeys.translationFontWeight
                 )
             }
+            markFullscreenLyricsTypographyDidChange()
         }
     }
 
@@ -1194,6 +1347,7 @@ public final class AppSettings {
             withMutation(keyPath: \.fullscreenLyricsFontSize) {
                 UserDefaults.standard.set(newValue, forKey: FullscreenLyricsKeys.fontSize)
             }
+            markFullscreenLyricsTypographyDidChange()
         }
     }
 
@@ -1212,6 +1366,7 @@ public final class AppSettings {
                     forKey: FullscreenLyricsKeys.translationFontSize
                 )
             }
+            markFullscreenLyricsTypographyDidChange()
         }
     }
 
@@ -1238,6 +1393,7 @@ public final class AppSettings {
         withMutation(keyPath: \.fullscreenLyricsTranslationFontSize) {
             UserDefaults.standard.removeObject(forKey: FullscreenLyricsKeys.translationFontSize)
         }
+        markFullscreenLyricsTypographyDidChange()
     }
 
     // MARK: - Private Init

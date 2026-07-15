@@ -14,6 +14,8 @@ struct FullscreenLyricsTabView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
+    @State private var fullscreenLyricsUsesPerSkinTypography: Bool =
+        AppSettings.shared.fullscreenLyricsUsesPerSkinTypography
     // Fullscreen-specific font settings
     @State private var fullscreenLyricsFontNameZh: String = AppSettings.shared.fullscreenLyricsFontNameZh
     @State private var fullscreenLyricsFontNameEn: String = AppSettings.shared.fullscreenLyricsFontNameEn
@@ -51,6 +53,13 @@ struct FullscreenLyricsTabView: View {
                 .environment(lyricsVM)
         }
         .onAppear {
+            syncStateFromSettings()
+        }
+        .onChange(of: fullscreenLyricsUsesPerSkinTypography) { _, newValue in
+            settings.fullscreenLyricsUsesPerSkinTypography = newValue
+            syncStateFromSettings()
+        }
+        .onChange(of: settings.fullscreen.skinID) { _, _ in
             syncStateFromSettings()
         }
         .onChange(of: fullscreenLyricsFontNameZh) { _, _ in syncToSettings() }
@@ -92,6 +101,17 @@ struct FullscreenLyricsTabView: View {
     private var fontsSection: some View {
         SettingsSection("字体") {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
+                SettingsSwitchRow(
+                    title: "按皮肤单独设置字体",
+                    isOn: $fullscreenLyricsUsesPerSkinTypography,
+                    titleFont: presentationStyle.rowLabelFont,
+                    detailFont: presentationStyle.captionFont,
+                    titleColor: presentationStyle.primaryTextColor,
+                    detailColor: presentationStyle.tertiaryTextColor
+                )
+
+                Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
+
                 HStack {
                     Text("主歌词字号")
                         .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
@@ -177,13 +197,15 @@ struct FullscreenLyricsTabView: View {
     }
 
     private func syncStateFromSettings() {
-        fullscreenLyricsFontNameZh = settings.fullscreenLyricsFontNameZh
-        fullscreenLyricsFontNameEn = settings.fullscreenLyricsFontNameEn
-        fullscreenLyricsTranslationFontName = settings.fullscreenLyricsTranslationFontName
-        fullscreenLyricsFontWeight = settings.fullscreenLyricsFontWeight
-        fullscreenLyricsTranslationFontWeight = settings.fullscreenLyricsTranslationFontWeight
-        fullscreenLyricsFontSize = settings.fullscreenLyricsFontSize
-        fullscreenLyricsTranslationFontSize = settings.fullscreenLyricsTranslationFontSize
+        fullscreenLyricsUsesPerSkinTypography = settings.fullscreenLyricsUsesPerSkinTypography
+        let typography = settings.effectiveFullscreenLyricsTypography
+        fullscreenLyricsFontNameZh = typography.mainFontNameZh
+        fullscreenLyricsFontNameEn = typography.mainFontNameEn
+        fullscreenLyricsTranslationFontName = typography.translationFontName
+        fullscreenLyricsFontWeight = typography.mainFontWeight
+        fullscreenLyricsTranslationFontWeight = typography.translationFontWeight
+        fullscreenLyricsFontSize = typography.mainFontSize
+        fullscreenLyricsTranslationFontSize = typography.translationFontSize
         amllLyricsRenderQuality = settings.amllLyricsRenderQuality
         amllLyricsSpringDuration = settings.amllLyricsSpringDuration
         amllLyricsSpringBounce = settings.amllLyricsSpringBounce
@@ -191,13 +213,29 @@ struct FullscreenLyricsTabView: View {
     }
 
     private func syncToSettings() {
-        settings.fullscreenLyricsFontNameZh = fullscreenLyricsFontNameZh
-        settings.fullscreenLyricsFontNameEn = fullscreenLyricsFontNameEn
-        settings.fullscreenLyricsTranslationFontName = fullscreenLyricsTranslationFontName
-        settings.fullscreenLyricsFontWeight = fullscreenLyricsFontWeight
-        settings.fullscreenLyricsTranslationFontWeight = fullscreenLyricsTranslationFontWeight
-        settings.fullscreenLyricsFontSize = fullscreenLyricsFontSize
-        settings.fullscreenLyricsTranslationFontSize = fullscreenLyricsTranslationFontSize
+        let typography = FullscreenLyricsTypography(
+            mainFontNameZh: fullscreenLyricsFontNameZh,
+            mainFontNameEn: fullscreenLyricsFontNameEn,
+            translationFontName: fullscreenLyricsTranslationFontName,
+            mainFontWeight: fullscreenLyricsFontWeight,
+            translationFontWeight: fullscreenLyricsTranslationFontWeight,
+            mainFontSize: fullscreenLyricsFontSize,
+            translationFontSize: fullscreenLyricsTranslationFontSize
+        )
+        if settings.fullscreenLyricsUsesPerSkinTypography {
+            settings.setFullscreenLyricsTypography(
+                typography,
+                for: settings.fullscreen.skinID
+            )
+        } else {
+            settings.fullscreenLyricsFontNameZh = typography.mainFontNameZh
+            settings.fullscreenLyricsFontNameEn = typography.mainFontNameEn
+            settings.fullscreenLyricsTranslationFontName = typography.translationFontName
+            settings.fullscreenLyricsFontWeight = typography.mainFontWeight
+            settings.fullscreenLyricsTranslationFontWeight = typography.translationFontWeight
+            settings.fullscreenLyricsFontSize = typography.mainFontSize
+            settings.fullscreenLyricsTranslationFontSize = typography.translationFontSize
+        }
         settings.amllLyricsRenderQuality = amllLyricsRenderQuality
         settings.amllLyricsSpringEnabled = true
         settings.amllLyricsSpringDuration = amllLyricsSpringDuration
@@ -221,5 +259,10 @@ struct FullscreenLyricsTabView: View {
             lyricsVM.refreshConfigFromSettings()
             NotificationCenter.default.post(name: .lyricSpringSettingsDidSettle, object: nil)
         }
+    }
+
+    private var selectedFullscreenSkinName: String {
+        SkinRegistry.fullscreenOptions.first(where: { $0.id == settings.fullscreen.skinID })?.name
+            ?? settings.fullscreen.skinID
     }
 }
