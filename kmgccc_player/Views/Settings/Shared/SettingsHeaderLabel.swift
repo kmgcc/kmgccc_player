@@ -22,7 +22,7 @@ enum SettingsStyleTokens {
 
 /// Phase 4.5 — bundle of pre-resolved tinted-neutral foreground colors for the
 /// Settings detail pages. Injected via `\.settingsAppForegroundColors`; nil on
-/// surfaces whose presentation style forces white text (fullscreen overlay).
+/// surfaces whose presentation style supplies a unified fullscreen overlay palette.
 struct SettingsAppForegroundColors: Equatable {
     let primary: Color
     let secondary: Color
@@ -52,7 +52,11 @@ struct SettingsHeaderLabel: View {
     var body: some View {
         HStack(spacing: presentationStyle.compactInlineSpacing) {
             Image(systemName: systemImage)
-                .foregroundStyle(themeStore.accentColor)
+                .foregroundStyle(
+                    presentationStyle.usesUnifiedOverlayForeground
+                        ? presentationStyle.primaryTextColor
+                        : themeStore.accentColor
+                )
                 .font(.system(size: presentationStyle.headerIconSize, weight: .bold))
             Text(title)
                 .font(.system(size: presentationStyle.headerTitleFontSize, weight: .bold))
@@ -64,7 +68,7 @@ struct SettingsHeaderLabel: View {
     private var resolvedTitleColor: Color {
         // The white-text hierarchy (fullscreen quick panel) intentionally bypasses
         // the tinted palette so it stays high-contrast on artwork.
-        if let appColors, !presentationStyle.forcesWhiteText {
+        if let appColors, !presentationStyle.usesUnifiedOverlayForeground {
             return appColors.primary
         }
         return presentationStyle.primaryTextColor
@@ -113,7 +117,11 @@ struct SettingsSection<Content: View>: View {
     var body: some View {
         GroupBox {
             content
-                .padding(presentationStyle.groupPadding)
+                .padding(
+                    presentationStyle.usesCustomSectionCards
+                        ? 0
+                        : presentationStyle.groupPadding
+                )
                 .frame(maxWidth: .infinity, alignment: .leading)
         } label: {
             if let title {
@@ -175,7 +183,7 @@ private struct SettingsSectionTitleStyleModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         let base: Color
-        if let appColors, !presentationStyle.forcesWhiteText {
+        if let appColors, !presentationStyle.usesUnifiedOverlayForeground {
             // Section labels read as "softened primary"; the palette already
             // ladders L by tier, so use secondary instead of opacity-fading
             // primary (opacity on a tinted color compounds against background
@@ -197,7 +205,7 @@ private struct SettingsDescriptionStyleModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         let base: Color
-        if let appColors, !presentationStyle.forcesWhiteText {
+        if let appColors, !presentationStyle.usesUnifiedOverlayForeground {
             base = appColors.tertiary
         } else {
             base = presentationStyle.secondaryTextColor
@@ -216,7 +224,7 @@ private struct SettingsRowLabelStyleModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         let base: Color
-        if let appColors, !presentationStyle.forcesWhiteText {
+        if let appColors, !presentationStyle.usesUnifiedOverlayForeground {
             base = appColors.primary
         } else {
             base = presentationStyle.primaryTextColor
@@ -252,18 +260,23 @@ struct SettingsSwitchRow: View {
 
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
     @Environment(\.settingsAppForegroundColors) private var appColors
+    @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: detail == nil ? 0 : 6) {
-            HStack(spacing: 12) {
+        VStack(
+            alignment: .leading,
+            spacing: detail == nil ? 0 : presentationStyle.scaled(6)
+        ) {
+            HStack(spacing: presentationStyle.scaled(12)) {
                 Text(title)
                     .font(titleFont ?? presentationStyle.rowLabelFont)
                     .foregroundStyle(titleColor ?? resolvedTitleColor)
 
-                Spacer(minLength: 16)
+                Spacer(minLength: presentationStyle.scaled(16))
 
                 Toggle("", isOn: $isOn)
                     .toggleStyle(.switch)
+                    .tint(themeStore.accentColor)
                     .labelsHidden()
             }
 
@@ -279,14 +292,14 @@ struct SettingsSwitchRow: View {
     }
 
     private var resolvedTitleColor: Color {
-        if let appColors, !presentationStyle.forcesWhiteText {
+        if let appColors, !presentationStyle.usesUnifiedOverlayForeground {
             return appColors.primary
         }
         return presentationStyle.primaryTextColor
     }
 
     private var resolvedDetailColor: Color {
-        if let appColors, !presentationStyle.forcesWhiteText {
+        if let appColors, !presentationStyle.usesUnifiedOverlayForeground {
             return appColors.tertiary
         }
         return presentationStyle.secondaryTextColor

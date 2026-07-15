@@ -17,7 +17,7 @@ struct AMLLLyricSpringSettingsControls: View {
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
             ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 14) {
+                HStack(alignment: .top, spacing: presentationStyle.scaled(14)) {
                     sliderPane(
                         title: "持续时间",
                         valueText: String(format: "%.2f", duration),
@@ -58,9 +58,9 @@ struct AMLLLyricSpringSettingsControls: View {
                     bounce = AppSettings.defaultLyricSpringBounce
                 } label: {
                     Label("恢复默认", systemImage: "arrow.counterclockwise")
+                        .font(presentationStyle.captionFont)
                         .foregroundStyle(presentationStyle.primaryTextColor)
                 }
-                .controlSize(.small)
                 .disabled(isDefaultSpringSettings)
             }
         }

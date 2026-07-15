@@ -60,16 +60,15 @@ struct DeferredLyricsFontPickerRows: View {
                     fontPickerRow(title: translationTitle, selection: $translationFontName)
                 }
             } else if fontProvider.isLoading {
-                HStack(spacing: 8) {
+                HStack(spacing: presentationStyle.scaled(8)) {
                     ProgressView()
-                        .controlSize(.small)
                     Text("正在加载字体…")
                         .font(presentationStyle.captionFont)
                         .foregroundStyle(presentationStyle.secondaryTextColor)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                HStack(spacing: 10) {
+                HStack(spacing: presentationStyle.scaled(10)) {
                     Text("字体列表尚未加载")
                         .font(presentationStyle.captionFont)
                         .foregroundStyle(presentationStyle.secondaryTextColor)
@@ -78,9 +77,9 @@ struct DeferredLyricsFontPickerRows: View {
                         fontProvider.loadIfNeeded()
                     } label: {
                         Label("加载字体", systemImage: "textformat")
+                            .font(presentationStyle.captionFont)
                             .foregroundStyle(presentationStyle.primaryTextColor)
                     }
-                    .controlSize(.small)
                 }
             }
         }
@@ -98,7 +97,7 @@ struct DeferredLyricsFontPickerRows: View {
             Picker("", selection: selection) {
                 ForEach(families(including: selection.wrappedValue), id: \.self) { family in
                     Text(family)
-                        .font(.custom(family, size: 12))
+                        .font(.custom(family, size: presentationStyle.scaled(12)))
                         .tag(family)
                 }
             }

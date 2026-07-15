@@ -19,10 +19,7 @@ struct FullscreenSkinTabView: View {
 
     private var slidingKnobColor: Color {
         if presentationStyle.usesMaterialSectionCards {
-            return FullscreenSelectionAccentStyle.dimmedAccentColor(
-                from: themeStore.accentNSColor,
-                lightnessDelta: 0.30
-            )
+            return presentationStyle.primaryTextColor
         }
         return themeStore.accentColor
     }
@@ -256,7 +253,9 @@ struct FullscreenSkinTabView: View {
                     Capsule()
                         .strokeBorder(
                             presentationStyle.segmentedTrackStrokeColor,
-                            lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear ? 0 : 0.5
+                            lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear
+                                ? 0
+                                : presentationStyle.scaledHairlineWidth
                         )
                         .allowsHitTesting(false)
                 )
