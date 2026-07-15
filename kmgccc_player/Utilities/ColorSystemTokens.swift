@@ -802,13 +802,13 @@ nonisolated enum ColorSystemTokens {
         // Strict global gate (see ArtworkForegroundPolarityPolicy).
         // A cover must clear `eligibilityAvgHslL` before any bright-evidence
         // signal is even considered.
-        static let eligibilityAvgHslL: CGFloat = 0.58
+        static let eligibilityAvgHslL: CGFloat = 0.62
         // Any one of these three "clearly bright" signals commits to dark
         // foreground; otherwise a mid-tone cover stays on light foreground.
-        static let clearlyBrightAvgHslL: CGFloat = 0.68
-        static let clearlyBrightWcagLuma: CGFloat = 0.58
-        static let paleBrightnessFloor: CGFloat = 0.82
-        static let paleSaturationCeiling: CGFloat = 0.30
+        static let clearlyBrightAvgHslL: CGFloat = 0.72
+        static let clearlyBrightWcagLuma: CGFloat = 0.62
+        static let paleBrightnessFloor: CGFloat = 0.86
+        static let paleSaturationCeiling: CGFloat = 0.28
 
         // Local rendered-backdrop contrast engine
         // (RenderedBackdropReadability). These govern the per-surface polarity
@@ -828,7 +828,7 @@ nonisolated enum ColorSystemTokens {
         static let absoluteContrastFloor: CGFloat = 3.0
         // Dark foreground must beat light by at least this margin to be
         // chosen; an intentional product bias toward light ink.
-        static let darkSelectionAdvantage: CGFloat = 0.75
+        static let darkSelectionAdvantage: CGFloat = 0.95
         // Each sampling rectangle is grown outward by this many points before
         // being clamped, so the score covers the text/glass neighbourhood.
         static let regionExpansionPoints: CGFloat = 14
@@ -960,6 +960,47 @@ nonisolated enum ColorSystemTokens {
         static let nearMonoChromaAssertion: CGFloat = 0.005
     }
 
+    // MARK: - PlusBlendText
+    //
+    // Pre-blend source colours for text rendered with SwiftUI's
+    // `.plusLighter` / `.plusDarker` modes. These must deliberately avoid the
+    // usual near-white / near-black text endpoints: additive blending would
+    // clip the former, while subtractive blending would crush the latter.
+    // The blend operation supplies the final contrast; the source colour stays
+    // inside a neutral middle band and carries only a restrained theme tint.
+
+    enum PlusBlendText {
+        // `.plusLighter` adds the source into a dark backdrop, so its source
+        // stays below ordinary light text. Secondary text adds less energy.
+        static let plusLighterPrimaryL: CGFloat = 0.78
+        static let plusLighterSecondaryL: CGFloat = 0.66
+        static let plusLighterTertiaryL: CGFloat = 0.58
+        static let plusLighterQuaternaryL: CGFloat = 0.52
+
+        // `.plusDarker` subtracts from a light backdrop, so its source must be
+        // substantially lighter than ordinary dark ink. Secondary text stays
+        // closer to the backdrop and therefore darkens it less.
+        static let plusDarkerPrimaryL: CGFloat = 0.42
+        static let plusDarkerSecondaryL: CGFloat = 0.57
+        static let plusDarkerTertiaryL: CGFloat = 0.66
+        static let plusDarkerQuaternaryL: CGFloat = 0.73
+
+        static let primaryAlpha: CGFloat = 1.00
+        static let secondaryAlpha: CGFloat = 0.84
+        static let tertiaryAlpha: CGFloat = 0.70
+        static let quaternaryAlpha: CGFloat = 0.56
+
+        // Plus blending amplifies RGB differences, so keep the pre-blend tint
+        // much nearer neutral than ordinary App foreground colours.
+        static let chromaCap: CGFloat = 0.030
+        static let colorfulnessSaturationPoint: CGFloat = 0.40
+
+        // Self-check bounds documenting the safe pre-blend lightness band.
+        static let minimumSourceL: CGFloat = 0.20
+        static let maximumSourceL: CGFloat = 0.92
+        static let nearMonoChromaAssertion: CGFloat = 0.005
+    }
+
     // MARK: - AppForeground
     //
     // OKLCH tinted-neutral foreground palette for ordinary App UI — sidebar
@@ -992,29 +1033,42 @@ nonisolated enum ColorSystemTokens {
 
     enum AppForeground {
 
-        // Dark-mode lightness targets (high L = bright foreground on dark surface).
+        // Foreground hierarchy is opacity-driven. Primary stays opaque; the
+        // subordinate tiers use a closely related, slightly more chromatic
+        // source colour and descend mainly through alpha. Keeping their source
+        // lightness near primary avoids muddy grey text on tinted/material
+        // surfaces while alpha lets the actual backdrop participate naturally.
         static let darkPrimaryL: CGFloat    = 0.960
-        static let darkSecondaryL: CGFloat  = 0.780
-        static let darkTertiaryL: CGFloat   = 0.590
-        static let darkQuaternaryL: CGFloat = 0.440
-        static let darkDisabledL: CGFloat   = 0.360
+        static let darkSecondaryL: CGFloat  = 0.920
+        static let darkTertiaryL: CGFloat   = 0.910
+        static let darkQuaternaryL: CGFloat = 0.900
+        static let darkDisabledL: CGFloat   = 0.860
 
-        // Light-mode lightness targets (low L = dark foreground on light surface).
-        // Primary/secondary raised from 0.14/0.30 → 0.22/0.38 so the hue tint
-        // is visually detectable on a bright window background.
+        // Light-mode source colours remain close to the primary dark ink. The
+        // composited result becomes lighter through alpha rather than by
+        // manufacturing progressively greyer opaque colours.
         static let lightPrimaryL: CGFloat    = 0.220
-        static let lightSecondaryL: CGFloat  = 0.380
-        static let lightTertiaryL: CGFloat   = 0.520
-        static let lightQuaternaryL: CGFloat = 0.620
-        static let lightDisabledL: CGFloat   = 0.670
+        static let lightSecondaryL: CGFloat  = 0.235
+        static let lightTertiaryL: CGFloat   = 0.245
+        static let lightQuaternaryL: CGFloat = 0.255
+        static let lightDisabledL: CGFloat   = 0.300
 
-        // Dark-mode per-tier OKLCH chroma caps. Secondary and tertiary are
-        // significantly tighter than primary so grey-tier text does not look
-        // unexpectedly chromatic. Disabled is always achromatic (C=0).
+        // Semantic opacity ladder. These are the primary hierarchy controls;
+        // source-L differences above are deliberately small stabilizers only.
+        static let primaryAlpha: CGFloat    = 1.00
+        static let secondaryAlpha: CGFloat  = 0.78
+        static let tertiaryAlpha: CGFloat   = 0.60
+        static let quaternaryAlpha: CGFloat = 0.44
+        static let disabledAlpha: CGFloat   = 0.36
+
+        // Subordinate source colours are intentionally more chromatic than the
+        // old opaque tiers. Their alpha reduces the perceived chroma after
+        // compositing, preserving the former restraint without washing them
+        // into flat grey on glass/material backgrounds.
         static let primaryChromaCap: CGFloat    = 0.070
-        static let secondaryChromaCap: CGFloat  = 0.042  // ~60 % of primary
-        static let tertiaryChromaCap: CGFloat   = 0.026  // ~37 % of primary
-        static let quaternaryChromaCap: CGFloat = 0.014
+        static let secondaryChromaCap: CGFloat  = 0.078
+        static let tertiaryChromaCap: CGFloat   = 0.070
+        static let quaternaryChromaCap: CGFloat = 0.056
         static let disabledChromaCap: CGFloat   = 0.000
 
         // Dark-mode hue-aware chroma scale factors.
@@ -1029,14 +1083,12 @@ nonisolated enum ColorSystemTokens {
         static let darkHueVioletRangeLo: CGFloat     = 0.72
         static let darkHueVioletRangeHi: CGFloat     = 0.88
 
-        // Light-mode per-tier OKLCH chroma caps. Primary cap is modestly
-        // reduced (0.100→0.095) because L=0.22 has wider sRGB gamut than
-        // L=0.14 and doesn't need as much chroma headroom. Secondary and
-        // tertiary caps tightened so grey text stays clearly subordinate.
+        // Light-mode subordinate sources receive the same pre-alpha chroma
+        // compensation. The final composited colour remains subordinate.
         static let lightPrimaryChromaCap: CGFloat    = 0.095
-        static let lightSecondaryChromaCap: CGFloat  = 0.060
-        static let lightTertiaryChromaCap: CGFloat   = 0.040
-        static let lightQuaternaryChromaCap: CGFloat = 0.022
+        static let lightSecondaryChromaCap: CGFloat  = 0.108
+        static let lightTertiaryChromaCap: CGFloat   = 0.096
+        static let lightQuaternaryChromaCap: CGFloat = 0.078
 
         // Artwork colorfulness level at which tier caps are fully applied.
         // Below this the chroma scales proportionally (linear ramp).
@@ -1044,11 +1096,11 @@ nonisolated enum ColorSystemTokens {
 
         // Absolute safety ceiling applied after per-tier cap (dark mode).
         // Must be ≥ primaryChromaCap; acts as a global backstop only.
-        static let chromaCeiling: CGFloat = 0.080
+        static let chromaCeiling: CGFloat = 0.095
 
         // Absolute safety ceiling for light-mode tiers.
         // Must be ≥ lightPrimaryChromaCap.
-        static let lightChromaCeiling: CGFloat = 0.105
+        static let lightChromaCeiling: CGFloat = 0.115
 
         // Self-check assertions.
         static let nearMonoChromaAssertion: CGFloat      = 0.005  // must be achromatic on nearMono
@@ -1057,12 +1109,9 @@ nonisolated enum ColorSystemTokens {
         static let darkPrimaryLAssertion: CGFloat        = 0.90   // dark primary must stay near white
         static let lightPrimaryLAssertion: CGFloat       = 0.26   // light primary L ≥ 0.22
 
-        // Self-check caps: secondary must remain low-chroma in absolute terms.
-        // Primary lives at very high L in dark mode, where sRGB gamut clipping
-        // can lower realised chroma below secondary for some hues; hierarchy is
-        // therefore asserted by lightness plus an absolute secondary cap.
-        static let darkSecondaryChromaAssertion: CGFloat     = 0.045
-        static let darkTertiaryToSecondaryRatioCap: CGFloat = 0.70
+        // Self-check limits for the compensated source colours.
+        static let darkSecondaryChromaAssertion: CGFloat = 0.082
+        static let subordinateSourceLightnessDeltaAssertion: CGFloat = 0.08
     }
 
 }

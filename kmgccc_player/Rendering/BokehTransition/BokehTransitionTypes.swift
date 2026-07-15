@@ -2,30 +2,17 @@
 //  BokehTransitionTypes.swift
 //  myPlayer2
 //
-//  User-facing configuration and value-only contracts for the fullscreen
-//  Cover Gradient Blur transition. Metal-specific uniforms live alongside the
-//  renderer so this file remains safe to use from settings views.
+//  Value-only contracts for the fullscreen Cover Gradient Blur transition.
+//  Metal-specific uniforms live alongside the renderer.
 //
 
 import CoreGraphics
 import Foundation
 import simd
 
-enum CoverBlurTransitionEffect: String, CaseIterable, Sendable {
-    case bokeh
-    case gaussian
-
-    var displayName: String {
-        switch self {
-        case .bokeh: "散景"
-        case .gaussian: "高斯"
-        }
-    }
-}
-
-/// The only persisted choice is whether the transition uses Bokeh or Gaussian.
 /// Bokeh's visual and performance parameters are intentionally fixed so every
-/// installation uses the same transition result.
+/// installation uses the same transition result. Gaussian is only a runtime
+/// fallback when the Metal renderer cannot be used.
 struct BokehTransitionConfig: Equatable, Sendable {
     static let defaultRadiusAt1080 = 60.0
     static let defaultHighlightPower = 5.0
@@ -34,23 +21,6 @@ struct BokehTransitionConfig: Equatable, Sendable {
     static let defaultApertureRotationRadians = 0.0
     static let defaultApertureRoundness = 0.0
 
-    var effect: CoverBlurTransitionEffect
-
-    init(
-        effect: CoverBlurTransitionEffect = .bokeh
-    ) {
-        self.effect = effect
-    }
-
-    static func load(from defaults: UserDefaults = .standard) -> Self {
-        Self(
-            effect: CoverBlurTransitionEffect(rawValue: defaults.string(forKey: Keys.effect) ?? "") ?? .bokeh
-        )
-    }
-
-    enum Keys {
-        static let effect = "skin.coverGradientBlur.transitionBokeh.effect"
-    }
 }
 
 // MARK: - Metal contracts
