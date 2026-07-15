@@ -24,18 +24,16 @@ struct HomeHeroView: View {
     @State private var coverImage: NSImage?
     @State private var artworkData: Data?
     @State private var heroBackdropImage: CGImage?
-    @State private var heroCoverHoverBackdropImage: CGImage?
+    @State private var heroBackdropLayoutSize: CGSize = .zero
     @State private var heroArtworkChecksum: UInt64 = 0
     @State private var heroAnalysis: ArtworkColorAnalysis?
     @State private var isHovering = false
-    @State private var isCoverHovering = false
 
     /// Local rendered-region polarity for this Hero's text and action icons.
     /// The same decision selects both the ordinary icon foreground and the
     /// adaptive Plus Lighter / Plus Darker text profile.
     @State private var heroLocalPolarity: ArtworkForegroundPolarity?
     @State private var heroNormalReadabilityMap: RenderedBackdropReadabilityMap?
-    @State private var heroHoverReadabilityMap: RenderedBackdropReadabilityMap?
     @State private var heroLocalDecision: LocalForegroundDecision?
 
     /// Cached hero palette. Invariant: equals `Self.makeHeroPalette(...)` for
@@ -261,8 +259,6 @@ struct HomeHeroView: View {
                 .allowsHitTesting(false)
             heroContent
                 .zIndex(1)
-            coverHoverHitRegion
-                .zIndex(2)
         }
         .frame(height: heroHeight)
         .frame(maxWidth: .infinity)
@@ -316,7 +312,7 @@ struct HomeHeroView: View {
     /// expanded by `regionExpansionPoints` and mapped through the backdrop's
     /// leading-aligned aspect-fill into normalized image regions.
     private var heroReadabilityRegions: [NormalizedReadabilityRegion] {
-        let viewSize = CGSize(width: containerWidth, height: heroHeight)
+        let viewSize = CGSize(width: heroLayoutWidth, height: heroHeight)
         let imageSize = heroBackdropTargetSize
         let expansion = ColorSystemTokens.ReadabilityForeground.regionExpansionPoints
         var regions: [NormalizedReadabilityRegion] = []
@@ -337,7 +333,7 @@ struct HomeHeroView: View {
 
         // trackInfo: title (≤2 lines) + artist/album line + description scroll.
         let trackLeading = heroPadding + artworkLeadingWidth
-        let trackWidth = max(0, containerWidth - trackLeading - heroPadding)
+        let trackWidth = max(0, heroLayoutWidth - trackLeading - heroPadding)
         let titleHeight = ceil(titleFontSize * 1.2) * 2
         let artistHeight = ceil(14 * 1.3)
         let trackHeight = titleHeight + 6 + artistHeight + 6 + descriptionScrollHeight + 4
@@ -352,7 +348,7 @@ struct HomeHeroView: View {
         // stats: bottom-trailing caption (duration + play count).
         let statsWidth: CGFloat = 112
         let statsHeight: CGFloat = 16
-        let statsRight = containerWidth - statsTrailingPadding
+        let statsRight = heroLayoutWidth - statsTrailingPadding
         let statsBottom = heroHeight - statsBottomPadding
         expandAndMap(CGRect(x: statsRight - statsWidth, y: statsBottom - statsHeight, width: statsWidth, height: statsHeight))
 
@@ -363,7 +359,7 @@ struct HomeHeroView: View {
     private var heroReadabilityDebugViewRects: [CGRect] {
         let expansion = ColorSystemTokens.ReadabilityForeground.regionExpansionPoints
         let trackLeading = heroPadding + artworkLeadingWidth
-        let trackWidth = max(0, containerWidth - trackLeading - heroPadding)
+        let trackWidth = max(0, heroLayoutWidth - trackLeading - heroPadding)
         let titleHeight = ceil(titleFontSize * 1.2) * 2
         let artistHeight = ceil(14 * 1.3)
         let trackHeight = titleHeight + 6 + artistHeight + 6 + descriptionScrollHeight + 4
@@ -372,7 +368,7 @@ struct HomeHeroView: View {
         let actionWidth = playWidth + heroButtonHeight * 2 + 20
         let statsWidth: CGFloat = 112
         let statsHeight: CGFloat = 16
-        let statsRight = containerWidth - statsTrailingPadding
+        let statsRight = heroLayoutWidth - statsTrailingPadding
         let statsBottom = heroHeight - statsBottomPadding
         return [
             CGRect(x: trackLeading, y: heroTopPadding, width: trackWidth, height: trackHeight),
@@ -381,24 +377,17 @@ struct HomeHeroView: View {
         ].map { $0.insetBy(dx: -expansion, dy: -expansion) }
     }
 
-    /// Re-score the local polarity from the current backdrop maps, candidate
-    /// colours and layout. No-op until the normal map exists; the hover map is
-    /// folded in when it arrives (one further update, no animation).
+    /// Re-score the local polarity from the current backdrop map, candidate
+    /// colours and layout. No-op until the normal map exists.
     private func updateHeroLocalPolarity() {
         guard let normalMap = heroNormalReadabilityMap else { return }
         let regions = heroReadabilityRegions
         guard !regions.isEmpty else { return }
-        var samples: [(map: RenderedBackdropReadabilityMap, regions: [NormalizedReadabilityRegion])] = [
-            (normalMap, regions)
-        ]
-        if let hoverMap = heroHoverReadabilityMap {
-            samples.append((hoverMap, regions))
-        }
         let candidates = heroPalette.readabilityCandidates
         let decision = RenderedBackdropReadability.decide(
             darkForeground: candidates.darkOnLightBackground.foregroundPrimary,
             lightForeground: candidates.lightOnDarkBackground.foregroundPrimary,
-            samples: samples
+            samples: [(normalMap, regions)]
         )
         heroLocalDecision = decision
         // Disable implicit animation so blend-mode/colour tiers don't
@@ -439,34 +428,26 @@ struct HomeHeroView: View {
         #endif
     }
 
-    private func heroBlurConfig(variant: HomeHeroBackdropVariant) -> CoverGradientBlurConfig {
-        let isCoverHover = variant == .coverHover
-        return CoverGradientBlurConfig(
-            blurRadius: isCoverHover ? 560 : 240,
+    private var heroBlurConfig: CoverGradientBlurConfig {
+        CoverGradientBlurConfig(
+            blurRadius: 240,
             colorOverlayOpacity: 0.46,
-            transitionDuration: isCoverHover ? 0.28 : 0.35,
+            transitionDuration: 0.35,
             edgeStripWidth: 3.0,
             blurStartRatio: 0.08,
             blurEndRatio: 0.9,
             overlayOffsetRatio: 0.0,
             blurCurveGamma: 5.0,
             overlayCurveGamma: 3.0,
-            overlayStartRatioFromEdge: isCoverHover ? 0.0 : 0.28,
+            overlayStartRatioFromEdge: 0.28,
             edgeFillMode: .pixelStretch,
-            blurMaskMode: isCoverHover ? .extensionOnly : .progressiveRamp,
-            // Cover hover selects only the right-side extension so the square
-            // cover area stays clean. Normal uses the same narrow strip as
-            // fullscreen (30% of cover width) so the crisp cover region is wide.
-            blurStartRatioFromEdge: isCoverHover ? 0.0 : 0.30,
-            // Quadratic-dominant ramp matching the fullscreen skin: ~0 at the
-            // strip's inner side, accelerating smoothly to a strong edge value
-            // so the cover↔fill junction is well masked. Cover hover retains its
-            // own curve unchanged.
-            blurAlphaCoefficients: isCoverHover ? (0, 0.36, 0.38, 0.26) : (0, 0, 1.8, -0.8),
-            // Continuous blur ramp across the fill (pixel-stretch) region:
-            // 0 at the cover's right edge, easing up toward the right with no
-            // hard seam at the cover→fill boundary. Matches fullscreen value.
-            extensionFloorStrength: isCoverHover ? 0 : 0.2
+            blurMaskMode: .progressiveRamp,
+            // Keep the cover mostly crisp, then start the progressive ramp a
+            // little inside its right edge and continue it through the
+            // pixel-stretched extension.
+            blurStartRatioFromEdge: 0.30,
+            blurAlphaCoefficients: (0, 0, 1.8, -0.8),
+            extensionFloorStrength: 0.2
         )
     }
 
@@ -478,13 +459,30 @@ struct HomeHeroView: View {
         heroHeight
     }
 
+    /// Width of the card as laid out by SwiftUI. `containerWidth` is a
+    /// quantized parent-layout hint; using the measured width here prevents a
+    /// small mismatch from making the display-side aspect-fill crop the
+    /// artwork vertically at particular window widths.
+    private var heroLayoutWidth: CGFloat {
+        heroBackdropLayoutSize.width > 1 ? heroBackdropLayoutSize.width : containerWidth
+    }
+
     /// Dynamic backdrop render target size matching the actual card aspect
     /// ratio so the cover area is not cropped by a mismatched fixed size.
     private var heroBackdropTargetSize: CGSize {
-        let aspect = containerWidth / max(1, heroHeight)
+        let aspect = heroLayoutWidth / max(1, heroHeight)
         let targetHeight: CGFloat = 380
         let targetWidth = round(targetHeight * aspect)
-        return CGSize(width: max(380, targetWidth), height: targetHeight)
+        return CGSize(width: max(1, targetWidth), height: targetHeight)
+    }
+
+    private func updateHeroBackdropLayoutSize(_ size: CGSize) {
+        guard size.width > 1, size.height > 1 else { return }
+        guard abs(size.width - heroBackdropLayoutSize.width) > 0.5
+                || abs(size.height - heroBackdropLayoutSize.height) > 0.5 else {
+            return
+        }
+        heroBackdropLayoutSize = size
     }
 
     /// Changes when either the artwork or the rendered card aspect ratio
@@ -497,59 +495,43 @@ struct HomeHeroView: View {
 
     @ViewBuilder
     private var backdropView: some View {
-        if let heroBackdropImage {
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
+        GeometryReader { geometry in
+            Group {
+                if let heroBackdropImage {
                     heroBackdropLayer(heroBackdropImage, geometry: geometry)
-
-                    if let heroCoverHoverBackdropImage {
-                        heroBackdropLayer(heroCoverHoverBackdropImage, geometry: geometry)
-                            .opacity(isCoverHovering ? 1 : 0)
-                    }
+                } else {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(
+                            ColorRenderingAdapter.makeSwiftUIColor(artworkDominantColor)
+                                .opacity(colorScheme == .dark ? 0.42 : 0.26)
+                        )
+                        .overlay(
+                            LinearGradient(
+                                colors: [
+                                    Color.black.opacity(colorScheme == .dark ? 0.34 : 0.08),
+                                    Color.black.opacity(colorScheme == .dark ? 0.16 : 0.02),
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
                 }
-                .animation(.easeInOut(duration: 0.24), value: isCoverHovering)
-                .animation(.easeInOut(duration: 0.24), value: heroCoverHoverBackdropImage != nil)
             }
-        } else {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(
-                    ColorRenderingAdapter.makeSwiftUIColor(artworkDominantColor)
-                        .opacity(colorScheme == .dark ? 0.42 : 0.26)
-                )
-                .overlay(
-                    LinearGradient(
-                        colors: [
-                            Color.black.opacity(colorScheme == .dark ? 0.34 : 0.08),
-                            Color.black.opacity(colorScheme == .dark ? 0.16 : 0.02),
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
+            .onAppear {
+                updateHeroBackdropLayoutSize(geometry.size)
+            }
+            .onChange(of: geometry.size) { _, newSize in
+                updateHeroBackdropLayoutSize(newSize)
+            }
         }
     }
 
     private func heroBackdropLayer(_ image: CGImage, geometry: GeometryProxy) -> some View {
-        let imageAspect = CGFloat(image.width) / max(1, CGFloat(image.height))
         return Image(decorative: image, scale: 1, orientation: .up)
             .resizable()
             .interpolation(.medium)
-            .aspectRatio(imageAspect, contentMode: .fill)
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
             .clipped()
-    }
-
-    private var coverHoverSide: CGFloat {
-        heroHeight
-    }
-
-    private var coverHoverHitRegion: some View {
-        Color.clear
-            .frame(width: coverHoverSide, height: coverHoverSide, alignment: .topLeading)
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                isCoverHovering = hovering
-            }
     }
 
     private var heroContent: some View {
@@ -811,7 +793,6 @@ struct HomeHeroView: View {
         )
         artworkData = nil
         heroBackdropImage = nil
-        heroCoverHoverBackdropImage = nil
         heroArtworkChecksum = 0
         heroAnalysis = nil
         // New track: clear the previous track's local decision and maps so a
@@ -819,7 +800,6 @@ struct HomeHeroView: View {
         heroLocalPolarity = nil
         heroLocalDecision = nil
         heroNormalReadabilityMap = nil
-        heroHoverReadabilityMap = nil
         let data = await track.loadArtworkDataOffMainIfNeeded()
         guard let data, !data.isEmpty else { return }
         let checksum = ArtworkLoader.checksum(for: data)
@@ -879,7 +859,6 @@ struct HomeHeroView: View {
         let backdrop = await renderHeroBackdrop(
             artworkData: artworkData,
             checksum: checksum,
-            variant: .normal,
             targetSize: targetSize
         )
         guard
@@ -891,40 +870,19 @@ struct HomeHeroView: View {
 
         heroBackdropImage = backdrop.image
         heroNormalReadabilityMap = backdrop.readabilityMap
-        // Do not let the previous aspect ratio's hover composite sit on top of
-        // the newly sized normal composite while the replacement is rendering.
-        heroCoverHoverBackdropImage = nil
-        heroHoverReadabilityMap = nil
-        updateHeroLocalPolarity()
-
-        let hoverBackdrop = await renderHeroBackdrop(
-            artworkData: artworkData,
-            checksum: checksum,
-            variant: .coverHover,
-            targetSize: targetSize
-        )
-        guard
-            !Task.isCancelled,
-            heroArtworkChecksum == checksum,
-            heroBackdropRequestID == requestID
-        else { return }
-
-        heroCoverHoverBackdropImage = hoverBackdrop?.image
-        heroHoverReadabilityMap = hoverBackdrop?.readabilityMap
         updateHeroLocalPolarity()
     }
 
     private func renderHeroBackdrop(
         artworkData: Data,
         checksum: UInt64,
-        variant: HomeHeroBackdropVariant,
         targetSize: CGSize
     ) async -> HomeHeroBackdropArtifact? {
-        let config = heroBlurConfig(variant: variant)
+        let config = heroBlurConfig
         let sizeTag = "\(Int(targetSize.width))x\(Int(targetSize.height))"
-        // Bumped to v8: target size is now dynamic (card aspect ratio) so the
-        // cache key includes the resolved size tag.
-        let cacheKey = "\(checksum)-\(sizeTag)-home-hero-\(variant.cacheKey)-v8" as NSString
+        // Bumped to v9: the Hero now uses one normal progressive composite;
+        // the old clear-cover hover variant must never be reused.
+        let cacheKey = "\(checksum)-\(sizeTag)-home-hero-v9" as NSString
 
         if let cached = HomeHeroBackdropCache.shared.artifact(for: cacheKey) {
             return cached
@@ -971,18 +929,6 @@ struct HomeHeroView: View {
 private struct HomeHeroBackdropArtifact: Sendable {
     let image: CGImage
     let readabilityMap: RenderedBackdropReadabilityMap?
-}
-
-private enum HomeHeroBackdropVariant {
-    case normal
-    case coverHover
-
-    var cacheKey: String {
-        switch self {
-        case .normal: return "normal"
-        case .coverHover: return "cover-hover"
-        }
-    }
 }
 
 private final class HomeHeroBackdropCache {
