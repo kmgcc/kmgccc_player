@@ -833,7 +833,11 @@ final class PlaylistPageController {
             )
         }
         let searchHits = isSearching
-            ? await Self.searchHits(for: trimmedSearch, displayedTrackIDs: displayedTracks.map(\.id))
+            ? await searchHits(
+                for: trimmedSearch,
+                displayedTrackIDs: displayedTracks.map(\.id),
+                libraryVM: libraryVM
+            )
             : [:]
         let pageTrackSources = displayedTracks.map {
             PageTrackSource(
@@ -1931,19 +1935,19 @@ final class PlaylistPageController {
         selection.selectionIdentity(in: libraryVM)
     }
 
-    private static func searchHits(
+    private func searchHits(
         for searchText: String,
-        displayedTrackIDs: [UUID]
+        displayedTrackIDs: [UUID],
+        libraryVM: LibraryViewModel
     ) async -> [UUID: LibrarySearchHit] {
         let scope = Set(displayedTrackIDs)
         guard !scope.isEmpty else { return [:] }
         let limit = max(100, min(2_000, scope.count))
-        let hits = await LibrarySearchIndex.shared.search(
+        return await libraryVM.searchTracks(
             query: searchText,
             scopedTo: scope,
             limit: limit
         )
-        return Dictionary(uniqueKeysWithValues: hits.map { ($0.trackID, $0) })
     }
 
     private static func buildPageResult(
