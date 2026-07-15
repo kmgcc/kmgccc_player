@@ -227,10 +227,11 @@ final class CapsuleSpectrumHostView: NSView {
     // Lease / playback state.
     private var consumerID: UUID?
     private var hasServiceLease = false
-    private var isActive = false
+    private var requestedActive = false
     private var isPlaying = false
     private var lastForwardedPlaybackState: Bool?
     private var latestWaveFrame = SpectrumWaveFrame(legacy: [], detailed: [])
+    private weak var observedWindow: NSWindow?
 
     private var lastLayoutSize: CGSize = .zero
     private var lastColorSignature: Int?
@@ -260,6 +261,11 @@ final class CapsuleSpectrumHostView: NSView {
 
     deinit {
         MainActor.assumeIsolated {
+            if let consumerID {
+                service.removeConsumer(consumerID)
+                self.consumerID = nil
+            }
+            uninstallWindowVisibilityObservers()
             frameLink?.invalidate()
             frameLink = nil
         }
@@ -308,24 +314,22 @@ final class CapsuleSpectrumHostView: NSView {
 
     /// Used by surfaces that gate the lease on visibility (MiniPlayer).
     func setActive(_ active: Bool) {
-        guard isActive != active else { return }
-        isActive = active
-        if active {
-            start()
-        } else {
-            stop()
-        }
+        requestedActive = active
+        reconcileVisibleConsumer()
     }
 
     /// Acquire the shared visualization lease and start consuming waves.
     func start() {
-        isActive = true
+        requestedActive = true
+        reconcileVisibleConsumer()
+    }
+
+    private func acquireConsumerIfNeeded() {
         guard consumerID == nil else { return }
-        service.start()
-        hasServiceLease = true
         consumerID = service.addAdaptiveConsumer { [weak self] frame in
             self?.applyWave(frame)
         }
+        hasServiceLease = true
         if let state = lastForwardedPlaybackState {
             service.updatePlaybackState(isPlaying: state)
         }
@@ -334,22 +338,42 @@ final class CapsuleSpectrumHostView: NSView {
 
     /// Release the lease and stop animating.
     func stop() {
-        isActive = false
+        requestedActive = false
+        releaseConsumerIfNeeded(resetWave: true)
+    }
+
+    private func releaseConsumerIfNeeded(resetWave: Bool) {
         if let consumerID {
             service.removeConsumer(consumerID)
             self.consumerID = nil
         }
-        if hasServiceLease {
-            hasServiceLease = false
-            service.stop()
-        }
+        hasServiceLease = false
         invalidateDisplayLink()
+        guard resetWave else { return }
         for index in 0..<count {
             targetWave[index] = 0
             position[index] = 0
             velocity[index] = 0
         }
         renderHeights()
+    }
+
+    private func reconcileVisibleConsumer() {
+        if requestedActive && isActuallyVisible {
+            acquireConsumerIfNeeded()
+        } else {
+            releaseConsumerIfNeeded(resetWave: true)
+        }
+    }
+
+    private var isActuallyVisible: Bool {
+        guard let window else { return false }
+        return window.isVisible
+            && !window.isMiniaturized
+            && window.occlusionState.contains(.visible)
+            && !isHiddenOrHasHiddenAncestor
+            && bounds.width > 0
+            && bounds.height > 0
     }
 
     func setPlayback(isPlaying playing: Bool) {
@@ -620,6 +644,8 @@ final class CapsuleSpectrumHostView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        installWindowVisibilityObserversIfNeeded()
+        reconcileVisibleConsumer()
         if window != nil {
             // The display link binds to the view's screen; (re)create it here.
             if hasServiceLease { wakeDisplayLink() }
@@ -628,12 +654,62 @@ final class CapsuleSpectrumHostView: NSView {
         }
     }
 
+    override func viewDidHide() {
+        super.viewDidHide()
+        reconcileVisibleConsumer()
+    }
+
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        reconcileVisibleConsumer()
+    }
+
+    @objc private func handleWindowVisibilityChanged(_ notification: Notification) {
+        reconcileVisibleConsumer()
+    }
+
+    private func installWindowVisibilityObserversIfNeeded() {
+        guard observedWindow !== window else { return }
+        uninstallWindowVisibilityObservers()
+        guard let window else { return }
+        observedWindow = window
+        let center = NotificationCenter.default
+        center.addObserver(
+            self,
+            selector: #selector(handleWindowVisibilityChanged(_:)),
+            name: NSWindow.didChangeOcclusionStateNotification,
+            object: window
+        )
+        center.addObserver(
+            self,
+            selector: #selector(handleWindowVisibilityChanged(_:)),
+            name: NSWindow.didMiniaturizeNotification,
+            object: window
+        )
+        center.addObserver(
+            self,
+            selector: #selector(handleWindowVisibilityChanged(_:)),
+            name: NSWindow.didDeminiaturizeNotification,
+            object: window
+        )
+    }
+
+    private func uninstallWindowVisibilityObservers() {
+        guard let observedWindow else { return }
+        let center = NotificationCenter.default
+        center.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: observedWindow)
+        center.removeObserver(self, name: NSWindow.didMiniaturizeNotification, object: observedWindow)
+        center.removeObserver(self, name: NSWindow.didDeminiaturizeNotification, object: observedWindow)
+        self.observedWindow = nil
+    }
+
     // MARK: Layout & render
 
     override func layout() {
         super.layout()
         guard bounds.size != lastLayoutSize else { return }
         lastLayoutSize = bounds.size
+        reconcileVisibleConsumer()
         refreshGeometry()
         renderHeights()
         // A resize may expose un-settled geometry; nudge the link so the bars
