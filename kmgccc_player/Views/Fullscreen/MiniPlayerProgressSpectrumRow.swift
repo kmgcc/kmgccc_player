@@ -44,10 +44,18 @@ struct MiniPlayerProgressSpectrumRow: View {
     private var spectrumCollapsedWidth: CGFloat { 14 * scale }
     private var spectrumHeight: CGFloat { 52 * scale }
     private var barHeight: CGFloat { 6 * scale }
-    private var timeFontSize: CGFloat { 10.5 * scale }
+    private var timeFontSize: CGFloat { 11.5 * scale }
     private var progressYOffset: CGFloat { 13 * scale }
     private var hPadding: CGFloat { 8 * scale }
     private var timeSpacing: CGFloat { 10 * scale }
+    private var compactSpectrumTimeBottomInset: CGFloat { 2 * scale }
+    private var compactSpectrumLabelCutoutWidth: CGFloat {
+        max(28 * scale, timeFontSize * 3.4)
+    }
+    private var compactSpectrumLabelCutoutHeight: CGFloat {
+        max(18 * scale, timeFontSize + 6 * scale)
+    }
+    private var compactSpectrumLabelCutoutFeather: CGFloat { 3 * scale }
     // A window row should not gain extra dots while it is still in its normal
     // compact range; once it is genuinely wide, grow the right-hand visualizer
     // so the progress track does not consume empty space.
@@ -191,30 +199,7 @@ struct MiniPlayerProgressSpectrumRow: View {
                 )
             }
             
-            // Time labels overlay - show only on hover
-            HStack(spacing: timeSpacing) {
-                NumericTimeText(
-                    time: progress,
-                    fontSize: timeFontSize,
-                    fontWeight: .medium,
-                    color: timeColor
-                )
-                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
-                
-                Spacer(minLength: 18 * scale)
-                
-                NumericTimeText(
-                    time: duration,
-                    fontSize: timeFontSize,
-                    fontWeight: .medium,
-                    color: timeColor
-                )
-                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
-            }
-            .padding(.horizontal, hPadding)
-            .offset(y: progressYOffset)
-            .opacity(isRowHovered ? 1 : 0)
-            .animation(.easeInOut(duration: 0.2), value: isRowHovered)
+            timeLabels
         }
         .frame(maxHeight: .infinity)
         .padding(.horizontal, hPadding)
@@ -262,17 +247,120 @@ struct MiniPlayerProgressSpectrumRow: View {
             visualizationContent(count: count, width: size.width, height: contentHeight)
                 .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
                 .opacity(0.30)
+                .mask {
+                    compactVisualizationLabelMask(size: size)
+                }
 
             visualizationContent(count: count, width: size.width, height: contentHeight)
                 .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
                 .mask(alignment: .leading) {
                     compactProgressMask(filledWidth: filledWidth)
                 }
+                .mask {
+                    compactVisualizationLabelMask(size: size)
+                }
+
+            compactVisualizationTimeLabels
+                .zIndex(1)
         }
         .frame(width: size.width, height: size.height, alignment: .center)
         .clipped()
         .contentShape(Rectangle())
         .gesture(seekGesture(width: size.width))
+    }
+
+    @ViewBuilder
+    private var compactVisualizationTimeLabels: some View {
+        switch visualization {
+        case .spectrum:
+            compactSpectrumTimeLabels
+        case .led:
+            timeLabels.offset(y: 2 * scale)
+        case .off:
+            EmptyView()
+        }
+    }
+
+    private var compactSpectrumTimeLabels: some View {
+        HStack(alignment: .bottom, spacing: 0) {
+            numericTimeLabel(time: progress)
+
+            Spacer(minLength: 0)
+
+            numericTimeLabel(time: duration)
+        }
+        .padding(.horizontal, hPadding)
+        .padding(.bottom, compactSpectrumTimeBottomInset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .opacity(isRowHovered ? 1 : 0)
+        .animation(.easeInOut(duration: 0.2), value: isRowHovered)
+        .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private func compactVisualizationLabelMask(size: CGSize) -> some View {
+        ZStack {
+            Rectangle()
+                .fill(.white)
+
+            if visualization == .spectrum {
+                HStack(alignment: .bottom, spacing: 0) {
+                    spectrumLabelCutout
+                        .padding(.leading, hPadding)
+                        .padding(.bottom, compactSpectrumTimeBottomInset)
+
+                    Spacer(minLength: 0)
+
+                    spectrumLabelCutout
+                        .padding(.trailing, hPadding)
+                        .padding(.bottom, compactSpectrumTimeBottomInset)
+                }
+                .frame(width: size.width, height: size.height, alignment: .bottom)
+                .opacity(isRowHovered ? 1 : 0)
+            }
+        }
+        .compositingGroup()
+        .frame(width: size.width, height: size.height)
+        .animation(.easeInOut(duration: 0.2), value: isRowHovered)
+    }
+
+    private var spectrumLabelCutout: some View {
+        RoundedRectangle(
+            cornerRadius: compactSpectrumLabelCutoutHeight * 0.28,
+            style: .continuous
+        )
+        .fill(.black)
+        .frame(
+            width: compactSpectrumLabelCutoutWidth,
+            height: compactSpectrumLabelCutoutHeight
+        )
+        .blur(radius: compactSpectrumLabelCutoutFeather)
+        .blendMode(.destinationOut)
+    }
+
+    private func numericTimeLabel(time: Double) -> some View {
+        NumericTimeText(
+            time: time,
+            fontSize: timeFontSize,
+            fontWeight: .medium,
+            color: timeColor
+        )
+        .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
+    }
+
+    private var timeLabels: some View {
+        HStack(spacing: timeSpacing) {
+            numericTimeLabel(time: progress)
+
+            Spacer(minLength: 18 * scale)
+
+            numericTimeLabel(time: duration)
+        }
+        .padding(.horizontal, hPadding)
+        .offset(y: progressYOffset)
+        .opacity(isRowHovered ? 1 : 0)
+        .animation(.easeInOut(duration: 0.2), value: isRowHovered)
+        .allowsHitTesting(false)
     }
 
     @ViewBuilder
@@ -324,8 +412,7 @@ struct MiniPlayerProgressSpectrumRow: View {
     }
 
     private func compactSpectrumSegmentCount(for width: CGFloat) -> Int {
-        let additionalSegments = Int(max(0, width - 70) / 22)
-        return min(9, max(5, 5 + additionalSegments))
+        max(5, adaptiveSegmentCount(for: width))
     }
 
     private func wideSpectrumSegmentCount(
@@ -338,30 +425,36 @@ struct MiniPlayerProgressSpectrumRow: View {
             return 9
         }
 
-        let baselineRenderedWidth = resolvedVisualizationWidth(
-            for: spectrumWideSegmentStartWidth
-        )
-        let elementStep = (5.8 + 4) * scale
-        let additionalSegments = Int(
-            max(0, renderedWidth - baselineRenderedWidth) / max(1, elementStep)
-        )
-        return 9 + additionalSegments
+        // Once the spectrum is allowed to grow, derive the count from its
+        // actual rendered width. The centered-bars layout otherwise leaves a
+        // large symmetric gap when the frame grows faster than the nine-bar
+        // baseline can fill it.
+        return max(9, adaptiveSegmentCount(for: renderedWidth))
     }
 
+    @ViewBuilder
     private func compactProgressMask(filledWidth: CGFloat) -> some View {
-        let featherWidth = min(filledWidth, max(10, 18 * scale))
-        let solidWidth = max(0, filledWidth - featherWidth)
-        return HStack(spacing: 0) {
-            Rectangle()
-                .fill(.white)
-                .frame(width: solidWidth)
+        Group {
+            if isRowHovered {
+                Rectangle()
+                    .fill(.white)
+                    .frame(width: filledWidth)
+            } else {
+                let featherWidth = min(filledWidth, max(10, 18 * scale))
+                let solidWidth = max(0, filledWidth - featherWidth)
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(.white)
+                        .frame(width: solidWidth)
 
-            LinearGradient(
-                colors: [.white, .clear],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(width: featherWidth)
+                    LinearGradient(
+                        colors: [.white, .clear],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .frame(width: featherWidth)
+                }
+            }
         }
         .frame(width: filledWidth)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
@@ -369,7 +462,10 @@ struct MiniPlayerProgressSpectrumRow: View {
 
     private func resolvedVisualizationWidth(for availableWidth: CGFloat) -> CGFloat {
         guard adaptsWideVisualizationSegments else { return spectrumExpandedWidth }
-        let extraWidth = max(0, availableWidth - wideVisualizationStartWidth)
+        let growthStartWidth = visualization == .spectrum
+            ? spectrumWideSegmentStartWidth
+            : wideVisualizationStartWidth
+        let extraWidth = max(0, availableWidth - growthStartWidth)
         let grownWidth = spectrumExpandedWidth + extraWidth * 0.38
         return min(wideVisualizationMaximumWidth, grownWidth)
     }
