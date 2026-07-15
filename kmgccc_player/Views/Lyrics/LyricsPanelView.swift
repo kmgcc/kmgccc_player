@@ -192,11 +192,9 @@ struct LyricsPanelView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         } else {
             ZStack {
-                if !playbackCoordinator.presentation.hasTrack && !shouldHostLyricsWebView {
+                if !playbackCoordinator.presentation.hasTrack {
                     emptyStateView
-                }
-
-                if shouldHostLyricsWebView {
+                } else if shouldHostLyricsWebView {
                     AMLLWebView(store: lyricsVM.webViewStore, animatesAttachment: false)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(.horizontal, 24)
@@ -328,7 +326,11 @@ struct LyricsPanelView: View {
 
     private var emptyStateView: some View {
         VStack(spacing: 6) {
-            Image("EmptyLyric")
+            ArtAssetImages.image(
+                named: ArtAssetImages.emptyLyricsName,
+                maxPixel: 720,
+                fallbackSystemName: "text.quote"
+            )
                 .resizable()
                 .scaledToFit()
                 .frame(width: 180, height: 180)
@@ -354,7 +356,11 @@ struct LyricsPanelView: View {
 
     private func lyricsUnavailableOverlay(message: String) -> some View {
         VStack(spacing: 8) {
-            Image("EmptyLyric")
+            ArtAssetImages.image(
+                named: ArtAssetImages.emptyLyricsName,
+                maxPixel: 560,
+                fallbackSystemName: "text.quote"
+            )
                 .resizable()
                 .scaledToFit()
                 .frame(width: 120, height: 120)
