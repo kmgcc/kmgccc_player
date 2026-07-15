@@ -63,71 +63,7 @@ struct SidebarView: View {
                     .padding(.bottom, 12)
             }
 
-            // Home Link
-            Button {
-                uiState.clearHomeNavigationContext()
-                libraryVM.selectOrResetCurrentSelection(.home)
-                uiState.showLibrary()
-            } label: {
-                HStack {
-                    Label("主页", systemImage: "house")
-                    Spacer()
-                }
-                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(
-                    selectionFill(isSelected: currentSelection == .home)
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 14)
-            .padding(.top, 4)
-
-            // Main Library Link
-            Button {
-                libraryVM.selectOrResetCurrentSelection(.allSongs)
-                uiState.showLibrary()
-            } label: {
-                HStack {
-                    Label(
-                        "sidebar.all_songs",
-                        systemImage: "music.note.list")
-                    Spacer()
-                }
-                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(
-                    selectionFill(isSelected: currentSelection == .allSongs)
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 14)
-            .padding(.bottom, 4)
-
-            // Playback History Link
-            Button {
-                uiState.clearHomeNavigationContext()
-                uiState.showPlaybackHistory()
-            } label: {
-                HStack {
-                    Label("播放历史", systemImage: "clock.arrow.circlepath")
-                    Spacer()
-                }
-                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(
-                    selectionFill(isSelected: currentSelection == .history)
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 14)
-            .padding(.bottom, 12)
+            primaryNavigation
 
             // Playlists List
             List {
@@ -484,6 +420,68 @@ struct SidebarView: View {
                 .foregroundStyle(.primary, themeStore.accentColor)
         }
         .buttonStyle(.plain)
+    }
+
+    private var primaryNavigation: some View {
+        VStack(spacing: 2) {
+            sidebarNavigationRow(
+                title: "主页",
+                systemImage: "house",
+                selection: .home
+            ) {
+                uiState.clearHomeNavigationContext()
+                libraryVM.selectOrResetCurrentSelection(.home)
+                uiState.showLibrary()
+            }
+
+            sidebarNavigationRow(
+                title: "sidebar.all_songs",
+                systemImage: "music.note.list",
+                selection: .allSongs
+            ) {
+                libraryVM.selectOrResetCurrentSelection(.allSongs)
+                uiState.showLibrary()
+            }
+
+            sidebarNavigationRow(
+                title: "播放历史",
+                systemImage: "clock.arrow.circlepath",
+                selection: .history
+            ) {
+                uiState.clearHomeNavigationContext()
+                uiState.showPlaybackHistory()
+            }
+        }
+        .padding(.top, 4)
+        .padding(.bottom, 12)
+    }
+
+    private func sidebarNavigationRow(
+        title: LocalizedStringKey,
+        systemImage: String,
+        selection: SidebarSelection,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 18, height: 18, alignment: .center)
+
+                Text(title)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+            .padding(.horizontal, 16)
+            .frame(height: 32, alignment: .center)
+            .background(
+                selectionFill(isSelected: currentSelection == selection)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
     }
 
     private var hasSidebarTaskProgress: Bool {
