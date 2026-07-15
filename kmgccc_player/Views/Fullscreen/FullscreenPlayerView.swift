@@ -2577,11 +2577,7 @@ struct FullscreenPlayerView: View {
         
         let effectiveColorScheme: ColorScheme
         if materialStyle == .normal {
-            // Normal Glass adapts:
-            // - If the final text/icon is dark (isDarkForeground == true) -> light material (ColorScheme = .light)
-            // - If the final text/icon is light (isDarkForeground == false) -> dark material (ColorScheme = .dark)
-            let profile = fullscreenMiniPlayerForegroundProfile
-            effectiveColorScheme = profile.isDarkForeground ? .light : .dark
+            effectiveColorScheme = fullscreenMiniPlayerForegroundProfile.complementaryGlassColorScheme
         } else {
             // Clear material or regular: use the default controls color scheme
             effectiveColorScheme = fullscreenControlsColorScheme

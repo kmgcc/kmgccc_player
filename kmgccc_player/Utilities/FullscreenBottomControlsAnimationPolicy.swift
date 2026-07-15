@@ -33,6 +33,10 @@ enum FullscreenBottomControlsAnimationPolicy {
 extension View {
     /// Prevents the fullscreen controls' layout spring from interpolating
     /// semantic colors or caching a transient AppKit/compositing appearance.
+    /// Apply this inside the layout-owning frame, on fixed-size foreground
+    /// leaves or fixed-footprint sections. Applying it to the Mini Player's
+    /// root layout would make its contents jump to the final width while the
+    /// outer glass pill is still animating.
     /// Explicit animations created inside the control remain intact because
     /// they do not carry the geometry-animation transaction key.
     func isolatesFullscreenBottomControlRenderingFromGeometryAnimation() -> some View {

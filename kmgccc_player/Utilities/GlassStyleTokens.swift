@@ -5,6 +5,17 @@
 
 import SwiftUI
 
+nonisolated enum GlassPillOverlayTone: Equatable, Sendable {
+    case clear
+    case light
+    case dark
+}
+
+nonisolated struct GlassPillOverlayRecipe: Equatable, Sendable {
+    let tone: GlassPillOverlayTone
+    let opacity: Double
+}
+
 struct GlassStyleTokens {
     // MARK: - Prominence
     enum Prominence {
@@ -73,16 +84,38 @@ struct GlassStyleTokens {
         colorScheme == .dark ? Color.black.opacity(0.18) : .clear
     }
 
+    nonisolated static func pillOverlayRecipe(
+        for colorScheme: ColorScheme,
+        materialStyle: LiquidGlassPillMaterialStyle
+    ) -> GlassPillOverlayRecipe {
+        switch materialStyle {
+        case .clear:
+            return colorScheme == .dark
+                ? GlassPillOverlayRecipe(tone: .dark, opacity: 0.18)
+                : GlassPillOverlayRecipe(tone: .clear, opacity: 0)
+        case .regular:
+            return GlassPillOverlayRecipe(tone: .clear, opacity: 0)
+        case .normal:
+            // Normal is an explicitly legible material. Dark foreground must
+            // sit on a light neutral glass; light foreground sits on a dark
+            // neutral glass. Never use a dark overlay for both polarities.
+            return colorScheme == .dark
+                ? GlassPillOverlayRecipe(tone: .dark, opacity: 0.30)
+                : GlassPillOverlayRecipe(tone: .light, opacity: 0.24)
+        }
+    }
+
     static func pillOverlay(for colorScheme: ColorScheme, materialStyle: LiquidGlassPillMaterialStyle)
         -> Color
     {
-        switch materialStyle {
+        let recipe = pillOverlayRecipe(for: colorScheme, materialStyle: materialStyle)
+        switch recipe.tone {
         case .clear:
-            return darkNeutralOverlay(for: colorScheme)
-        case .regular:
             return .clear
-        case .normal:
-            return colorScheme == .dark ? Color.black.opacity(0.30) : Color.black.opacity(0.14)
+        case .light:
+            return Color.white.opacity(recipe.opacity)
+        case .dark:
+            return Color.black.opacity(recipe.opacity)
         }
     }
 

@@ -308,13 +308,19 @@ extension FullscreenMiniPlayerForegroundProfile {
     var disabledColor: Color { ColorRenderingAdapter.makeSwiftUIColor(disabled) }
     var pillTintColor: Color { ColorRenderingAdapter.makeSwiftUIColor(pillTint) }
 
-    var isDarkForeground: Bool {
+    nonisolated var isDarkForeground: Bool {
         switch role {
         case .coverBlurDarkForeground, .artisticDayDarkForeground, .chromeDarkForeground:
             return true
         case .appleFixedLight, .coverBlurLightForeground, .artisticNightLightForeground, .chromeLightForeground:
             return false
         }
+    }
+
+    /// The normal glass surface always uses the opposite visual polarity from
+    /// its foreground ink: dark ink receives a light glass and vice versa.
+    nonisolated var complementaryGlassColorScheme: ColorScheme {
+        isDarkForeground ? .light : .dark
     }
 }
 
