@@ -16,16 +16,33 @@ import Foundation
 final class PlaybackArtworkWarmer {
     private var task: Task<Void, Never>?
     private var signature: String?
+    private var presentationSignature: String?
 
     func update(
         activeSource: PlaybackSource,
         presentation: NowPlayingPresentation,
-        queue: [Track]
+        queue: @autoclosure () -> [Track]
     ) {
         guard activeSource == .local, let currentTrack = presentation.localTrack else {
             reset()
             return
         }
+
+        // Progress-only presentation updates arrive several times per second.
+        // Do not rebuild the queue window or resolve artwork paths unless the
+        // current artwork input actually changed. The queue is intentionally an
+        // autoclosure so its array copy is skipped on this hot no-op path.
+        let nextPresentationSignature = [
+            currentTrack.id.uuidString,
+            presentation.artworkIdentity ?? "no-artwork-identity",
+            presentation.artworkDisplayTrackID?.uuidString ?? "no-display-track",
+            ArtworkDataFingerprint.sampledString(for: presentation.artworkData),
+            presentation.isArtworkLoading ? "loading" : "ready",
+        ].joined(separator: "|")
+        guard nextPresentationSignature != presentationSignature else { return }
+        presentationSignature = nextPresentationSignature
+
+        let queue = queue()
 
         let currentIndex = queue.firstIndex(where: { $0.id == currentTrack.id })
         var targets: [Track] = [currentTrack]
@@ -52,7 +69,9 @@ final class PlaybackArtworkWarmer {
         }
 
         guard !sources.isEmpty else {
-            reset()
+            task?.cancel()
+            task = nil
+            signature = nil
             return
         }
 
@@ -71,5 +90,6 @@ final class PlaybackArtworkWarmer {
         task?.cancel()
         task = nil
         signature = nil
+        presentationSignature = nil
     }
 }

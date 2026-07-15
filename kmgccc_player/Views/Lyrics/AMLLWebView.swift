@@ -363,6 +363,7 @@ final class WebViewHostView: NSView {
     var onLayout: ((CGRect) -> Void)?
     var onWindowStateChange: ((String) -> Void)?
     var webViewLayoutScale: CGFloat = 1
+    private var lastNotifiedLayoutBounds: CGRect?
 
     var isMouseInteractionSuppressed = false {
         didSet {
@@ -467,6 +468,8 @@ final class WebViewHostView: NSView {
     override func layout() {
         LyricsRuntimeProfile.increment("WebViewHostView.layout")
         super.layout()
+        guard lastNotifiedLayoutBounds != bounds else { return }
+        lastNotifiedLayoutBounds = bounds
         onLayout?(bounds)
     }
 
@@ -477,6 +480,7 @@ final class WebViewHostView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        lastNotifiedLayoutBounds = nil
         LyricsRuntimeProfile.increment("WebViewHostView.viewDidMoveToWindow")
         LyricsRuntimeProfile.setMetadata(
             "WebViewHostView.windowAttached",

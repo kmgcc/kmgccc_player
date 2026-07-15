@@ -1094,114 +1094,279 @@ private enum WaveformCapsulesPalette {
     }
 }
 
-// MARK: - Physics Engine
-
-@MainActor
-private class HolePhysics: ObservableObject {
-    @Published var angle: Double = 0
-    var omega: Double = 0  // deg/s
-
-    // Physics constants
-    private let targetSpeed: Double = 45.0
-    private let startTau: Double = 0.25  // Seconds to reach ~63% speed
-    private let stopTau: Double = 0.45  // Seconds to slow down (high inertia)
-
-    private var lastTime: TimeInterval = 0
-
-    func tick(at date: Date, isPlaying: Bool) {
-        let now = date.timeIntervalSinceReferenceDate
-
-        // First tick init
-        if lastTime == 0 {
-            lastTime = now
-            return
-        }
-
-        // Calculate clamped delta time
-        var dt = now - lastTime
-        lastTime = now
-        if dt > 0.1 { dt = 0.016 }  // Prevent jumps on resume
-
-        // Determine targets
-        let targetOmega = isPlaying ? targetSpeed : 0.0
-        let tau = isPlaying ? startTau : stopTau
-
-        // Apply damping (Spring/Friction simulation)
-        // omega_new = target + (omega_old - target) * e^(-dt/tau)
-        // derived from: d(omega)/dt = (target - omega) / tau
-        let decay = exp(-dt / tau)
-        omega = targetOmega + (omega - targetOmega) * decay
-
-        // Integrate angle
-        angle += omega * dt
-
-        // Wrap to prevent float drift over long periods
-        if angle > 36000 { angle -= 36000 }
-    }
-}
-
 // MARK: - Rotating Layer
 
 private struct HolesOverlay: View {
     let context: SkinContext
-
-    // Persist physics state across layout updates
-    @StateObject private var physics = HolePhysics()
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
-        GeometryReader { geo in
-            let w = geo.size.width
-            let h = geo.size.height
-            let minDim = min(w, h)
-            let holeSize = minDim * 0.16
-
-            // Resolve assets once
-            let imgName = context.theme.colorScheme == .dark ? "darkhole" : "lighthole"
-
-            // Determine if we can sleep the timeline loop
-            // Sleep if: Not playing AND essentially stopped (omega near 0)
-            let isPlaying = context.playback.isPlaying
-            let isStationary = !isPlaying && abs(physics.omega) < 0.1
-            // The original instruction had `AnyLayout` for schedule, which is incorrect.
-            // Using `TimelineView(.animation(minimumInterval:paused:))` directly.
-
-            TimelineView(
-                .animation(minimumInterval: isStationary ? 1.0 : 1.0 / 60.0, paused: isStationary)
-            ) { timeline in
-                Canvas { ctx, size in
-                    // 1. Resolve image
-                    // Note: In a real app, optimize by resolving Image once outside if possible,
-                    // but Canvas requires context-bound resolution.
-                    // System caches this efficiently.
-                    guard let resolved = ctx.resolveSymbol(id: "hole") else { return }
-
-                    // 2. Draw Left Hole
-                    ctx.drawLayer { lctx in
-                        lctx.translateBy(x: w * 0.2960, y: h * 0.5424)
-                        lctx.rotate(by: .degrees(physics.angle))
-                        lctx.draw(resolved, at: .zero)
-                    }
-
-                    // 3. Draw Right Hole
-                    ctx.drawLayer { lctx in
-                        lctx.translateBy(x: w * 0.7066, y: h * 0.5424)
-                        lctx.rotate(by: .degrees(physics.angle))
-                        lctx.draw(resolved, at: .zero)
-                    }
-                } symbols: {
-                    // Symbol definition (drawn once, rasterized if grouped)
-                    ArtAssetImages.image(named: imgName, maxPixel: Int(ceil(holeSize * 2)))
-                        .resizable()
-                        .frame(width: holeSize, height: holeSize)
-                        .tag("hole")
-                }
-                .onChange(of: timeline.date) { _, newDate in
-                    physics.tick(at: newDate, isPlaying: isPlaying)
-                }
-            }
-        }
-        // Isolate compositing to avoid redrawing parent cassette layers
+        CassetteHoleRotationRepresentable(
+            imageName: context.theme.colorScheme == .dark ? "darkhole" : "lighthole",
+            isPlaying: context.playback.isPlaying,
+            displayScale: displayScale
+        )
         .allowsHitTesting(false)
+    }
+}
+
+private struct CassetteHoleRotationRepresentable: NSViewRepresentable {
+    let imageName: String
+    let isPlaying: Bool
+    let displayScale: CGFloat
+
+    func makeNSView(context: Context) -> CassetteHoleRotationHostView {
+        let view = CassetteHoleRotationHostView()
+        view.configure(imageName: imageName, isPlaying: isPlaying, displayScale: displayScale)
+        return view
+    }
+
+    func updateNSView(_ nsView: CassetteHoleRotationHostView, context: Context) {
+        nsView.configure(imageName: imageName, isPlaying: isPlaying, displayScale: displayScale)
+    }
+
+    static func dismantleNSView(_ nsView: CassetteHoleRotationHostView, coordinator: ()) {
+        nsView.prepareForDismissal()
+    }
+}
+
+/// Tiny AppKit bridge for server-side reel rotation. SwiftUI owns image/theme
+/// and playback state; Core Animation owns interpolation between those changes.
+@MainActor
+private final class CassetteHoleRotationHostView: NSView {
+    private enum Constants {
+        // Canvas used a top-left coordinate space, where positive angles rotate
+        // clockwise. CALayer is bottom-left, so use the negative equivalent.
+        static let targetAngularVelocity = -CGFloat.pi / 4  // 45 degrees / second
+        static let startTau: TimeInterval = 0.25
+        static let stopTau: TimeInterval = 0.45
+        static let accelerationDuration: TimeInterval = 1.1
+        static let decelerationDuration: TimeInterval = 2.75
+        static let fullRotationDuration: TimeInterval = 8.0
+        static let sampleCount = 28
+    }
+
+    private let rootLayer = CALayer()
+    private let leftHoleLayer = CALayer()
+    private let rightHoleLayer = CALayer()
+    private var imageName = ""
+    private var loadedMaxPixel = 0
+    private var displayScale: CGFloat = 2
+    private var requestedPlaying = false
+    private var animationGeneration: UInt64 = 0
+    private var handoffWorkItem: DispatchWorkItem?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer = rootLayer
+        rootLayer.masksToBounds = false
+        configureLayer(leftHoleLayer)
+        configureLayer(rightHoleLayer)
+        rootLayer.addSublayer(leftHoleLayer)
+        rootLayer.addSublayer(rightHoleLayer)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        rootLayer.frame = bounds
+        let holeSide = min(bounds.width, bounds.height) * 0.16
+        let holeBounds = CGRect(x: 0, y: 0, width: holeSide, height: holeSide)
+        leftHoleLayer.bounds = holeBounds
+        rightHoleLayer.bounds = holeBounds
+        let canvasY = bounds.height * (1 - 0.5424)
+        leftHoleLayer.position = CGPoint(x: bounds.width * 0.2960, y: canvasY)
+        rightHoleLayer.position = CGPoint(x: bounds.width * 0.7066, y: canvasY)
+        CATransaction.commit()
+        updateImageIfNeeded(holeSide: holeSide)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            stopAtPresentationAngle()
+        } else if requestedPlaying {
+            beginAcceleration()
+        }
+    }
+
+    func configure(imageName: String, isPlaying: Bool, displayScale: CGFloat) {
+        let imageChanged = self.imageName != imageName
+        let scaleChanged = abs(self.displayScale - displayScale) > 0.01
+        self.imageName = imageName
+        self.displayScale = max(1, displayScale)
+        if imageChanged || scaleChanged {
+            loadedMaxPixel = 0
+            needsLayout = true
+        }
+
+        guard requestedPlaying != isPlaying else { return }
+        requestedPlaying = isPlaying
+        if isPlaying, window != nil {
+            beginAcceleration()
+        } else {
+            beginDeceleration()
+        }
+    }
+
+    func prepareForDismissal() {
+        requestedPlaying = false
+        handoffWorkItem?.cancel()
+        handoffWorkItem = nil
+        animationGeneration &+= 1
+        leftHoleLayer.removeAllAnimations()
+        rightHoleLayer.removeAllAnimations()
+    }
+
+    private func configureLayer(_ layer: CALayer) {
+        layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        layer.contentsGravity = .resizeAspect
+        layer.magnificationFilter = .linear
+        layer.minificationFilter = .trilinear
+        layer.actions = [
+            "bounds": NSNull(),
+            "position": NSNull(),
+            "contents": NSNull(),
+            "transform": NSNull(),
+        ]
+    }
+
+    private func updateImageIfNeeded(holeSide: CGFloat) {
+        let maxPixel = max(1, Int(ceil(holeSide * 2)))
+        guard maxPixel != loadedMaxPixel else { return }
+        loadedMaxPixel = maxPixel
+        let image = ArtAssetLoader.shared.xcAssetImage(
+            named: imageName,
+            maxPixel: maxPixel,
+            fallbackToProgrammaticArt: true
+        )
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        leftHoleLayer.contents = image
+        rightHoleLayer.contents = image
+        leftHoleLayer.contentsScale = displayScale
+        rightHoleLayer.contentsScale = displayScale
+        CATransaction.commit()
+    }
+
+    private func beginAcceleration() {
+        animationGeneration &+= 1
+        let generation = animationGeneration
+        handoffWorkItem?.cancel()
+        let startAngle = stopAtPresentationAngle()
+        let values = sampledAngles(
+            startAngle: startAngle,
+            duration: Constants.accelerationDuration
+        ) { time in
+            Constants.targetAngularVelocity
+                * CGFloat(time - Constants.startTau * (1 - exp(-time / Constants.startTau)))
+        }
+        let finalAngle = values.last ?? startAngle
+        addKeyframeAnimation(values: values, duration: Constants.accelerationDuration, finalAngle: finalAngle)
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.animationGeneration == generation,
+                  self.requestedPlaying,
+                  self.window != nil else { return }
+            self.beginContinuousRotation(from: finalAngle)
+        }
+        handoffWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Constants.accelerationDuration, execute: work)
+    }
+
+    private func beginDeceleration() {
+        animationGeneration &+= 1
+        handoffWorkItem?.cancel()
+        handoffWorkItem = nil
+        let startAngle = stopAtPresentationAngle()
+        guard window != nil else { return }
+        let values = sampledAngles(
+            startAngle: startAngle,
+            duration: Constants.decelerationDuration
+        ) { time in
+            Constants.targetAngularVelocity * CGFloat(Constants.stopTau * (1 - exp(-time / Constants.stopTau)))
+        }
+        addKeyframeAnimation(
+            values: values,
+            duration: Constants.decelerationDuration,
+            finalAngle: values.last ?? startAngle
+        )
+    }
+
+    private func beginContinuousRotation(from startAngle: CGFloat) {
+        handoffWorkItem = nil
+        setModelAngle(startAngle)
+        for layer in [leftHoleLayer, rightHoleLayer] {
+            layer.removeAnimation(forKey: "cassetteReelTransition")
+            let animation = CABasicAnimation(keyPath: "transform.rotation.z")
+            animation.fromValue = startAngle
+            let revolution = Constants.targetAngularVelocity < 0
+                ? -2 * CGFloat.pi
+                : 2 * CGFloat.pi
+            animation.toValue = startAngle + revolution
+            animation.duration = Constants.fullRotationDuration
+            animation.repeatCount = .infinity
+            animation.timingFunction = CAMediaTimingFunction(name: .linear)
+            animation.isRemovedOnCompletion = false
+            layer.add(animation, forKey: "cassetteReelContinuous")
+        }
+    }
+
+    @discardableResult
+    private func stopAtPresentationAngle() -> CGFloat {
+        let angle = presentationAngle(of: leftHoleLayer)
+        leftHoleLayer.removeAllAnimations()
+        rightHoleLayer.removeAllAnimations()
+        setModelAngle(angle)
+        return angle
+    }
+
+    private func addKeyframeAnimation(values: [CGFloat], duration: TimeInterval, finalAngle: CGFloat) {
+        setModelAngle(finalAngle)
+        for layer in [leftHoleLayer, rightHoleLayer] {
+            let animation = CAKeyframeAnimation(keyPath: "transform.rotation.z")
+            animation.values = values
+            animation.duration = duration
+            animation.calculationMode = .linear
+            animation.isRemovedOnCompletion = true
+            layer.add(animation, forKey: "cassetteReelTransition")
+        }
+    }
+
+    private func sampledAngles(
+        startAngle: CGFloat,
+        duration: TimeInterval,
+        offset: (TimeInterval) -> CGFloat
+    ) -> [CGFloat] {
+        (0...Constants.sampleCount).map { index in
+            let time = duration * TimeInterval(index) / TimeInterval(Constants.sampleCount)
+            return startAngle + offset(time)
+        }
+    }
+
+    private func presentationAngle(of layer: CALayer) -> CGFloat {
+        if let number = layer.presentation()?.value(forKeyPath: "transform.rotation.z") as? NSNumber {
+            return CGFloat(truncating: number)
+        }
+        if let number = layer.value(forKeyPath: "transform.rotation.z") as? NSNumber {
+            return CGFloat(truncating: number)
+        }
+        return 0
+    }
+
+    private func setModelAngle(_ angle: CGFloat) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        leftHoleLayer.setValue(angle, forKeyPath: "transform.rotation.z")
+        rightHoleLayer.setValue(angle, forKeyPath: "transform.rotation.z")
+        CATransaction.commit()
     }
 }
 
