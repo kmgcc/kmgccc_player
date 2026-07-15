@@ -27,7 +27,6 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         static let staleDataThreshold: TimeInterval = 0.12
         static let staleRestartThreshold: TimeInterval = 0.80
         static let restartCooldown: TimeInterval = 1.20
-        static let stopGracePeriod: TimeInterval = 0.35
         // Low so quiet passages still publish at ~30Hz instead of dropping to the
         // 0.25s forced cadence (which made low-volume bars lurch / look granular).
         static let publishEpsilon: Float = 0.003
@@ -54,10 +53,10 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     private var consumers: [UUID: Consumer] = [:]
     private var adaptiveConsumers: [UUID: AdaptiveConsumer] = [:]
     private var hubConsumerId: UUID?
+    private var hasHubLease = false
     private var timer: DispatchSourceTimer?
-    private var activeRefs = 0
     private var isRunning = false
-    private var pendingStopWorkItem: DispatchWorkItem?
+    private var visibilityLeaseID: UUID?
 
     private var isPlaying: Bool = false
     private var pauseStartTime: TimeInterval?
@@ -129,26 +128,6 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
 
     private init() {}
 
-    func start() {
-        processingQueue.async { [weak self] in
-            guard let self else { return }
-            self.pendingStopWorkItem?.cancel()
-            self.pendingStopWorkItem = nil
-            self.activeRefs += 1
-            guard self.activeRefs == 1 else { return }
-            self.startLocked()
-        }
-    }
-
-    func stop() {
-        processingQueue.async { [weak self] in
-            guard let self else { return }
-            self.activeRefs = max(0, self.activeRefs - 1)
-            guard self.activeRefs == 0, self.isRunning else { return }
-            self.scheduleStopLocked()
-        }
-    }
-
     func updatePlaybackState(isPlaying: Bool) {
         // Gate the shared FFT hub so it stops doing FFTs on silent buffers while
         // paused. Idempotent; safe to call from any thread.
@@ -188,8 +167,14 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
 
             if enabled && !wasEnabled {
                 self.lastDataTime = Date().timeIntervalSinceReferenceDate
+                if self.isRunning {
+                    self.detachHubLocked()
+                }
             } else if !enabled && wasEnabled {
                 self.hasPendingFFT = false
+                if self.isRunning {
+                    self.attachHubLocked()
+                }
             }
         }
     }
@@ -211,7 +196,10 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         consumers[id] = callback
         consumerLock.unlock()
 
-        let initialWave = processingQueue.sync { lastPublishedWave }
+        let initialWave = processingQueue.sync {
+            reconcileConsumerDemandLocked()
+            return lastPublishedWave
+        }
         Task { @MainActor in
             callback(initialWave)
         }
@@ -223,11 +211,16 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         let id = UUID()
 
         consumerLock.lock()
+        let isFirstDetailedConsumer = adaptiveConsumers.isEmpty
         adaptiveConsumers[id] = callback
         consumerLock.unlock()
 
         let initialFrame = processingQueue.sync {
-            SpectrumWaveFrame(
+            if isFirstDetailedConsumer {
+                resetDetailedSpectrumLocked()
+            }
+            reconcileConsumerDemandLocked()
+            return SpectrumWaveFrame(
                 legacy: lastPublishedWave,
                 detailed: lastPublishedDetailedWave
             )
@@ -242,13 +235,21 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     func removeConsumer(_ id: UUID) {
         consumerLock.lock()
         consumers.removeValue(forKey: id)
-        adaptiveConsumers.removeValue(forKey: id)
+        let removedDetailedConsumer = adaptiveConsumers.removeValue(forKey: id) != nil
+        let hasDetailedConsumers = !adaptiveConsumers.isEmpty
         consumerLock.unlock()
+
+        processingQueue.async { [weak self] in
+            guard let self else { return }
+            if removedDetailedConsumer, !hasDetailedConsumers {
+                self.resetDetailedSpectrumLocked()
+            }
+            self.reconcileConsumerDemandLocked()
+        }
     }
 
     private func startLocked() {
-        pendingStopWorkItem?.cancel()
-        pendingStopWorkItem = nil
+        guard !isRunning else { return }
         let now = Date().timeIntervalSinceReferenceDate
         isRunning = true
         // Restore the last known play-state rather than assuming paused. Only arm
@@ -293,22 +294,21 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         producedFrameCount = 0
         coalescedFrameCount = 0
 
-        hub.start()
-        hubConsumerId = hub.addConsumer { [weak self] data in
-            self?.enqueue(data)
+        visibilityLeaseID = AudioVisualizationVisibilityRegistry.shared.acquire(.spectrum)
+        if !isExternalMode {
+            attachHubLocked()
         }
         startTimerLocked()
     }
 
     private func stopLocked() {
-        pendingStopWorkItem?.cancel()
-        pendingStopWorkItem = nil
-        if let id = hubConsumerId {
-            hub.removeConsumer(id)
-        }
-        hubConsumerId = nil
-        hub.stop()
+        guard isRunning else { return }
+        detachHubLocked()
         stopTimerLocked()
+        if let visibilityLeaseID {
+            AudioVisualizationVisibilityRegistry.shared.release(visibilityLeaseID)
+            self.visibilityLeaseID = nil
+        }
 
         let zeroWave = Array(repeating: Float(0), count: Constants.bandCount)
         let shouldPublishZero = lastPublishedWave.contains(where: { $0 > 0.001 })
@@ -343,17 +343,42 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         }
     }
 
-    private func scheduleStopLocked() {
-        pendingStopWorkItem?.cancel()
+    private func reconcileConsumerDemandLocked() {
+        consumerLock.lock()
+        let hasVisibleConsumers = !consumers.isEmpty || !adaptiveConsumers.isEmpty
+        consumerLock.unlock()
 
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            guard self.activeRefs == 0, self.isRunning else { return }
-            self.stopLocked()
+        if hasVisibleConsumers {
+            startLocked()
+        } else {
+            stopLocked()
         }
+    }
 
-        pendingStopWorkItem = workItem
-        processingQueue.asyncAfter(deadline: .now() + Constants.stopGracePeriod, execute: workItem)
+    private func attachHubLocked() {
+        guard !hasHubLease else { return }
+        hub.start()
+        hasHubLease = true
+        hubConsumerId = hub.addConsumer { [weak self] data in
+            self?.enqueue(data)
+        }
+    }
+
+    private func detachHubLocked() {
+        if let id = hubConsumerId {
+            hub.removeConsumer(id)
+            hubConsumerId = nil
+        }
+        guard hasHubLease else { return }
+        hub.stop()
+        hasHubLease = false
+    }
+
+    private func resetDetailedSpectrumLocked() {
+        detailedProcessor.reset()
+        liveDetailedWave = DetailedSpectrumProcessor.zeroWave
+        outputDetailedWave = DetailedSpectrumProcessor.zeroWave
+        lastPublishedDetailedWave = DetailedSpectrumProcessor.zeroWave
     }
 
     private func enqueue(_ data: AudioAnalysisData) {
@@ -390,6 +415,10 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     private func tick() {
         guard isRunning else { return }
 
+        consumerLock.lock()
+        let hasDetailedConsumers = !adaptiveConsumers.isEmpty
+        consumerLock.unlock()
+
         let now = Date().timeIntervalSinceReferenceDate
         let dt = Float(max(0.001, min(0.1, now - lastTickTime)))
         lastTickTime = now
@@ -409,13 +438,15 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
 
         if isExternalMode {
             liveWave = ExternalPlaybackSpectrumSimulator.shared.lastWave
-            liveDetailedWave = detailedProcessor.process(
-                magnitudes: [],
-                fftSize: pendingFFTSize,
-                sampleRate: pendingSampleRate,
-                legacyWave: liveWave,
-                dt: dt
-            )
+            if hasDetailedConsumers {
+                liveDetailedWave = detailedProcessor.process(
+                    magnitudes: [],
+                    fftSize: pendingFFTSize,
+                    sampleRate: pendingSampleRate,
+                    legacyWave: liveWave,
+                    dt: dt
+                )
+            }
             lastDataTime = now
         } else if hasPendingFFT {
             liveWave = processWave(
@@ -427,13 +458,15 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
                 playerVolume: playerVolume,
                 dt: dt
             )
-            liveDetailedWave = detailedProcessor.process(
-                magnitudes: pendingMagnitudes,
-                fftSize: pendingFFTSize,
-                sampleRate: pendingSampleRate,
-                legacyWave: liveWave,
-                dt: dt
-            )
+            if hasDetailedConsumers {
+                liveDetailedWave = detailedProcessor.process(
+                    magnitudes: pendingMagnitudes,
+                    fftSize: pendingFFTSize,
+                    sampleRate: pendingSampleRate,
+                    legacyWave: liveWave,
+                    dt: dt
+                )
+            }
             hasPendingFFT = false
         } else if isPlaying, now - lastDataTime > Constants.staleDataThreshold {
             // Only force a decay tick while playing; while paused we keep the
@@ -448,18 +481,19 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
                 playerVolume: playerVolume,
                 dt: dt
             )
-            liveDetailedWave = detailedProcessor.process(
-                magnitudes: [],
-                fftSize: pendingFFTSize,
-                sampleRate: pendingSampleRate,
-                legacyWave: liveWave,
-                dt: dt
-            )
+            if hasDetailedConsumers {
+                liveDetailedWave = detailedProcessor.process(
+                    magnitudes: [],
+                    fftSize: pendingFFTSize,
+                    sampleRate: pendingSampleRate,
+                    legacyWave: liveWave,
+                    dt: dt
+                )
+            }
         }
 
         if !isExternalMode,
            isPlaying,
-           activeRefs > 0,
            now - lastDataTime > Constants.staleRestartThreshold,
            now - lastRestartAttemptTime > Constants.restartCooldown
         {
@@ -482,19 +516,18 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
             let pose = idlePattern[index]
             outputWave[index] = live + (pose - live) * poseBlend
         }
-        for index in outputDetailedWave.indices {
-            let live = liveDetailedWave[index]
-            let pose = detailedIdlePattern[index]
-            outputDetailedWave[index] = live + (pose - live) * poseBlend
+        if hasDetailedConsumers {
+            for index in outputDetailedWave.indices {
+                let live = liveDetailedWave[index]
+                let pose = detailedIdlePattern[index]
+                outputDetailedWave[index] = live + (pose - live) * poseBlend
+            }
         }
 
         var maxDelta = zip(outputWave, lastPublishedWave).reduce(Float.zero) { partial, pair in
             max(partial, abs(pair.0 - pair.1))
         }
-        consumerLock.lock()
-        let hasAdaptiveConsumers = adaptiveConsumers.isEmpty == false
-        consumerLock.unlock()
-        if hasAdaptiveConsumers {
+        if hasDetailedConsumers {
             let detailedDelta = zip(outputDetailedWave, lastPublishedDetailedWave)
                 .reduce(Float.zero) { partial, pair in
                     max(partial, abs(pair.0 - pair.1))
@@ -511,7 +544,9 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
         guard shouldPublish else { return }
         lastPublishTime = now
         lastPublishedWave = outputWave
-        lastPublishedDetailedWave = outputDetailedWave
+        if hasDetailedConsumers {
+            lastPublishedDetailedWave = outputDetailedWave
+        }
         publish(
             SpectrumWaveFrame(
                 legacy: outputWave,
@@ -580,6 +615,7 @@ nonisolated final class AudioVisualizationService: @unchecked Sendable {
     }
 
     private func restartAnalysisChainLocked(now: TimeInterval) {
+        guard hasHubLease else { return }
         lastRestartAttemptTime = now
 
         if let id = hubConsumerId {

@@ -27,6 +27,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     private var lastObservedPlaying: Bool = false
     private var frameConsumers: [UUID: FrameConsumer] = [:]
     private var serviceFrameConsumerID: UUID?
+    private var visibilityLeaseID: UUID?
 
     /// Active sampling sessions. The provider keeps the underlying meter alive
     /// while at least one session is held (Now Playing scene, fullscreen,
@@ -34,8 +35,6 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     /// kept around for fast re-acquire — Now Playing's hard release goes
     /// through `releaseNowPlayingResources()`.
     private var sessionCount: Int = 0
-    private var isPlaybackSessionActive = false
-
     /// Metrics from the real service or the external simulator.
     var metrics: LEDMeterMetrics {
         if playbackSource.isExternal {
@@ -71,11 +70,11 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
                 detachServiceFrameConsumer()
                 _service?.stop()
                 _service = nil
-                startExternalPolling()
             } else {
                 stopExternalPolling()
-                syncFrameConsumerForwarder()
             }
+            syncActiveState()
+            syncFrameConsumerForwarder()
             publishFrameToConsumers()
         }
     }
@@ -117,12 +116,12 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     // MARK: - AudioLevelMeterProtocol
 
     func start() {
-        isPlaybackSessionActive = true
+        // Playback intent alone is not visibility demand. A real view session or
+        // frame consumer is required before the meter/FFT chain can run.
         syncActiveState()
     }
 
     func stop() {
-        isPlaybackSessionActive = false
         syncActiveState()
     }
 
@@ -149,7 +148,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     /// session (e.g. the LED settings preview), this is a no-op — they need
     /// the meter to keep sampling.
     func releaseNowPlayingResources() {
-        guard sessionCount == 0 else { return }
+        guard !hasVisibleConsumers else { return }
         stopExternalPolling()
         detachServiceFrameConsumer()
         _service?.stop()
@@ -173,8 +172,11 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     }
 
     private func syncActiveState() {
-        let shouldBeRunning = isPlaybackSessionActive || sessionCount > 0
+        let shouldBeRunning = hasVisibleConsumers
         if shouldBeRunning {
+            if visibilityLeaseID == nil {
+                visibilityLeaseID = AudioVisualizationVisibilityRegistry.shared.acquire(.ledMeter)
+            }
             if playbackSource.isExternal {
                 startExternalPolling()
             } else {
@@ -186,7 +188,15 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
         } else {
             _service?.stop()
             stopExternalPolling()
+            if let visibilityLeaseID {
+                AudioVisualizationVisibilityRegistry.shared.release(visibilityLeaseID)
+                self.visibilityLeaseID = nil
+            }
         }
+    }
+
+    private var hasVisibleConsumers: Bool {
+        sessionCount > 0 || !frameConsumers.isEmpty
     }
 
     /// Updates config on existing service or stores for future creation.
@@ -202,6 +212,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
         let id = UUID()
         frameConsumers[id] = consumer
         consumer(metrics, audioMetrics)
+        syncActiveState()
         syncFrameConsumerForwarder()
         return id
     }
@@ -209,6 +220,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     func removeFrameConsumer(_ id: UUID) {
         frameConsumers.removeValue(forKey: id)
         syncFrameConsumerForwarder()
+        syncActiveState()
     }
 
     private func syncFrameConsumerForwarder() {
@@ -259,6 +271,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
         externalPollSuspendWork?.cancel()
         externalPollSuspendWork = nil
         guard externalPollTimer == nil else { return }
+        guard hasVisibleConsumers else { return }
         // While externally paused the simulator output is frozen, so there is
         // nothing new to re-read — skip the 30Hz pulse. The static frame is
         // still read once on the next SwiftUI evaluation.
