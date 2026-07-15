@@ -137,7 +137,13 @@ struct HomeHeroView: View {
     }
 
     private var heroHeight: CGFloat {
-        baseHeroHeight + wideExpansion * 80
+        guard mode == .wide else { return baseHeroHeight }
+
+        // Keep the extra-wide Hero visually balanced instead of letting the
+        // banner become an increasingly thin strip. The wide layout starts at
+        // the existing 320 pt floor, then follows the card width until a
+        // desktop-friendly ceiling is reached.
+        return min(max(containerWidth / 3.05, baseHeroHeight), 520)
     }
 
     private var heroTopPadding: CGFloat {
@@ -282,6 +288,9 @@ struct HomeHeroView: View {
         }
         .task(id: track.id) {
             await loadCoverImage()
+        }
+        .task(id: heroBackdropRequestID) {
+            await refreshHeroBackdropsForCurrentLayout()
         }
         .onAppear { recomputeHeroPalette() }
         .onChange(of: heroAnalysis) { _, _ in recomputeHeroPalette() }
@@ -461,16 +470,12 @@ struct HomeHeroView: View {
         )
     }
 
-    /// Width the background renderer draws the artwork at (scale-to-height).
-    /// Used to push the text content past the visible cover art.
-    /// Uses `heroHeight` so the square cover fills the full card height and
-    /// text/buttons stay in the blurred extension region.
+    /// The Hero always reserves a square, full-height artwork column. This is
+    /// intentionally independent of image load state and source pixel aspect
+    /// ratio so text/buttons never slide left onto the cover while loading or
+    /// during a wide-window resize.
     private var artworkLeadingWidth: CGFloat {
-        guard artworkData != nil else { return 0 }
-        if let img = coverImage {
-            return heroHeight * (img.size.width / max(1, img.size.height))
-        }
-        return heroHeight  // assume square while image is loading
+        heroHeight
     }
 
     /// Dynamic backdrop render target size matching the actual card aspect
@@ -480,6 +485,14 @@ struct HomeHeroView: View {
         let targetHeight: CGFloat = 380
         let targetWidth = round(targetHeight * aspect)
         return CGSize(width: max(380, targetWidth), height: targetHeight)
+    }
+
+    /// Changes when either the artwork or the rendered card aspect ratio
+    /// changes. The matching task debounces live resize and replaces the
+    /// existing composite only after a correctly sized render is ready.
+    private var heroBackdropRequestID: String {
+        let targetSize = heroBackdropTargetSize
+        return "\(track.id)-\(heroArtworkChecksum)-\(Int(targetSize.width))x\(Int(targetSize.height))"
     }
 
     @ViewBuilder
@@ -527,8 +540,7 @@ struct HomeHeroView: View {
     }
 
     private var coverHoverSide: CGFloat {
-        let side = artworkLeadingWidth > 0 ? artworkLeadingWidth : baseHeroHeight
-        return min(heroHeight, max(1, side))
+        heroHeight
     }
 
     private var coverHoverHitRegion: some View {
@@ -823,18 +835,12 @@ struct HomeHeroView: View {
             cacheKey: key,
             targetPixelSize: CGSize(width: 480, height: 480)
         )
-        async let backdropTask: HomeHeroBackdropArtifact? = renderHeroBackdrop(
-            artworkData: data,
-            checksum: checksum,
-            variant: .normal
-        )
         // Analyze locally so the hero's text/dominant colours track this card's
         // artwork, not the currently-playing track's ThemeStore palette.
         async let analysisTask: ArtworkColorAnalysis? = Task.detached(priority: .userInitiated) {
             ArtworkColorExtractor.analyze(from: data)
         }.value
         let image = await imageTask
-        let backdrop = await backdropTask
         let analysis = await analysisTask
         // Guard against a stale completion from a previous track — only apply
         // the result if this hero card's artwork hasn't changed underneath us.
@@ -846,33 +852,75 @@ struct HomeHeroView: View {
                 for: HomeArtworkMemoryStore.heroCoverKey(for: track)
             )
         }
-        heroBackdropImage = backdrop?.image
-        heroNormalReadabilityMap = backdrop?.readabilityMap ?? nil
         heroAnalysis = analysis
-        // Image and map arrive together (built in one detached task), so score
-        // immediately - no foreground-late-by-a-beat. The palette .onChange
-        // re-scores once heroAnalysis propagates into the candidates.
+    }
+
+    /// Regenerate the single composited cover + progressive-blur backdrop for
+    /// the current card aspect ratio. A short debounce prevents detached Core
+    /// Image renders from piling up during live resize; the old composite stays
+    /// visible until the new one is ready, so there is no empty flash.
+    private func refreshHeroBackdropsForCurrentLayout() async {
+        guard
+            heroArtworkChecksum != 0,
+            let artworkData,
+            !artworkData.isEmpty
+        else { return }
+
+        do {
+            try await Task.sleep(for: .milliseconds(120))
+        } catch {
+            return
+        }
+        guard !Task.isCancelled else { return }
+
+        let checksum = heroArtworkChecksum
+        let requestID = heroBackdropRequestID
+        let targetSize = heroBackdropTargetSize
+        let backdrop = await renderHeroBackdrop(
+            artworkData: artworkData,
+            checksum: checksum,
+            variant: .normal,
+            targetSize: targetSize
+        )
+        guard
+            !Task.isCancelled,
+            heroArtworkChecksum == checksum,
+            heroBackdropRequestID == requestID,
+            let backdrop
+        else { return }
+
+        heroBackdropImage = backdrop.image
+        heroNormalReadabilityMap = backdrop.readabilityMap
+        // Do not let the previous aspect ratio's hover composite sit on top of
+        // the newly sized normal composite while the replacement is rendering.
+        heroCoverHoverBackdropImage = nil
+        heroHoverReadabilityMap = nil
         updateHeroLocalPolarity()
 
         let hoverBackdrop = await renderHeroBackdrop(
-            artworkData: data,
+            artworkData: artworkData,
             checksum: checksum,
-            variant: .coverHover
+            variant: .coverHover,
+            targetSize: targetSize
         )
-        guard heroArtworkChecksum == checksum else { return }
+        guard
+            !Task.isCancelled,
+            heroArtworkChecksum == checksum,
+            heroBackdropRequestID == requestID
+        else { return }
+
         heroCoverHoverBackdropImage = hoverBackdrop?.image
-        heroHoverReadabilityMap = hoverBackdrop?.readabilityMap ?? nil
-        // Fold the hover map in (one further update, animation disabled).
+        heroHoverReadabilityMap = hoverBackdrop?.readabilityMap
         updateHeroLocalPolarity()
     }
 
     private func renderHeroBackdrop(
         artworkData: Data,
         checksum: UInt64,
-        variant: HomeHeroBackdropVariant
+        variant: HomeHeroBackdropVariant,
+        targetSize: CGSize
     ) async -> HomeHeroBackdropArtifact? {
         let config = heroBlurConfig(variant: variant)
-        let targetSize = heroBackdropTargetSize
         let sizeTag = "\(Int(targetSize.width))x\(Int(targetSize.height))"
         // Bumped to v8: target size is now dynamic (card aspect ratio) so the
         // cache key includes the resolved size tag.
