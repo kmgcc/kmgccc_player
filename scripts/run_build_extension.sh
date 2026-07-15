@@ -12,6 +12,7 @@ RESOURCES="$APP/Contents/Resources"
 MODE="${BUILD_EXTENSION_MODE:-auto}"
 STRICT="${BUILD_EXTENSION_STRICT:-NO}"
 HOOK="${BUILD_EXTENSION_HOOK:-}"
+PROTECTED_ROOT="${BUILD_EXTENSION_PROTECTED_ROOT:-$(cd "$PROJECT_DIR/.." && pwd -P)}"
 STATE_ROOT="${DERIVED_FILE_DIR:-${TARGET_TEMP_DIR:-${TEMP_FILES_DIR:-${TMPDIR:-/tmp}/kmgccc-build-state}}}"
 STATE_FILE="${BUILD_EXTENSION_STATE_FILE:-$STATE_ROOT/build-extension.paths}"
 
@@ -60,6 +61,8 @@ if [[ -z "$HOOK" || ! -x "$HOOK" ]]; then
 fi
 
 [[ -d "$APP" ]] || fail "target app is unavailable before optional build outputs are prepared"
+[[ -x /usr/bin/sandbox-exec ]] || fail "build extension source protection is unavailable"
+[[ "$PROTECTED_ROOT" != / ]] || fail "build extension source protection root is invalid"
 mkdir -p "$RESOURCES" "$STATE_ROOT"
 
 HOOK_STAGING="$(mktemp -d "${TMPDIR:-/tmp}/kmgccc-build-extension.XXXXXX")"
@@ -105,7 +108,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$HOOK" --output "$HOOK_STAGING"
+/usr/bin/sandbox-exec \
+  -D PROTECTED_ROOT="$PROTECTED_ROOT" \
+  -p '(version 1)(allow default)(deny file-write* (subpath (param "PROTECTED_ROOT")))' \
+  "$HOOK" --output "$HOOK_STAGING"
 
 output_count=0
 while IFS= read -r -d '' item; do
