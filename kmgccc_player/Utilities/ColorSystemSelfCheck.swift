@@ -162,6 +162,10 @@ nonisolated enum ColorSystemSelfCheck {
         checkAppFgDarkCoolHueReduced(&report)
         checkAppFgLightModeDirectional(&report)
 
+        report.section("Phase 4.6 — Plus blend text pre-colours")
+        checkPlusBlendTextMiddleBand(&report)
+        checkPlusBlendTextNearMonoAchromatic(&report)
+
         report.section("Phase 5 — LyricsColorPalette")
         checkLyricsNearMonoWindowNeutral(&report)
         checkLyricsNearMonoFullscreenNeutral(&report)
@@ -1552,9 +1556,9 @@ nonisolated enum ColorSystemSelfCheck {
         )
     }
 
-    /// Dark mode: lightness hierarchy primary > secondary > tertiary >
-    /// quaternary > disabled. Ensures the visual weight ordering is
-    /// preserved even when the chroma scale shifts with artwork.
+    /// Dark mode: source colours stay close to primary while alpha supplies
+    /// the visible hierarchy. This guards against regressing to opaque grey
+    /// tiers or accidentally flattening the opacity ladder.
     private static func checkAppFgDarkLightnessHierarchy(_ report: inout CheckReport) {
         guard let analysis = analyse(side: 32, fill: (40, 100, 200, 255)) else {
             report.record("AppForeground: dark mode L hierarchy", false, "analysis nil")
@@ -1574,20 +1578,26 @@ nonisolated enum ColorSystemSelfCheck {
             report.record("AppForeground: dark mode L hierarchy", false, "OKLCH nil")
             return
         }
-        let assertion = ColorSystemTokens.AppForeground.darkPrimaryLAssertion
-        let ok = lPri >= assertion
-            && lPri > lSec
-            && lSec > lTer
-            && lTer > lQua
-            && lQua > lDis
+        let T = ColorSystemTokens.AppForeground.self
+        let maxDelta = T.subordinateSourceLightnessDeltaAssertion
+        let alphaOK = p.primary.alphaComponent == T.primaryAlpha
+            && p.secondary.alphaComponent == T.secondaryAlpha
+            && p.tertiary.alphaComponent == T.tertiaryAlpha
+            && p.quaternary.alphaComponent == T.quaternaryAlpha
+            && p.disabled.alphaComponent == T.disabledAlpha
+        let sourceLIsClustered = lPri >= T.darkPrimaryLAssertion
+            && lPri - lSec <= maxDelta
+            && lPri - lTer <= maxDelta
+            && lPri - lQua <= maxDelta
+        let ok = alphaOK && sourceLIsClustered && lQua > lDis
         report.record(
-            "AppForeground: dark mode L hierarchy", ok,
-            "L: \(format(lPri))>\(format(lSec))>\(format(lTer))>\(format(lQua))>\(format(lDis))"
+            "AppForeground: dark mode opacity hierarchy", ok,
+            "L=\(format(lPri)),\(format(lSec)),\(format(lTer)),\(format(lQua)),\(format(lDis)) alpha=\(format(p.primary.alphaComponent)),\(format(p.secondary.alphaComponent)),\(format(p.tertiary.alphaComponent)),\(format(p.quaternary.alphaComponent)),\(format(p.disabled.alphaComponent))"
         )
     }
 
-    /// Light mode: lightness hierarchy primary < secondary < tertiary <
-    /// quaternary < disabled (low L = dark text on light background).
+    /// Light mode uses the same opacity ladder with closely clustered dark-ink
+    /// source colours.
     private static func checkAppFgLightLightnessHierarchy(_ report: inout CheckReport) {
         guard let analysis = analyse(side: 32, fill: (40, 100, 200, 255)) else {
             report.record("AppForeground: light mode L hierarchy", false, "analysis nil")
@@ -1607,15 +1617,21 @@ nonisolated enum ColorSystemSelfCheck {
             report.record("AppForeground: light mode L hierarchy", false, "OKLCH nil")
             return
         }
-        let assertion = ColorSystemTokens.AppForeground.lightPrimaryLAssertion
-        let ok = lPri <= assertion
-            && lPri < lSec
-            && lSec < lTer
-            && lTer < lQua
-            && lQua < lDis
+        let T = ColorSystemTokens.AppForeground.self
+        let maxDelta = T.subordinateSourceLightnessDeltaAssertion
+        let alphaOK = p.primary.alphaComponent == T.primaryAlpha
+            && p.secondary.alphaComponent == T.secondaryAlpha
+            && p.tertiary.alphaComponent == T.tertiaryAlpha
+            && p.quaternary.alphaComponent == T.quaternaryAlpha
+            && p.disabled.alphaComponent == T.disabledAlpha
+        let sourceLIsClustered = lPri <= T.lightPrimaryLAssertion
+            && lSec - lPri <= maxDelta
+            && lTer - lPri <= maxDelta
+            && lQua - lPri <= maxDelta
+        let ok = alphaOK && sourceLIsClustered && lQua < lDis
         report.record(
-            "AppForeground: light mode L hierarchy", ok,
-            "L: \(format(lPri))<\(format(lSec))<\(format(lTer))<\(format(lQua))<\(format(lDis))"
+            "AppForeground: light mode opacity hierarchy", ok,
+            "L=\(format(lPri)),\(format(lSec)),\(format(lTer)),\(format(lQua)),\(format(lDis)) alpha=\(format(p.primary.alphaComponent)),\(format(p.secondary.alphaComponent)),\(format(p.tertiary.alphaComponent)),\(format(p.quaternary.alphaComponent)),\(format(p.disabled.alphaComponent))"
         )
     }
 
@@ -1729,7 +1745,8 @@ nonisolated enum ColorSystemSelfCheck {
         )
     }
 
-    /// Dark mode tertiary chroma must be ≤ secondary chroma × ratio cap.
+    /// After opacity is applied, tertiary effective chroma must remain below
+    /// secondary even though both source colours are intentionally saturated.
     private static func checkAppFgDarkTertiaryBelowSecondary(_ report: inout CheckReport) {
         guard let analysis = analyse(side: 32, fill: (40, 100, 200, 255)) else {
             report.record("AppForeground: dark tertiary chroma ≤ secondary × cap", false, "analysis nil")
@@ -1744,11 +1761,12 @@ nonisolated enum ColorSystemSelfCheck {
             report.record("AppForeground: dark tertiary chroma ≤ secondary × cap", false, "OKLCH nil")
             return
         }
-        let cap = ColorSystemTokens.AppForeground.darkTertiaryToSecondaryRatioCap
-        let ok = secC > 0 ? (terC / secC) <= cap : terC == 0
+        let secEffective = secC * p.secondary.alphaComponent
+        let terEffective = terC * p.tertiary.alphaComponent
+        let ok = terEffective < secEffective || (secEffective == 0 && terEffective == 0)
         report.record(
-            "AppForeground: dark tertiary chroma ≤ secondary × cap", ok,
-            "ter/sec=\(format(secC > 0 ? terC / secC : 0)) cap=\(format(cap)) ter=\(format(terC)) sec=\(format(secC))"
+            "AppForeground: dark effective tertiary chroma < secondary", ok,
+            "effective ter=\(format(terEffective)) sec=\(format(secEffective)) rawTer=\(format(terC)) rawSec=\(format(secC))"
         )
     }
 
@@ -1811,6 +1829,87 @@ nonisolated enum ColorSystemSelfCheck {
         report.record(
             "AppForeground: light mode warm/cool direction", ok,
             "warm R>\u{3e}B: \(warmIsWarm) (R=\(format(warmRGB.redComponent)) B=\(format(warmRGB.blueComponent))) | cool B>R: \(coolIsCool) (R=\(format(coolRGB.redComponent)) B=\(format(coolRGB.blueComponent)))"
+        )
+    }
+
+    private static func checkPlusBlendTextMiddleBand(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (44, 108, 210, 255)) else {
+            report.record("PlusBlendText: source colours stay in middle band", false, "analysis nil")
+            return
+        }
+        let palette = SemanticPaletteSelfCheck.plusBlendText(
+            analysis: analysis,
+            globalAccent: NSColor(deviceRed: 0.12, green: 0.38, blue: 0.92, alpha: 1)
+        )
+        let T = ColorSystemTokens.PlusBlendText.self
+        let colors = [
+            palette.lightOnDarkBackground.primary,
+            palette.lightOnDarkBackground.secondary,
+            palette.lightOnDarkBackground.tertiary,
+            palette.lightOnDarkBackground.quaternary,
+            palette.darkOnLightBackground.primary,
+            palette.darkOnLightBackground.secondary,
+            palette.darkOnLightBackground.tertiary,
+            palette.darkOnLightBackground.quaternary,
+        ]
+        let lchValues = colors.compactMap(OKColor.nsColorToOKLCH)
+        guard lchValues.count == colors.count else {
+            report.record("PlusBlendText: source colours stay in middle band", false, "OKLCH nil")
+            return
+        }
+        let lightPrimary = lchValues[0].l
+        let lightSecondary = lchValues[1].l
+        let lightTertiary = lchValues[2].l
+        let lightQuaternary = lchValues[3].l
+        let darkPrimary = lchValues[4].l
+        let darkSecondary = lchValues[5].l
+        let darkTertiary = lchValues[6].l
+        let darkQuaternary = lchValues[7].l
+        let withinBand = lchValues.allSatisfy {
+            $0.l >= T.minimumSourceL - 0.01
+                && $0.l <= T.maximumSourceL + 0.01
+                && $0.c <= T.chromaCap + 0.006
+        }
+        let hierarchy = lightPrimary > lightSecondary
+            && lightSecondary > lightTertiary
+            && lightTertiary > lightQuaternary
+            && darkPrimary < darkSecondary
+            && darkSecondary < darkTertiary
+            && darkTertiary < darkQuaternary
+        let ok = withinBand && hierarchy
+        report.record(
+            "PlusBlendText: source colours stay in middle band", ok,
+            "lighter=\(format(lightPrimary))/\(format(lightSecondary))/\(format(lightTertiary))/\(format(lightQuaternary)) darker=\(format(darkPrimary))/\(format(darkSecondary))/\(format(darkTertiary))/\(format(darkQuaternary))"
+        )
+    }
+
+    private static func checkPlusBlendTextNearMonoAchromatic(_ report: inout CheckReport) {
+        guard let analysis = analyse(side: 32, fill: (144, 144, 144, 255)) else {
+            report.record("PlusBlendText: near-mono candidates achromatic", false, "analysis nil")
+            return
+        }
+        let palette = SemanticPaletteSelfCheck.plusBlendText(
+            analysis: analysis,
+            globalAccent: NSColor(deviceRed: 0.90, green: 0.42, blue: 0.12, alpha: 1)
+        )
+        let colors = [
+            palette.lightOnDarkBackground.primary,
+            palette.lightOnDarkBackground.secondary,
+            palette.lightOnDarkBackground.tertiary,
+            palette.lightOnDarkBackground.quaternary,
+            palette.darkOnLightBackground.primary,
+            palette.darkOnLightBackground.secondary,
+            palette.darkOnLightBackground.tertiary,
+            palette.darkOnLightBackground.quaternary,
+        ]
+        let chroma = colors.compactMap { OKColor.nsColorToOKLCH($0)?.c }
+        let ceiling = ColorSystemTokens.PlusBlendText.nearMonoChromaAssertion
+        let ok = analysis.isNearMonochrome
+            && chroma.count == colors.count
+            && chroma.allSatisfy { $0 <= ceiling }
+        report.record(
+            "PlusBlendText: near-mono candidates achromatic", ok,
+            "nearMono=\(analysis.isNearMonochrome) maxC=\(format(chroma.max() ?? -1))"
         )
     }
 
@@ -3794,13 +3893,13 @@ nonisolated enum ColorSystemSelfCheck {
                  expected: .lightOnDarkBackground), // below eligibility
             Case(name: "hsl0.60 luma0.40 mid sat", hslL: 0.60, luma: 0.40, bri: 0.70, sat: 0.40,
                  expected: .lightOnDarkBackground), // borderline -> light
-            Case(name: "hsl0.70", hslL: 0.70, luma: 0.40, bri: 0.75, sat: 0.40,
+            Case(name: "hsl0.74", hslL: 0.74, luma: 0.40, bri: 0.78, sat: 0.40,
                  expected: .darkOnLightBackground), // clearlyBrightByHSL
-            Case(name: "hsl0.60 luma0.60", hslL: 0.60, luma: 0.60, bri: 0.75, sat: 0.40,
+            Case(name: "hsl0.64 luma0.64", hslL: 0.64, luma: 0.64, bri: 0.78, sat: 0.40,
                  expected: .darkOnLightBackground), // clearlyBrightByLuma
-            Case(name: "hsl0.60 bri0.86 sat0.10", hslL: 0.60, luma: 0.40, bri: 0.86, sat: 0.10,
+            Case(name: "hsl0.64 bri0.88 sat0.10", hslL: 0.64, luma: 0.40, bri: 0.88, sat: 0.10,
                  expected: .darkOnLightBackground), // paleHighBrightness
-            Case(name: "hsl0.60 bri0.86 sat0.45", hslL: 0.60, luma: 0.40, bri: 0.86, sat: 0.45,
+            Case(name: "hsl0.64 bri0.88 sat0.45", hslL: 0.64, luma: 0.40, bri: 0.88, sat: 0.45,
                  expected: .lightOnDarkBackground)  // saturation above pale ceiling
         ]
         var allOk = true
@@ -3860,7 +3959,7 @@ nonisolated enum ColorSystemSelfCheck {
     /// strict-gate value.
     private static func checkArtworkForegroundPolarityCacheVersionBumped(_ report: inout CheckReport) {
         let v = ArtworkColorExtractor.cacheVersion
-        let ok = v.contains("v11") && v.contains("readability")
+        let ok = v.contains("v12") && v.contains("readability-opacity")
         report.record(
             "Phase 7: analysis cache version bumped", ok,
             "cacheVersion=\(v)"
@@ -4216,6 +4315,52 @@ nonisolated enum ColorSystemSelfCheck {
             transitionOk && viewportOk,
             "transition=\(transitionOk) viewport=\(viewportOk)"
         )
+
+        let stableRegions = FullscreenBottomControlsGeometry.stableReadabilityRegions(
+            viewportSize: CGSize(width: 1920, height: 923),
+            expansionPoints: 14
+        )
+        let expectedStableRegions = FullscreenBottomControlsGeometry.InteractionLayout.allCases
+            .flatMap { layout in
+                FullscreenBottomControlsGeometry.make(
+                    isLeftActionsExpanded: layout.isLeftActionsExpanded,
+                    isVolumeExpanded: layout.isVolumeExpanded
+                ).readabilityRegions(
+                    viewportSize: CGSize(width: 1920, height: 923),
+                    expansionPoints: 14
+                )
+            }
+        let stableLayoutOk = stableRegions == expectedStableRegions
+            && stableRegions.count == FullscreenBottomControlsGeometry.InteractionLayout.allCases.count * 3
+
+        let customConfiguration = FullscreenBottomControlsGeometry.Configuration(
+            buttonSize: 72,
+            spacing: 16,
+            leadingExpandedWidth: 216,
+            volumeExpandedWidth: 204
+        )
+        let customStableRegions = FullscreenBottomControlsGeometry.stableReadabilityRegions(
+            viewportSize: CGSize(width: 1920, height: 1080),
+            expansionPoints: 14,
+            configuration: customConfiguration
+        )
+        let expectedCustomRegions = FullscreenBottomControlsGeometry.InteractionLayout.allCases
+            .flatMap { layout in
+                FullscreenBottomControlsGeometry.make(
+                    isLeftActionsExpanded: layout.isLeftActionsExpanded,
+                    isVolumeExpanded: layout.isVolumeExpanded,
+                    configuration: customConfiguration
+                ).readabilityRegions(
+                    viewportSize: CGSize(width: 1920, height: 1080),
+                    expansionPoints: 14
+                )
+            }
+        let customConfigurationOk = customStableRegions == expectedCustomRegions
+        report.record(
+            "Phase 7.1: fullscreen hover-stable control regions",
+            stableLayoutOk && customConfigurationOk,
+            "regions=\(stableRegions.count) layouts=\(FullscreenBottomControlsGeometry.InteractionLayout.allCases.count) custom=\(customConfigurationOk)"
+        )
     }
 
     /// Local-polarity routing (plan section 11.3): only the Cover Blur
@@ -4309,43 +4454,45 @@ nonisolated enum ColorSystemSelfCheck {
         )
     }
 
-    /// Queue text palette is decoupled from the bottom controls' local polarity
-    /// (plan section 8.7): Cover Blur uses the global gate; other skins keep
-    /// fixed behaviour.
+    /// Queue/Quick Panel overlay surfaces consume their own local Cover Blur
+    /// polarity, while Apple stays light and other skins follow app appearance.
     private static func checkFullscreenQueueDecoupled(_ report: inout CheckReport) {
         guard let brightAnalysis = analyse(side: 32, fill: (245, 196, 120, 255)) else {
-            report.record("Phase 7.1: queue decoupled", false, "analysis nil")
+            report.record("Phase 7.1: overlay local polarity routing", false, "analysis nil")
             return
         }
         let fallbackAccent = NSColor(deviceRed: 0.30, green: 0.48, blue: 0.95, alpha: 1)
         let palette = foregroundStrategyPalette(
             analysis: brightAnalysis, scheme: .light, fallbackAccent: fallbackAccent
         )
-        // Bright cover -> global usesDarkForeground = true -> Cover Blur queue
-        // bright = false (dark text). A local-light polarity must NOT flip this.
-        let coverBlurQueue = FullscreenMiniPlayerForegroundStrategy.resolveQueueUsesBrightText(
-            palette: palette, skinID: "fullscreen.coverGradientBlur",
-            colorScheme: .light, fullscreenArtBackgroundEnabled: false
+        let coverBlurLocalDark = FullscreenMiniPlayerForegroundStrategy.resolveOverlaySurface(
+            palette: palette, localArtworkPolarity: .darkOnLightBackground,
+            skinID: "fullscreen.coverGradientBlur", colorScheme: .dark
         )
-        let appleQueue = FullscreenMiniPlayerForegroundStrategy.resolveQueueUsesBrightText(
-            palette: palette, skinID: "appleStyle",
-            colorScheme: .light, fullscreenArtBackgroundEnabled: false
+        let coverBlurLocalLight = FullscreenMiniPlayerForegroundStrategy.resolveOverlaySurface(
+            palette: palette, localArtworkPolarity: .lightOnDarkBackground,
+            skinID: "fullscreen.coverGradientBlur", colorScheme: .light
         )
-        let ledLightQueue = FullscreenMiniPlayerForegroundStrategy.resolveQueueUsesBrightText(
-            palette: palette, skinID: "coverLed",
-            colorScheme: .light, fullscreenArtBackgroundEnabled: false
+        let appleQueue = FullscreenMiniPlayerForegroundStrategy.resolveOverlaySurface(
+            palette: palette, localArtworkPolarity: .darkOnLightBackground,
+            skinID: "appleStyle", colorScheme: .light
         )
-        let ledDarkQueue = FullscreenMiniPlayerForegroundStrategy.resolveQueueUsesBrightText(
-            palette: palette, skinID: "coverLed",
-            colorScheme: .dark, fullscreenArtBackgroundEnabled: false
+        let ledLightQueue = FullscreenMiniPlayerForegroundStrategy.resolveOverlaySurface(
+            palette: palette, localArtworkPolarity: .lightOnDarkBackground,
+            skinID: "coverLed", colorScheme: .light
         )
-        let ok = coverBlurQueue == false
-            && appleQueue == true
-            && ledLightQueue == false
-            && ledDarkQueue == true
+        let ledDarkQueue = FullscreenMiniPlayerForegroundStrategy.resolveOverlaySurface(
+            palette: palette, localArtworkPolarity: .darkOnLightBackground,
+            skinID: "coverLed", colorScheme: .dark
+        )
+        let ok = coverBlurLocalDark.isDarkForeground
+            && !coverBlurLocalLight.isDarkForeground
+            && !appleQueue.isDarkForeground
+            && ledLightQueue.isDarkForeground
+            && !ledDarkQueue.isDarkForeground
         report.record(
-            "Phase 7.1: queue decoupled from local polarity", ok,
-            "coverBlur=\(coverBlurQueue) apple=\(appleQueue) ledLight=\(ledLightQueue) ledDark=\(ledDarkQueue)"
+            "Phase 7.1: overlay local polarity routing", ok,
+            "cbDark=\(coverBlurLocalDark.isDarkForeground) cbLight=\(coverBlurLocalLight.isDarkForeground) apple=\(appleQueue.isDarkForeground) ledLight=\(ledLightQueue.isDarkForeground) ledDark=\(ledDarkQueue.isDarkForeground)"
         )
     }
 
@@ -4368,6 +4515,10 @@ nonisolated enum ColorSystemSelfCheck {
             analysis: analysis,
             globalAccent: fallbackAccent,
             isDark: scheme == .dark
+        )
+        let plusBlendText = SemanticPaletteSelfCheck.plusBlendText(
+            analysis: analysis,
+            globalAccent: fallbackAccent
         )
         let lyrics = SemanticPaletteSelfCheck.lyricsPalette(
             analysis: analysis,
@@ -4394,6 +4545,7 @@ nonisolated enum ColorSystemSelfCheck {
             readabilityCandidates: SemanticPaletteSelfCheck.readabilityCandidates(analysis),
             coverGradientTextCandidates: SemanticPaletteSelfCheck.coverGradientTextCandidates(analysis),
             miniPlayerControl: control,
+            plusBlendText: plusBlendText,
             appForeground: appForeground,
             lyrics: lyrics
         )
