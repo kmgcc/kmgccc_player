@@ -220,7 +220,14 @@ struct KmgcccPlayerApp: App {
                 Divider()
 
                 Button(NSLocalizedString("menu.toggle_queue", comment: "Toggle Queue")) {
-                    NotificationCenter.default.post(name: .toggleQueuePanel, object: nil)
+                    Task { @MainActor in
+                        await appSession.setupIfNeeded()
+                        if FullscreenWindowManager.shared.usesFullscreenPlayerUI {
+                            NotificationCenter.default.post(name: .toggleQueuePanel, object: nil)
+                        } else {
+                            appSession.uiState.toggleWindowPlaybackQueue()
+                        }
+                    }
                 }
                 .keyboardShortcut("q", modifiers: [.command, .option])
 
