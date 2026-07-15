@@ -15,6 +15,44 @@ struct FullscreenControlsGlassStyle {
     let materialStyle: LiquidGlassPillMaterialStyle
 }
 
+/// Shared content metrics for the fullscreen Mini Player. The outer pill owns
+/// the animated container width; every section except progress has a stable
+/// footprint, so progress is the single continuous compression/expansion zone.
+/// Keeping these values in one type lets geometry self-checks detect future
+/// changes that would make the content wider than an expanded pill.
+nonisolated struct FullscreenMiniPlayerLayoutMetrics: Equatable, Sendable {
+    let scale: CGFloat
+
+    var trackInfoWidth: CGFloat { 196 * scale }
+    var controlsWidth: CGFloat { 174 * scale }
+    var playbackModeExpandedWidth: CGFloat { 178 * scale }
+    var externalPlaybackModeExpandedWidth: CGFloat { 160 * scale }
+    var playbackModeCollapsedWidth: CGFloat { 56 * scale }
+    var preferredProgressAreaWidth: CGFloat { 320 * scale }
+    var minimumProgressAreaWidth: CGFloat { 104 * scale }
+    var sectionSpacing: CGFloat { 18 * scale }
+    var horizontalPadding: CGFloat { 20 * scale }
+
+    var maximumPlaybackModeWidth: CGFloat {
+        max(playbackModeExpandedWidth, externalPlaybackModeExpandedWidth)
+    }
+
+    func availableProgressAreaWidth(
+        containerWidth: CGFloat,
+        playbackModeWidth: CGFloat
+    ) -> CGFloat {
+        max(
+            0,
+            containerWidth
+                - horizontalPadding * 2
+                - sectionSpacing * 3
+                - trackInfoWidth
+                - controlsWidth
+                - playbackModeWidth
+        )
+    }
+}
+
 /// Enlarged mini player bar for fullscreen mode.
 /// Layout: Cover+Title | Controls | Playback Mode | Progress | Volume
 struct FullscreenMiniPlayerView: View {
@@ -59,21 +97,25 @@ struct FullscreenMiniPlayerView: View {
     private var controlSize: CGFloat { barHeight * 0.6 }
     private var iconSize: CGFloat { barHeight * 0.27 }
     private var primaryIconSize: CGFloat { barHeight * 0.33 }
+    private var layoutMetrics: FullscreenMiniPlayerLayoutMetrics {
+        FullscreenMiniPlayerLayoutMetrics(scale: scale)
+    }
     
     // Layout constants scaled
-    private var trackInfoWidth: CGFloat { 196 * scale }
-    private var controlsWidth: CGFloat { 174 * scale }
-    private var playbackModeExpandedWidth: CGFloat { 178 * scale }
-    private var playbackModeCollapsedWidth: CGFloat { 56 * scale }
+    private var trackInfoWidth: CGFloat { layoutMetrics.trackInfoWidth }
+    private var controlsWidth: CGFloat { layoutMetrics.controlsWidth }
+    private var playbackModeExpandedWidth: CGFloat { layoutMetrics.playbackModeExpandedWidth }
+    private var playbackModeCollapsedWidth: CGFloat { layoutMetrics.playbackModeCollapsedWidth }
     private var playbackModeOccupancyWidth: CGFloat {
         let expandedWidth = playbackCoordinator.presentation.source.isExternal
-            ? 160 * scale
+            ? layoutMetrics.externalPlaybackModeExpandedWidth
             : playbackModeExpandedWidth
         return isPlaybackModeExpanded ? expandedWidth : playbackModeCollapsedWidth
     }
-    private var minProgressWidth: CGFloat { 320 * scale }
-    private var hStackSpacing: CGFloat { 18 * scale }
-    private var hPadding: CGFloat { 20 * scale }
+    private var minimumProgressAreaWidth: CGFloat { layoutMetrics.minimumProgressAreaWidth }
+    private var preferredProgressAreaWidth: CGFloat { layoutMetrics.preferredProgressAreaWidth }
+    private var hStackSpacing: CGFloat { layoutMetrics.sectionSpacing }
+    private var hPadding: CGFloat { layoutMetrics.horizontalPadding }
     private var vPadding: CGFloat { 8 * scale }
     private var trackInfoHSpacing: CGFloat { 16 * scale }
     private var trackInfoVSpacing: CGFloat { 6 * scale }
@@ -135,25 +177,34 @@ struct FullscreenMiniPlayerView: View {
                 onInteraction: onInteraction
             )
             .equatable()
+            .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
             .frame(width: trackInfoWidth, alignment: .leading)
             .contentShape(Rectangle())
 
             // Center: Playback Controls
             controlsView
+                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
                 .frame(width: controlsWidth)
 
             // Playback Mode
             playbackModeView
+                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
                 .frame(width: playbackModeOccupancyWidth, alignment: .leading)
 
-            // Progress bar
+            // The progress/spectrum row is the only flexible section. Its
+            // proposal follows the outer pill's animated width on every frame,
+            // while the fixed controls keep their positions and dimensions.
             progressArea
-                .frame(minWidth: minProgressWidth, maxWidth: .infinity)
+                .frame(
+                    minWidth: minimumProgressAreaWidth,
+                    idealWidth: preferredProgressAreaWidth,
+                    maxWidth: .infinity
+                )
+                .layoutPriority(-1)
                 .frame(height: barHeight - vPadding * 2, alignment: .center)
 
             // Volume removed - now external component
         }
-        .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
         .padding(.horizontal, hPadding)
         .padding(.vertical, vPadding)
         .frame(height: barHeight)

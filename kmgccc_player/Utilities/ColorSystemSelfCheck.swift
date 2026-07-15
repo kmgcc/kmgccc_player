@@ -4361,6 +4361,33 @@ nonisolated enum ColorSystemSelfCheck {
             stableLayoutOk && customConfigurationOk,
             "regions=\(stableRegions.count) layouts=\(FullscreenBottomControlsGeometry.InteractionLayout.allCases.count) custom=\(customConfigurationOk)"
         )
+
+        let contentMetrics = FullscreenMiniPlayerLayoutMetrics(scale: 1)
+        let progressAreaWidths = FullscreenBottomControlsGeometry.InteractionLayout.allCases.map { layout in
+            let layoutGeometry = FullscreenBottomControlsGeometry.make(
+                isLeftActionsExpanded: layout.isLeftActionsExpanded,
+                isVolumeExpanded: layout.isVolumeExpanded
+            )
+            return contentMetrics.availableProgressAreaWidth(
+                containerWidth: layoutGeometry.miniPlayerRect.width,
+                playbackModeWidth: contentMetrics.maximumPlaybackModeWidth
+            )
+        }
+        let progressCompressionOk = progressAreaWidths.allSatisfy {
+            $0 >= contentMetrics.minimumProgressAreaWidth
+        }
+        let progressAreaWidthSummary = progressAreaWidths
+            .map { String(format: "%.0f", Double($0)) }
+            .joined(separator: ",")
+        let minimumProgressAreaWidthSummary = String(
+            format: "%.0f",
+            Double(contentMetrics.minimumProgressAreaWidth)
+        )
+        report.record(
+            "Phase 7.1: fullscreen progress compression envelope",
+            progressCompressionOk,
+            "widths=\(progressAreaWidthSummary) min=\(minimumProgressAreaWidthSummary)"
+        )
     }
 
     /// Local-polarity routing (plan section 11.3): only the Cover Blur
@@ -4400,6 +4427,11 @@ nonisolated enum ColorSystemSelfCheck {
             hasArtworkThemeColor: true, skinID: "fullscreen.coverGradientBlur",
             colorScheme: .light, materialStyle: .normal, fullscreenArtBackgroundEnabled: false
         )
+        let coverBlurNormalLocalLight = FullscreenMiniPlayerForegroundStrategy.resolve(
+            palette: darkPalette, localArtworkPolarity: .lightOnDarkBackground,
+            hasArtworkThemeColor: true, skinID: "fullscreen.coverGradientBlur",
+            colorScheme: .dark, materialStyle: .normal, fullscreenArtBackgroundEnabled: false
+        )
         // Cover Blur regular material -> ignores local (falls through).
         let coverBlurRegular = FullscreenMiniPlayerForegroundStrategy.resolve(
             palette: brightPalette, localArtworkPolarity: .darkOnLightBackground,
@@ -4428,6 +4460,7 @@ nonisolated enum ColorSystemSelfCheck {
         let ok = coverBlurLocalDark.role == .coverBlurDarkForeground
             && coverBlurLocalLight.role == .coverBlurLightForeground
             && coverBlurNormalLocalDark.role == .coverBlurDarkForeground
+            && coverBlurNormalLocalLight.role == .coverBlurLightForeground
             && coverBlurRegular.role == .chromeLightForeground
             && apple.role == .appleFixedLight
             && coverLedLight.role == .chromeDarkForeground
@@ -4435,6 +4468,26 @@ nonisolated enum ColorSystemSelfCheck {
         report.record(
             "Phase 7.1: local polarity routing", ok,
             "cbLocalDark=\(coverBlurLocalDark.role.rawValue) cbLocalLight=\(coverBlurLocalLight.role.rawValue) cbNormal=\(coverBlurNormalLocalDark.role.rawValue) cbRegular=\(coverBlurRegular.role.rawValue) apple=\(apple.role.rawValue) ledLight=\(coverLedLight.role.rawValue) artDark=\(artisticDark.role.rawValue)"
+        )
+
+        let normalLightGlassRecipe = GlassStyleTokens.pillOverlayRecipe(
+            for: .light,
+            materialStyle: .normal
+        )
+        let normalDarkGlassRecipe = GlassStyleTokens.pillOverlayRecipe(
+            for: .dark,
+            materialStyle: .normal
+        )
+        let normalGlassPairingOk = coverBlurNormalLocalDark.complementaryGlassColorScheme == .light
+            && coverBlurNormalLocalLight.complementaryGlassColorScheme == .dark
+            && normalLightGlassRecipe.tone == .light
+            && normalLightGlassRecipe.opacity > 0
+            && normalDarkGlassRecipe.tone == .dark
+            && normalDarkGlassRecipe.opacity > 0
+        report.record(
+            "Phase 7.1: adaptive normal glass polarity",
+            normalGlassPairingOk,
+            "darkInk=\(coverBlurNormalLocalDark.complementaryGlassColorScheme) lightInk=\(coverBlurNormalLocalLight.complementaryGlassColorScheme) lightTone=\(normalLightGlassRecipe.tone) darkTone=\(normalDarkGlassRecipe.tone)"
         )
 
         // Candidate profiles: dark candidate low-L, light candidate high-L,
