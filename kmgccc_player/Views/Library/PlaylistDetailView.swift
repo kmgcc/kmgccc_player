@@ -184,24 +184,7 @@ struct PlaylistDetailView: View {
     }
 
     private var fallbackSelectionIdentity: String {
-        switch libraryVM.currentSelection {
-        case .home:
-            return "home"
-        case .allSongs:
-            return "allSongs"
-        case .allPlaylists:
-            return "allPlaylists"
-        case .allAlbums:
-            return "allAlbums"
-        case .allArtists:
-            return "allArtists"
-        case .playlist(let id):
-            return "playlist-\(id.uuidString)"
-        case .artist(let key):
-            return "artist-\(key)"
-        case .album(let key):
-            return "album-\(key)"
-        }
+        libraryVM.currentSelection.selectionIdentity(in: libraryVM)
     }
 
     private var scrollBinding: Binding<UUID?> {
