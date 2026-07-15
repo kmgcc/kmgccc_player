@@ -230,6 +230,7 @@ final class PlaylistPageController {
     }
 
     func handleSelectionChange(_ selection: LibrarySelection) {
+        clearMultiselectState()
         if collectionListSelection != selection {
             collectionListSelection = nil
             collectionVisibleItemIDs = []

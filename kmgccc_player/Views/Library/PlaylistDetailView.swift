@@ -127,6 +127,7 @@ struct PlaylistDetailView: View {
         }
         .onDisappear {
             pageController.disappear(token: lifecycleToken)
+            pageController.clearMultiselectState()
         }
         .onChange(of: pageController.searchText) { _, _ in
             pageController.handleSearchChange()
