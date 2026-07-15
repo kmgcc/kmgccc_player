@@ -58,48 +58,57 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		D01000000000000000000001 /* kmgccc_player/AppKit */ = {
+		D01000000000000000000001 /* AppKit */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			name = AppKit;
 			path = kmgccc_player/AppKit;
 			sourceTree = "<group>";
 		};
-		D01000000000000000000002 /* kmgccc_player/Models */ = {
+		D01000000000000000000002 /* Models */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			name = Models;
 			path = kmgccc_player/Models;
 			sourceTree = "<group>";
 		};
-		D01000000000000000000003 /* kmgccc_player/Rendering */ = {
+		D01000000000000000000003 /* Rendering */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			name = Rendering;
 			path = kmgccc_player/Rendering;
 			sourceTree = "<group>";
 		};
-		D01000000000000000000004 /* kmgccc_player/Repositories */ = {
+		D01000000000000000000004 /* Repositories */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			name = Repositories;
 			path = kmgccc_player/Repositories;
 			sourceTree = "<group>";
 		};
-		D01000000000000000000005 /* kmgccc_player/Services */ = {
+		D01000000000000000000005 /* Services */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			name = Services;
 			path = kmgccc_player/Services;
 			sourceTree = "<group>";
 		};
-		D01000000000000000000006 /* kmgccc_player/Skins */ = {
+		D01000000000000000000006 /* Skins */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			name = Skins;
 			path = kmgccc_player/Skins;
 			sourceTree = "<group>";
 		};
-		D01000000000000000000007 /* kmgccc_player/Utilities */ = {
+		D01000000000000000000007 /* Utilities */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			name = Utilities;
 			path = kmgccc_player/Utilities;
 			sourceTree = "<group>";
 		};
-		D01000000000000000000008 /* kmgccc_player/ViewModels */ = {
+		D01000000000000000000008 /* ViewModels */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			name = ViewModels;
 			path = kmgccc_player/ViewModels;
 			sourceTree = "<group>";
 		};
-		D01000000000000000000009 /* kmgccc_player/Views */ = {
+		D01000000000000000000009 /* Views */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			name = Views;
 			path = kmgccc_player/Views;
 			sourceTree = "<group>";
 		};
@@ -130,15 +139,15 @@
 				A10000000000000000000003 /* Config */,
 				C02000000000000000000015 /* Tests */,
 				C01000000000000000000002 /* App Sources */,
-				D01000000000000000000001 /* kmgccc_player/AppKit */,
-				D01000000000000000000002 /* kmgccc_player/Models */,
-				D01000000000000000000003 /* kmgccc_player/Rendering */,
-				D01000000000000000000004 /* kmgccc_player/Repositories */,
-				D01000000000000000000005 /* kmgccc_player/Services */,
-				D01000000000000000000006 /* kmgccc_player/Skins */,
-				D01000000000000000000007 /* kmgccc_player/Utilities */,
-				D01000000000000000000008 /* kmgccc_player/ViewModels */,
-				D01000000000000000000009 /* kmgccc_player/Views */,
+				D01000000000000000000001 /* AppKit */,
+				D01000000000000000000002 /* Models */,
+				D01000000000000000000003 /* Rendering */,
+				D01000000000000000000004 /* Repositories */,
+				D01000000000000000000005 /* Services */,
+				D01000000000000000000006 /* Skins */,
+				D01000000000000000000007 /* Utilities */,
+				D01000000000000000000008 /* ViewModels */,
+				D01000000000000000000009 /* Views */,
 				C01000000000000000000001 /* Runtime Resources */,
 				9351198D2F33149A00766A5F /* AMLL */,
 				935118932F3231C500766A5F /* Products */,
