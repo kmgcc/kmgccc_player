@@ -39,6 +39,7 @@ struct SkinSelectorRow: View {
     var verticalPadding: CGFloat = 4
     var showsScrollButtons: Bool = false
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     var body: some View {
         let selectionAccentColor = FullscreenSelectionAccentStyle.adjustedAccentColor(
@@ -47,14 +48,20 @@ struct SkinSelectorRow: View {
 
         HorizontalFadeScrollContainer(
             spacing: itemSpacing,
-            fadeWidth: 12,
+            fadeWidth: presentationStyle.scaled(12),
             verticalPadding: verticalPadding,
             leadingScrollPadding: edgePadding,
             trailingScrollPadding: edgePadding,
             showsEdgeFade: true,
             showsScrollButtons: showsScrollButtons,
-            scrollButtonLeadingInset: max(4, edgePadding - 4),
-            scrollButtonTrailingInset: max(4, edgePadding - 4)
+            scrollButtonLeadingInset: max(
+                presentationStyle.scaled(4),
+                edgePadding - presentationStyle.scaled(4)
+            ),
+            scrollButtonTrailingInset: max(
+                presentationStyle.scaled(4),
+                edgePadding - presentationStyle.scaled(4)
+            )
         ) {
             ForEach(skins) { skin in
                 let selected = selectedSkinID == skin.id

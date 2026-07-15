@@ -62,7 +62,7 @@ struct SettingsView: View {
         // SettingsSwitchRow / settingsRowLabelStyle / settingsSectionTitleStyle
         // / settingsDescriptionStyle modifiers all read this environment and
         // override their built-in `.primary`/`.secondary` defaults — except
-        // surfaces whose presentation style sets `forcesWhiteText` (fullscreen
+        // surfaces whose presentation style supplies its own unified foreground (fullscreen
         // overlay panel), which keep the high-contrast white hierarchy.
         let palette = themeStore.appForegroundPalette
         let appColors = SettingsAppForegroundColors(

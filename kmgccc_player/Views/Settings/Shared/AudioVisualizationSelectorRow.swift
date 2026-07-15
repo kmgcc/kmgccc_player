@@ -14,10 +14,7 @@ struct AudioVisualizationSelectorRow: View {
 
     private var knobColor: Color {
         if presentationStyle.usesMaterialSectionCards {
-            return FullscreenSelectionAccentStyle.dimmedAccentColor(
-                from: themeStore.accentNSColor,
-                lightnessDelta: 0.30
-            )
+            return presentationStyle.primaryTextColor
         }
         return themeStore.accentColor
     }

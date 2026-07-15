@@ -38,7 +38,11 @@ struct LyricsTimingConfigSection: View {
                 Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
                 globalAdvanceSection
             }
-            .padding(presentationStyle.groupPadding)
+            .padding(
+                presentationStyle.usesCustomSectionCards
+                    ? 0
+                    : presentationStyle.groupPadding
+            )
         } label: {
             HStack(spacing: presentationStyle.compactInlineSpacing) {
                 Text("settings.lyrics.timing")

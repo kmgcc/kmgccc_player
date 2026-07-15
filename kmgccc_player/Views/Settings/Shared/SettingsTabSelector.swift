@@ -44,7 +44,7 @@ struct SettingsTabSelector: View {
             },
             knob: {
                 let knobBaseColor = presentationStyle.usesMaterialSectionCards
-                    ? FullscreenSelectionAccentStyle.dimmedAccentColor(from: themeStore.accentNSColor, lightnessDelta: 0.30)
+                    ? presentationStyle.primaryTextColor
                     : themeStore.accentColor
                 Capsule()
                     .fill(knobBaseColor.opacity(0.18))
@@ -101,7 +101,9 @@ struct SettingsTabSelector: View {
                         Capsule()
                             .strokeBorder(
                                 presentationStyle.segmentedTrackStrokeColor,
-                                lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear ? 0 : 0.5
+                                lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear
+                                    ? 0
+                                    : presentationStyle.scaledHairlineWidth
                             )
                             .allowsHitTesting(false)
                     )
