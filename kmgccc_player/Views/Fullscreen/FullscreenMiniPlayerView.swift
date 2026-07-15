@@ -120,8 +120,9 @@ struct FullscreenMiniPlayerView: View {
                 artworkImage: artworkImage,
                 isRefetchingLyrics: playbackCoordinator.presentation.isRefetchingLyrics,
                 scale: scale,
-                primaryColor: lyricsDynamicPrimaryColor,
-                secondaryColor: lyricsDynamicSecondaryColor,
+                textForegroundProfile: miniPlayerTextForegroundProfile,
+                placeholderColor: lyricsDynamicSecondaryColor,
+                activityIndicatorColor: controlPrimaryColor,
                 contextMenuRefreshTrigger: libraryVM.refreshTrigger,
                 onEditTrack: { track in
                     onInteraction()
@@ -152,6 +153,7 @@ struct FullscreenMiniPlayerView: View {
 
             // Volume removed - now external component
         }
+        .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
         .padding(.horizontal, hPadding)
         .padding(.vertical, vPadding)
         .frame(height: barHeight)
@@ -162,6 +164,7 @@ struct FullscreenMiniPlayerView: View {
             materialStyle: glassStyle.materialStyle,
             isFloating: true
         )
+        .animation(nil, value: resolvedForegroundProfile)
         .onHover { hovering in
             isMiniPlayerHovering = hovering
             onHoverStateChanged(hovering)
@@ -451,6 +454,14 @@ struct FullscreenMiniPlayerView: View {
         controlPrimaryColor.opacity(0.78)
     }
 
+    private var miniPlayerTextForegroundProfile: PlusBlendTextForegroundProfile {
+        themeStore.plusBlendTextPalette.profile(
+            for: resolvedForegroundProfile.isDarkForeground
+                ? .darkOnLightBackground
+                : .lightOnDarkBackground
+        )
+    }
+
     private var controlSecondaryColor: Color {
         resolvedForegroundProfile.secondaryColor.opacity(0.96)
     }
@@ -588,8 +599,9 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
     let artworkImage: NSImage?
     let isRefetchingLyrics: Bool
     let scale: CGFloat
-    let primaryColor: Color
-    let secondaryColor: Color
+    let textForegroundProfile: PlusBlendTextForegroundProfile
+    let placeholderColor: Color
+    let activityIndicatorColor: Color
     let contextMenuRefreshTrigger: Int
 
     let onEditTrack: (Track) -> Void
@@ -615,8 +627,9 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
             && lhs.artworkImage === rhs.artworkImage
             && lhs.isRefetchingLyrics == rhs.isRefetchingLyrics
             && lhs.scale == rhs.scale
-            && lhs.primaryColor == rhs.primaryColor
-            && lhs.secondaryColor == rhs.secondaryColor
+            && lhs.textForegroundProfile == rhs.textForegroundProfile
+            && lhs.placeholderColor == rhs.placeholderColor
+            && lhs.activityIndicatorColor == rhs.activityIndicatorColor
             && lhs.contextMenuRefreshTrigger == rhs.contextMenuRefreshTrigger
     }
 
@@ -635,9 +648,11 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
                             text: displayTitle,
                             fontSize: titleFontSize,
                             fontWeight: .semibold,
-                            color: primaryColor,
+                            color: textForegroundProfile.primaryColor,
                             enablesContentTransition: true
                         )
+                        .compositingGroup()
+                        .blendMode(textForegroundProfile.blendMode)
 
                         SeamlessMarqueeText(
                             text: displayArtist.isEmpty
@@ -645,13 +660,15 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
                                 : displayArtist,
                             fontSize: artistFontSize,
                             fontWeight: .medium,
-                            color: secondaryColor,
+                            color: textForegroundProfile.secondaryColor,
                             enablesContentTransition: true
                         )
+                        .compositingGroup()
+                        .blendMode(textForegroundProfile.blendMode)
                     } else {
                         Text(LocalizedStringKey(emptyTitleKey))
                             .font(.system(size: titleFontSize, weight: .semibold))
-                            .foregroundStyle(secondaryColor)
+                            .foregroundStyle(placeholderColor)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -659,6 +676,8 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
 
                 ProgressView()
                     .controlSize(.small)
+                    .tint(activityIndicatorColor)
+                    .foregroundStyle(activityIndicatorColor)
                     .frame(width: 12, height: 12)
                     .scaleEffect(scale)
                     .opacity(isRefetchingLyrics ? 1 : 0)
@@ -688,6 +707,8 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
                 ArtworkPlaceholderView.fullscreenMiniPlayer(artworkSize: 44, scale: scale)
                 ProgressView()
                     .controlSize(.small)
+                    .tint(activityIndicatorColor)
+                    .foregroundStyle(activityIndicatorColor)
                     .scaleEffect(0.78 * scale)
             }
             .frame(width: artworkSize, height: artworkSize)

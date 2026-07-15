@@ -17,12 +17,11 @@ struct FullscreenQueueView: View {
     let currentTrackID: UUID?
     let playbackMode: PlaybackOrderMode
     let glassStyle: FullscreenControlsGlassStyle
-    let usesBrightTextPalette: Bool
+    let foregroundProfile: FullscreenOverlayForegroundProfile
     let scale: CGFloat
     let visibleHeight: CGFloat
     let onTrackTap: (Track) -> Void
 
-    @EnvironmentObject private var themeStore: ThemeStore
     @State private var hasPerformedInitialScroll = false
 
     init(
@@ -30,7 +29,7 @@ struct FullscreenQueueView: View {
         currentTrackID: UUID?,
         playbackMode: PlaybackOrderMode,
         glassStyle: FullscreenControlsGlassStyle,
-        usesBrightTextPalette: Bool,
+        foregroundProfile: FullscreenOverlayForegroundProfile,
         scale: CGFloat = 1.0,
         visibleHeight: CGFloat = 600,
         onTrackTap: @escaping (Track) -> Void
@@ -39,7 +38,7 @@ struct FullscreenQueueView: View {
         self.currentTrackID = currentTrackID
         self.playbackMode = playbackMode
         self.glassStyle = glassStyle
-        self.usesBrightTextPalette = usesBrightTextPalette
+        self.foregroundProfile = foregroundProfile
         self.scale = scale
         self.visibleHeight = visibleHeight
         self.onTrackTap = onTrackTap
@@ -230,25 +229,19 @@ struct FullscreenQueueView: View {
     }
 
     private var primaryForegroundColor: Color {
-        usesBrightTextPalette
-            ? Color.white.opacity(0.96)
-            : themeStore.appForegroundPalette.primaryColor.opacity(0.96)
+        foregroundProfile.primaryColor
     }
 
     private var secondaryForegroundColor: Color {
-        usesBrightTextPalette
-            ? Color.white.opacity(0.74)
-            : themeStore.appForegroundPalette.secondaryColor.opacity(0.82)
+        foregroundProfile.secondaryColor
     }
 
     private var tertiaryForegroundColor: Color {
-        usesBrightTextPalette
-            ? Color.white.opacity(0.58)
-            : themeStore.appForegroundPalette.tertiaryColor.opacity(0.72)
+        foregroundProfile.tertiaryColor
     }
 
     private var hoverFillColor: Color {
-        usesBrightTextPalette ? Color.white.opacity(0.08) : Color.primary.opacity(0.08)
+        foregroundProfile.primaryColor.opacity(0.08)
     }
 
     private var textPalette: FullscreenQueueTextPalette {
@@ -472,7 +465,7 @@ extension FullscreenQueueView: Equatable {
             && lhs.playbackMode == rhs.playbackMode
             && lhs.glassStyle.colorScheme == rhs.glassStyle.colorScheme
             && lhs.glassStyle.materialStyle == rhs.glassStyle.materialStyle
-            && lhs.usesBrightTextPalette == rhs.usesBrightTextPalette
+            && lhs.foregroundProfile == rhs.foregroundProfile
             && lhs.scale == rhs.scale
             && lhs.visibleHeight == rhs.visibleHeight
             && lhs.tracks.map(\.id) == rhs.tracks.map(\.id)
@@ -501,7 +494,10 @@ extension FullscreenQueueView: Equatable {
             accentColor: ThemeStore.shared.accentColor,
             materialStyle: .clear
         ),
-        usesBrightTextPalette: true,
+        foregroundProfile: FullscreenOverlayForegroundProfile(
+            primary: .white,
+            isDarkForeground: false
+        ),
         scale: 1.0,
         visibleHeight: 650,
         onTrackTap: { _ in }

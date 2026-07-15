@@ -30,10 +30,9 @@ struct HomeHeroView: View {
     @State private var isHovering = false
     @State private var isCoverHovering = false
 
-    /// Local rendered-region polarity for this hero card's backdrop. Nil until
-    /// the normal backdrop readability map has been scored; the foreground
-    /// accessors then fall back to light ink (never the global dark fallback)
-    /// per the readability plan. See `updateHeroLocalPolarity`.
+    /// Local rendered-region polarity for this Hero's text and action icons.
+    /// The same decision selects both the ordinary icon foreground and the
+    /// adaptive Plus Lighter / Plus Darker text profile.
     @State private var heroLocalPolarity: ArtworkForegroundPolarity?
     @State private var heroNormalReadabilityMap: RenderedBackdropReadabilityMap?
     @State private var heroHoverReadabilityMap: RenderedBackdropReadabilityMap?
@@ -80,27 +79,29 @@ struct HomeHeroView: View {
         )
     }
 
-    /// Foreground polarity actually applied to this hero card. The local
-    /// rendered-region decision wins once the backdrop map is ready; until then
-    /// light ink is used (never the global dark fallback), so a pending card
-    /// does not flash dark text that the local pass would reject.
+    /// Foreground polarity applied consistently to Hero text and action icons.
+    /// Until the local rendered-region map is ready, light ink avoids an
+    /// initial dark flash.
     private var heroResolvedPolarity: ArtworkForegroundPolarity {
         heroLocalPolarity ?? .lightOnDarkBackground
     }
 
-    /// Readability profile variant for the resolved polarity. Both variants
-    /// are precomputed in `readabilityCandidates`; selecting by polarity keeps
-    /// colour, blend and alpha tiers in lockstep with one decision.
+    /// Readability profile variant for adaptive action icons. Both variants are
+    /// precomputed in `readabilityCandidates`.
     private var heroResolvedReadabilityProfile: ArtworkReadabilityProfile {
         heroPalette.readabilityCandidates.profile(for: heroResolvedPolarity)
     }
 
-    private var artworkTextPrimary: Color {
-        ColorRenderingAdapter.makeSwiftUIColor(heroResolvedReadabilityProfile.foregroundPrimary)
+    /// Hero text follows the same local polarity as the action icons, selecting
+    /// Plus Lighter over dark regions and Plus Darker over light regions. The
+    /// colours come from this Hero track's own palette rather than current
+    /// playback.
+    private var heroPlusBlendTextProfile: PlusBlendTextForegroundProfile {
+        heroPalette.plusBlendText.profile(for: heroResolvedPolarity)
     }
 
-    private var artworkTextSecondary: Color {
-        ColorRenderingAdapter.makeSwiftUIColor(heroResolvedReadabilityProfile.foregroundSecondary)
+    private var artworkTextPrimary: Color {
+        ColorRenderingAdapter.makeSwiftUIColor(heroResolvedReadabilityProfile.foregroundPrimary)
     }
 
     private var artworkDominantColor: NSColor {
@@ -301,8 +302,8 @@ struct HomeHeroView: View {
 
     // MARK: - Local rendered-region readability
 
-    /// Three view-space sampling rectangles covering where the hero's
-    /// foreground elements actually render (track info, action buttons, stats),
+    /// Three view-space sampling rectangles covering where the Hero's adaptive
+    /// foreground actually renders (track info, action buttons and stats),
     /// expanded by `regionExpansionPoints` and mapped through the backdrop's
     /// leading-aligned aspect-fill into normalized image regions.
     private var heroReadabilityRegions: [NormalizedReadabilityRegion] {
@@ -577,7 +578,9 @@ struct HomeHeroView: View {
                 .font(.system(size: titleFontSize, weight: .semibold))
                 .tracking(0)
                 .lineLimit(2)
-                .foregroundStyle(heroPrimaryForeground)
+                .foregroundStyle(heroPlusBlendTextProfile.primaryColor)
+                .compositingGroup()
+                .blendMode(heroPlusBlendTextProfile.blendMode)
 
             artistAlbumLine
             descriptionLine
@@ -604,13 +607,19 @@ struct HomeHeroView: View {
     private var artistAlbumLine: some View {
         HStack(spacing: 0) {
             Text(track.artist)
-                .foregroundStyle(heroSecondaryForeground)
+                .foregroundStyle(heroPlusBlendTextProfile.secondaryColor)
+                .compositingGroup()
+                .blendMode(heroPlusBlendTextProfile.blendMode)
             let albumTitle = LibraryNormalization.displayAlbum(track.album)
             if !LibraryNormalization.isUnknownAlbum(track.album), !albumTitle.isEmpty {
                 Text(" \u{00B7} ")
-                    .foregroundStyle(heroQuaternaryForeground)
+                    .foregroundStyle(heroPlusBlendTextProfile.tertiaryColor)
+                    .compositingGroup()
+                    .blendMode(heroPlusBlendTextProfile.blendMode)
                 Text(albumTitle)
-                    .foregroundStyle(heroSecondaryForeground)
+                    .foregroundStyle(heroPlusBlendTextProfile.secondaryColor)
+                    .compositingGroup()
+                    .blendMode(heroPlusBlendTextProfile.blendMode)
             }
         }
         .font(.system(size: mode == .narrow ? 12 : 14, weight: .medium))
@@ -625,7 +634,9 @@ struct HomeHeroView: View {
                 Text(description)
                     .font(.system(size: descriptionFontSize, weight: .ultraLight))
                     .lineSpacing(1.5)
-                    .foregroundStyle(heroDescriptionForeground)
+                    .foregroundStyle(heroPlusBlendTextProfile.secondaryColor)
+                    .compositingGroup()
+                    .blendMode(heroPlusBlendTextProfile.blendMode)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(height: descriptionScrollHeight, alignment: .top)
@@ -656,7 +667,9 @@ struct HomeHeroView: View {
             }
         }
         .font(.caption)
-        .foregroundStyle(heroTertiaryForeground)
+        .foregroundStyle(heroPlusBlendTextProfile.tertiaryColor)
+        .compositingGroup()
+        .blendMode(heroPlusBlendTextProfile.blendMode)
     }
 
     private var playButton: some View {
@@ -666,10 +679,13 @@ struct HomeHeroView: View {
             HStack(spacing: 6) {
                 Image(systemName: "play.fill")
                     .font(.system(size: heroButtonIconSize, weight: .semibold))
+                    .foregroundStyle(heroButtonForeground)
                 Text("播放")
                     .font(.system(size: heroButtonTextSize, weight: .medium))
+                    .foregroundStyle(heroPlusBlendTextProfile.primaryColor)
+                    .compositingGroup()
+                    .blendMode(heroPlusBlendTextProfile.blendMode)
             }
-            .foregroundStyle(heroButtonForeground)
             .padding(.horizontal, heroButtonHorizontalPadding)
             .frame(height: heroButtonHeight)
             .contentShape(Capsule())
@@ -755,22 +771,6 @@ struct HomeHeroView: View {
 
     private var heroPrimaryForeground: Color {
         artworkTextPrimary
-    }
-
-    private var heroSecondaryForeground: Color {
-        artworkTextSecondary
-    }
-
-    private var heroDescriptionForeground: Color {
-        artworkTextPrimary.opacity(0.80)
-    }
-
-    private var heroTertiaryForeground: Color {
-        artworkTextPrimary.opacity(0.68)
-    }
-
-    private var heroQuaternaryForeground: Color {
-        artworkTextPrimary.opacity(0.54)
     }
 
     private var formattedDuration: String {

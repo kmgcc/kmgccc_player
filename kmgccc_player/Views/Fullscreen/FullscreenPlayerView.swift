@@ -69,17 +69,24 @@ struct FullscreenPlayerView: View {
         let leadingRenderKey: String?
         let centeredRenderKey: String?
         let transitionRenderKey: String?
-        let isLeftActionsExpanded: Bool
-        let isVolumeExpanded: Bool
         let viewportSize: CGSize
+        let fullscreenScale: CGFloat
         let darkForegroundHash: Int
         let lightForegroundHash: Int
+        let overlayDarkForegroundHash: Int
+        let overlayLightForegroundHash: Int
     }
 
     private enum FeatureTips {
         static let playbackModeRetapKey = "fullscreen.playbackModeRetap"
         static let playbackModeRetapIntroducedBuild = AppBuild(1)
         static let playbackModeRetapMaxDisplayCount = 2
+    }
+
+    private nonisolated enum BottomControlGlassID: Hashable, Sendable {
+        case leading
+        case miniPlayer
+        case volume
     }
 
     private enum RightPanelDisplayState {
@@ -276,8 +283,12 @@ struct FullscreenPlayerView: View {
     /// getter returns this cached value; `.onChange(of: localPolarityInputSignature)`
     /// refreshes it only when the decision inputs actually change.
     @State private var resolvedLocalPolarity: ArtworkForegroundPolarity?
+    @State private var resolvedQueueLocalPolarity: ArtworkForegroundPolarity?
+    @State private var resolvedQuickPanelLocalPolarity: ArtworkForegroundPolarity?
+    @State private var localPolarityRecomputeTask: Task<Void, Never>?
     @State private var currentFullscreenScale: CGFloat = 1.0
     @State private var fullscreenViewportSize: CGSize = .zero
+    @Namespace private var fullscreenBottomControlsGlassNamespace
     @State private var embeddedInitialThemeUnlocked = false
     @State private var didHandleFullscreenAppear = false
     @State private var isFullscreenBottomControlsVisible = true
@@ -464,7 +475,7 @@ struct FullscreenPlayerView: View {
             #endif
         }
         .onChange(of: localPolarityInputSignature, initial: true) { _, _ in
-            recomputeLocalPolarity()
+            scheduleLocalPolarityRecompute()
         }
         .onChange(of: settings.fullscreen.skinID) { oldValue, newValue in
             skinRevision &+= 1
@@ -677,6 +688,8 @@ struct FullscreenPlayerView: View {
         pendingFullscreenThemeReapply = nil
         pendingEmbeddedStartupRetry?.cancel()
         pendingEmbeddedStartupRetry = nil
+        localPolarityRecomputeTask?.cancel()
+        localPolarityRecomputeTask = nil
         embeddedStartupRetryCount = 0
         deferredTrackUpdateDeadline = nil
         suppressFullscreenLyricsViewport = false
@@ -1187,8 +1200,8 @@ struct FullscreenPlayerView: View {
             tracks: playerVM.currentQueueTracks,
             currentTrackID: playerVM.currentTrack?.id,
             playbackMode: currentPlaybackMode,
-            glassStyle: fullscreenControlsGlassStyle,
-            usesBrightTextPalette: fullscreenQueueUsesBrightTextPalette,
+            glassStyle: fullscreenQueueGlassStyle,
+            foregroundProfile: fullscreenQueueForegroundProfile,
             scale: scale,
             visibleHeight: visibleHeight,
             onTrackTap: { track in
@@ -1304,6 +1317,34 @@ struct FullscreenPlayerView: View {
     private let volumeCollapsedWidth: CGFloat = 60
     private let fullscreenSideControlsCollapseDelayNanoseconds: UInt64 = 180_000_000
 
+    private var fullscreenBottomControlsGeometryConfiguration: FullscreenBottomControlsGeometry.Configuration {
+        FullscreenBottomControlsGeometry.Configuration(
+            buttonSize: fullscreenControlButtonSize,
+            spacing: fullscreenControlSpacing,
+            horizontalPadding: fullscreenControlsHorizontalPadding,
+            miniPlayerMaxWidth: fullscreenMiniPlayerMaxWidth,
+            miniPlayerPillWidthReduction: fullscreenMiniPlayerPillWidthReduction,
+            leadingExpandedWidth: leadingControlsExpandedWidth,
+            leadingCollapsedWidth: leadingControlsCollapsedWidth,
+            volumeExpandedWidth: volumeExpandedWidth,
+            volumeCollapsedWidth: volumeCollapsedWidth,
+            canvasWidth: Self.baseCanvasWidth,
+            canvasHeight: Self.baseCanvasHeight,
+            bottomPadding: fullscreenControlsBottomPadding
+        )
+    }
+
+    private func fullscreenBottomControlsGeometry(
+        isLeftActionsExpanded: Bool? = nil,
+        isVolumeExpanded: Bool? = nil
+    ) -> FullscreenBottomControlsGeometry {
+        FullscreenBottomControlsGeometry.make(
+            isLeftActionsExpanded: isLeftActionsExpanded ?? self.isLeftActionsExpanded,
+            isVolumeExpanded: isVolumeExpanded ?? self.isVolumeExpanded,
+            configuration: fullscreenBottomControlsGeometryConfiguration
+        )
+    }
+
     private func fullscreenMiniPlayerOcclusionRegion(
         scale: CGFloat,
         screenSize: CGSize
@@ -1312,34 +1353,11 @@ struct FullscreenPlayerView: View {
             return .inactive
         }
 
-        let buttonSize = fullscreenControlButtonSize
-        let spacing = fullscreenControlSpacing
-        let windowWidth = Self.baseCanvasWidth
-
-        let leadingControlsWidth = isLeftActionsExpanded ? leadingControlsExpandedWidth : leadingControlsCollapsedWidth
-        let leadingControlsExtraWidth = leadingControlsWidth - leadingControlsCollapsedWidth
-        let volumeWidth = isVolumeExpanded ? volumeExpandedWidth : volumeCollapsedWidth
-        let volumeExtraWidth = volumeWidth - volumeCollapsedWidth
-        let leadingMiniPlayerOriginX = leadingControlsCollapsedWidth + spacing
-        let fixedControlWidth = leadingControlsCollapsedWidth + spacing + spacing + volumeCollapsedWidth
-        let availableGroupWidth = max(0, windowWidth - fullscreenControlsHorizontalPadding * 2)
-        let collapsedMiniPlayerWidth = max(
-            0,
-            min(availableGroupWidth - fixedControlWidth, fullscreenMiniPlayerMaxWidth)
-                - fullscreenMiniPlayerPillWidthReduction
-        )
-        let groupWidth = fixedControlWidth + collapsedMiniPlayerWidth
-        let currentMiniPlayerWidth = max(
-            0,
-            collapsedMiniPlayerWidth - leadingControlsExtraWidth - volumeExtraWidth
-        )
-        let groupOriginX = max(0, (windowWidth - groupWidth) * 0.5)
-        let miniPlayerOriginX = groupOriginX + leadingMiniPlayerOriginX + leadingControlsExtraWidth
-
-        let scaledButtonSize = buttonSize * scale
-        let scaledMiniPlayerOriginX = miniPlayerOriginX * scale
-        let scaledMiniPlayerWidth = currentMiniPlayerWidth * scale
-        let scaledWindowWidth = windowWidth * scale
+        let geometry = fullscreenBottomControlsGeometry()
+        let scaledButtonSize = fullscreenControlButtonSize * scale
+        let scaledMiniPlayerOriginX = geometry.miniPlayerRect.minX * scale
+        let scaledMiniPlayerWidth = geometry.miniPlayerRect.width * scale
+        let scaledWindowWidth = Self.baseCanvasWidth * scale
         let canvasLeftMargin = max(0, (screenSize.width - scaledWindowWidth) * 0.5)
         let canvasBottomMargin = max(0, (screenSize.height - Self.baseCanvasHeight * scale) * 0.5)
         let scaledBottomPadding = fullscreenControlsBottomPadding * scale + canvasBottomMargin
@@ -1360,92 +1378,6 @@ struct FullscreenPlayerView: View {
         )
     }
 
-    private func bottomControlsRow() -> some View {
-        // Fixed layout for 1470x923 base canvas
-        let buttonSize = fullscreenControlButtonSize
-        let spacing = fullscreenControlSpacing
-        let windowWidth = Self.baseCanvasWidth
-        let leadingControlsWidth = isLeftActionsExpanded ? leadingControlsExpandedWidth : leadingControlsCollapsedWidth
-        let leadingControlsExtraWidth = leadingControlsWidth - leadingControlsCollapsedWidth
-        let volumeWidth = isVolumeExpanded ? volumeExpandedWidth : volumeCollapsedWidth
-        let volumeExtraWidth = volumeWidth - volumeCollapsedWidth
-        let leadingMiniPlayerOriginX = leadingControlsCollapsedWidth + spacing
-        let fixedControlWidth = leadingControlsCollapsedWidth + spacing + spacing + volumeCollapsedWidth
-        let availableGroupWidth = max(0, windowWidth - fullscreenControlsHorizontalPadding * 2)
-        let collapsedMiniPlayerWidth = max(
-            0,
-            min(availableGroupWidth - fixedControlWidth, fullscreenMiniPlayerMaxWidth)
-                - fullscreenMiniPlayerPillWidthReduction
-        )
-        let groupWidth = fixedControlWidth + collapsedMiniPlayerWidth
-        let currentMiniPlayerWidth = max(
-            0,
-            collapsedMiniPlayerWidth - leadingControlsExtraWidth - volumeExtraWidth
-        )
-        let groupOriginX = max(0, (windowWidth - groupWidth) * 0.5)
-        let leadingControlsOriginX = groupOriginX
-        let miniPlayerOriginX = groupOriginX + leadingMiniPlayerOriginX + leadingControlsExtraWidth
-        let volumeOriginX = max(0, groupOriginX + groupWidth - volumeWidth)
-
-        return ZStack(alignment: .leading) {
-            leadingControlsPill(
-                size: buttonSize,
-                materialStyle: fullscreenControlsGlassStyle.materialStyle
-            )
-                .frame(width: leadingControlsWidth, height: buttonSize)
-                .offset(x: leadingControlsOriginX)
-
-            FullscreenMiniPlayerView(
-                isSpectrumActive: isFullscreenBottomControlsVisible,
-                glassStyle: fullscreenControlsGlassStyle,
-                playbackMode: currentPlaybackMode,
-                onPlaybackModeChange: handlePlaybackModeChange,
-                onCurrentPlaybackModeRetap: handleCurrentPlaybackModeRetap,
-                onEditTrackRequested: { track in
-                    trackToEdit = track
-                },
-                onEditExternalInfoRequested: {
-                    isShowingExternalMatchEditor = true
-                },
-                foregroundProfile: fullscreenMiniPlayerForegroundProfile
-            )
-                .frame(width: currentMiniPlayerWidth, height: buttonSize)
-                .overlay(alignment: .top) {
-                    if showPlaybackModeRetapTip {
-                        PlaybackModeRetapTipView(onClose: dismissPlaybackModeRetapTip)
-                            .offset(y: -12)
-                    }
-                }
-                .animation(bottomControlsAnimation, value: showPlaybackModeRetapTip)
-                // Phase 6.9: suppress inherited implicit animation on color-profile
-                // changes so controls using .compositingGroup().blendMode() do not
-                // get trapped in a stuck gray intermediate state.
-                .transaction { $0.animation = nil }
-                .environment(\.colorScheme, fullscreenControlsGlassStyle.colorScheme)
-                .offset(x: miniPlayerOriginX)
-
-            ExpandableVolumeControl(
-                volume: volumeBinding,
-                isExpanded: $isVolumeExpanded,
-                isEnabled: playbackCoordinator.presentation.isVolumeControlEnabled,
-                usesAdaptiveForeground: isCoverBlurFullscreenSkin,
-                forceDarkForegroundProfile: false,
-                foregroundProfile: fullscreenMiniPlayerForegroundProfile
-            )
-            .frame(width: volumeWidth, height: buttonSize)
-            // Phase 6.9: suppress inherited implicit animation on color-profile
-            // changes so controls using .compositingGroup().blendMode() do not
-            // get trapped in a stuck gray intermediate state.
-            .transaction { $0.animation = nil }
-            .environment(\.colorScheme, fullscreenControlsColorScheme)
-            .offset(x: volumeOriginX)
-        }
-        .frame(width: windowWidth, height: buttonSize, alignment: .leading)
-        .padding(.bottom, fullscreenControlsBottomPadding)
-        .animation(bottomControlsAnimation, value: isLeftActionsExpanded)
-        .animation(bottomControlsAnimation, value: isVolumeExpanded)
-    }
-
     private var volumeBinding: Binding<Double> {
         Binding(
             get: { playbackCoordinator.presentation.volume },
@@ -1458,6 +1390,20 @@ struct FullscreenPlayerView: View {
             return .easeInOut(duration: 0.18)
         }
         return .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
+    }
+
+    private func animateFullscreenBottomControlsGeometry(_ updates: () -> Void) {
+        FullscreenBottomControlsAnimationPolicy.animateGeometry(
+            with: bottomControlsAnimation,
+            updates
+        )
+    }
+
+    private func setFullscreenBottomControlsVisible(_ visible: Bool) {
+        guard isFullscreenBottomControlsVisible != visible else { return }
+        animateFullscreenBottomControlsGeometry {
+            isFullscreenBottomControlsVisible = visible
+        }
     }
 
     private var quickAppearancePanelAnimation: Animation {
@@ -1518,11 +1464,7 @@ struct FullscreenPlayerView: View {
         isFullscreenBottomControlsHovered = hovering
         if hovering {
             cancelFullscreenBottomControlsAutoHide()
-            if isFullscreenBottomControlsVisible == false {
-                withAnimation(bottomControlsAnimation) {
-                    isFullscreenBottomControlsVisible = true
-                }
-            }
+            setFullscreenBottomControlsVisible(true)
         } else {
             scheduleFullscreenBottomControlsAutoHideIfNeeded()
         }
@@ -1561,11 +1503,7 @@ struct FullscreenPlayerView: View {
         guard isPointerInsideFullscreenBottomControls != isFullscreenBottomControlsHovered else {
             if isPointerInsideFullscreenBottomControls {
                 cancelFullscreenBottomControlsAutoHide()
-                if isFullscreenBottomControlsVisible == false {
-                    withAnimation(bottomControlsAnimation) {
-                        isFullscreenBottomControlsVisible = true
-                    }
-                }
+                setFullscreenBottomControlsVisible(true)
             }
             return
         }
@@ -1574,11 +1512,7 @@ struct FullscreenPlayerView: View {
     }
 
     private func registerFullscreenBottomControlsInteraction() {
-        if isFullscreenBottomControlsVisible == false {
-            withAnimation(bottomControlsAnimation) {
-                isFullscreenBottomControlsVisible = true
-            }
-        }
+        setFullscreenBottomControlsVisible(true)
         guard isFullscreenBottomControlsHovered == false else {
             cancelFullscreenBottomControlsAutoHide()
             return
@@ -1595,11 +1529,7 @@ struct FullscreenPlayerView: View {
 
         if isPresented {
             cancelFullscreenBottomControlsAutoHide()
-            if isFullscreenBottomControlsVisible == false {
-                withAnimation(bottomControlsAnimation) {
-                    isFullscreenBottomControlsVisible = true
-                }
-            }
+            setFullscreenBottomControlsVisible(true)
         } else {
             updateFullscreenBottomControlsHoverGate(appearancePanel: false)
             scheduleFullscreenBottomControlsAutoHideIfNeeded()
@@ -1647,11 +1577,7 @@ struct FullscreenPlayerView: View {
 
         if newState == .queue {
             cancelFullscreenBottomControlsAutoHide()
-            if isFullscreenBottomControlsVisible == false {
-                withAnimation(bottomControlsAnimation) {
-                    isFullscreenBottomControlsVisible = true
-                }
-            }
+            setFullscreenBottomControlsVisible(true)
             return
         }
 
@@ -1678,11 +1604,7 @@ struct FullscreenPlayerView: View {
     private func scheduleFullscreenBottomControlsAutoHideIfNeeded() {
         cancelFullscreenBottomControlsAutoHide()
         guard isFullscreenBottomControlsAutoHideEnabled else {
-            if isFullscreenBottomControlsVisible == false {
-                withAnimation(bottomControlsAnimation) {
-                    isFullscreenBottomControlsVisible = true
-                }
-            }
+            setFullscreenBottomControlsVisible(true)
             return
         }
         guard shouldBlockFullscreenBottomControlsAutoHide == false else { return }
@@ -1703,9 +1625,7 @@ struct FullscreenPlayerView: View {
                 return
             }
 
-            withAnimation(bottomControlsAnimation) {
-                isFullscreenBottomControlsVisible = false
-            }
+            setFullscreenBottomControlsVisible(false)
             setLeftActionsExpanded(false, reason: "auto-hide")
             setVolumeExpanded(false, reason: "auto-hide")
             pendingFullscreenBottomControlsHideTask = nil
@@ -1795,7 +1715,7 @@ struct FullscreenPlayerView: View {
         logFullscreenMiniPlayerHover(
             "left reason=\(reason) \(isLeftActionsExpanded)->\(expanded) hot=\(isFullscreenBottomControlsHotZoneHovered) center=\(isFullscreenBottomControlsCenterHovered) leadingHover=\(isFullscreenBottomControlsLeadingHovered) trailing=\(isFullscreenBottomControlsTrailingHovered)"
         )
-        withAnimation(bottomControlsAnimation) {
+        animateFullscreenBottomControlsGeometry {
             isLeftActionsExpanded = expanded
         }
     }
@@ -1810,7 +1730,7 @@ struct FullscreenPlayerView: View {
         logFullscreenMiniPlayerHover(
             "volume reason=\(reason) \(isVolumeExpanded)->\(nextValue) hot=\(isFullscreenBottomControlsHotZoneHovered) center=\(isFullscreenBottomControlsCenterHovered) leadingHover=\(isFullscreenBottomControlsLeadingHovered) trailing=\(isFullscreenBottomControlsTrailingHovered) adjusting=\(isFullscreenBottomControlsVolumeAdjusting)"
         )
-        withAnimation(bottomControlsAnimation) {
+        animateFullscreenBottomControlsGeometry {
             isVolumeExpanded = nextValue
         }
     }
@@ -1828,49 +1748,26 @@ struct FullscreenPlayerView: View {
         screenWidth: CGFloat,
         screenHeight: CGFloat
     ) -> some View {
-        // Use the same base calculations as bottomControlsRow, then multiply by scale
         let baseScale = scale
         let buttonSize = fullscreenControlButtonSize
-        let spacing = fullscreenControlSpacing
         let windowWidth = Self.baseCanvasWidth
-        
-        let leadingControlsWidth = isLeftActionsExpanded ? leadingControlsExpandedWidth : leadingControlsCollapsedWidth
-        let leadingControlsExtraWidth = leadingControlsWidth - leadingControlsCollapsedWidth
-        let volumeWidth = isVolumeExpanded ? volumeExpandedWidth : volumeCollapsedWidth
-        let volumeExtraWidth = volumeWidth - volumeCollapsedWidth
-        let leadingMiniPlayerOriginX = leadingControlsCollapsedWidth + spacing
-        let fixedControlWidth = leadingControlsCollapsedWidth + spacing + spacing + volumeCollapsedWidth
-        let availableGroupWidth = max(0, windowWidth - fullscreenControlsHorizontalPadding * 2)
-        let collapsedMiniPlayerWidth = max(
-            0,
-            min(availableGroupWidth - fixedControlWidth, fullscreenMiniPlayerMaxWidth)
-                - fullscreenMiniPlayerPillWidthReduction
-        )
-        let groupWidth = fixedControlWidth + collapsedMiniPlayerWidth
-        let currentMiniPlayerWidth = max(
-            0,
-            collapsedMiniPlayerWidth - leadingControlsExtraWidth - volumeExtraWidth
-        )
-        let groupOriginX = max(0, (windowWidth - groupWidth) * 0.5)
-        let leadingControlsOriginX = groupOriginX
-        let miniPlayerOriginX = groupOriginX + leadingMiniPlayerOriginX + leadingControlsExtraWidth
-        let volumeOriginX = max(0, groupOriginX + groupWidth - volumeWidth)
+        let geometry = fullscreenBottomControlsGeometry()
         
         // Apply scale to all positions for actual resolution rendering
         let scaledButtonSize = buttonSize * baseScale
-        let scaledLeadingControlsOriginX = leadingControlsOriginX * baseScale
-        let scaledLeadingControlsWidth = leadingControlsWidth * baseScale
-        let scaledMiniPlayerOriginX = miniPlayerOriginX * baseScale
-        let scaledMiniPlayerWidth = currentMiniPlayerWidth * baseScale
-        let scaledVolumeOriginX = volumeOriginX * baseScale
-        let scaledVolumeWidth = volumeWidth * baseScale
+        let scaledLeadingControlsOriginX = geometry.leadingControlsRect.minX * baseScale
+        let scaledLeadingControlsWidth = geometry.leadingControlsRect.width * baseScale
+        let scaledMiniPlayerOriginX = geometry.miniPlayerRect.minX * baseScale
+        let scaledMiniPlayerWidth = geometry.miniPlayerRect.width * baseScale
+        let scaledVolumeOriginX = geometry.volumeRect.minX * baseScale
+        let scaledVolumeWidth = geometry.volumeRect.width * baseScale
         let scaledWindowWidth = windowWidth * baseScale
         // Canvas-bottom-relative bottom padding: on displays where the canvas has vertical
         // margins (scale = scaleX, e.g. portrait-aspect MacBooks), anchor the controls bar
         // to the canvas bottom rather than the screen bottom so the visual spacing is stable.
         let canvasBottomMargin = max(0, (screenHeight - Self.baseCanvasHeight * baseScale) / 2)
         let scaledBottomPadding = fullscreenControlsBottomPadding * baseScale + canvasBottomMargin
-        let scaledGroupWidth = groupWidth * baseScale
+        let scaledGroupWidth = geometry.fullGroupRect.width * baseScale
         let hotZoneWidth = min(scaledWindowWidth, scaledGroupWidth + 120 * baseScale)
         let hotZoneHeight = scaledButtonSize + 34 * baseScale
         let controlsRowHeight = max(scaledButtonSize, hotZoneHeight)
@@ -1879,29 +1776,15 @@ struct FullscreenPlayerView: View {
             0,
             scaledBottomPadding - (controlsRowHeight - scaledButtonSize) * 0.5
         )
-        let canvasLeadingMargin = max(0, (screenWidth - scaledWindowWidth) * 0.5)
-        let quickPanelSize = FullscreenQuickAppearancePanel.panelSize(for: baseScale)
-        let quickPanelWidth = quickPanelSize.width
-        let quickPanelHeight = quickPanelSize.height
-        let quickPanelSafeMargin = 20 * baseScale
-        // Keep it close to the Mini Player, but never overlapping it.
-        let quickPanelGap = 22 * baseScale
-        let quickPanelBottomY = screenHeight - adjustedBottomPadding - controlsRowHeight - quickPanelGap
-        // Anchor the panel above the bottom-left controls group (not centered on screen).
-        let quickPanelHorizontalInset = 10 * baseScale
-        let quickPanelIdealCenterX =
-            canvasLeadingMargin + scaledLeadingControlsOriginX - quickPanelHorizontalInset + quickPanelWidth * 0.5
-        let quickPanelCenterX = min(
-            max(quickPanelIdealCenterX, quickPanelSafeMargin + quickPanelWidth * 0.5),
-            max(
-                quickPanelSafeMargin + quickPanelWidth * 0.5,
-                screenWidth - quickPanelSafeMargin - quickPanelWidth * 0.5
-            )
+        let quickPanelFrame = quickAppearancePanelFrame(
+            scale: baseScale,
+            screenSize: CGSize(width: screenWidth, height: screenHeight),
+            leadingControlsOriginX: geometry.leadingControlsRect.minX
         )
-        let quickPanelCenterY = max(
-            quickPanelSafeMargin + quickPanelHeight * 0.5,
-            quickPanelBottomY - quickPanelHeight * 0.5
-        )
+        let quickPanelWidth = quickPanelFrame.width
+        let quickPanelHeight = quickPanelFrame.height
+        let quickPanelCenterX = quickPanelFrame.midX
+        let quickPanelCenterY = quickPanelFrame.midY
         
         ZStack(alignment: .topLeading) {
             if isQuickAppearancePanelPresented {
@@ -1935,12 +1818,16 @@ struct FullscreenPlayerView: View {
                         }
                     }
 
-                ZStack(alignment: .leading) {
-                    leadingControlsPill(
-                        size: scaledButtonSize,
-                        materialStyle: fullscreenControlsGlassStyle.materialStyle
-                    )
-                        .glassEffectTransition(.materialize)
+                GlassEffectContainer(spacing: 0) {
+                    ZStack(alignment: .leading) {
+                        leadingControlsPill(
+                            size: scaledButtonSize,
+                            materialStyle: fullscreenControlsGlassStyle.materialStyle
+                        )
+                        .glassEffectID(
+                            BottomControlGlassID.leading,
+                            in: fullscreenBottomControlsGlassNamespace
+                        )
                         .frame(width: scaledLeadingControlsWidth, height: scaledButtonSize)
                         .position(
                             x: scaledLeadingControlsOriginX + scaledLeadingControlsWidth / 2,
@@ -1981,7 +1868,10 @@ struct FullscreenPlayerView: View {
                         },
                         foregroundProfile: fullscreenMiniPlayerForegroundProfile
                     )
-                    .glassEffectTransition(.materialize)
+                    .glassEffectID(
+                        BottomControlGlassID.miniPlayer,
+                        in: fullscreenBottomControlsGlassNamespace
+                    )
                     .frame(width: scaledMiniPlayerWidth, height: scaledButtonSize)
                     .overlay(alignment: .top) {
                         if showPlaybackModeRetapTip {
@@ -2030,13 +1920,17 @@ struct FullscreenPlayerView: View {
                         usesInternalHoverExpansion: false,
                         foregroundProfile: fullscreenMiniPlayerForegroundProfile
                     )
-                    .glassEffectTransition(.materialize)
+                    .glassEffectID(
+                        BottomControlGlassID.volume,
+                        in: fullscreenBottomControlsGlassNamespace
+                    )
                     .frame(width: scaledVolumeWidth, height: scaledButtonSize)
                     .environment(\.colorScheme, fullscreenControlsGlassStyle.colorScheme)
                     .position(
                         x: scaledVolumeOriginX + scaledVolumeWidth / 2,
                         y: controlsCenterY
                     )
+                    }
                 }
                 .opacity(isFullscreenBottomControlsVisible ? 1 : 0)
                 .allowsHitTesting(isFullscreenBottomControlsVisible)
@@ -2051,6 +1945,7 @@ struct FullscreenPlayerView: View {
             if isQuickAppearancePanelPresented {
                 FullscreenQuickAppearancePanel(
                     scale: scale,
+                    foregroundProfile: fullscreenQuickPanelForegroundProfile,
                     onDismiss: { setQuickAppearancePanelPresented(false) }
                 )
                 .frame(width: quickPanelWidth, height: quickPanelHeight)
@@ -2077,9 +1972,6 @@ struct FullscreenPlayerView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .animation(quickAppearancePanelAnimation, value: isQuickAppearancePanelPresented)
-        .animation(bottomControlsAnimation, value: isLeftActionsExpanded)
-        .animation(bottomControlsAnimation, value: isVolumeExpanded)
-        .animation(bottomControlsAnimation, value: isFullscreenBottomControlsVisible)
     }
 
     // MARK: - Artwork and Controls Area (No Lyrics - Lyrics are in crisp layer)
@@ -2233,6 +2125,7 @@ struct FullscreenPlayerView: View {
         // Scale factor relative to base button size (60)
         let scaleFactor = size / fullscreenControlButtonSize
         let controlColorScheme = fullscreenControlsGlassStyle.colorScheme
+        let foregroundProfile = fullscreenMiniPlayerForegroundProfile
 
         return HStack(spacing: 0) {
             leadingControlButton(size: size, help: "fullscreen.exit") {
@@ -2241,6 +2134,7 @@ struct FullscreenPlayerView: View {
                     .foregroundStyle(fullscreenMiniPlayerPrimaryColor)
                     .compositingGroup()
                     .blendMode(fullscreenMiniPlayerIconBlendMode)
+                    .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
             } action: {
                 onExitFullscreen?()
             }
@@ -2265,6 +2159,7 @@ struct FullscreenPlayerView: View {
             materialStyle: materialStyle,
             isFloating: true
         )
+        .animation(nil, value: foregroundProfile)
         .environment(\.colorScheme, controlColorScheme)
         .onHover { hovering in
             updateFullscreenBottomControlsHoverGate(leading: hovering)
@@ -2307,6 +2202,7 @@ struct FullscreenPlayerView: View {
                 .foregroundStyle(fullscreenMiniPlayerPrimaryColor)
                 .compositingGroup()
                 .blendMode(fullscreenMiniPlayerIconBlendMode)
+                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
                 .contentTransition(
                     .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
                 )
@@ -2329,6 +2225,7 @@ struct FullscreenPlayerView: View {
                 .foregroundStyle(fullscreenMiniPlayerPrimaryColor.opacity(canToggle ? 1 : 0.45))
                 .compositingGroup()
                 .blendMode(fullscreenMiniPlayerIconBlendMode)
+                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
                 .contentTransition(
                     .symbolEffect(.replace.magic(fallback: .offUp.byLayer), options: .nonRepeating)
                 )
@@ -2403,12 +2300,17 @@ struct FullscreenPlayerView: View {
     }
 
     /// Cheap value signature over every polarity-decision input: skin, artwork,
-    /// render keys, control layout, viewport geometry and candidate colours.
+    /// render keys, viewport geometry and candidate colours. Pointer-driven
+    /// expansion is deliberately excluded because all interaction layouts are
+    /// scored together by `stableReadabilityRegions`.
     /// Compared between body evaluations so the expensive engine only re-runs
     /// on a real input change instead of on every body / every profile access.
     private var localPolarityInputSignature: LocalPolarityInputSignature {
         let state = backdropReadabilityState
         let candidates = FullscreenMiniPlayerForegroundStrategy.artworkCandidateProfiles(
+            palette: themeStore.semanticPalette
+        )
+        let overlayCandidates = FullscreenMiniPlayerForegroundStrategy.overlayCandidateProfiles(
             palette: themeStore.semanticPalette
         )
         return LocalPolarityInputSignature(
@@ -2417,43 +2319,119 @@ struct FullscreenPlayerView: View {
             leadingRenderKey: state.leading?.renderKey,
             centeredRenderKey: state.centered?.renderKey,
             transitionRenderKey: state.transition?.renderKey,
-            isLeftActionsExpanded: isLeftActionsExpanded,
-            isVolumeExpanded: isVolumeExpanded,
             viewportSize: fullscreenViewportSize,
+            fullscreenScale: currentFullscreenScale,
             darkForegroundHash: candidates.dark.primary.hash,
-            lightForegroundHash: candidates.light.primary.hash
+            lightForegroundHash: candidates.light.primary.hash,
+            overlayDarkForegroundHash: overlayCandidates.dark.primary.hash,
+            overlayLightForegroundHash: overlayCandidates.light.primary.hash
         )
     }
 
     /// Recompute and cache the local polarity from the current readability
     /// maps. Called from `.onChange(of: localPolarityInputSignature, initial: true)`,
-    /// so it runs on the main actor only on artwork / render / layout / skin
+    /// so it runs on the main actor only on artwork / render / viewport / skin
     /// changes - never per frame. The engine work is bounded (a few region
     /// sorts) and only happens a handful of times per track switch.
     private func recomputeLocalPolarity() {
         let state = backdropReadabilityState
-        guard isCoverBlurFullscreenSkin, state.hasAnyMap else {
-            if resolvedLocalPolarity != nil { resolvedLocalPolarity = nil }
+        guard isCoverBlurFullscreenSkin else {
+            commitLocalPolarities(bottom: nil, queue: nil, quickPanel: nil)
             return
         }
-        let geometry = FullscreenBottomControlsGeometry.make(
-            isLeftActionsExpanded: isLeftActionsExpanded,
-            isVolumeExpanded: isVolumeExpanded
-        )
+        // Hold the last complete decision while the new artwork's three maps
+        // render independently. Partial commits are the source of the visible
+        // light/dark/light flashing during track and layout transitions.
+        guard state.hasCompleteMapSet else { return }
+
         let viewportSize = fullscreenViewportSize
-        let regions = geometry.readabilityRegions(
+        let regions = FullscreenBottomControlsGeometry.stableReadabilityRegions(
             viewportSize: viewportSize,
             baseCanvasSize: CGSize(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight),
-            expansionPoints: ColorSystemTokens.ReadabilityForeground.regionExpansionPoints
+            expansionPoints: ColorSystemTokens.ReadabilityForeground.regionExpansionPoints,
+            configuration: fullscreenBottomControlsGeometryConfiguration
         )
-        guard !regions.isEmpty else {
-            if resolvedLocalPolarity != nil { resolvedLocalPolarity = nil }
+        let referenceGeometry = fullscreenBottomControlsGeometry(
+            isLeftActionsExpanded: false,
+            isVolumeExpanded: false
+        )
+
+        let miniPlayerCandidates = FullscreenMiniPlayerForegroundStrategy.artworkCandidateProfiles(
+            palette: themeStore.semanticPalette
+        )
+        let overlayCandidates = FullscreenMiniPlayerForegroundStrategy.overlayCandidateProfiles(
+            palette: themeStore.semanticPalette
+        )
+
+        let bottomPolarity = localPolarity(
+            regions: regions,
+            darkForeground: miniPlayerCandidates.dark.primary,
+            lightForeground: miniPlayerCandidates.light.primary,
+            state: state,
+            viewportSize: viewportSize
+        )
+        let queuePolarity = localPolarity(
+            regions: fullscreenQueueReadabilityRegions(
+                viewportSize: viewportSize,
+                scale: currentFullscreenScale
+            ),
+            darkForeground: overlayCandidates.dark.primary,
+            lightForeground: overlayCandidates.light.primary,
+            state: state,
+            viewportSize: viewportSize
+        )
+        let quickPanelPolarity = localPolarity(
+            regions: quickAppearancePanelReadabilityRegions(
+                viewportSize: viewportSize,
+                scale: currentFullscreenScale,
+                leadingControlsOriginX: referenceGeometry.leadingControlsRect.minX
+            ),
+            darkForeground: overlayCandidates.dark.primary,
+            lightForeground: overlayCandidates.light.primary,
+            state: state,
+            viewportSize: viewportSize
+        )
+
+        commitLocalPolarities(
+            bottom: bottomPolarity,
+            queue: queuePolarity,
+            quickPanel: quickPanelPolarity
+        )
+    }
+
+    private func scheduleLocalPolarityRecompute() {
+        localPolarityRecomputeTask?.cancel()
+        guard isCoverBlurFullscreenSkin else {
+            recomputeLocalPolarity()
             return
         }
+        let scheduledSignature = localPolarityInputSignature
+        localPolarityRecomputeTask = Task { @MainActor in
+            // Rendering placements publish independently. Wait for a short
+            // quiet window so a resize/config update also commits once, after
+            // all related render-key changes have arrived.
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled,
+                  scheduledSignature == localPolarityInputSignature else { return }
+            recomputeLocalPolarity()
+        }
+    }
 
+    private func localPolarity(
+        regions: [NormalizedReadabilityRegion],
+        darkForeground: NSColor,
+        lightForeground: NSColor,
+        state: FullscreenBackdropReadabilityState,
+        viewportSize: CGSize
+    ) -> ArtworkForegroundPolarity? {
+        guard !regions.isEmpty else { return nil }
         var samples: [(map: RenderedBackdropReadabilityMap, regions: [NormalizedReadabilityRegion])] = []
-        if let leading = state.leading { samples.append((leading.readabilityMap, regions)) }
-        if let centered = state.centered { samples.append((centered.readabilityMap, regions)) }
+        if let leading = state.leading {
+            samples.append((leading.readabilityMap, regions))
+        }
+        if let centered = state.centered {
+            samples.append((centered.readabilityMap, regions))
+        }
         if let transition = state.transition {
             for frame in transition.transitionFrames
             where abs(frame.height - viewportSize.height) < 1 {
@@ -2469,22 +2447,128 @@ struct FullscreenPlayerView: View {
                 }
             }
         }
-        guard !samples.isEmpty else {
-            if resolvedLocalPolarity != nil { resolvedLocalPolarity = nil }
-            return
-        }
-
-        let candidates = FullscreenMiniPlayerForegroundStrategy.artworkCandidateProfiles(
-            palette: themeStore.semanticPalette
-        )
+        guard !samples.isEmpty else { return nil }
         let decision = RenderedBackdropReadability.decide(
-            darkForeground: candidates.dark.primary,
-            lightForeground: candidates.light.primary,
+            darkForeground: darkForeground,
+            lightForeground: lightForeground,
             samples: samples
         )
-        resolvedLocalPolarity = decision.reason == .noValidSamples
-            ? nil
-            : decision.polarity
+        return decision.reason == .noValidSamples ? nil : decision.polarity
+    }
+
+    private func fullscreenQueueReadabilityRegions(
+        viewportSize: CGSize,
+        scale: CGFloat
+    ) -> [NormalizedReadabilityRegion] {
+        guard viewportSize.width > 0, viewportSize.height > 0, scale > 0 else { return [] }
+        let visibleBottomReserve: CGFloat = isFullscreenBottomControlsVisible
+            ? fullscreenControlsBottomPadding
+            : 0
+        let visibleHeight = (Self.baseCanvasHeight - visibleBottomReserve) * scale
+        let width = 520 * scale
+        let height = min(visibleHeight * 0.92, 660 * scale)
+        let rect = CGRect(
+            x: viewportSize.width - 118 * scale - width,
+            y: 72 * scale,
+            width: width,
+            height: height
+        )
+        return normalizedReadabilityRegions(for: rect, viewportSize: viewportSize, scale: scale)
+    }
+
+    private func quickAppearancePanelReadabilityRegions(
+        viewportSize: CGSize,
+        scale: CGFloat,
+        leadingControlsOriginX: CGFloat
+    ) -> [NormalizedReadabilityRegion] {
+        let rect = quickAppearancePanelFrame(
+            scale: scale,
+            screenSize: viewportSize,
+            leadingControlsOriginX: leadingControlsOriginX
+        )
+        return normalizedReadabilityRegions(for: rect, viewportSize: viewportSize, scale: scale)
+    }
+
+    private func normalizedReadabilityRegions(
+        for rect: CGRect,
+        viewportSize: CGSize,
+        scale: CGFloat
+    ) -> [NormalizedReadabilityRegion] {
+        guard viewportSize.width > 0, viewportSize.height > 0,
+              rect.width > 0, rect.height > 0 else { return [] }
+        let expansion = ColorSystemTokens.ReadabilityForeground.regionExpansionPoints * scale
+        let expanded = rect.insetBy(dx: -expansion, dy: -expansion)
+        let x0 = max(0, expanded.minX)
+        let y0 = max(0, expanded.minY)
+        let x1 = min(viewportSize.width, expanded.maxX)
+        let y1 = min(viewportSize.height, expanded.maxY)
+        guard x1 > x0, y1 > y0 else { return [] }
+        return [NormalizedReadabilityRegion(
+            x: x0 / viewportSize.width,
+            y: y0 / viewportSize.height,
+            width: (x1 - x0) / viewportSize.width,
+            height: (y1 - y0) / viewportSize.height
+        )]
+    }
+
+    private func commitLocalPolarities(
+        bottom: ArtworkForegroundPolarity?,
+        queue: ArtworkForegroundPolarity?,
+        quickPanel: ArtworkForegroundPolarity?
+    ) {
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            resolvedLocalPolarity = bottom
+            resolvedQueueLocalPolarity = queue
+            resolvedQuickPanelLocalPolarity = quickPanel
+        }
+    }
+
+    private func quickAppearancePanelFrame(
+        scale: CGFloat,
+        screenSize: CGSize,
+        leadingControlsOriginX: CGFloat
+    ) -> CGRect {
+        guard scale > 0, screenSize.width > 0, screenSize.height > 0 else { return .zero }
+        let scaledButtonSize = fullscreenControlButtonSize * scale
+        let scaledWindowWidth = Self.baseCanvasWidth * scale
+        let canvasBottomMargin = max(0, (screenSize.height - Self.baseCanvasHeight * scale) / 2)
+        let scaledBottomPadding = fullscreenControlsBottomPadding * scale + canvasBottomMargin
+        let hotZoneHeight = scaledButtonSize + 34 * scale
+        let controlsRowHeight = max(scaledButtonSize, hotZoneHeight)
+        let adjustedBottomPadding = max(
+            0,
+            scaledBottomPadding - (controlsRowHeight - scaledButtonSize) * 0.5
+        )
+        let canvasLeadingMargin = max(0, (screenSize.width - scaledWindowWidth) * 0.5)
+        let panelSize = FullscreenQuickAppearancePanel.panelSize(for: scale)
+        let safeMargin = 20 * scale
+        let gap = 22 * scale
+        let panelBottomY = screenSize.height - adjustedBottomPadding - controlsRowHeight - gap
+        let horizontalInset = 10 * scale
+        let idealCenterX =
+            canvasLeadingMargin
+            + leadingControlsOriginX * scale
+            - horizontalInset
+            + panelSize.width * 0.5
+        let centerX = min(
+            max(idealCenterX, safeMargin + panelSize.width * 0.5),
+            max(
+                safeMargin + panelSize.width * 0.5,
+                screenSize.width - safeMargin - panelSize.width * 0.5
+            )
+        )
+        let centerY = max(
+            safeMargin + panelSize.height * 0.5,
+            panelBottomY - panelSize.height * 0.5
+        )
+        return CGRect(
+            x: centerX - panelSize.width * 0.5,
+            y: centerY - panelSize.height * 0.5,
+            width: panelSize.width,
+            height: panelSize.height
+        )
     }
 
     private var fullscreenControlsGlassStyle: FullscreenControlsGlassStyle {
@@ -2510,16 +2594,31 @@ struct FullscreenPlayerView: View {
         )
     }
 
-    private var fullscreenQueueUsesBrightTextPalette: Bool {
-        // Phase 6.8 + readability plan 8.7: the queue is NOT in the Mini
-        // Player sampling region, so it must not inherit the bottom controls'
-        // local Cover Blur polarity. Cover Blur uses the optimized global gate;
-        // other skins keep their fixed behaviour.
-        FullscreenMiniPlayerForegroundStrategy.resolveQueueUsesBrightText(
+    private var fullscreenQueueForegroundProfile: FullscreenOverlayForegroundProfile {
+        FullscreenMiniPlayerForegroundStrategy.resolveOverlaySurface(
             palette: themeStore.semanticPalette,
+            localArtworkPolarity: resolvedQueueLocalPolarity,
             skinID: settings.fullscreen.skinID,
-            colorScheme: colorScheme,
-            fullscreenArtBackgroundEnabled: settings.fullscreenArtBackgroundEnabled
+            colorScheme: colorScheme
+        )
+    }
+
+    private var fullscreenQueueGlassStyle: FullscreenControlsGlassStyle {
+        let materialStyle: LiquidGlassPillMaterialStyle =
+            settings.fullscreenMiniPlayerGlassMaterial == .normal ? .normal : .clear
+        return FullscreenControlsGlassStyle(
+            colorScheme: fullscreenQueueForegroundProfile.colorScheme,
+            accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
+            materialStyle: materialStyle
+        )
+    }
+
+    private var fullscreenQuickPanelForegroundProfile: FullscreenOverlayForegroundProfile {
+        FullscreenMiniPlayerForegroundStrategy.resolveOverlaySurface(
+            palette: themeStore.semanticPalette,
+            localArtworkPolarity: resolvedQuickPanelLocalPolarity,
+            skinID: settings.fullscreen.skinID,
+            colorScheme: colorScheme
         )
     }
 

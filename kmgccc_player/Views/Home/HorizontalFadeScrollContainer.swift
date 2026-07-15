@@ -38,6 +38,7 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
     @State private var activeScrollEdge: HorizontalScrollEdge?
     @State private var nativeScrollView: NSScrollView?
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
     init(
         spacing: CGFloat = 0,
@@ -78,14 +79,14 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
     /// Smooth ramp from 0 (at far-left) to 1 (after ~18px of scroll).
     private var leftFadeOpacity: Double {
         guard isScrollable else { return 0 }
-        return min(1, max(0, Double(scrollX) / 18.0))
+        return min(1, max(0, Double(scrollX) / Double(presentationStyle.scaled(18))))
     }
 
     /// Smooth ramp from 1 (more content right) to 0 (at far-right).
     private var rightFadeOpacity: Double {
         guard isScrollable else { return 0 }
         let remaining = maxScroll - scrollX
-        return min(1, max(0, Double(remaining) / 18.0))
+        return min(1, max(0, Double(remaining) / Double(presentationStyle.scaled(18))))
     }
 
     var body: some View {
@@ -221,7 +222,10 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
     }
 
     private var edgeActivationWidth: CGFloat {
-        min(max(viewportWidth * 0.16, 96), 150)
+        min(
+            max(viewportWidth * 0.16, presentationStyle.scaled(96)),
+            presentationStyle.scaled(150)
+        )
     }
 
     private func updateActiveScrollEdge(_ edge: HorizontalScrollEdge, hovering: Bool) {
@@ -235,14 +239,17 @@ struct HorizontalFadeScrollContainer<Content: View>: View {
     private func edgeScrollButton(systemImage: String, direction: CGFloat) -> some View {
         Button {
             let currentX = nativeScrollView?.contentView.bounds.origin.x ?? scrollX
-            let step = max(140, viewportWidth * 0.46)
+            let step = max(presentationStyle.scaled(140), viewportWidth * 0.46)
             let target = min(max(currentX + step * direction, 0), maxScroll)
             scrollTo(target)
         } label: {
             Image(systemName: systemImage)
-                .font(.system(size: 15, weight: .bold))
+                .font(.system(size: presentationStyle.scaled(15), weight: .bold))
                 .foregroundStyle(.primary.opacity(0.86))
-                .frame(width: 32, height: 68)
+                .frame(
+                    width: presentationStyle.scaled(32),
+                    height: presentationStyle.scaled(68)
+                )
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)

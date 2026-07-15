@@ -8,7 +8,19 @@
 import AppKit
 import SwiftUI
 
-nonisolated struct FullscreenMiniPlayerForegroundProfile {
+nonisolated enum FullscreenMiniPlayerBlendStyle: Equatable, Sendable {
+    case normal
+    case screen
+
+    var blendMode: BlendMode {
+        switch self {
+        case .normal: .normal
+        case .screen: .screen
+        }
+    }
+}
+
+nonisolated struct FullscreenMiniPlayerForegroundProfile: Equatable {
     enum Role: String {
         case appleFixedLight
         case coverBlurLightForeground
@@ -24,10 +36,25 @@ nonisolated struct FullscreenMiniPlayerForegroundProfile {
     let secondary: NSColor
     let disabled: NSColor
     let pillTint: NSColor
-    let iconBlendMode: BlendMode
-    let useScreenBlend: Bool
+    let blendStyle: FullscreenMiniPlayerBlendStyle
     let enforceBrightProgressForeground: Bool
     let spectrumUsesDarkForeground: Bool
+
+    var iconBlendMode: BlendMode { blendStyle.blendMode }
+    var useScreenBlend: Bool { blendStyle == .screen }
+}
+
+/// Unified text/icon palette for fullscreen overlay cards such as the queue
+/// and Quick Panel. These surfaces intentionally use only two polarities:
+/// near-white ink or one dark artwork-tinted ink, with hierarchy supplied by
+/// alpha so every nested control stays visually coherent.
+nonisolated struct FullscreenOverlayForegroundProfile: Equatable {
+    let primary: NSColor
+    let isDarkForeground: Bool
+
+    var secondary: NSColor { primary.withAlphaComponent(0.76) }
+    var tertiary: NSColor { primary.withAlphaComponent(0.58) }
+    var disabled: NSColor { primary.withAlphaComponent(0.38) }
 }
 
 nonisolated enum FullscreenMiniPlayerForegroundStrategy {
@@ -136,27 +163,38 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
         )
     }
 
-    /// Queue text palette, decoupled from the bottom controls' local polarity.
-    /// The fullscreen queue is not inside the Mini Player sampling region, so
-    /// it must not inherit a local Cover Blur decision. Cover Blur uses the
-    /// optimized global gate; other skins keep their fixed behaviour.
-    static func resolveQueueUsesBrightText(
+    /// Queue and Quick Panel share one two-polarity rule. Cover Blur consumes
+    /// the local decision for each card's real screen rectangle; Apple Style is
+    /// always light; every other skin follows the app appearance.
+    static func resolveOverlaySurface(
         palette: SemanticPalette,
+        localArtworkPolarity: ArtworkForegroundPolarity?,
         skinID: String,
-        colorScheme: ColorScheme,
-        fullscreenArtBackgroundEnabled: Bool
-    ) -> Bool {
+        colorScheme: ColorScheme
+    ) -> FullscreenOverlayForegroundProfile {
         if skinID == coverGradientBlurSkinID {
-            return !palette.analysis.usesDarkForeground
+            let polarity = localArtworkPolarity
+                ?? (palette.analysis.usesDarkForeground
+                    ? .darkOnLightBackground
+                    : .lightOnDarkBackground)
+            return overlaySurfaceProfile(palette: palette, polarity: polarity)
         }
-        if skinID == appleStyleSkinID { return true }
-        if skinID == "coverLed" || skinID == "rotatingCover" || skinID == "kmgccc.cassette" {
-            return colorScheme == .dark
+        if skinID == appleStyleSkinID {
+            return overlaySurfaceProfile(palette: palette, polarity: .lightOnDarkBackground)
         }
-        if fullscreenArtBackgroundEnabled {
-            return colorScheme == .dark
-        }
-        return true
+        return overlaySurfaceProfile(
+            palette: palette,
+            polarity: colorScheme == .light ? .darkOnLightBackground : .lightOnDarkBackground
+        )
+    }
+
+    static func overlayCandidateProfiles(
+        palette: SemanticPalette
+    ) -> (dark: FullscreenOverlayForegroundProfile, light: FullscreenOverlayForegroundProfile) {
+        (
+            dark: overlaySurfaceProfile(palette: palette, polarity: .darkOnLightBackground),
+            light: overlaySurfaceProfile(palette: palette, polarity: .lightOnDarkBackground)
+        )
     }
 
     private static func isClearOrNormalMaterial(_ materialStyle: LiquidGlassPillMaterialStyle) -> Bool {
@@ -180,8 +218,7 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
             secondary: primary.withAlphaComponent(0.78),
             disabled: primary.withAlphaComponent(0.45),
             pillTint: primary,
-            iconBlendMode: .screen,
-            useScreenBlend: true,
+            blendStyle: .screen,
             enforceBrightProgressForeground: enforceBrightProgressForeground,
             spectrumUsesDarkForeground: false
         )
@@ -202,8 +239,7 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
             secondary: primary.withAlphaComponent(0.78),
             disabled: primary.withAlphaComponent(0.45),
             pillTint: primary,
-            iconBlendMode: .screen,
-            useScreenBlend: true,
+            blendStyle: .screen,
             enforceBrightProgressForeground: enforceBrightProgressForeground,
             spectrumUsesDarkForeground: false
         )
@@ -224,8 +260,7 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
             secondary: darkVariant.foregroundSecondary,
             disabled: primary.withAlphaComponent(0.45),
             pillTint: primary,
-            iconBlendMode: .normal,
-            useScreenBlend: false,
+            blendStyle: .normal,
             enforceBrightProgressForeground: false,
             spectrumUsesDarkForeground: spectrumUsesDarkForeground
         )
@@ -242,11 +277,28 @@ nonisolated enum FullscreenMiniPlayerForegroundStrategy {
             secondary: palette.appForeground.secondary,
             disabled: palette.appForeground.disabled,
             pillTint: primary,
-            iconBlendMode: .normal,
-            useScreenBlend: false,
+            blendStyle: .normal,
             enforceBrightProgressForeground: false,
             spectrumUsesDarkForeground: false
         )
+    }
+
+    private static func overlaySurfaceProfile(
+        palette: SemanticPalette,
+        polarity: ArtworkForegroundPolarity
+    ) -> FullscreenOverlayForegroundProfile {
+        switch polarity {
+        case .darkOnLightBackground:
+            return FullscreenOverlayForegroundProfile(
+                primary: palette.readabilityCandidates.darkOnLightBackground.foregroundPrimary,
+                isDarkForeground: true
+            )
+        case .lightOnDarkBackground:
+            return FullscreenOverlayForegroundProfile(
+                primary: NSColor.white,
+                isDarkForeground: false
+            )
+        }
     }
 }
 
@@ -263,5 +315,16 @@ extension FullscreenMiniPlayerForegroundProfile {
         case .appleFixedLight, .coverBlurLightForeground, .artisticNightLightForeground, .chromeLightForeground:
             return false
         }
+    }
+}
+
+extension FullscreenOverlayForegroundProfile {
+    var primaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(primary).opacity(0.96) }
+    var secondaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(secondary) }
+    var tertiaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(tertiary) }
+    var disabledColor: Color { ColorRenderingAdapter.makeSwiftUIColor(disabled) }
+
+    var colorScheme: ColorScheme {
+        isDarkForeground ? .light : .dark
     }
 }

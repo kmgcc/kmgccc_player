@@ -1036,14 +1036,17 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
                 )
                 
                 Spacer()
-                    .frame(width: 24)
+                    .frame(width: presentationStyle.scaled(24))
                 
                 Rectangle()
                     .fill(presentationStyle.primaryTextColor.opacity(0.12))
-                    .frame(width: 1, height: 16)
+                    .frame(
+                        width: presentationStyle.scaled(1),
+                        height: presentationStyle.scaled(16)
+                    )
                 
                 Spacer()
-                    .frame(width: 24)
+                    .frame(width: presentationStyle.scaled(24))
                 
                 SettingsSwitchRow(
                     title: "边缘模糊",

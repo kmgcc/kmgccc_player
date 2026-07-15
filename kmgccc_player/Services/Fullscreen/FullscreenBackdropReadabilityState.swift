@@ -119,15 +119,52 @@ final class FullscreenBackdropReadabilityState {
     var hasAnyMap: Bool {
         leading != nil || centered != nil || transition != nil
     }
+
+    /// A polarity commit waits for the complete render set. During a track
+    /// switch the three placements finish independently; committing from the
+    /// first arrival lets the foreground jump through partial decisions before
+    /// the final backdrop is known.
+    var hasCompleteMapSet: Bool {
+        leading != nil && centered != nil && transition != nil
+    }
 }
 
 /// Pure value type that computes the fullscreen bottom-controls rectangles
 /// in base-canvas (1470×923) top-left coordinates. Centralizes the layout
-/// formula that was previously duplicated across `fullscreenMiniPlayerOcclusionRegion`
-/// and `bottomControlsRow`. The readability engine consumes normalized
-/// versions of these rects (scale-invariant, so any render size maps
-/// correctly).
+/// formula shared by the visible bar, pointer occlusion, and readability
+/// sampling. The readability engine consumes normalized versions of these
+/// rects (scale-invariant, so any render size maps correctly).
 nonisolated struct FullscreenBottomControlsGeometry: Equatable, Sendable {
+    struct Configuration: Equatable, Sendable {
+        var buttonSize: CGFloat = 60
+        var spacing: CGFloat = 20
+        var horizontalPadding: CGFloat = 80
+        var miniPlayerMaxWidth: CGFloat = 1200
+        var miniPlayerPillWidthReduction: CGFloat = 160
+        var leadingExpandedWidth: CGFloat = 180
+        var leadingCollapsedWidth: CGFloat = 120
+        var volumeExpandedWidth: CGFloat = 180
+        var volumeCollapsedWidth: CGFloat = 60
+        var canvasWidth: CGFloat = 1470
+        var canvasHeight: CGFloat = 923
+        var bottomPadding: CGFloat = 72
+    }
+
+    enum InteractionLayout: CaseIterable, Sendable {
+        case collapsed
+        case leadingExpanded
+        case volumeExpanded
+        case bothExpanded
+
+        var isLeftActionsExpanded: Bool {
+            self == .leadingExpanded || self == .bothExpanded
+        }
+
+        var isVolumeExpanded: Bool {
+            self == .volumeExpanded || self == .bothExpanded
+        }
+    }
+
     let leadingControlsRect: CGRect
     let miniPlayerRect: CGRect
     let volumeRect: CGRect
@@ -136,19 +173,20 @@ nonisolated struct FullscreenBottomControlsGeometry: Equatable, Sendable {
     static func make(
         isLeftActionsExpanded: Bool,
         isVolumeExpanded: Bool,
-        buttonSize: CGFloat = 60,
-        spacing: CGFloat = 20,
-        horizontalPadding: CGFloat = 80,
-        miniPlayerMaxWidth: CGFloat = 1200,
-        miniPlayerPillWidthReduction: CGFloat = 160,
-        leadingExpandedWidth: CGFloat = 180,
-        leadingCollapsedWidth: CGFloat = 120,
-        volumeExpandedWidth: CGFloat = 180,
-        volumeCollapsedWidth: CGFloat = 60,
-        canvasWidth: CGFloat = 1470,
-        canvasHeight: CGFloat = 923,
-        bottomPadding: CGFloat = 72
+        configuration: Configuration = Configuration()
     ) -> FullscreenBottomControlsGeometry {
+        let buttonSize = configuration.buttonSize
+        let spacing = configuration.spacing
+        let horizontalPadding = configuration.horizontalPadding
+        let miniPlayerMaxWidth = configuration.miniPlayerMaxWidth
+        let miniPlayerPillWidthReduction = configuration.miniPlayerPillWidthReduction
+        let leadingExpandedWidth = configuration.leadingExpandedWidth
+        let leadingCollapsedWidth = configuration.leadingCollapsedWidth
+        let volumeExpandedWidth = configuration.volumeExpandedWidth
+        let volumeCollapsedWidth = configuration.volumeCollapsedWidth
+        let canvasWidth = configuration.canvasWidth
+        let canvasHeight = configuration.canvasHeight
+        let bottomPadding = configuration.bottomPadding
         let leadingControlsWidth = isLeftActionsExpanded ? leadingExpandedWidth : leadingCollapsedWidth
         let leadingControlsExtraWidth = leadingControlsWidth - leadingCollapsedWidth
         let volumeWidth = isVolumeExpanded ? volumeExpandedWidth : volumeCollapsedWidth
@@ -223,6 +261,29 @@ nonisolated struct FullscreenBottomControlsGeometry: Equatable, Sendable {
             )
         }
         return [norm(leadingControlsRect), norm(miniPlayerRect), norm(volumeRect)]
+    }
+
+    /// One stable sampling set for the complete interaction lifecycle. The
+    /// foreground decision must be valid for collapsed, leading-expanded,
+    /// volume-expanded, and transient both-expanded layouts so pointer hover
+    /// never becomes a semantic color input.
+    static func stableReadabilityRegions(
+        viewportSize: CGSize,
+        baseCanvasSize: CGSize = CGSize(width: 1470, height: 923),
+        expansionPoints: CGFloat,
+        configuration: Configuration = Configuration()
+    ) -> [NormalizedReadabilityRegion] {
+        InteractionLayout.allCases.flatMap { layout in
+            make(
+                isLeftActionsExpanded: layout.isLeftActionsExpanded,
+                isVolumeExpanded: layout.isVolumeExpanded,
+                configuration: configuration
+            ).readabilityRegions(
+                viewportSize: viewportSize,
+                baseCanvasSize: baseCanvasSize,
+                expansionPoints: expansionPoints
+            )
+        }
     }
 }
 
