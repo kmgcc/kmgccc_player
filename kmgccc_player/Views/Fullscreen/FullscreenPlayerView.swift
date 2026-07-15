@@ -2662,15 +2662,17 @@ struct FullscreenPlayerView: View {
         } else {
             trackOffsetMs = max(-15000, min(15000, playbackCoordinator.presentation.localTrack?.lyricsTimeOffsetMs ?? 0))
         }
+        let typography = settings.effectiveFullscreenLyricsTypography
         return [
             settings.fullscreen.skinID,
-            settings.fullscreenLyricsFontNameZh,
-            settings.fullscreenLyricsFontNameEn,
-            settings.fullscreenLyricsTranslationFontName,
-            String(format: "%.2f", settings.fullscreenLyricsFontSize),
-            String(format: "%.2f", settings.fullscreenLyricsTranslationFontSize),
-            String(settings.fullscreenLyricsFontWeight),
-            String(settings.fullscreenLyricsTranslationFontWeight),
+            String(settings.fullscreenLyricsTypographyRevision),
+            typography.mainFontNameZh,
+            typography.mainFontNameEn,
+            typography.translationFontName,
+            String(format: "%.2f", typography.mainFontSize),
+            String(format: "%.2f", typography.translationFontSize),
+            String(typography.mainFontWeight),
+            String(typography.translationFontWeight),
             String(format: "%.0f", settings.lyricsLeadInMs),
             String(format: "%.0f", settings.lyricsNearSwitchGapMs),
             String(format: "%.0f", settings.lyricsGlobalAdvanceMs),
@@ -3778,12 +3780,13 @@ struct FullscreenPlayerView: View {
             )
             highlightStore.setThemePaletteOverride(activePalette)
         }
+        let typography = settings.effectiveFullscreenLyricsTypography
         let mainFontFamily = cssFontFamily([
-            settings.fullscreenLyricsFontNameEn,
-            settings.fullscreenLyricsFontNameZh,
+            typography.mainFontNameEn,
+            typography.mainFontNameZh,
         ])
         let translationFontFamily = cssFontFamily([
-            settings.fullscreenLyricsTranslationFontName
+            typography.translationFontName
         ])
         let mainActiveColor = LyricRenderingAdapter.cssPayload(semanticPalette.mainActive)
         let mainInactiveColor = LyricRenderingAdapter.cssPayload(semanticPalette.mainInactive)
@@ -3850,9 +3853,9 @@ struct FullscreenPlayerView: View {
         // Scale base sizes with fullscreen metrics first, then apply runtime presentation overlay.
         // For embedded fullscreen, this keeps +6/+4 as a visible on-screen delta instead of being
         // attenuated by the scale factor.
-        let scaledBaseFontSize = settings.fullscreenLyricsFontSize * currentFullscreenScale
+        let scaledBaseFontSize = typography.mainFontSize * currentFullscreenScale
         let scaledBaseTranslationFontSize =
-            settings.fullscreenLyricsTranslationFontSize * currentFullscreenScale
+            typography.translationFontSize * currentFullscreenScale
         let scaledFontSize = scaledBaseFontSize + overlay.mainFontSizeDeltaPx
         let scaledTranslationFontSize =
             scaledBaseTranslationFontSize + overlay.translationFontSizeDeltaPx
@@ -3860,20 +3863,20 @@ struct FullscreenPlayerView: View {
 
         if EmbeddedFullscreenTrace.enabled, hostContext == .embeddedWindow {
             Log.info(
-                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] FullscreenPlayerView.embeddedFont overlay=(\(String(format: "%.1f", overlay.mainFontSizeDeltaPx)),\(String(format: "%.1f", overlay.translationFontSizeDeltaPx))) baseSetting=(\(String(format: "%.1f", settings.fullscreenLyricsFontSize)),\(String(format: "%.1f", settings.fullscreenLyricsTranslationFontSize))) scaledBase=(\(String(format: "%.2f", scaledBaseFontSize)),\(String(format: "%.2f", scaledBaseTranslationFontSize))) scaled=(\(String(format: "%.2f", scaledFontSize)),\(String(format: "%.2f", scaledTranslationFontSize)))",
+                "[EFS t=\(EmbeddedFullscreenTrace.stamp())] FullscreenPlayerView.embeddedFont overlay=(\(String(format: "%.1f", overlay.mainFontSizeDeltaPx)),\(String(format: "%.1f", overlay.translationFontSizeDeltaPx))) baseSetting=(\(String(format: "%.1f", typography.mainFontSize)),\(String(format: "%.1f", typography.translationFontSize))) scaledBase=(\(String(format: "%.2f", scaledBaseFontSize)),\(String(format: "%.2f", scaledBaseTranslationFontSize))) scaled=(\(String(format: "%.2f", scaledFontSize)),\(String(format: "%.2f", scaledTranslationFontSize)))",
                 category: .fullscreen
             )
         }
 
         var config: [String: Any] = [
             "fontSize": scaledFontSize,
-            "fontWeight": max(100, min(900, settings.fullscreenLyricsFontWeight)),
+            "fontWeight": max(100, min(900, typography.mainFontWeight)),
             "fontFamilyMain": mainFontFamily,
             "fontFamilyTranslation": translationFontFamily,
             "translationFontSize": scaledTranslationFontSize,
             "translationFontWeight": max(
                 100,
-                min(900, settings.fullscreenLyricsTranslationFontWeight)
+                min(900, typography.translationFontWeight)
             ),
             "renderScale": surfaceRole.renderScale,
             "enableBlur": surfaceRole.enableBlur,
