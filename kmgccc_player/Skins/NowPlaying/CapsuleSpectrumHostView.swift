@@ -100,6 +100,8 @@ struct CapsuleSpectrumConfiguration {
     /// affects the spring feel). `< 1` lifts quiet passages; the ceiling caps
     /// loud passages so they stop pegging the top. See `LevelShaping`.
     var levelShaping: LevelShaping
+    /// Opts adaptive MiniPlayer spectra into raw-FFT sub-band sampling.
+    var usesDetailedSampling: Bool
     /// Computes bar geometry from the current bounds. Pure / cheap.
     var metrics: (_ bounds: CGRect, _ count: Int) -> CapsuleSpectrumMetrics
 
@@ -125,6 +127,7 @@ struct CapsuleSpectrumConfiguration {
         strokeWidth: CGFloat = 0,
         heightBoost: CGFloat = 1.0,
         levelShaping: LevelShaping = .standard,
+        usesDetailedSampling: Bool = false,
         metrics: @escaping (_ bounds: CGRect, _ count: Int) -> CapsuleSpectrumMetrics
     ) {
         self.capsuleCount = capsuleCount
@@ -134,6 +137,7 @@ struct CapsuleSpectrumConfiguration {
         self.strokeWidth = strokeWidth
         self.heightBoost = heightBoost
         self.levelShaping = levelShaping
+        self.usesDetailedSampling = usesDetailedSampling
         self.metrics = metrics
     }
 
@@ -149,7 +153,8 @@ struct CapsuleSpectrumConfiguration {
         dynamics: CapsuleSpectrumDynamics = .standard,
         pauseDynamics: CapsuleSpectrumDynamics = .pauseFall,
         pausedBehavior: CapsuleSpectrumPausedBehavior = .idlePose,
-        levelShaping: LevelShaping = .standard
+        levelShaping: LevelShaping = .standard,
+        usesDetailedSampling: Bool = false
     ) -> CapsuleSpectrumConfiguration {
         CapsuleSpectrumConfiguration(
             capsuleCount: capsuleCount,
@@ -158,7 +163,8 @@ struct CapsuleSpectrumConfiguration {
             pausedBehavior: pausedBehavior,
             strokeWidth: strokeWidth,
             heightBoost: 1.0,
-            levelShaping: levelShaping
+            levelShaping: levelShaping,
+            usesDetailedSampling: usesDetailedSampling
         ) { bounds, count in
             let totalWidth = CGFloat(count) * capsuleWidth
                 + CGFloat(max(0, count - 1)) * capsuleSpacing
@@ -224,6 +230,7 @@ final class CapsuleSpectrumHostView: NSView {
     private var isActive = false
     private var isPlaying = false
     private var lastForwardedPlaybackState: Bool?
+    private var latestWaveFrame = SpectrumWaveFrame(legacy: [], detailed: [])
 
     private var lastLayoutSize: CGSize = .zero
     private var lastColorSignature: Int?
@@ -267,11 +274,15 @@ final class CapsuleSpectrumHostView: NSView {
     /// capsule count actually changed.
     func configure(_ newConfiguration: CapsuleSpectrumConfiguration) {
         let countChanged = newConfiguration.capsuleCount != configuration.capsuleCount
+        let samplingChanged = newConfiguration.usesDetailedSampling != configuration.usesDetailedSampling
         configuration = newConfiguration
         if countChanged {
             resizeFollowerState()
             rebuildCapsuleLayers()
             lastColorSignature = nil // force color re-apply for the new layers
+        }
+        if countChanged || samplingChanged {
+            applyWave(latestWaveFrame)
         }
         applyStrokeWidth()
         refreshGeometry()
@@ -312,8 +323,8 @@ final class CapsuleSpectrumHostView: NSView {
         guard consumerID == nil else { return }
         service.start()
         hasServiceLease = true
-        consumerID = service.addConsumer { [weak self] wave in
-            self?.applyWave(wave)
+        consumerID = service.addAdaptiveConsumer { [weak self] frame in
+            self?.applyWave(frame)
         }
         if let state = lastForwardedPlaybackState {
             service.updatePlaybackState(isPlaying: state)
@@ -378,11 +389,15 @@ final class CapsuleSpectrumHostView: NSView {
 
     // MARK: Wave intake
 
-    private func applyWave(_ wave: [Float]) {
+    private func applyWave(_ frame: SpectrumWaveFrame) {
+        latestWaveFrame = frame
         // While paused in collapse-to-dots mode the bars stay down; ignore the
         // service's idle-pose frames so they don't fight the collapse target.
         if !isPlaying, configuration.pausedBehavior == .collapseToDots { return }
 
+        let wave = configuration.usesDetailedSampling && count > 9
+            ? frame.detailed
+            : frame.legacy
         let sampledWave = Self.resampledWave(wave, targetCount: count)
         var changed = false
         for index in 0..<count {

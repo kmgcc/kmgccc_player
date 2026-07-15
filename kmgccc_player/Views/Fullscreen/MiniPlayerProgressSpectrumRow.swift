@@ -53,6 +53,7 @@ struct MiniPlayerProgressSpectrumRow: View {
     // so the progress track does not consume empty space.
     private var baseVisualizationCount: Int { visualization == .led ? 5 : 9 }
     private var wideVisualizationStartWidth: CGFloat { max(260, 300 * scale) }
+    private var spectrumWideSegmentStartWidth: CGFloat { max(340, 420 * scale) }
     private var wideVisualizationMaximumWidth: CGFloat {
         max(spectrumExpandedWidth, 220 * scale)
     }
@@ -149,11 +150,13 @@ struct MiniPlayerProgressSpectrumRow: View {
                     // Track - full width capsule
                     Capsule()
                         .fill(progressTrackColor)
+                        .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
                         .frame(height: barHeight)
                     
                     // Fill - always a full capsule, masked to filled width
                     Capsule()
                         .fill(progressFillColor)
+                        .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
                         .frame(height: barHeight)
                         .mask(
                             Rectangle()
@@ -196,6 +199,7 @@ struct MiniPlayerProgressSpectrumRow: View {
                     fontWeight: .medium,
                     color: timeColor
                 )
+                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
                 
                 Spacer(minLength: 18 * scale)
                 
@@ -205,6 +209,7 @@ struct MiniPlayerProgressSpectrumRow: View {
                     fontWeight: .medium,
                     color: timeColor
                 )
+                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
             }
             .padding(.horizontal, hPadding)
             .offset(y: progressYOffset)
@@ -221,16 +226,25 @@ struct MiniPlayerProgressSpectrumRow: View {
     private func visualizationSection(availableWidth: CGFloat, availableHeight: CGFloat) -> some View {
         let height = min(spectrumHeight, availableHeight)
         let expandedWidth = resolvedVisualizationWidth(for: availableWidth)
-        let shouldAdaptWideSegments = adaptsWideVisualizationSegments
-            && availableWidth > wideVisualizationStartWidth
-        let count = shouldAdaptWideSegments
-            ? max(baseVisualizationCount, adaptiveSegmentCount(for: expandedWidth))
-            : baseVisualizationCount
+        let count: Int
+        if visualization == .spectrum {
+            count = wideSpectrumSegmentCount(
+                availableWidth: availableWidth,
+                renderedWidth: expandedWidth
+            )
+        } else {
+            let shouldAdaptWideSegments = adaptsWideVisualizationSegments
+                && availableWidth > wideVisualizationStartWidth
+            count = shouldAdaptWideSegments
+                ? max(baseVisualizationCount, adaptiveSegmentCount(for: expandedWidth))
+                : baseVisualizationCount
+        }
         return visualizationContent(
             count: count,
             width: expandedWidth,
             height: height
         )
+        .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
         .frame(width: isRowHovered ? spectrumCollapsedWidth : expandedWidth, height: height)
         .frame(maxHeight: .infinity, alignment: .center)
         .opacity(isRowHovered ? 0 : 1)
@@ -239,18 +253,20 @@ struct MiniPlayerProgressSpectrumRow: View {
     }
 
     private func compactVisualizationProgress(size: CGSize) -> some View {
-        let count = adaptiveSegmentCount(for: size.width)
+        let count = visualization == .spectrum
+            ? compactSpectrumSegmentCount(for: size.width)
+            : adaptiveSegmentCount(for: size.width)
         let filledWidth = progressWidth(in: size.width)
         let contentHeight = min(spectrumHeight, size.height)
         return ZStack {
             visualizationContent(count: count, width: size.width, height: contentHeight)
+                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
                 .opacity(0.30)
 
             visualizationContent(count: count, width: size.width, height: contentHeight)
+                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
                 .mask(alignment: .leading) {
-                    Rectangle()
-                        .frame(width: filledWidth)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                    compactProgressMask(filledWidth: filledWidth)
                 }
         }
         .frame(width: size.width, height: size.height, alignment: .center)
@@ -305,6 +321,50 @@ struct MiniPlayerProgressSpectrumRow: View {
         let elementWidth = visualization == .led ? 10 * scale : 5.8 * scale
         let spacing = visualization == .led ? 6 * scale : 4 * scale
         return max(3, Int((width + spacing) / (elementWidth + spacing)))
+    }
+
+    private func compactSpectrumSegmentCount(for width: CGFloat) -> Int {
+        let additionalSegments = Int(max(0, width - 70) / 22)
+        return min(9, max(5, 5 + additionalSegments))
+    }
+
+    private func wideSpectrumSegmentCount(
+        availableWidth: CGFloat,
+        renderedWidth: CGFloat
+    ) -> Int {
+        guard adaptsWideVisualizationSegments,
+              availableWidth > spectrumWideSegmentStartWidth
+        else {
+            return 9
+        }
+
+        let baselineRenderedWidth = resolvedVisualizationWidth(
+            for: spectrumWideSegmentStartWidth
+        )
+        let elementStep = (5.8 + 4) * scale
+        let additionalSegments = Int(
+            max(0, renderedWidth - baselineRenderedWidth) / max(1, elementStep)
+        )
+        return 9 + additionalSegments
+    }
+
+    private func compactProgressMask(filledWidth: CGFloat) -> some View {
+        let featherWidth = min(filledWidth, max(10, 18 * scale))
+        let solidWidth = max(0, filledWidth - featherWidth)
+        return HStack(spacing: 0) {
+            Rectangle()
+                .fill(.white)
+                .frame(width: solidWidth)
+
+            LinearGradient(
+                colors: [.white, .clear],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: featherWidth)
+        }
+        .frame(width: filledWidth)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
     private func resolvedVisualizationWidth(for availableWidth: CGFloat) -> CGFloat {
