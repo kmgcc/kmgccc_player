@@ -1401,7 +1401,8 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             historyDeleteItem?.isEnabled = false
             return
         }
-        historyDeleteItem?.isEnabled = currentHistoryVM?.hasSelectedEvents == true
+        historyDeleteItem?.isEnabled = currentHistoryVM?.isMultiselectMode == true
+            && currentHistoryVM?.hasSelectedEvents == true
     }
 
     private func syncRevealNowPlayingItemPresentation() {
