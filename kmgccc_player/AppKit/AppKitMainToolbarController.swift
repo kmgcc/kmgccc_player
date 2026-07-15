@@ -670,19 +670,19 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
 
         sortMenu.addItem(.separator())
 
-        let isCustomTrackSort: Bool = {
+        let isCustomCollectionSort: Bool = {
             switch libraryVM.currentSelection {
             case .allPlaylists, .allAlbums, .allArtists:
                 return libraryVM.isCustomCollectionSortActive()
             default:
-                return libraryVM.trackSortKey == .custom
+                return false
             }
         }()
         for order in TrackSortOrder.allCases {
             let item = NSMenuItem(title: order.title, action: #selector(handleSortOrder(_:)), keyEquivalent: "")
             item.representedObject = order.rawValue
-            item.state = (libraryVM.trackSortOrder == order) ? .on : .off
-            item.isEnabled = !isCustomTrackSort
+            item.state = (libraryVM.sortOrderForCurrentSelection == order) ? .on : .off
+            item.isEnabled = !isCustomCollectionSort
             item.target = self
             sortMenu.addItem(item)
         }
@@ -743,7 +743,12 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             let order = TrackSortOrder(rawValue: raw),
             let libraryVM = currentLibraryVM
         else { return }
-        libraryVM.trackSortOrder = order
+        switch libraryVM.currentSelection {
+        case .allPlaylists:
+            libraryVM.playlistSortOrder = order
+        default:
+            libraryVM.trackSortOrder = order
+        }
         currentPageController?.handleSortChange(reason: "toolbar.sortOrder")
         validateCurrentToolbarVisibleItems()
     }
@@ -973,24 +978,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             if let identity = pageController.page?.selectionIdentity {
                 return identity
             }
-            switch libraryVM.currentSelection {
-            case .home:
-                return "home"
-            case .allSongs:
-                return "allSongs"
-            case .allPlaylists:
-                return "allPlaylists"
-            case .allAlbums:
-                return "allAlbums"
-            case .allArtists:
-                return "allArtists"
-            case .playlist(let id):
-                return "playlist-\(id.uuidString)"
-            case .artist(let key):
-                return "artist-\(key)"
-            case .album(let key):
-                return "album-\(key)"
-            }
+            return libraryVM.currentSelection.selectionIdentity(in: libraryVM)
         }()
 
         if libraryVM.currentSelection == .home {

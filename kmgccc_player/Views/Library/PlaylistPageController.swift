@@ -781,7 +781,7 @@ final class PlaylistPageController {
             ? libraryVM.customTrackOrderIDsForCurrentSelection(displayedTrackIDs: displayedTrackIDs)
             : nil
         let sortOrderCacheComponent = libraryVM.trackSortKey == .custom
-            ? "custom:\(libraryVM.customTrackOrderSignatureForCurrentSelection(displayedTrackIDs: displayedTrackIDs))"
+            ? "custom:\(libraryVM.trackSortOrder.rawValue):\(libraryVM.customTrackOrderSignatureForCurrentSelection(displayedTrackIDs: displayedTrackIDs))"
             : libraryVM.trackSortOrder.rawValue
 
         let modelKey = await PlaylistPageModelCacheService.shared.cacheKey(
@@ -1927,35 +1927,7 @@ final class PlaylistPageController {
     }
 
     private func selectionIdentity(for selection: LibrarySelection) -> String {
-        switch selection {
-        case .home:
-            return "home"
-        case .allSongs:
-            return "allSongs"
-        case .allPlaylists:
-            return "allPlaylists"
-        case .allAlbums:
-            return "allAlbums"
-        case .allArtists:
-            return "allArtists"
-        case .playlist(let id):
-            return "playlist-\(id.uuidString)"
-        case .artist(let key):
-            // Must match DetailHeaderConfig.selectionIdentity ("artist-<UUID>").
-            // The haloState session identity and the bounds-update identity must
-            // agree or updateHeaderArtworkBounds always early-returns, leaving
-            // the anchor unset and the window-layer halo invisible.
-            if let entry = libraryVM?.artistEntries.first(where: { $0.canonicalName == key }) {
-                return "artist-\(entry.id)"
-            }
-            return "artist-\(key)"
-        case .album(let key):
-            // Same fix for album.
-            if let entry = libraryVM?.albumEntries.first(where: { $0.canonicalKey == key }) {
-                return "album-\(entry.id)"
-            }
-            return "album-\(key)"
-        }
+        selection.selectionIdentity(in: libraryVM)
     }
 
     private static func searchHits(
