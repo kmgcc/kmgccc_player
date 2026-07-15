@@ -1,0 +1,75 @@
+//
+//  PlaybackArtworkWarmer.swift
+//  myPlayer2
+//
+//  Playback-window artwork preloading.
+//
+
+import Foundation
+
+/// Preloads the current track and a small neighbouring queue window.
+///
+/// The warmer owns only its cancellable preload task and deduplication key;
+/// playback state remains owned by `PlayerViewModel` and presentation remains
+/// owned by `PlaybackCoordinator`.
+@MainActor
+final class PlaybackArtworkWarmer {
+    private var task: Task<Void, Never>?
+    private var signature: String?
+
+    func update(
+        activeSource: PlaybackSource,
+        presentation: NowPlayingPresentation,
+        queue: [Track]
+    ) {
+        guard activeSource == .local, let currentTrack = presentation.localTrack else {
+            reset()
+            return
+        }
+
+        let currentIndex = queue.firstIndex(where: { $0.id == currentTrack.id })
+        var targets: [Track] = [currentTrack]
+        if let currentIndex {
+            for offset in 1...2 {
+                let index = currentIndex + offset
+                if queue.indices.contains(index) {
+                    targets.append(queue[index])
+                }
+            }
+            let previousIndex = currentIndex - 1
+            if queue.indices.contains(previousIndex) {
+                targets.append(queue[previousIndex])
+            }
+        }
+
+        var seen = Set<UUID>()
+        let sources = targets.compactMap { track -> TrackArtworkSource? in
+            guard seen.insert(track.id).inserted else { return nil }
+            let fallbackData = track.id == currentTrack.id
+                ? presentation.artworkData
+                : track.artworkData
+            return track.trackArtworkSource(fallbackData: fallbackData)
+        }
+
+        guard !sources.isEmpty else {
+            reset()
+            return
+        }
+
+        let nextSignature = sources.map(\.sourceKey).joined(separator: "||")
+        guard nextSignature != signature else { return }
+
+        signature = nextSignature
+        task?.cancel()
+        task = TrackArtworkCache.shared.preloadPlaybackArtwork(
+            for: sources,
+            reason: "playback-current-window"
+        )
+    }
+
+    private func reset() {
+        task?.cancel()
+        task = nil
+        signature = nil
+    }
+}
