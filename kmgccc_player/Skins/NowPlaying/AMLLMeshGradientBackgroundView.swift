@@ -57,7 +57,7 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
     let configuration: Configuration
 
     func makeNSView(context: Context) -> NSView {
-        let container = NSView()
+        let container = AMLLMeshGradientHostView()
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.clear.cgColor
         context.coordinator.attach(to: container)
@@ -109,15 +109,22 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
 
         func attach(to hostView: NSView) {
             self.hostView = hostView
+            if let visibilityHost = hostView as? AMLLMeshGradientHostView {
+                visibilityHost.onVisibilityChanged = { [weak self] in
+                    self?.hostVisibilityDidChange()
+                }
+            }
             let webView = ensureWebView()
             guard webView.superview !== hostView else {
                 webView.frame = hostView.bounds
+                hostVisibilityDidChange()
                 return
             }
             webView.removeFromSuperview()
             webView.frame = hostView.bounds
             webView.autoresizingMask = [.width, .height]
             hostView.addSubview(webView)
+            hostVisibilityDidChange()
             Log.debug("AMLL background attached host=\(hostView.bounds) web=\(webView.frame)", category: .webview)
         }
 
@@ -127,11 +134,16 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
             guard isReady else { return }
             applyConfig(configuration)
             applyArtworkIfNeeded(configuration)
-            setPlaying(configuration.isPlaying && configuration.dynamicBackgroundEnabled)
+            setPlaying(
+                configuration.isPlaying
+                    && configuration.dynamicBackgroundEnabled
+                    && isHostActuallyVisible
+            )
         }
 
         func dispose() {
             stopSampling()
+            (hostView as? AMLLMeshGradientHostView)?.onVisibilityChanged = nil
             call("window.AMLLBackground?.dispose?.()", label: "dispose")
             webView?.configuration.userContentController.removeScriptMessageHandler(forName: "backgroundReady")
             webView?.configuration.userContentController.removeScriptMessageHandler(forName: "backgroundDebug")
@@ -181,7 +193,11 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
             if let configuration = lastConfiguration {
                 applyConfig(configuration)
                 applyArtworkIfNeeded(configuration, force: true)
-                setPlaying(configuration.isPlaying && configuration.dynamicBackgroundEnabled)
+                setPlaying(
+                    configuration.isPlaying
+                        && configuration.dynamicBackgroundEnabled
+                        && isHostActuallyVisible
+                )
             }
             collectDiagnostics(label: "ready")
         }
@@ -280,7 +296,7 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
         }
 
         private func syncSampling(for configuration: Configuration) {
-            if configuration.dynamicBackgroundEnabled {
+            if configuration.dynamicBackgroundEnabled && isHostActuallyVisible {
                 startSampling(isPlaying: configuration.isPlaying)
             } else {
                 stopSampling()
@@ -292,9 +308,23 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
             }
         }
 
+        private var isHostActuallyVisible: Bool {
+            (hostView as? AMLLMeshGradientHostView)?.isActuallyVisible ?? false
+        }
+
+        private func hostVisibilityDidChange() {
+            guard let configuration = lastConfiguration else { return }
+            syncSampling(for: configuration)
+            guard isReady else { return }
+            setPlaying(
+                configuration.isPlaying
+                    && configuration.dynamicBackgroundEnabled
+                    && isHostActuallyVisible
+            )
+        }
+
         private func startSampling(isPlaying: Bool) {
             if lowFreqConsumerID == nil {
-                spectrumService.start()
                 lowFreqConsumerID = spectrumService.addConsumer { [weak self] wave in
                     self?.publishLowFrequencyVolume(from: wave)
                 }
@@ -306,7 +336,6 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
             if let id = lowFreqConsumerID {
                 spectrumService.removeConsumer(id)
                 lowFreqConsumerID = nil
-                spectrumService.stop()
             }
             smoothedLowFreq = 0
             lastPushedLowFreq = -1
@@ -391,5 +420,98 @@ struct AMLLMeshGradientBackgroundView: NSViewRepresentable {
             }
             return "image/jpeg"
         }
+    }
+}
+
+@MainActor
+private final class AMLLMeshGradientHostView: NSView {
+    var onVisibilityChanged: (() -> Void)?
+
+    private weak var observedWindow: NSWindow?
+    private var lastLayoutSize: CGSize = .zero
+
+    var isActuallyVisible: Bool {
+        guard let window else { return false }
+        return NSApp.isActive
+            && window.isVisible
+            && window.isKeyWindow
+            && !window.isMiniaturized
+            && window.occlusionState.contains(.visible)
+            && !isHiddenOrHasHiddenAncestor
+            && bounds.width > 0
+            && bounds.height > 0
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            uninstallVisibilityObservers()
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        installVisibilityObserversIfNeeded()
+        onVisibilityChanged?()
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        onVisibilityChanged?()
+    }
+
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        onVisibilityChanged?()
+    }
+
+    override func layout() {
+        super.layout()
+        guard lastLayoutSize != bounds.size else { return }
+        lastLayoutSize = bounds.size
+        onVisibilityChanged?()
+    }
+
+    @objc private func visibilityDidChange(_ notification: Notification) {
+        onVisibilityChanged?()
+    }
+
+    private func installVisibilityObserversIfNeeded() {
+        guard observedWindow !== window else { return }
+        uninstallVisibilityObservers()
+        guard let window else { return }
+        observedWindow = window
+
+        let center = NotificationCenter.default
+        for name in [
+            NSWindow.didBecomeKeyNotification,
+            NSWindow.didResignKeyNotification,
+            NSWindow.didMiniaturizeNotification,
+            NSWindow.didDeminiaturizeNotification,
+            NSWindow.didChangeOcclusionStateNotification,
+        ] {
+            center.addObserver(
+                self,
+                selector: #selector(visibilityDidChange(_:)),
+                name: name,
+                object: window
+            )
+        }
+        center.addObserver(
+            self,
+            selector: #selector(visibilityDidChange(_:)),
+            name: NSApplication.didBecomeActiveNotification,
+            object: NSApp
+        )
+        center.addObserver(
+            self,
+            selector: #selector(visibilityDidChange(_:)),
+            name: NSApplication.didResignActiveNotification,
+            object: NSApp
+        )
+    }
+
+    private func uninstallVisibilityObservers() {
+        NotificationCenter.default.removeObserver(self)
+        observedWindow = nil
     }
 }

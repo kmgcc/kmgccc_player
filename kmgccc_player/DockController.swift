@@ -173,7 +173,6 @@ final class DockController: NSObject, NSMenuItemValidation {
     }
 
     private func refreshFromPlaybackCoordinator(forceDisplay: Bool) {
-        playbackCoordinator?.refreshPresentation()
         let nextState = currentPlaybackState()
         guard forceDisplay || nextState != lastRenderedState else { return }
 
