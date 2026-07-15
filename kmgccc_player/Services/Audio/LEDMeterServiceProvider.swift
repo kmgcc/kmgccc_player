@@ -34,6 +34,7 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     /// kept around for fast re-acquire — Now Playing's hard release goes
     /// through `releaseNowPlayingResources()`.
     private var sessionCount: Int = 0
+    private var isPlaybackSessionActive = false
 
     /// Metrics from the real service or the external simulator.
     var metrics: LEDMeterMetrics {
@@ -116,17 +117,13 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     // MARK: - AudioLevelMeterProtocol
 
     func start() {
-        if playbackSource.isExternal {
-            startExternalPolling()
-        } else {
-            _service?.start()
-            _service?.updatePlaybackState(isPlaying: lastObservedPlaying)
-        }
+        isPlaybackSessionActive = true
+        syncActiveState()
     }
 
     func stop() {
-        stopExternalPolling()
-        _service?.stop()
+        isPlaybackSessionActive = false
+        syncActiveState()
     }
 
     func updatePlaybackState(isPlaying: Bool) {
@@ -166,22 +163,30 @@ final class LEDMeterServiceProvider: AudioLevelMeterProtocol {
     /// last session is released.
     func acquireSession() {
         sessionCount += 1
-        if playbackSource.isExternal {
-            startExternalPolling()
-        } else {
-            if let service = getOrCreate() {
-                service.start()
-                service.updatePlaybackState(isPlaying: lastObservedPlaying)
-            }
-        }
+        syncActiveState()
     }
 
     func releaseSession() {
         guard sessionCount > 0 else { return }
         sessionCount -= 1
-        guard sessionCount == 0 else { return }
-        _service?.stop()
-        stopExternalPolling()
+        syncActiveState()
+    }
+
+    private func syncActiveState() {
+        let shouldBeRunning = isPlaybackSessionActive || sessionCount > 0
+        if shouldBeRunning {
+            if playbackSource.isExternal {
+                startExternalPolling()
+            } else {
+                if let service = getOrCreate() {
+                    service.start()
+                    service.updatePlaybackState(isPlaying: lastObservedPlaying)
+                }
+            }
+        } else {
+            _service?.stop()
+            stopExternalPolling()
+        }
     }
 
     /// Updates config on existing service or stores for future creation.

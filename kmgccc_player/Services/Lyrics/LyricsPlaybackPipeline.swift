@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import CryptoKit
 
 @MainActor
 final class LyricsPlaybackPipeline {
@@ -155,8 +156,7 @@ final class LyricsPlaybackPipeline {
 
     private func textSignature(_ text: String?) -> String {
         guard let text, !text.isEmpty else { return "empty" }
-        let head = String(text.prefix(16))
-        let tail = String(text.suffix(16))
-        return "\(text.count):\(head):\(tail)"
+        let digest = SHA256.hash(data: Data(text.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 }
