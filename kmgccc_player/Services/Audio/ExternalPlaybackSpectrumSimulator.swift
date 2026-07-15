@@ -4,10 +4,84 @@
 //
 //  kmgccc_player - External Playback Spectrum Simulator
 //  Plays back pre-recorded app-chain spectrum frames from real audio (15s-35s of Tabata Wod).
-//  Lifetime is NOT bound to any view, service, or provider.
+//  Lifetime is bound to the shared visualization visibility registry.
 //
 
 import Foundation
+
+/// Shared visibility demand for every live audio-visualization surface.
+///
+/// Spectrum and LED services each hold one lease while they have at least one
+/// visible consumer. The external simulator is therefore active only when the
+/// selected source is external *and* some on-screen surface can use its frames.
+nonisolated final class AudioVisualizationVisibilityRegistry: @unchecked Sendable {
+    enum ConsumerKind: String, Sendable {
+        case spectrum
+        case ledMeter
+    }
+
+    static let shared = AudioVisualizationVisibilityRegistry()
+
+    private let lock = NSLock()
+    private var leases: [UUID: ConsumerKind] = [:]
+    private var isExternalMode = false
+    private var isPlaying = false
+
+    private init() {}
+
+    func acquire(_ kind: ConsumerKind) -> UUID {
+        let id = UUID()
+        lock.lock()
+        leases[id] = kind
+        apply(demandSnapshotLocked())
+        lock.unlock()
+        return id
+    }
+
+    func release(_ id: UUID) {
+        lock.lock()
+        guard leases.removeValue(forKey: id) != nil else {
+            lock.unlock()
+            return
+        }
+        apply(demandSnapshotLocked())
+        lock.unlock()
+    }
+
+    func setExternalMode(_ enabled: Bool) {
+        lock.lock()
+        guard isExternalMode != enabled else {
+            lock.unlock()
+            return
+        }
+        isExternalMode = enabled
+        apply(demandSnapshotLocked())
+        lock.unlock()
+    }
+
+    func setPlaying(_ playing: Bool) {
+        lock.lock()
+        guard isPlaying != playing else {
+            lock.unlock()
+            return
+        }
+        isPlaying = playing
+        apply(demandSnapshotLocked())
+        lock.unlock()
+    }
+
+    private func demandSnapshotLocked() -> (external: Bool, visible: Bool, playing: Bool) {
+        (isExternalMode, !leases.isEmpty, isPlaying)
+    }
+
+    private func apply(_ snapshot: (external: Bool, visible: Bool, playing: Bool)) {
+        ExternalPlaybackSpectrumSimulator.shared.updateDemand(
+            isExternalMode: snapshot.external,
+            hasVisibleConsumers: snapshot.visible,
+            isPlaying: snapshot.playing
+        )
+    }
+}
 
 /// Spectrum source for Apple Music / external playback.
 /// Consumes offline-recorded app-chain spectrum frames and loops them at runtime.
@@ -70,54 +144,57 @@ nonisolated final class ExternalPlaybackSpectrumSimulator: @unchecked Sendable {
 
     private init() {}
 
-    func start() {
+    func updateDemand(
+        isExternalMode: Bool,
+        hasVisibleConsumers: Bool,
+        isPlaying playing: Bool
+    ) {
         queue.async { [weak self] in
             guard let self else { return }
-            guard !self.isRunning else {
-                // Already leased; re-arm only if a prior pause idle-suspended the
-                // timer and we are playing again. Paused-and-suspended stays frozen.
-                if self.timer == nil, self.isPlaying {
+            let shouldRun = isExternalMode && hasVisibleConsumers
+            let wasPlaying = self.isPlaying
+            self.isPlaying = playing
+
+            guard shouldRun else {
+                self.stopLocked()
+                return
+            }
+
+            if !self.isRunning {
+                self.isRunning = true
+                self.pauseDecay = 1.0
+                if playing {
                     self.startTimer()
                 }
                 return
             }
-            self.isRunning = true
-            self.startTimer()
-        }
-    }
 
-    func stop() {
-        queue.async { [weak self] in
-            guard let self else { return }
-            self.isRunning = false
-            self.timer?.cancel()
-            self.timer = nil
-            self.time = 0
-            self.pauseDecay = 1.0
-
-            self.lock.lock()
-            self._lastWave = Array(repeating: 0, count: self.waveBandCount)
-            self._lastAudioMetrics = .zero
-            self._lastLedMetrics = LEDMeterMetrics.zero(count: self.ledCount)
-            self.lock.unlock()
-        }
-    }
-
-    func setPlaying(_ playing: Bool) {
-        queue.async { [weak self] in
-            guard let self else { return }
-            self.isPlaying = playing
-            guard self.isRunning else { return }
             if playing {
                 // Resume immediately: reset decay and re-arm if idle-suspended.
                 self.pauseDecay = 1.0
                 if self.timer == nil {
                     self.startTimer()
                 }
+            } else if wasPlaying {
+                // Keep the current timer alive just long enough to render the
+                // existing fade-to-zero behavior, then tick() suspends it.
             }
-            // On pause the timer keeps running; tick() decays the meter to
-            // silence and then idle-suspends itself.
         }
+    }
+
+    private func stopLocked() {
+        guard isRunning || timer != nil else { return }
+        isRunning = false
+        timer?.cancel()
+        timer = nil
+        time = 0
+        pauseDecay = 1.0
+
+        lock.lock()
+        _lastWave = Array(repeating: 0, count: waveBandCount)
+        _lastAudioMetrics = .zero
+        _lastLedMetrics = LEDMeterMetrics.zero(count: ledCount)
+        lock.unlock()
     }
 
     // MARK: - Timer

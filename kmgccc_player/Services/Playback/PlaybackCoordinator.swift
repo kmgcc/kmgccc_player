@@ -67,8 +67,8 @@ final class PlaybackCoordinator {
         ) ?? .local
         if activeSource.isExternal {
             externalProvider(for: activeSource)?.start()
-            ExternalPlaybackSpectrumSimulator.shared.start()
         }
+        AudioVisualizationVisibilityRegistry.shared.setExternalMode(activeSource.isExternal)
         refreshPresentation()
         startPresentationTimer()
         NowPlayingService.shared.register(coordinator: self)
@@ -98,16 +98,15 @@ final class PlaybackCoordinator {
         switch source {
         case .local:
             stopExternalProviders()
-            ExternalPlaybackSpectrumSimulator.shared.stop()
         case .appleMusic, .systemNowPlaying:
             if playerVM.isPlaying {
                 playerVM.pause()
             }
             externalProvider(for: source)?.start()
-            ExternalPlaybackSpectrumSimulator.shared.start()
         }
 
         activeSource = source
+        AudioVisualizationVisibilityRegistry.shared.setExternalMode(source.isExternal)
         lastSyncedPlayingState = nil
         UserDefaults.standard.set(source.rawValue, forKey: Keys.activeSource)
         onActiveSourceChanged?(source)
@@ -527,9 +526,7 @@ final class PlaybackCoordinator {
         }
 
         let isPlaying = newPresentation.isPlaying
-        if activeSource.isExternal {
-            ExternalPlaybackSpectrumSimulator.shared.setPlaying(isPlaying)
-        }
+        AudioVisualizationVisibilityRegistry.shared.setPlaying(isPlaying)
         // Propagate play/pause to the meter + FFT chain for ALL sources (local
         // included, which previously never notified the meter) so the shared
         // analysis hub can suspend the FFT while paused, and re-cadence the

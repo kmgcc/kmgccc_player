@@ -440,6 +440,7 @@ private final class LiveLedMeterLayerHostView: NSView {
     private var currentBrightnessStates: [Int] = []
     private var currentStatusLevel = 0
     private var breathTimer: Timer?
+    private weak var observedWindow: NSWindow?
 
     private let breathHoldTime: Double = 0.32
     private let peakHoldTime: Double = 0.60
@@ -463,6 +464,7 @@ private final class LiveLedMeterLayerHostView: NSView {
     deinit {
         MainActor.assumeIsolated {
             unbind()
+            uninstallWindowVisibilityObservers()
         }
     }
 
@@ -526,16 +528,23 @@ private final class LiveLedMeterLayerHostView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window == nil {
-            unbind()
-        } else {
-            syncBindingIfPossible()
-            updateBreathTimer()
-        }
+        installWindowVisibilityObserversIfNeeded()
+        reconcileVisibility()
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        reconcileVisibility()
+    }
+
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        reconcileVisibility()
     }
 
     override func layout() {
         super.layout()
+        reconcileVisibility()
         guard let configuration else { return }
         rootLayer.frame = bounds
 
@@ -601,7 +610,7 @@ private final class LiveLedMeterLayerHostView: NSView {
     }
 
     private func syncBindingIfPossible() {
-        guard window != nil, let provider else { return }
+        guard isActuallyVisible, let provider else { return }
         if !hasSession {
             provider.acquireSession()
             hasSession = true
@@ -611,6 +620,64 @@ private final class LiveLedMeterLayerHostView: NSView {
                 self?.applyFrame(led: led, audio: audio)
             }
         }
+    }
+
+    private func reconcileVisibility() {
+        if isActuallyVisible {
+            syncBindingIfPossible()
+            updateBreathTimer()
+        } else {
+            unbind()
+        }
+    }
+
+    private var isActuallyVisible: Bool {
+        guard let window else { return false }
+        return window.isVisible
+            && !window.isMiniaturized
+            && window.occlusionState.contains(.visible)
+            && !isHiddenOrHasHiddenAncestor
+            && bounds.width > 0
+            && bounds.height > 0
+    }
+
+    @objc private func handleWindowVisibilityChanged(_ notification: Notification) {
+        reconcileVisibility()
+    }
+
+    private func installWindowVisibilityObserversIfNeeded() {
+        guard observedWindow !== window else { return }
+        uninstallWindowVisibilityObservers()
+        guard let window else { return }
+        observedWindow = window
+        let center = NotificationCenter.default
+        center.addObserver(
+            self,
+            selector: #selector(handleWindowVisibilityChanged(_:)),
+            name: NSWindow.didChangeOcclusionStateNotification,
+            object: window
+        )
+        center.addObserver(
+            self,
+            selector: #selector(handleWindowVisibilityChanged(_:)),
+            name: NSWindow.didMiniaturizeNotification,
+            object: window
+        )
+        center.addObserver(
+            self,
+            selector: #selector(handleWindowVisibilityChanged(_:)),
+            name: NSWindow.didDeminiaturizeNotification,
+            object: window
+        )
+    }
+
+    private func uninstallWindowVisibilityObservers() {
+        guard let observedWindow else { return }
+        let center = NotificationCenter.default
+        center.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: observedWindow)
+        center.removeObserver(self, name: NSWindow.didMiniaturizeNotification, object: observedWindow)
+        center.removeObserver(self, name: NSWindow.didDeminiaturizeNotification, object: observedWindow)
+        self.observedWindow = nil
     }
 
     private func rebuildLayers() {
@@ -767,7 +834,7 @@ private final class LiveLedMeterLayerHostView: NSView {
 
     private func updateBreathTimer() {
         guard let configuration else { return }
-        if configuration.showsStatusLight, configuration.isPlaying, window != nil {
+        if configuration.showsStatusLight, configuration.isPlaying, isActuallyVisible {
             if breathTimer == nil {
                 let timer = Timer(timeInterval: 0.10, repeats: true) { [weak self] _ in
                     Task { @MainActor [weak self] in
