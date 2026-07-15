@@ -12,7 +12,12 @@ import Observation
 import SwiftUI
 
 @MainActor
-final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarItemValidation, NSMenuDelegate, NSSearchFieldDelegate {
+final class AppKitMainToolbarController: NSObject,
+    NSToolbarDelegate,
+    NSToolbarItemValidation,
+    AppKitMainToolbarSearchBridgeDelegate,
+    AppKitMainToolbarSortMenuControllerDelegate
+{
     private enum FeatureTips {
         static let shiftRangeSelectionKey = "playlist.shiftRangeSelection"
         static let shiftRangeSelectionIntroducedBuild = AppBuild(7)
@@ -46,9 +51,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     private weak var playItem: NSToolbarItem?
     private weak var revealNowPlayingItem: NSToolbarItem?
     private weak var importItem: NSToolbarItem?
-    private weak var searchItem: NSToolbarItem?
-    private weak var searchField: NSSearchField?
-    private weak var historySearchRangeButton: NSPopUpButton?
     private weak var pillGroupItem: NSToolbarItemGroup?
     private weak var homePillGroupItem: NSToolbarItemGroup?
     private weak var historyDeleteItem: NSToolbarItem?
@@ -60,6 +62,10 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     private var featureTipPopover: NSPopover?
     private var lyricsFlashTicket = 0
     private var lyricsFlashFilled = false
+
+    private let itemFactory = AppKitMainToolbarItemFactory()
+    private let searchBridge = AppKitMainToolbarSearchBridge()
+    private let sortMenuController = AppKitMainToolbarSortMenuController()
 
     private var currentPageController: PlaylistPageController? {
         splitViewController?.playlistPageController
@@ -85,18 +91,16 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         appSession?.uiState.contentMode == .playbackHistory
     }
 
-    private lazy var sortMenu: NSMenu = {
-        let menu = NSMenu(title: "Sort")
-        menu.delegate = self
-        return menu
-    }()
-
     private var toolbar: NSToolbar?
 
     init(splitViewController: AppKitMainSplitViewController, appSession: AppSessionHost) {
         self.splitViewController = splitViewController
         self.appSession = appSession
         super.init()
+        // Helpers are strongly owned here and only point back through weak delegates.
+        // They do not own window/toolbar lifecycle or start Observation loops.
+        searchBridge.delegate = self
+        sortMenuController.delegate = self
     }
 
     func attachToWindow(_ window: NSWindow) {
@@ -305,402 +309,59 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
         willBeInsertedIntoToolbar flag: Bool
     ) -> NSToolbarItem? {
-        switch itemIdentifier {
-        case Identifier.sidebarToggle:
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.label = NSLocalizedString("toolbar.sidebar", comment: "Sidebar")
-            item.paletteLabel = item.label
-            item.toolTip = appSession?.uiState.sidebarVisible == true ? "Hide Sidebar" : "Show Sidebar"
-            item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: item.label)
-            item.target = self
-            item.action = #selector(handleSidebarToggle(_:))
-            item.autovalidates = false
-            item.isEnabled = true
-            self.sidebarToggleItem = item
-            return item
-
-        case Identifier.homeNavPill:
-            let backLabel = "后退"
-            let forwardLabel = "前进"
-            let group = NSToolbarItemGroup(
-                itemIdentifier: itemIdentifier,
-                images: [
-                    NSImage(systemSymbolName: "chevron.left", accessibilityDescription: backLabel)
-                        ?? NSImage(),
-                    NSImage(systemSymbolName: "chevron.right", accessibilityDescription: forwardLabel)
-                        ?? NSImage()
-                ],
-                selectionMode: .momentary,
-                labels: [backLabel, forwardLabel],
-                target: self,
-                action: #selector(handleHomeNavPillAction(_:))
-            )
-            group.label = "Home Navigation"
-            group.paletteLabel = group.label
-            group.controlRepresentation = .expanded
-            group.isNavigational = true
-            group.autovalidates = false
-            group.isEnabled = true
-            if group.subitems.indices.contains(0) {
-                group.subitems[0].toolTip = backLabel
-                group.subitems[0].isNavigational = true
-            }
-            if group.subitems.indices.contains(1) {
-                group.subitems[1].toolTip = forwardLabel
-                group.subitems[1].isNavigational = true
-            }
-            self.homeNavPillItem = group
-            syncHomeNavPillPresentation()
-            return group
-
-        case Identifier.sort:
-            let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
-            item.label = NSLocalizedString("sort.menu_title", comment: "Sort")
-            item.paletteLabel = item.label
-            item.toolTip = item.label
-            item.image = NSImage(
-                systemSymbolName: "arrow.up.arrow.down",
-                accessibilityDescription: item.label
-            )
-            item.menu = sortMenu
-            item.showsIndicator = true
-            item.autovalidates = true
-            return item
-
-        case Identifier.pillGroup:
-            let isHistoryMode = isPlaybackHistoryMode
-            let multiselectLabel = NSLocalizedString("context.multiselect", comment: "Select")
-            let playLabel = NSLocalizedString("context.play_all", comment: "Play All")
-            let revealLabel = "定位正在播放"
-            let deleteHistoryLabel = "删除播放历史"
-            let importLabel = NSLocalizedString("context.import", comment: "Import")
-            let multiselectSymbol = (isHistoryMode
+        let isHistoryMode = isPlaybackHistoryMode
+        let context = AppKitMainToolbarItemFactory.Context(
+            isSidebarVisible: appSession?.uiState.sidebarVisible == true,
+            isLyricsVisible: appSession?.uiState.lyricsVisible == true,
+            isPlaybackHistoryMode: isHistoryMode,
+            isMultiselectMode: (isHistoryMode
                 ? currentHistoryVM?.isMultiselectMode
-                : currentPageController?.isMultiselectMode) == true
-                ? "checkmark.circle.fill"
-                : "checkmark.circle"
-
-            let group = NSToolbarItemGroup(
-                itemIdentifier: itemIdentifier,
-                images: [
-                    NSImage(systemSymbolName: multiselectSymbol, accessibilityDescription: multiselectLabel)
-                        ?? NSImage(),
-                    NSImage(systemSymbolName: "play.fill", accessibilityDescription: playLabel)
-                        ?? NSImage(),
-                    NSImage(
-                        systemSymbolName: isHistoryMode ? "trash" : "list.bullet.below.rectangle",
-                        accessibilityDescription: isHistoryMode ? deleteHistoryLabel : revealLabel
-                    )
-                        ?? NSImage(),
-                    NSImage(systemSymbolName: "plus", accessibilityDescription: importLabel)
-                        ?? NSImage()
-                ],
-                selectionMode: .momentary,
-                labels: [
-                    multiselectLabel,
-                    playLabel,
-                    isHistoryMode ? deleteHistoryLabel : revealLabel,
-                    importLabel
-                ],
-                target: self,
-                action: #selector(handlePillGroupAction(_:))
-            )
-            group.label = "Actions"
-            group.paletteLabel = group.label
-            group.controlRepresentation = .expanded
-            group.autovalidates = false
-            group.isEnabled = true
-            self.pillGroupItem = group
-            if group.subitems.indices.contains(0) {
-                self.multiselectItem = group.subitems[0]
-                group.subitems[0].toolTip = multiselectLabel
-            }
-            if group.subitems.indices.contains(1) {
-                self.playItem = group.subitems[1]
-                group.subitems[1].toolTip = playLabel
-            }
-            if group.subitems.indices.contains(2) {
-                if isHistoryMode {
-                    self.historyDeleteItem = group.subitems[2]
-                    group.subitems[2].toolTip = deleteHistoryLabel
-                } else {
-                    self.revealNowPlayingItem = group.subitems[2]
-                    group.subitems[2].toolTip = revealLabel
-                }
-            }
-            if group.subitems.indices.contains(3) {
-                self.importItem = group.subitems[3]
-                group.subitems[3].toolTip = importLabel
-            }
-
-            syncMultiselectItemPresentation()
-            syncHistoryDeleteItemPresentation()
-            syncRevealNowPlayingItemPresentation()
-            return group
-
-        case Identifier.homePillGroup:
-            let playLabel = NSLocalizedString("context.play_all", comment: "Play All")
-            let revealLabel = "定位正在播放"
-            let importLabel = NSLocalizedString("context.import", comment: "Import")
-
-            let group = NSToolbarItemGroup(
-                itemIdentifier: itemIdentifier,
-                images: [
-                    NSImage(systemSymbolName: "play.fill", accessibilityDescription: playLabel)
-                        ?? NSImage(),
-                    NSImage(systemSymbolName: "list.bullet.below.rectangle", accessibilityDescription: revealLabel)
-                        ?? NSImage(),
-                    NSImage(systemSymbolName: "plus", accessibilityDescription: importLabel)
-                        ?? NSImage()
-                ],
-                selectionMode: .momentary,
-                labels: [playLabel, revealLabel, importLabel],
-                target: self,
-                action: #selector(handleHomePillGroupAction(_:))
-            )
-            group.label = "Home Actions"
-            group.paletteLabel = group.label
-            group.controlRepresentation = .expanded
-            group.autovalidates = false
-            group.isEnabled = true
-            self.homePillGroupItem = group
-            if group.subitems.indices.contains(0) {
-                self.playItem = group.subitems[0]
-                group.subitems[0].toolTip = playLabel
-            }
-            if group.subitems.indices.contains(1) {
-                self.revealNowPlayingItem = group.subitems[1]
-                group.subitems[1].toolTip = revealLabel
-            }
-            if group.subitems.indices.contains(2) {
-                self.importItem = group.subitems[2]
-                group.subitems[2].toolTip = importLabel
-            }
-            syncRevealNowPlayingItemPresentation()
-            return group
-
-        case Identifier.search:
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.label = NSLocalizedString("library.search", comment: "Search")
-            item.paletteLabel = item.label
-            item.toolTip = item.label
-
-            let isHistoryMode = isPlaybackHistoryMode
-            let width: CGFloat = isHistoryMode ? 216 : 176
-            let height: CGFloat = 28
-            let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
-            container.translatesAutoresizingMaskIntoConstraints = false
-            container.setContentHuggingPriority(.required, for: .horizontal)
-            container.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-            let field = NSSearchField(frame: .zero)
-            field.translatesAutoresizingMaskIntoConstraints = false
-            field.placeholderString = "在播放列表中搜索"
-            field.sendsSearchStringImmediately = true
-            field.target = self
-            field.action = #selector(handleSearchChange(_:))
-            field.delegate = self
-            container.addSubview(field)
-
-            var constraints = [
-                field.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-                field.topAnchor.constraint(equalTo: container.topAnchor),
-                field.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-                container.widthAnchor.constraint(equalToConstant: width),
-                container.heightAnchor.constraint(equalToConstant: height)
-            ]
-
-            if isHistoryMode {
-                let rangeButton = makeHistorySearchRangeButton()
-                container.addSubview(rangeButton)
-                NSLayoutConstraint.activate([
-                    rangeButton.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                    rangeButton.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-                    rangeButton.widthAnchor.constraint(equalToConstant: 30),
-                    rangeButton.heightAnchor.constraint(equalToConstant: height)
-                ])
-                historySearchRangeButton = rangeButton
-                constraints.append(field.leadingAnchor.constraint(equalTo: rangeButton.trailingAnchor, constant: 2))
-            } else {
-                constraints.append(field.leadingAnchor.constraint(equalTo: container.leadingAnchor))
-            }
-            NSLayoutConstraint.activate(constraints)
-
-            item.view = container
-            self.searchItem = item
-            self.searchField = field
-            syncSearchFieldFromModel()
-            syncSearchPlaceholder()
-            return item
-
-        case Identifier.lyricsToggle:
-            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-            item.label = NSLocalizedString("lyrics", comment: "Lyrics")
-            item.paletteLabel = item.label
-            item.toolTip = appSession?.uiState.lyricsVisible == true ? "Hide Lyrics" : "Show Lyrics"
-            item.target = self
-            item.action = #selector(handleLyricsToggle(_:))
-            item.autovalidates = false
-            item.isEnabled = true
-            self.lyricsToggleItem = item
-            syncLyricsToggleItemPresentation()
-            return item
-
-        case .sidebarTrackingSeparator:
-            guard let splitView = splitViewController?.splitView else { return nil }
-            return NSTrackingSeparatorToolbarItem(
-                identifier: itemIdentifier,
-                splitView: splitView,
-                dividerIndex: 0
-            )
-
-        case .inspectorTrackingSeparator:
-            guard let splitView = splitViewController?.splitView else { return nil }
-            return NSTrackingSeparatorToolbarItem(
-                identifier: itemIdentifier,
-                splitView: splitView,
-                dividerIndex: AppKitMainSplitViewController.mainLyricsDividerIndex
-            )
-
-        default:
-            // System-provided items (.toggleSidebar, spacers) return nil.
+                : currentPageController?.isMultiselectMode) == true,
+            generation: attachmentGeneration,
+            splitView: splitViewController?.splitView
+        )
+        let actions = AppKitMainToolbarItemFactory.Actions(
+            target: self,
+            sidebarToggle: #selector(handleSidebarToggle(_:)),
+            homeNavigation: #selector(handleHomeNavPillAction(_:)),
+            pillGroup: #selector(handlePillGroupAction(_:)),
+            homePillGroup: #selector(handleHomePillGroupAction(_:)),
+            lyricsToggle: #selector(handleLyricsToggle(_:))
+        )
+        guard let item = itemFactory.makeItem(
+            identifier: itemIdentifier,
+            context: context,
+            actions: actions,
+            sortMenu: sortMenuController.menu,
+            searchBridge: searchBridge
+        ) else {
             return nil
         }
+
+        attachToolbarItemReference(item)
+        syncVisibleToolbarItemPresentation()
+        return item
     }
 
-    private func makeHistorySearchRangeButton() -> NSPopUpButton {
-        let button = NSPopUpButton(frame: .zero, pullsDown: false)
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.controlSize = .small
-        button.bezelStyle = .texturedRounded
-        button.imagePosition = .imageOnly
-        button.image = NSImage(
-            systemSymbolName: "line.3.horizontal.decrease.circle",
-            accessibilityDescription: "搜索范围"
-        )
-        button.toolTip = "搜索范围"
-        button.target = self
-        button.action = #selector(handleHistorySearchRange(_:))
+    // MARK: - Search and Sort Bridges
 
-        let menu = NSMenu(title: "搜索范围")
-        for range in PlaybackHistorySearchRange.allCases {
-            let item = NSMenuItem(
-                title: range.title,
-                action: #selector(handleHistorySearchRangeMenuItem(_:)),
-                keyEquivalent: ""
-            )
-            item.representedObject = range.rawValue
-            item.target = self
-            menu.addItem(item)
-        }
-        button.menu = menu
-        return button
+    func toolbarSortMenuContext(
+        _ controller: AppKitMainToolbarSortMenuController
+    ) -> (libraryVM: LibraryViewModel, generation: Int)? {
+        guard isCurrentToolbarAttached, let libraryVM = currentLibraryVM else { return nil }
+        return (libraryVM, attachmentGeneration)
     }
 
-    // MARK: - Sort Menu
+    func toolbarSortMenuController(
+        _ controller: AppKitMainToolbarSortMenuController,
+        didSelectKeyRawValue rawValue: String,
+        generation: Int
+    ) {
+        guard isCurrentAttachment(generation), let libraryVM = currentLibraryVM else { return }
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
-        guard menu === sortMenu else { return }
-        rebuildSortMenu()
-    }
-
-    private func rebuildSortMenu() {
-        sortMenu.removeAllItems()
-        guard let libraryVM = appSession?.libraryVM else { return }
-
-        let keyHeader = NSMenuItem(title: NSLocalizedString("sort.by", comment: "Sort by"), action: nil, keyEquivalent: "")
-        keyHeader.isEnabled = false
-        sortMenu.addItem(keyHeader)
-
-        // Context-aware sort keys: collection pages
-        // expose their own sort dimensions (track count, album count, etc.),
-        // while track-list selections continue to use TrackSortKey.
         switch libraryVM.currentSelection {
         case .allPlaylists:
-            for key in PlaylistSortKey.allCases {
-                let item = NSMenuItem(
-                    title: key.title,
-                    action: #selector(handleSortKey(_:)),
-                    keyEquivalent: ""
-                )
-                item.representedObject = key.rawValue
-                item.state = (libraryVM.playlistSortKey == key) ? .on : .off
-                item.target = self
-                sortMenu.addItem(item)
-            }
-        case .allAlbums:
-            for key in AlbumSortKey.allCases {
-                let item = NSMenuItem(
-                    title: key.title,
-                    action: #selector(handleSortKey(_:)),
-                    keyEquivalent: ""
-                )
-                item.representedObject = key.rawValue
-                item.state = (libraryVM.albumSortKey == key) ? .on : .off
-                item.target = self
-                sortMenu.addItem(item)
-            }
-        case .allArtists:
-            for key in ArtistSortKey.allCases {
-                let item = NSMenuItem(
-                    title: key.title,
-                    action: #selector(handleSortKey(_:)),
-                    keyEquivalent: ""
-                )
-                item.representedObject = key.rawValue
-                item.state = (libraryVM.artistSortKey == key) ? .on : .off
-                item.target = self
-                sortMenu.addItem(item)
-            }
-        default:
-            for key in TrackSortKey.allCases
-                where key != .custom || libraryVM.supportsCustomTrackOrder()
-            {
-                let item = NSMenuItem(
-                    title: key.title,
-                    action: #selector(handleSortKey(_:)),
-                    keyEquivalent: ""
-                )
-                item.representedObject = key.rawValue
-                item.state = (libraryVM.trackSortKey == key) ? .on : .off
-                item.target = self
-                sortMenu.addItem(item)
-            }
-        }
-
-        sortMenu.addItem(.separator())
-
-        let isCustomCollectionSort: Bool = {
-            switch libraryVM.currentSelection {
-            case .allPlaylists, .allAlbums, .allArtists:
-                return libraryVM.isCustomCollectionSortActive()
-            default:
-                return false
-            }
-        }()
-        for order in TrackSortOrder.allCases {
-            let item = NSMenuItem(title: order.title, action: #selector(handleSortOrder(_:)), keyEquivalent: "")
-            item.representedObject = order.rawValue
-            item.state = (libraryVM.sortOrderForCurrentSelection == order) ? .on : .off
-            item.isEnabled = !isCustomCollectionSort
-            item.target = self
-            sortMenu.addItem(item)
-        }
-    }
-
-    @objc
-    private func handleSortKey(_ sender: NSMenuItem) {
-        guard
-            let raw = sender.representedObject as? String,
-            let libraryVM = currentLibraryVM
-        else { return }
-
-        // Dispatch the selected raw value into the right model property based
-        // on the current selection. This lets the same toolbar menu item
-        // action serve TrackSortKey and collection sort keys.
-        switch libraryVM.currentSelection {
-        case .allPlaylists:
-            guard let key = PlaylistSortKey(rawValue: raw) else { return }
+            guard let key = PlaylistSortKey(rawValue: rawValue) else { return }
             if key == .custom {
                 currentPageController?.activateCustomSortFromCurrentDisplay(reason: "toolbar.customPlaylistSort")
                 validateCurrentToolbarVisibleItems()
@@ -708,7 +369,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             }
             libraryVM.playlistSortKey = key
         case .allAlbums:
-            guard let key = AlbumSortKey(rawValue: raw) else { return }
+            guard let key = AlbumSortKey(rawValue: rawValue) else { return }
             if key == .custom {
                 currentPageController?.activateCustomSortFromCurrentDisplay(reason: "toolbar.customAlbumSort")
                 validateCurrentToolbarVisibleItems()
@@ -716,7 +377,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             }
             libraryVM.albumSortKey = key
         case .allArtists:
-            guard let key = ArtistSortKey(rawValue: raw) else { return }
+            guard let key = ArtistSortKey(rawValue: rawValue) else { return }
             if key == .custom {
                 currentPageController?.activateCustomSortFromCurrentDisplay(reason: "toolbar.customArtistSort")
                 validateCurrentToolbarVisibleItems()
@@ -724,7 +385,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             }
             libraryVM.artistSortKey = key
         default:
-            guard let key = TrackSortKey(rawValue: raw) else { return }
+            guard let key = TrackSortKey(rawValue: rawValue) else { return }
             if key == .custom {
                 currentPageController?.activateCustomSortFromCurrentDisplay(reason: "toolbar.customSort")
                 validateCurrentToolbarVisibleItems()
@@ -736,11 +397,14 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         validateCurrentToolbarVisibleItems()
     }
 
-    @objc
-    private func handleSortOrder(_ sender: NSMenuItem) {
+    func toolbarSortMenuController(
+        _ controller: AppKitMainToolbarSortMenuController,
+        didSelectOrderRawValue rawValue: String,
+        generation: Int
+    ) {
         guard
-            let raw = sender.representedObject as? String,
-            let order = TrackSortOrder(rawValue: raw),
+            isCurrentAttachment(generation),
+            let order = TrackSortOrder(rawValue: rawValue),
             let libraryVM = currentLibraryVM
         else { return }
         switch libraryVM.currentSelection {
@@ -753,31 +417,47 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         validateCurrentToolbarVisibleItems()
     }
 
-    // MARK: - Actions
-
-    @objc
-    private func handleSearchChange(_ sender: NSSearchField) {
+    func toolbarSearchBridge(
+        _ bridge: AppKitMainToolbarSearchBridge,
+        didChangeText text: String,
+        generation: Int
+    ) {
+        guard isCurrentAttachment(generation) else { return }
         if isPlaybackHistoryMode {
-            currentHistoryVM?.searchText = sender.stringValue
+            currentHistoryVM?.searchText = text
             syncMultiselectItemPresentation()
             validateCurrentToolbarVisibleItems()
             return
         }
         currentPageController?.prepareForSearchInteraction()
-        currentPageController?.searchText = sender.stringValue
+        currentPageController?.searchText = text
         currentPageController?.handleSearchChange()
         syncMultiselectItemPresentation()
         validateCurrentToolbarVisibleItems()
     }
 
-    func controlTextDidBeginEditing(_ obj: Notification) {
-        guard let field = obj.object as? NSSearchField, field === searchField else { return }
+    func toolbarSearchBridgeDidBeginEditing(
+        _ bridge: AppKitMainToolbarSearchBridge,
+        generation: Int
+    ) {
+        guard isCurrentAttachment(generation) else { return }
         if isPlaybackHistoryMode {
             validateCurrentToolbarVisibleItems()
             return
         }
         currentPageController?.prepareForSearchInteraction()
         syncMultiselectItemPresentation()
+        validateCurrentToolbarVisibleItems()
+    }
+
+    func toolbarSearchBridge(
+        _ bridge: AppKitMainToolbarSearchBridge,
+        didSelectHistoryRange range: PlaybackHistorySearchRange,
+        generation: Int
+    ) {
+        guard isCurrentAttachment(generation), let historyVM = currentHistoryVM else { return }
+        historyVM.searchRange = range
+        syncHistorySearchRangePresentation()
         validateCurrentToolbarVisibleItems()
     }
 
@@ -1046,28 +726,6 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     }
 
     @objc
-    private func handleHistorySearchRange(_ sender: NSPopUpButton) {
-        guard isPlaybackHistoryMode,
-              let rawValue = sender.selectedItem?.representedObject as? String,
-              let range = PlaybackHistorySearchRange(rawValue: rawValue)
-        else { return }
-        currentHistoryVM?.searchRange = range
-        syncHistorySearchRangePresentation()
-        validateCurrentToolbarVisibleItems()
-    }
-
-    @objc
-    private func handleHistorySearchRangeMenuItem(_ sender: NSMenuItem) {
-        guard isPlaybackHistoryMode,
-              let rawValue = sender.representedObject as? String,
-              let range = PlaybackHistorySearchRange(rawValue: rawValue)
-        else { return }
-        currentHistoryVM?.searchRange = range
-        syncHistorySearchRangePresentation()
-        validateCurrentToolbarVisibleItems()
-    }
-
-    @objc
     private func handleRevealNowPlaying(_ sender: NSToolbarItem) {
         guard
             let libraryVM = currentLibraryVM,
@@ -1174,25 +832,12 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
             group.subitems.forEach { $0.isEnabled = false }
             return
         }
-        if appSession.uiState.contentMode == .playbackHistory {
-            if group.subitems.indices.contains(0) {
-                group.subitems[0].isEnabled = true
-            }
-            if group.subitems.indices.contains(1) {
-                group.subitems[1].isEnabled = false
-            }
-            group.isEnabled = true
-            return
-        }
-        let canBack = !appSession.uiState.homeBackStack.isEmpty
-        let canForward = !appSession.uiState.homeForwardStack.isEmpty
-        if group.subitems.indices.contains(0) {
-            group.subitems[0].isEnabled = canBack
-        }
-        if group.subitems.indices.contains(1) {
-            group.subitems[1].isEnabled = canForward
-        }
-        group.isEnabled = canBack || canForward
+        AppKitMainToolbarPresentation.syncHomeNavigation(
+            group: group,
+            isPlaybackHistoryMode: appSession.uiState.contentMode == .playbackHistory,
+            canGoBack: !appSession.uiState.homeBackStack.isEmpty,
+            canGoForward: !appSession.uiState.homeForwardStack.isEmpty
+        )
     }
 
     @objc
@@ -1382,116 +1027,107 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     private func syncMultiselectItemPresentation() {
         if isPlaybackHistoryMode {
             let isOn = currentHistoryVM?.isMultiselectMode == true
-            let symbol = isOn ? "checkmark.circle.fill" : "checkmark.circle"
-            multiselectItem?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: multiselectItem?.label)
-            multiselectItem?.isEnabled = currentHistoryVM?.hasVisibleItems == true
+            AppKitMainToolbarPresentation.syncMultiselect(
+                item: multiselectItem,
+                isOn: isOn,
+                isEnabled: currentHistoryVM?.hasVisibleItems == true
+            )
             return
         }
         let pageController = currentPageController
         let isOn = pageController?.isMultiselectMode == true
-        let symbol = isOn ? "checkmark.circle.fill" : "checkmark.circle"
-        multiselectItem?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: multiselectItem?.label)
-        multiselectItem?.isEnabled = currentLibraryVM?.currentSelection != .home
-            && pageController?.hasMultiselectRowsForCurrentSelection == true
-            && pageController?.isSearchFilteringCurrentList != true
+        AppKitMainToolbarPresentation.syncMultiselect(
+            item: multiselectItem,
+            isOn: isOn,
+            isEnabled: currentLibraryVM?.currentSelection != .home
+                && pageController?.hasMultiselectRowsForCurrentSelection == true
+                && pageController?.isSearchFilteringCurrentList != true
+        )
     }
 
     private func syncHistoryDeleteItemPresentation() {
-        guard isPlaybackHistoryMode else {
-            historyDeleteItem?.isEnabled = false
-            return
-        }
-        historyDeleteItem?.isEnabled = currentHistoryVM?.isMultiselectMode == true
-            && currentHistoryVM?.hasSelectedEvents == true
+        AppKitMainToolbarPresentation.syncHistoryDelete(
+            item: historyDeleteItem,
+            isEnabled: isPlaybackHistoryMode
+                && currentHistoryVM?.isMultiselectMode == true
+                && currentHistoryVM?.hasSelectedEvents == true
+        )
     }
 
     private func syncRevealNowPlayingItemPresentation() {
-        revealNowPlayingItem?.isEnabled = currentPlayerVM?.currentTrack != nil
+        AppKitMainToolbarPresentation.syncRevealNowPlaying(
+            item: revealNowPlayingItem,
+            isEnabled: currentPlayerVM?.currentTrack != nil
+        )
     }
 
     private func syncSearchFieldFromModel() {
-        guard searchItem != nil, let searchField else { return }
         if isPlaybackHistoryMode {
-            let modelValue = currentHistoryVM?.searchText ?? ""
-            if searchField.stringValue != modelValue {
-                searchField.stringValue = modelValue
-            }
-            syncSearchPlaceholder()
-            syncHistorySearchRangePresentation()
+            searchBridge.sync(
+                text: currentHistoryVM?.searchText ?? "",
+                placeholder: searchPlaceholder,
+                historyRange: currentHistoryVM?.searchRange
+            )
             return
         }
         guard let pageController = currentPageController else { return }
-        let modelValue = pageController.searchText
-        if searchField.stringValue != modelValue {
-            searchField.stringValue = modelValue
-        }
-        syncSearchPlaceholder()
+        searchBridge.sync(
+            text: pageController.searchText,
+            placeholder: searchPlaceholder,
+            historyRange: nil
+        )
     }
 
     private func syncSearchPlaceholder() {
-        guard let searchField else { return }
+        searchBridge.syncPlaceholder(searchPlaceholder)
+    }
+
+    private var searchPlaceholder: String {
         if isPlaybackHistoryMode {
-            searchField.placeholderString = "在最近播放记录中搜索"
-            return
+            return "在最近播放记录中搜索"
         }
         switch currentLibraryVM?.currentSelection {
         case .home, .allSongs:
-            searchField.placeholderString = "在所有歌曲中搜索"
+            return "在所有歌曲中搜索"
         case .allPlaylists:
-            searchField.placeholderString = "在所有播放列表中搜索"
+            return "在所有播放列表中搜索"
         case .playlist:
-            searchField.placeholderString = "在播放列表中搜索"
+            return "在播放列表中搜索"
         case .album:
-            searchField.placeholderString = "在专辑中搜索"
+            return "在专辑中搜索"
         case .artist:
-            searchField.placeholderString = "在歌手中搜索"
+            return "在歌手中搜索"
         case .allAlbums:
-            searchField.placeholderString = "在所有专辑中搜索"
+            return "在所有专辑中搜索"
         case .allArtists:
-            searchField.placeholderString = "在所有歌手中搜索"
+            return "在所有歌手中搜索"
         case nil:
-            searchField.placeholderString = "在播放列表中搜索"
+            return "在播放列表中搜索"
         }
     }
 
     private func syncHistorySearchRangePresentation() {
-        guard let button = historySearchRangeButton,
-              let historyVM = currentHistoryVM
-        else { return }
-        let range = historyVM.searchRange
-        button.image = NSImage(
-            systemSymbolName: "line.3.horizontal.decrease.circle",
-            accessibilityDescription: "搜索范围：\(range.title)"
-        )
-        button.toolTip = "搜索范围：\(range.title)"
-        button.selectItem(withTitle: range.title)
-        button.menu?.items.forEach { item in
-            item.state = (item.representedObject as? String) == range.rawValue ? .on : .off
-        }
+        guard let range = currentHistoryVM?.searchRange else { return }
+        searchBridge.syncHistoryRangePresentation(range)
     }
 
     private func resignSearchFocusIfNeeded() {
-        guard let searchField else { return }
-        guard let window = searchField.window ?? window else { return }
-        let firstResponder = window.firstResponder
-        if firstResponder === searchField || firstResponder === searchField.currentEditor() {
-            window.makeFirstResponder(nil)
-        }
+        searchBridge.resignFocusIfNeeded(fallbackWindow: window)
     }
 
     private func syncSidebarToggleItemPresentation() {
-        guard let item = sidebarToggleItem else { return }
-        item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: item.label)
-        item.toolTip = appSession?.uiState.sidebarVisible == true ? "Hide Sidebar" : "Show Sidebar"
-        item.isEnabled = true
+        AppKitMainToolbarPresentation.syncSidebarToggle(
+            item: sidebarToggleItem,
+            isSidebarVisible: appSession?.uiState.sidebarVisible == true
+        )
     }
 
     private func syncLyricsToggleItemPresentation() {
-        guard let item = lyricsToggleItem else { return }
-        let symbol = lyricsFlashFilled ? "quote.bubble.fill" : "quote.bubble"
-        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: item.label)
-        item.toolTip = appSession?.uiState.lyricsVisible == true ? "Hide Lyrics" : "Show Lyrics"
-        item.isEnabled = true
+        AppKitMainToolbarPresentation.syncLyricsToggle(
+            item: lyricsToggleItem,
+            isLyricsVisible: appSession?.uiState.lyricsVisible == true,
+            isFlashFilled: lyricsFlashFilled
+        )
     }
 
     private func observeSearchText() {
@@ -1646,9 +1282,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
     }
 
     private func resetToolbarItemReferences() {
-        searchItem = nil
-        searchField = nil
-        historySearchRangeButton = nil
+        searchBridge.resetReferences()
         multiselectItem = nil
         playItem = nil
         revealNowPlayingItem = nil
@@ -1669,89 +1303,80 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
         resetToolbarItemReferences()
 
         for item in toolbar.items {
-            switch item.itemIdentifier {
-            case Identifier.sidebarToggle:
-                item.target = self
-                item.action = #selector(handleSidebarToggle(_:))
-                item.autovalidates = false
-                item.isEnabled = true
-                sidebarToggleItem = item
+            attachToolbarItemReference(item)
+        }
+    }
 
-            case Identifier.lyricsToggle:
-                item.target = self
-                item.action = #selector(handleLyricsToggle(_:))
-                item.autovalidates = false
-                item.isEnabled = true
-                lyricsToggleItem = item
+    private func attachToolbarItemReference(_ item: NSToolbarItem) {
+        switch item.itemIdentifier {
+        case Identifier.sidebarToggle:
+            item.target = self
+            item.action = #selector(handleSidebarToggle(_:))
+            item.autovalidates = false
+            item.isEnabled = true
+            sidebarToggleItem = item
 
-            case Identifier.search:
-                searchItem = item
-                if let itemView = item.view,
-                   let field = firstSubview(in: itemView, matching: { $0 is NSSearchField }) as? NSSearchField {
-                    field.target = self
-                    field.action = #selector(handleSearchChange(_:))
-                    field.delegate = self
-                    searchField = field
-                }
-                if let itemView = item.view,
-                   let rangeButton = firstSubview(in: itemView, matching: { $0 is NSPopUpButton }) as? NSPopUpButton {
-                    rangeButton.target = self
-                    rangeButton.action = #selector(handleHistorySearchRange(_:))
-                    historySearchRangeButton = rangeButton
-                }
+        case Identifier.lyricsToggle:
+            item.target = self
+            item.action = #selector(handleLyricsToggle(_:))
+            item.autovalidates = false
+            item.isEnabled = true
+            lyricsToggleItem = item
 
-            case Identifier.pillGroup:
-                guard let group = item as? NSToolbarItemGroup else { continue }
-                group.target = self
-                group.action = #selector(handlePillGroupAction(_:))
-                group.autovalidates = false
-                group.isEnabled = true
-                pillGroupItem = group
-                if group.subitems.indices.contains(0) {
-                    multiselectItem = group.subitems[0]
-                }
-                if group.subitems.indices.contains(1) {
-                    playItem = group.subitems[1]
-                }
-                if group.subitems.indices.contains(2) {
-                    if isPlaybackHistoryMode {
-                        historyDeleteItem = group.subitems[2]
-                    } else {
-                        revealNowPlayingItem = group.subitems[2]
-                    }
-                }
-                if group.subitems.indices.contains(3) {
-                    importItem = group.subitems[3]
-                }
+        case Identifier.search:
+            searchBridge.attach(to: item, generation: attachmentGeneration)
 
-            case Identifier.homePillGroup:
-                guard let group = item as? NSToolbarItemGroup else { continue }
-                group.target = self
-                group.action = #selector(handleHomePillGroupAction(_:))
-                group.autovalidates = false
-                group.isEnabled = true
-                homePillGroupItem = group
-                if group.subitems.indices.contains(0) {
-                    playItem = group.subitems[0]
-                }
-                if group.subitems.indices.contains(1) {
-                    revealNowPlayingItem = group.subitems[1]
-                }
-                if group.subitems.indices.contains(2) {
-                    importItem = group.subitems[2]
-                }
-
-            case Identifier.homeNavPill:
-                guard let group = item as? NSToolbarItemGroup else { continue }
-                group.target = self
-                group.action = #selector(handleHomeNavPillAction(_:))
-                group.autovalidates = false
-                group.isEnabled = true
-                homeNavPillItem = group
-
-            default:
-                continue
+        case Identifier.pillGroup:
+            guard let group = item as? NSToolbarItemGroup else { return }
+            group.target = self
+            group.action = #selector(handlePillGroupAction(_:))
+            group.autovalidates = false
+            group.isEnabled = true
+            pillGroupItem = group
+            if group.subitems.indices.contains(0) {
+                multiselectItem = group.subitems[0]
             }
+            if group.subitems.indices.contains(1) {
+                playItem = group.subitems[1]
+            }
+            if group.subitems.indices.contains(2) {
+                if isPlaybackHistoryMode {
+                    historyDeleteItem = group.subitems[2]
+                } else {
+                    revealNowPlayingItem = group.subitems[2]
+                }
+            }
+            if group.subitems.indices.contains(3) {
+                importItem = group.subitems[3]
+            }
+
+        case Identifier.homePillGroup:
+            guard let group = item as? NSToolbarItemGroup else { return }
+            group.target = self
+            group.action = #selector(handleHomePillGroupAction(_:))
+            group.autovalidates = false
+            group.isEnabled = true
+            homePillGroupItem = group
+            if group.subitems.indices.contains(0) {
+                playItem = group.subitems[0]
+            }
+            if group.subitems.indices.contains(1) {
+                revealNowPlayingItem = group.subitems[1]
+            }
+            if group.subitems.indices.contains(2) {
+                importItem = group.subitems[2]
+            }
+
+        case Identifier.homeNavPill:
+            guard let group = item as? NSToolbarItemGroup else { return }
+            group.target = self
+            group.action = #selector(handleHomeNavPillAction(_:))
+            group.autovalidates = false
+            group.isEnabled = true
+            homeNavPillItem = group
+
+        default:
+            return
         }
     }
 
@@ -1762,20 +1387,13 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                 group.subitems.forEach { clearToolbarItemTarget($0) }
             }
         }
+        sortMenuController.detachMenuItemActions()
     }
 
     private func clearToolbarItemTarget(_ item: NSToolbarItem) {
+        searchBridge.detachControls(in: item)
         item.target = nil
         item.action = nil
-        if let searchField = item.view.flatMap({ firstSubview(in: $0, matching: { $0 is NSSearchField }) }) as? NSSearchField {
-            searchField.target = nil
-            searchField.action = nil
-            searchField.delegate = nil
-        }
-        if let rangeButton = item.view.flatMap({ firstSubview(in: $0, matching: { $0 is NSPopUpButton }) }) as? NSPopUpButton {
-            rangeButton.target = nil
-            rangeButton.action = nil
-        }
     }
 
     private func syncVisibleToolbarItemPresentation() {
@@ -1841,7 +1459,7 @@ final class AppKitMainToolbarController: NSObject, NSToolbarDelegate, NSToolbarI
                     return
                 }
                 let hadSearch = !(self.currentPageController?.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-                    || !(self.searchField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                    || !(self.searchBridge.currentText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
                 self.currentPageController?.clearSearchAndRebuildIfNeeded(reason: "search-reset")
                 if hadSearch {
                     self.resignSearchFocusIfNeeded()
