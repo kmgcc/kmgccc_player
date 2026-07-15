@@ -56,10 +56,6 @@ nonisolated struct DuplicatePairRow: Identifiable, Sendable {
     let dedupKey: String
 }
 
-enum ArtworkExtractor {
-    // Removed
-}
-
 nonisolated private enum BatchImportItemStage: Sendable {
     case scanning
     case ncmConversion

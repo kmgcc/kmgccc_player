@@ -27,8 +27,6 @@
 		F01000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000001 /* AppDelegate.swift */; };
 		F01000000000000000000002 /* DockController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000002 /* DockController.swift */; };
 		F01000000000000000000003 /* PlaybackCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000003 /* PlaybackCommands.swift */; };
-		F01000000000000000000004 /* SettingsRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000004 /* SettingsRootView.swift */; };
-		F01000000000000000000005 /* SettingsSceneDependencies.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000005 /* SettingsSceneDependencies.swift */; };
 		F01000000000000000000006 /* kmgccc_playerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000006 /* kmgccc_playerApp.swift */; };
 /* End PBXBuildFile section */
 
@@ -56,8 +54,6 @@
 		E01000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = kmgccc_player/AppDelegate.swift; sourceTree = "<group>"; };
 		E01000000000000000000002 /* DockController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DockController.swift; path = kmgccc_player/DockController.swift; sourceTree = "<group>"; };
 		E01000000000000000000003 /* PlaybackCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlaybackCommands.swift; path = kmgccc_player/PlaybackCommands.swift; sourceTree = "<group>"; };
-		E01000000000000000000004 /* SettingsRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsRootView.swift; path = kmgccc_player/SettingsRootView.swift; sourceTree = "<group>"; };
-		E01000000000000000000005 /* SettingsSceneDependencies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SettingsSceneDependencies.swift; path = kmgccc_player/SettingsSceneDependencies.swift; sourceTree = "<group>"; };
 		E01000000000000000000006 /* kmgccc_playerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = kmgccc_playerApp.swift; path = kmgccc_player/kmgccc_playerApp.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -199,8 +195,6 @@
 				E01000000000000000000001 /* AppDelegate.swift */,
 				E01000000000000000000002 /* DockController.swift */,
 				E01000000000000000000003 /* PlaybackCommands.swift */,
-				E01000000000000000000004 /* SettingsRootView.swift */,
-				E01000000000000000000005 /* SettingsSceneDependencies.swift */,
 				E01000000000000000000006 /* kmgccc_playerApp.swift */,
 			);
 			name = "App Sources";
@@ -470,8 +464,6 @@
 				F01000000000000000000001 /* AppDelegate.swift in Sources */,
 				F01000000000000000000002 /* DockController.swift in Sources */,
 				F01000000000000000000003 /* PlaybackCommands.swift in Sources */,
-				F01000000000000000000004 /* SettingsRootView.swift in Sources */,
-				F01000000000000000000005 /* SettingsSceneDependencies.swift in Sources */,
 				F01000000000000000000006 /* kmgccc_playerApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

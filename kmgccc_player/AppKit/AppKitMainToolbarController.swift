@@ -2,8 +2,8 @@
 //  AppKitMainToolbarController.swift
 //  myPlayer2
 //
-//  Step 2: Real NSToolbar for the AppKit main split template window.
-//  Owns toolbar items and bridges minimal actions to AppSession / hosted controllers.
+//  NSToolbar for the AppKit main split template window.
+//  Owns toolbar items and bridges actions to AppSession / hosted controllers.
 //
 
 import AppKit

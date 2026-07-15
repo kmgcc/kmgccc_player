@@ -169,10 +169,7 @@ struct LDDCSearchSection: View {
                 "LyricsSearchSection.onAppear",
                 detail: "autoSearch=\(autoSearchToken), hasTrack=\(track != nil)"
             )
-            // Setup AMLLDB model context
-            amlldbService.setupModelContext(modelContext)
-            Self.logger.info("[LyricsSearch] View appeared, AMLLDB model context set")
-            
+
             resetQueryForCurrentTrack()
             triggerAutoSearchIfNeeded(autoSearchToken, force: true)
             FirstUseHitchDiagnostics.end(token)

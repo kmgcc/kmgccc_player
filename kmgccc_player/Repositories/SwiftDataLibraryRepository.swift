@@ -61,7 +61,6 @@ private struct TrackDeletionMemorySnapshot {
 @MainActor
 final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private let libraryService: LocalLibraryService
-    private let scanner: MusicLibraryScanner
     private let fileManager = FileManager.default
     private let indexContext: ModelContext?
     private var changeHandler: LibraryRepositoryChangeHandler?
@@ -79,7 +78,6 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     init(modelContext: ModelContext? = nil, libraryService: LocalLibraryService? = nil) {
         self.indexContext = modelContext
         self.libraryService = libraryService ?? LocalLibraryService.shared
-        self.scanner = MusicLibraryScanner()
     }
 
     func setChangeHandler(_ handler: LibraryRepositoryChangeHandler?) {

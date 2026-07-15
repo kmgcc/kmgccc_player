@@ -99,9 +99,9 @@ final class Track {
     /// TTML lyrics file name inside the track folder (e.g. "lyrics.ttml").
     var ttmlLyricsFileName: String?
 
-    // MARK: - Playback Stats (Deprecated)
-    /// DEPRECATED: All playback stats now live in preferenceStats via PreferenceStatsService.
-    /// This property is kept for backward compatibility during migration only.
+    // MARK: - Playback Stats (Migrated)
+    /// MIGRATED: All playback stats have been migrated to preferenceStats via PreferenceStatsService.
+    /// This property is kept deprecated to avoid breaking legacy references if any.
     /// Use `PreferenceStatsService.shared.getStats(for: id).playCount` instead.
     @available(*, deprecated, message: "Use PreferenceStatsService.shared.getStats(for: id).playCount")
     @MainActor

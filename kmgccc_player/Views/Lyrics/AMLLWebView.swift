@@ -21,15 +21,7 @@ struct AMLLWebView: NSViewRepresentable {
     var forcedAppearanceMode: AppSettings.AppearanceMode?
     var animatesAttachment: Bool
 
-    @MainActor
-    init(
-        forcedAppearanceMode: AppSettings.AppearanceMode? = nil,
-        animatesAttachment: Bool = false
-    ) {
-        self.store = .shared
-        self.forcedAppearanceMode = forcedAppearanceMode
-        self.animatesAttachment = animatesAttachment
-    }
+
 
     @MainActor
     init(
@@ -503,7 +495,7 @@ final class WebViewHostView: NSView {
 // MARK: - Preview
 
 #Preview("AMLL WebView") {
-    AMLLWebView()
+    AMLLWebView(store: LyricsWebViewStore())
         .frame(width: 400, height: 500)
         .background(Color.black.opacity(0.8))
 }
