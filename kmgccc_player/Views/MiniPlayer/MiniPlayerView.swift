@@ -70,6 +70,7 @@ struct MiniPlayerView: View {
                 contextMenuRefreshTrigger: libraryVM.refreshTrigger,
                 isFullscreenPresented: fullscreenWindowManager.isFullscreenPlayerPresented,
                 isRefetchingLyrics: playbackCoordinator.presentation.isRefetchingLyrics,
+                textForegroundProfile: miniPlayerTextForegroundProfile,
                 trackToEdit: $trackToEdit,
                 isShowingExternalMatchEditor: $isShowingExternalMatchEditor,
                 onFullscreen: { fullscreenWindowManager.showFullscreenPlayerInWindow() },
@@ -473,6 +474,14 @@ struct MiniPlayerView: View {
     private var controlDisabledColor: Color {
         Color.secondary.opacity(0.5)
     }
+
+    private var miniPlayerTextForegroundProfile: PlusBlendTextForegroundProfile {
+        themeStore.plusBlendTextPalette.profile(
+            for: colorScheme == .dark
+                ? .lightOnDarkBackground
+                : .darkOnLightBackground
+        )
+    }
 }
 
 // MARK: - Left section (isolated from high-frequency presentation ticks)
@@ -488,6 +497,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
     let contextMenuRefreshTrigger: Int
     let isFullscreenPresented: Bool
     let isRefetchingLyrics: Bool
+    let textForegroundProfile: PlusBlendTextForegroundProfile
 
     @Binding var trackToEdit: Track?
     @Binding var isShowingExternalMatchEditor: Bool
@@ -513,6 +523,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
             && lhs.contextMenuRefreshTrigger == rhs.contextMenuRefreshTrigger
             && lhs.isFullscreenPresented == rhs.isFullscreenPresented
             && lhs.isRefetchingLyrics == rhs.isRefetchingLyrics
+            && lhs.textForegroundProfile == rhs.textForegroundProfile
     }
 
     var body: some View {
@@ -605,9 +616,11 @@ private struct MiniPlayerLeftSection: View, Equatable {
                         text: displayTitle,
                         style: .subheadline,
                         fontWeight: .medium,
-                        color: .primary,
+                        color: textForegroundProfile.primaryColor,
                         enablesContentTransition: true
                     )
+                    .compositingGroup()
+                    .blendMode(textForegroundProfile.blendMode)
 
                     SeamlessMarqueeText(
                         text: displayArtist.isEmpty
@@ -615,9 +628,11 @@ private struct MiniPlayerLeftSection: View, Equatable {
                             : displayArtist,
                         style: .caption,
                         fontWeight: .regular,
-                        color: .secondary,
+                        color: textForegroundProfile.secondaryColor,
                         enablesContentTransition: true
                     )
+                    .compositingGroup()
+                    .blendMode(textForegroundProfile.blendMode)
                 } else {
                     Text(LocalizedStringKey(emptyTitleKey))
                         .font(.subheadline)

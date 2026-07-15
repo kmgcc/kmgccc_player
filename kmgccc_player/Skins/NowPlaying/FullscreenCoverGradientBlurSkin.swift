@@ -121,8 +121,8 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     @State private var bokehOpticalOpacities: [CGFloat] = [0, 0]
     @State private var bokehSourceSets: [BokehTransitionPreparedSourceSet?] = [nil, nil]
     @State private var activeTransitionMode: BokehTransitionMode = .unmaskedFallback(reason: "idle")
-    @State private var activeBokehConfiguration = BokehTransitionConfig()
     @State private var isTransitionActive = false
+    @State private var transitionGeneration: UInt64 = 0
     @State private var transitionTask: Task<Void, Never>?
     /// Live track artwork checksum, updated in onChange. The transitionTask
     /// captures `self` at creation time, so `context.track` inside the task
@@ -351,13 +351,11 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     }
 
     private func prepareBokehSourcesIfPossible() {
-        let configuration = BokehTransitionConfig.load()
         let tier = preferredBokehTier()
         let hasAllFrames = leadingRenderedFrame != nil
             && centeredRenderedFrame != nil
             && transitionRenderedFrame != nil
-        guard configuration.effect == .bokeh,
-              BokehTransitionMetalContext.shared.availability.isReady,
+        guard BokehTransitionMetalContext.shared.availability.isReady,
               let frames = BokehTransitionSourceFrames(
                 leading: leadingRenderedFrame,
                 centered: centeredRenderedFrame,
@@ -377,7 +375,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             if hasAllFrames {
                 let leadingW = leadingRenderedFrame?.logicalCanvasSize.width ?? 0
                 let leadingH = leadingRenderedFrame?.logicalCanvasSize.height ?? 0
-                print("[CoverBlur] prepare skipped despite all frames: effect=\(configuration.effect.rawValue) metal=\(BokehTransitionMetalContext.shared.availability.isReady) viewport=\(bokehViewportSize) leadingSize=\(leadingW)x\(leadingH) tier=\(tier.rawValue)")
+                print("[CoverBlur] prepare skipped despite all frames: metal=\(BokehTransitionMetalContext.shared.availability.isReady) viewport=\(bokehViewportSize) leadingSize=\(leadingW)x\(leadingH) tier=\(tier.rawValue)")
             }
             return
         }
@@ -417,7 +415,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             // transitionPosition every frame. Sending the already-evaluated
             // offset here bypassed AnimatableData and caused a hard position cut.
             transitionCanvasOffsetRatio: size.width > 1 ? coverCenterShift(for: size) / size.width : 0,
-            configuration: activeTransitionMode.usesBokeh ? activeBokehConfiguration : BokehTransitionConfig.load(),
+            configuration: BokehTransitionConfig(),
             tier: sourceSet?.identity.tier ?? .balanced,
             reduceMotion: context.theme.reduceMotion
         )
@@ -431,12 +429,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         }
     }
 
-    private func selectTransitionMode(configuration: BokehTransitionConfig) -> BokehTransitionMode {
-        guard configuration.effect == .bokeh else {
-            Log.info("CoverBlur transition: Gaussian (effect=\(configuration.effect.rawValue))", category: .fullscreen)
-            return .gaussianFallback(reason: "selected in settings")
-        }
-
+    private func selectTransitionMode() async -> BokehTransitionMode? {
         let metalAvailability = BokehTransitionMetalContext.shared.availability
         guard metalAvailability.isReady else {
             Log.info("CoverBlur transition: Gaussian (Metal unavailable: \(metalAvailability.reason ?? "unknown"))", category: .fullscreen)
@@ -460,8 +453,26 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         }
 
         prepareBokehSourcesIfPossible()
-        Log.info("CoverBlur transition: Gaussian (source set not ready, tier=\(tier.rawValue))", category: .fullscreen)
-        return .gaussianFallback(reason: "Bokeh source set not ready")
+        let pollInterval: UInt64 = 16_000_000
+        let preparationTimeout: UInt64 = 750_000_000
+        var elapsed: UInt64 = 0
+
+        while elapsed < preparationTimeout {
+            guard await waitForTransitionStage(nanoseconds: pollInterval) else { return nil }
+            elapsed += pollInterval
+
+            if let sourceSet = bokehPreparedSourceSet {
+                if sourceSet.identity.tier != tier {
+                    Log.debug("CoverBlur transition: tier mismatch, using prepared \(sourceSet.identity.tier.rawValue) source set while decision is \(tier.rawValue)", category: .fullscreen)
+                }
+                bokehSourceSets[0] = sourceSet
+                Log.debug("CoverBlur transition: Bokeh source became ready after \(elapsed / 1_000_000)ms", category: .fullscreen)
+                return .bokeh
+            }
+        }
+
+        Log.info("CoverBlur transition: Gaussian (source preparation timed out, tier=\(tier.rawValue))", category: .fullscreen)
+        return .gaussianFallback(reason: "Bokeh source preparation timed out")
     }
 
     private var blurRiseAnimation: Animation {
@@ -541,10 +552,11 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
 
     private func runLayoutTransition(to targetCentered: Bool) {
         transitionTask?.cancel()
+        transitionGeneration &+= 1
+        let generation = transitionGeneration
 
         let targetPosition: CGFloat = targetCentered ? 1 : 0
         let shouldRetargetImmediately = isTransitionActive
-        let bokehConfiguration = BokehTransitionConfig.load()
 
         print("[CoverBlur] runLayoutTransition: target=\(targetPosition) pos=\(transitionPosition) isActive=\(isTransitionActive)")
 
@@ -554,30 +566,29 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             return
         }
 
-        isTransitionActive = true
-
-        if !shouldRetargetImmediately {
-            // The mode is deliberately locked for this whole transition. A
-            // source set that becomes ready later is reserved for the next
-            // toggle, avoiding an in-flight Gaussian/Bokeh quality jump.
-            activeBokehConfiguration = bokehConfiguration
-            activeTransitionMode = selectTransitionMode(configuration: activeBokehConfiguration)
-            if activeTransitionMode.usesBokeh {
-                BokehTransitionPerformancePolicy.shared.begin(
-                    tier: activeBokehSourceSet?.identity.tier ?? .balanced
-                )
-            }
-            Log.info("CoverBlur transition starting: mode=\(transitionModeLabel(activeTransitionMode)) target=\(targetPosition)", category: .fullscreen)
-        }
-
-        startTransitionEffect()
-        setTransitionLayerOpacity(1, rising: true)
-
-        if shouldRetargetImmediately {
-            retargetTransition(to: targetPosition)
-        }
-
         transitionTask = Task { @MainActor in
+            if !shouldRetargetImmediately {
+                guard let selectedMode = await selectTransitionMode() else { return }
+                guard !Task.isCancelled, transitionGeneration == generation else { return }
+
+                activeTransitionMode = selectedMode
+                if activeTransitionMode.usesBokeh {
+                    BokehTransitionPerformancePolicy.shared.begin(
+                        tier: activeBokehSourceSet?.identity.tier ?? .balanced
+                    )
+                }
+                Log.info("CoverBlur transition starting: mode=\(transitionModeLabel(activeTransitionMode)) target=\(targetPosition)", category: .fullscreen)
+            }
+
+            guard !Task.isCancelled, transitionGeneration == generation else { return }
+            isTransitionActive = true
+            startTransitionEffect()
+            setTransitionLayerOpacity(1, rising: true)
+
+            if shouldRetargetImmediately {
+                retargetTransition(to: targetPosition)
+            }
+
             if !shouldRetargetImmediately {
                 // Start moving once the masking blur is roughly halfway up.
                 guard await waitForTransitionStage(nanoseconds: 105_000_000) else { return }
@@ -985,22 +996,14 @@ private struct CoverGradientBlurSettingsView: View {
     @AppStorage("skin.coverGradientBlur.maxBlurRadius") private var maxBlurRadius: Double = 1600
     @AppStorage("skin.coverGradientBlur.edgeFillMode") private var edgeFillMode: String = CoverEdgeFillMode.pixelStretch.rawValue
     @AppStorage("fullscreenDimmingIntensity") private var fullscreenDimmingIntensity: Double = 0.15
-    @AppStorage(BokehTransitionConfig.Keys.effect) private var transitionEffect: String = CoverBlurTransitionEffect.bokeh.rawValue
 
     private var currentEdgeFillMode: CoverEdgeFillMode {
         CoverEdgeFillMode(rawValue: edgeFillMode) ?? .pixelStretch
     }
 
-    private var currentTransitionEffect: CoverBlurTransitionEffect {
-        CoverBlurTransitionEffect(rawValue: transitionEffect) ?? .bokeh
-    }
-
     private var slidingKnobColor: Color {
         if presentationStyle.usesMaterialSectionCards {
-            return FullscreenSelectionAccentStyle.dimmedAccentColor(
-                from: themeStore.accentNSColor,
-                lightnessDelta: 0.30
-            )
+            return presentationStyle.primaryTextColor
         }
         return themeStore.accentColor
     }
@@ -1011,15 +1014,13 @@ private struct CoverGradientBlurSettingsView: View {
 
             blurRadiusSlider
 
-            transitionEffectPicker
-
             dimmingIntensitySlider
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, presentationStyle.scaled(6))
     }
 
     private var edgeFillModePicker: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: presentationStyle.scaled(8)) {
             Text("右侧填充")
                 .font(presentationStyle.rowLabelFont)
                 .foregroundStyle(presentationStyle.primaryTextColor)
@@ -1062,7 +1063,9 @@ private struct CoverGradientBlurSettingsView: View {
                         Capsule()
                             .strokeBorder(
                                 presentationStyle.segmentedTrackStrokeColor,
-                                lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear ? 0 : 0.5
+                                lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear
+                                    ? 0
+                                    : presentationStyle.scaledHairlineWidth
                             )
                             .allowsHitTesting(false)
                     )
@@ -1072,14 +1075,14 @@ private struct CoverGradientBlurSettingsView: View {
     }
 
     private var blurRadiusSlider: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: presentationStyle.scaled(12)) {
             Text("模糊半径")
                 .font(presentationStyle.rowLabelFont)
                 .foregroundStyle(presentationStyle.primaryTextColor)
-                .frame(width: 84, alignment: .leading)
+                .frame(width: presentationStyle.scaled(84), alignment: .leading)
 
             Slider(value: $maxBlurRadius, in: 100...2500, step: 100)
-                .tint(themeStore.accentColor)
+                .tint(presentationStyle.selectedTextColor(accentColor: themeStore.accentColor))
                 .frame(maxWidth: .infinity)
 
             Text("\(Int(maxBlurRadius))")
@@ -1089,70 +1092,19 @@ private struct CoverGradientBlurSettingsView: View {
                 // Don't let the value collapse into an ellipsis on narrower settings windows.
                 .fixedSize(horizontal: true, vertical: false)
                 .layoutPriority(1)
-                .frame(minWidth: 52, alignment: .trailing)
-        }
-    }
-
-    private var transitionEffectPicker: some View {
-        HStack(spacing: 8) {
-            Text("切换效果")
-                .font(presentationStyle.rowLabelFont)
-                .foregroundStyle(presentationStyle.primaryTextColor)
-
-            Spacer()
-
-            SlidingSelector(
-                segments: CoverBlurTransitionEffect.allCases,
-                selection: Binding(
-                    get: { currentTransitionEffect },
-                    set: { transitionEffect = $0.rawValue }
-                ),
-                animation: .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08),
-                hSpacing: 0,
-                background: { Color.clear },
-                knob: {
-                    Capsule()
-                        .fill(slidingKnobColor.opacity(0.18))
-                },
-                content: { effect, isSelected in
-                    Text(effect.displayName)
-                        .font(presentationStyle.segmentedLabelFont.weight(isSelected ? .medium : .regular))
-                        .padding(.horizontal, presentationStyle.segmentedHorizontalPadding)
-                        .padding(.vertical, presentationStyle.segmentedVerticalPadding)
-                        .foregroundStyle(
-                            isSelected
-                                ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
-                                : presentationStyle.secondaryTextColor
-                        )
-                }
-            )
-            .padding(.horizontal, presentationStyle.segmentedTrackHorizontalPadding)
-            .padding(.vertical, presentationStyle.segmentedTrackVerticalPadding)
-            .background(
-                Capsule()
-                    .fill(presentationStyle.segmentedTrackColor)
-                    .overlay(
-                        Capsule()
-                            .strokeBorder(
-                                presentationStyle.segmentedTrackStrokeColor,
-                                lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear ? 0 : 0.5
-                            )
-                            .allowsHitTesting(false)
-                    )
-            )
-            .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: presentationStyle.scaled(52), alignment: .trailing)
         }
     }
 
     private var dimmingIntensitySlider: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: presentationStyle.scaled(12)) {
             Text("背景压暗强度")
                 .font(presentationStyle.rowLabelFont)
                 .foregroundStyle(presentationStyle.primaryTextColor)
-                .frame(width: 84, alignment: .leading)
+                .frame(width: presentationStyle.scaled(84), alignment: .leading)
 
             Slider(value: $fullscreenDimmingIntensity, in: 0.0...0.5, step: 0.05)
-                .tint(themeStore.accentColor)
+                .tint(presentationStyle.selectedTextColor(accentColor: themeStore.accentColor))
                 .frame(maxWidth: .infinity)
 
             Text(String(format: "%.0f%%", fullscreenDimmingIntensity * 100))
@@ -1161,7 +1113,7 @@ private struct CoverGradientBlurSettingsView: View {
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
                 .layoutPriority(1)
-                .frame(minWidth: 52, alignment: .trailing)
+                .frame(minWidth: presentationStyle.scaled(52), alignment: .trailing)
         }
     }
 }

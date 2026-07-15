@@ -66,23 +66,23 @@ struct ExpandableVolumeControl: View {
             materialStyle: materialStyle,
             isFloating: true
         )
+        .animation(nil, value: foregroundProfile)
         .onHover { hovering in
             guard isEnabled else {
                 if usesInternalHoverExpansion {
-                    isExpanded = false
+                    setExpanded(false)
                 }
                 onHoverStateChanged(false)
                 return
             }
             if usesInternalHoverExpansion {
-                isExpanded = hovering
+                setExpanded(hovering)
             }
             onHoverStateChanged(hovering)
             if hovering {
                 onInteraction()
             }
         }
-        .animation(expandAnimation, value: isExpanded)
     }
 
     private var volumeIconButton: some View {
@@ -93,6 +93,7 @@ struct ExpandableVolumeControl: View {
                 .opacity(isEnabled ? 1 : 0.4)
                 .compositingGroup()
                 .blendMode(isEnabled ? controlBlendMode : .normal)
+                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
                 .frame(width: scaledIconAreaWidth, height: scaledControlHeight)
                 .contentShape(Circle())
         }
@@ -115,6 +116,7 @@ struct ExpandableVolumeControl: View {
             .tint(controlPrimaryColor)
             .compositingGroup()
             .blendMode(controlBlendMode)
+            .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
             .frame(maxWidth: .infinity)
             .padding(.trailing, sliderTrailingPadding)
             .opacity(isExpanded ? 1 : 0)
@@ -135,6 +137,13 @@ struct ExpandableVolumeControl: View {
             return .easeInOut(duration: 0.18)
         }
         return .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
+    }
+
+    private func setExpanded(_ expanded: Bool) {
+        guard isExpanded != expanded else { return }
+        FullscreenBottomControlsAnimationPolicy.animateGeometry(with: expandAnimation) {
+            isExpanded = expanded
+        }
     }
 
     private var volumeIcon: String {

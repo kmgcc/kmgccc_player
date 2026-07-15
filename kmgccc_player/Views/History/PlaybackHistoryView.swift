@@ -64,6 +64,22 @@ struct PlaybackHistoryView: View {
         .onChange(of: uiState.playbackHistoryDate) { _, _ in
             historyVM.clearMultiselectState()
         }
+        .background(
+            MultiselectExitKeyMonitor(
+                isEnabled: historyVM.isMultiselectMode,
+                onEscape: {
+                    historyVM.clearMultiselectState()
+                },
+                onReturn: {
+                    historyVM.clearMultiselectState()
+                }
+            )
+        )
+        .onExitCommand {
+            if historyVM.isMultiselectMode {
+                historyVM.clearMultiselectState()
+            }
+        }
     }
 
     private func historyList(
@@ -74,16 +90,26 @@ struct PlaybackHistoryView: View {
     ) -> some View {
         GeometryReader { proxy in
             ScrollView(.vertical) {
-                LazyVStack(alignment: .leading, spacing: 24) {
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(sections) { section in
-                        sectionView(
-                            section,
-                            tracksByID: tracksByID,
-                            queueTracks: queueTracks
-                        )
+                        Section {
+                            ForEach(section.items) { item in
+                                historyRow(
+                                    item,
+                                    tracksByID: tracksByID,
+                                    queueTracks: queueTracks
+                                )
+                            }
+                        } header: {
+                            sectionHeader(
+                                section,
+                                addsTopSpacing: section.id != sections.first?.id
+                            )
+                        }
                     }
 
                     olderHistoryControl(filterDate: filterDate)
+                        .padding(.top, 24)
                 }
                 // This is intentionally a blank chrome placeholder. The
                 // toolbar is AppKit-owned and overlays the center pane just as
@@ -98,55 +124,63 @@ struct PlaybackHistoryView: View {
         }
     }
 
-    private func sectionView(
+    private func sectionHeader(
         _ section: PlaybackHistorySection,
+        addsTopSpacing: Bool
+    ) -> some View {
+        Text(section.title)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+            .padding(.horizontal, 4)
+            .padding(.top, addsTopSpacing ? 24 : 0)
+            .padding(.bottom, 8)
+    }
+
+    private func historyRow(
+        _ item: PlaybackHistoryItem,
         tracksByID: [UUID: Track],
         queueTracks: [Track]
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(section.title)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                .padding(.horizontal, 4)
-
-            // Keep this shell identical to the All Songs row shell: no lyric
-            // snippet and no extra divider inserted into the row height.
-            LazyVStack(spacing: 0) {
-                ForEach(section.items) { item in
-                    PlaybackHistoryTrackRow(
-                        item: item,
-                        track: tracksByID[item.trackID],
-                        queueTracks: queueTracks,
-                        isPlaying: historyVM.activeEventID == item.id
-                            && playerVM.currentTrack?.id == item.trackID,
-                        isSelected: historyVM.selectedEventIDs.contains(item.id),
-                        isMultiselectMode: historyVM.isMultiselectMode,
-                        playbackCoordinator: playbackCoordinator,
-                        onToggleSelection: {
-                            historyVM.toggleSelection(for: item.id)
-                        },
-                        onPlay: {
-                            guard let track = tracksByID[item.trackID], track.availability != .missing else {
-                                return
-                            }
-                            historyVM.setActiveEvent(item.id)
-                            playbackCoordinator.playTrack(
-                                track,
-                                inQueueFrom: queueTracks,
-                                libraryQueueSource: .librarySelection("playback-history")
-                            )
-                        },
-                        onDelete: {
-                            historyVM.delete(eventID: item.id, using: historyStore)
-                        },
-                        onEditTrack: { trackToEdit = $0 },
-                        rowPrimaryColor: themeStore.appForegroundPalette.primaryColor,
-                        rowSecondaryColor: themeStore.appForegroundPalette.secondaryColor,
-                        rowTertiaryColor: themeStore.appForegroundPalette.tertiaryColor
-                    )
-                }
+        let play = {
+            guard let track = tracksByID[item.trackID], track.availability != .missing else {
+                return
             }
+            historyVM.setActiveEvent(item.id)
+            playbackCoordinator.playTrack(
+                track,
+                inQueueFrom: queueTracks,
+                libraryQueueSource: .librarySelection("playback-history")
+            )
         }
+
+        // Keep this shell identical to the All Songs row shell: no lyric
+        // snippet and no extra divider inserted into the row height.
+        return PlaybackHistoryTrackRow(
+            item: item,
+            track: tracksByID[item.trackID],
+            isPlaying: historyVM.activeEventID == item.id
+                && playerVM.currentTrack?.id == item.trackID,
+            isSelected: historyVM.selectedEventIDs.contains(item.id),
+            playbackCoordinator: playbackCoordinator,
+            onTap: {
+                // Read the shared model at event time. The row can outlive the
+                // render pass that created its gesture closure, especially
+                // across an AppKit toolbar action that enables multiselect.
+                if historyVM.isMultiselectMode {
+                    historyVM.toggleSelection(for: item.id)
+                    return
+                }
+                play()
+            },
+            onPlay: play,
+            onDelete: {
+                historyVM.delete(eventID: item.id, using: historyStore)
+            },
+            onEditTrack: { trackToEdit = $0 },
+            rowPrimaryColor: themeStore.appForegroundPalette.primaryColor,
+            rowSecondaryColor: themeStore.appForegroundPalette.secondaryColor,
+            rowTertiaryColor: themeStore.appForegroundPalette.tertiaryColor
+        )
     }
 
     @ViewBuilder
@@ -287,12 +321,10 @@ struct PlaybackHistoryView: View {
 private struct PlaybackHistoryTrackRow: View {
     let item: PlaybackHistoryItem
     let track: Track?
-    let queueTracks: [Track]
     let isPlaying: Bool
     let isSelected: Bool
-    let isMultiselectMode: Bool
     let playbackCoordinator: PlaybackCoordinator
-    let onToggleSelection: () -> Void
+    let onTap: () -> Void
     let onPlay: () -> Void
     let onDelete: () -> Void
     let onEditTrack: (Track) -> Void
@@ -333,13 +365,7 @@ private struct PlaybackHistoryTrackRow: View {
             isSelected: isSelected,
             enableSecondaryInteractions: true,
             allowsMissingRowTap: true,
-            onTap: { _ in
-                if isMultiselectMode {
-                    onToggleSelection()
-                } else {
-                    onPlay()
-                }
-            },
+            onTap: { _ in onTap() },
             rowPrimaryColor: rowPrimaryColor,
             rowSecondaryColor: rowSecondaryColor,
             rowTertiaryColor: rowTertiaryColor

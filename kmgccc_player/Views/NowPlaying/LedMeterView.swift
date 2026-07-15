@@ -29,6 +29,9 @@ struct LedMeterView: View {
     /// Spacing between dots
     var spacing: CGFloat = 7
 
+    /// Scales the meter's internal padding and hairlines alongside caller-sized dots.
+    var contentScale: CGFloat = 1
+
     /// Optional pill tint (very subtle, above glass)
     var pillTint: Color? = nil
 
@@ -89,8 +92,8 @@ struct LedMeterView: View {
     }
 
     var body: some View {
-        let horizontalPadding: CGFloat = 14
-        let verticalPadding: CGFloat = 10
+        let horizontalPadding: CGFloat = 14 * contentScale
+        let verticalPadding: CGFloat = 10 * contentScale
 
         // Idle-CPU: only drive the 20Hz breath animation while playing. When
         // paused the breath value is constant (see `breathStep`) and `ledValues`
@@ -136,7 +139,10 @@ struct LedMeterView: View {
                 .opacity(level > 0 ? 1.0 : 0.0)
 
             Circle()
-                .stroke(resolver.statusLightStrokeColor(level: level), lineWidth: 0.7)
+                .stroke(
+                    resolver.statusLightStrokeColor(level: level),
+                    lineWidth: 0.7 * contentScale
+                )
                 .frame(width: dotSize, height: dotSize)
                 .opacity(level > 0 ? 1.0 : 0.0)
         }
@@ -145,7 +151,7 @@ struct LedMeterView: View {
     private var divider: some View {
         Rectangle()
             .fill(Color.primary.opacity(0.12))
-            .frame(width: 1, height: dotSize * 0.6)
+            .frame(width: contentScale, height: dotSize * 0.6)
     }
 
     // MARK: - LED Dot
@@ -170,7 +176,7 @@ struct LedMeterView: View {
 
             // Subtle stroke — visible only when brightnessState > 0
             Circle()
-                .stroke(strokeColor, lineWidth: 0.7)
+                .stroke(strokeColor, lineWidth: 0.7 * contentScale)
                 .frame(width: dotSize, height: dotSize)
                 .opacity(brightnessState > 0 ? 1.0 : 0.0)
         }
