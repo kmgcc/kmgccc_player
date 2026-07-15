@@ -527,6 +527,8 @@ struct AppKitMainWindowArtBackgroundLayer: View {
                         trackID: artworkBackgroundTrackID(playbackCoordinator: playbackCoordinator),
                         artworkData: renderingArtworkData(playbackCoordinator: playbackCoordinator),
                         isPlaying: playbackCoordinator.presentation.isPlaying,
+                        animationEnabled: appSession.uiState.contentMode == .nowPlaying
+                            && !fullscreenWindowManager.usesFullscreenPlayerUI,
                         resourceProfile: settings.selectedNowPlayingSkinID == "kmgccc.cassette"
                             ? .cassetteForeground
                             : .standard,
