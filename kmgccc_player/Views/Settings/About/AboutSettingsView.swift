@@ -43,7 +43,11 @@ struct AboutSettingsView: View {
 
             (showEasterEggImage
                 ? ArtAssetImages.image(named: "jntm", maxPixel: 800)
-                : Image("EmptyLyric"))
+                : ArtAssetImages.image(
+                    named: ArtAssetImages.emptyLyricsName,
+                    maxPixel: 800,
+                    fallbackSystemName: "text.quote"
+                ))
                 .resizable()
                 .scaledToFit()
                 .frame(width: 230, height: 230)
@@ -244,7 +248,13 @@ struct AboutSettingsView: View {
     }
 
     private func loadDocumentContent(fileName: String) -> String {
-        guard let url = Bundle.main.url(forResource: fileName, withExtension: "md") else {
+        let url = Bundle.main.url(
+            forResource: fileName,
+            withExtension: "md",
+            subdirectory: "LegalDocuments"
+        ) ?? Bundle.main.url(forResource: fileName, withExtension: "md")
+
+        guard let url else {
             return "文档加载失败"
         }
 
