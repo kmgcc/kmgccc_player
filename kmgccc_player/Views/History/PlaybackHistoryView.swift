@@ -64,6 +64,9 @@ struct PlaybackHistoryView: View {
         .onChange(of: uiState.playbackHistoryDate) { _, _ in
             historyVM.clearMultiselectState()
         }
+        .onDisappear {
+            historyVM.clearMultiselectState()
+        }
         .background(
             MultiselectExitKeyMonitor(
                 isEnabled: historyVM.isMultiselectMode,
@@ -161,6 +164,8 @@ struct PlaybackHistoryView: View {
             isPlaying: historyVM.activeEventID == item.id
                 && playerVM.currentTrack?.id == item.trackID,
             isSelected: historyVM.selectedEventIDs.contains(item.id),
+            isMultiselectMode: historyVM.isMultiselectMode,
+            hasSelectedEvents: historyVM.hasSelectedEvents,
             playbackCoordinator: playbackCoordinator,
             onTap: {
                 // Read the shared model at event time. The row can outlive the
@@ -174,7 +179,11 @@ struct PlaybackHistoryView: View {
             },
             onPlay: play,
             onDelete: {
-                historyVM.delete(eventID: item.id, using: historyStore)
+                if historyVM.isMultiselectMode {
+                    historyVM.deleteSelected(using: historyStore)
+                } else {
+                    historyVM.delete(eventID: item.id, using: historyStore)
+                }
             },
             onEditTrack: { trackToEdit = $0 },
             rowPrimaryColor: themeStore.appForegroundPalette.primaryColor,
@@ -323,6 +332,8 @@ private struct PlaybackHistoryTrackRow: View {
     let track: Track?
     let isPlaying: Bool
     let isSelected: Bool
+    let isMultiselectMode: Bool
+    let hasSelectedEvents: Bool
     let playbackCoordinator: PlaybackCoordinator
     let onTap: () -> Void
     let onPlay: () -> Void
@@ -370,22 +381,29 @@ private struct PlaybackHistoryTrackRow: View {
             rowSecondaryColor: rowSecondaryColor,
             rowTertiaryColor: rowTertiaryColor
         ) {
-            if let track, track.availability != .missing {
-                TrackActionMenuContent(
-                    track: track,
-                    onPlay: onPlay,
-                    onPlayNext: playbackCoordinator.canInsertTracksAfterCurrent
-                        ? { playbackCoordinator.insertTracksAfterCurrent([track]) }
-                        : nil,
-                    onEditTrack: onEditTrack,
-                    showsDeleteFromLibrary: false,
-                    diagnosticSurface: "PlaybackHistory"
-                )
-                Divider()
-            }
+            if isMultiselectMode {
+                Button(role: .destructive, action: onDelete) {
+                    Label("删除选中的播放历史", systemImage: "trash")
+                }
+                .disabled(!hasSelectedEvents)
+            } else {
+                if let track, track.availability != .missing {
+                    TrackActionMenuContent(
+                        track: track,
+                        onPlay: onPlay,
+                        onPlayNext: playbackCoordinator.canInsertTracksAfterCurrent
+                            ? { playbackCoordinator.insertTracksAfterCurrent([track]) }
+                            : nil,
+                        onEditTrack: onEditTrack,
+                        showsDeleteFromLibrary: false,
+                        diagnosticSurface: "PlaybackHistory"
+                    )
+                    Divider()
+                }
 
-            Button(role: .destructive, action: onDelete) {
-                Label("从播放历史删除", systemImage: "trash")
+                Button(role: .destructive, action: onDelete) {
+                    Label("从播放历史删除", systemImage: "trash")
+                }
             }
         }
     }
