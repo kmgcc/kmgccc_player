@@ -1957,6 +1957,26 @@ final class LibraryViewModel {
         await refresh()
     }
 
+    /// Search the current library index through the ViewModel boundary.
+    /// Callers receive an ID-keyed map so page builders do not need to know
+    /// about the index actor or its singleton lifetime.
+    func searchTracks(
+        query: String,
+        scopedTo trackIDs: Set<UUID>,
+        limit: Int = 200
+    ) async -> [UUID: LibrarySearchHit] {
+        guard !trackIDs.isEmpty else { return [:] }
+
+        let hits = await LibrarySearchIndex.shared.search(
+            query: query,
+            scopedTo: trackIDs,
+            limit: max(1, limit)
+        )
+        return hits.reduce(into: [:]) { result, hit in
+            result[hit.trackID] = hit
+        }
+    }
+
     // MARK: - Display Helpers
 
     /// Title for the current view.
