@@ -176,6 +176,21 @@ final class CrashReportService: ObservableObject {
                 record.promptState = .pending
                 changed = true
             }
+            if record.technicalUploadState == .permanentlyFailed,
+               record.lastErrorCategory == "http_400_permanent",
+               let legacySurface = record.report.appContext?.visibleSurface,
+               let canonicalSurface = CrashVisibleSurface.canonicalValue(for: legacySurface),
+               canonicalSurface != legacySurface {
+                record.report.appContext?.visibleSurface = canonicalSurface
+                record.technicalUploadState = .pending
+                record.nextRetryAt = nil
+                record.lastErrorCategory = nil
+                changed = true
+                Log.info(
+                    "[CrashReporting] Recovered report rejected for legacy surface id=\(record.id.prefix(8))",
+                    category: .telemetry
+                )
+            }
             if changed {
                 try? await store.save(record)
             }
