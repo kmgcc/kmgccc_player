@@ -21,6 +21,19 @@ struct BokehTransitionConfig: Equatable, Sendable {
     static let defaultApertureRotationRadians = 0.0
     static let defaultApertureRoundness = 0.0
 
+    /// The Metal surface is intentionally low resolution while it is strongly
+    /// blurred. Once the radius is nearly clear, dissolve it into the static
+    /// high-resolution surface instead of exposing the upscaled source.
+    static let opticalFadeInvisibleRadiusAt1080 = 2.0
+    static let opticalFadeOpaqueRadiusAt1080 = 12.0
+
+    static func opticalVisibility(forRadiusAt1080 radius: CGFloat) -> CGFloat {
+        let lower = CGFloat(opticalFadeInvisibleRadiusAt1080)
+        let upper = CGFloat(opticalFadeOpaqueRadiusAt1080)
+        let progress = min(max((radius - lower) / (upper - lower), 0), 1)
+        return progress * progress * (3 - 2 * progress)
+    }
+
 }
 
 // MARK: - Metal contracts
@@ -31,22 +44,24 @@ enum BokehTransitionRenderTier: String, Sendable {
 
     nonisolated var sampleBudget: UInt32 {
         switch self {
-        case .low: 128
-        case .balanced: 256
+        // Keep the gather kernel dense in both tiers. Sparse samples turn a
+        // point highlight into a visible flower/dot pattern; lowering spatial
+        // resolution is much less objectionable for an already-blurred layer.
+        case .low, .balanced: 640
         }
     }
 
     nonisolated var pixelBudget: Int {
         switch self {
-        case .low: 500_000
-        case .balanced: 900_000
+        case .low: 180_000
+        case .balanced: 260_000
         }
     }
 
     nonisolated var shortEdgeRange: ClosedRange<Int> {
         switch self {
-        case .low: 360...540
-        case .balanced: 540...720
+        case .low: 280...380
+        case .balanced: 360...480
         }
     }
 }

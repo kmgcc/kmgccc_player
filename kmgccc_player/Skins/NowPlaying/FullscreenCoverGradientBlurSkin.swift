@@ -343,6 +343,15 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     }
 
     private func preferredBokehTier() -> BokehTransitionRenderTier {
+        // A system fullscreen space can be several times larger in backing
+        // pixels than the embedded host. Use the smaller drawable from the
+        // first transition instead of waiting for a dropped-frame sample to
+        // downgrade the next one. Sample density remains identical across
+        // tiers, so this does not reintroduce sparse flower-like highlights.
+        if context.fullscreenHostMode == .systemFullscreen {
+            return .low
+        }
+
         let thermal = ProcessInfo.processInfo.thermalState
         if ProcessInfo.processInfo.isLowPowerModeEnabled || thermal == .serious || thermal == .critical {
             return .low
