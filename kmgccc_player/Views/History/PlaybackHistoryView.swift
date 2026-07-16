@@ -167,12 +167,12 @@ struct PlaybackHistoryView: View {
             isMultiselectMode: historyVM.isMultiselectMode,
             hasSelectedEvents: historyVM.hasSelectedEvents,
             playbackCoordinator: playbackCoordinator,
-            onTap: {
+            onTap: { isShiftPressed in
                 // Read the shared model at event time. The row can outlive the
                 // render pass that created its gesture closure, especially
                 // across an AppKit toolbar action that enables multiselect.
                 if historyVM.isMultiselectMode {
-                    historyVM.toggleSelection(for: item.id)
+                    historyVM.toggleSelection(for: item.id, extendingRange: isShiftPressed)
                     return
                 }
                 play()
@@ -239,8 +239,8 @@ struct PlaybackHistoryView: View {
                 .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
             Text(
                 filterDate == nil
-                    ? (hasOlderRecords ? "更早的记录已折叠在下面" : "播放满两秒后会自动记录在这里")
-                    : "可以换一个日期看看"
+                    ? (hasOlderRecords ? "更早的记录已折叠在下面" : "")
+                    : "请尝试更换日期"
             )
                 .font(.callout)
                 .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
@@ -335,7 +335,7 @@ private struct PlaybackHistoryTrackRow: View {
     let isMultiselectMode: Bool
     let hasSelectedEvents: Bool
     let playbackCoordinator: PlaybackCoordinator
-    let onTap: () -> Void
+    let onTap: (Bool) -> Void
     let onPlay: () -> Void
     let onDelete: () -> Void
     let onEditTrack: (Track) -> Void
@@ -376,7 +376,7 @@ private struct PlaybackHistoryTrackRow: View {
             isSelected: isSelected,
             enableSecondaryInteractions: true,
             allowsMissingRowTap: true,
-            onTap: { _ in onTap() },
+            onTap: { isShiftPressed in onTap(isShiftPressed) },
             rowPrimaryColor: rowPrimaryColor,
             rowSecondaryColor: rowSecondaryColor,
             rowTertiaryColor: rowTertiaryColor
