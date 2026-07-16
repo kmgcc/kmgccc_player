@@ -30,8 +30,11 @@ struct SidebarView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var currentColorScheme
     @ObservedObject private var updateDownloadManager = UpdatePackageDownloadManager.shared
+    @ObservedObject private var crashReportService = CrashReportService.shared
 
     @State private var showSettings = false
+    @State private var showCrashReportSettingsTip = false
+    @State private var crashReportTipTask: Task<Void, Never>?
     @State private var showingPlaylistSheet = false
     @State private var deletionRequest: SidebarDeletionRequest?
     @State private var editingArtistEntry: ArtistEntry?
@@ -356,6 +359,22 @@ struct SidebarView: View {
         .onPreferenceChange(SidebarWidthPreferenceKey.self) { width in
             uiState.updateSidebarWidth(width)
         }
+        .onAppear {
+            scheduleCrashReportSettingsTipIfNeeded()
+        }
+        .onDisappear {
+            crashReportTipTask?.cancel()
+            crashReportTipTask = nil
+            showCrashReportSettingsTip = false
+        }
+        .onChange(of: crashReportService.isPromptFlowActive) { _, isActive in
+            if isActive {
+                crashReportTipTask?.cancel()
+                showCrashReportSettingsTip = false
+            } else {
+                scheduleCrashReportSettingsTipIfNeeded()
+            }
+        }
         .sheet(isPresented: $showSettings) {
             SettingsView()
                 .environment(settings)
@@ -602,6 +621,54 @@ struct SidebarView: View {
             showSettings = true
         }
         .symbolEffect(.rotate, value: settingsRotateTrigger)
+        .popover(isPresented: $showCrashReportSettingsTip, arrowEdge: .bottom) {
+            CrashReportSettingsTipView(
+                onOpenSettings: {
+                    showCrashReportSettingsTip = false
+                    AppVersionGate.shared.markFeatureTipDismissed(
+                        featureKey: CrashReportFeatureTip.key
+                    )
+                    settingsRotateTrigger += 1
+                    showSettings = true
+                },
+                onDismiss: {
+                    showCrashReportSettingsTip = false
+                }
+            )
+        }
+    }
+
+    private enum CrashReportFeatureTip {
+        static let key = "dataSharing.automaticCrashReports"
+        static let introducedBuild = AppBuild(8)
+        static let maxDisplayCount = 3
+    }
+
+    private func scheduleCrashReportSettingsTipIfNeeded() {
+        crashReportTipTask?.cancel()
+        guard !crashReportService.isPromptFlowActive,
+              !showSettings,
+              !showingPlaylistSheet,
+              !showCrashReportSettingsTip,
+              AppVersionGate.shared.shouldShowFeatureTip(
+                featureKey: CrashReportFeatureTip.key,
+                introducedBuild: CrashReportFeatureTip.introducedBuild,
+                maxDisplayCount: CrashReportFeatureTip.maxDisplayCount
+              )
+        else { return }
+
+        crashReportTipTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled,
+                  !crashReportService.isPromptFlowActive,
+                  !showSettings,
+                  !showingPlaylistSheet
+            else { return }
+            showCrashReportSettingsTip = true
+            AppVersionGate.shared.recordFeatureTipDisplayed(
+                featureKey: CrashReportFeatureTip.key
+            )
+        }
     }
 
     private var appearanceSwitchButton: some View {

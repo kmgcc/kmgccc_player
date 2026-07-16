@@ -170,6 +170,7 @@ struct DataManagementSettingsView: View {
             set: { newValue in
                 automaticCrashReportUploadEnabled = newValue
                 CrashReportService.shared.automaticUploadPreferenceDidChange(newValue)
+                MetricKitDiagnosticService.shared.automaticUploadPreferenceDidChange(newValue)
             }
         )
     }

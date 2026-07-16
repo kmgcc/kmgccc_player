@@ -30,6 +30,9 @@
 		C02000000000000000000006 /* CrashReportModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000017 /* CrashReportModels.swift */; };
 		C02000000000000000000007 /* CrashReportSanitizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000018 /* CrashReportSanitizer.swift */; };
 		C02000000000000000000008 /* CrashReportStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000019 /* CrashReportStore.swift */; };
+		C02000000000000000000009 /* MetricKitDiagnosticModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0200000000000000000001A /* MetricKitDiagnosticModels.swift */; };
+		C0200000000000000000000A /* MetricKitDiagnosticSanitizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0200000000000000000001B /* MetricKitDiagnosticSanitizer.swift */; };
+		C0200000000000000000000B /* MetricKitDiagnosticStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0200000000000000000001C /* MetricKitDiagnosticStore.swift */; };
 		F01000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000001 /* AppDelegate.swift */; };
 		F01000000000000000000002 /* DockController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000002 /* DockController.swift */; };
 		F01000000000000000000003 /* PlaybackCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000003 /* PlaybackCommands.swift */; };
@@ -62,6 +65,9 @@
 		C02000000000000000000017 /* CrashReportModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CrashReportModels.swift; path = kmgccc_player/Services/CrashReporting/CrashReportModels.swift; sourceTree = "<group>"; };
 		C02000000000000000000018 /* CrashReportSanitizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CrashReportSanitizer.swift; path = kmgccc_player/Services/CrashReporting/CrashReportSanitizer.swift; sourceTree = "<group>"; };
 		C02000000000000000000019 /* CrashReportStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CrashReportStore.swift; path = kmgccc_player/Services/CrashReporting/CrashReportStore.swift; sourceTree = "<group>"; };
+		C0200000000000000000001A /* MetricKitDiagnosticModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MetricKitDiagnosticModels.swift; path = kmgccc_player/Services/CrashReporting/MetricKitDiagnosticModels.swift; sourceTree = "<group>"; };
+		C0200000000000000000001B /* MetricKitDiagnosticSanitizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MetricKitDiagnosticSanitizer.swift; path = kmgccc_player/Services/CrashReporting/MetricKitDiagnosticSanitizer.swift; sourceTree = "<group>"; };
+		C0200000000000000000001C /* MetricKitDiagnosticStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MetricKitDiagnosticStore.swift; path = kmgccc_player/Services/CrashReporting/MetricKitDiagnosticStore.swift; sourceTree = "<group>"; };
 		E01000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = kmgccc_player/AppDelegate.swift; sourceTree = "<group>"; };
 		E01000000000000000000002 /* DockController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DockController.swift; path = kmgccc_player/DockController.swift; sourceTree = "<group>"; };
 		E01000000000000000000003 /* PlaybackCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlaybackCommands.swift; path = kmgccc_player/PlaybackCommands.swift; sourceTree = "<group>"; };
@@ -233,6 +239,9 @@
 				C02000000000000000000017 /* CrashReportModels.swift */,
 				C02000000000000000000018 /* CrashReportSanitizer.swift */,
 				C02000000000000000000019 /* CrashReportStore.swift */,
+				C0200000000000000000001A /* MetricKitDiagnosticModels.swift */,
+				C0200000000000000000001B /* MetricKitDiagnosticSanitizer.swift */,
+				C0200000000000000000001C /* MetricKitDiagnosticStore.swift */,
 			);
 			name = Tests;
 			sourceTree = "<group>";
@@ -509,6 +518,9 @@
 				C02000000000000000000006 /* CrashReportModels.swift in Sources */,
 				C02000000000000000000007 /* CrashReportSanitizer.swift in Sources */,
 				C02000000000000000000008 /* CrashReportStore.swift in Sources */,
+				C02000000000000000000009 /* MetricKitDiagnosticModels.swift in Sources */,
+				C0200000000000000000000A /* MetricKitDiagnosticSanitizer.swift in Sources */,
+				C0200000000000000000000B /* MetricKitDiagnosticStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -657,7 +669,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = TYU73KR9WW;
 				ENABLE_APP_SANDBOX = NO;
@@ -709,7 +721,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = TYU73KR9WW;
 				ENABLE_APP_SANDBOX = NO;

@@ -71,6 +71,10 @@ final class AppSessionHost: ObservableObject {
         await CrashReportService.shared.start(
             anonymousInstallID: crashReportInstallID
         )
+        MetricKitDiagnosticService.shared.start(anonymousInstallID: crashReportInstallID)
+#if DEBUG
+        DebugCrashTrigger.scheduleIfRequested()
+#endif
         if CrashReportService.shared.hasPendingPrompt {
             CrashReportService.shared.setPromptQueueDrainedHandler { [weak self] in
                 self?.scheduleDeferredLaunchPromptsIfNeeded()

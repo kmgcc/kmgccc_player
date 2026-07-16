@@ -7,6 +7,7 @@ final class CrashReportService: ObservableObject {
     static let shared = CrashReportService()
 
     @Published private(set) var currentPrompt: CrashReportPromptPresentation?
+    @Published private(set) var isPromptFlowActive = false
 
     private let bootstrap: CrashReporterBootstrap
     private let store: CrashReportStore
@@ -39,6 +40,9 @@ final class CrashReportService: ObservableObject {
         installActivationObserverIfNeeded()
         await importPendingReportIfNeeded(anonymousInstallID: anonymousInstallID)
         await normalizeInterruptedStates()
+        isPromptFlowActive = await store.records().contains {
+            $0.promptState == .pending || $0.promptState == .presenting
+        }
 
         // Start an automatic delivery attempt before publishing the prompt. The
         // request remains asynchronous, so an offline server never delays the UI.
@@ -334,9 +338,11 @@ final class CrashReportService: ObservableObject {
             .filter { $0.promptState == .pending }
             .min { $0.report.occurredAt < $1.report.occurredAt }
         guard var record = pending else {
+            isPromptFlowActive = false
             notifyPromptQueueDrained()
             return
         }
+        isPromptFlowActive = true
         record.promptState = .presenting
         record.promptedAt = Date()
         do {
