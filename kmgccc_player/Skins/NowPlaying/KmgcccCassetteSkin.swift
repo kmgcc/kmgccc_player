@@ -226,6 +226,19 @@ private final class CassetteThemeAssetCache {
 }
 
 private struct CassetteArtwork: View, Equatable {
+    private struct ArtworkSourceIdentity: Equatable {
+        let trackID: UUID?
+        let displayedArtworkID: UUID?
+        let artworkChecksum: UInt64
+        let dataFingerprint: UInt64
+    }
+
+    private struct ProcessingInputKey: Equatable {
+        let source: ArtworkSourceIdentity
+        let isDark: Bool
+        let maxPixel: Int
+    }
+
     let context: SkinContext
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
     @Environment(\.displayScale) private var displayScale
@@ -244,8 +257,8 @@ private struct CassetteArtwork: View, Equatable {
         lhs.showKmgLook == rhs.showKmgLook
             && lhs.normalVisualizerMode == rhs.normalVisualizerMode
             && lhs.fullscreenVisualizerMode == rhs.fullscreenVisualizerMode
-            && lhs.context.track?.id == rhs.context.track?.id
-            && lhs.context.track?.artworkChecksum == rhs.context.track?.artworkChecksum
+            && artworkSourceIdentity(for: lhs.context.track)
+                == artworkSourceIdentity(for: rhs.context.track)
             && lhs.context.theme.colorScheme == rhs.context.theme.colorScheme
             && lhs.context.playback.isPlaying == rhs.context.playback.isPlaying
             && lhs.context.presentationMode == rhs.context.presentationMode
@@ -316,16 +329,7 @@ private struct CassetteArtwork: View, Equatable {
         .onAppear {
             scheduleAdjustedArtworkProcessing(targetSize: size)
         }
-        .onChange(of: context.track?.id) { _, _ in
-            scheduleAdjustedArtworkProcessing(targetSize: size)
-        }
-        .onChange(of: context.track?.artworkChecksum) { _, _ in
-            scheduleAdjustedArtworkProcessing(targetSize: size)
-        }
-        .onChange(of: context.theme.colorScheme) { _, _ in
-            scheduleAdjustedArtworkProcessing(targetSize: size)
-        }
-        .onChange(of: processingBudgetKey(for: size)) { _, _ in
+        .onChange(of: artworkProcessingInputKey(for: size)) { _, _ in
             scheduleAdjustedArtworkProcessing(targetSize: size)
         }
         .onDisappear {
@@ -360,9 +364,6 @@ private struct CassetteArtwork: View, Equatable {
         }
         if previewArtworkKey == renderKey, let previewArtworkImage {
             return Image(nsImage: previewArtworkImage)
-        }
-        if let adjustedArtworkImage {
-            return Image(nsImage: adjustedArtworkImage)
         }
         return originalArtworkImage
     }
@@ -406,13 +407,33 @@ private struct CassetteArtwork: View, Equatable {
         hasher.combine(Int(resolved.alphaComponent * 1_000))
     }
 
+    private static func artworkSourceIdentity(
+        for track: SkinContext.TrackMetadata?
+    ) -> ArtworkSourceIdentity {
+        ArtworkSourceIdentity(
+            trackID: track?.id,
+            displayedArtworkID: track.map { $0.displayedArtworkID ?? $0.id },
+            artworkChecksum: track?.artworkChecksum ?? 0,
+            dataFingerprint: ArtworkDataFingerprint.sampledHash(for: track?.artworkData)
+        )
+    }
+
+    private func artworkProcessingInputKey(for size: CGSize) -> ProcessingInputKey {
+        ProcessingInputKey(
+            source: Self.artworkSourceIdentity(for: context.track),
+            isDark: context.theme.colorScheme == .dark,
+            maxPixel: processingBudgetKey(for: size)
+        )
+    }
+
     private func scheduleAdjustedArtworkProcessing(targetSize: CGSize) {
         processingTask?.cancel()
         processingGeneration &+= 1
         let generation = processingGeneration
 
-        guard let track = context.track, let data = track.artworkData else {
-            renderKey = ""
+        guard let track = context.track, let data = track.artworkData, !data.isEmpty else {
+            processingTask = nil
+            clearAdjustedArtworkState(resetRenderKey: true)
             return
         }
 
@@ -421,6 +442,7 @@ private struct CassetteArtwork: View, Equatable {
         let midAnchor = 0.5
         let seed = UInt64(bitPattern: Int64(track.id.uuidString.hashValue))
         let maxPixel = processingMaxPixel(for: targetSize)
+        let dataFingerprint = ArtworkDataFingerprint.sampledHash(for: data)
         let key = makeToneKey(
             trackID: track.id,
             scheme: context.theme.colorScheme,
@@ -428,9 +450,14 @@ private struct CassetteArtwork: View, Equatable {
             hi: hi,
             mid: midAnchor,
             checksum: track.artworkChecksum,
+            dataFingerprint: dataFingerprint,
             maxPixel: maxPixel
         )
         renderKey = key
+        if adjustedArtworkKey != key {
+            adjustedArtworkKey = nil
+            adjustedArtworkImage = nil
+        }
         if previewArtworkKey != key {
             previewArtworkKey = nil
             previewArtworkImage = nil
@@ -502,9 +529,10 @@ private struct CassetteArtwork: View, Equatable {
         hi: Double,
         mid: Double,
         checksum: UInt64,
+        dataFingerprint: UInt64,
         maxPixel: Int
     ) -> String {
-        "\(trackID.uuidString)-\(scheme == .dark ? "dark" : "light")-\(String(format: "%.3f", lo))-\(String(format: "%.3f", hi))-\(String(format: "%.3f", mid))-\(checksum)-px:\(maxPixel)"
+        "\(trackID.uuidString)-\(scheme == .dark ? "dark" : "light")-\(String(format: "%.3f", lo))-\(String(format: "%.3f", hi))-\(String(format: "%.3f", mid))-\(checksum)-\(dataFingerprint)-px:\(maxPixel)"
     }
 
     private func processingBudgetKey(for size: CGSize) -> Int {
@@ -1394,7 +1422,8 @@ private struct CassetteOverlay: View {
                     spacing: 8,
                     pillTint: context.theme.artworkAccentColor,
                     isPlaying: context.playback.isPlaying,
-                    forceBrightLEDColors: context.theme.artBackgroundIsUltraDark
+                    forceBrightLEDColors: context.theme.artBackgroundIsUltraDark,
+                    levelToneVariant: .skinLight
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .offset(x: horizontalOffset, y: yOffset)
