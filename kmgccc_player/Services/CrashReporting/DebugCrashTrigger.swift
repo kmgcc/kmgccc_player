@@ -12,25 +12,35 @@ enum DebugCrashTrigger {
               ["main-abort", "background-abort", "main-segv"].contains(mode)
         else { return }
         didSchedule = true
+        let delay = requestedDelaySeconds
         Log.warning(
-            "[CrashReporting] DEBUG controlled crash scheduled mode=\(mode)",
+            "[CrashReporting] DEBUG controlled crash scheduled mode=\(mode) delay=\(delay)s",
             category: .telemetry
         )
 
         switch mode {
         case "background-abort":
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 3) {
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) {
                 raise(SIGABRT)
             }
         case "main-segv":
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 triggerInvalidMemoryAccess()
             }
         default:
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 raise(SIGABRT)
             }
         }
+    }
+
+    private static var requestedDelaySeconds: Double {
+        guard let rawValue = ProcessInfo.processInfo.environment["KMGCCC_CRASH_TEST_DELAY_SECONDS"],
+              let value = Double(rawValue),
+              value.isFinite else {
+            return 3
+        }
+        return min(max(value, 1), 300)
     }
 
     /// Produces a real EXC_BAD_ACCESS instead of merely sending SIGSEGV to the
