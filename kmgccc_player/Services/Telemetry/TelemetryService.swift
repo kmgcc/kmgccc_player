@@ -7,7 +7,6 @@
 
 import AppKit
 import Foundation
-import Synchronization
 
 enum TelemetryPlaybackMode: String, Codable, Sendable {
     case local
@@ -202,7 +201,13 @@ final class TelemetryService: NSObject {
         checkpointTimer = nil
         recoveryStore.clear()
         if reason == .appTerminated {
-            flushQueueSynchronouslyForTermination()
+            // The summary is already durable in the local queue. Do not perform
+            // network I/O while AppKit is synchronously terminating the process;
+            // the next launch flushes this queue asynchronously.
+            Log.info(
+                "[Telemetry] session persisted for next launch; skipping termination upload",
+                category: .telemetry
+            )
         } else {
             flushQueue()
         }
@@ -425,29 +430,6 @@ final class TelemetryService: NSObject {
                     self.uploadTask = nil
                 }
             }
-        }
-    }
-
-    private func flushQueueSynchronouslyForTermination() {
-        guard consentStore.isEnabled else { return }
-        let events = queue.pendingEvents()
-        guard !events.isEmpty else { return }
-
-        // The process is exiting: do not block on a network registration round-trip.
-        // Sign only if registration already succeeded in a prior run; otherwise the
-        // upload goes out unsigned and the server compat path accepts it.
-        let isRegistered = UserDefaults.standard.integer(forKey: TelemetryDefaults.signingRegisteredKey) >= 1
-        let clientID = identityStore.installID
-        let eventsToUpload = rewriteInstallIDIfNeeded(events: events, to: clientID)
-        Log.info("[Telemetry] flushQueueSynchronouslyForTermination events=\(eventsToUpload.count) isRegistered=\(isRegistered) willSign=\(isRegistered)", category: .telemetry)
-        do {
-            let response = try uploader.uploadSynchronously(
-                events: eventsToUpload, timeout: 3, device: deviceSnapshot,
-                signer: isRegistered ? signer : nil,
-                clientID: isRegistered ? clientID : nil)
-            applyUploadResponse(response, uploadedEvents: eventsToUpload)
-        } catch {
-            Log.warning("[Telemetry] termination upload failed: \(error)", category: .telemetry)
         }
     }
 
@@ -1306,55 +1288,6 @@ private final class TelemetryUploader {
         return try Self.decodeUploadResponse(data: data, response: response)
     }
 
-    func uploadSynchronously(
-        events: [TelemetryQueuedEvent],
-        timeout: TimeInterval,
-        device: DeviceTelemetrySnapshot? = nil,
-        signer: TelemetryRequestSigner? = nil,
-        clientID: String? = nil
-    ) throws -> TelemetryUploadResponse {
-        let request = try makeRequest(events: events, timeout: timeout, device: device,
-                                      signer: signer, clientID: clientID)
-        let semaphore = DispatchSemaphore(value: 0)
-        let outcome = Mutex<TelemetrySynchronousUploadOutcome?>(nil)
-
-        let task = Task.detached(priority: .utility) {
-            let uploadOutcome: TelemetrySynchronousUploadOutcome
-            do {
-                let response = try await Self.uploadOnce(request: request, timeout: timeout)
-                uploadOutcome = .success(response)
-            } catch let error as TelemetrySynchronousUploadError {
-                uploadOutcome = .failure(error)
-            } catch let error as URLError {
-                uploadOutcome = .failure(.url(error.code))
-            } catch let error as DecodingError {
-                uploadOutcome = .failure(.decoding(String(describing: error)))
-            } catch {
-                uploadOutcome = .failure(.unexpected(String(describing: error)))
-            }
-
-            outcome.withLock { value in
-                value = uploadOutcome
-            }
-            semaphore.signal()
-        }
-
-        if semaphore.wait(timeout: .now() + timeout) == .timedOut {
-            task.cancel()
-            throw URLError(.timedOut)
-        }
-
-        guard let uploadOutcome = outcome.withLock({ $0 }) else {
-            throw TelemetrySynchronousUploadError.missingResult
-        }
-        switch uploadOutcome {
-        case .success(let response):
-            return response
-        case .failure(let error):
-            throw error
-        }
-    }
-
     private func makeRequest(
         events: [TelemetryQueuedEvent],
         timeout: TimeInterval,
@@ -1407,20 +1340,6 @@ private final class TelemetryUploader {
         return request
     }
 
-    private static func uploadOnce(
-        request: URLRequest,
-        timeout: TimeInterval
-    ) async throws -> TelemetryUploadResponse {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = timeout
-        configuration.timeoutIntervalForResource = timeout
-        let session = URLSession(configuration: configuration)
-        defer { session.invalidateAndCancel() }
-
-        let (data, response) = try await session.data(for: request)
-        return try decodeUploadResponse(data: data, response: response)
-    }
-
     private static func decodeUploadResponse(
         data: Data,
         response: URLResponse
@@ -1441,31 +1360,6 @@ private final class TelemetryUploader {
         Log.info("[Telemetry] upload HTTP \(httpResponse.statusCode) accepted (signed/unsigned determined server-side)", category: .telemetry)
         let decoder = JSONDecoder()
         return try decoder.decode(TelemetryUploadResponse.self, from: data)
-    }
-}
-
-private enum TelemetrySynchronousUploadOutcome: Sendable {
-    case success(TelemetryUploadResponse)
-    case failure(TelemetrySynchronousUploadError)
-}
-
-private enum TelemetrySynchronousUploadError: Error, Sendable, CustomStringConvertible {
-    case missingResult
-    case url(URLError.Code)
-    case decoding(String)
-    case unexpected(String)
-
-    var description: String {
-        switch self {
-        case .missingResult:
-            return "upload finished without a result"
-        case .url(let code):
-            return "url error: \(code)"
-        case .decoding(let detail):
-            return "decoding error: \(detail)"
-        case .unexpected(let detail):
-            return "unexpected error: \(detail)"
-        }
     }
 }
 
