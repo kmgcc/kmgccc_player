@@ -112,6 +112,9 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     @State private var transitionBlurRadius: CGFloat = 0
     @State private var bokehRadius: CGFloat = 0
     @State private var bokehSurfaceOpacity: CGFloat = 0
+    /// Transition-wide dissolve into the settled high-resolution background.
+    /// Per-surface optical opacity remains reserved for old/new artwork swaps.
+    @State private var bokehHandoffOpacity: CGFloat = 0
     /// Per-surface optical opacity for the two persistent Bokeh surfaces.
     /// Surface 0 is the "base" (current artwork, always full opacity while
     /// active). Surface 1 is the "overlay" (previous artwork that fades out
@@ -150,6 +153,9 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         self._transitionPosition = State(initialValue: startsCentered ? 1 : 0)
         self._centeredLayerOpacity = State(initialValue: startsCentered ? 1 : 0)
         self._settledCenteredLayerOpacity = State(initialValue: startsCentered ? 1 : 0)
+        self._latestTrackArtworkChecksum = State(
+            initialValue: context.track?.artworkChecksum ?? 0
+        )
     }
 
     var body: some View {
@@ -419,6 +425,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             bokehRadius: bokehRadius,
             surfaceOpacity: bokehSurfaceOpacity,
             opticalOpacity: bokehOpticalOpacities[surfaceIndex],
+            handoffOpacity: bokehHandoffOpacity,
             transitionCanvasSizeRatio: canvasRatio,
             // A constant travel distance; Metal combines it with the animated
             // transitionPosition every frame. Sending the already-evaluated
@@ -438,7 +445,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         }
     }
 
-    private func selectTransitionMode() async -> BokehTransitionMode? {
+    private func selectTransitionMode() -> BokehTransitionMode {
         let metalAvailability = BokehTransitionMetalContext.shared.availability
         guard metalAvailability.isReady else {
             Log.info("CoverBlur transition: Gaussian (Metal unavailable: \(metalAvailability.reason ?? "unknown"))", category: .fullscreen)
@@ -461,27 +468,14 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             return .bokeh
         }
 
+        // Do not hold the layout animation behind source preparation. The old
+        // 750 ms polling window was the intermittent "lyrics disappear, cover
+        // waits about a second, then Gaussian starts" stall. Preparation keeps
+        // running for the next transition while this one starts immediately on
+        // the complete Gaussian path.
         prepareBokehSourcesIfPossible()
-        let pollInterval: UInt64 = 16_000_000
-        let preparationTimeout: UInt64 = 750_000_000
-        var elapsed: UInt64 = 0
-
-        while elapsed < preparationTimeout {
-            guard await waitForTransitionStage(nanoseconds: pollInterval) else { return nil }
-            elapsed += pollInterval
-
-            if let sourceSet = bokehPreparedSourceSet {
-                if sourceSet.identity.tier != tier {
-                    Log.debug("CoverBlur transition: tier mismatch, using prepared \(sourceSet.identity.tier.rawValue) source set while decision is \(tier.rawValue)", category: .fullscreen)
-                }
-                bokehSourceSets[0] = sourceSet
-                Log.debug("CoverBlur transition: Bokeh source became ready after \(elapsed / 1_000_000)ms", category: .fullscreen)
-                return .bokeh
-            }
-        }
-
-        Log.info("CoverBlur transition: Gaussian (source preparation timed out, tier=\(tier.rawValue))", category: .fullscreen)
-        return .gaussianFallback(reason: "Bokeh source preparation timed out")
+        Log.info("CoverBlur transition: Gaussian (Bokeh source not ready, tier=\(tier.rawValue))", category: .fullscreen)
+        return .gaussianFallback(reason: "Bokeh source not ready")
     }
 
     private var blurRiseAnimation: Animation {
@@ -577,7 +571,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
 
         transitionTask = Task { @MainActor in
             if !shouldRetargetImmediately {
-                guard let selectedMode = await selectTransitionMode() else { return }
+                let selectedMode = selectTransitionMode()
                 guard !Task.isCancelled, transitionGeneration == generation else { return }
 
                 activeTransitionMode = selectedMode
@@ -678,8 +672,28 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                         guard await waitForTransitionStage(nanoseconds: waitNanos) else { return }
                     }
                 } else {
-                    // No artwork change; just wait for the blur fall.
-                    guard await waitForTransitionStage(nanoseconds: bokehBlurFallDuration) else { return }
+                    // Same artwork: begin the low-resolution handoff when the
+                    // blur-fall curve reaches roughly radius 8. The 0.60 s
+                    // dissolve then finishes shortly after radius zero,
+                    // avoiding both a clear low-res frame and an abrupt cutoff.
+                    guard await waitForTransitionStage(
+                        nanoseconds: bokehHandoffFadeLeadDelay
+                    ) else { return }
+                    withoutSwiftUIAnimation {
+                        bokehHandoffOpacity = 0
+                    }
+                    let remainingBlur = bokehBlurFallDuration > bokehHandoffFadeLeadDelay
+                        ? bokehBlurFallDuration - bokehHandoffFadeLeadDelay
+                        : 0
+                    let remainingHandoff = max(
+                        remainingBlur,
+                        bokehHandoffFadeDuration
+                    )
+                    if remainingHandoff > 0 {
+                        guard await waitForTransitionStage(
+                            nanoseconds: remainingHandoff
+                        ) else { return }
+                    }
                 }
             } else {
                 retireTransitionEffect()
@@ -693,6 +707,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                 // no-op: the floor was already synced above.
                 settledCenteredLayerOpacity = targetPosition
                 bokehSurfaceOpacity = 0
+                bokehHandoffOpacity = 0
                 isTransitionActive = false
             }
             BokehTransitionPerformancePolicy.shared.finish()
@@ -715,6 +730,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             transitionBlurRadius = 0
             withoutSwiftUIAnimation {
                 bokehSurfaceOpacity = 1
+                bokehHandoffOpacity = 1
                 // Raise the base surface; ensure the overlay is dark. The
                 // overlay hosts the old artwork during a fade-out and must
                 // start hidden.
@@ -725,6 +741,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         case .gaussianFallback:
             bokehRadius = 0
             bokehSurfaceOpacity = 0
+            bokehHandoffOpacity = 0
             bokehOpticalOpacities = [0, 0]
             withAnimation(blurRiseAnimation) {
                 transitionBlurRadius = 44
@@ -732,6 +749,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         case .unmaskedFallback:
             bokehRadius = 0
             bokehSurfaceOpacity = 0
+            bokehHandoffOpacity = 0
             bokehOpticalOpacities = [0, 0]
             transitionBlurRadius = 0
         }
@@ -772,6 +790,17 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     /// 0.10 s reduce-motion). The retirement waits this long after the overlay
     /// swap so the fade-out is not cut short by cleanup.
     private var bokehOverlayFadeDuration: UInt64 {
+        context.theme.reduceMotion ? 100_000_000 : 600_000_000
+    }
+
+    /// Publish one display frame before the blur-fall curve reaches radius 8
+    /// (about 0.281 s normal / 0.101 s reduce-motion), so the renderer receives
+    /// the timed-handoff target at the intended radius without an alpha jump.
+    private var bokehHandoffFadeLeadDelay: UInt64 {
+        context.theme.reduceMotion ? 84_000_000 : 264_000_000
+    }
+
+    private var bokehHandoffFadeDuration: UInt64 {
         context.theme.reduceMotion ? 100_000_000 : 600_000_000
     }
 

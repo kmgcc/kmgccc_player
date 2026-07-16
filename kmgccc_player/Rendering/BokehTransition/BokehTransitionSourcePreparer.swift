@@ -70,6 +70,7 @@ final class BokehTransitionSourcePreparer {
 
     private var generation = 0
     private var task: Task<Void, Never>?
+    private var pendingIdentity: BokehTransitionSourceIdentity?
 
     private(set) var currentSourceSet: BokehTransitionPreparedSourceSet?
 
@@ -81,6 +82,7 @@ final class BokehTransitionSourcePreparer {
         generation &+= 1
         task?.cancel()
         task = nil
+        pendingIdentity = nil
         currentSourceSet = nil
     }
 
@@ -92,20 +94,25 @@ final class BokehTransitionSourcePreparer {
     ) {
         let identity = frames.identity(renderSize: renderSize, tier: tier)
         if currentSourceSet?.identity == identity { return }
+        // The three render callbacks and fullscreen geometry updates can all
+        // request the same source set while downsampling is still running.
+        // Restarting identical work repeatedly starves first-entry preparation
+        // and makes an otherwise valid Bokeh transition fall back to Gaussian.
+        if pendingIdentity == identity { return }
 
         generation &+= 1
         let expectedGeneration = generation
         task?.cancel()
+        pendingIdentity = identity
 
         task = Task { [weak self] in
             let prepared = await Task.detached(priority: .userInitiated) {
                 Self.prepare(frames: frames, identity: identity)
             }.value
 
-            guard !Task.isCancelled,
-                  let self,
-                  self.generation == expectedGeneration,
-                  let prepared else { return }
+            guard let self, self.generation == expectedGeneration else { return }
+            self.pendingIdentity = nil
+            guard !Task.isCancelled, let prepared else { return }
 
             self.currentSourceSet = prepared
             #if DEBUG
