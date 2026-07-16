@@ -40,6 +40,7 @@ final class AppSessionHost: ObservableObject {
     private var firstUsePrewarmTask: Task<Void, Never>?
     private var lyricsPlaybackPipeline: LyricsPlaybackPipeline?
     private var didAttemptPlaybackMemoryRestore = false
+    private var didScheduleDeferredLaunchPrompts = false
 
     init(
         modelContainer: ModelContainer,
@@ -66,6 +67,22 @@ final class AppSessionHost: ObservableObject {
 
         LegacyCacheCleanupCoordinator.shared.captureBuild7UpgradeEligibilityBeforeLaunchRecord()
         AppVersionGate.shared.recordCurrentAppLaunch()
+        let crashReportInstallID = await TelemetryService.shared.prepareAnonymousInstallIDForSignedUpload()
+        await CrashReportService.shared.start(
+            anonymousInstallID: crashReportInstallID
+        )
+        if CrashReportService.shared.hasPendingPrompt {
+            CrashReportService.shared.setPromptQueueDrainedHandler { [weak self] in
+                self?.scheduleDeferredLaunchPromptsIfNeeded()
+            }
+        } else {
+            scheduleDeferredLaunchPromptsIfNeeded()
+        }
+    }
+
+    private func scheduleDeferredLaunchPromptsIfNeeded() {
+        guard !didScheduleDeferredLaunchPrompts else { return }
+        didScheduleDeferredLaunchPrompts = true
         LegacyCacheCleanupCoordinator.shared.schedulePromptIfNeeded {
             LegacyCacheCleanupDialogPresenter.present()
         }
@@ -160,6 +177,14 @@ final class AppSessionHost: ObservableObject {
             lyricsVM?.refreshConfigFromSettings()
         }
         TelemetryService.shared.configure(playbackCoordinator: playbackCoordinator)
+        CrashBreadcrumbRecorder.shared.updateAppContext { context in
+            context.playbackSourceCategory = TelemetryPlaybackMode(
+                source: playbackCoordinator.activeSource
+            ).rawValue
+            context.isPlaying = playerVM.isPlaying
+            context.lastOperationCategory = "app_startup"
+        }
+        CrashBreadcrumbRecorder.shared.record(.dependenciesReady)
         ledMeterProvider.playbackSource = playbackCoordinator.activeSource
         AudioVisualizationService.shared.setExternalMode(playbackCoordinator.activeSource.isExternal)
         libraryVM.setImportService(fileImportService)

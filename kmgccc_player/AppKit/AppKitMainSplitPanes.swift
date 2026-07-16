@@ -46,6 +46,7 @@ struct AppKitMainSidebarPaneRoot: View {
 struct AppKitMainContentPaneRoot: View {
     @ObservedObject var appSession: AppSessionHost
     @ObservedObject private var fullscreenWindowManager = FullscreenWindowManager.shared
+    @ObservedObject private var crashReportService = CrashReportService.shared
     @StateObject private var themeStore = ThemeStore.shared
     @ObservedObject var artBackgroundController: BKArtBackgroundController
     @State private var settings = AppSettings.shared
@@ -326,6 +327,24 @@ struct AppKitMainContentPaneRoot: View {
             .modelContainer(appSession.sharedModelContainer)
             .tint(themeStore.accentColor)
             .accentColor(themeStore.accentColor)
+            .sheet(item: crashPromptBinding) { prompt in
+                CrashReportPromptSheet(
+                    prompt: prompt,
+                    onCancel: {
+                        crashReportService.cancelCurrentPrompt()
+                    },
+                    onSend: { description in
+                        crashReportService.sendCurrentPrompt(description: description)
+                    }
+                )
+            }
+    }
+
+    private var crashPromptBinding: Binding<CrashReportPromptPresentation?> {
+        Binding(
+            get: { crashReportService.currentPrompt },
+            set: { _ in }
+        )
     }
 
     private func handleContentModeChange(

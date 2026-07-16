@@ -131,6 +131,15 @@ final class TelemetryService: NSObject {
         identityStore.installID
     }
 
+    /// Returns the install identity after attempting the existing TOFU key
+    /// registration flow. A 409 registration conflict may rotate the install
+    /// ID, so crash reports must bind to the value returned here rather than a
+    /// value captured before registration finishes.
+    func prepareAnonymousInstallIDForSignedUpload() async -> String {
+        _ = await ensureRegistered()
+        return identityStore.installID
+    }
+
     private override init() {
         super.init()
     }
