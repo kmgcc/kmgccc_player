@@ -264,21 +264,20 @@ final class BKThemeAssets: @unchecked Sendable {
     }
 
     nonisolated var artworkFrameCount: Int {
-        artworkFrameEntries.isEmpty ? Self.programmaticFrameIndices.count : artworkFrameEntries.count
+        artworkFrameEntries.count
     }
 
     nonisolated func artworkFrame(at index: Int, maxPixel: Int) -> CGImage? {
-        guard index >= 0, index < artworkFrameCount else { return nil }
+        guard index >= 0, index < artworkFrameEntries.count else { return nil }
 
         let key = "artwork-frame-\(index)-\(maxPixel)" as NSString
         if let cached = artworkFrameCache.object(forKey: key) {
             return cached.images.first
         }
 
-        let image = index < artworkFrameEntries.count
-            ? downsampledImage(from: artworkFrameEntries[index], maxPixel: maxPixel)
-                ?? Self.programmaticImage(kind: .frame, index: index, maxPixel: maxPixel)
-            : Self.programmaticImage(kind: .frame, index: index, maxPixel: maxPixel)
+        guard let image = downsampledImage(from: artworkFrameEntries[index], maxPixel: maxPixel) else {
+            return nil
+        }
 
         let box = ImageArrayBox(images: [image])
         artworkFrameCache.setObject(box, forKey: key, cost: Self.byteCost(for: image))
@@ -334,7 +333,6 @@ final class BKThemeAssets: @unchecked Sendable {
     private nonisolated static let programmaticBackgroundIndices = [0, 1]
     private nonisolated static let programmaticShapeIndices = [0, 1, 2, 3]
     private nonisolated static let programmaticMaskIndices = [0, 1]
-    private nonisolated static let programmaticFrameIndices = [0, 1, 2, 3]
     private nonisolated static let programmaticCircleIndices = [0, 1]
 
     private nonisolated static func programmaticImage(

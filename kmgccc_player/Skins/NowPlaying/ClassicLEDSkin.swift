@@ -228,10 +228,13 @@ private struct ClassicArtworkCoverContainer: View {
         let assets = BKThemeAssets.shared
         let frameCount = assets.artworkFrameCount
         let key = ClassicArtworkFrameMaskKey(track: context.track)
-        guard ClassicArtworkFrameMaskSelection.shared.advanceMask(
+        // Keep the setting inert when the selected frame cannot be loaded. The
+        // cover remains the plain rounded artwork instead of refreshing toward
+        // another unavailable mask.
+        guard let index = ClassicArtworkFrameMaskSelection.shared.advanceMask(
             for: key,
             frameCount: frameCount
-        ) != nil else {
+        ), assets.artworkFrame(at: index, maxPixel: 1) != nil else {
             return
         }
 
