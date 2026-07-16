@@ -116,7 +116,7 @@ struct ClassicCoverArtworkView: View {
                     pillTint: context.theme.artworkAccentColor,
                     isPlaying: context.playback.isPlaying,
                     forceBrightLEDColors: forceBrightLEDColors || context.theme.artBackgroundIsUltraDark,
-                    levelToneVariant: presentation == .appleStyle ? .appleStyleBright : .retuned
+                    levelToneVariant: presentation == .appleStyle ? .appleStyleBright : .skinLight
                 )
             } else if visualizerMode == "spectrum" {
                 PillSpectrumView(
@@ -1077,11 +1077,13 @@ private struct PillSpectrumView: View {
 
     private let capsuleCount: CGFloat = 9
     private let capsuleWidth: CGFloat = 7
-    private let capsuleSpacing: CGFloat = 6
+    // Keep the capsule size unchanged while tightening the gaps so the
+    // spectrum reads as one continuous waveform.
+    private let capsuleSpacing: CGFloat = 4
     private let horizontalPadding: CGFloat = 28
     private let contentHeight: CGFloat = 52  // Spectrum bars height (increased from 48)
     private var verticalPadding: CGFloat {
-        isFullscreen ? 5 : 8  // Slightly shorter background pill in fullscreen
+        isFullscreen ? 1 : 2  // Fullscreen shell gets one final compacting pass
     }
 
     private var contentWidth: CGFloat {

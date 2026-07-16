@@ -33,10 +33,11 @@ struct AudioVisualizationSelectorRow: View {
                 knob: { Capsule().fill(knobColor.opacity(0.18)) },
                 content: { option, isSelected in
                     Text(option.displayName)
-                        .font(.system(
-                            size: presentationStyle.segmentedFontSize,
-                            weight: isSelected ? .medium : .regular
-                        ))
+                        // Keep typography invariant across selection states.
+                        // In particular, "LED" has different advances at
+                        // regular and medium weights, which shifts the glyphs
+                        // and can perturb the capsule's intrinsic width.
+                        .font(presentationStyle.segmentedLabelFont)
                         .padding(.horizontal, presentationStyle.segmentedHorizontalPadding)
                         .padding(.vertical, presentationStyle.segmentedVerticalPadding)
                         .foregroundStyle(
