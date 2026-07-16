@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		9351198E2F33149A00766A5F /* AMLL in Resources */ = {isa = PBXBuildFile; fileRef = 9351198D2F33149A00766A5F /* AMLL */; };
 		938818D32F7925E800880C23 /* WhatsNewKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000002 /* WhatsNewKit */; };
+		938818D42F7925E800880C24 /* CrashReporter in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000004 /* CrashReporter */; };
 		A01000000000000000000001 /* youdowhat.wav in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000001 /* youdowhat.wav */; };
 		A01000000000000000000002 /* youdowhatreversed.wav in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000002 /* youdowhatreversed.wav */; };
 		A01000000000000000000003 /* AGPL-3.0.txt in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000003 /* AGPL-3.0.txt */; };
@@ -20,10 +21,15 @@
 		A01000000000000000000009 /* applemusic-like-lyrics.txt in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000009 /* applemusic-like-lyrics.txt */; };
 		A0100000000000000000000A /* zh-Hans.lproj in Resources */ = {isa = PBXBuildFile; fileRef = B0100000000000000000000A /* zh-Hans.lproj */; };
 		A0100000000000000000000B /* kmgccc.icon in Resources */ = {isa = PBXBuildFile; fileRef = B0100000000000000000000B /* kmgccc.icon */; };
+		A0100000000000000000000C /* PLCrashReporter-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = B0100000000000000000000C /* PLCrashReporter-LICENSE.txt */; };
 		C02000000000000000000001 /* kmgccc_playerTests/MetadataMatchScorerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000011 /* kmgccc_playerTests/MetadataMatchScorerTests.swift */; };
 		C02000000000000000000002 /* kmgccc_playerTests/SkinRoutePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000012 /* kmgccc_playerTests/SkinRoutePolicyTests.swift */; };
 		C02000000000000000000003 /* ExternalPlaybackTextNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000013 /* ExternalPlaybackTextNormalizer.swift */; };
 		C02000000000000000000004 /* SkinRoutePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000014 /* SkinRoutePolicy.swift */; };
+		C02000000000000000000005 /* kmgccc_playerTests/CrashReportingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000016 /* kmgccc_playerTests/CrashReportingTests.swift */; };
+		C02000000000000000000006 /* CrashReportModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000017 /* CrashReportModels.swift */; };
+		C02000000000000000000007 /* CrashReportSanitizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000018 /* CrashReportSanitizer.swift */; };
+		C02000000000000000000008 /* CrashReportStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000019 /* CrashReportStore.swift */; };
 		F01000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000001 /* AppDelegate.swift */; };
 		F01000000000000000000002 /* DockController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000002 /* DockController.swift */; };
 		F01000000000000000000003 /* PlaybackCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000003 /* PlaybackCommands.swift */; };
@@ -46,11 +52,16 @@
 		B01000000000000000000009 /* applemusic-like-lyrics.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "applemusic-like-lyrics.txt"; path = "kmgccc_player/Resources/Licenses/applemusic-like-lyrics.txt"; sourceTree = "<group>"; };
 		B0100000000000000000000A /* zh-Hans.lproj */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "zh-Hans.lproj"; path = "kmgccc_player/Resources/zh-Hans.lproj"; sourceTree = "<group>"; };
 		B0100000000000000000000B /* kmgccc.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; name = kmgccc.icon; path = kmgccc_player/kmgccc.icon; sourceTree = "<group>"; };
+		B0100000000000000000000C /* PLCrashReporter-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "PLCrashReporter-LICENSE.txt"; path = "kmgccc_player/Resources/Licenses/PLCrashReporter-LICENSE.txt"; sourceTree = "<group>"; };
 		C02000000000000000000010 /* kmgccc_playerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = kmgccc_playerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C02000000000000000000011 /* kmgccc_playerTests/MetadataMatchScorerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/MetadataMatchScorerTests.swift; sourceTree = "<group>"; };
 		C02000000000000000000012 /* kmgccc_playerTests/SkinRoutePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/SkinRoutePolicyTests.swift; sourceTree = "<group>"; };
 		C02000000000000000000013 /* ExternalPlaybackTextNormalizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ExternalPlaybackTextNormalizer.swift; path = kmgccc_player/Services/ExternalPlayback/ExternalPlaybackTextNormalizer.swift; sourceTree = "<group>"; };
 		C02000000000000000000014 /* SkinRoutePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SkinRoutePolicy.swift; path = kmgccc_player/Skins/NowPlaying/SkinRoutePolicy.swift; sourceTree = "<group>"; };
+		C02000000000000000000016 /* kmgccc_playerTests/CrashReportingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/CrashReportingTests.swift; sourceTree = "<group>"; };
+		C02000000000000000000017 /* CrashReportModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CrashReportModels.swift; path = kmgccc_player/Services/CrashReporting/CrashReportModels.swift; sourceTree = "<group>"; };
+		C02000000000000000000018 /* CrashReportSanitizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CrashReportSanitizer.swift; path = kmgccc_player/Services/CrashReporting/CrashReportSanitizer.swift; sourceTree = "<group>"; };
+		C02000000000000000000019 /* CrashReportStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CrashReportStore.swift; path = kmgccc_player/Services/CrashReporting/CrashReportStore.swift; sourceTree = "<group>"; };
 		E01000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = kmgccc_player/AppDelegate.swift; sourceTree = "<group>"; };
 		E01000000000000000000002 /* DockController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DockController.swift; path = kmgccc_player/DockController.swift; sourceTree = "<group>"; };
 		E01000000000000000000003 /* PlaybackCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlaybackCommands.swift; path = kmgccc_player/PlaybackCommands.swift; sourceTree = "<group>"; };
@@ -119,6 +130,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				938818D42F7925E800880C24 /* CrashReporter in Frameworks */,
 				938818D32F7925E800880C23 /* WhatsNewKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -194,6 +206,7 @@
 				B01000000000000000000008 /* apple-audio-visualization.txt */,
 				B01000000000000000000009 /* applemusic-like-lyrics.txt */,
 				B0100000000000000000000A /* zh-Hans.lproj */,
+				B0100000000000000000000C /* PLCrashReporter-LICENSE.txt */,
 			);
 			name = "Runtime Resources";
 			sourceTree = "<group>";
@@ -216,6 +229,10 @@
 				C02000000000000000000012 /* kmgccc_playerTests/SkinRoutePolicyTests.swift */,
 				C02000000000000000000013 /* ExternalPlaybackTextNormalizer.swift */,
 				C02000000000000000000014 /* SkinRoutePolicy.swift */,
+				C02000000000000000000016 /* kmgccc_playerTests/CrashReportingTests.swift */,
+				C02000000000000000000017 /* CrashReportModels.swift */,
+				C02000000000000000000018 /* CrashReportSanitizer.swift */,
+				C02000000000000000000019 /* CrashReportStore.swift */,
 			);
 			name = Tests;
 			sourceTree = "<group>";
@@ -241,18 +258,19 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				D01000000000000000000001 /* kmgccc_player/AppKit */,
-				D01000000000000000000002 /* kmgccc_player/Models */,
-				D01000000000000000000003 /* kmgccc_player/Rendering */,
-				D01000000000000000000004 /* kmgccc_player/Repositories */,
-				D01000000000000000000005 /* kmgccc_player/Services */,
-				D01000000000000000000006 /* kmgccc_player/Skins */,
-				D01000000000000000000007 /* kmgccc_player/Utilities */,
-				D01000000000000000000008 /* kmgccc_player/ViewModels */,
-				D01000000000000000000009 /* kmgccc_player/Views */,
+				D01000000000000000000001 /* AppKit */,
+				D01000000000000000000002 /* Models */,
+				D01000000000000000000003 /* Rendering */,
+				D01000000000000000000004 /* Repositories */,
+				D01000000000000000000005 /* Services */,
+				D01000000000000000000006 /* Skins */,
+				D01000000000000000000007 /* Utilities */,
+				D01000000000000000000008 /* ViewModels */,
+				D01000000000000000000009 /* Views */,
 			);
 			name = kmgccc_player;
 			packageProductDependencies = (
+				AA0000000000000000000004 /* CrashReporter */,
 				AA0000000000000000000002 /* WhatsNewKit */,
 			);
 			productName = kmgccc_player;
@@ -308,6 +326,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				AA0000000000000000000001 /* XCRemoteSwiftPackageReference "WhatsNewKit" */,
+				AA0000000000000000000003 /* XCRemoteSwiftPackageReference "plcrashreporter" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 935118932F3231C500766A5F /* Products */;
@@ -337,6 +356,7 @@
 				A01000000000000000000009 /* applemusic-like-lyrics.txt in Resources */,
 				A0100000000000000000000A /* zh-Hans.lproj in Resources */,
 				A0100000000000000000000B /* kmgccc.icon in Resources */,
+				A0100000000000000000000C /* PLCrashReporter-LICENSE.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -485,6 +505,10 @@
 				C02000000000000000000004 /* SkinRoutePolicy.swift in Sources */,
 				C02000000000000000000001 /* kmgccc_playerTests/MetadataMatchScorerTests.swift in Sources */,
 				C02000000000000000000002 /* kmgccc_playerTests/SkinRoutePolicyTests.swift in Sources */,
+				C02000000000000000000005 /* kmgccc_playerTests/CrashReportingTests.swift in Sources */,
+				C02000000000000000000006 /* CrashReportModels.swift in Sources */,
+				C02000000000000000000007 /* CrashReportSanitizer.swift in Sources */,
+				C02000000000000000000008 /* CrashReportStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -798,6 +822,14 @@
 				version = 2.2.1;
 			};
 		};
+		AA0000000000000000000003 /* XCRemoteSwiftPackageReference "plcrashreporter" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/microsoft/plcrashreporter.git";
+			requirement = {
+				kind = exactVersion;
+				version = 1.12.2;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -805,6 +837,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA0000000000000000000001 /* XCRemoteSwiftPackageReference "WhatsNewKit" */;
 			productName = WhatsNewKit;
+		};
+		AA0000000000000000000004 /* CrashReporter */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA0000000000000000000003 /* XCRemoteSwiftPackageReference "plcrashreporter" */;
+			productName = CrashReporter;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
