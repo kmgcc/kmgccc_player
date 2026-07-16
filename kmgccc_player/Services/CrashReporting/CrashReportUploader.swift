@@ -153,6 +153,13 @@ final class CrashReportUploader {
             guard let http = response as? HTTPURLResponse else {
                 throw CrashReportDeliveryError.retryable(statusCode: nil)
             }
+            if !(200..<300).contains(http.statusCode) {
+                let detail = boundedResponseDetail(data)
+                Log.warning(
+                    "[CrashReporting] Upload rejected path=\(request.url?.path ?? "unknown") status=\(http.statusCode) detail=\(detail)",
+                    category: .telemetry
+                )
+            }
             switch http.statusCode {
             case 200..<300:
                 return (data, http)
@@ -170,6 +177,11 @@ final class CrashReportUploader {
         } catch {
             throw CrashReportDeliveryError.retryable(statusCode: nil)
         }
+    }
+
+    private func boundedResponseDetail(_ data: Data) -> String {
+        let raw = String(data: data.prefix(1_024), encoding: .utf8) ?? "unreadable_response"
+        return String(raw.replacingOccurrences(of: "\n", with: " ").prefix(240))
     }
 }
 

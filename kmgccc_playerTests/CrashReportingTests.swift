@@ -101,6 +101,14 @@ final class CrashReportStoreTests: XCTestCase {
 }
 
 final class CrashReportDeliveryModelTests: XCTestCase {
+    func testLegacyVisibleSurfacesNormalizeToServerContract() {
+        XCTAssertEqual(CrashVisibleSurface.canonicalValue(for: "main_window"), "unknown")
+        XCTAssertEqual(CrashVisibleSurface.canonicalValue(for: "fullscreen_player"), "full_screen")
+        XCTAssertEqual(CrashVisibleSurface.canonicalValue(for: "now_playing_window"), "now_playing")
+        XCTAssertEqual(CrashVisibleSurface.canonicalValue(for: "library"), "library")
+        XCTAssertNil(CrashVisibleSurface.canonicalValue(for: nil))
+    }
+
     func testCrashCaptureSnapshotCarriesSessionIDAndDecodesLegacyPayload() throws {
         let snapshot = CrashCaptureSnapshot(
             sessionID: "session-test",

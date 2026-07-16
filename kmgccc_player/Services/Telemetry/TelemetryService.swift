@@ -362,11 +362,11 @@ final class TelemetryService: NSObject {
         let isFullScreen = FullscreenWindowManager.shared.usesFullscreenPlayerUI
         let visibleSurface: String
         if isFullScreen {
-            visibleSurface = "fullscreen_player"
+            visibleSurface = CrashVisibleSurface.fullScreen.rawValue
         } else if isWindowNowPlayingVisible {
-            visibleSurface = "now_playing_window"
+            visibleSurface = CrashVisibleSurface.nowPlaying.rawValue
         } else {
-            visibleSurface = "main_window"
+            visibleSurface = CrashVisibleSurface.unknown.rawValue
         }
         let selectedSkinID = isFullScreen ? currentFullscreenSkinID() : currentWindowSkinID()
         let didChange = crashVisibleSurface != nil

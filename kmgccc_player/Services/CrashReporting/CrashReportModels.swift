@@ -136,6 +136,29 @@ nonisolated struct CrashAppContext: Codable, Sendable, Equatable {
     var lastOperationCategory: String?
 }
 
+nonisolated enum CrashVisibleSurface: String, Sendable {
+    case home
+    case library
+    case nowPlaying = "now_playing"
+    case settings
+    case fullScreen = "full_screen"
+    case miniPlayer = "mini_player"
+    case unknown
+
+    static func canonicalValue(for value: String?) -> String? {
+        switch value {
+        case "fullscreen_player":
+            CrashVisibleSurface.fullScreen.rawValue
+        case "now_playing_window":
+            CrashVisibleSurface.nowPlaying.rawValue
+        case "main_window":
+            CrashVisibleSurface.unknown.rawValue
+        default:
+            value
+        }
+    }
+}
+
 nonisolated struct CrashBreadcrumb: Codable, Sendable, Equatable {
     var occurredAt: Date?
     var category: String
