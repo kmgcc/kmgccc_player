@@ -1935,6 +1935,13 @@ struct FullscreenPlayerView: View {
                 .opacity(isFullscreenBottomControlsVisible ? 1 : 0)
                 .allowsHitTesting(isFullscreenBottomControlsVisible)
                 .accessibilityHidden(!isFullscreenBottomControlsVisible)
+                // Force the Liquid Glass material polarity at the container scope.
+                // The material resolves its tint here, not from the per-pill
+                // `.environment(\.colorScheme, …)` overrides inside the closure,
+                // so the override must sit on the container to take effect. This
+                // is what makes Cover Blur / Apple Style glass track the
+                // complementary polarity instead of the app appearance.
+                .environment(\.colorScheme, fullscreenControlsGlassStyle.colorScheme)
             }
             .frame(width: scaledWindowWidth, height: controlsRowHeight, alignment: .leading)
             .padding(.bottom, adjustedBottomPadding)
@@ -2574,15 +2581,23 @@ struct FullscreenPlayerView: View {
     private var fullscreenControlsGlassStyle: FullscreenControlsGlassStyle {
         let materialStyle: LiquidGlassPillMaterialStyle =
             settings.fullscreenMiniPlayerGlassMaterial == .normal ? .normal : .clear
-        
-        let effectiveColorScheme: ColorScheme
-        if materialStyle == .normal {
-            effectiveColorScheme = fullscreenMiniPlayerForegroundProfile.complementaryGlassColorScheme
-        } else {
-            // Clear material or regular: use the default controls color scheme
-            effectiveColorScheme = fullscreenControlsColorScheme
-        }
-        
+
+        // The glass surface uses the polarity complementary to the resolved
+        // foreground ink, for both Clear and Normal Glass. This value is also
+        // forced onto the GlassEffectContainer via `.environment(\.colorScheme, …)`
+        // (see fullscreenBottomBarLayer) so the Liquid Glass material itself
+        // renders in that polarity, independent of the app appearance. The
+        // per-pill `.environment(\.colorScheme, …)` overrides that were added
+        // before did NOT reach the material - the GlassEffectContainer resolves
+        // the glass tint at its own scope, so the override must sit on the
+        // container, not on the pills inside it. Clear Glass previously forced
+        // `.dark` for Cover Blur / Apple Style, which left Cover Blur Clear
+        // Glass dark-tinted even on bright covers (dark ink); complementary
+        // makes it follow the cover. For every other skin complementary equals
+        // the app appearance, so they are unchanged.
+        let effectiveColorScheme: ColorScheme =
+            fullscreenMiniPlayerForegroundProfile.complementaryGlassColorScheme
+
         return FullscreenControlsGlassStyle(
             colorScheme: effectiveColorScheme,
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
@@ -2616,10 +2631,6 @@ struct FullscreenPlayerView: View {
             skinID: settings.fullscreen.skinID,
             colorScheme: colorScheme
         )
-    }
-
-    private var fullscreenControlsColorScheme: ColorScheme {
-        (isCoverBlurFullscreenSkin || isAppleStyleFullscreenSkin) ? .dark : colorScheme
     }
 
     private var coverBlurBaseBlendMode: BlendMode {
