@@ -24,6 +24,7 @@ esac
 DERIVED_DATA_PATH="${DERIVED_DATA_PATH:-${TMPDIR:-/tmp}/kmgccc-player-$CONFIGURATION}"
 PROJECT="$REPO_ROOT/kmgccc_player.xcodeproj"
 APP="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION/kmgccc_player.app"
+DSYM="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION/kmgccc_player.app.dSYM"
 rm -rf "$DERIVED_DATA_PATH"
 
 xcodebuild \
@@ -38,6 +39,20 @@ xcodebuild \
 
 [[ -d "$APP" ]] || { echo "error: app was not produced: $APP" >&2; exit 1; }
 "$SCRIPT_DIR/check-app-bundle.sh" "$APP"
+
+if [[ "$CONFIGURATION" == "Release" ]]; then
+  [[ -d "$DSYM" ]] || { echo "error: Release build did not produce a dSYM: $DSYM" >&2; exit 1; }
+  [[ -n "${CRASH_SYMBOL_ARCHIVE_DIR:-}" && -n "${CRASH_SYMBOL_BACKUP_DIR:-}" ]] || {
+    echo "error: Release symbol retention requires CRASH_SYMBOL_ARCHIVE_DIR and CRASH_SYMBOL_BACKUP_DIR" >&2
+    exit 1
+  }
+  "$SCRIPT_DIR/package-crash-symbols.sh" \
+    --app "$APP" \
+    --dsym "$DSYM" \
+    --manifest "$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION/kmgccc_player.symbols-manifest.json" \
+    --archive-dir "$CRASH_SYMBOL_ARCHIVE_DIR" \
+    --backup-dir "$CRASH_SYMBOL_BACKUP_DIR"
+fi
 
 if [[ -n "$OUTPUT_DIR" ]]; then
   mkdir -p "$OUTPUT_DIR"
