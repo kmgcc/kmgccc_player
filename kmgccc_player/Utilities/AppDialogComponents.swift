@@ -162,10 +162,10 @@ struct AppDialogConfirmHeader: View {
     let iconName: String
     let iconColor: Color
     let title: String
-    let description: String
+    var description: String? = nil
 
     var body: some View {
-        VStack(spacing: AppDialogTokens.confirmHeaderSpacing) {
+        HStack(spacing: AppDialogTokens.confirmHeaderSpacing) {
             Image(systemName: iconName)
                 .font(.system(size: AppDialogTokens.confirmIconSize, weight: .medium))
                 .foregroundStyle(iconColor)
@@ -181,19 +181,22 @@ struct AppDialogConfirmHeader: View {
                     .fill(iconColor.opacity(AppDialogTokens.confirmIconOpacity))
                 )
 
-            VStack(spacing: AppDialogTokens.confirmTitleBodySpacing) {
+            VStack(alignment: .leading, spacing: AppDialogTokens.confirmTitleBodySpacing) {
                 Text(title)
                     .font(.title3.bold())
                     .foregroundStyle(.primary)
-                Text(description)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+                    .multilineTextAlignment(.leading)
+                if let description {
+                    Text(description)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
+                }
             }
         }
         .padding(.horizontal, AppDialogTokens.headerHorizontalPadding)
         .padding(.vertical, AppDialogTokens.confirmHeaderVerticalPadding)
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(.thinMaterial)
     }
 }
