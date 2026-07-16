@@ -327,9 +327,8 @@ struct AppKitMainContentPaneRoot: View {
             .modelContainer(appSession.sharedModelContainer)
             .tint(themeStore.accentColor)
             .accentColor(themeStore.accentColor)
-            .sheet(item: crashPromptBinding) { prompt in
+            .sheet(item: crashPromptBinding) { _ in
                 CrashReportPromptSheet(
-                    prompt: prompt,
                     onCancel: {
                         crashReportService.cancelCurrentPrompt()
                     },
