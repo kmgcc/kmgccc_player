@@ -451,7 +451,10 @@ final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
         commandBuffer.label = "Fullscreen Cover Bokeh Transition"
 
         let presentation = presentationState.snapshot(at: CACurrentMediaTime())
-        view.alphaValue = presentation.opticalOpacity
+        let radiusVisibility = BokehTransitionConfig.opticalVisibility(
+            forRadiusAt1080: presentation.bokehRadius
+        )
+        view.alphaValue = presentation.opticalOpacity * radiusVisibility
         let canvasRatio = presentation.transitionCanvasSizeRatio
         var composeUniforms = TransitionComposeUniforms(
             viewportSize: SIMD2(Float(intermediate.size.width), Float(intermediate.size.height)),
