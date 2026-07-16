@@ -13,7 +13,7 @@
 | [资料库存储](library-storage.md) | 用户数据、缓存、索引、播放历史和清理操作之间的边界 |
 | [曲库搜索](search.md) | FTS5、字符 n-gram、TTML 纯文本提取、候选召回与排序 |
 | [偏好随机播放](smart-shuffle.md) | 行为信号、负向衰减、探索与再曝光的权重模型 |
-| [崩溃报告与分析](crash-reporting.md) | 捕获与上报架构、隐私边界、Breadcrumb/会话关联、报告阅读、dSYM 符号化和受控验证 |
+| [崩溃报告与分析](crash-reporting.md) | 捕获与上报架构、隐私边界、Breadcrumb/会话关联、GitHub Release dSYM、符号化和受控验证 |
 
 ## 术语约定
 

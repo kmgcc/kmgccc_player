@@ -134,9 +134,11 @@ jq '.threads[]
 
 同一问题的多份报告应优先按异常类型、crashed thread 前几个 App frame 和 image UUID 聚合，版本号、OS 和操作上下文用于判断影响范围。仅凭最后一个 Breadcrumb 给某项功能定责并不可靠，因为真正的崩溃可能发生在异步回调或稍晚执行的任务中。
 
-## 保留 Release 符号
+## 发布和保留 Release 符号
 
-生产 dSYM 默认不上传服务器。Release 构建必须同时提供两个不同的私有归档目录：
+每个正式 [GitHub Release](https://github.com/kmgcc/kmgccc_player/releases) 都应附带与该发布构建完全匹配的主 App dSYM，供贡献者和维护者分析崩溃。dSYM 不上传崩溃诊断服务器；服务器只保存脱敏报告和可选的小型符号化结果。公开 Release 资产用于协作分析，两个私有归档仍承担长期保留和灾难恢复，不能由 GitHub 上的一份附件代替。
+
+Release 构建必须同时提供两个不同的私有归档目录：
 
 ```bash
 CRASH_SYMBOL_ARCHIVE_DIR='<本地私有归档目录>' \
@@ -158,6 +160,34 @@ CRASH_SYMBOL_BACKUP_DIR='<另一份可靠备份目录>' \
 ```
 
 版本号和 build number 不能代替 UUID。重新编译相同源码也可能产生新的 Mach-O UUID；报告、App 和 dSYM 的目标架构与 UUID 必须完全一致。
+
+### GitHub Release 资产
+
+`package-crash-symbols.sh` 生成的归档名称包含 version、build 和 UUID 前缀：
+
+```text
+kmgccc_player_<version>_<build>_<uuid-prefix>.symbols.zip
+```
+
+发布者应把脚本生成的 ZIP 原样附加到对应 GitHub Release，不重新压缩、不替换其中的 manifest，也不使用另一次构建生成的 dSYM。若同一个 Release 同时提供不同架构或不同构建产物，每份资产都要用名称和 manifest 明确区分。
+
+贡献者分析报告时，先在报告的 `app.version` 和 `app.build` 对应的 GitHub Release 下载 `.symbols.zip`，再查看归档内的 manifest：
+
+```bash
+SYMBOLS='<下载的 kmgccc_player_*.symbols.zip>'
+
+unzip -p "$SYMBOLS" manifest.json | jq .
+
+DESTINATION='<本地符号目录>'
+mkdir -p "$DESTINATION"
+unzip "$SYMBOLS" -d "$DESTINATION"
+
+DSYM="$DESTINATION/kmgccc_player.app.dSYM"
+/usr/bin/dwarfdump --uuid \
+  "$DSYM/Contents/Resources/DWARF/kmgccc_player"
+```
+
+下载了正确版本仍不代表 UUID 一定匹配。报告 UUID 与 manifest、dSYM 的目标架构和 UUID 全部一致后，才进入下一节的 `atos` 符号化步骤。若 GitHub Release 缺少对应资产或校验失败，应在 Issue 中提供 version、build、architecture 和报告 UUID，不要上传包含用户说明或未经脱敏路径的完整报告。
 
 ## 用 dSYM 符号化
 

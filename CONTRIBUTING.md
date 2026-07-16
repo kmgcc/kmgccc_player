@@ -48,6 +48,8 @@ open kmgccc_player.xcodeproj
 
 需要实际启动 App 时运行 `./scripts/build_and_run.sh`。需要验证 Release 产物时运行 `./scripts/build_app.sh Release`。
 
+分析正式版本的崩溃报告时，从对应的 [GitHub Release](https://github.com/kmgcc/kmgccc_player/releases) 下载 `kmgccc_player_<version>_<build>_<uuid-prefix>.symbols.zip`。归档包含主 App dSYM 和 UUID manifest；version、build、architecture 与 UUID 都匹配后才能用于符号化。报告字段阅读、UUID 校验和 `atos` 命令见 [崩溃报告与分析](docs/crash-reporting.md)。公开 Issue 只提交已经脱敏且定位问题所需的最小信息，不要上传用户说明或含有本地路径的原始文件。
+
 ## 提交 Pull Request
 
 PR 描述至少写清：
