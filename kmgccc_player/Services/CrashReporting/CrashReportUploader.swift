@@ -22,6 +22,7 @@ nonisolated struct CrashUserContextUploadResponse: Decodable, Sendable {
 @MainActor
 final class CrashReportUploader {
     private static let technicalPath = "/api/v1/telemetry/crash-reports"
+    private static let metricKitPath = "/api/v1/telemetry/diagnostic-reports"
     private let baseURL: URL
     private let session: URLSession
     private let signer: TelemetryRequestSigner
@@ -96,6 +97,30 @@ final class CrashReportUploader {
         guard let decoded = try? JSONDecoder().decode(CrashUserContextUploadResponse.self, from: data),
               decoded.success,
               decoded.reportID.caseInsensitiveCompare(reportID) == .orderedSame else {
+            throw CrashReportDeliveryError.retryable(statusCode: response.statusCode)
+        }
+    }
+
+    func uploadMetricKitDiagnostic(_ diagnostic: MetricKitDiagnosticEnvelope) async throws {
+        let json = try JSONEncoder.crashReportEncoder().encode(diagnostic)
+        let body = try await Task.detached(priority: .utility) {
+            try CrashGzip.compress(json)
+        }.value
+        guard body.count <= 512 * 1024 else {
+            throw CrashReportDeliveryError.permanent(statusCode: 413)
+        }
+        var request = try signedRequest(
+            method: "POST",
+            path: Self.metricKitPath,
+            body: body,
+            clientID: diagnostic.anonymousInstallID
+        )
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("gzip", forHTTPHeaderField: "Content-Encoding")
+        let (data, response) = try await perform(request)
+        guard let decoded = try? JSONDecoder().decode(CrashTechnicalUploadResponse.self, from: data),
+              decoded.success,
+              decoded.reportID.caseInsensitiveCompare(diagnostic.reportID) == .orderedSame else {
             throw CrashReportDeliveryError.retryable(statusCode: response.statusCode)
         }
     }

@@ -145,6 +145,57 @@ final class CrashReportDeliveryModelTests: XCTestCase {
     }
 }
 
+final class MetricKitDiagnosticTests: XCTestCase {
+    func testSanitizerRemovesExternalPathsSecretsAndURLDetails() throws {
+        let input = Data(#"{"callStackTree":{"callStackPerThread":true,"binaryName":"/Users/alice/Desktop/My Song.flac"},"reason":"token=secret-value https://example.com/path?user=alice","symbol":"Player.openTrack()"}"#.utf8)
+
+        let result = try MetricKitDiagnosticSanitizer.sanitize(input)
+
+        XCTAssertFalse(result.json.contains("alice"))
+        XCTAssertFalse(result.json.contains("secret-value"))
+        XCTAssertFalse(result.json.contains("?user="))
+        XCTAssertTrue(result.json.contains("Player.openTrack()"))
+        XCTAssertGreaterThan(result.counts["externalPath"] ?? 0, 0)
+    }
+
+    func testMetricKitStoreDeduplicatesStableReportID() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = MetricKitDiagnosticStore(rootURL: root, maxRecords: 5, maxBytes: 1_000_000)
+        let envelope = MetricKitDiagnosticEnvelope(
+            schemaVersion: 1,
+            reportID: "8ff5d778-eedf-54c5-9ac7-5b961f3fa6f1",
+            anonymousInstallID: "install-test",
+            diagnosticKind: .hang,
+            intervalBegin: Date(timeIntervalSince1970: 10),
+            intervalEnd: Date(timeIntervalSince1970: 20),
+            appVersion: "2.2.0",
+            buildNumber: "8",
+            architecture: "arm64",
+            osVersion: "macOS 26.0",
+            deviceType: "Mac",
+            payloadJSON: "{}",
+            clientRedactionVersion: "1",
+            clientRedactionCounts: [:],
+            uploadMode: "automatic"
+        )
+        let record = MetricKitDiagnosticRecord(
+            envelope: envelope,
+            attemptCount: 0,
+            nextRetryAt: nil,
+            lastErrorCategory: nil
+        )
+
+        try await store.insertIfNeeded(record)
+        try await store.insertIfNeeded(record)
+
+        let records = await store.records()
+        XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records.first?.id, envelope.reportID)
+    }
+}
+
 private func makeCrashReport() -> CrashReportEnvelope {
     let reportID = "922da39a-7985-41d9-8664-5dd613e292ed"
     return CrashReportEnvelope(

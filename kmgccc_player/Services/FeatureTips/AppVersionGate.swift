@@ -11,7 +11,8 @@ enum FeatureTipCatalog {
     static let enabledFeatureKeys: Set<String> = [
         "fullscreen.playbackModeRetap",
         "playbackSource.externalAppPlayback",
-        "playlist.shiftRangeSelection"
+        "playlist.shiftRangeSelection",
+        "dataSharing.automaticCrashReports"
     ]
 
     static func isEnabled(featureKey: String) -> Bool {
