@@ -471,12 +471,14 @@ nonisolated enum ColorSystemTokens {
         static let nearMonoChromaCeiling: CGFloat = 0.004
         static let nearMonoChromaAssertion: CGFloat = 0.005
 
-        // LED ladder. v4 keeps the v3 visible L band but makes the level
-        // language explicit: lower levels carry stronger style drift and a
-        // wider chroma ramp, while peak returns closest to the semantic seed.
-        // Light foreground LEDs gain a stronger night glow. Dark foreground
-        // LEDs reverse the L ramp so increasing signal reads as progressively
-        // darker ink against bright glass instead of a brighter tint. Skin and
+        // LED ladder. v7 is a drive-contrast model rather than a same-colour
+        // opacity ramp. Low and middle current deliberately carry MORE
+        // chroma than the fully driven LED; the peak trades some chroma for
+        // high lightness, which reads as overexposure instead of a pale fade.
+        // The low-drive chroma floor follows the same direction, so the
+        // effect survives weak semantic seeds and the later opacity blend.
+        // Light foreground LEDs reverse the L ramp so increasing signal reads
+        // as progressively darker ink against bright glass. Skin and
         // MiniPlayer keep separate light-mode endpoints because the compact
         // progress surface needs a slightly tighter dark register.
         //
@@ -484,30 +486,44 @@ nonisolated enum ColorSystemTokens {
         // lightness delta is visible *after* the opacity ramp (which is
         // the dominant brightness driver). v2's narrow 0.78–0.92 band was
         // visually flat because the perceived lightness difference between
-        // levels was dominated by opacity alone. Chroma climbs toward peak;
-        // the output boundary may apply only a small final gamut shoulder for
-        // high-risk hues at the brighter lightness target.
-        static let ledDarkMinL: CGFloat = 0.680
-        static let ledDarkPeakL: CGFloat = 0.855
-        static let ledUltraDarkPeakL: CGFloat = 0.845
-        static let ledLightMinL: CGFloat = 0.610
-        static let ledLightPeakL: CGFloat = 0.300
-        static let ledMiniPlayerLightMinL: CGFloat = 0.595
-        static let ledMiniPlayerLightPeakL: CGFloat = 0.270
+        // levels was dominated by opacity alone. v7 reverses the chroma
+        // direction for low/middle drive; the output boundary may apply a
+        // final gamut shoulder for high-risk hues at the brighter target.
+        static let ledDarkMinL: CGFloat = 0.650
+        static let ledDarkPeakL: CGFloat = 0.915
+        static let ledUltraDarkPeakL: CGFloat = 0.900
+        static let ledLightMinL: CGFloat = 0.700
+        static let ledLightPeakL: CGFloat = 0.220
+        static let ledMiniPlayerLightMinL: CGFloat = 0.680
+        static let ledMiniPlayerLightPeakL: CGFloat = 0.200
+        static let ledSkinLightPeakLightnessLift: CGFloat = 0.105
+        static let ledSkinLightPeakLightnessLiftExponent: CGFloat = 2.20
         static let ledAppleStyleMinL: CGFloat = 0.820
         static let ledAppleStylePeakL: CGFloat = 0.970
-        static let ledLowChromaScale: CGFloat = 0.74
-        static let ledPeakChromaScale: CGFloat = 0.96
-        static let ledLightLowChromaScale: CGFloat = 0.70
-        static let ledLightPeakChromaScale: CGFloat = 0.94
-        static let ledShadowDriftScale: CGFloat = 1.85
+        static let ledDarkLowChromaScale: CGFloat = 2.35
+        static let ledDarkPeakChromaScale: CGFloat = 0.74
+        static let ledLightLowChromaScale: CGFloat = 2.20
+        static let ledLightPeakChromaScale: CGFloat = 0.72
+        static let ledDarkChromaCapScale: CGFloat = 1.70
+        static let ledLightChromaCapScale: CGFloat = 1.55
+        static let ledDarkChromaCurveExponent: CGFloat = 1.32
+        static let ledLightChromaCurveExponent: CGFloat = 1.26
+        static let ledShadowDriftScale: CGFloat = 5.4
+        static let ledShadowDriftCurveExponent: CGFloat = 0.68
         static let ledHighlightDriftScale: CGFloat = 0.0
         static let ledNearMonoChromaCap: CGFloat = 0.006
         static let ledColorfulMinimumChroma: CGFloat = 0.062
+        static let ledColorfulLevelFloorScale: CGFloat = 1.70
+        static let ledColorfulLevelFloorCurveExponent: CGFloat = 0.86
         static let ledColorfulMinimumChromaAssertion: CGFloat = 0.055
         static let ledPerceptualStepAssertion: CGFloat = 0.055
         static let ledLightnessVisibilityAssertion: CGFloat = 0.180
         static let ledPeakLightnessCeilingAssertion: CGFloat = 0.95
+        // v7 intentionally makes low/middle levels visibly biased. With the
+        // stronger chroma shoulder, Display P3 -> deviceRGB readback can add
+        // a little extra rotation at the gamut edge; keep it below 25 degrees
+        // so the LED still reads as the same hue family.
+        static let ledHueDriftCeilingAssertion: CGFloat = 0.070
         static let ledStrokeLightnessTrimDark: CGFloat = 0.060
         static let ledStrokeLightnessTrimLight: CGFloat = 0.040
         static let ledStrokeChromaScale: CGFloat = 0.92
