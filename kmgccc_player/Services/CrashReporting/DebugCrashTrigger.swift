@@ -24,13 +24,23 @@ enum DebugCrashTrigger {
             }
         case "main-segv":
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                raise(SIGSEGV)
+                triggerInvalidMemoryAccess()
             }
         default:
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                 raise(SIGABRT)
             }
         }
+    }
+
+    /// Produces a real EXC_BAD_ACCESS instead of merely sending SIGSEGV to the
+    /// process. The PLCrashReporter Mach handler observes memory-access Mach
+    /// exceptions; `raise(SIGSEGV)` only exercises the BSD signal path.
+    @inline(never)
+    private static func triggerInvalidMemoryAccess() -> Never {
+        let invalidAddress = UnsafeMutableRawPointer(bitPattern: 0x1)!
+        invalidAddress.storeBytes(of: UInt8(0xA5), as: UInt8.self)
+        fatalError("Invalid memory access unexpectedly returned")
     }
 }
 #endif
