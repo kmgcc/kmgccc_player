@@ -241,6 +241,11 @@ final class CrashReportService: ObservableObject {
                 }
                 return
             } catch let error as CrashReportDeliveryError {
+                if error == .unauthorized,
+                   await recoverDiagnosticAuthorization(for: &record, userContext: false) {
+                    try? await store.save(record)
+                    return
+                }
                 applyDeliveryFailure(error, to: &record)
                 try? await store.save(record)
                 return
@@ -270,6 +275,11 @@ final class CrashReportService: ObservableObject {
             } catch is CancellationError {
                 return
             } catch let error as CrashReportDeliveryError {
+                if error == .unauthorized,
+                   await recoverDiagnosticAuthorization(for: &record, userContext: true) {
+                    try? await store.save(record)
+                    return
+                }
                 applyDeliveryFailure(error, to: &record, userContext: true)
                 try? await store.save(record)
                 return
@@ -294,6 +304,8 @@ final class CrashReportService: ObservableObject {
         userContext: Bool = false
     ) {
         switch error {
+        case .unauthorized:
+            applyRetryableFailure(to: &record, category: "http_401_after_reregistration")
         case .permanent(let statusCode):
             if userContext {
                 record.userContextUploadState = .failed
@@ -310,6 +322,36 @@ final class CrashReportService: ObservableObject {
         case .invalidRequest:
             applyRetryableFailure(to: &record, category: "signing_unavailable")
         }
+    }
+
+    /// Attempts one immediate registration repair for an HTTP 401. If the
+    /// registration flow rotates the anonymous install ID after a key conflict,
+    /// unsent technical reports are rebound to the new ID before retrying.
+    /// A second consecutive 401 falls back to the normal backoff policy.
+    private func recoverDiagnosticAuthorization(
+        for record: inout CrashReportRecord,
+        userContext: Bool
+    ) async -> Bool {
+        guard record.lastErrorCategory != "signing_reregistered" else { return false }
+        guard let currentInstallID = await TelemetryService.shared
+            .recoverDiagnosticSigningRegistrationAfterUnauthorized()
+        else {
+            return false
+        }
+
+        if !userContext, record.technicalUploadState != .uploaded {
+            record.report.anonymousInstallID = currentInstallID
+            record.technicalUploadState = .pending
+        } else {
+            record.userContextUploadState = .pending
+        }
+        record.nextRetryAt = Date()
+        record.lastErrorCategory = "signing_reregistered"
+        Log.info(
+            "[CrashReporting] Re-registered diagnostic signing key; retrying id=\(record.id.prefix(8))",
+            category: .telemetry
+        )
+        return true
     }
 
     private func applyRetryableFailure(

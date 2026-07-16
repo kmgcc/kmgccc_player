@@ -641,7 +641,7 @@ struct SidebarView: View {
     private enum CrashReportFeatureTip {
         static let key = "dataSharing.automaticCrashReports"
         static let introducedBuild = AppBuild(8)
-        static let maxDisplayCount = 3
+        static let maxDisplayCount = 2
     }
 
     private func scheduleCrashReportSettingsTipIfNeeded() {

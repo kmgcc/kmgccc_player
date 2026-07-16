@@ -2,6 +2,7 @@ import Foundation
 import zlib
 
 nonisolated enum CrashReportDeliveryError: Error, Sendable, Equatable {
+    case unauthorized
     case retryable(statusCode: Int?)
     case permanent(statusCode: Int)
     case invalidRequest
@@ -155,6 +156,8 @@ final class CrashReportUploader {
             switch http.statusCode {
             case 200..<300:
                 return (data, http)
+            case 401:
+                throw CrashReportDeliveryError.unauthorized
             case 400, 403, 404, 409, 413, 415, 422:
                 throw CrashReportDeliveryError.permanent(statusCode: http.statusCode)
             default:
