@@ -3101,6 +3101,16 @@ struct FullscreenPlayerView: View {
 
     private func setRightPanelDisplayState(_ newState: RightPanelDisplayState) {
         if newState == .lyrics, playbackCoordinator.presentation.hasTrack {
+            // A detached/suspended fullscreen WebView can otherwise remount
+            // for one frame with the default AMLL palette and normal blend,
+            // then switch to the cover-aware profile after reload. Publish the
+            // final config and blend profile before making the host visible.
+            if usesCoverBlurLyricsRenderingPath {
+                applyFullscreenLyricsTheme(
+                    force: true,
+                    reason: "fullscreen lyrics pre-show"
+                )
+            }
             pendingFullscreenLyricsHostDetach?.cancel()
             pendingFullscreenLyricsHostDetach = nil
             fullscreenLyricsHostMounted = true
@@ -3539,11 +3549,13 @@ struct FullscreenPlayerView: View {
 
     private var fullscreenLyricsHostOpacity: Double {
         guard isShowingLyricsPanel, playbackCoordinator.presentation.hasTrack else { return 0 }
-        if playbackCoordinator.presentation.source == .local,
-           isCoverBlurFullscreenSkin && coverBlurLyricsTheme?.trackID != currentArtworkTrackID {
-            return 0
-        }
+        guard coverBlurLyricsThemeMatchesCurrentArtwork else { return 0 }
         return 1
+    }
+
+    private var coverBlurLyricsThemeMatchesCurrentArtwork: Bool {
+        guard isCoverBlurFullscreenSkin, let currentArtworkTrackID else { return true }
+        return coverBlurLyricsTheme?.trackID == currentArtworkTrackID
     }
 
     private var shouldKeepFullscreenLyricsHostMounted: Bool {
@@ -3600,10 +3612,7 @@ struct FullscreenPlayerView: View {
 
     private var fullscreenLyricsViewportOpacity: Double {
         guard currentDisplayContext.hasTrack else { return 0 }
-        if playbackCoordinator.presentation.source == .local,
-           isCoverBlurFullscreenSkin && coverBlurLyricsTheme?.trackID != currentArtworkTrackID {
-            return 0
-        }
+        guard coverBlurLyricsThemeMatchesCurrentArtwork else { return 0 }
         return suppressFullscreenLyricsViewport ? 0 : 1
     }
     private func scheduleFullscreenLyricsViewportReveal(after delay: TimeInterval) {
