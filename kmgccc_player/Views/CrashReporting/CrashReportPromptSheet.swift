@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct CrashReportPromptSheet: View {
+    let prompt: CrashReportPromptPresentation
     let onCancel: () -> Void
     let onSend: (String) -> Void
 
@@ -14,7 +15,8 @@ struct CrashReportPromptSheet: View {
             AppDialogConfirmHeader(
                 iconName: "exclamationmark.triangle.fill",
                 iconColor: .orange,
-                title: "检测到 App 上次意外退出"
+                title: "检测到 App 上次意外退出",
+                description: headerDescription
             )
 
             AppDialogDivider()
@@ -23,7 +25,7 @@ struct CrashReportPromptSheet: View {
                 Text("崩溃前你正在进行什么操作？")
                     .font(.headline)
 
-                Text("如果不记得，可以留空。")
+                Text("如果不记得，可以留空。请不要填写账户、密码或其他敏感信息。")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
@@ -94,5 +96,12 @@ struct CrashReportPromptSheet: View {
                 description = String(newValue.prefix(characterLimit))
             }
         }
+    }
+
+    private var headerDescription: String {
+        if prompt.automaticUploadEnabled {
+            return "技术报告会自动发送。你可以补充当时的操作，帮助我们复现并定位问题。"
+        }
+        return "是否愿意发送经过脱敏的技术报告？你也可以补充当时的操作，帮助我们定位问题。"
     }
 }
