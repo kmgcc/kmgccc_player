@@ -126,6 +126,22 @@ final class MetricKitDiagnosticService: NSObject, MXMetricManagerSubscriber {
                 try await store.remove(reportID: record.id)
             } catch let error as CrashReportDeliveryError {
                 switch error {
+                case .unauthorized:
+                    if record.lastErrorCategory != "signing_reregistered",
+                       let currentInstallID = await TelemetryService.shared
+                        .recoverDiagnosticSigningRegistrationAfterUnauthorized() {
+                        record.envelope.anonymousInstallID = currentInstallID
+                        record.nextRetryAt = Date()
+                        record.lastErrorCategory = "signing_reregistered"
+                    } else {
+                        record.attemptCount += 1
+                        record.nextRetryAt = CrashRetryPolicy.nextRetryDate(
+                            reportID: record.id,
+                            attemptCount: record.attemptCount
+                        )
+                        record.lastErrorCategory = "http_401_after_reregistration"
+                    }
+                    try? await store.save(record)
                 case .permanent:
                     try? await store.remove(reportID: record.id)
                 case .retryable(let statusCode):

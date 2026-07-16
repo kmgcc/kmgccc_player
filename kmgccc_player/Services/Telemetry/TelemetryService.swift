@@ -140,6 +140,17 @@ final class TelemetryService: NSObject {
         return identityStore.installID
     }
 
+    /// Recovers when a signed diagnostic endpoint no longer recognizes the
+    /// locally registered key. The server can lose its TOFU binding after a
+    /// database restore while UserDefaults still records registration success.
+    /// Force the normal registration flow instead of leaving crash reports in
+    /// an endless HTTP 401 retry loop.
+    func recoverDiagnosticSigningRegistrationAfterUnauthorized() async -> String? {
+        UserDefaults.standard.set(0, forKey: TelemetryDefaults.signingRegisteredKey)
+        guard await ensureRegistered() else { return nil }
+        return identityStore.installID
+    }
+
     private override init() {
         super.init()
     }
