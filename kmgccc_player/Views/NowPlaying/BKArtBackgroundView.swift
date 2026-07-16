@@ -724,6 +724,10 @@ private final class BKArtBackgroundLayerView: NSView {
     private var fromContainer: Container?
     private var toContainer: Container?
     private var transitionMaskLayer: CALayer?
+    // A running transition owns the exact frame sequence it started with.
+    // Background/circle asset refreshes may consult an evictable NSCache and
+    // must not invalidate an in-flight mask animation.
+    private var activeTransitionMaskFrames: [CGImage] = []
 
     private var backgroundPhase: Int = 0
     private var backgroundPhaseFloat: Double = 0
@@ -1164,6 +1168,7 @@ private final class BKArtBackgroundLayerView: NSView {
         mask.contents = maskFrames[0]
         next.layer.mask = mask
         transitionMaskLayer = mask
+        activeTransitionMaskFrames = maskFrames
         maskFrameIndex = 0
         maskFrameProgress = 0
         startTransitionTimer()
@@ -1199,6 +1204,7 @@ private final class BKArtBackgroundLayerView: NSView {
         stopTransitionTimer()
         transitionMaskLayer?.contents = nil
         transitionMaskLayer?.removeFromSuperlayer()
+        activeTransitionMaskFrames.removeAll(keepingCapacity: false)
         let replacement = buildContainer(seed: rebuildSeed)
         fromContainer?.layer.removeFromSuperlayer()
         toContainer?.layer.removeFromSuperlayer()
@@ -2210,6 +2216,7 @@ private final class BKArtBackgroundLayerView: NSView {
         let backgroundsChanged =
             loadedBudget.background != snapshot.budget.background
             || loadedBackgroundSourceIndices != snapshot.backgroundSourceIndices
+        let maskBudgetChanged = loadedBudget.mask != snapshot.budget.mask
 
         if backgroundsChanged {
             cancelBackgroundRenderTasks()
@@ -2221,7 +2228,9 @@ private final class BKArtBackgroundLayerView: NSView {
         loadedShapes = snapshot.shapes
         loadedFullscreenCircleImages = snapshot.fullscreenCircleImages
         loadedFullscreenCircleMaxPixel = snapshot.budget.background
-        loadedMaskFrames = snapshot.maskFrames
+        if maskBudgetChanged || !snapshot.maskFrames.isEmpty || loadedMaskFrames.isEmpty {
+            loadedMaskFrames = snapshot.maskFrames
+        }
         tintedBackgroundCache.removeAllObjects()
         prewarmTintedBackgroundsIfNeeded()
     }
@@ -2610,7 +2619,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private func tickTransitionMask() {
         guard transitionClockSubscription != nil else { return }
         guard let toContainer, let maskLayer = transitionMaskLayer else { return }
-        let maskFrames = resolvedMaskFrames()
+        let maskFrames = activeTransitionMaskFrames
         guard !maskFrames.isEmpty else {
             abortTransitionKeepingCurrent(pendingSeed: rebuildSeed)
             return
@@ -2642,6 +2651,7 @@ private final class BKArtBackgroundLayerView: NSView {
         transitionMaskLayer?.contents = nil
         transitionMaskLayer?.removeFromSuperlayer()
         transitionMaskLayer = nil
+        activeTransitionMaskFrames.removeAll(keepingCapacity: false)
         maskFrameIndex = 0
         maskFrameProgress = 0
         stopTransitionTimer()
@@ -2663,6 +2673,7 @@ private final class BKArtBackgroundLayerView: NSView {
         next.layer.mask = nil
         transitionMaskLayer?.contents = nil
         transitionMaskLayer = nil
+        activeTransitionMaskFrames.removeAll(keepingCapacity: false)
         fromContainer?.layer.removeFromSuperlayer()
         fromContainer = next
         toContainer = nil
@@ -3307,7 +3318,9 @@ private final class BKArtBackgroundLayerView: NSView {
             loadedFullscreenCircleImages = assets.fullscreenCircleImages(maxPixel: budget.background)
             loadedFullscreenCircleMaxPixel = budget.background
         }
-        loadedMaskFrames = assets.cachedMaskFrames(maxPixel: budget.mask) ?? []
+        if let cachedMaskFrames = assets.cachedMaskFrames(maxPixel: budget.mask) {
+            loadedMaskFrames = cachedMaskFrames
+        }
         tintedBackgroundCache.removeAllObjects()
         prewarmTintedBackgroundsIfNeeded()
         if allowMaskWarmup {
@@ -3462,6 +3475,7 @@ private final class BKArtBackgroundLayerView: NSView {
         transitionMaskLayer?.contents = nil
         transitionMaskLayer?.removeFromSuperlayer()
         transitionMaskLayer = nil
+        activeTransitionMaskFrames.removeAll(keepingCapacity: false)
         loadedBackgrounds.removeAll(keepingCapacity: false)
         loadedBackgroundSourceIndices.removeAll(keepingCapacity: false)
         loadedShapes = BKThemeAssets.ShapeLoadResult(images: [], scaleByIndex: [:], edgePinnedIndices: [])
