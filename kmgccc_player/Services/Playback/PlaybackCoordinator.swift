@@ -84,6 +84,11 @@ final class PlaybackCoordinator {
             return
         }
 
+        CrashBreadcrumbRecorder.shared.record(
+            .playbackSourceChanged,
+            metadata: [.source: .string(TelemetryPlaybackMode(source: source).rawValue)]
+        )
+
         Log.info(
             "[PlaybackCoordinator] source switch \(activeSource.rawValue) -> \(source.rawValue)",
             category: .playback
@@ -116,6 +121,7 @@ final class PlaybackCoordinator {
     }
 
     func playPause() {
+        recordCrashPlaybackCommand(.playPause)
         switch activeSource {
         case .local:
             playerVM.togglePlayPause()
@@ -127,6 +133,7 @@ final class PlaybackCoordinator {
     }
 
     func pause() {
+        recordCrashPlaybackCommand(.pause)
         switch activeSource {
         case .local:
             playerVM.pause()
@@ -138,6 +145,7 @@ final class PlaybackCoordinator {
     }
 
     func resume() {
+        recordCrashPlaybackCommand(.resume)
         switch activeSource {
         case .local:
             playerVM.resume()
@@ -149,6 +157,7 @@ final class PlaybackCoordinator {
     }
 
     func stop() {
+        recordCrashPlaybackCommand(.stop)
         switch activeSource {
         case .local:
             playerVM.stop()
@@ -160,6 +169,7 @@ final class PlaybackCoordinator {
     }
 
     func next() {
+        recordCrashPlaybackCommand(.next)
         switch activeSource {
         case .local:
             playerVM.next()
@@ -171,6 +181,7 @@ final class PlaybackCoordinator {
     }
 
     func previous() {
+        recordCrashPlaybackCommand(.previous)
         switch activeSource {
         case .local:
             playerVM.previous()
@@ -182,6 +193,7 @@ final class PlaybackCoordinator {
     }
 
     func seek(to seconds: Double) {
+        recordCrashPlaybackCommand(.seek)
         switch activeSource {
         case .local:
             playerVM.seek(to: seconds)
@@ -387,6 +399,7 @@ final class PlaybackCoordinator {
         libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil,
         startPolicy: PlaybackStartPolicy = .useSavedMode
     ) {
+        recordCrashPlaybackCommand(.playQueue)
         if activeSource != .local {
             setActiveSource(.local)
         }
@@ -495,6 +508,7 @@ final class PlaybackCoordinator {
     }
 
     func play(track: Track) {
+        recordCrashPlaybackCommand(.playTrack)
         if activeSource != .local {
             setActiveSource(.local)
         }
@@ -504,6 +518,7 @@ final class PlaybackCoordinator {
     }
 
     func playTrackFromQueue(_ track: Track) {
+        recordCrashPlaybackCommand(.playTrackFromQueue)
         if activeSource != .local {
             setActiveSource(.local)
         }
@@ -583,6 +598,13 @@ final class PlaybackCoordinator {
         lastTelemetrySource = source
         lastTelemetryIsPlaying = isPlaying
         onTelemetryPlaybackStateChanged?(source, isPlaying)
+    }
+
+    private func recordCrashPlaybackCommand(_ command: CrashPlaybackCommand) {
+        CrashBreadcrumbRecorder.shared.record(
+            .playbackCommand(command),
+            metadata: [.source: .string(TelemetryPlaybackMode(source: activeSource).rawValue)]
+        )
     }
 
     private func isPlayingForTelemetry(_ source: PlaybackSource) -> Bool {

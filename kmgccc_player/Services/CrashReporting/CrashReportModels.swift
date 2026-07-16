@@ -202,6 +202,7 @@ nonisolated struct CrashReportRecord: Codable, Sendable, Identifiable, Equatable
 }
 
 nonisolated struct CrashCaptureSnapshot: Codable, Sendable, Equatable {
+    var sessionID: String?
     var appContext: CrashAppContext?
     var breadcrumbs: [CrashBreadcrumb]
 }

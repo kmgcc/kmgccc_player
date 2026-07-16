@@ -253,12 +253,28 @@ final class FileImportService: FileImportServiceProtocol {
         to playlist: Playlist,
         metadataOverride: ImportMetadataOverride? = nil
     ) async -> Int {
+        var crashBreadcrumbResult = "not_completed"
+        var crashBreadcrumbImportedCount = 0
+        CrashBreadcrumbRecorder.shared.record(
+            .libraryImportStarted,
+            metadata: [.count: .integer(Int64(selectedURLs.count))]
+        )
+        defer {
+            CrashBreadcrumbRecorder.shared.record(
+                .libraryImportFinished,
+                metadata: [
+                    .result: .string(crashBreadcrumbResult),
+                    .count: .integer(Int64(crashBreadcrumbImportedCount)),
+                ]
+            )
+        }
         Log.debug(
             "importSelectedURLs called for playlist: '\(playlist.name)' (id=\(playlist.id)) count=\(selectedURLs.count) override=\(String(describing: metadataOverride))",
             category: .import
         )
 
         guard !importInProgress else {
+            crashBreadcrumbResult = "rejected_concurrent"
             Log.warning(
                 "[Import] rejected concurrent import request playlist=\(playlist.id.uuidString)",
                 category: .import
@@ -709,6 +725,8 @@ final class FileImportService: FileImportServiceProtocol {
         try? await Task.sleep(nanoseconds: 500_000_000)
 
         print("✅ Import complete: \(importedRecords.count) imported")
+        crashBreadcrumbResult = "completed"
+        crashBreadcrumbImportedCount = importedRecords.count
         return importedRecords.count
     }
 

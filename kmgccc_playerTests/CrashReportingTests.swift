@@ -101,6 +101,21 @@ final class CrashReportStoreTests: XCTestCase {
 }
 
 final class CrashReportDeliveryModelTests: XCTestCase {
+    func testCrashCaptureSnapshotCarriesSessionIDAndDecodesLegacyPayload() throws {
+        let snapshot = CrashCaptureSnapshot(
+            sessionID: "session-test",
+            appContext: nil,
+            breadcrumbs: []
+        )
+        let data = try JSONEncoder.crashReportEncoder().encode(snapshot)
+        let decoded = try JSONDecoder.crashReportDecoder().decode(CrashCaptureSnapshot.self, from: data)
+        XCTAssertEqual(decoded.sessionID, "session-test")
+
+        let legacy = Data(#"{"appContext":null,"breadcrumbs":[]}"#.utf8)
+        let legacyDecoded = try JSONDecoder.crashReportDecoder().decode(CrashCaptureSnapshot.self, from: legacy)
+        XCTAssertNil(legacyDecoded.sessionID)
+    }
+
     func testAutomaticUploadDefaultsToEnabledAndCanBeDisabled() {
         let suiteName = "CrashReportPreferencesTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
