@@ -3100,7 +3100,22 @@ struct FullscreenPlayerView: View {
     }
 
     private func setRightPanelDisplayState(_ newState: RightPanelDisplayState) {
+        let needsSystemFullscreenBlendPreflight = newState == .lyrics
+            && playbackCoordinator.presentation.hasTrack
+            && hostContext == .systemFullscreenSpace
+            && isCoverBlurFullscreenSkin
+            && !suppressFullscreenLyricsViewport
+
         if newState == .lyrics, playbackCoordinator.presentation.hasTrack {
+            if needsSystemFullscreenBlendPreflight {
+                // Materialize the WKWebView under opacity zero for two display
+                // frames. True system fullscreen can otherwise present the
+                // newly reattached layer once with normal compositing before
+                // SwiftUI installs plusLighter / plusDarker.
+                pendingFullscreenLyricsReveal?.cancel()
+                pendingFullscreenLyricsReveal = nil
+                suppressFullscreenLyricsViewport = true
+            }
             // A detached/suspended fullscreen WebView can otherwise remount
             // for one frame with the default AMLL palette and normal blend,
             // then switch to the cover-aware profile after reload. Publish the
@@ -3118,6 +3133,12 @@ struct FullscreenPlayerView: View {
 
         withAnimation(lyricsLayoutAnimation) {
             rightPanelDisplayState = newState
+        }
+
+        if needsSystemFullscreenBlendPreflight {
+            scheduleSystemFullscreenLyricsBlendReveal(
+                after: reduceMotion ? 0 : 2.0 / 60.0
+            )
         }
     }
 
@@ -3554,7 +3575,18 @@ struct FullscreenPlayerView: View {
     }
 
     private var coverBlurLyricsThemeMatchesCurrentArtwork: Bool {
-        guard isCoverBlurFullscreenSkin, let currentArtworkTrackID else { return true }
+        guard isCoverBlurFullscreenSkin else { return true }
+        // A transient nil artwork identity is not a valid ready state while an
+        // artwork-backed theme is loading. This is common while the true
+        // fullscreen host is being attached and was the hole that allowed one
+        // visible frame with BlendMode.normal. A genuine no-artwork track may
+        // still use the normal fallback lyrics path.
+        let display = currentDisplayContext
+        let expectsArtworkTheme = display.artworkData != nil
+            || display.artworkIdentity != nil
+            || display.isArtworkLoading
+        guard expectsArtworkTheme else { return true }
+        guard let currentArtworkTrackID else { return false }
         return coverBlurLyricsTheme?.trackID == currentArtworkTrackID
     }
 
@@ -3615,6 +3647,32 @@ struct FullscreenPlayerView: View {
         guard coverBlurLyricsThemeMatchesCurrentArtwork else { return 0 }
         return suppressFullscreenLyricsViewport ? 0 : 1
     }
+
+    private func scheduleSystemFullscreenLyricsBlendReveal(after delay: TimeInterval) {
+        pendingFullscreenLyricsReveal?.cancel()
+
+        let workItem = DispatchWorkItem {
+            pendingFullscreenLyricsReveal = nil
+            guard isShowingLyricsPanel else {
+                suppressFullscreenLyricsViewport = false
+                return
+            }
+            let revealAnimation: Animation = reduceMotion
+                ? .linear(duration: 0)
+                : .easeOut(duration: 0.12)
+            withAnimation(revealAnimation) {
+                suppressFullscreenLyricsViewport = false
+            }
+        }
+        pendingFullscreenLyricsReveal = workItem
+
+        if delay <= 0 {
+            DispatchQueue.main.async(execute: workItem)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+        }
+    }
+
     private func scheduleFullscreenLyricsViewportReveal(after delay: TimeInterval) {
         pendingFullscreenLyricsReveal?.cancel()
 
