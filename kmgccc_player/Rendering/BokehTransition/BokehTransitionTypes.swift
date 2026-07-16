@@ -24,8 +24,8 @@ struct BokehTransitionConfig: Equatable, Sendable {
     /// The Metal surface is intentionally low resolution while it is strongly
     /// blurred. Once the radius is nearly clear, dissolve it into the static
     /// high-resolution surface instead of exposing the upscaled source.
-    static let opticalFadeInvisibleRadiusAt1080 = 2.0
-    static let opticalFadeOpaqueRadiusAt1080 = 12.0
+    static let opticalFadeInvisibleRadiusAt1080 = 0.0
+    static let opticalFadeOpaqueRadiusAt1080 = 8.0
 
     static func opticalVisibility(forRadiusAt1080 radius: CGFloat) -> CGFloat {
         let lower = CGFloat(opticalFadeInvisibleRadiusAt1080)
@@ -139,6 +139,10 @@ struct BokehTransitionSnapshot: Equatable, Sendable {
     var bokehRadius: CGFloat
     var surfaceOpacity: CGFloat
     var opticalOpacity: CGFloat
+    /// A transition-wide handoff from the low-resolution Metal surfaces to
+    /// the settled high-resolution SwiftUI background. This is separate from
+    /// per-surface opticalOpacity so artwork swaps retain their own crossfade.
+    var handoffOpacity: CGFloat
     var transitionCanvasSizeRatio: CGSize
     var transitionCanvasOffsetRatio: CGFloat
     var configuration: BokehTransitionConfig
@@ -152,6 +156,7 @@ struct BokehTransitionSnapshot: Equatable, Sendable {
         bokehRadius: 0,
         surfaceOpacity: 0,
         opticalOpacity: 0,
+        handoffOpacity: 0,
         transitionCanvasSizeRatio: CGSize(width: 1, height: 1),
         transitionCanvasOffsetRatio: 0,
         configuration: BokehTransitionConfig(),

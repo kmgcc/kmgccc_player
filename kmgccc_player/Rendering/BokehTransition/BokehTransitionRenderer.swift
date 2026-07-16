@@ -156,6 +156,7 @@ private struct BokehTransitionPresentationState {
     private var transitionOpacity = TimedTransitionScalar(0)
     private var radius = TimedTransitionScalar(0)
     private var opticalOpacity = TimedTransitionScalar(0)
+    private var handoffOpacity = TimedTransitionScalar(0)
 
     mutating func retarget(to newTarget: BokehTransitionSnapshot, at time: CFTimeInterval) {
         // Keep the dormant renderer exactly aligned with whichever static layout
@@ -168,6 +169,7 @@ private struct BokehTransitionPresentationState {
             transitionOpacity = TimedTransitionScalar(newTarget.transitionOpacity)
             radius = TimedTransitionScalar(newTarget.bokehRadius)
             opticalOpacity = TimedTransitionScalar(newTarget.opticalOpacity)
+            handoffOpacity = TimedTransitionScalar(newTarget.handoffOpacity)
             return
         }
         let reduceMotion = newTarget.reduceMotion
@@ -187,7 +189,12 @@ private struct BokehTransitionPresentationState {
             transitionOpacity.retarget(
                 to: newTarget.transitionOpacity,
                 at: time,
-                duration: reduceMotion ? (rising ? 0.16 : 0.22) : (rising ? 0.32 : 0.42),
+                // Finish the same-artwork moving-layer handoff before position
+                // starts at 105 ms. A slower rise lets the stationary and
+                // moving copies separate while both are translucent, which
+                // reads as a trailing double image. Artwork swaps use the
+                // independent per-surface optical opacity below.
+                duration: rising ? 0.08 : (reduceMotion ? 0.22 : 0.42),
                 curve: rising ? .layerFadeIn : .layerFadeOut
             )
         }
@@ -204,6 +211,15 @@ private struct BokehTransitionPresentationState {
             let rising = newTarget.opticalOpacity > target.opticalOpacity
             opticalOpacity.retarget(
                 to: newTarget.opticalOpacity,
+                at: time,
+                duration: reduceMotion ? 0.10 : (rising ? 0.08 : 0.60),
+                curve: rising ? .layerFadeIn : .layerFadeOut
+            )
+        }
+        if abs(newTarget.handoffOpacity - target.handoffOpacity) > 0.0001 {
+            let rising = newTarget.handoffOpacity > target.handoffOpacity
+            handoffOpacity.retarget(
+                to: newTarget.handoffOpacity,
                 at: time,
                 duration: reduceMotion ? 0.10 : (rising ? 0.08 : 0.60),
                 curve: rising ? .layerFadeIn : .layerFadeOut
@@ -252,12 +268,14 @@ private struct BokehTransitionPresentationState {
         transitionOpacity.advance(to: time)
         radius.advance(to: time)
         opticalOpacity.advance(to: time)
+        handoffOpacity.advance(to: time)
         var result = target
         result.transitionPosition = position.value
         result.centeredOpacity = centeredOpacity.value
         result.transitionOpacity = transitionOpacity.value
         result.bokehRadius = radius.value
         result.opticalOpacity = opticalOpacity.value
+        result.handoffOpacity = handoffOpacity.value
         return result
     }
 }
@@ -451,10 +469,19 @@ final class BokehTransitionRenderer: NSObject, MTKViewDelegate {
         commandBuffer.label = "Fullscreen Cover Bokeh Transition"
 
         let presentation = presentationState.snapshot(at: CACurrentMediaTime())
-        let radiusVisibility = BokehTransitionConfig.opticalVisibility(
-            forRadiusAt1080: presentation.bokehRadius
-        )
-        view.alphaValue = presentation.opticalOpacity * radiusVisibility
+        // On rise (and artwork-swap fall) the radius envelope prevents an
+        // unblurred low-resolution frame. Same-artwork layout transitions
+        // switch to the timed handoff exactly around radius 8, allowing its
+        // last faint opacity to continue briefly after radius zero.
+        let usesTimedHandoff = snapshot.handoffOpacity < 0.999
+        let radiusVisibility = usesTimedHandoff
+            ? 1
+            : BokehTransitionConfig.opticalVisibility(
+                forRadiusAt1080: presentation.bokehRadius
+            )
+        view.alphaValue = presentation.opticalOpacity
+            * presentation.handoffOpacity
+            * radiusVisibility
         let canvasRatio = presentation.transitionCanvasSizeRatio
         var composeUniforms = TransitionComposeUniforms(
             viewportSize: SIMD2(Float(intermediate.size.width), Float(intermediate.size.height)),
