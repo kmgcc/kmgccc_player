@@ -116,6 +116,8 @@ final class TelemetryService: NSObject {
     private var accumulator: SessionMetricsAccumulator?
     private weak var playbackCoordinator: PlaybackCoordinator?
     private var isWindowNowPlayingVisible = false
+    private var crashVisibleSurface: String?
+    private var crashSelectedSkinID: String?
     private var checkpointTimer: Timer?
     private var uploadTask: Task<Void, Never>?
     // Coarse anonymous device info, computed once per launch. Only attached to
@@ -165,6 +167,12 @@ final class TelemetryService: NSObject {
                 self?.updatePlaybackState(source: source, isPlaying: isPlaying)
             }
         }
+        syncCrashPlaybackContext(
+            source: playbackCoordinator.activeSource,
+            isPlaying: playbackCoordinator.presentation.isPlaying,
+            recordTransition: false
+        )
+        syncCrashPresentationContext(recordTransition: false)
 
         NotificationCenter.default.addObserver(
             self,
@@ -204,6 +212,7 @@ final class TelemetryService: NSObject {
             uploadTask?.cancel()
             uploadTask = nil
             accumulator = nil
+            CrashBreadcrumbRecorder.shared.updateSessionID(nil)
             checkpointTimer?.invalidate()
             checkpointTimer = nil
             queue.keepOnlyInstallSeenEvents()
@@ -217,6 +226,9 @@ final class TelemetryService: NSObject {
         guard consentStore.isEnabled, let summary = accumulator?.finish(reason: reason) else { return }
         queue.enqueue(summaryEvent(from: summary))
         accumulator = nil
+        if reason != .appTerminated {
+            CrashBreadcrumbRecorder.shared.updateSessionID(nil)
+        }
         checkpointTimer?.invalidate()
         checkpointTimer = nil
         recoveryStore.clear()
@@ -251,6 +263,7 @@ final class TelemetryService: NSObject {
             fullscreenSkinID: currentFullscreenSkinID(),
             skinContext: currentSkinUsageContext()
         )
+        CrashBreadcrumbRecorder.shared.updateSessionID(sessionID)
         queue.enqueue(baseEvent(
             eventID: UUID().uuidString,
             occurredAt: now,
@@ -285,6 +298,7 @@ final class TelemetryService: NSObject {
     }
 
     private func updatePlaybackState(source: PlaybackSource, isPlaying: Bool) {
+        syncCrashPlaybackContext(source: source, isPlaying: isPlaying, recordTransition: true)
         guard consentStore.isEnabled else { return }
         startSessionIfNeeded()
         accumulator?.update(mode: TelemetryPlaybackMode(source: source), isPlaying: isPlaying)
@@ -306,6 +320,7 @@ final class TelemetryService: NSObject {
     }
 
     func updateSkinState() {
+        syncCrashPresentationContext(recordTransition: true)
         guard consentStore.isEnabled else { return }
         startSessionIfNeeded()
         accumulator?.updateSkins(
@@ -320,6 +335,59 @@ final class TelemetryService: NSObject {
         guard isWindowNowPlayingVisible != isVisible else { return }
         isWindowNowPlayingVisible = isVisible
         updateSkinState()
+    }
+
+    private func syncCrashPlaybackContext(
+        source: PlaybackSource,
+        isPlaying: Bool,
+        recordTransition: Bool
+    ) {
+        let sourceCategory = TelemetryPlaybackMode(source: source).rawValue
+        CrashBreadcrumbRecorder.shared.updateAppContext { context in
+            context.playbackSourceCategory = sourceCategory
+            context.isPlaying = isPlaying
+        }
+        if recordTransition {
+            CrashBreadcrumbRecorder.shared.record(
+                .playbackStateChanged,
+                metadata: [
+                    .source: .string(sourceCategory),
+                    .state: .string(isPlaying ? "playing" : "not_playing"),
+                ]
+            )
+        }
+    }
+
+    private func syncCrashPresentationContext(recordTransition: Bool) {
+        let isFullScreen = FullscreenWindowManager.shared.usesFullscreenPlayerUI
+        let visibleSurface: String
+        if isFullScreen {
+            visibleSurface = "fullscreen_player"
+        } else if isWindowNowPlayingVisible {
+            visibleSurface = "now_playing_window"
+        } else {
+            visibleSurface = "main_window"
+        }
+        let selectedSkinID = isFullScreen ? currentFullscreenSkinID() : currentWindowSkinID()
+        let didChange = crashVisibleSurface != nil
+            && (crashVisibleSurface != visibleSurface || crashSelectedSkinID != selectedSkinID)
+
+        crashVisibleSurface = visibleSurface
+        crashSelectedSkinID = selectedSkinID
+        CrashBreadcrumbRecorder.shared.updateAppContext { context in
+            context.visibleSurface = visibleSurface
+            context.isFullScreen = isFullScreen
+            context.selectedSkinIdentifier = selectedSkinID
+        }
+        if recordTransition, didChange {
+            CrashBreadcrumbRecorder.shared.record(
+                .presentationChanged,
+                metadata: [
+                    .surface: .string(visibleSurface),
+                    .skin: .string(selectedSkinID),
+                ]
+            )
+        }
     }
 
     private func startCheckpointTimer() {
@@ -522,7 +590,7 @@ final class TelemetryService: NSObject {
     private func summaryEvent(from summary: TelemetrySessionSummary) -> TelemetryQueuedEvent {
         baseEvent(
             eventID: UUID().uuidString,
-            occurredAt: Date(),
+            occurredAt: summary.endedAt,
             sessionID: summary.sessionID,
             eventType: "app_session_summary",
             properties: [
@@ -709,7 +777,7 @@ private struct SessionMetricsAccumulator {
         let now = Date()
         settle(now: now)
         closeOpenTimelineSegments(at: now)
-        return summary(reason: reason)
+        return summary(reason: reason, endedAt: now)
     }
 
     mutating func checkpoint() -> TelemetrySessionCheckpoint {
@@ -841,11 +909,12 @@ private struct SessionMetricsAccumulator {
         ))
     }
 
-    private func summary(reason: TelemetrySessionEndReason) -> TelemetrySessionSummary {
+    private func summary(reason: TelemetrySessionEndReason, endedAt: Date) -> TelemetrySessionSummary {
         let playbackTotal = playbackLocalDuration + playbackAppleMusicDuration + playbackExternalDuration
         return TelemetrySessionSummary(
             sessionID: sessionID,
-            sessionDurationSeconds: Int(max(0, Date().timeIntervalSince(startedAt)).rounded()),
+            endedAt: endedAt,
+            sessionDurationSeconds: Int(max(0, endedAt.timeIntervalSince(startedAt)).rounded()),
             foregroundDurationSeconds: Int(foregroundDuration.rounded()),
             localModeDurationSeconds: Int(localModeDuration.rounded()),
             appleMusicModeDurationSeconds: Int(appleMusicModeDuration.rounded()),
@@ -899,6 +968,7 @@ private struct SessionMetricsAccumulator {
 
 private struct TelemetrySessionSummary {
     let sessionID: String
+    let endedAt: Date
     let sessionDurationSeconds: Int
     let foregroundDurationSeconds: Int
     let localModeDurationSeconds: Int
@@ -948,6 +1018,7 @@ private struct TelemetrySessionCheckpoint: Codable {
         )
         return TelemetrySessionSummary(
             sessionID: sessionID,
+            endedAt: lastCheckpointAt,
             sessionDurationSeconds: sessionDuration,
             foregroundDurationSeconds: foregroundDurationSeconds,
             localModeDurationSeconds: localModeDurationSeconds,

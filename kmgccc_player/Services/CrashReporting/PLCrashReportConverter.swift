@@ -35,7 +35,7 @@ nonisolated enum PLCrashReportConverter {
             schemaVersion: 1,
             reportID: stableReportID(for: data),
             anonymousInstallID: anonymousInstallID,
-            sessionID: nil,
+            sessionID: snapshot?.sessionID,
             occurredAt: occurredAt,
             importedAt: importedAt,
             app: CrashAppInfo(
