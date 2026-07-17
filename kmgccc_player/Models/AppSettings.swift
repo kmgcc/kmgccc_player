@@ -1139,6 +1139,15 @@ public final class AppSettings {
         static let lyricsTranslationFontSize: Double = FullscreenLyricsTypography.defaultValue.translationFontSize
     }
 
+    /// The initial fullscreen background dimming varies by skin. The stored
+    /// preference remains shared for backward compatibility; this only changes
+    /// the value used before the user has made an explicit choice.
+    public static func defaultFullscreenDimmingIntensity(for skinID: String) -> Double {
+        skinID == "fullscreen.coverGradientBlur"
+            ? 0.0
+            : FullscreenDefaults.dimmingIntensity
+    }
+
     /// Observation-only revision used by fullscreen surfaces to reapply AMLL
     /// when a per-skin profile changes without changing the global keys.
     var fullscreenLyricsTypographyRevision: UInt64 = 0

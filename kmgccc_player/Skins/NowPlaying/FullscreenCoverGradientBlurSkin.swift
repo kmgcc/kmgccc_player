@@ -1034,7 +1034,8 @@ private struct CoverGradientBlurSettingsView: View {
 
     @AppStorage("skin.coverGradientBlur.maxBlurRadius") private var maxBlurRadius: Double = 1600
     @AppStorage("skin.coverGradientBlur.edgeFillMode") private var edgeFillMode: String = CoverEdgeFillMode.pixelStretch.rawValue
-    @AppStorage("fullscreenDimmingIntensity") private var fullscreenDimmingIntensity: Double = 0.15
+    @AppStorage("fullscreenDimmingIntensity") private var fullscreenDimmingIntensity: Double =
+        AppSettings.defaultFullscreenDimmingIntensity(for: "fullscreen.coverGradientBlur")
 
     private var currentEdgeFillMode: CoverEdgeFillMode {
         CoverEdgeFillMode(rawValue: edgeFillMode) ?? .pixelStretch

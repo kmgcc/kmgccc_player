@@ -417,7 +417,12 @@ struct FullscreenPlayerView: View {
     /// Effective dimming intensity adjusted for color scheme.
     /// Light mode requires stronger dimming for readability.
     private var effectiveDimmingIntensity: Double {
-        let base = settings.fullscreenDimmingIntensity
+        let base: Double
+        if UserDefaults.standard.object(forKey: "fullscreenDimmingIntensity") == nil {
+            base = AppSettings.defaultFullscreenDimmingIntensity(for: settings.fullscreen.skinID)
+        } else {
+            base = settings.fullscreenDimmingIntensity
+        }
         if colorScheme == .light {
             // Light mode: increase dimming by ~40% for better contrast
             return min(0.55, base * 1.40)
