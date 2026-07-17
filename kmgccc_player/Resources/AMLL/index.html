@@ -1708,6 +1708,13 @@
                 applyingLyricSpringOverride = false;
             }
         };
+
+        // The App defaults are intentionally different from AMLL's native
+        // reference pair. Apply them before the first lyric payload arrives;
+        // otherwise the first Swift config is mistaken for a no-op because
+        // the local state already contains the same duration/bounce values.
+        applyLyricSpringParams(springDuration, springBounce);
+
         const syncWordHighlightModeRootState = () => {
             const playerElement = lyricPlayer.getElement();
             if (!(playerElement instanceof HTMLElement)) return;
