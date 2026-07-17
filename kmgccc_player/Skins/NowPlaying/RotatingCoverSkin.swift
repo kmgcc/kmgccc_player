@@ -1116,6 +1116,7 @@ private struct RotatingCoverSkinFullscreenSettingsView: View {
     @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = false
     @AppStorage("fullscreenArtBackgroundEnabled") private var fullscreenArtBackgroundEnabled: Bool = true
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
@@ -1125,15 +1126,15 @@ private struct RotatingCoverSkinFullscreenSettingsView: View {
                 detail: "遇到性能问题时，可以关闭此选项",
                 titleFont: presentationStyle.rowLabelFont,
                 detailFont: presentationStyle.captionFont,
-                titleColor: presentationStyle.primaryTextColor,
-                detailColor: presentationStyle.secondaryTextColor
+                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors),
+                detailColor: presentationStyle.settingsSecondaryTextColor(appColors: appColors)
             )
 
             SettingsSwitchRow(
                 title: "CD 模式",
                 isOn: $cdMode,
                 titleFont: presentationStyle.rowLabelFont,
-                titleColor: presentationStyle.primaryTextColor
+                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors)
             )
 
             AudioVisualizationSelectorRow(

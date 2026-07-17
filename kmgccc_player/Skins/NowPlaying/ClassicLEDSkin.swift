@@ -973,6 +973,7 @@ private struct ClassicLEDSkinNormalSettingsView: View {
     @AppStorage("skin.classicLED.artworkFrameMaskEnabled") private var artworkFrameMaskEnabled: Bool = true
     @AppStorage("skin.classicLED.edgeBlurEnabled") private var edgeBlurEnabled: Bool = true
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
+    @Environment(\.settingsAppForegroundColors) private var appColors
     @State private var visualizationPreferences = AudioVisualizationPreferences.shared
 
     var body: some View {
@@ -984,7 +985,7 @@ private struct ClassicLEDSkinNormalSettingsView: View {
                     .frame(width: 24)
                 
                 Rectangle()
-                    .fill(Color.primary.opacity(0.1))
+                    .fill((appColors?.primary ?? .primary).opacity(0.1))
                     .frame(width: 1, height: 16)
                 
                 Spacer()
@@ -1014,6 +1015,7 @@ private struct ClassicLEDSkinNormalSettingsView: View {
 
 private struct ClassicLEDSkinFullscreenSettingsView: View {
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
     @AppStorage("skin.classicLED.artworkFrameMaskEnabled") private var artworkFrameMaskEnabled: Bool = true
     @AppStorage("fullscreenArtBackgroundEnabled") private var fullscreenArtBackgroundEnabled: Bool = true
     @AppStorage("skin.classicLED.edgeBlurEnabled") private var edgeBlurEnabled: Bool = true
@@ -1026,8 +1028,8 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
                 detail: "遇到性能问题时，可以关闭此选项",
                 titleFont: presentationStyle.rowLabelFont,
                 detailFont: presentationStyle.captionFont,
-                titleColor: presentationStyle.primaryTextColor,
-                detailColor: presentationStyle.secondaryTextColor
+                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors),
+                detailColor: presentationStyle.settingsSecondaryTextColor(appColors: appColors)
             )
 
             HStack(spacing: 0) {
@@ -1035,14 +1037,16 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
                     title: "风格化封面边缘",
                     isOn: $artworkFrameMaskEnabled,
                     titleFont: presentationStyle.rowLabelFont,
-                    titleColor: presentationStyle.primaryTextColor
+                    titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors)
                 )
                 
                 Spacer()
                     .frame(width: presentationStyle.scaled(24))
                 
                 Rectangle()
-                    .fill(presentationStyle.primaryTextColor.opacity(0.12))
+                    .fill(
+                        presentationStyle.settingsPrimaryTextColor(appColors: appColors).opacity(0.12)
+                    )
                     .frame(
                         width: presentationStyle.scaled(1),
                         height: presentationStyle.scaled(16)
@@ -1055,7 +1059,7 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
                     title: "边缘模糊",
                     isOn: $edgeBlurEnabled,
                     titleFont: presentationStyle.rowLabelFont,
-                    titleColor: presentationStyle.primaryTextColor
+                    titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors)
                 )
             }
 

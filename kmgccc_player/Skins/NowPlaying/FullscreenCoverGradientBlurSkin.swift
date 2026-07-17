@@ -1030,6 +1030,7 @@ private struct CoverGradientBlurArtwork: View {
 private struct CoverGradientBlurSettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     @AppStorage("skin.coverGradientBlur.maxBlurRadius") private var maxBlurRadius: Double = 1600
     @AppStorage("skin.coverGradientBlur.edgeFillMode") private var edgeFillMode: String = CoverEdgeFillMode.pixelStretch.rawValue
@@ -1041,7 +1042,7 @@ private struct CoverGradientBlurSettingsView: View {
 
     private var slidingKnobColor: Color {
         if presentationStyle.usesMaterialSectionCards {
-            return presentationStyle.primaryTextColor
+            return presentationStyle.settingsPrimaryTextColor(appColors: appColors)
         }
         return themeStore.accentColor
     }
@@ -1061,7 +1062,7 @@ private struct CoverGradientBlurSettingsView: View {
         HStack(spacing: presentationStyle.scaled(8)) {
             Text("右侧填充")
                 .font(presentationStyle.rowLabelFont)
-                .foregroundStyle(presentationStyle.primaryTextColor)
+                .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
 
             Spacer()
 
@@ -1087,8 +1088,11 @@ private struct CoverGradientBlurSettingsView: View {
                         .padding(.vertical, presentationStyle.segmentedVerticalPadding)
                         .foregroundStyle(
                             isSelected
-                                ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
-                                : presentationStyle.secondaryTextColor
+                                ? presentationStyle.settingsSelectedTextColor(
+                                    accentColor: themeStore.accentColor,
+                                    appColors: appColors
+                                )
+                                : presentationStyle.settingsSecondaryTextColor(appColors: appColors)
                         )
                 }
             )
@@ -1096,7 +1100,7 @@ private struct CoverGradientBlurSettingsView: View {
             .padding(.vertical, presentationStyle.segmentedTrackVerticalPadding)
             .background(
                 Capsule()
-                    .fill(presentationStyle.segmentedTrackColor)
+                    .fill(presentationStyle.settingsSegmentedTrackColor(appColors: appColors))
                     .overlay(
                         Capsule()
                             .strokeBorder(
@@ -1116,11 +1120,14 @@ private struct CoverGradientBlurSettingsView: View {
         HStack(spacing: presentationStyle.scaled(12)) {
             Text("模糊半径")
                 .font(presentationStyle.rowLabelFont)
-                .foregroundStyle(presentationStyle.primaryTextColor)
+                .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                 .frame(width: presentationStyle.scaled(84), alignment: .leading)
 
             Slider(value: $maxBlurRadius, in: 100...2500, step: 100)
-                .tint(presentationStyle.selectedTextColor(accentColor: themeStore.accentColor))
+                .tint(presentationStyle.settingsSelectedTextColor(
+                    accentColor: themeStore.accentColor,
+                    appColors: appColors
+                ))
                 .frame(maxWidth: .infinity)
 
             Text("\(Int(maxBlurRadius))")
@@ -1138,11 +1145,14 @@ private struct CoverGradientBlurSettingsView: View {
         HStack(spacing: presentationStyle.scaled(12)) {
             Text("背景压暗强度")
                 .font(presentationStyle.rowLabelFont)
-                .foregroundStyle(presentationStyle.primaryTextColor)
+                .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                 .frame(width: presentationStyle.scaled(84), alignment: .leading)
 
             Slider(value: $fullscreenDimmingIntensity, in: 0.0...0.5, step: 0.05)
-                .tint(presentationStyle.selectedTextColor(accentColor: themeStore.accentColor))
+                .tint(presentationStyle.settingsSelectedTextColor(
+                    accentColor: themeStore.accentColor,
+                    appColors: appColors
+                ))
                 .frame(maxWidth: .infinity)
 
             Text(String(format: "%.0f%%", fullscreenDimmingIntensity * 100))

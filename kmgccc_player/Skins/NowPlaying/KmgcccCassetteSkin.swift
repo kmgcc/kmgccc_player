@@ -1645,6 +1645,7 @@ private struct KmgcccCassetteFullscreenSettingsView: View {
     @AppStorage("skin.kmgcccCassette.showKmgLook") private var showKmgLook: Bool = false
     @AppStorage("fullscreenArtBackgroundEnabled") private var fullscreenArtBackgroundEnabled: Bool = true
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
@@ -1654,8 +1655,8 @@ private struct KmgcccCassetteFullscreenSettingsView: View {
                 detail: "遇到性能问题时，可以关闭此选项",
                 titleFont: presentationStyle.rowLabelFont,
                 detailFont: presentationStyle.captionFont,
-                titleColor: presentationStyle.primaryTextColor,
-                detailColor: presentationStyle.secondaryTextColor
+                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors),
+                detailColor: presentationStyle.settingsSecondaryTextColor(appColors: appColors)
             )
 
             SettingsSwitchRow(title: "LED 电平表", isOn: Binding(
@@ -1666,13 +1667,13 @@ private struct KmgcccCassetteFullscreenSettingsView: View {
                     }
                     visualizerMode = isOn ? "led" : "off"
                 }
-            ), titleFont: presentationStyle.rowLabelFont, titleColor: presentationStyle.primaryTextColor)
+            ), titleFont: presentationStyle.rowLabelFont, titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors))
 
             SettingsSwitchRow(
                 title: NSLocalizedString("skin.kmgccc_cassette.show_kmg", comment: ""),
                 isOn: $showKmgLook,
                 titleFont: presentationStyle.rowLabelFont,
-                titleColor: presentationStyle.primaryTextColor
+                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors)
             )
         }
     }
