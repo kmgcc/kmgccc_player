@@ -946,7 +946,7 @@ private struct RotatingCoverArtwork: View {
 
     private let windowCoverScaleEffect: CGFloat = 1.08
 
-    @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = false
+    @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = true
     @AppStorage("skin.rotatingCover.visualizerMode") private var normalVisualizerMode: String = "off"
     @AppStorage("skin.rotatingCover.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "led"
 
@@ -1085,7 +1085,7 @@ private struct RotatingCoverArtwork: View {
     }
 }
 private struct RotatingCoverSkinNormalSettingsView: View {
-    @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = false
+    @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = true
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @State private var visualizationPreferences = AudioVisualizationPreferences.shared
 
@@ -1113,7 +1113,7 @@ private struct RotatingCoverSkinNormalSettingsView: View {
 }
 
 private struct RotatingCoverSkinFullscreenSettingsView: View {
-    @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = false
+    @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = true
     @AppStorage("fullscreenArtBackgroundEnabled") private var fullscreenArtBackgroundEnabled: Bool = true
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
     @Environment(\.settingsAppForegroundColors) private var appColors
