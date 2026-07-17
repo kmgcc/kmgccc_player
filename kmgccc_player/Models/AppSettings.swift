@@ -86,6 +86,7 @@ public final class AppSettings {
     // MARK: - Singleton
 
     public static let shared = AppSettings()
+    public static let defaultVolume: Double = 0.8
 
     // MARK: - Localization Settings
 
@@ -136,7 +137,7 @@ public final class AppSettings {
 
     /// Master volume (0.0 to 1.0)
     @ObservationIgnored
-    @AppStorage("volume") var volume: Double = 0.8
+    @AppStorage("volume") var volume: Double = AppSettings.defaultVolume
 
     // MARK: - LED Meter Settings
 
