@@ -36,12 +36,6 @@ actor LDDCClient {
         translation: Bool = false,
         limitPerSource: Int = 20
     ) async throws -> LDDCSearchResponse {
-        let manager = await LDDCServerManager.shared
-        try await manager.ensureRunning()
-        await manager.recordRequest()
-
-        let url = await manager.baseURL.appendingPathComponent("search")
-
         var body: [String: Any] = [
             "title": title,
             "sources": sources.map { $0.rawValue },
@@ -54,7 +48,7 @@ actor LDDCClient {
             body["artist"] = artist
         }
 
-        let data = try await postJSON(url: url, body: body)
+        let data = try await postJSON(path: "search", body: body)
 
         let response = try await MainActor.run {
             try JSONDecoder().decode(LDDCSearchResponse.self, from: data)
@@ -68,6 +62,75 @@ actor LDDCClient {
         return response
     }
 
+    /// Search each provider independently and yield outcomes as they finish.
+    ///
+    /// The bundled server is able to handle these requests concurrently. This
+    /// keeps one slow provider from delaying or erasing results from the others.
+    func searchBySource(
+        title: String,
+        artist: String?,
+        sources: [LDDCSource],
+        mode: LDDCMode = .verbatim,
+        translation: Bool = false,
+        limitPerSource: Int = 20
+    ) -> AsyncStream<LDDCSourceSearchResult> {
+        let client = self
+        let orderedSources = Array(Set(sources)).sorted { $0.rawValue < $1.rawValue }
+        let (stream, continuation) = AsyncStream<LDDCSourceSearchResult>.makeStream()
+
+        let worker = Task {
+            await withTaskGroup(of: LDDCSourceSearchResult?.self) { group in
+                for source in orderedSources {
+                    group.addTask {
+                        guard !Task.isCancelled else { return nil }
+
+                        do {
+                            let response = try await client.search(
+                                title: title,
+                                artist: artist,
+                                sources: [source],
+                                mode: mode,
+                                translation: translation,
+                                limitPerSource: limitPerSource
+                            )
+
+                            guard !Task.isCancelled else { return nil }
+                            return LDDCSourceSearchResult(
+                                source: source,
+                                results: response.results,
+                                errors: response.errors ?? []
+                            )
+                        } catch {
+                            guard !Task.isCancelled, !Self.isCancellationError(error) else {
+                                return nil
+                            }
+
+                            return LDDCSourceSearchResult(
+                                source: source,
+                                results: [],
+                                errors: [error.localizedDescription]
+                            )
+                        }
+                    }
+                }
+
+                while let result = await group.next() {
+                    if let result {
+                        continuation.yield(result)
+                    }
+                }
+            }
+
+            continuation.finish()
+        }
+
+        continuation.onTermination = { @Sendable _ in
+            worker.cancel()
+        }
+
+        return stream
+    }
+
     /// Fetch lyrics for a specific candidate.
     func fetchById(
         candidate: LDDCCandidate,
@@ -75,12 +138,6 @@ actor LDDCClient {
         translation: Bool = false,
         offsetMs: Int = 0
     ) async throws -> String {
-        let manager = await LDDCServerManager.shared
-        try await manager.ensureRunning()
-        await manager.recordRequest()
-
-        let url = await manager.baseURL.appendingPathComponent("fetch_by_id")
-
         var body: [String: Any] = [
             "source": candidate.source,
             "id": candidate.songId,
@@ -106,7 +163,7 @@ actor LDDCClient {
             body["extra"] = extra
         }
 
-        let data = try await postJSON(url: url, body: body)
+        let data = try await postJSON(path: "fetch_by_id", body: body)
 
         let response = try await MainActor.run {
             try JSONDecoder().decode(LDDCFetchResponse.self, from: data)
@@ -129,12 +186,6 @@ actor LDDCClient {
         mode: LDDCMode = .verbatim,
         offsetMs: Int = 0
     ) async throws -> (orig: String, trans: String?) {
-        let manager = await LDDCServerManager.shared
-        try await manager.ensureRunning()
-        await manager.recordRequest()
-
-        let url = await manager.baseURL.appendingPathComponent("fetch_by_id_separate")
-
         var body: [String: Any] = [
             "source": candidate.source,
             "id": candidate.songId,
@@ -160,7 +211,7 @@ actor LDDCClient {
             body["extra"] = extra
         }
 
-        let data = try await postJSON(url: url, body: body)
+        let data = try await postJSON(path: "fetch_by_id_separate", body: body)
 
         let response = try await MainActor.run {
             try JSONDecoder().decode(LDDCFetchSeparateResponse.self, from: data)
@@ -179,7 +230,11 @@ actor LDDCClient {
 
     // MARK: - Private Methods
 
-    private func postJSON(url: URL, body: [String: Any]) async throws -> Data {
+    private func postJSON(path: String, body: [String: Any]) async throws -> Data {
+        let manager = await LDDCServerManager.shared
+        try await manager.ensureRunning()
+
+        let url = await manager.baseURL.appendingPathComponent(path)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -187,7 +242,17 @@ actor LDDCClient {
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await session.data(for: request)
+        await manager.beginRequest()
+        let networkResponse: (Data, URLResponse)
+        do {
+            networkResponse = try await session.data(for: request)
+        } catch {
+            await manager.endRequest()
+            throw error
+        }
+        await manager.endRequest()
+
+        let (data, response) = networkResponse
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw LDDCError.invalidResponse
@@ -204,5 +269,12 @@ actor LDDCClient {
         }
 
         return data
+    }
+
+    nonisolated private static func isCancellationError(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+        return (error as? URLError)?.code == .cancelled
     }
 }

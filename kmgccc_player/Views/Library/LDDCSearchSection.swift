@@ -7,7 +7,6 @@
 //
 
 import SwiftUI
-import SwiftData
 import os.log
 
 /// LDDC lyrics search section with Liquid Glass styling.
@@ -16,6 +15,18 @@ struct LDDCSearchSection: View {
     enum LayoutStyle {
         case stacked
         case split
+    }
+
+    private struct SearchTrigger: Equatable {
+        let trackID: UUID?
+        let autoSearchToken: Int
+        let requestID: Int
+        let autoSearchOnAppear: Bool
+    }
+
+    private struct SearchContext: Equatable {
+        let trackID: UUID?
+        let autoSearchToken: Int
     }
     
     let track: Track?
@@ -26,11 +37,11 @@ struct LDDCSearchSection: View {
     let layoutStyle: LayoutStyle
     let includeTranslationDefault: Bool
     let autoSearchToken: Int
+    let autoSearchOnAppear: Bool
     let onApplyLyrics: (String) -> Void
     
     @EnvironmentObject private var themeStore: ThemeStore
-    @Environment(\.modelContext) private var modelContext
-    
+
     // MARK: - Logger
     private static let logger = Logger(subsystem: "com.kmgccc.player", category: "LyricsSearch")
     
@@ -45,11 +56,15 @@ struct LDDCSearchSection: View {
     // AMLLDB is always enabled
     @State private var enableAMLLDB = true
     
-    @State private var lastAutoSearchToken = 0
-    
+    @State private var searchRequestID = 0
+    @State private var completedSearchContext: SearchContext?
+    @State private var completedRequestID: Int?
+    @State private var activeSearchID: UUID?
+
     @State private var isSearching = false
     @State private var searchResults: [LDDCCandidate] = []
     @State private var searchError: String?
+    @State private var searchWarning: String?
     
     // Separate results for display
     @State private var amlldbResults: [LDDCCandidate] = []
@@ -57,8 +72,6 @@ struct LDDCSearchSection: View {
     
     @State private var selectedCandidate: LDDCCandidate?
     @State private var isFetchingPreview = false
-    @State private var previewOrig: String?
-    @State private var previewTrans: String?
     @State private var editableOrig = ""
     @State private var editableTrans = ""
     @State private var previewError: String?
@@ -68,9 +81,10 @@ struct LDDCSearchSection: View {
     @State private var applyNotice: String?
     @AppStorage("lddc.stripExtraInfo") private var stripExtraInfo = true
 
-    // Track current selection task to handle quick clicks
-    @State private var currentSelectionTask: Task<Void, Never>?
-    @State private var applyingCandidateId: String?
+    // Selection requests are modeled as state so SwiftUI owns cancellation.
+    @State private var pendingCandidate: LDDCCandidate?
+    @State private var selectionRequestID = 0
+    @State private var manualApplyRequestID: UUID?
     @State private var autoApplySuccess = false
 
     // Index update state
@@ -81,6 +95,7 @@ struct LDDCSearchSection: View {
     // evaluation, so a per-instance LDDCClient would create a URLSession each time.
     private let client = LDDCClient.shared
     private let amlldbService = AMLLDBService.shared
+    private let searchCoordinator = LyricsSearchCoordinator.shared
     private let panelMaxWidth: CGFloat = 380
     private let visibleLDDCSources: [LDDCSource] = [.QM, .KG, .NE]
 
@@ -88,12 +103,22 @@ struct LDDCSearchSection: View {
     private var appFgPrimary: Color { themeStore.appForegroundPalette.primaryColor }
     private var appFgSecondary: Color { themeStore.appForegroundPalette.secondaryColor }
     private var appFgTertiary: Color { themeStore.appForegroundPalette.tertiaryColor }
+
+    private var searchTrigger: SearchTrigger {
+        SearchTrigger(
+            trackID: track?.id,
+            autoSearchToken: autoSearchToken,
+            requestID: searchRequestID,
+            autoSearchOnAppear: autoSearchOnAppear
+        )
+    }
     
     init(
         track: Track,
         layoutStyle: LayoutStyle = .stacked,
         includeTranslationDefault: Bool = true,
         autoSearchToken: Int = 0,
+        autoSearchOnAppear: Bool = true,
         onApplyLyrics: @escaping (String) -> Void
     ) {
         self.track = track
@@ -104,6 +129,7 @@ struct LDDCSearchSection: View {
         self.layoutStyle = layoutStyle
         self.includeTranslationDefault = includeTranslationDefault
         self.autoSearchToken = autoSearchToken
+        self.autoSearchOnAppear = autoSearchOnAppear
         self.onApplyLyrics = onApplyLyrics
         _includeTranslation = State(initialValue: includeTranslationDefault)
     }
@@ -116,6 +142,7 @@ struct LDDCSearchSection: View {
         layoutStyle: LayoutStyle = .stacked,
         includeTranslationDefault: Bool = true,
         autoSearchToken: Int = 0,
+        autoSearchOnAppear: Bool = false,
         onApplyLyrics: @escaping (String) -> Void
     ) {
         self.track = nil
@@ -126,6 +153,7 @@ struct LDDCSearchSection: View {
         self.layoutStyle = layoutStyle
         self.includeTranslationDefault = includeTranslationDefault
         self.autoSearchToken = autoSearchToken
+        self.autoSearchOnAppear = autoSearchOnAppear
         self.onApplyLyrics = onApplyLyrics
         _includeTranslation = State(initialValue: includeTranslationDefault)
     }
@@ -160,25 +188,55 @@ struct LDDCSearchSection: View {
             // Error Display
             if let error = searchError ?? previewError ?? applyError {
                 errorBanner(message: error)
+            } else if let warning = searchWarning {
+                noticeBanner(message: warning)
             } else if let notice = applyNotice {
                 noticeBanner(message: notice)
             }
         }
-        .onAppear {
-            let token = FirstUseHitchDiagnostics.begin(
-                "LyricsSearchSection.onAppear",
-                detail: "autoSearch=\(autoSearchToken), hasTrack=\(track != nil)"
+        .task(id: searchTrigger) {
+            let context = SearchContext(
+                trackID: track?.id,
+                autoSearchToken: autoSearchToken
             )
+            let contextNeedsSearch = completedSearchContext != context
 
-            resetQueryForCurrentTrack()
-            triggerAutoSearchIfNeeded(autoSearchToken, force: true)
+            if contextNeedsSearch {
+                resetQueryForCurrentTrack()
+                completedSearchContext = context
+                if !autoSearchOnAppear {
+                    completedRequestID = searchRequestID
+                }
+            }
+
+            let requestNeedsSearch = completedRequestID != searchRequestID
+            let shouldSearch = requestNeedsSearch || (contextNeedsSearch && autoSearchOnAppear)
+            guard shouldSearch else { return }
+
+            let token = FirstUseHitchDiagnostics.begin(
+                "LyricsSearchSection.autoSearch",
+                detail: "request=\(searchRequestID), hasTrack=\(track != nil)"
+            )
+            let completed = await performSearch()
             FirstUseHitchDiagnostics.end(token)
+
+            guard completed else { return }
+            completedSearchContext = context
+            completedRequestID = searchRequestID
         }
-        .onChange(of: track?.id) { _, _ in
-            resetQueryForCurrentTrack()
+        .task(id: selectionRequestID) {
+            guard let candidate = pendingCandidate else { return }
+            await processCandidateSelection(candidate)
         }
-        .onChange(of: autoSearchToken) { _, newValue in
-            triggerAutoSearchIfNeeded(newValue, force: false)
+        .task(id: manualApplyRequestID) {
+            guard manualApplyRequestID != nil else { return }
+            await applyLyrics()
+        }
+        .onDisappear {
+            pendingCandidate = nil
+            manualApplyRequestID = nil
+            isFetchingPreview = false
+            isApplying = false
         }
     }
     
@@ -362,7 +420,7 @@ struct LDDCSearchSection: View {
                 
                 // Search Button
                 Button {
-                    Task { await performSearch() }
+                    searchRequestID &+= 1
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "magnifyingglass")
@@ -370,10 +428,14 @@ struct LDDCSearchSection: View {
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(searchTitle.isEmpty || isSearching)
+                .disabled(
+                    searchTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || isSearching
+                )
                 .clipShape(Capsule())
             }
         }
+        .disabled(isSearching)
     }
     
     // MARK: - Results Section
@@ -426,19 +488,20 @@ struct LDDCSearchSection: View {
                 .foregroundStyle(appFgSecondary)
 
             Group {
-                if isSearching {
-                    ProgressView("搜索中...")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if searchResults.isEmpty {
-                    emptyResultsPlaceholder
-                } else {
+                if !searchResults.isEmpty {
                     List {
-                        // Unified results list (no separate sections)
+                        // Unified results list; keep already completed sources
+                        // visible while slower providers are still running.
                         ForEach(searchResults) { candidate in
                             candidateRow(candidate)
                         }
                     }
                     .listStyle(.plain)
+                } else if isSearching {
+                    ProgressView("搜索中...")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    emptyResultsPlaceholder
                 }
             }
         }
@@ -558,7 +621,7 @@ struct LDDCSearchSection: View {
             Spacer()
 
             Button {
-                Task { await applyLyrics() }
+                manualApplyRequestID = UUID()
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark.circle")
@@ -607,7 +670,8 @@ struct LDDCSearchSection: View {
     
     private func candidateRow(_ candidate: LDDCCandidate) -> some View {
         Button {
-            Task { await selectCandidate(candidate) }
+            pendingCandidate = candidate
+            selectionRequestID &+= 1
         } label: {
             let displayScore = candidate.normalizedScore()
 
@@ -697,233 +761,121 @@ struct LDDCSearchSection: View {
     
     // MARK: - Actions
 
-    private func resetQueryForCurrentTrack() {
-        // Cancel any pending selection task
-        currentSelectionTask?.cancel()
-        currentSelectionTask = nil
-
-        searchTitle = initialTitle
-        searchArtist = initialArtist
-        searchAlbum = initialAlbum
+    private func resetSearchStateForNewRequest() {
+        selectionRequestID &+= 1
+        pendingCandidate = nil
+        manualApplyRequestID = nil
         selectedCandidate = nil
-        applyingCandidateId = nil
         autoApplySuccess = false
-        previewOrig = nil
-        previewTrans = nil
         editableOrig = ""
         editableTrans = ""
         searchError = nil
+        searchWarning = nil
         previewError = nil
         applyError = nil
         applyNotice = nil
         amlldbResults = []
         lddcResults = []
         searchResults = []
+        isFetchingPreview = false
+        isApplying = false
         isUpdatingAMLLDBIndex = false
         amlldbIndexStatus = nil
     }
-    
-    private func triggerAutoSearchIfNeeded(_ token: Int, force: Bool) {
-        guard token > 0 else { return }
-        if !force && token == lastAutoSearchToken {
-            return
-        }
-        lastAutoSearchToken = token
+
+    private func resetQueryForCurrentTrack() {
         searchTitle = initialTitle
         searchArtist = initialArtist
         searchAlbum = initialAlbum
         includeTranslation = includeTranslationDefault
-        Task { await performSearch() }
+        resetSearchStateForNewRequest()
     }
-    
-    private func performSearch() async {
-        guard !searchTitle.isEmpty else { return }
 
-        // Cancel any pending selection task
-        currentSelectionTask?.cancel()
-        currentSelectionTask = nil
+    private func performSearch() async -> Bool {
+        guard !searchTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            isSearching = false
+            return true
+        }
 
-        Self.logger.debug("[LyricsSearch] Starting search - title: '\(self.searchTitle)', artist: '\(self.searchArtist)', AMLLDB enabled: \(self.enableAMLLDB)")
-        
+        let requestID = UUID()
+        activeSearchID = requestID
+        resetSearchStateForNewRequest()
         isSearching = true
-        searchError = nil
-        previewError = nil
-        applyError = nil
-        applyNotice = nil
-        searchResults = []
-        amlldbResults = []
-        lddcResults = []
-        selectedCandidate = nil
-        previewOrig = nil
-        previewTrans = nil
-        editableOrig = ""
-        editableTrans = ""
+        var lddcErrors: [String] = []
+        var amlldbFailure: String?
 
-        let initialAMLLDBStatus = enableAMLLDB ? amlldbService.getIndexStatus() : nil
-        if let initialAMLLDBStatus {
-            Self.logger.debug(
-                "[LyricsSearch] AMLLDB getIndexStatus -> available=\(initialAMLLDBStatus.available), entryCount=\(initialAMLLDBStatus.entryCount), lastUpdatedAt=\(String(describing: initialAMLLDBStatus.lastUpdatedAt)), reason=\(initialAMLLDBStatus.reason)"
-            )
-        } else {
-            amlldbIndexStatus = nil
-        }
-
-        async let lddcTask: [LDDCCandidate] = performLDDCSearch()
-        let searchableAMLLDBStatus = await ensureAMLLDBReadyForCurrentSearch(initialAMLLDBStatus)
-        let amlldbRes = await performAMLLDBSearch(using: searchableAMLLDBStatus)
-        let lddcRes = await lddcTask
-
-        amlldbResults = amlldbRes
-        lddcResults = lddcRes
-
-        // Log raw scores for debugging (only in debug builds)
-        #if DEBUG
-        for candidate in amlldbResults {
-            let normScore = candidate.normalizedScore()
-            Self.logger.debug("[LyricsSearch] AMLLDB result: '\(candidate.title)' rawScore=\(candidate.score) normalized=\(normScore)")
-        }
-        for candidate in lddcResults {
-            let normScore = candidate.normalizedScore()
-            Self.logger.debug("[LyricsSearch] LDDC result: '\(candidate.title)' source=\(candidate.source) rawScore=\(candidate.score) normalized=\(normScore)")
-        }
-        #endif
-
-        // Merge with proper ranking:
-        // 1. High-confidence AMLLDB (>=80%) first, sorted by score desc
-        // 2. All other results sorted by normalized score desc
-        searchResults = mergeAndSortResults(amlldb: amlldbResults, lddc: lddcResults)
-
-        Self.logger.debug("[LyricsSearch] merged result count: \(searchResults.count) (AMLLDB: \(amlldbResults.count), LDDC: \(lddcResults.count))")
-
-        if searchResults.isEmpty {
-            if enableAMLLDB,
-               let searchableAMLLDBStatus,
-               !searchableAMLLDBStatus.available,
-               let initError = amlldbService.lastError
-            {
-                searchError = initError
-            } else {
-                searchError = "未找到可用歌词"
-            }
-        }
-        
-        isSearching = false
-    }
-
-    private func ensureAMLLDBReadyForCurrentSearch(_ status: AMLLDBIndexStatus?) async -> AMLLDBIndexStatus? {
-        guard enableAMLLDB else {
-            Self.logger.debug("[LyricsSearch] AMLLDB search skipped: disabled")
-            return nil
-        }
-
-        // Check current status
-        let currentStatus = amlldbService.getIndexStatus()
-
-        if currentStatus.available {
-            Self.logger.debug("[LyricsSearch] AMLLDB index ready: \(currentStatus.reason)")
-            amlldbIndexStatus = nil
-            return currentStatus
-        }
-
-        // Need to initialize - show status
-        amlldbIndexStatus = "正在初始化 AMLLDB 索引..."
-        isUpdatingAMLLDBIndex = true
-
-        // Ensure index is ready
-        let ready = await amlldbService.ensureIndexReady()
-        isUpdatingAMLLDBIndex = false
-
-        let newStatus = amlldbService.getIndexStatus()
-
-        if ready && newStatus.available {
-            amlldbIndexStatus = "AMLLDB 索引已就绪 (\(newStatus.entryCount) 条)"
-            Self.logger.debug("[LyricsSearch] AMLLDB index initialized: \(newStatus.entryCount) entries")
-            clearAMLLDBStatusBannerAfterDelay()
-        } else {
-            let failureMessage = amlldbService.lastError ?? "AMLLDB 索引初始化失败"
-            amlldbIndexStatus = failureMessage
-            Self.logger.error("[LyricsSearch] AMLLDB initialization failed: \(failureMessage)")
-        }
-
-        return newStatus
-    }
-
-    private func startAMLLDBSilentRefresh() {
-        Task {
-            do {
-                _ = try await amlldbService.checkAndUpdateIfNeeded()
-            } catch {
-                Self.logger.error("[LyricsSearch] AMLLDB silent refresh failed: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    private func clearAMLLDBStatusBannerAfterDelay() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            if !isUpdatingAMLLDBIndex {
-                amlldbIndexStatus = nil
-            }
-        }
-    }
-    
-    private func performLDDCSearch() async -> [LDDCCandidate] {
-        guard !selectedLDDCSources.isEmpty else {
-            Self.logger.debug("[LyricsSearch] LDDC search skipped: no sources selected")
-            return []
-        }
-        
-        Self.logger.debug("[LyricsSearch] Starting LDDC search with sources: \(selectedLDDCSources.map { $0.rawValue })")
-        
-        do {
-            let response = try await client.search(
-                title: searchTitle,
-                artist: searchArtist.isEmpty ? nil : searchArtist,
-                sources: Array(selectedLDDCSources),
-                mode: selectedMode,
-                translation: includeTranslation
-            )
-            
-            Self.logger.debug("[LyricsSearch] LDDC search completed: \(response.results.count) results")
-            
-            if let errors = response.errors, !errors.isEmpty {
-                Self.logger.warning("[LyricsSearch] LDDC partial errors: \(errors.joined(separator: ", "))")
-            }
-            
-            return response.results
-        } catch {
-            Self.logger.error("[LyricsSearch] LDDC search failed: \(error.localizedDescription)")
-            return []
-        }
-    }
-    
-    private func performAMLLDBSearch(using status: AMLLDBIndexStatus?) async -> [LDDCCandidate] {
-        guard enableAMLLDB else {
-            Self.logger.debug("[LyricsSearch] AMLLDB search skipped: disabled")
-            return []
-        }
-        
-        let currentStatus = status ?? amlldbService.getIndexStatus()
-        
-        guard currentStatus.available else {
-            Self.logger.warning("[LyricsSearch] AMLLDB search skipped: index not available (\(currentStatus.reason))")
-            return []
-        }
-        
         Self.logger.debug(
-            "[LyricsSearch] Starting AMLLDB search - title: '\(searchTitle)', artist: '\(searchArtist)', album: '\(searchAlbum)', entryCount: \(currentStatus.entryCount)"
+            "[LyricsSearch] Starting search - title: '\(searchTitle)', artist: '\(searchArtist)', AMLLDB enabled: \(enableAMLLDB)"
         )
-        
-        let results = amlldbService.search(
+
+        let updates = searchCoordinator.search(
             title: searchTitle,
             artist: searchArtist.isEmpty ? nil : searchArtist,
             album: searchAlbum.isEmpty ? nil : searchAlbum,
             duration: duration > 0 ? duration : nil,
-            limit: 20
+            lddcSources: selectedLDDCSources,
+            enableAMLLDB: enableAMLLDB,
+            mode: selectedMode,
+            translation: includeTranslation
         )
-        
-        Self.logger.debug("[LyricsSearch] AMLLDB final result count: \(results.count)")
 
-        return results.map { $0.toLDDCCandidate() }
+        for await update in updates {
+            guard !Task.isCancelled, activeSearchID == requestID else {
+                return false
+            }
+
+            switch update {
+            case .amlldbStatus(let message, let isUpdating):
+                isUpdatingAMLLDBIndex = isUpdating
+                amlldbIndexStatus = message
+
+            case .amlldbResults(let results):
+                amlldbResults = results
+
+            case .amlldbFailure(let message):
+                isUpdatingAMLLDBIndex = false
+                amlldbIndexStatus = message
+                amlldbFailure = message
+                Self.logger.error("[LyricsSearch] AMLLDB search failed: \(message)")
+
+            case .lddc(let outcome):
+                lddcResults.append(contentsOf: outcome.results)
+                lddcErrors.append(contentsOf: outcome.errors)
+
+                Self.logger.debug(
+                    "[LyricsSearch] \(outcome.source.rawValue) returned \(outcome.results.count) results"
+                )
+                if !outcome.errors.isEmpty {
+                    Self.logger.warning(
+                        "[LyricsSearch] \(outcome.source.rawValue) failed: \(outcome.errors.joined(separator: ", "))"
+                    )
+                }
+            }
+
+            searchResults = mergeAndSortResults(amlldb: amlldbResults, lddc: lddcResults)
+        }
+
+        guard !Task.isCancelled, activeSearchID == requestID else {
+            return false
+        }
+
+        isUpdatingAMLLDBIndex = false
+        isSearching = false
+
+        if searchResults.isEmpty {
+            if amlldbFailure != nil || !lddcErrors.isEmpty {
+                searchError = "歌词来源请求失败，请稍后重试"
+            } else {
+                searchError = "未找到可用歌词"
+            }
+        } else if amlldbFailure != nil || !lddcErrors.isEmpty {
+            searchWarning = "部分歌词来源暂时不可用，已显示其他来源结果"
+        }
+
+        Self.logger.debug(
+            "[LyricsSearch] merged result count: \(searchResults.count) (AMLLDB: \(amlldbResults.count), LDDC: \(lddcResults.count))"
+        )
+        return true
     }
 
     // MARK: - Result Merging & Sorting
@@ -934,37 +886,20 @@ struct LDDCSearchSection: View {
         LyricsSearchHelper.mergeAndSortResults(amlldb: amlldb, lddc: lddc)
     }
 
-    private func selectCandidate(_ candidate: LDDCCandidate) async {
-        Self.logger.info("[LyricsSearch] Candidate clicked: \(candidate.source) / \(candidate.title) / \(candidate.songId)")
-
-        // Cancel any previous selection task
-        currentSelectionTask?.cancel()
-
-        // Create new task for this selection
-        let task = Task {
-            await processCandidateSelection(candidate)
-        }
-        currentSelectionTask = task
-
-        await task.value
-    }
-
     private func processCandidateSelection(_ candidate: LDDCCandidate) async {
-        // Check if cancelled
-        guard !Task.isCancelled else {
+        guard !Task.isCancelled, pendingCandidate?.id == candidate.id else {
             Self.logger.info("[LyricsSearch] Selection task cancelled for: \(candidate.title)")
             return
         }
 
         selectedCandidate = candidate
-        applyingCandidateId = candidate.id
         isFetchingPreview = true
         previewError = nil
-        previewOrig = nil
-        previewTrans = nil
         applyError = nil
         applyNotice = nil
 
+        let artistName = candidate.artist ?? "未知"
+        Self.logger.info("[LyricsSearch] Candidate clicked: \(candidate.title) / \(artistName) / \(candidate.source)")
         Self.logger.info("[LyricsSearch] Preview load start for: \(candidate.title)")
 
         // Load preview content
@@ -1001,28 +936,35 @@ struct LDDCSearchSection: View {
             // Check if cancelled after download
             guard !Task.isCancelled else {
                 Self.logger.info("[LyricsSearch] Selection task cancelled after preview load")
+                if selectedCandidate?.id == candidate.id {
+                    isFetchingPreview = false
+                }
                 return
             }
 
             // Update preview state
-            previewOrig = loadedOrig
-            previewTrans = loadedTrans
             editableOrig = loadedOrig ?? ""
             editableTrans = loadedTrans ?? ""
             isFetchingPreview = false
 
         } catch {
+            if Task.isCancelled || Self.isCancellationError(error) {
+                if selectedCandidate?.id == candidate.id {
+                    isFetchingPreview = false
+                }
+                return
+            }
+
+            guard selectedCandidate?.id == candidate.id else { return }
             isFetchingPreview = false
             Self.logger.error("[LyricsSearch] Preview load failure: \(error.localizedDescription)")
             previewError = error.localizedDescription
-            applyingCandidateId = nil
             return
         }
 
         // Auto-apply after successful preview load
         guard let origLyrics = loadedOrig, !origLyrics.isEmpty else {
             Self.logger.error("[LyricsSearch] Preview content empty, skipping auto-apply")
-            applyingCandidateId = nil
             return
         }
 
@@ -1046,6 +988,9 @@ struct LDDCSearchSection: View {
         }
 
         isApplying = true
+        defer {
+            isApplying = false
+        }
         applyError = nil
         applyNotice = nil
 
@@ -1085,7 +1030,6 @@ struct LDDCSearchSection: View {
             // Verify again before final apply
             guard selectedCandidate?.id == candidate.id else {
                 Self.logger.info("[LyricsApply] Candidate changed during conversion, aborting")
-                isApplying = false
                 return
             }
 
@@ -1106,17 +1050,22 @@ struct LDDCSearchSection: View {
             Self.logger.info("[LyricsApply] LDDC returned instrumental placeholder lyrics; skipping apply")
             applyNotice = LRCConversionError.instrumentalPlaceholderLyrics.localizedDescription
         } catch {
+            if Task.isCancelled || Self.isCancellationError(error) {
+                return
+            }
             Self.logger.error("[LyricsApply] Apply failure: \(error.localizedDescription)")
             applyError = error.localizedDescription
         }
-
-        isApplying = false
-        applyingCandidateId = nil
     }
     
     // MARK: - Manual Apply (fallback)
 
     private func applyLyrics() async {
+        guard !isFetchingPreview, !isApplying else {
+            Self.logger.debug("[LyricsApply] Manual apply ignored while another lyrics operation is active")
+            return
+        }
+
         guard let candidate = selectedCandidate else {
             Self.logger.warning("[LyricsApply] Manual apply called but no candidate selected")
             return
@@ -1133,6 +1082,13 @@ struct LDDCSearchSection: View {
     }
     
     // MARK: - Helpers
+
+    private nonisolated static func isCancellationError(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+        return (error as? URLError)?.code == .cancelled
+    }
     
     private func platformColor(_ source: LDDCSource) -> Color {
         switch source {
