@@ -6,6 +6,16 @@
     <title>AMLL Lyrics</title>
     <link rel="stylesheet" href="style.css?v=cover-blur-rewrite-20260328-v14">
     <style>
+        /* Inter is shipped with the app so the English glyph source is stable
+           across Macs. The Swift host also registers it for native previews. */
+        @font-face {
+            font-family: "Inter";
+            src: url("./Fonts/Inter-VariableFont_opsz,wght.ttf") format("truetype");
+            font-style: normal;
+            font-weight: 100 900;
+            font-display: block;
+        }
+
         body, html {
             margin: 0;
             padding: 0;

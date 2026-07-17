@@ -65,14 +65,54 @@ struct FullscreenLyricsTypography: Codable, Equatable {
     var translationFontSize: Double
 
     static let defaultValue = FullscreenLyricsTypography(
-        mainFontNameZh: "SF Pro Text",
-        mainFontNameEn: "SF Pro Text",
-        translationFontName: "SF Pro Text",
+        mainFontNameZh: LyricsFontDefaults.chinese,
+        mainFontNameEn: LyricsFontDefaults.english,
+        translationFontName: LyricsFontDefaults.translation,
         mainFontWeight: 700,
         translationFontWeight: 600,
         mainFontSize: 53,
         translationFontSize: 25
     )
+
+    /// Readability-oriented defaults for the three existing fullscreen skins.
+    /// The English slot deliberately stays Inter so the decorative CJK family
+    /// cannot supply Latin glyphs for the main lyric line.
+    static func defaultValue(forFullscreenSkinID skinID: String) -> Self {
+        switch skinID {
+        case "coverLed":
+            return Self(
+                mainFontNameZh: LyricsFontDefaults.skinChinese,
+                mainFontNameEn: LyricsFontDefaults.english,
+                translationFontName: LyricsFontDefaults.skinTranslation,
+                mainFontWeight: 700,
+                translationFontWeight: 600,
+                mainFontSize: 56,
+                translationFontSize: 27
+            )
+        case "rotatingCover":
+            return Self(
+                mainFontNameZh: LyricsFontDefaults.skinChinese,
+                mainFontNameEn: LyricsFontDefaults.english,
+                translationFontName: LyricsFontDefaults.skinTranslation,
+                mainFontWeight: 600,
+                translationFontWeight: 500,
+                mainFontSize: 54,
+                translationFontSize: 25
+            )
+        case "kmgccc.cassette":
+            return Self(
+                mainFontNameZh: LyricsFontDefaults.skinChinese,
+                mainFontNameEn: LyricsFontDefaults.english,
+                translationFontName: LyricsFontDefaults.skinTranslation,
+                mainFontWeight: 700,
+                translationFontWeight: 600,
+                mainFontSize: 52,
+                translationFontSize: 24
+            )
+        default:
+            return Self.defaultValue
+        }
+    }
 }
 
 extension Notification.Name {
@@ -426,6 +466,9 @@ public final class AppSettings {
     var deferImportEnrichment: Bool {
         get {
             access(keyPath: \.deferImportEnrichment)
+            if UserDefaults.standard.object(forKey: ImportKeys.deferImportEnrichment) == nil {
+                return true
+            }
             return UserDefaults.standard.bool(forKey: ImportKeys.deferImportEnrichment)
         }
         set {
@@ -451,19 +494,19 @@ public final class AppSettings {
 
     /// Lyrics font name
     @ObservationIgnored
-    @AppStorage("lyricsFontName") var lyricsFontName: String = "SF Pro Text"
+    @AppStorage("lyricsFontName") var lyricsFontName: String = LyricsFontDefaults.english
 
     /// Lyrics font name (Chinese/CJK)
     @ObservationIgnored
-    @AppStorage("lyricsFontNameZh") var lyricsFontNameZh: String = "SF Pro Text"
+    @AppStorage("lyricsFontNameZh") var lyricsFontNameZh: String = LyricsFontDefaults.chinese
 
     /// Lyrics font name (Latin/English)
     @ObservationIgnored
-    @AppStorage("lyricsFontNameEn") var lyricsFontNameEn: String = "SF Pro Text"
+    @AppStorage("lyricsFontNameEn") var lyricsFontNameEn: String = LyricsFontDefaults.english
 
     /// Translation font name
     @ObservationIgnored
-    @AppStorage("lyricsTranslationFontName") var lyricsTranslationFontName: String = "SF Pro Text"
+    @AppStorage("lyricsTranslationFontName") var lyricsTranslationFontName: String = LyricsFontDefaults.translation
 
     /// Translation font size
     @ObservationIgnored
@@ -1027,6 +1070,8 @@ public final class AppSettings {
     // MARK: - Fullscreen Player Settings
 
     private enum FullscreenLyricsKeys {
+        static let fontDefaultsMigration = "lyricsTypographyDefaultsMigrated_v2"
+        static let perSkinTypographyDefaultsMigration = "fullscreenLyricsPerSkinTypographyDefaults_v2"
         static let perSkinTypographyEnabled = "fullscreenLyricsPerSkinTypographyEnabled"
         static let perSkinTypographyProfiles = "fullscreenLyricsPerSkinTypographyProfiles_v1"
         static let fontNameZh = "fullscreenLyricsFontNameZh"
@@ -1200,8 +1245,9 @@ public final class AppSettings {
         )
     }
 
-    /// Typography saved for one fullscreen skin. Missing profiles inherit the
-    /// current global typography until per-skin mode is first enabled.
+    /// Typography saved for one fullscreen skin. Known skin-specific defaults
+    /// are seeded once; other missing profiles inherit the current global
+    /// typography until per-skin mode is first enabled.
     func fullscreenLyricsTypography(for skinID: String) -> FullscreenLyricsTypography {
         let normalizedSkinID = skinID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedSkinID.isEmpty,
@@ -1249,15 +1295,32 @@ public final class AppSettings {
             [String: FullscreenLyricsTypography].self,
             from: data
         )) ?? [:]
-        
+
         var migrated = false
         for (skinID, var profile) in decoded {
+            var profileChanged = false
+            if profile.mainFontNameZh == LyricsFontDefaults.legacySystemDefault {
+                profile.mainFontNameZh = LyricsFontDefaults.chinese
+                profileChanged = true
+            }
+            if profile.mainFontNameEn == LyricsFontDefaults.legacySystemDefault {
+                profile.mainFontNameEn = LyricsFontDefaults.english
+                profileChanged = true
+            }
+            if profile.translationFontName == LyricsFontDefaults.legacySystemDefault {
+                profile.translationFontName = LyricsFontDefaults.translation
+                profileChanged = true
+            }
             if profile.mainFontSize == 50.0 {
                 profile.mainFontSize = 53.0
+                profileChanged = true
+            }
+            if profileChanged {
                 decoded[skinID] = profile
                 migrated = true
             }
         }
+
         if migrated {
             if let encoded = try? JSONEncoder().encode(decoded) {
                 UserDefaults.standard.set(encoded, forKey: FullscreenLyricsKeys.perSkinTypographyProfiles)
@@ -1274,14 +1337,71 @@ public final class AppSettings {
         UserDefaults.standard.set(data, forKey: FullscreenLyricsKeys.perSkinTypographyProfiles)
     }
 
+    private func seedDefaultFullscreenLyricsTypographyProfilesIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: FullscreenLyricsKeys.perSkinTypographyDefaultsMigration) else {
+            return
+        }
+
+        var profiles = loadFullscreenLyricsTypographyProfiles()
+        let globalTypography = FullscreenLyricsTypography(
+            mainFontNameZh: defaults.string(forKey: FullscreenLyricsKeys.fontNameZh)
+                ?? FullscreenDefaults.lyricsFontNameZh,
+            mainFontNameEn: defaults.string(forKey: FullscreenLyricsKeys.fontNameEn)
+                ?? FullscreenDefaults.lyricsFontNameEn,
+            translationFontName: defaults.string(forKey: FullscreenLyricsKeys.translationFontName)
+                ?? FullscreenDefaults.lyricsTranslationFontName,
+            mainFontWeight: (defaults.object(forKey: FullscreenLyricsKeys.fontWeight) as? NSNumber)?
+                .intValue ?? FullscreenDefaults.lyricsFontWeight,
+            translationFontWeight: (defaults.object(
+                forKey: FullscreenLyricsKeys.translationFontWeight
+            ) as? NSNumber)?.intValue ?? FullscreenDefaults.lyricsTranslationFontWeight,
+            mainFontSize: (defaults.object(forKey: FullscreenLyricsKeys.fontSize) as? NSNumber)?
+                .doubleValue ?? FullscreenDefaults.lyricsFontSize,
+            translationFontSize: (defaults.object(
+                forKey: FullscreenLyricsKeys.translationFontSize
+            ) as? NSNumber)?.doubleValue ?? FullscreenDefaults.lyricsTranslationFontSize
+        )
+        let shouldUseSkinDefaults = globalTypography == FullscreenLyricsTypography.defaultValue
+
+        var didChange = false
+        for skinID in ["coverLed", "rotatingCover", "kmgccc.cassette"] {
+            let skinDefault = FullscreenLyricsTypography.defaultValue(
+                forFullscreenSkinID: skinID
+            )
+            if let existing = profiles[skinID] {
+                // Profiles created by the previous shared-default implementation
+                // are upgraded once. Any genuinely customized profile remains
+                // untouched.
+                guard existing == globalTypography || existing == FullscreenLyricsTypography.defaultValue
+                else { continue }
+                if shouldUseSkinDefaults, existing != skinDefault {
+                    profiles[skinID] = skinDefault
+                    didChange = true
+                }
+            } else {
+                profiles[skinID] = shouldUseSkinDefaults ? skinDefault : globalTypography
+                didChange = true
+            }
+        }
+
+        if didChange {
+            saveFullscreenLyricsTypographyProfiles(profiles)
+        }
+        defaults.set(true, forKey: FullscreenLyricsKeys.perSkinTypographyDefaultsMigration)
+    }
+
     private func snapshotMissingFullscreenLyricsTypographyProfiles() {
         var profiles = loadFullscreenLyricsTypographyProfiles()
         let globalTypography = globalFullscreenLyricsTypography
+        let shouldUseSkinDefaults = globalTypography == FullscreenLyricsTypography.defaultValue
         var didChange = false
 
         for skinID in FullscreenSkinID.allCases.map(\.rawValue) {
             guard profiles[skinID] == nil else { continue }
-            profiles[skinID] = globalTypography
+            profiles[skinID] = shouldUseSkinDefaults
+                ? FullscreenLyricsTypography.defaultValue(forFullscreenSkinID: skinID)
+                : globalTypography
             didChange = true
         }
 
@@ -1438,6 +1558,30 @@ public final class AppSettings {
         markFullscreenLyricsTypographyDidChange()
     }
 
+    private func migrateLegacyLyricsTypographyDefaults() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: FullscreenLyricsKeys.fontDefaultsMigration) else {
+            return
+        }
+
+        func migrate(_ key: String, to newValue: String) {
+            guard defaults.string(forKey: key) == LyricsFontDefaults.legacySystemDefault else {
+                return
+            }
+            defaults.set(newValue, forKey: key)
+        }
+
+        migrate("lyricsFontName", to: LyricsFontDefaults.english)
+        migrate("lyricsFontNameZh", to: LyricsFontDefaults.chinese)
+        migrate("lyricsFontNameEn", to: LyricsFontDefaults.english)
+        migrate("lyricsTranslationFontName", to: LyricsFontDefaults.translation)
+        migrate(FullscreenLyricsKeys.fontNameZh, to: LyricsFontDefaults.chinese)
+        migrate(FullscreenLyricsKeys.fontNameEn, to: LyricsFontDefaults.english)
+        migrate(FullscreenLyricsKeys.translationFontName, to: LyricsFontDefaults.translation)
+
+        defaults.set(true, forKey: FullscreenLyricsKeys.fontDefaultsMigration)
+    }
+
     // MARK: - Private Init
 
     private init() {
@@ -1470,6 +1614,9 @@ public final class AppSettings {
            storedFontSize.doubleValue == 50.0 {
             UserDefaults.standard.set(53.0, forKey: FullscreenLyricsKeys.fontSize)
         }
+
+        migrateLegacyLyricsTypographyDefaults()
+        seedDefaultFullscreenLyricsTypographyProfilesIfNeeded()
     }
 
     // MARK: - Computed Properties
