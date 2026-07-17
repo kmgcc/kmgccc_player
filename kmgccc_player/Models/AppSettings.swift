@@ -76,7 +76,8 @@ struct FullscreenLyricsTypography: Codable, Equatable {
 
     /// Readability-oriented defaults for the fullscreen skins with dedicated
     /// typography. The three cover/disc/cassette skins share one preset;
-    /// Panorama keeps the same fonts and sizes but uses an ultra-light weight.
+    /// Panorama follows the Apple-style font and size preset but uses an
+    /// ultra-light weight.
     static func defaultValue(forFullscreenSkinID skinID: String) -> Self {
         switch skinID {
         case "coverLed", "rotatingCover", "kmgccc.cassette":
@@ -91,13 +92,13 @@ struct FullscreenLyricsTypography: Codable, Equatable {
             )
         case "fullscreen.coverGradientBlur":
             return Self(
-                mainFontNameZh: LyricsFontDefaults.skinChinese,
-                mainFontNameEn: LyricsFontDefaults.skinEnglish,
-                translationFontName: LyricsFontDefaults.skinTranslation,
+                mainFontNameZh: Self.defaultValue.mainFontNameZh,
+                mainFontNameEn: Self.defaultValue.mainFontNameEn,
+                translationFontName: Self.defaultValue.translationFontName,
                 mainFontWeight: 100,
                 translationFontWeight: 100,
-                mainFontSize: 64,
-                translationFontSize: 24
+                mainFontSize: Self.defaultValue.mainFontSize,
+                translationFontSize: Self.defaultValue.translationFontSize
             )
         default:
             return Self.defaultValue
@@ -137,6 +138,16 @@ struct FullscreenLyricsTypography: Codable, Equatable {
                 mainFontWeight: 700,
                 translationFontWeight: 600,
                 mainFontSize: 52,
+                translationFontSize: 24
+            )
+        case "fullscreen.coverGradientBlur":
+            return Self(
+                mainFontNameZh: LyricsFontDefaults.skinChinese,
+                mainFontNameEn: LyricsFontDefaults.skinEnglish,
+                translationFontName: LyricsFontDefaults.skinTranslation,
+                mainFontWeight: 100,
+                translationFontWeight: 100,
+                mainFontSize: 64,
                 translationFontSize: 24
             )
         default:
@@ -1101,7 +1112,7 @@ public final class AppSettings {
 
     private enum FullscreenLyricsKeys {
         static let fontDefaultsMigration = "lyricsTypographyDefaultsMigrated_v2"
-        static let perSkinTypographyDefaultsMigration = "fullscreenLyricsPerSkinTypographyDefaults_v3"
+        static let perSkinTypographyDefaultsMigration = "fullscreenLyricsPerSkinTypographyDefaults_v5"
         static let perSkinTypographyEnabled = "fullscreenLyricsPerSkinTypographyEnabled"
         static let perSkinTypographyProfiles = "fullscreenLyricsPerSkinTypographyProfiles_v1"
         static let fontNameZh = "fullscreenLyricsFontNameZh"
@@ -1279,9 +1290,9 @@ public final class AppSettings {
         )
     }
 
-    /// Typography saved for one fullscreen skin. Known skin-specific defaults
-    /// are seeded once; other missing profiles inherit the current global
-    /// typography until per-skin mode is first enabled.
+    /// Typography saved for one fullscreen skin. Every known fullscreen skin
+    /// gets its own profile; an unknown skin can still inherit the global
+    /// typography until it is first edited.
     func fullscreenLyricsTypography(for skinID: String) -> FullscreenLyricsTypography {
         let normalizedSkinID = skinID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedSkinID.isEmpty,
@@ -1401,6 +1412,7 @@ public final class AppSettings {
         var didChange = false
         for skinID in [
             "coverLed",
+            "appleStyle",
             "rotatingCover",
             "kmgccc.cassette",
             "fullscreen.coverGradientBlur"

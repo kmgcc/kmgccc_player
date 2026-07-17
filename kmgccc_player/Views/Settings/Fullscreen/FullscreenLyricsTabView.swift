@@ -17,14 +17,11 @@ struct FullscreenLyricsTabView: View {
 
     @State private var fullscreenLyricsUsesPerSkinTypography: Bool =
         AppSettings.shared.fullscreenLyricsUsesPerSkinTypography
-    // Fullscreen-specific font settings
-    @State private var fullscreenLyricsFontNameZh: String = AppSettings.shared.fullscreenLyricsFontNameZh
-    @State private var fullscreenLyricsFontNameEn: String = AppSettings.shared.fullscreenLyricsFontNameEn
-    @State private var fullscreenLyricsTranslationFontName: String = AppSettings.shared.fullscreenLyricsTranslationFontName
-    @State private var fullscreenLyricsFontWeight: Int = AppSettings.shared.fullscreenLyricsFontWeight
-    @State private var fullscreenLyricsTranslationFontWeight: Int = AppSettings.shared.fullscreenLyricsTranslationFontWeight
-    @State private var fullscreenLyricsFontSize: Double = AppSettings.shared.fullscreenLyricsFontSize
-    @State private var fullscreenLyricsTranslationFontSize: Double = AppSettings.shared.fullscreenLyricsTranslationFontSize
+    // Keep the seven typography values as one state snapshot. This prevents a
+    // skin switch from briefly mixing the old skin's values with the new
+    // skin's values while SwiftUI updates individual controls.
+    @State private var fullscreenLyricsTypography: FullscreenLyricsTypography =
+        AppSettings.shared.effectiveFullscreenLyricsTypography
     @State private var amllLyricsRenderQuality: AppSettings.AMLLLyricsRenderQuality = AppSettings.shared.amllLyricsRenderQuality
     @State private var amllLyricsSpringDuration: Double = AppSettings.shared.amllLyricsSpringDuration
     @State private var amllLyricsSpringBounce: Double = AppSettings.shared.amllLyricsSpringBounce
@@ -63,13 +60,7 @@ struct FullscreenLyricsTabView: View {
         .onChange(of: settings.fullscreen.skinID) { _, _ in
             syncStateFromSettings()
         }
-        .onChange(of: fullscreenLyricsFontNameZh) { _, _ in syncToSettings() }
-        .onChange(of: fullscreenLyricsFontNameEn) { _, _ in syncToSettings() }
-        .onChange(of: fullscreenLyricsTranslationFontName) { _, _ in syncToSettings() }
-        .onChange(of: fullscreenLyricsFontWeight) { _, _ in syncToSettings() }
-        .onChange(of: fullscreenLyricsTranslationFontWeight) { _, _ in syncToSettings() }
-        .onChange(of: fullscreenLyricsFontSize) { _, _ in syncToSettings() }
-        .onChange(of: fullscreenLyricsTranslationFontSize) { _, _ in syncToSettings() }
+        .onChange(of: fullscreenLyricsTypography) { _, _ in syncToSettings() }
         .onChange(of: amllLyricsRenderQuality) { _, _ in syncToSettings() }
         .onChange(of: amllLyricsSpringDuration) { _, _ in syncSpringSettingsDebounced() }
         .onChange(of: amllLyricsSpringBounce) { _, _ in syncSpringSettingsDebounced() }
@@ -118,11 +109,11 @@ struct FullscreenLyricsTabView: View {
                         .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
                         .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                     Spacer()
-                    Text("\(Int(fullscreenLyricsFontSize)) px")
+                    Text("\(Int(fullscreenLyricsTypography.mainFontSize)) px")
                         .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
                         .font(.system(size: presentationStyle.rowValueFontSize, weight: .medium, design: .monospaced))
                 }
-                Slider(value: $fullscreenLyricsFontSize, in: 24...72, step: 1)
+                Slider(value: $fullscreenLyricsTypography.mainFontSize, in: 24...72, step: 1)
                     .frame(height: presentationStyle.tabHeight)
 
                 HStack {
@@ -130,7 +121,7 @@ struct FullscreenLyricsTabView: View {
                         .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
                         .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                     Spacer()
-                    Picker("", selection: $fullscreenLyricsFontWeight) {
+                    Picker("", selection: $fullscreenLyricsTypography.mainFontWeight) {
                         ForEach(fontWeights, id: \.value) { weight in
                             Text(weight.label).tag(weight.value)
                         }
@@ -146,11 +137,11 @@ struct FullscreenLyricsTabView: View {
                         .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
                         .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                     Spacer()
-                    Text("\(Int(fullscreenLyricsTranslationFontSize)) px")
+                    Text("\(Int(fullscreenLyricsTypography.translationFontSize)) px")
                         .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
                         .font(.system(size: presentationStyle.rowValueFontSize, weight: .medium, design: .monospaced))
                 }
-                Slider(value: $fullscreenLyricsTranslationFontSize, in: 12...36, step: 1)
+                Slider(value: $fullscreenLyricsTypography.translationFontSize, in: 12...36, step: 1)
                     .frame(height: presentationStyle.tabHeight)
 
                 HStack {
@@ -158,7 +149,7 @@ struct FullscreenLyricsTabView: View {
                         .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
                         .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                     Spacer()
-                    Picker("", selection: $fullscreenLyricsTranslationFontWeight) {
+                    Picker("", selection: $fullscreenLyricsTypography.translationFontWeight) {
                         ForEach(fontWeights, id: \.value) { weight in
                             Text(weight.label).tag(weight.value)
                         }
@@ -170,9 +161,9 @@ struct FullscreenLyricsTabView: View {
                 Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
 
                 DeferredLyricsFontPickerRows(
-                    mainFontNameZh: $fullscreenLyricsFontNameZh,
-                    mainFontNameEn: $fullscreenLyricsFontNameEn,
-                    translationFontName: $fullscreenLyricsTranslationFontName,
+                    mainFontNameZh: $fullscreenLyricsTypography.mainFontNameZh,
+                    mainFontNameEn: $fullscreenLyricsTypography.mainFontNameEn,
+                    translationFontName: $fullscreenLyricsTypography.translationFontName,
                     zhTitle: "中文字体",
                     enTitle: "英文字体",
                     translationTitle: "翻译字体"
@@ -186,27 +177,20 @@ struct FullscreenLyricsTabView: View {
             LyricsPreviewCard(
                 title: "",
                 isDarkCard: true,
-                mainWeight: fullscreenLyricsFontWeight,
-                translationWeight: fullscreenLyricsTranslationFontWeight,
-                mainFontNameZh: fullscreenLyricsFontNameZh,
-                mainFontNameEn: fullscreenLyricsFontNameEn,
-                translationFontName: fullscreenLyricsTranslationFontName,
-                mainFontSize: fullscreenLyricsFontSize,
-                translationFontSize: fullscreenLyricsTranslationFontSize
+                mainWeight: fullscreenLyricsTypography.mainFontWeight,
+                translationWeight: fullscreenLyricsTypography.translationFontWeight,
+                mainFontNameZh: fullscreenLyricsTypography.mainFontNameZh,
+                mainFontNameEn: fullscreenLyricsTypography.mainFontNameEn,
+                translationFontName: fullscreenLyricsTypography.translationFontName,
+                mainFontSize: fullscreenLyricsTypography.mainFontSize,
+                translationFontSize: fullscreenLyricsTypography.translationFontSize
             )
         }
     }
 
     private func syncStateFromSettings() {
         fullscreenLyricsUsesPerSkinTypography = settings.fullscreenLyricsUsesPerSkinTypography
-        let typography = settings.effectiveFullscreenLyricsTypography
-        fullscreenLyricsFontNameZh = typography.mainFontNameZh
-        fullscreenLyricsFontNameEn = typography.mainFontNameEn
-        fullscreenLyricsTranslationFontName = typography.translationFontName
-        fullscreenLyricsFontWeight = typography.mainFontWeight
-        fullscreenLyricsTranslationFontWeight = typography.translationFontWeight
-        fullscreenLyricsFontSize = typography.mainFontSize
-        fullscreenLyricsTranslationFontSize = typography.translationFontSize
+        fullscreenLyricsTypography = settings.effectiveFullscreenLyricsTypography
         amllLyricsRenderQuality = settings.amllLyricsRenderQuality
         amllLyricsSpringDuration = settings.amllLyricsSpringDuration
         amllLyricsSpringBounce = settings.amllLyricsSpringBounce
@@ -214,15 +198,7 @@ struct FullscreenLyricsTabView: View {
     }
 
     private func syncToSettings() {
-        let typography = FullscreenLyricsTypography(
-            mainFontNameZh: fullscreenLyricsFontNameZh,
-            mainFontNameEn: fullscreenLyricsFontNameEn,
-            translationFontName: fullscreenLyricsTranslationFontName,
-            mainFontWeight: fullscreenLyricsFontWeight,
-            translationFontWeight: fullscreenLyricsTranslationFontWeight,
-            mainFontSize: fullscreenLyricsFontSize,
-            translationFontSize: fullscreenLyricsTranslationFontSize
-        )
+        let typography = fullscreenLyricsTypography
         if settings.fullscreenLyricsUsesPerSkinTypography {
             settings.setFullscreenLyricsTypography(
                 typography,

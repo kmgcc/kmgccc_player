@@ -72,10 +72,16 @@ enum AudioVisualizationScope: String {
 final class AudioVisualizationPreferences {
     static let shared = AudioVisualizationPreferences()
 
+    private enum Keys {
+        static let defaultsMigration = "audioVisualizationDefaultsMigrated_v2"
+    }
+
     private(set) var revision = 0
     private let defaults = UserDefaults.standard
 
-    private init() {}
+    private init() {
+        migrateDefaultSelectionsIfNeeded()
+    }
 
     func selection(for skinID: String, scope: AudioVisualizationScope) -> AudioVisualizationPlacement {
         _ = revision
@@ -128,32 +134,111 @@ final class AudioVisualizationPreferences {
         }
     }
 
+    private func defaultSelection(
+        for skinID: String,
+        scope: AudioVisualizationScope
+    ) -> AudioVisualizationPlacement {
+        switch scope {
+        case .fullscreen:
+            switch skinID {
+            case FullscreenSkinID.coverLed.rawValue:
+                return .miniPlayerLED
+            case FullscreenSkinID.appleStyle.rawValue:
+                return .skinLED
+            case FullscreenSkinID.rotatingCover.rawValue,
+                 FullscreenSkinID.coverGradientBlur.rawValue:
+                return .miniPlayerSpectrum
+            case FullscreenSkinID.kmgcccCassette.rawValue:
+                return .off
+            default:
+                return .off
+            }
+
+        case .window:
+            switch skinID {
+            case FullscreenSkinID.appleStyle.rawValue,
+                 FullscreenSkinID.kmgcccCassette.rawValue:
+                return .miniPlayerLED
+            case FullscreenSkinID.coverLed.rawValue,
+                 FullscreenSkinID.rotatingCover.rawValue:
+                return .miniPlayerSpectrum
+            default:
+                return .miniPlayerSpectrum
+            }
+        }
+    }
+
+    private func previousDefaultSelection(
+        for skinID: String,
+        scope: AudioVisualizationScope
+    ) -> AudioVisualizationPlacement {
+        switch scope {
+        case .fullscreen:
+            switch skinID {
+            case FullscreenSkinID.coverGradientBlur.rawValue:
+                return .miniPlayerSpectrum
+            case FullscreenSkinID.kmgcccCassette.rawValue:
+                return .miniPlayerLED
+            default:
+                return .skinLED
+            }
+
+        case .window:
+            return .miniPlayerSpectrum
+        }
+    }
+
+    private func migrateDefaultSelectionsIfNeeded() {
+        guard !defaults.bool(forKey: Keys.defaultsMigration) else { return }
+
+        let skinIDs = [
+            FullscreenSkinID.coverLed.rawValue,
+            FullscreenSkinID.appleStyle.rawValue,
+            FullscreenSkinID.rotatingCover.rawValue,
+            FullscreenSkinID.kmgcccCassette.rawValue,
+            FullscreenSkinID.coverGradientBlur.rawValue,
+        ]
+
+        for scope in [AudioVisualizationScope.fullscreen, .window] {
+            for skinID in skinIDs {
+                let target = defaultSelection(for: skinID, scope: scope)
+                let previous = previousDefaultSelection(for: skinID, scope: scope)
+                let selectionKey = preferenceKey(for: skinID, scope: scope)
+
+                if let raw = defaults.string(forKey: selectionKey),
+                   let existing = AudioVisualizationPlacement(rawValue: raw),
+                   existing == previous {
+                    persist(target, for: skinID, scope: scope, notify: false)
+                    continue
+                }
+
+                // Older installations may have only the legacy skin key. If
+                // it still matches the old generated default, upgrade it;
+                // otherwise leave the user's explicit legacy choice alone.
+                guard defaults.string(forKey: selectionKey) == nil,
+                      let raw = defaults.string(forKey: legacySkinKey(for: skinID, scope: scope)),
+                      let legacyKind = AudioVisualizationKind(rawValue: raw),
+                      legacyKind == previous.skinKind else {
+                    continue
+                }
+                persist(target, for: skinID, scope: scope, notify: false)
+            }
+        }
+
+        defaults.set(true, forKey: Keys.defaultsMigration)
+    }
+
     private func migratedSelection(
         for skinID: String,
         scope: AudioVisualizationScope
     ) -> AudioVisualizationPlacement {
-        if scope == .fullscreen,
-           defaults.object(forKey: "miniPlayerSpectrumEnabled") != nil,
-           defaults.bool(forKey: "miniPlayerSpectrumEnabled") {
-            return .miniPlayerSpectrum
-        }
-
         let legacyKey = legacySkinKey(for: skinID, scope: scope)
         if defaults.object(forKey: legacyKey) != nil,
            let kind = AudioVisualizationKind(rawValue: defaults.string(forKey: legacyKey) ?? "off") {
             return .skin(kind)
         }
 
-        if scope == .window {
-            return .miniPlayerSpectrum
-        }
-        if skinID == FullscreenSkinID.coverGradientBlur.rawValue {
-            return .miniPlayerSpectrum
-        }
-        if skinID == FullscreenSkinID.kmgcccCassette.rawValue {
-            return .miniPlayerLED
-        }
-        return .skinLED
+        return defaultSelection(for: skinID, scope: scope)
     }
 
     private func preferenceKey(for skinID: String, scope: AudioVisualizationScope) -> String {
