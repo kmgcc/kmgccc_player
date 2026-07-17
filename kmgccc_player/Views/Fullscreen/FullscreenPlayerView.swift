@@ -77,12 +77,6 @@ struct FullscreenPlayerView: View {
         let overlayLightForegroundHash: Int
     }
 
-    private enum FeatureTips {
-        static let playbackModeRetapKey = "fullscreen.playbackModeRetap"
-        static let playbackModeRetapIntroducedBuild = AppBuild(1)
-        static let playbackModeRetapMaxDisplayCount = 2
-    }
-
     private nonisolated enum BottomControlGlassID: Hashable, Sendable {
         case leading
         case miniPlayer
@@ -464,17 +458,11 @@ struct FullscreenPlayerView: View {
         .sheet(isPresented: $isShowingExternalMatchEditor, content: externalMatchEditorSheet)
         .onAppear(perform: handleFullscreenAppear)
         .onDisappear(perform: handleFullscreenDisappear)
-        .onChange(of: fullscreenLocalArtworkPolarity) { _, newValue in
-            #if DEBUG
-            let source = newValue == nil
-                ? (isCoverBlurFullscreenSkin ? "fallback-global" : "n/a")
-                : "cover-blur-local"
-            FSDiagnostics.emit(
-                "readability polarity source=\(source) polarity=\(newValue?.rawValue ?? "nil") skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
-                category: .fullscreen
-            )
-            #endif
-        }
+        .onChange(
+            of: fullscreenLocalArtworkPolarity,
+            initial: false,
+            handleFullscreenLocalArtworkPolarityChange
+        )
         .onChange(of: localPolarityInputSignature, initial: true) { _, _ in
             scheduleLocalPolarityRecompute()
         }
@@ -635,7 +623,6 @@ struct FullscreenPlayerView: View {
             category: .fullscreen
         )
         syncFullscreenLedService()
-        showPlaybackModeRetapTipIfNeeded()
         FullscreenLyricsLayerDiagnostics.logEvent(
             "appear",
             store: existingFullscreenStore,
@@ -650,6 +637,10 @@ struct FullscreenPlayerView: View {
     }
 
     private func handleFullscreenDisappear() {
+        if showPlaybackModeRetapTip {
+            AppVersionGate.shared.markPlaybackModeRetapFeatureTipDismissed()
+            showPlaybackModeRetapTip = false
+        }
         let shouldReportFullscreenHidden =
             hostContext != .embeddedWindow || embeddedInitialThemeUnlocked
         Log.info(
@@ -861,6 +852,9 @@ struct FullscreenPlayerView: View {
                     .frame(width: proxy.size.width, height: proxy.size.height)
                     .id("\(skinIdentity)_bottom")
                     .onAppear { FSDiagnostics.emit("skinBottom onAppear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
+                    .task(id: playbackModeRetapTipTaskID) {
+                        await schedulePlaybackModeRetapTipIfNeeded()
+                    }
             } else {
                 Color.clear
             }
@@ -1874,13 +1868,6 @@ struct FullscreenPlayerView: View {
                         in: fullscreenBottomControlsGlassNamespace
                     )
                     .frame(width: scaledMiniPlayerWidth, height: scaledButtonSize)
-                    .overlay(alignment: .top) {
-                        if showPlaybackModeRetapTip {
-                            PlaybackModeRetapTipView(onClose: dismissPlaybackModeRetapTip)
-                                .offset(y: -12 * scale)
-                        }
-                    }
-                    .animation(bottomControlsAnimation, value: showPlaybackModeRetapTip)
                     .environment(\.colorScheme, fullscreenControlsGlassStyle.colorScheme)
                     .position(
                         x: scaledMiniPlayerOriginX + scaledMiniPlayerWidth / 2,
@@ -1943,6 +1930,23 @@ struct FullscreenPlayerView: View {
                 // is what makes Cover Blur / Apple Style glass track the
                 // complementary polarity instead of the app appearance.
                 .environment(\.colorScheme, fullscreenControlsGlassStyle.colorScheme)
+            }
+            .overlayPreferenceValue(PlaybackModeRetapTipAnchorPreferenceKey.self) { anchor in
+                GeometryReader { proxy in
+                    if isFullscreenBottomControlsVisible,
+                       showPlaybackModeRetapTip,
+                       let anchor
+                    {
+                        let sliderRect = proxy[anchor]
+                        PlaybackModeRetapTipView(onClose: dismissPlaybackModeRetapTip)
+                            .offset(
+                                x: sliderRect.midX - 144,
+                                y: sliderRect.minY - 12 * scale
+                            )
+                            .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)))
+                        .zIndex(3)
+                    }
+                }
             }
             .frame(width: scaledWindowWidth, height: controlsRowHeight, alignment: .leading)
             .padding(.bottom, adjustedBottomPadding)
@@ -2309,6 +2313,26 @@ struct FullscreenPlayerView: View {
     private var fullscreenLocalArtworkPolarity: ArtworkForegroundPolarity? {
         guard isCoverBlurFullscreenSkin else { return nil }
         return resolvedLocalPolarity
+    }
+
+    private func handleFullscreenLocalArtworkPolarityChange(
+        _ oldValue: ArtworkForegroundPolarity?,
+        _ newValue: ArtworkForegroundPolarity?
+    ) {
+        #if DEBUG
+        let source: String
+        if newValue == nil {
+            source = isCoverBlurFullscreenSkin ? "fallback-global" : "n/a"
+        } else {
+            source = "cover-blur-local"
+        }
+        let polarity = newValue?.rawValue ?? "nil"
+        let timestamp = String(format: "%.4f", ProcessInfo.processInfo.systemUptime)
+        FSDiagnostics.emit(
+            "readability polarity source=\(source) polarity=\(polarity) skin=\(settings.fullscreen.skinID) t=\(timestamp)",
+            category: .fullscreen
+        )
+        #endif
     }
 
     /// Cheap value signature over every polarity-decision input: skin, artwork,
@@ -3162,23 +3186,38 @@ struct FullscreenPlayerView: View {
         playbackCoordinator.setPlaybackOrderMode(mode)
     }
 
-    private func showPlaybackModeRetapTipIfNeeded() {
-        guard showPlaybackModeRetapTip == false else { return }
-        guard AppVersionGate.shared.shouldShowFeatureTip(
-            featureKey: FeatureTips.playbackModeRetapKey,
-            introducedBuild: FeatureTips.playbackModeRetapIntroducedBuild,
-            maxDisplayCount: FeatureTips.playbackModeRetapMaxDisplayCount
-        ) else { return }
+    private var playbackModeRetapTipTaskID: String {
+        let presentation = playbackCoordinator.presentation
+        guard presentation.source == .local,
+              presentation.hasTrack,
+              presentation.isPlaying
+        else {
+            return "inactive"
+        }
+        return presentation.localTrack?.id.uuidString ?? "local-track-unknown"
+    }
+
+    @MainActor
+    private func schedulePlaybackModeRetapTipIfNeeded() async {
+        guard playbackModeRetapTipTaskID != "inactive" else { return }
+        do {
+            try await Task.sleep(for: .seconds(FeatureTipCatalog.PlaybackModeRetap.playbackStartDelay))
+        } catch {
+            return
+        }
+        guard !Task.isCancelled,
+              playbackModeRetapTipTaskID != "inactive",
+              showPlaybackModeRetapTip == false,
+              AppVersionGate.shared.claimPlaybackModeRetapFeatureTipDisplay()
+        else { return }
 
         withAnimation(bottomControlsAnimation) {
             showPlaybackModeRetapTip = true
         }
-        AppVersionGate.shared.recordFeatureTipDisplayed(
-            featureKey: FeatureTips.playbackModeRetapKey
-        )
     }
 
     private func dismissPlaybackModeRetapTip() {
+        AppVersionGate.shared.markPlaybackModeRetapFeatureTipDismissed()
         withAnimation(bottomControlsAnimation) {
             showPlaybackModeRetapTip = false
         }
@@ -4866,38 +4905,6 @@ struct FullscreenPlayerView: View {
         return cgImage.width > 1 && cgImage.height > 1
     }
 
-}
-
-private struct PlaybackModeRetapTipView: View {
-    let onClose: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text("播放队列")
-                    .font(.headline)
-                Spacer(minLength: 8)
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("关闭")
-            }
-
-            Text("再次点击已选择的播放顺序按钮，可快速展开播放队列")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .frame(width: 288, alignment: .leading)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
-    }
 }
 
 private struct FullscreenMiniPlayerOcclusionRegion: Equatable {

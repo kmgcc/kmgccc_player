@@ -90,6 +90,7 @@ struct FullscreenMiniPlayerView: View {
     @State private var artworkImage: NSImage?
     @State private var isPlaybackModeExpanded = false
     @State private var isMiniPlayerHovering = false
+    @State private var trackDeletionRequest: TrackDeletionConfirmationRequest?
 
     // Computed properties based on settings and scale
     private var barHeight: CGFloat { fixedBarHeight * scale }
@@ -170,6 +171,10 @@ struct FullscreenMiniPlayerView: View {
                     onInteraction()
                     onEditTrackRequested(track)
                 },
+                onDeleteTrack: { track in
+                    onInteraction()
+                    trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: [track])
+                },
                 onEditExternalInfo: {
                     onInteraction()
                     onEditExternalInfoRequested()
@@ -221,6 +226,11 @@ struct FullscreenMiniPlayerView: View {
             onHoverStateChanged(hovering)
             if hovering {
                 onInteraction()
+            }
+        }
+        .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in
+            Task {
+                await libraryVM.deleteTracks(tracks)
             }
         }
         .task(id: currentArtworkTaskKey) {
@@ -332,6 +342,10 @@ struct FullscreenMiniPlayerView: View {
             }
         }
         .frame(width: playbackModeOccupancyWidth, height: 36 * scale, alignment: .leading)
+        .anchorPreference(
+            key: PlaybackModeRetapTipAnchorPreferenceKey.self,
+            value: .bounds
+        ) { $0 }
         .contentShape(Capsule())
         .animation(layoutAnimation, value: isPlaybackModeExpanded)
         .onHover { hovering in
@@ -656,6 +670,7 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
     let contextMenuRefreshTrigger: Int
 
     let onEditTrack: (Track) -> Void
+    let onDeleteTrack: (Track) -> Void
     let onEditExternalInfo: () -> Void
     let onInteraction: () -> Void
 
@@ -787,6 +802,7 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
                     onInteraction()
                     onEditTrack(t)
                 },
+                onDeleteFromLibraryRequest: onDeleteTrack,
                 showsPlay: false,
                 showsNavigation: false,
                 diagnosticSurface: "MiniPlayerContextMenu"
