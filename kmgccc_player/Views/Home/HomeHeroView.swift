@@ -28,6 +28,7 @@ struct HomeHeroView: View {
     @State private var heroArtworkChecksum: UInt64 = 0
     @State private var heroAnalysis: ArtworkColorAnalysis?
     @State private var isHovering = false
+    @State private var trackDeletionRequest: TrackDeletionConfirmationRequest?
 
     /// Local rendered-region polarity for this Hero's text and action icons.
     /// The same decision selects both the ordinary icon foreground and the
@@ -281,6 +282,11 @@ struct HomeHeroView: View {
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
                 .environmentObject(themeStore)
+        }
+        .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in
+            Task {
+                await libraryVM.deleteTracks(tracks)
+            }
         }
         .task(id: track.id) {
             await loadCoverImage()
@@ -702,7 +708,10 @@ struct HomeHeroView: View {
                 onPlayNext: playbackCoordinator.canInsertTracksAfterCurrent
                     ? { playbackCoordinator.insertTracksAfterCurrent([track]) }
                     : nil,
-                onEditTrack: { trackToEdit = $0 }
+                onEditTrack: { trackToEdit = $0 },
+                onDeleteFromLibraryRequest: { track in
+                    trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: [track])
+                }
             )
         } label: {
             ZStack {

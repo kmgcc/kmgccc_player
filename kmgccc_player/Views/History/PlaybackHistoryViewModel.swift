@@ -191,6 +191,28 @@ final class PlaybackHistoryViewModel {
     }
 
     @discardableResult
+    func delete(eventIDs: some Collection<UUID>, using store: PlaybackHistoryStore) -> Bool {
+        let ids = Set(eventIDs)
+        guard !ids.isEmpty else { return true }
+
+        let didDelete = store.delete(itemIDs: ids)
+        guard didDelete else { return false }
+
+        items.removeAll { ids.contains($0.id) }
+        selectedEventIDs.subtract(ids)
+        if let activeEventID, ids.contains(activeEventID) {
+            self.activeEventID = nil
+        }
+        if let selectionAnchorEventID, ids.contains(selectionAnchorEventID) {
+            self.selectionAnchorEventID = nil
+        }
+        if selectedEventIDs.isEmpty {
+            isMultiselectMode = false
+        }
+        return true
+    }
+
+    @discardableResult
     func delete(eventID: UUID, using store: PlaybackHistoryStore) -> Bool {
         let didDelete = store.delete(itemID: eventID)
         guard didDelete else { return false }
