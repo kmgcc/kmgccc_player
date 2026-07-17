@@ -74,7 +74,6 @@ private struct HeaderArtworkBoundsReporter: View {
 struct LibraryDetailHeaderView: View {
     private static let artworkSide: CGFloat = 220
     private static let visibleDescriptionLineCount = 6
-    private static let maxHeaderDescriptionContentLines = 15
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(\.colorScheme) private var colorScheme
@@ -182,6 +181,7 @@ struct LibraryDetailHeaderView: View {
 
     @ViewBuilder
     private var headerTopContent: some View {
+        let description = headerDescriptionText
         VStack(alignment: .leading, spacing: 5) {
             titleView
             subtitleView
@@ -190,8 +190,8 @@ struct LibraryDetailHeaderView: View {
             if isEditing {
                 descriptionEditor
                 if case .album = config { yearEditor }
-            } else if hasReadableDescription {
-                descriptionReadView
+            } else if !description.isEmpty {
+                descriptionReadView(text: description)
             }
         }
     }
@@ -437,23 +437,15 @@ struct LibraryDetailHeaderView: View {
         currentDescription.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private var descriptionReadView: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            Text(headerDescriptionText)
-                .font(.callout)
-                .lineSpacing(0)
-                .foregroundStyle(headerSecondaryTextColor)
-                .lineLimit(Self.maxHeaderDescriptionContentLines)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(
-                    maxWidth: .infinity,
-                    maxHeight: headerDescriptionContentHeightLimit,
-                    alignment: .topLeading
-                )
-        }
+    private func descriptionReadView(text: String) -> some View {
+        AppKitFullTextScrollView(
+            text: text,
+            font: NSFont.preferredFont(forTextStyle: .callout),
+            textColor: NSColor(headerSecondaryTextColor),
+            lineSpacing: 0,
+            showsVerticalScroller: false
+        )
         .frame(height: headerDescriptionVisibleHeight, alignment: .top)
-        .scrollClipDisabled(false)
-        .clipped()
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -461,18 +453,10 @@ struct LibraryDetailHeaderView: View {
         headerDescriptionHeight(lineCount: Self.visibleDescriptionLineCount)
     }
 
-    private var headerDescriptionContentHeightLimit: CGFloat {
-        headerDescriptionHeight(lineCount: Self.maxHeaderDescriptionContentLines)
-    }
-
     private func headerDescriptionHeight(lineCount: Int) -> CGFloat {
         let font = NSFont.preferredFont(forTextStyle: .callout)
         let lineHeight = NSLayoutManager().defaultLineHeight(for: font)
         return ceil(lineHeight * CGFloat(lineCount) + 1)
-    }
-
-    private var hasReadableDescription: Bool {
-        !currentDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var descriptionEditor: some View {

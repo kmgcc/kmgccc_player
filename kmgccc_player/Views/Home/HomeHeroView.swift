@@ -624,17 +624,17 @@ struct HomeHeroView: View {
     private var descriptionLine: some View {
         let description = heroDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         if !description.isEmpty {
-            ScrollView(.vertical, showsIndicators: true) {
-                Text(description)
-                    .font(.system(size: descriptionFontSize, weight: .ultraLight))
-                    .lineSpacing(1.5)
-                    .foregroundStyle(heroPlusBlendTextProfile.secondaryColor)
-                    .compositingGroup()
-                    .blendMode(heroPlusBlendTextProfile.blendMode)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            AppKitFullTextScrollView(
+                text: description,
+                font: NSFont.systemFont(ofSize: descriptionFontSize, weight: .ultraLight),
+                textColor: NSColor(heroPlusBlendTextProfile.secondaryColor),
+                lineSpacing: 1.5,
+                showsVerticalScroller: true
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .compositingGroup()
+            .blendMode(heroPlusBlendTextProfile.blendMode)
             .frame(height: descriptionScrollHeight, alignment: .top)
-            .scrollClipDisabled(false)
             .clipped()
             .layoutPriority(1)
             .padding(.top, 4)
