@@ -96,7 +96,8 @@ struct FullscreenPlayerView: View {
     }
 
     private let topContentHorizontalPadding: CGFloat = 0
-    private let lyricsViewportTopLift: CGFloat = 22
+    private let lyricsViewportTopLift: CGFloat = 32 // Compensated 10pt upward (was 22)
+    private let lyricsViewportTopCropDown: CGFloat = 38 // Shift the top edge of the mask down by 38pt
     private let fullscreenBackgroundLyricsAvoidanceHorizontalInset: CGFloat = 28
     private let fullscreenBackgroundLyricsAvoidanceTopInset: CGFloat = 36
     private let fullscreenBackgroundLyricsAvoidanceBottomInset: CGFloat = 60
@@ -1239,13 +1240,13 @@ struct FullscreenPlayerView: View {
                 .mask(
                     ZStack(alignment: .top) {
                         fullscreenLyricsMask(
-                            visibleHeight: visibleHeight,
+                            visibleHeight: visibleHeight - lyricsViewportTopCropDown * scale,
                             topFade: topFade,
                             bottomFade: bottomFade
                         )
                     }
                     .frame(height: height, alignment: .top)  // Align mask to top of expanded content
-                    .offset(y: (isFullscreenBottomControlsVisible ? 42 : 58) * scale)  // Mask moves down
+                    .offset(y: (isFullscreenBottomControlsVisible ? 42 + lyricsViewportTopCropDown : 58 + lyricsViewportTopCropDown) * scale)  // Mask moves down
                 )
 
             // `.compositingGroup()` + `.blendMode(.normal)` is a visual no-op that
@@ -2112,11 +2113,15 @@ struct FullscreenPlayerView: View {
                     .opacity(fullscreenLyricsViewportOpacity)
                     .environment(\.colorScheme, .dark)
                     .mask(
-                        fullscreenLyricsMask(
-                            visibleHeight: proxy.size.height,
-                            topFade: topFade,
-                            bottomFade: bottomFade
-                        )
+                        ZStack(alignment: .top) {
+                            fullscreenLyricsMask(
+                                visibleHeight: proxy.size.height - lyricsViewportTopCropDown,
+                                topFade: topFade,
+                                bottomFade: bottomFade
+                            )
+                        }
+                        .frame(height: expandedHeight, alignment: .top)
+                        .offset(y: lyricsViewportTopCropDown)
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             }
