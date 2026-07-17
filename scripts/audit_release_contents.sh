@@ -162,10 +162,31 @@ artifact_risk() {
   local lower
   lower="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
 
-  if [[ "$lower" == *.metal ]]; then
-    printf '%s\n' 'metal-source-in-app-bundle'
-    return
-  fi
+  case "$lower" in
+    *.metal)
+      printf '%s\n' 'metal-source-in-app-bundle'
+      return
+      ;;
+    *.swift|*.air|*.png|*.jpg|*.jpeg|*.heic|*.webp|*.sh)
+      printf '%s\n' 'source-or-plaintext-runtime-artifact'
+      return
+      ;;
+  esac
+
+  # Encrypted artwork payloads and compiled Metal libraries are distributable
+  # runtime artifacts when they appear only in the final App bundle. The same
+  # names remain prohibited in the public worktree and Git object history,
+  # which continue to use path_risk directly.
+  case "$lower" in
+    contents/resources/bkart.bundle/contents/info.plist|\
+    contents/resources/bkart.bundle/contents/resources/encryptedartassets/manifest.json|\
+    contents/resources/bkart.bundle/contents/resources/encryptedartassets/*.kmgasset|\
+    contents/resources/bokehtransitionresources.bundle/contents/info.plist|\
+    contents/resources/bokehtransitionresources.bundle/contents/resources/bokehtransition.metallib|\
+    contents/resources/bokehtransitionresources.bundle/contents/resources/bokehtransition.manifest.json)
+      return
+      ;;
+  esac
 
   path_risk "$path"
 }
