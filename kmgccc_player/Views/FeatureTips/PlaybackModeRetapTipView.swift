@@ -9,6 +9,7 @@ import SwiftUI
 
 struct PlaybackModeRetapTipView: View {
     let onClose: () -> Void
+    var usesStandaloneBackground = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -34,9 +35,11 @@ struct PlaybackModeRetapTipView: View {
         .padding(.vertical, 12)
         .frame(width: 288, alignment: .leading)
         .background {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(.regularMaterial)
-                .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+            if usesStandaloneBackground {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(.regularMaterial)
+                    .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+            }
         }
         .zIndex(10)
     }

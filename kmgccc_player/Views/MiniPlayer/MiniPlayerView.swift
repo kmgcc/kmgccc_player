@@ -98,10 +98,16 @@ struct MiniPlayerView: View {
             // MARK: - Playback Mode
             playbackModeView
                 .frame(width: playbackModeWidth, height: 24)
-                .anchorPreference(
-                    key: PlaybackModeRetapTipAnchorPreferenceKey.self,
-                    value: .bounds
-                ) { $0 }
+                .popover(
+                    isPresented: $showPlaybackModeRetapTip,
+                    attachmentAnchor: .rect(.bounds),
+                    arrowEdge: .bottom
+                ) {
+                    PlaybackModeRetapTipView(
+                        onClose: dismissPlaybackModeRetapTip,
+                        usesStandaloneBackground: false
+                    )
+                }
                 .layoutPriority(2)
 
             // MARK: - Progress bar (draggable + hover time labels)
@@ -125,23 +131,6 @@ struct MiniPlayerView: View {
             )
             .contentShape(Capsule())
             .onTapGesture {}
-        }
-        .overlayPreferenceValue(PlaybackModeRetapTipAnchorPreferenceKey.self) { anchor in
-            GeometryReader { proxy in
-                if !fullscreenWindowManager.isFullscreenPlayerPresented,
-                   showPlaybackModeRetapTip,
-                   let anchor
-                {
-                    let sliderRect = proxy[anchor]
-                    PlaybackModeRetapTipView(onClose: dismissPlaybackModeRetapTip)
-                        .offset(
-                            x: sliderRect.midX - 144,
-                            y: sliderRect.minY - 12
-                        )
-                        .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)))
-                        .zIndex(10)
-                }
-            }
         }
         .animation(layoutAnimation, value: isPlaybackModeExpanded)
         .sheet(item: $trackToEdit) { track in
@@ -172,6 +161,10 @@ struct MiniPlayerView: View {
             guard showPlaybackModeRetapTip else { return }
             AppVersionGate.shared.markPlaybackModeRetapFeatureTipDismissed()
             showPlaybackModeRetapTip = false
+        }
+        .onChange(of: showPlaybackModeRetapTip) { wasPresented, isPresented in
+            guard wasPresented, !isPresented else { return }
+            AppVersionGate.shared.markPlaybackModeRetapFeatureTipDismissed()
         }
     }
 
