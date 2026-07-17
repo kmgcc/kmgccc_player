@@ -337,7 +337,7 @@ private struct MusicPreferenceResetDialogView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("选择要重置的播放统计数据类别")
                 .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.primary)
+                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
 
             VStack(alignment: .leading, spacing: 12) {
                 SettingsTaskOptionToggle(
@@ -355,7 +355,7 @@ private struct MusicPreferenceResetDialogView: View {
 
             Text("至少勾选一项后才能继续。操作范围是整个音乐资料库，且不可恢复。")
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -364,7 +364,7 @@ private struct MusicPreferenceResetDialogView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("这将重置整个音乐资料库中所选的播放统计数据，并修改对应 meta.json。此操作不可恢复。")
                 .font(.system(size: 14))
-                .foregroundStyle(.primary)
+                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                 .fixedSize(horizontal: false, vertical: true)
 
             SettingsTaskSummaryCard(
@@ -374,7 +374,7 @@ private struct MusicPreferenceResetDialogView: View {
 
             Text("确认无误后继续进入最后确认。")
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -383,7 +383,7 @@ private struct MusicPreferenceResetDialogView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("最后确认：所选播放统计数据将被清空或重置；若勾选清理旧版残留与废弃缓存，也会一并清理。此操作不可撤销，不可恢复。")
                 .font(.system(size: 14))
-                .foregroundStyle(.primary)
+                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                 .fixedSize(horizontal: false, vertical: true)
 
             SettingsTaskSummaryCard(
@@ -393,7 +393,7 @@ private struct MusicPreferenceResetDialogView: View {
 
             Text("确认重置后将立即在后台逐首写回 meta.json。")
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -414,7 +414,7 @@ private struct MusicPreferenceResetDialogView: View {
                     Text("\(Int(viewModel.progress.fractionCompleted * 100))%")
                         .font(.system(size: 13, weight: .medium))
                         .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                 }
 
                 ProgressView(value: viewModel.progress.fractionCompleted)
@@ -424,13 +424,13 @@ private struct MusicPreferenceResetDialogView: View {
                    !currentTrackTitle.isEmpty {
                     Text("当前：\(currentTrackTitle)")
                         .font(.system(size: 13))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                         .lineLimit(1)
                 }
 
                 Text(viewModel.progress.detail)
                     .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                 }
             }
         }
@@ -444,17 +444,17 @@ private struct MusicPreferenceResetDialogView: View {
                     VStack(alignment: .leading, spacing: 12) {
                     Text("已处理 \(result.successCount) 首，失败 \(result.failureCount) 首。")
                         .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
 
                     if result.didClearPlaybackHistory {
                         Text("播放历史已同步清空。")
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                     }
 
                     Text("本次未触发额外整库重复扫描，仅对对应歌曲的 meta.json 做了定点写回。")
                         .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                         .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -463,7 +463,7 @@ private struct MusicPreferenceResetDialogView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("失败项")
                             .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
 
                         ScrollView {
                             VStack(alignment: .leading, spacing: 10) {
@@ -471,10 +471,10 @@ private struct MusicPreferenceResetDialogView: View {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(failure.title)
                                             .font(.system(size: 13, weight: .medium))
-                                            .foregroundStyle(.primary)
+                                            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                                         Text(failure.reason)
                                             .font(.system(size: 12))
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                                             .fixedSize(horizontal: false, vertical: true)
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)

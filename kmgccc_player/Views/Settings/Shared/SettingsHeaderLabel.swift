@@ -27,6 +27,8 @@ struct SettingsAppForegroundColors: Equatable {
     let primary: Color
     let secondary: Color
     let tertiary: Color
+    let quaternary: Color
+    let disabled: Color
 }
 
 private struct SettingsAppForegroundColorsKey: EnvironmentKey {
@@ -37,6 +39,69 @@ extension EnvironmentValues {
     var settingsAppForegroundColors: SettingsAppForegroundColors? {
         get { self[SettingsAppForegroundColorsKey.self] }
         set { self[SettingsAppForegroundColorsKey.self] = newValue }
+    }
+}
+
+extension FullscreenSettingsPresentationStyle {
+    func settingsPrimaryTextColor(
+        appColors: SettingsAppForegroundColors?
+    ) -> Color {
+        if let appColors, !usesUnifiedOverlayForeground {
+            return appColors.primary
+        }
+        return primaryTextColor
+    }
+
+    func settingsSecondaryTextColor(
+        appColors: SettingsAppForegroundColors?
+    ) -> Color {
+        if let appColors, !usesUnifiedOverlayForeground {
+            return appColors.secondary
+        }
+        return secondaryTextColor
+    }
+
+    func settingsTertiaryTextColor(
+        appColors: SettingsAppForegroundColors?
+    ) -> Color {
+        if let appColors, !usesUnifiedOverlayForeground {
+            return appColors.tertiary
+        }
+        return tertiaryTextColor
+    }
+
+    func settingsSelectedTextColor(
+        accentColor: Color,
+        appColors: SettingsAppForegroundColors?
+    ) -> Color {
+        if usesUnifiedOverlayForeground {
+            return primaryTextColor
+        }
+        _ = appColors
+        return accentColor
+    }
+
+    func settingsValueTextColor(
+        accentColor: Color,
+        appColors: SettingsAppForegroundColors?
+    ) -> Color {
+        if usesUnifiedOverlayForeground {
+            return primaryTextColor
+        }
+        _ = appColors
+        return accentColor
+    }
+
+    func settingsSegmentedTrackColor(
+        appColors: SettingsAppForegroundColors?
+    ) -> Color {
+        if usesMaterialSectionCards {
+            return primaryTextColor.opacity(0.12)
+        }
+        if usesUnifiedOverlayForeground {
+            return primaryTextColor.opacity(0.08)
+        }
+        return (appColors?.secondary ?? Color.secondary).opacity(0.08)
     }
 }
 
@@ -137,6 +202,9 @@ struct CollapsibleSectionHeader: View {
     let systemImage: String
     @Binding var isExpanded: Bool
 
+    @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
+
     init(
         _ title: LocalizedStringKey,
         systemImage: String,
@@ -164,9 +232,11 @@ struct CollapsibleSectionHeader: View {
             HStack(spacing: 8) {
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
+                    .foregroundStyle(resolvedSecondaryColor)
                     .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 Label(title, systemImage: systemImage)
                     .font(.headline)
+                    .foregroundStyle(resolvedPrimaryColor)
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -174,6 +244,20 @@ struct CollapsibleSectionHeader: View {
             .padding(.vertical, 4)
         }
         .buttonStyle(.plain)
+    }
+
+    private var resolvedPrimaryColor: Color {
+        if let appColors, !presentationStyle.usesUnifiedOverlayForeground {
+            return appColors.primary
+        }
+        return presentationStyle.primaryTextColor
+    }
+
+    private var resolvedSecondaryColor: Color {
+        if let appColors, !presentationStyle.usesUnifiedOverlayForeground {
+            return appColors.secondary
+        }
+        return presentationStyle.secondaryTextColor
     }
 }
 
@@ -270,7 +354,7 @@ struct SettingsSwitchRow: View {
             HStack(spacing: presentationStyle.scaled(12)) {
                 Text(title)
                     .font(titleFont ?? presentationStyle.rowLabelFont)
-                    .foregroundStyle(titleColor ?? resolvedTitleColor)
+                    .foregroundStyle(resolvedTitleColor)
 
                 Spacer(minLength: presentationStyle.scaled(16))
 
@@ -283,7 +367,7 @@ struct SettingsSwitchRow: View {
             if let detail {
                 Text(detail)
                     .font(detailFont ?? presentationStyle.captionFont)
-                    .foregroundStyle(detailColor ?? resolvedDetailColor)
+                    .foregroundStyle(resolvedDetailColor)
                     .lineSpacing(SettingsStyleTokens.descriptionLineSpacing)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -295,13 +379,13 @@ struct SettingsSwitchRow: View {
         if let appColors, !presentationStyle.usesUnifiedOverlayForeground {
             return appColors.primary
         }
-        return presentationStyle.primaryTextColor
+        return titleColor ?? presentationStyle.primaryTextColor
     }
 
     private var resolvedDetailColor: Color {
         if let appColors, !presentationStyle.usesUnifiedOverlayForeground {
             return appColors.tertiary
         }
-        return presentationStyle.secondaryTextColor
+        return detailColor ?? presentationStyle.secondaryTextColor
     }
 }

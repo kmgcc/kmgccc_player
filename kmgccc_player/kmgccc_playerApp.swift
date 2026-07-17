@@ -85,6 +85,10 @@ struct KmgcccPlayerApp: App {
     let sharedModelContainer: ModelContainer
 
     init() {
+        // Register the bundled Inter family before any settings preview or
+        // lyric surface asks CoreText/SwiftUI to resolve it.
+        BundledFontRegistrar.register()
+
         // Install the crash handler before SwiftData or the main window is
         // created. The handler only writes PLCrashReporter's pending file;
         // parsing, redaction and all network work happen on a later launch.

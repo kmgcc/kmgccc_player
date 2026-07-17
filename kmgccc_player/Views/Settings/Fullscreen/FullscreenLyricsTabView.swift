@@ -13,6 +13,7 @@ struct FullscreenLyricsTabView: View {
     @Environment(LyricsViewModel.self) private var lyricsVM
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     @State private var fullscreenLyricsUsesPerSkinTypography: Bool =
         AppSettings.shared.fullscreenLyricsUsesPerSkinTypography
@@ -91,8 +92,8 @@ struct FullscreenLyricsTabView: View {
                     detail: "开启后可能减少高亮移动干扰",
                     titleFont: presentationStyle.rowLabelFont,
                     detailFont: presentationStyle.captionFont,
-                    titleColor: presentationStyle.primaryTextColor,
-                    detailColor: presentationStyle.tertiaryTextColor
+                    titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors),
+                    detailColor: presentationStyle.settingsTertiaryTextColor(appColors: appColors)
                 )
             }
         }
@@ -106,8 +107,8 @@ struct FullscreenLyricsTabView: View {
                     isOn: $fullscreenLyricsUsesPerSkinTypography,
                     titleFont: presentationStyle.rowLabelFont,
                     detailFont: presentationStyle.captionFont,
-                    titleColor: presentationStyle.primaryTextColor,
-                    detailColor: presentationStyle.tertiaryTextColor
+                    titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors),
+                    detailColor: presentationStyle.settingsTertiaryTextColor(appColors: appColors)
                 )
 
                 Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
@@ -115,7 +116,7 @@ struct FullscreenLyricsTabView: View {
                 HStack {
                     Text("主歌词字号")
                         .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
-                        .foregroundStyle(presentationStyle.primaryTextColor)
+                        .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                     Spacer()
                     Text("\(Int(fullscreenLyricsFontSize)) px")
                         .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
@@ -127,7 +128,7 @@ struct FullscreenLyricsTabView: View {
                 HStack {
                     Text("主歌词字重")
                         .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
-                        .foregroundStyle(presentationStyle.primaryTextColor)
+                        .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                     Spacer()
                     Picker("", selection: $fullscreenLyricsFontWeight) {
                         ForEach(fontWeights, id: \.value) { weight in
@@ -143,7 +144,7 @@ struct FullscreenLyricsTabView: View {
                 HStack {
                     Text("翻译字号")
                         .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
-                        .foregroundStyle(presentationStyle.primaryTextColor)
+                        .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                     Spacer()
                     Text("\(Int(fullscreenLyricsTranslationFontSize)) px")
                         .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
@@ -155,7 +156,7 @@ struct FullscreenLyricsTabView: View {
                 HStack {
                     Text("翻译字重")
                         .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
-                        .foregroundStyle(presentationStyle.primaryTextColor)
+                        .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                     Spacer()
                     Picker("", selection: $fullscreenLyricsTranslationFontWeight) {
                         ForEach(fontWeights, id: \.value) { weight in

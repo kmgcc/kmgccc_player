@@ -50,6 +50,7 @@ struct DeferredLyricsFontPickerRows: View {
 
     @ObservedObject private var fontProvider = SystemFontFamilyProvider.shared
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     var body: some View {
         Group {
@@ -64,21 +65,21 @@ struct DeferredLyricsFontPickerRows: View {
                     ProgressView()
                     Text("正在加载字体…")
                         .font(presentationStyle.captionFont)
-                        .foregroundStyle(presentationStyle.secondaryTextColor)
+                        .foregroundStyle(presentationStyle.settingsSecondaryTextColor(appColors: appColors))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 HStack(spacing: presentationStyle.scaled(10)) {
                     Text("字体列表尚未加载")
                         .font(presentationStyle.captionFont)
-                        .foregroundStyle(presentationStyle.secondaryTextColor)
+                        .foregroundStyle(presentationStyle.settingsSecondaryTextColor(appColors: appColors))
                     Spacer()
                     Button {
                         fontProvider.loadIfNeeded()
                     } label: {
                         Label("加载字体", systemImage: "textformat")
                             .font(presentationStyle.captionFont)
-                            .foregroundStyle(presentationStyle.primaryTextColor)
+                            .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                     }
                 }
             }
@@ -92,7 +93,7 @@ struct DeferredLyricsFontPickerRows: View {
         HStack {
             Text(title)
                 .font(presentationStyle.rowLabelFont)
-                .foregroundStyle(presentationStyle.primaryTextColor)
+                .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
             Spacer()
             Picker("", selection: selection) {
                 ForEach(families(including: selection.wrappedValue), id: \.self) { family in

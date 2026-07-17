@@ -22,6 +22,7 @@
 		A0100000000000000000000A /* zh-Hans.lproj in Resources */ = {isa = PBXBuildFile; fileRef = B0100000000000000000000A /* zh-Hans.lproj */; };
 		A0100000000000000000000B /* kmgccc.icon in Resources */ = {isa = PBXBuildFile; fileRef = B0100000000000000000000B /* kmgccc.icon */; };
 		A0100000000000000000000C /* PLCrashReporter-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = B0100000000000000000000C /* PLCrashReporter-LICENSE.txt */; };
+		A0100000000000000000000D /* Docs in Resources */ = {isa = PBXBuildFile; fileRef = B0100000000000000000000D /* Docs */; };
 		C02000000000000000000001 /* kmgccc_playerTests/MetadataMatchScorerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000011 /* kmgccc_playerTests/MetadataMatchScorerTests.swift */; };
 		C02000000000000000000002 /* kmgccc_playerTests/SkinRoutePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000012 /* kmgccc_playerTests/SkinRoutePolicyTests.swift */; };
 		C02000000000000000000003 /* ExternalPlaybackTextNormalizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C02000000000000000000013 /* ExternalPlaybackTextNormalizer.swift */; };
@@ -56,6 +57,7 @@
 		B0100000000000000000000A /* zh-Hans.lproj */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "zh-Hans.lproj"; path = "kmgccc_player/Resources/zh-Hans.lproj"; sourceTree = "<group>"; };
 		B0100000000000000000000B /* kmgccc.icon */ = {isa = PBXFileReference; lastKnownFileType = folder.iconcomposer.icon; name = kmgccc.icon; path = kmgccc_player/kmgccc.icon; sourceTree = "<group>"; };
 		B0100000000000000000000C /* PLCrashReporter-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "PLCrashReporter-LICENSE.txt"; path = "kmgccc_player/Resources/Licenses/PLCrashReporter-LICENSE.txt"; sourceTree = "<group>"; };
+		B0100000000000000000000D /* Docs */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Docs; path = kmgccc_player/Docs; sourceTree = "<group>"; };
 		C02000000000000000000010 /* kmgccc_playerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = kmgccc_playerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C02000000000000000000011 /* kmgccc_playerTests/MetadataMatchScorerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/MetadataMatchScorerTests.swift; sourceTree = "<group>"; };
 		C02000000000000000000012 /* kmgccc_playerTests/SkinRoutePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/SkinRoutePolicyTests.swift; sourceTree = "<group>"; };
@@ -213,6 +215,7 @@
 				B01000000000000000000009 /* applemusic-like-lyrics.txt */,
 				B0100000000000000000000A /* zh-Hans.lproj */,
 				B0100000000000000000000C /* PLCrashReporter-LICENSE.txt */,
+				B0100000000000000000000D /* Docs */,
 			);
 			name = "Runtime Resources";
 			sourceTree = "<group>";
@@ -366,6 +369,7 @@
 				A0100000000000000000000A /* zh-Hans.lproj in Resources */,
 				A0100000000000000000000B /* kmgccc.icon in Resources */,
 				A0100000000000000000000C /* PLCrashReporter-LICENSE.txt in Resources */,
+				A0100000000000000000000D /* Docs in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

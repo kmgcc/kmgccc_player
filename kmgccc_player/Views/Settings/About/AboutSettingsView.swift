@@ -10,6 +10,7 @@ import SwiftUI
 /// About page with app info, licenses, and social links.
 struct AboutSettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.settingsAppForegroundColors) private var appColors
     @AppStorage(UpdateCheckPreferences.checkForUpdatesOnLaunchKey) private var checkForUpdatesOnLaunch: Bool = true
     @State private var aboutEasterEggTracker = AboutEasterEggTapTracker()
     @State private var showEasterEggImage: Bool = false
@@ -106,7 +107,7 @@ struct AboutSettingsView: View {
                 }
                 .font(.subheadline.weight(.semibold))
                 .buttonStyle(.bordered)
-                .tint(.accentColor)
+                .tint(themeStore.accentColor)
                 .clipShape(Capsule())
 
                 capsuleLinkButton(
@@ -248,22 +249,31 @@ struct AboutSettingsView: View {
     }
 
     private func loadDocumentContent(fileName: String) -> String {
-        let url = Bundle.main.url(
-            forResource: fileName,
-            withExtension: "md",
-            subdirectory: "LegalDocuments"
-        ) ?? Bundle.main.url(forResource: fileName, withExtension: "md")
+        let candidateURLs = [
+            Bundle.main.url(
+                forResource: fileName,
+                withExtension: "md",
+                subdirectory: "Docs"
+            ),
+            Bundle.main.url(
+                forResource: fileName,
+                withExtension: "md",
+                subdirectory: "LegalDocuments"
+            ),
+            Bundle.main.url(forResource: fileName, withExtension: "md")
+        ].compactMap { $0 }
 
-        guard let url else {
+        guard !candidateURLs.isEmpty else {
             return "文档加载失败"
         }
 
-        do {
-            let content = try String(contentsOf: url, encoding: .utf8)
-            return content
-        } catch {
-            return "文档读取失败"
+        for url in candidateURLs {
+            if let content = try? String(contentsOf: url, encoding: .utf8) {
+                return content
+            }
         }
+
+        return "文档读取失败"
     }
 
     private func showPage(_ nextPage: AboutSettingsPage) {
@@ -341,14 +351,14 @@ struct AboutSettingsView: View {
         case "MPL-2.0": return .purple
         case "Apache-2.0": return .teal
         case "BSD": return .cyan
-        default: return .secondary
+        default: return appColors?.secondary ?? .secondary
         }
     }
 
     private func socialIconLink(title: String, hexColor: String, destination: String) -> some View {
         Link(destination: URL(string: destination)!) {
-            Circle()
-                .fill(Color(hex: hexColor) ?? .secondary)
+                Circle()
+                .fill(Color(hex: hexColor) ?? (appColors?.secondary ?? .secondary))
                 .frame(width: 30, height: 30)
                 .overlay {
                     Text(title)
@@ -447,6 +457,15 @@ private struct AboutEasterEggTapTracker {
 
 struct MarkdownRendererView: View {
     let text: String
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    private var primaryColor: Color {
+        themeStore.appForegroundPalette.primaryColor
+    }
+
+    private var secondaryColor: Color {
+        themeStore.appForegroundPalette.secondaryColor
+    }
 
     var body: some View {
         let lines = text.components(separatedBy: .newlines)
@@ -467,21 +486,21 @@ struct MarkdownRendererView: View {
             let cleanText = String(line.dropFirst(2))
             Text(attributedString(for: cleanText))
                 .font(.title.bold())
-                .foregroundColor(.primary)
+                .foregroundStyle(primaryColor)
                 .padding(.top, 20)
                 .padding(.bottom, 6)
         } else if line.hasPrefix("## ") {
             let cleanText = String(line.dropFirst(3))
             Text(attributedString(for: cleanText))
                 .font(.title3.bold())
-                .foregroundColor(.primary)
+                .foregroundStyle(primaryColor)
                 .padding(.top, 16)
                 .padding(.bottom, 4)
         } else if line.hasPrefix("### ") {
             let cleanText = String(line.dropFirst(4))
             Text(attributedString(for: cleanText))
                 .font(.headline.bold())
-                .foregroundColor(.primary)
+                .foregroundStyle(primaryColor)
                 .padding(.top, 12)
                 .padding(.bottom, 2)
         } else if let match = line.range(of: "^\\d+\\.\\s+", options: .regularExpression) {
@@ -490,10 +509,10 @@ struct MarkdownRendererView: View {
             HStack(alignment: .top, spacing: 4) {
                 Text(prefix)
                     .font(.body)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(secondaryColor)
                 Text(attributedString(for: cleanText))
                     .font(.body)
-                    .foregroundColor(.primary)
+                    .foregroundStyle(primaryColor)
             }
             .padding(.leading, 12)
         } else if line.hasPrefix("- ") {
@@ -501,10 +520,10 @@ struct MarkdownRendererView: View {
             HStack(alignment: .top, spacing: 6) {
                 Text("•")
                     .font(.body)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(secondaryColor)
                 Text(attributedString(for: cleanText))
                     .font(.body)
-                    .foregroundColor(.primary)
+                    .foregroundStyle(primaryColor)
             }
             .padding(.leading, 12)
         } else if line.hasPrefix("* ") {
@@ -512,16 +531,16 @@ struct MarkdownRendererView: View {
             HStack(alignment: .top, spacing: 6) {
                 Text("•")
                     .font(.body)
-                    .foregroundColor(.secondary)
+                    .foregroundStyle(secondaryColor)
                 Text(attributedString(for: cleanText))
                     .font(.body)
-                    .foregroundColor(.primary)
+                    .foregroundStyle(primaryColor)
             }
             .padding(.leading, 12)
         } else {
             Text(attributedString(for: line))
                 .font(.body)
-                .foregroundColor(.primary)
+                .foregroundStyle(primaryColor)
                 .lineSpacing(4)
         }
     }

@@ -25,9 +25,9 @@ struct LyricsPreviewCard: View {
         isDarkCard: Bool,
         mainWeight: Int,
         translationWeight: Int,
-        mainFontNameZh: String = "PingFang SC",
-        mainFontNameEn: String = "SF Pro Text",
-        translationFontName: String = "SF Pro Text",
+        mainFontNameZh: String = LyricsFontDefaults.chinese,
+        mainFontNameEn: String = LyricsFontDefaults.english,
+        translationFontName: String = LyricsFontDefaults.translation,
         mainFontSize: Double = 26.0,
         translationFontSize: Double = 16.0
     ) {

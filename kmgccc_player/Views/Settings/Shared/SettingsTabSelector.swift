@@ -15,6 +15,7 @@ struct SettingsTabSelector: View {
     @Binding var selectedTab: Int
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     init(tabs: [String], selectedTab: Binding<Int>, fillsWidth: Bool = false) {
         self.tabs = tabs
@@ -54,8 +55,11 @@ struct SettingsTabSelector: View {
                     .font(.system(size: presentationStyle.tabFontSize, weight: isSelected ? .medium : .regular))
                     .foregroundStyle(
                         isSelected
-                            ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
-                            : presentationStyle.secondaryTextColor
+                            ? presentationStyle.settingsSelectedTextColor(
+                                accentColor: themeStore.accentColor,
+                                appColors: appColors
+                            )
+                            : presentationStyle.settingsSecondaryTextColor(appColors: appColors)
                     )
                     .frame(
                         minWidth: presentationStyle.tabMinWidth,
@@ -96,7 +100,7 @@ struct SettingsTabSelector: View {
                 }
 
                 Capsule()
-                    .fill(presentationStyle.segmentedTrackColor)
+                    .fill(presentationStyle.settingsSegmentedTrackColor(appColors: appColors))
                     .overlay(
                         Capsule()
                             .strokeBorder(

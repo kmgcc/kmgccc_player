@@ -32,10 +32,10 @@ struct SettingsSidebarView: View {
                         Image(systemName: category.systemImage)
                             .font(.system(size: 15, weight: .medium))
                             .frame(width: 20)
-                            .foregroundStyle(
-                                selection == category
-                                    ? themeStore.accentColor
-                                    : themeStore.appForegroundPalette.primaryColor)
+                                .foregroundStyle(
+                                    selection == category
+                                        ? themeStore.accentColor
+                                        : themeStore.appForegroundPalette.secondaryColor)
 
                         Text(category.title)
                             .font(.body)

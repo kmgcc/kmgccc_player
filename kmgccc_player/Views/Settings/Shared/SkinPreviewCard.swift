@@ -22,6 +22,7 @@ struct SkinPreviewCard<Preview: View>: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     private var selectionAccentColor: Color {
         FullscreenSelectionAccentStyle.adjustedAccentColor(from: themeStore.accentNSColor)
@@ -129,10 +130,13 @@ struct SkinPreviewCard<Preview: View>: View {
                 colorScheme: colorScheme
             )
         }
-        if colorScheme == .dark {
-            return Color.white.opacity(0.82)
+        if isSelected {
+            return selectionAccentColor
         }
-        return Color.black.opacity(0.62)
+        if let appColors {
+            return appColors.secondary
+        }
+        return colorScheme == .dark ? Color.white.opacity(0.82) : Color.black.opacity(0.62)
     }
 
     private var outerStrokeColor: Color {
@@ -141,6 +145,9 @@ struct SkinPreviewCard<Preview: View>: View {
         }
         if isSelected {
             return selectionAccentColor.opacity(0.98)
+        }
+        if let appColors {
+            return appColors.secondary.opacity(0.16)
         }
         if colorScheme == .dark {
             return Color.white.opacity(0.10)

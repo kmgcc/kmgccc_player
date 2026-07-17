@@ -14,6 +14,7 @@ struct LEDMeterSettingsView: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     /// Hide the embedded "LED Meter" header when this view is rendered as a tab
     /// inside another settings container that already shows a title.
@@ -54,7 +55,7 @@ struct LEDMeterSettingsView: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: presentationStyle.scaled(16))
                         .strokeBorder(
-                            presentationStyle.primaryTextColor.opacity(0.05),
+                            presentationStyle.settingsPrimaryTextColor(appColors: appColors).opacity(0.05),
                             lineWidth: presentationStyle.scaledHairlineWidth
                         )
                 )
@@ -118,15 +119,18 @@ struct LEDMeterSettingsView: View {
                         .padding(.vertical, presentationStyle.scaled(4))
                         .foregroundStyle(
                             isSelected
-                                ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
-                                : presentationStyle.secondaryTextColor
+                                ? presentationStyle.settingsSelectedTextColor(
+                                    accentColor: themeStore.accentColor,
+                                    appColors: appColors
+                                )
+                                : presentationStyle.settingsSecondaryTextColor(appColors: appColors)
                         )
                 }
             )
             .padding(presentationStyle.scaled(3))
             .background(
                 Capsule()
-                    .fill(presentationStyle.segmentedTrackColor)
+                    .fill(presentationStyle.settingsSegmentedTrackColor(appColors: appColors))
             )
             .fixedSize(horizontal: true, vertical: false)
         }
@@ -159,15 +163,18 @@ struct LEDMeterSettingsView: View {
                         .padding(.vertical, presentationStyle.scaled(4))
                         .foregroundStyle(
                             isSelected
-                                ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
-                                : presentationStyle.secondaryTextColor
+                                ? presentationStyle.settingsSelectedTextColor(
+                                    accentColor: themeStore.accentColor,
+                                    appColors: appColors
+                                )
+                                : presentationStyle.settingsSecondaryTextColor(appColors: appColors)
                         )
                 }
             )
             .padding(presentationStyle.scaled(3))
             .background(
                 Capsule()
-                    .fill(presentationStyle.segmentedTrackColor)
+                    .fill(presentationStyle.settingsSegmentedTrackColor(appColors: appColors))
             )
             .fixedSize(horizontal: true, vertical: false)
         }
@@ -175,7 +182,7 @@ struct LEDMeterSettingsView: View {
 
     private var selectorKnobColor: Color {
         presentationStyle.usesMaterialSectionCards
-            ? presentationStyle.primaryTextColor
+            ? presentationStyle.settingsPrimaryTextColor(appColors: appColors)
             : themeStore.accentColor
     }
 

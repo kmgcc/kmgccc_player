@@ -33,7 +33,7 @@ struct DataManagementSettingsView: View {
             SettingsSection {
                 VStack(alignment: .leading, spacing: 12) {
                     SettingsSwitchRow(
-                        title: "导入时延后补全歌词与封面",
+                        title: "导入时延后补全歌曲信息",
                         isOn: Binding(
                             get: { settings.deferImportEnrichment },
                             set: { settings.deferImportEnrichment = $0 }

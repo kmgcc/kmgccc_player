@@ -69,6 +69,7 @@ private struct SettingsTaskDialogHeader: View {
     let iconColor: Color
 
     @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
         HStack(spacing: 16) {
@@ -90,10 +91,10 @@ private struct SettingsTaskDialogHeader: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                 Text(subtitle)
                     .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -108,6 +109,7 @@ struct SettingsTaskPanel<Content: View>: View {
     private let content: Content
 
     @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var themeStore: ThemeStore
 
     init(
         cornerRadius: CGFloat = 18,
@@ -123,6 +125,7 @@ struct SettingsTaskPanel<Content: View>: View {
         content
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
             .liquidGlassRect(
                 cornerRadius: cornerRadius,
                 colorScheme: colorScheme,
@@ -144,7 +147,7 @@ struct SettingsTaskSummaryCard: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text(title)
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
 
                 ForEach(items, id: \.self) { item in
                     HStack(spacing: 10) {
@@ -153,7 +156,7 @@ struct SettingsTaskSummaryCard: View {
                             .foregroundStyle(themeStore.accentColor)
                         Text(item)
                             .font(.system(size: 13))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                     }
                 }
             }
@@ -174,13 +177,13 @@ struct SettingsTaskOptionToggle: View {
             Toggle(isOn: $isOn) {
                 Text(title)
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
             }
             .toggleStyle(.checkbox)
 
             Text(detail)
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(14)
@@ -199,21 +202,21 @@ enum SettingsTaskDialogButtonKind: Equatable {
     case primary
     case destructive
 
-    var foregroundColor: Color {
+    func foregroundColor(primaryColor: Color) -> Color {
         switch self {
         case .secondary:
-            return .primary
+            return primaryColor
         case .primary, .destructive:
             return .white
         }
     }
 
-    var fillColor: Color {
+    func fillColor(accentColor: Color, primaryColor: Color) -> Color {
         switch self {
         case .secondary:
-            return Color.black.opacity(0.08)
+            return primaryColor.opacity(0.08)
         case .primary:
-            return ThemeStore.shared.accentColor.opacity(0.88)
+            return accentColor.opacity(0.88)
         case .destructive:
             return Color.red.opacity(0.88)
         }
@@ -229,6 +232,7 @@ struct SettingsTaskDialogButton: View {
     let kind: SettingsTaskDialogButtonKind
     let disabled: Bool
     let action: () -> Void
+    @EnvironmentObject private var themeStore: ThemeStore
 
     init(
         _ title: String,
@@ -246,13 +250,20 @@ struct SettingsTaskDialogButton: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 13, weight: kind.isProminent ? .semibold : .medium))
-                .foregroundStyle(kind.foregroundColor)
+                .foregroundStyle(
+                    kind.foregroundColor(primaryColor: themeStore.appForegroundPalette.primaryColor)
+                )
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .contentShape(Capsule())
                 .background(
                     Capsule()
-                        .fill(kind.fillColor)
+                        .fill(
+                            kind.fillColor(
+                                accentColor: themeStore.accentColor,
+                                primaryColor: themeStore.appForegroundPalette.primaryColor
+                            )
+                        )
                 )
                 .overlay(
                     Capsule()

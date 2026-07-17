@@ -49,6 +49,8 @@ struct SettingsView: View {
         .frame(minWidth: 760, minHeight: 680)
         .scrollContentBackground(.hidden)
         .background(ThemedBaseBackgroundColorView())
+        .environment(\.settingsAppForegroundColors, appForegroundColors)
+        .foregroundStyle(appForegroundColors.primary)
         .onAppear {
             settings.fullscreen.normalizeConfiguration()
         }
@@ -64,12 +66,7 @@ struct SettingsView: View {
         // override their built-in `.primary`/`.secondary` defaults — except
         // surfaces whose presentation style supplies its own unified foreground (fullscreen
         // overlay panel), which keep the high-contrast white hierarchy.
-        let palette = themeStore.appForegroundPalette
-        let appColors = SettingsAppForegroundColors(
-            primary: palette.primaryColor,
-            secondary: palette.secondaryColor,
-            tertiary: palette.tertiaryColor
-        )
+        let appColors = appForegroundColors
         return ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 switch selection {
@@ -96,7 +93,19 @@ struct SettingsView: View {
         }
         .groupBoxStyle(SettingsWindowGroupBoxStyle())
         .environment(\.settingsAppForegroundColors, appColors)
+        .foregroundStyle(appColors.primary)
         .scrollContentBackground(.hidden)
+    }
+
+    private var appForegroundColors: SettingsAppForegroundColors {
+        let palette = themeStore.appForegroundPalette
+        return SettingsAppForegroundColors(
+            primary: palette.primaryColor,
+            secondary: palette.secondaryColor,
+            tertiary: palette.tertiaryColor,
+            quaternary: palette.quaternaryColor,
+            disabled: palette.disabledColor
+        )
     }
 
 
