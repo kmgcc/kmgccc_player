@@ -4426,6 +4426,7 @@ struct FullscreenPlayerView: View {
                 && bkController.isUltraDarkActive,
             spectrumArtworkColors: spectrumArtworkColors,
             spectrumUsesDarkForeground: spectrumUsesDarkForeground,
+            cassetteTint: themeStore.semanticPalette.cassetteTint,
             kickToBrightnessMix: AppSettings.shared.bgKickToBrightnessMix,
             kickDisplaceAmount: AppSettings.shared.bgKickDisplaceAmount,
             kickScaleAmount: AppSettings.shared.bgKickScaleAmount
