@@ -239,6 +239,26 @@ nonisolated struct CrashReportPromptPresentation: Identifiable, Sendable, Equata
     let automaticUploadEnabled: Bool
 }
 
+nonisolated struct CrashReportExportPayload: Sendable, Equatable {
+    let suggestedFilename: String
+    let data: Data
+
+    static func make(
+        report: CrashReportEnvelope,
+        userDescription: String?
+    ) throws -> CrashReportExportPayload {
+        var exportedReport = report
+        exportedReport.userDescription = userDescription?.isEmpty == false ? userDescription : nil
+
+        let encoder = JSONEncoder.crashReportEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        return CrashReportExportPayload(
+            suggestedFilename: "\(report.reportID.lowercased()).crash-report.json",
+            data: try encoder.encode(exportedReport)
+        )
+    }
+}
+
 nonisolated enum CrashReportPreferences {
     static let automaticUploadKey = "telemetry.automaticCrashReportUploadEnabled"
 

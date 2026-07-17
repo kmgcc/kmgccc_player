@@ -1,10 +1,18 @@
+import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct CrashReportPromptSheet: View {
     let onCancel: () -> Void
+    let onExport: (String) async throws -> CrashReportExportPayload
     let onSend: (String) -> Void
 
     @State private var description = ""
+    @State private var exportDocument: CrashReportExportDocument?
+    @State private var exportFilename = "crash-report.json"
+    @State private var isPreparingExport = false
+    @State private var isExporting = false
+    @State private var exportErrorMessage: String?
     @FocusState private var descriptionIsFocused: Bool
 
     private let characterLimit = 1_000
@@ -67,6 +75,13 @@ struct CrashReportPromptSheet: View {
             AppDialogDivider()
 
             HStack(spacing: 10) {
+                Button("保存报告…") {
+                    prepareExport()
+                }
+                .buttonStyle(.bordered)
+                .clipShape(Capsule())
+                .disabled(isPreparingExport)
+
                 Spacer()
                 Button("取消", action: onCancel)
                     .buttonStyle(.bordered)
@@ -94,5 +109,69 @@ struct CrashReportPromptSheet: View {
                 description = String(newValue.prefix(characterLimit))
             }
         }
+        .fileExporter(
+            isPresented: $isExporting,
+            document: exportDocument,
+            contentType: .json,
+            defaultFilename: exportFilename
+        ) { result in
+            exportDocument = nil
+            if case .failure(let error) = result {
+                let cocoaError = error as NSError
+                if cocoaError.domain != NSCocoaErrorDomain || cocoaError.code != NSUserCancelledError {
+                    exportErrorMessage = error.localizedDescription
+                }
+            }
+        }
+        .alert("无法保存崩溃报告", isPresented: exportErrorIsPresented) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(exportErrorMessage ?? "请稍后再试。")
+        }
+    }
+
+    private var exportErrorIsPresented: Binding<Bool> {
+        Binding(
+            get: { exportErrorMessage != nil },
+            set: { isPresented in
+                if !isPresented {
+                    exportErrorMessage = nil
+                }
+            }
+        )
+    }
+
+    private func prepareExport() {
+        guard !isPreparingExport else { return }
+        isPreparingExport = true
+        Task {
+            defer { isPreparingExport = false }
+            do {
+                let payload = try await onExport(description)
+                exportDocument = CrashReportExportDocument(data: payload.data)
+                exportFilename = payload.suggestedFilename
+                isExporting = true
+            } catch {
+                exportErrorMessage = error.localizedDescription
+            }
+        }
+    }
+}
+
+private struct CrashReportExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+
+    let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }

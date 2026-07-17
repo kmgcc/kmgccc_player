@@ -332,6 +332,9 @@ struct AppKitMainContentPaneRoot: View {
                     onCancel: {
                         crashReportService.cancelCurrentPrompt()
                     },
+                    onExport: { description in
+                        try await crashReportService.exportCurrentPrompt(description: description)
+                    },
                     onSend: { description in
                         crashReportService.sendCurrentPrompt(description: description)
                     }
@@ -710,6 +713,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
             artBackgroundIsUltraDark: false,
             spectrumArtworkColors: spectrumArtworkColors,
             spectrumUsesDarkForeground: analysis.usesDarkForeground,
+            cassetteTint: themeStore.semanticPalette.cassetteTint,
             kickToBrightnessMix: settings.bgKickToBrightnessMix,
             kickDisplaceAmount: settings.bgKickDisplaceAmount,
             kickScaleAmount: settings.bgKickScaleAmount
