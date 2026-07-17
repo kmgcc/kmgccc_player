@@ -65,6 +65,7 @@ struct LDDCSearchSection: View {
     @State private var searchResults: [LDDCCandidate] = []
     @State private var searchError: String?
     @State private var searchWarning: String?
+    @State private var forceRetryUnreliableSourcesForNextSearch = false
     
     // Separate results for display
     @State private var amlldbResults: [LDDCCandidate] = []
@@ -203,6 +204,7 @@ struct LDDCSearchSection: View {
 
             if contextNeedsSearch {
                 resetQueryForCurrentTrack()
+                forceRetryUnreliableSourcesForNextSearch = false
                 completedSearchContext = context
                 if !autoSearchOnAppear {
                     completedRequestID = searchRequestID
@@ -217,7 +219,11 @@ struct LDDCSearchSection: View {
                 "LyricsSearchSection.autoSearch",
                 detail: "request=\(searchRequestID), hasTrack=\(track != nil)"
             )
-            let completed = await performSearch()
+            let forceRetryUnreliableSources = forceRetryUnreliableSourcesForNextSearch
+            forceRetryUnreliableSourcesForNextSearch = false
+            let completed = await performSearch(
+                forceRetryUnreliableSources: forceRetryUnreliableSources
+            )
             FirstUseHitchDiagnostics.end(token)
 
             guard completed else { return }
@@ -235,6 +241,7 @@ struct LDDCSearchSection: View {
         .onDisappear {
             pendingCandidate = nil
             manualApplyRequestID = nil
+            forceRetryUnreliableSourcesForNextSearch = false
             isFetchingPreview = false
             isApplying = false
         }
@@ -420,6 +427,7 @@ struct LDDCSearchSection: View {
                 
                 // Search Button
                 Button {
+                    forceRetryUnreliableSourcesForNextSearch = true
                     searchRequestID &+= 1
                 } label: {
                     HStack(spacing: 4) {
@@ -791,7 +799,7 @@ struct LDDCSearchSection: View {
         resetSearchStateForNewRequest()
     }
 
-    private func performSearch() async -> Bool {
+    private func performSearch(forceRetryUnreliableSources: Bool = false) async -> Bool {
         guard !searchTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             isSearching = false
             return true
@@ -816,7 +824,8 @@ struct LDDCSearchSection: View {
             lddcSources: selectedLDDCSources,
             enableAMLLDB: enableAMLLDB,
             mode: selectedMode,
-            translation: includeTranslation
+            translation: includeTranslation,
+            sourcePolicy: forceRetryUnreliableSources ? .forceAll : .adaptive
         )
 
         for await update in updates {

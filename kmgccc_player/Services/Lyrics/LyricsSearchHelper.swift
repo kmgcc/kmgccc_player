@@ -267,7 +267,9 @@ struct LyricsSearchHelper {
                 do {
                     (origLyrics, transLyrics) = try await client.fetchByIdSeparate(
                         candidate: candidate,
-                        mode: mode
+                        mode: mode,
+                        requestTimeout: LDDCSourceHealthStore.slowSourceTimeout,
+                        policy: .adaptive
                     )
                 } catch {
                     throw error
@@ -313,7 +315,9 @@ struct LyricsSearchHelper {
                     lyrics = try await client.fetchById(
                         candidate: candidate,
                         mode: mode,
-                        translation: false
+                        translation: false,
+                        requestTimeout: LDDCSourceHealthStore.slowSourceTimeout,
+                        policy: .adaptive
                     )
                 } catch {
                     throw error

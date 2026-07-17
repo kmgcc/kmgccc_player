@@ -40,7 +40,8 @@ final class LyricsSearchCoordinator {
         mode: LDDCMode,
         translation: Bool,
         amlldbLimit: Int = 20,
-        lddcLimitPerSource: Int = 20
+        lddcLimitPerSource: Int = 20,
+        sourcePolicy: LDDCSourceSearchPolicy = .adaptive
     ) -> AsyncStream<LyricsSearchUpdate> {
         let (stream, continuation) = AsyncStream<LyricsSearchUpdate>.makeStream()
 
@@ -82,6 +83,7 @@ final class LyricsSearchCoordinator {
                     mode: mode,
                     translation: translation,
                     limitPerSource: lddcLimitPerSource,
+                    policy: sourcePolicy,
                     continuation: continuation
                 )
             } else {
@@ -103,6 +105,7 @@ final class LyricsSearchCoordinator {
                     mode: mode,
                     translation: translation,
                     limitPerSource: lddcLimitPerSource,
+                    policy: sourcePolicy,
                     continuation: continuation
                 )
 
@@ -150,6 +153,7 @@ final class LyricsSearchCoordinator {
         mode: LDDCMode,
         translation: Bool,
         limitPerSource: Int,
+        policy: LDDCSourceSearchPolicy,
         continuation: AsyncStream<LyricsSearchUpdate>.Continuation
     ) async {
         guard !sources.isEmpty else { return }
@@ -160,7 +164,8 @@ final class LyricsSearchCoordinator {
             sources: sources,
             mode: mode,
             translation: translation,
-            limitPerSource: limitPerSource
+            limitPerSource: limitPerSource,
+            policy: policy
         )
 
         for await update in updates {
