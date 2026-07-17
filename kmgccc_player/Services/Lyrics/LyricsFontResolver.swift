@@ -21,6 +21,7 @@ enum LyricsFontDefaults {
     /// are intentionally not bundled; the app only bundles the open-source
     /// English fallback above.
     static let skinChinese = "LingWai SC"
+    static let skinEnglish = "LingWai SC"
     static let skinTranslation = "HanziPen SC"
 
     /// Font used by the previous defaults. Only exact matches are migrated,

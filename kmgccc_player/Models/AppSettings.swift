@@ -74,10 +74,40 @@ struct FullscreenLyricsTypography: Codable, Equatable {
         translationFontSize: 25
     )
 
-    /// Readability-oriented defaults for the three existing fullscreen skins.
-    /// The English slot deliberately stays Inter so the decorative CJK family
-    /// cannot supply Latin glyphs for the main lyric line.
+    /// Readability-oriented defaults for the fullscreen skins with dedicated
+    /// typography. The three cover/disc/cassette skins share one preset;
+    /// Panorama keeps the same fonts and sizes but uses an ultra-light weight.
     static func defaultValue(forFullscreenSkinID skinID: String) -> Self {
+        switch skinID {
+        case "coverLed", "rotatingCover", "kmgccc.cassette":
+            return Self(
+                mainFontNameZh: LyricsFontDefaults.skinChinese,
+                mainFontNameEn: LyricsFontDefaults.skinEnglish,
+                translationFontName: LyricsFontDefaults.skinTranslation,
+                mainFontWeight: 600,
+                translationFontWeight: 600,
+                mainFontSize: 64,
+                translationFontSize: 24
+            )
+        case "fullscreen.coverGradientBlur":
+            return Self(
+                mainFontNameZh: LyricsFontDefaults.skinChinese,
+                mainFontNameEn: LyricsFontDefaults.skinEnglish,
+                translationFontName: LyricsFontDefaults.skinTranslation,
+                mainFontWeight: 100,
+                translationFontWeight: 100,
+                mainFontSize: 64,
+                translationFontSize: 24
+            )
+        default:
+            return Self.defaultValue
+        }
+    }
+
+    /// Defaults written by the previous per-skin typography implementation.
+    /// They are recognized only during the one-time upgrade so a genuinely
+    /// customized profile is not overwritten.
+    static func previousDefaultValue(forFullscreenSkinID skinID: String) -> Self? {
         switch skinID {
         case "coverLed":
             return Self(
@@ -110,7 +140,7 @@ struct FullscreenLyricsTypography: Codable, Equatable {
                 translationFontSize: 24
             )
         default:
-            return Self.defaultValue
+            return nil
         }
     }
 }
@@ -1071,7 +1101,7 @@ public final class AppSettings {
 
     private enum FullscreenLyricsKeys {
         static let fontDefaultsMigration = "lyricsTypographyDefaultsMigrated_v2"
-        static let perSkinTypographyDefaultsMigration = "fullscreenLyricsPerSkinTypographyDefaults_v2"
+        static let perSkinTypographyDefaultsMigration = "fullscreenLyricsPerSkinTypographyDefaults_v3"
         static let perSkinTypographyEnabled = "fullscreenLyricsPerSkinTypographyEnabled"
         static let perSkinTypographyProfiles = "fullscreenLyricsPerSkinTypographyProfiles_v1"
         static let fontNameZh = "fullscreenLyricsFontNameZh"
@@ -1108,7 +1138,11 @@ public final class AppSettings {
     var fullscreenLyricsUsesPerSkinTypography: Bool {
         get {
             access(keyPath: \.fullscreenLyricsUsesPerSkinTypography)
-            return UserDefaults.standard.bool(forKey: FullscreenLyricsKeys.perSkinTypographyEnabled)
+            let defaults = UserDefaults.standard
+            guard defaults.object(forKey: FullscreenLyricsKeys.perSkinTypographyEnabled) != nil else {
+                return true
+            }
+            return defaults.bool(forKey: FullscreenLyricsKeys.perSkinTypographyEnabled)
         }
         set {
             guard newValue != fullscreenLyricsUsesPerSkinTypography else { return }
@@ -1365,18 +1399,28 @@ public final class AppSettings {
         let shouldUseSkinDefaults = globalTypography == FullscreenLyricsTypography.defaultValue
 
         var didChange = false
-        for skinID in ["coverLed", "rotatingCover", "kmgccc.cassette"] {
+        for skinID in [
+            "coverLed",
+            "rotatingCover",
+            "kmgccc.cassette",
+            "fullscreen.coverGradientBlur"
+        ] {
             let skinDefault = FullscreenLyricsTypography.defaultValue(
                 forFullscreenSkinID: skinID
             )
             if let existing = profiles[skinID] {
-                // Profiles created by the previous shared-default implementation
-                // are upgraded once. Any genuinely customized profile remains
-                // untouched.
-                guard existing == globalTypography || existing == FullscreenLyricsTypography.defaultValue
-                else { continue }
-                if shouldUseSkinDefaults, existing != skinDefault {
-                    profiles[skinID] = skinDefault
+                let isPreviousGeneratedDefault = existing ==
+                    FullscreenLyricsTypography.previousDefaultValue(forFullscreenSkinID: skinID)
+                let isGeneratedDefault = existing == globalTypography
+                    || existing == FullscreenLyricsTypography.defaultValue
+                    || isPreviousGeneratedDefault
+                guard isGeneratedDefault else { continue }
+
+                let target = isPreviousGeneratedDefault || shouldUseSkinDefaults
+                    ? skinDefault
+                    : globalTypography
+                if existing != target {
+                    profiles[skinID] = target
                     didChange = true
                 }
             } else {
@@ -1617,6 +1661,12 @@ public final class AppSettings {
 
         migrateLegacyLyricsTypographyDefaults()
         seedDefaultFullscreenLyricsTypographyProfilesIfNeeded()
+
+        // A missing value means this is a new install (or an older install
+        // that predates the switch). Keep an explicit user-off choice intact.
+        if UserDefaults.standard.object(forKey: FullscreenLyricsKeys.perSkinTypographyEnabled) == nil {
+            UserDefaults.standard.set(true, forKey: FullscreenLyricsKeys.perSkinTypographyEnabled)
+        }
     }
 
     // MARK: - Computed Properties

@@ -140,11 +140,11 @@ jq '.threads[]
 
 保存报告不会触发上传，也不会改变弹窗状态。保存完成后仍可取消或发送；弹窗内已经填写的操作说明会经过脱敏后写入导出副本。准备把文件附到公开 Issue 时，可以先用文本编辑器检查 `userDescription`，只保留愿意公开的内容。
 
-拿到报告后，从相应的正式 GitHub Release 下载 dSYM，再按报告中的 version、build、architecture 和 UUID 选择符号归档。这样，复现问题的人可以在自己的电脑上保存报告、核对 dSYM 并完成分析，不需要诊断后台权限。开发构建也可以直接复制本地 `Pending/<report-id>.json`；该文件外层还有一层投递 record，技术报告位于 `.report`。
+拿到报告后，从相应的正式 GitHub Release 下载 dSYM，再按报告中的 version、build、architecture 和 UUID 选择符号归档。开发构建也可以直接复制本地 `Pending/<report-id>.json`；该文件外层还有一层投递 record，技术报告位于 `.report`。
 
 ## 发布和保留 Release 符号
 
-正式版本及其符号归档由项目维护者在发布时一并准备。每个 [GitHub Release](https://github.com/kmgcc/kmgccc_player/releases) 会附带与该构建完全匹配的主 App dSYM，方便贡献者和维护者分析本机保存的报告。dSYM 不上传崩溃诊断服务器；诊断环境保存报告和可选的小型符号化结果。公开 Release 资产用于协作分析，两份私有归档则用于长期保留和备份。
+正式版本及其符号归档由项目维护者在发布时一并准备。每个 [GitHub Release](https://github.com/kmgcc/kmgccc_player/releases) 会附带与该构建完全匹配的主 App dSYM，方便贡献者和维护者分析本机保存的报告。诊断环境保存报告和可选的小型符号化结果。公开 Release 资产用于协作分析，两份私有归档则用于长期保留和备份。
 
 Release 构建必须同时提供两个不同的私有归档目录：
 
