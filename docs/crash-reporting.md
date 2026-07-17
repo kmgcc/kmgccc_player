@@ -2,7 +2,7 @@
 
 崩溃报告使用独立于匿名使用统计的诊断链路。PLCrashReporter 负责主 App 进程的即时捕获；崩溃现场只写入本地 pending report，不访问网络、SwiftUI、SwiftData 或普通日志系统。App 在下一次正常启动时导入报告，转换成版本化模型，完成客户端脱敏和原子持久化，再按“自动发送崩溃报告”设置异步上传。MetricKit 的 crash、hang 和 CPU exception 使用另一条队列和接口，作为系统侧补充。
 
-这套设计不读取 macOS `.ips`，也不要求用户复制系统问题报告。产品自己的报告已经包含异常、线程、镜像 UUID、相对地址、崩溃前 App 状态和有限的操作记录；与发布构建对应的 dSYM 配合后，可以把 App 地址还原为函数名和源码位置。
+报告包含异常、线程、镜像 UUID、相对地址、崩溃前 App 状态和有限的操作记录；与发布构建对应的 dSYM 配合后，可以把 App 地址还原为函数名和源码位置。
 
 ## 数据流
 
@@ -134,9 +134,17 @@ jq '.threads[]
 
 同一问题的多份报告应优先按异常类型、crashed thread 前几个 App frame 和 image UUID 聚合，版本号、OS 和操作上下文用于判断影响范围。仅凭最后一个 Breadcrumb 给某项功能定责并不可靠，因为真正的崩溃可能发生在异步回调或稍晚执行的任务中。
 
+## 怎样参与崩溃问题分析
+
+用户、维护者和贡献者都可以直接取得自己电脑上产生的报告。App 崩溃后再次启动，报告弹窗左下角会显示“保存报告…”按钮。选择保存位置后，App 会导出 `<report-id>.crash-report.json`。这份文件已经经过与上传链路相同的客户端脱敏，内容结构也与后台下载的技术报告一致，可以直接交给后续的 `jq` 和符号化命令。
+
+保存报告不会触发上传，也不会改变弹窗状态。保存完成后仍可取消或发送；弹窗内已经填写的操作说明会经过脱敏后写入导出副本。准备把文件附到公开 Issue 时，可以先用文本编辑器检查 `userDescription`，只保留愿意公开的内容。
+
+拿到报告后，从相应的正式 GitHub Release 下载 dSYM，再按报告中的 version、build、architecture 和 UUID 选择符号归档。这样，复现问题的人可以在自己的电脑上保存报告、核对 dSYM 并完成分析，不需要诊断后台权限。开发构建也可以直接复制本地 `Pending/<report-id>.json`；该文件外层还有一层投递 record，技术报告位于 `.report`。
+
 ## 发布和保留 Release 符号
 
-每个正式 [GitHub Release](https://github.com/kmgcc/kmgccc_player/releases) 都应附带与该发布构建完全匹配的主 App dSYM，供贡献者和维护者分析崩溃。dSYM 不上传崩溃诊断服务器；服务器只保存脱敏报告和可选的小型符号化结果。公开 Release 资产用于协作分析，两个私有归档仍承担长期保留和灾难恢复，不能由 GitHub 上的一份附件代替。
+正式版本及其符号归档由项目维护者在发布时一并准备。每个 [GitHub Release](https://github.com/kmgcc/kmgccc_player/releases) 会附带与该构建完全匹配的主 App dSYM，方便贡献者和维护者分析本机保存的报告。dSYM 不上传崩溃诊断服务器；诊断环境保存报告和可选的小型符号化结果。公开 Release 资产用于协作分析，两份私有归档则用于长期保留和备份。
 
 Release 构建必须同时提供两个不同的私有归档目录：
 
@@ -169,9 +177,9 @@ CRASH_SYMBOL_BACKUP_DIR='<另一份可靠备份目录>' \
 kmgccc_player_<version>_<build>_<uuid-prefix>.symbols.zip
 ```
 
-发布者应把脚本生成的 ZIP 原样附加到对应 GitHub Release，不重新压缩、不替换其中的 manifest，也不使用另一次构建生成的 dSYM。若同一个 Release 同时提供不同架构或不同构建产物，每份资产都要用名称和 manifest 明确区分。
+正式发布时，项目维护者会把脚本生成的 ZIP 原样附加到对应 GitHub Release，并保留归档内的 manifest。若同一个 Release 同时提供不同架构或不同构建产物，资产名称和 manifest 会标明各自对应的构建。
 
-贡献者分析报告时，先在报告的 `app.version` 和 `app.build` 对应的 GitHub Release 下载 `.symbols.zip`，再查看归档内的 manifest：
+从弹窗保存报告后，可以在报告的 `app.version` 和 `app.build` 对应的 GitHub Release 下载 `.symbols.zip`，再查看归档内的 manifest：
 
 ```bash
 SYMBOLS='<下载的 kmgccc_player_*.symbols.zip>'
@@ -187,7 +195,7 @@ DSYM="$DESTINATION/kmgccc_player.app.dSYM"
   "$DSYM/Contents/Resources/DWARF/kmgccc_player"
 ```
 
-下载了正确版本仍不代表 UUID 一定匹配。报告 UUID 与 manifest、dSYM 的目标架构和 UUID 全部一致后，才进入下一节的 `atos` 符号化步骤。若 GitHub Release 缺少对应资产或校验失败，应在 Issue 中提供 version、build、architecture 和报告 UUID，不要上传包含用户说明或未经脱敏路径的完整报告。
+下载了正确版本仍不代表 UUID 一定匹配。报告 UUID 与 manifest、dSYM 的目标架构和 UUID 全部一致后，再进入下一节的 `atos` 符号化步骤。若 GitHub Release 暂时缺少对应资产或校验失败，可以在 Issue 中提供 version、build、architecture 和报告 UUID，维护者会协助确认正确的符号归档。
 
 ## 用 dSYM 符号化
 
@@ -206,7 +214,7 @@ echo "report: $REPORT_UUID"
 /usr/bin/dwarfdump --uuid "$DWARF"
 ```
 
-如果 arm64 UUID 不匹配，立即停止。`atos` 可能返回裸地址或错误符号，不能把这种输出写回服务器。
+如果 arm64 UUID 不匹配，这份 dSYM 就不适合当前报告。此时 `atos` 可能返回裸地址或错误符号，换用匹配的归档后再继续即可。
 
 UUID 匹配后，从 crashed thread 取得 App image 的运行时 load address，再逐个解析 App frame：
 

@@ -126,6 +126,18 @@ final class CrashReportService: ObservableObject {
         }
     }
 
+    func exportCurrentPrompt(description: String) async throws -> CrashReportExportPayload {
+        guard let prompt = currentPrompt,
+              let record = await store.record(reportID: prompt.reportID) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let cleanDescription = sanitizedUserDescription(description, report: record.report)
+        return try CrashReportExportPayload.make(
+            report: record.report,
+            userDescription: cleanDescription
+        )
+    }
+
     private var automaticUploadEnabled: Bool {
         CrashReportPreferences.automaticUploadEnabled(defaults: defaults)
     }

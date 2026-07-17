@@ -166,6 +166,29 @@ final class CrashReportDeliveryModelTests: XCTestCase {
 
         XCTAssertEqual(decoded, record)
     }
+
+    func testExportPayloadUsesTechnicalReportShapeAndIncludesDescription() throws {
+        let report = makeCrashReport()
+
+        let payload = try CrashReportExportPayload.make(
+            report: report,
+            userDescription: "切换到全屏时崩溃"
+        )
+        let decoded = try JSONDecoder.crashReportDecoder().decode(
+            CrashReportEnvelope.self,
+            from: payload.data
+        )
+
+        XCTAssertEqual(
+            payload.suggestedFilename,
+            "922da39a-7985-41d9-8664-5dd613e292ed.crash-report.json"
+        )
+        XCTAssertEqual(decoded.reportID, report.reportID)
+        XCTAssertEqual(decoded.userDescription, "切换到全屏时崩溃")
+        XCTAssertThrowsError(
+            try JSONDecoder.crashReportDecoder().decode(CrashReportRecord.self, from: payload.data)
+        )
+    }
 }
 
 final class MetricKitDiagnosticTests: XCTestCase {
