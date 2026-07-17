@@ -11,12 +11,13 @@ struct AMLLLyricsRenderQualitySlider: View {
     @Binding var quality: AppSettings.AMLLLyricsRenderQuality
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     var body: some View {
         HStack(spacing: presentationStyle.scaled(12)) {
             Text("歌词渲染质量")
                 .font(presentationStyle.rowLabelFont)
-                .foregroundStyle(presentationStyle.primaryTextColor)
+                .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
 
             Spacer(minLength: presentationStyle.scaled(12))
 
@@ -37,8 +38,11 @@ struct AMLLLyricsRenderQualitySlider: View {
                         .font(.system(size: presentationStyle.segmentedFontSize, weight: isSelected ? .medium : .regular))
                         .foregroundStyle(
                             isSelected
-                                ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
-                                : presentationStyle.secondaryTextColor
+                                ? presentationStyle.settingsSelectedTextColor(
+                                    accentColor: themeStore.accentColor,
+                                    appColors: appColors
+                                )
+                                : presentationStyle.settingsSecondaryTextColor(appColors: appColors)
                         )
                         .frame(
                             minWidth: presentationStyle.scaled(30),
@@ -61,7 +65,7 @@ struct AMLLLyricsRenderQualitySlider: View {
 
     private var selectionTint: Color {
         if presentationStyle.usesMaterialSectionCards {
-            return presentationStyle.primaryTextColor
+            return presentationStyle.settingsPrimaryTextColor(appColors: appColors)
         }
         return themeStore.accentColor
     }
@@ -90,7 +94,7 @@ struct AMLLLyricsRenderQualitySlider: View {
                 }
 
                 Capsule()
-                    .fill(presentationStyle.segmentedTrackColor)
+                    .fill(presentationStyle.settingsSegmentedTrackColor(appColors: appColors))
                     .overlay(
                         Capsule()
                             .strokeBorder(

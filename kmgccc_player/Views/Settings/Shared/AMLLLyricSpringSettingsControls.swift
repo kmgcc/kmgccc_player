@@ -13,6 +13,7 @@ struct AMLLLyricSpringSettingsControls: View {
 
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
@@ -59,7 +60,7 @@ struct AMLLLyricSpringSettingsControls: View {
                 } label: {
                     Label("恢复默认", systemImage: "arrow.counterclockwise")
                         .font(presentationStyle.captionFont)
-                        .foregroundStyle(presentationStyle.primaryTextColor)
+                        .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                 }
                 .disabled(isDefaultSpringSettings)
             }
@@ -81,7 +82,7 @@ struct AMLLLyricSpringSettingsControls: View {
             HStack {
                 Text(title)
                     .font(presentationStyle.rowLabelFont)
-                    .foregroundStyle(presentationStyle.primaryTextColor)
+                    .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
 
                 Spacer()
 

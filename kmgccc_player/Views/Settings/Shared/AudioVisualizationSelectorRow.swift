@@ -11,6 +11,7 @@ struct AudioVisualizationSelectorRow: View {
 
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     private var knobColor: Color {
         if presentationStyle.usesMaterialSectionCards {
@@ -23,7 +24,7 @@ struct AudioVisualizationSelectorRow: View {
         HStack(spacing: presentationStyle.compactInlineSpacing) {
             Text(title)
                 .font(presentationStyle.rowLabelFont)
-                .foregroundStyle(presentationStyle.primaryTextColor)
+                .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
             Spacer()
             SlidingSelector(
                 segments: AudioVisualizationKind.allCases,
@@ -42,8 +43,11 @@ struct AudioVisualizationSelectorRow: View {
                         .padding(.vertical, presentationStyle.segmentedVerticalPadding)
                         .foregroundStyle(
                             isSelected
-                                ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
-                                : presentationStyle.secondaryTextColor
+                                ? presentationStyle.settingsSelectedTextColor(
+                                    accentColor: themeStore.accentColor,
+                                    appColors: appColors
+                                )
+                                : presentationStyle.settingsSecondaryTextColor(appColors: appColors)
                         )
                 }
             )
@@ -68,7 +72,7 @@ struct AudioVisualizationSelectorRow: View {
                 )
                 .overlay(Capsule().fill(Color.white.opacity(0.018)))
         } else {
-            Capsule().fill(presentationStyle.segmentedTrackColor)
+            Capsule().fill(presentationStyle.settingsSegmentedTrackColor(appColors: appColors))
         }
     }
 }

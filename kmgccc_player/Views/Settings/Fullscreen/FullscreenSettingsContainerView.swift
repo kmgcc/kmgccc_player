@@ -407,6 +407,7 @@ extension EnvironmentValues {
 /// Container view for Fullscreen settings with "皮肤" and "歌词" tabs.
 struct FullscreenSettingsContainerView: View {
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     let presentationStyle: FullscreenSettingsPresentationStyle
     let embedsScrollView: Bool
@@ -452,7 +453,7 @@ struct FullscreenSettingsContainerView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .foregroundStyle(presentationStyle.primaryTextColor)
+        .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
         .tint(
             presentationStyle.usesUnifiedOverlayForeground
                 ? presentationStyle.primaryTextColor
