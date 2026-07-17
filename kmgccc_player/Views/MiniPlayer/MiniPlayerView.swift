@@ -49,9 +49,9 @@ struct MiniPlayerView: View {
         .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
     }
     private var trackInfoIdealWidth: CGFloat { 100 }
-    private var trackInfoMinWidth: CGFloat { 56 }
+    private var trackInfoMinWidth: CGFloat { 32 }
     private var trackInfoMaxWidth: CGFloat { 136 }
-    private var progressAreaMinWidth: CGFloat { 72 }
+    private var progressAreaMinWidth: CGFloat { 96 }
 
     var body: some View {
         let _ = ContextMenuDiagnostics.markBodyUpdate(
@@ -525,7 +525,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
 
     @State private var isArtworkHovering = false
 
-    private var trackInfoMinWidth: CGFloat { 56 }
+    private var trackInfoMinWidth: CGFloat { 32 }
     private var trackInfoIdealWidth: CGFloat { 100 }
     private var trackInfoMaxWidth: CGFloat { 136 }
 
