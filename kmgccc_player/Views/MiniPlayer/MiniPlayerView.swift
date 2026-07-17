@@ -883,12 +883,9 @@ struct PlaybackModeSlider: View {
                         onInteraction?()
                         let raw = baseOffset + value.translation.width
                         let index = Int(round(raw / segmentWidth))
-                        dragTranslation = 0
-                        isDragging = false
                         let clampedIndex = max(0, min(3, index))
                         let targetMode = modeForIndex(clampedIndex)
-                        guard targetMode != mode else { return }
-                        commitModeChange(targetMode, snap: snap)
+                        finishDrag(at: targetMode, snap: snap)
                     }
             )
         }
@@ -915,6 +912,34 @@ struct PlaybackModeSlider: View {
             withAnimation(snap) {
                 onModeChange(newMode)
             }
+        }
+    }
+
+    /// Finish a drag in one transaction so the knob animates directly from
+    /// the release position to the selected segment. Resetting the drag state
+    /// before changing `mode` makes the knob briefly jump back to its old
+    /// segment before the mode animation starts.
+    private func finishDrag(at newMode: PlaybackOrderMode, snap: Animation) {
+        if newMode != mode {
+            // Keep the existing interaction pulse for a drag that commits a
+            // new mode; `onEnded` already emitted the first interaction event.
+            onInteraction?()
+        }
+
+        let update = {
+            dragTranslation = 0
+            isDragging = false
+            if newMode != mode {
+                onModeChange(newMode)
+            }
+        }
+
+        if reduceMotion {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction, update)
+        } else {
+            withAnimation(snap, update)
         }
     }
 
