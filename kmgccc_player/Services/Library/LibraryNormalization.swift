@@ -239,9 +239,9 @@ nonisolated enum LibraryNormalization {
 
     private static var artistSplitPattern: NSRegularExpression {
         // Common collaboration separators used in local tags, including the
-        // slash/semicolon forms from imported Chinese metadata.
+        // comma/slash/semicolon forms from imported metadata.
         try! NSRegularExpression(
-            pattern: #"\s*(?:[;/／、，；×]|\\|\b(?:feat\.?|ft\.?|featuring|with|vs\.?)\b)\s*"#,
+            pattern: #"\s*(?:[,;/／、，；×]|\\|\b(?:feat\.?|ft\.?|featuring|with|vs\.?)\b)\s*"#,
             options: [.caseInsensitive]
         )
     }
