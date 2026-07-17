@@ -31,6 +31,7 @@ struct PlaylistDetailView: View {
 
 
     @State private var trackToEdit: Track?
+    @State private var trackDeletionRequest: TrackDeletionConfirmationRequest?
     @State private var batchEditRequest: BatchEditRequest?
     @State private var trackScrollFadeState = ScrollEdgeFadeState()
     @State private var detailScrollFadeState = ScrollEdgeFadeState()
@@ -109,6 +110,9 @@ struct PlaylistDetailView: View {
             BatchTrackEditSheet(
                 tracks: request.tracks
             )
+        }
+        .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in
+            confirmTrackDeletion(tracks)
         }
         .onAppear {
             let token = FirstUseHitchDiagnostics.begin(
@@ -639,12 +643,7 @@ struct PlaylistDetailView: View {
                 Divider()
 
                 Button(role: .destructive) {
-                    processBatchAction(actionName: "batchDeleteTracks") { tracks in
-                        await libraryVM.deleteTracks(tracks)
-                        await MainActor.run {
-                            pageController.selectedTrackIDs.removeAll()
-                        }
-                    }
+                    requestTrackDeletion(selectedTracksForBatchEditor())
                 } label: {
                     Label("从资料库删除", systemImage: "trash")
                 }
@@ -678,6 +677,9 @@ struct PlaylistDetailView: View {
                         ? { playbackCoordinator.insertTracksAfterCurrent([track]) }
                         : nil,
                     onEditTrack: { trackToEdit = $0 },
+                    onDeleteFromLibraryRequest: { track in
+                        requestTrackDeletion([track])
+                    },
                     onRemoveFromCurrentPlaylist: libraryVM.selectedPlaylist.map { currentPlaylist in
                         { track in
                             Task {
@@ -703,6 +705,25 @@ struct PlaylistDetailView: View {
         )
         Task {
             await action(selectedTracks)
+            await MainActor.run {
+                pageController.clearMultiselectState()
+            }
+            ContextMenuDiagnostics.end(token)
+        }
+    }
+
+    private func requestTrackDeletion(_ tracks: [Track]) {
+        guard !tracks.isEmpty else { return }
+        trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: tracks)
+    }
+
+    private func confirmTrackDeletion(_ tracks: [Track]) {
+        let token = ContextMenuDiagnostics.beginActionInvoke(
+            surface: "TrackContextMenu",
+            detail: "action=deleteTracksAfterConfirmation, selected=\(tracks.count)"
+        )
+        Task {
+            await libraryVM.deleteTracks(tracks)
             await MainActor.run {
                 pageController.clearMultiselectState()
             }

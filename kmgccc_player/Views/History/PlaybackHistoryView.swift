@@ -8,6 +8,18 @@
 import AppKit
 import SwiftUI
 
+private struct PlaybackHistoryDeletionRequest: Identifiable {
+    let eventIDs: Set<UUID>
+    let id = UUID()
+
+    var message: String {
+        String(
+            format: NSLocalizedString("context.delete_history_confirm_message", comment: ""),
+            eventIDs.count
+        )
+    }
+}
+
 struct PlaybackHistoryView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
@@ -19,6 +31,7 @@ struct PlaybackHistoryView: View {
 
     @State private var toolbarTopInset: CGFloat = 0
     @State private var trackToEdit: Track?
+    @State private var deletionRequest: PlaybackHistoryDeletionRequest?
 
     var body: some View {
         let filterDate = uiState.playbackHistoryDate
@@ -54,6 +67,31 @@ struct PlaybackHistoryView: View {
         )
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
+        }
+        .alert(
+            NSLocalizedString("context.delete_history_confirm_title", comment: ""),
+            isPresented: Binding(
+                get: { deletionRequest != nil },
+                set: { if !$0 { deletionRequest = nil } }
+            ),
+            presenting: deletionRequest
+        ) { request in
+            Button(
+                NSLocalizedString("context.delete_confirm", comment: ""),
+                role: .destructive
+            ) {
+                let eventIDs = request.eventIDs
+                deletionRequest = nil
+                historyVM.delete(eventIDs: eventIDs, using: historyStore)
+            }
+            Button(
+                NSLocalizedString("edit.track.cancel", comment: ""),
+                role: .cancel
+            ) {
+                deletionRequest = nil
+            }
+        } message: { request in
+            Text(request.message)
         }
         .task(id: loadToken(filterDate: filterDate)) {
             historyVM.load(using: historyStore, filterDate: filterDate)
@@ -179,11 +217,11 @@ struct PlaybackHistoryView: View {
             },
             onPlay: play,
             onDelete: {
-                if historyVM.isMultiselectMode {
-                    historyVM.deleteSelected(using: historyStore)
-                } else {
-                    historyVM.delete(eventID: item.id, using: historyStore)
-                }
+                let eventIDs = historyVM.isMultiselectMode
+                    ? historyVM.selectedEventIDs
+                    : Set([item.id])
+                guard !eventIDs.isEmpty else { return }
+                deletionRequest = PlaybackHistoryDeletionRequest(eventIDs: eventIDs)
             },
             onEditTrack: { trackToEdit = $0 },
             rowPrimaryColor: themeStore.appForegroundPalette.primaryColor,
@@ -395,6 +433,7 @@ private struct PlaybackHistoryTrackRow: View {
                             ? { playbackCoordinator.insertTracksAfterCurrent([track]) }
                             : nil,
                         onEditTrack: onEditTrack,
+                        onDeleteFromLibraryRequest: { _ in },
                         showsDeleteFromLibrary: false,
                         diagnosticSurface: "PlaybackHistory"
                     )
