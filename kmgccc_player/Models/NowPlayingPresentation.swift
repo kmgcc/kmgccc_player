@@ -202,6 +202,7 @@ extension NowPlayingPresentation {
         title == other.title &&
         artist == other.artist &&
         album == other.album &&
+        localPlaybackOrderMode == other.localPlaybackOrderMode &&
         artworkIdentity == other.artworkIdentity &&
         artworkDisplayTrackID == other.artworkDisplayTrackID &&
         isArtworkLoading == other.isArtworkLoading &&
