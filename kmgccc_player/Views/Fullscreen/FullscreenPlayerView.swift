@@ -3864,11 +3864,11 @@ struct FullscreenPlayerView: View {
             highlightStore.setThemePaletteOverride(activePalette)
         }
         let typography = settings.effectiveFullscreenLyricsTypography
-        let mainFontFamily = cssFontFamily([
-            typography.mainFontNameEn,
-            typography.mainFontNameZh,
-        ])
-        let translationFontFamily = cssFontFamily([
+        let mainFontFamily = LyricsFontResolver.cssMainFontFamily(
+            english: typography.mainFontNameEn,
+            chinese: typography.mainFontNameZh
+        )
+        let translationFontFamily = LyricsFontResolver.cssFontFamily([
             typography.translationFontName
         ])
         let mainActiveColor = LyricRenderingAdapter.cssPayload(semanticPalette.mainActive)
@@ -4476,18 +4476,6 @@ struct FullscreenPlayerView: View {
             LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
                 .frame(height: bottomFade)
         }
-    }
-
-    private func cssFontFamily(_ names: [String]) -> String {
-        let sanitized =
-            names
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .map { name in
-                "\"\(name.replacingOccurrences(of: "\"", with: "\\\""))\""
-            }
-        let fallbacks = ["-apple-system", "\"Helvetica Neue\"", "sans-serif"]
-        return (sanitized + fallbacks).joined(separator: ", ")
     }
 
     private func layoutMetrics(for windowSize: CGSize) -> FullscreenHorizontalSplitLayout {

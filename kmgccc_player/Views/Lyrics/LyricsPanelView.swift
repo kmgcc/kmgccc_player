@@ -765,10 +765,10 @@ struct LyricsSettingsObserver: ViewModifier {
     var isActive: Bool = true
 
     @AppStorage("lyricsFontSize") private var lyricsFontSize: Double = 32.0
-    @AppStorage("lyricsFontNameZh") private var lyricsFontNameZh: String = "SF Pro Text"
-    @AppStorage("lyricsFontNameEn") private var lyricsFontNameEn: String = "SF Pro Text"
+    @AppStorage("lyricsFontNameZh") private var lyricsFontNameZh: String = LyricsFontDefaults.chinese
+    @AppStorage("lyricsFontNameEn") private var lyricsFontNameEn: String = LyricsFontDefaults.english
     @AppStorage("lyricsTranslationFontName") private var lyricsTranslationFontName: String =
-        "SF Pro Text"
+        LyricsFontDefaults.translation
     @AppStorage("lyricsFontWeightLight") private var lyricsFontWeightLight: Int = 600
     @AppStorage("lyricsFontWeightDark") private var lyricsFontWeightDark: Int = 100
     @AppStorage("lyricsTranslationFontSize") private var lyricsTranslationFontSize: Double = 18.0
