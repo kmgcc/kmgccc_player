@@ -51,12 +51,6 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         }
     }
 
-    private enum FeatureTips {
-        static let externalPlaybackKey = "playbackSource.externalAppPlayback"
-        static let externalPlaybackIntroducedBuild = AppBuild(1)
-        static let externalPlaybackMaxDisplayCount = 2
-    }
-
     private static var sharedController: AppKitMainSplitWindowController?
 
     private let splitViewController: AppKitMainSplitViewController
@@ -67,9 +61,6 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     private var didReachPresentedState = false
     private var isClosingMainWindow = false
     private var playbackQueueDismissMonitor: Any?
-
-    private var externalPlaybackTipPopover: NSPopover?
-    private var pendingTipDisplay: Bool = false
 
     static func show(appSession: AppSessionHost) -> AppKitMainSplitWindowController {
         let controller: AppKitMainSplitWindowController
@@ -338,113 +329,6 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         guard !isClosingMainWindow else { return }
         guard !didReachPresentedState else { return }
         didReachPresentedState = true
-        scheduleExternalPlaybackTipIfNeeded()
-    }
-
-    // MARK: - External Playback Feature Tip
-
-    /// Set by the NSViewRepresentable anchor probe placed behind the source switch.
-    static weak var sourceSwitchAnchorView: NSView?
-
-    private func scheduleExternalPlaybackTipIfNeeded() {
-        guard !isClosingMainWindow else {
-            Log.debug("[FeatureTip:externalPlayback] skip - window is closing", category: .ui)
-            return
-        }
-
-        let gateResult = AppVersionGate.shared.shouldShowFeatureTip(
-            featureKey: FeatureTips.externalPlaybackKey,
-            introducedBuild: FeatureTips.externalPlaybackIntroducedBuild,
-            maxDisplayCount: FeatureTips.externalPlaybackMaxDisplayCount
-        )
-        let dismissed = AppVersionGate.shared.isFeatureTipDismissed(featureKey: FeatureTips.externalPlaybackKey)
-        let count = AppVersionGate.shared.featureTipDisplayCount(featureKey: FeatureTips.externalPlaybackKey)
-        let upgraded = AppVersionGate.shared.wasUpgradedFromBuildBelow(FeatureTips.externalPlaybackIntroducedBuild)
-        Log.debug("[FeatureTip:externalPlayback] gate result=\(gateResult) dismissed=\(dismissed) displayCount=\(count) upgraded=\(upgraded)", category: .ui)
-
-        guard gateResult else {
-            Log.debug("[FeatureTip:externalPlayback] skip - gate returned false", category: .ui)
-            return
-        }
-        guard AppSettings.shared.showPlaybackSourceSwitcher else {
-            Log.debug("[FeatureTip:externalPlayback] skip - showPlaybackSourceSwitcher is false", category: .ui)
-            return
-        }
-
-        pendingTipDisplay = true
-        // Give the sidebar layout time to settle, then try to find the anchor.
-        tryShowExternalPlaybackTip(retryDelay: 0.5)
-    }
-
-    private func tryShowExternalPlaybackTip(retryDelay: TimeInterval) {
-        guard pendingTipDisplay, !isClosingMainWindow else {
-            Log.debug("[FeatureTip:externalPlayback] tryShow skip - pending=\(pendingTipDisplay) closing=\(isClosingMainWindow)", category: .ui)
-            return
-        }
-        guard externalPlaybackTipPopover?.isShown != true else {
-            Log.debug("[FeatureTip:externalPlayback] tryShow skip - popover already shown", category: .ui)
-            return
-        }
-
-        Log.debug("[FeatureTip:externalPlayback] attempt findSourceSwitchAnchor (retryDelay=\(String(format: "%.2f", retryDelay))s)", category: .ui)
-
-        if let anchor = findSourceSwitchAnchor() {
-            Log.debug("[FeatureTip:externalPlayback] anchor found - view=\(type(of: anchor.view)) bounds=\(NSStringFromRect(anchor.view.bounds)) rect=\(NSStringFromRect(anchor.rect))", category: .ui)
-            showExternalPlaybackTipPopover(anchor: anchor)
-            pendingTipDisplay = false
-        } else if retryDelay < 5.0 {
-            Log.debug("[FeatureTip:externalPlayback] anchor not found - retry in \(String(format: "%.2f", retryDelay))s", category: .ui)
-            DispatchQueue.main.asyncAfter(deadline: .now() + retryDelay) { [weak self] in
-                self?.tryShowExternalPlaybackTip(retryDelay: retryDelay * 1.5)
-            }
-        } else {
-            Log.debug("[FeatureTip:externalPlayback] giving up after retries - anchor never appeared", category: .ui)
-            pendingTipDisplay = false
-        }
-    }
-
-    private func findSourceSwitchAnchor() -> (view: NSView, rect: NSRect)? {
-        guard let switchView = Self.sourceSwitchAnchorView else {
-            Log.debug("[FeatureTip:externalPlayback] findAnchor - sourceSwitchAnchorView is nil", category: .ui)
-            return nil
-        }
-        guard switchView.window != nil else {
-            Log.debug("[FeatureTip:externalPlayback] findAnchor - anchor view has no window", category: .ui)
-            return nil
-        }
-        guard switchView.bounds.width > 0, switchView.bounds.height > 0 else {
-            Log.debug("[FeatureTip:externalPlayback] findAnchor - anchor bounds zero: \(NSStringFromRect(switchView.bounds))", category: .ui)
-            return nil
-        }
-
-        // Anchor to the middle-right edge of the switch's own bounds so the
-        // popover arrow points directly at the source switch (not a container).
-        let anchorRect = NSRect(
-            x: switchView.bounds.maxX - 4,
-            y: switchView.bounds.midY - 1,
-            width: 8,
-            height: 2
-        )
-        return (switchView, anchorRect)
-    }
-
-    private func showExternalPlaybackTipPopover(anchor: (view: NSView, rect: NSRect)) {
-        let popover = NSPopover()
-        popover.behavior = .semitransient
-        popover.animates = true
-        popover.contentSize = NSSize(width: 288, height: 118)
-        popover.contentViewController = NSHostingController(
-            rootView: ExternalPlaybackTipView { [weak self] in
-                self?.externalPlaybackTipPopover?.performClose(nil)
-                self?.externalPlaybackTipPopover = nil
-            }
-        )
-
-        externalPlaybackTipPopover = popover
-        popover.show(relativeTo: anchor.rect, of: anchor.view, preferredEdge: .maxX)
-        AppVersionGate.shared.recordFeatureTipDisplayed(
-            featureKey: FeatureTips.externalPlaybackKey
-        )
     }
 
     @discardableResult
@@ -951,57 +835,4 @@ final class HomeRoutingRootView: NSView {
         }
         return AudioFormatSupport.isImportable(url)
     }
-}
-
-// MARK: - External Playback Tip View
-
-private struct ExternalPlaybackTipView: View {
-    let onClose: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text("现已支持外部音乐 App")
-                    .font(.headline)
-                Spacer(minLength: 8)
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("关闭")
-            }
-
-            Text("授权必要权限后，可以在这里切换并使用其他音乐 App 的正在播放内容。")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .frame(width: 288, alignment: .leading)
-    }
-}
-
-// MARK: - Source Switch Anchor Probe
-
-/// Transparent NSView that registers itself as the source-switch anchor on the
-/// window controller so the NSPopover can be positioned precisely on the switch.
-final class SourceSwitchAnchorView: NSView {
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if window != nil {
-            AppKitMainSplitWindowController.sourceSwitchAnchorView = self
-        }
-    }
-}
-
-/// NSViewRepresentable that places a `SourceSwitchAnchorView` in the view
-/// hierarchy, matching the frame of the SwiftUI view it is attached to.
-struct SourceSwitchAnchorProbe: NSViewRepresentable {
-    func makeNSView(context: Context) -> SourceSwitchAnchorView {
-        SourceSwitchAnchorView()
-    }
-    func updateNSView(_ nsView: SourceSwitchAnchorView, context: Context) {}
 }

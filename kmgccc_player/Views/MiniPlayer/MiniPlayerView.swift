@@ -31,6 +31,7 @@ struct MiniPlayerView: View {
     @State private var isDragging = false
     @State private var dragProgress: Double = 0
     @State private var trackToEdit: Track?
+    @State private var trackDeletionRequest: TrackDeletionConfirmationRequest?
     @State private var isProgressHovering = false
     @State private var previousSymbolEffectTrigger = 0
     @State private var playPauseSymbolEffectTrigger = 0
@@ -38,6 +39,7 @@ struct MiniPlayerView: View {
     @State private var artworkImage: NSImage?
     @State private var isPlaybackModeExpanded = false
     @State private var isShowingExternalMatchEditor = false
+    @State private var showPlaybackModeRetapTip = false
 
     private var playbackModeExpandedWidth: CGFloat { 168 }
     private var playbackModeCollapsedWidth: CGFloat { 44 }
@@ -58,7 +60,8 @@ struct MiniPlayerView: View {
             "contextMenu.miniPlayerBodyUpdate",
             detail: "surface=MiniPlayerView, track=\(FirstUseHitchDiagnostics.trackIDPrefix(playbackCoordinator.presentation.localTrack?.id)), isPlaying=\(playbackCoordinator.presentation.isPlaying)"
         )
-        return HStack(spacing: 12) {
+        return ZStack(alignment: .topLeading) {
+            HStack(spacing: 12) {
             // MARK: - Left: Cover enters embedded fullscreen player, text keeps library/now playing toggle
             MiniPlayerLeftSection(
                 hasTrack: playbackCoordinator.presentation.hasTrack,
@@ -73,6 +76,9 @@ struct MiniPlayerView: View {
                 textForegroundProfile: miniPlayerTextForegroundProfile,
                 trackToEdit: $trackToEdit,
                 isShowingExternalMatchEditor: $isShowingExternalMatchEditor,
+                onDeleteTrack: { track in
+                    trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: [track])
+                },
                 onFullscreen: { fullscreenWindowManager.showFullscreenPlayerInWindow() },
                 onToggleNowPlaying: {
                     if uiState.contentMode == .nowPlaying {
@@ -92,6 +98,10 @@ struct MiniPlayerView: View {
             // MARK: - Playback Mode
             playbackModeView
                 .frame(width: playbackModeWidth, height: 24)
+                .anchorPreference(
+                    key: PlaybackModeRetapTipAnchorPreferenceKey.self,
+                    value: .bounds
+                ) { $0 }
                 .layoutPriority(2)
 
             // MARK: - Progress bar (draggable + hover time labels)
@@ -103,18 +113,36 @@ struct MiniPlayerView: View {
             volumeView
                 .layoutPriority(2)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
-        .frame(height: GlassStyleTokens.miniPlayerHeight)
-        .liquidGlassPill(
-            colorScheme: colorScheme,
-            accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
-            prominence: .prominent,
-            materialStyle: .regular,
-            isFloating: true
-        )
-        .contentShape(Capsule())
-        .onTapGesture {}
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+            .frame(height: GlassStyleTokens.miniPlayerHeight)
+            .liquidGlassPill(
+                colorScheme: colorScheme,
+                accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
+                prominence: .prominent,
+                materialStyle: .regular,
+                isFloating: true
+            )
+            .contentShape(Capsule())
+            .onTapGesture {}
+        }
+        .overlayPreferenceValue(PlaybackModeRetapTipAnchorPreferenceKey.self) { anchor in
+            GeometryReader { proxy in
+                if !fullscreenWindowManager.isFullscreenPlayerPresented,
+                   showPlaybackModeRetapTip,
+                   let anchor
+                {
+                    let sliderRect = proxy[anchor]
+                    PlaybackModeRetapTipView(onClose: dismissPlaybackModeRetapTip)
+                        .offset(
+                            x: sliderRect.midX - 144,
+                            y: sliderRect.minY - 12
+                        )
+                        .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottom)))
+                        .zIndex(10)
+                }
+            }
+        }
         .animation(layoutAnimation, value: isPlaybackModeExpanded)
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
@@ -129,8 +157,21 @@ struct MiniPlayerView: View {
             )
             .environmentObject(themeStore)
         }
+        .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in
+            Task {
+                await libraryVM.deleteTracks(tracks)
+            }
+        }
         .task(id: currentArtworkTaskKey) {
             await loadArtworkThumbnail()
+        }
+        .task(id: playbackModeRetapTipTaskID) {
+            await schedulePlaybackModeRetapTipIfNeeded()
+        }
+        .onDisappear {
+            guard showPlaybackModeRetapTip else { return }
+            AppVersionGate.shared.markPlaybackModeRetapFeatureTipDismissed()
+            showPlaybackModeRetapTip = false
         }
     }
 
@@ -271,6 +312,44 @@ struct MiniPlayerView: View {
             AppKitMainSplitWindowController.setLyricsVisible(true, animated: true)
             uiState.lyricsVisible = true
             uiState.showWindowPlaybackQueue()
+        }
+    }
+
+    private var playbackModeRetapTipTaskID: String {
+        let presentation = playbackCoordinator.presentation
+        guard !fullscreenWindowManager.isFullscreenPlayerPresented,
+              presentation.source == .local,
+              presentation.hasTrack,
+              presentation.isPlaying
+        else {
+            return "inactive"
+        }
+        return presentation.localTrack?.id.uuidString ?? "local-track-unknown"
+    }
+
+    @MainActor
+    private func schedulePlaybackModeRetapTipIfNeeded() async {
+        guard playbackModeRetapTipTaskID != "inactive" else { return }
+        do {
+            try await Task.sleep(for: .seconds(FeatureTipCatalog.PlaybackModeRetap.playbackStartDelay))
+        } catch {
+            return
+        }
+        guard !Task.isCancelled,
+              playbackModeRetapTipTaskID != "inactive",
+              showPlaybackModeRetapTip == false,
+              AppVersionGate.shared.claimPlaybackModeRetapFeatureTipDisplay()
+        else { return }
+
+        withAnimation(layoutAnimation) {
+            showPlaybackModeRetapTip = true
+        }
+    }
+
+    private func dismissPlaybackModeRetapTip() {
+        AppVersionGate.shared.markPlaybackModeRetapFeatureTipDismissed()
+        withAnimation(layoutAnimation) {
+            showPlaybackModeRetapTip = false
         }
     }
 
@@ -518,6 +597,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
     @Binding var trackToEdit: Track?
     @Binding var isShowingExternalMatchEditor: Bool
 
+    let onDeleteTrack: (Track) -> Void
     let onFullscreen: () -> Void
     let onToggleNowPlaying: () -> Void
 
@@ -692,6 +772,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
                 onEditTrack: { t in
                     trackToEdit = t
                 },
+                onDeleteFromLibraryRequest: onDeleteTrack,
                 showsPlay: false,
                 diagnosticSurface: "MiniPlayerContextMenu"
             )
