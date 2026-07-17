@@ -70,7 +70,7 @@ struct FullscreenLyricsTypography: Codable, Equatable {
         translationFontName: "SF Pro Text",
         mainFontWeight: 700,
         translationFontWeight: 600,
-        mainFontSize: 50,
+        mainFontSize: 53,
         translationFontSize: 25
     )
 }
@@ -141,13 +141,38 @@ public final class AppSettings {
 
     // MARK: - LED Meter Settings
 
+    private enum LEDKeys {
+        static let ledCount = "ledCount"
+        static let ledBrightnessLevels = "ledBrightnessLevels"
+    }
+
     /// Number of LEDs (default 11)
-    @ObservationIgnored
-    @AppStorage("ledCount") var ledCount: Int = LEDDefaults.ledCount
+    var ledCount: Int {
+        get {
+            access(keyPath: \.ledCount)
+            let val = UserDefaults.standard.integer(forKey: LEDKeys.ledCount)
+            return val == 0 ? LEDDefaults.ledCount : val
+        }
+        set {
+            withMutation(keyPath: \.ledCount) {
+                UserDefaults.standard.set(newValue, forKey: LEDKeys.ledCount)
+            }
+        }
+    }
 
     /// Brightness levels per LED (default 5)
-    @ObservationIgnored
-    @AppStorage("ledBrightnessLevels") var ledBrightnessLevels: Int = LEDDefaults.levels
+    var ledBrightnessLevels: Int {
+        get {
+            access(keyPath: \.ledBrightnessLevels)
+            let val = UserDefaults.standard.integer(forKey: LEDKeys.ledBrightnessLevels)
+            return val == 0 ? LEDDefaults.levels : val
+        }
+        set {
+            withMutation(keyPath: \.ledBrightnessLevels) {
+                UserDefaults.standard.set(newValue, forKey: LEDKeys.ledBrightnessLevels)
+            }
+        }
+    }
 
     /// LED sensitivity is now fixed; UI control was removed and the value is sourced from LEDDefaults.
     var ledSensitivity: Float { LEDDefaults.sensitivity }
@@ -1220,10 +1245,26 @@ public final class AppSettings {
         ) else {
             return [:]
         }
-        return (try? JSONDecoder().decode(
+        var decoded = (try? JSONDecoder().decode(
             [String: FullscreenLyricsTypography].self,
             from: data
         )) ?? [:]
+        
+        var migrated = false
+        for (skinID, var profile) in decoded {
+            if profile.mainFontSize == 50.0 {
+                profile.mainFontSize = 53.0
+                decoded[skinID] = profile
+                migrated = true
+            }
+        }
+        if migrated {
+            if let encoded = try? JSONEncoder().encode(decoded) {
+                UserDefaults.standard.set(encoded, forKey: FullscreenLyricsKeys.perSkinTypographyProfiles)
+            }
+        }
+        
+        return decoded
     }
 
     private func saveFullscreenLyricsTypographyProfiles(
@@ -1422,6 +1463,12 @@ public final class AppSettings {
         // so users who somehow set a custom value are left alone.
         if UserDefaults.standard.string(forKey: "accentColorHex") == "#FFC878" {
             UserDefaults.standard.set("#E6C799", forKey: "accentColorHex")
+        }
+
+        // Migrate old default fullscreen lyric font size (50.0) to new default (53.0).
+        if let storedFontSize = UserDefaults.standard.object(forKey: FullscreenLyricsKeys.fontSize) as? NSNumber,
+           storedFontSize.doubleValue == 50.0 {
+            UserDefaults.standard.set(53.0, forKey: FullscreenLyricsKeys.fontSize)
         }
     }
 
