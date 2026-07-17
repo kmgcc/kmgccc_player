@@ -59,6 +59,7 @@ final class LDDCServerManager: ObservableObject {
     private var startTask: Task<Void, Error>?
     private var idleTimer: Timer?
     private var lastRequestTime = Date()
+    private var inFlightRequestCount = 0
     private var recentStdout: String = ""
     private var recentStderr: String = ""
     private let recentLogLimit = 8_000
@@ -72,7 +73,9 @@ final class LDDCServerManager: ObservableObject {
     /// Concurrent callers share a single start task — only one process is ever launched.
     func ensureRunning() async throws {
         if isRunning {
-            resetIdleTimer()
+            if inFlightRequestCount == 0 {
+                resetIdleTimer()
+            }
             return
         }
 
@@ -105,13 +108,13 @@ final class LDDCServerManager: ObservableObject {
         idleTimer?.invalidate()
         idleTimer = nil
         startTask = nil
+        inFlightRequestCount = 0
 
         if let process = serverProcess, process.isRunning {
             process.terminate()
             Log.debug("Server terminate requested", category: .lddc)
-        } else {
-            teardownLogPipes()
         }
+        teardownLogPipes()
 
         serverProcess = nil
         isRunning = false
@@ -122,10 +125,24 @@ final class LDDCServerManager: ObservableObject {
         URL(string: "http://127.0.0.1:\(currentPort)")!
     }
 
-    /// Record a request (resets idle timer).
-    func recordRequest() {
+    /// Mark the beginning of an HTTP request.
+    ///
+    /// The server must not be reclaimed while a provider request is still in
+    /// flight. This counter also makes concurrent per-provider searches safe.
+    func beginRequest() {
+        inFlightRequestCount += 1
         lastRequestTime = Date()
-        resetIdleTimer()
+        idleTimer?.invalidate()
+        idleTimer = nil
+    }
+
+    /// Mark the end of an HTTP request and restart idle reclamation if needed.
+    func endRequest() {
+        inFlightRequestCount = max(0, inFlightRequestCount - 1)
+        lastRequestTime = Date()
+        if inFlightRequestCount == 0, isRunning {
+            resetIdleTimer()
+        }
     }
 
     // MARK: - Private Methods
@@ -298,11 +315,21 @@ final class LDDCServerManager: ObservableObject {
     }
 
     private func handleProcessTermination(_ process: Process) {
+        // A termination callback can arrive after stop() has already started
+        // a replacement process. Never let the old process tear down the new
+        // process's pipes or request bookkeeping.
+        guard serverProcess === process else {
+            Log.debug("Ignoring termination callback for stale server process", category: .lddc)
+            return
+        }
+
         Log.warning(
             "Server terminated reason=\(process.terminationReason) code=\(process.terminationStatus)",
             category: .lddc
         )
         teardownLogPipes()
+        inFlightRequestCount = 0
+        lastRequestTime = Date()
         if serverProcess === process {
             serverProcess = nil
             isRunning = false
@@ -505,6 +532,11 @@ final class LDDCServerManager: ObservableObject {
     }
 
     private func handleIdleTimeout() {
+        guard inFlightRequestCount == 0 else {
+            resetIdleTimer()
+            return
+        }
+
         let idleTime = Date().timeIntervalSince(lastRequestTime)
         if idleTime >= idleTimeout {
             Log.info("Idle timeout reached; stopping server", category: .lddc)

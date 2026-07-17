@@ -11,7 +11,7 @@ import Foundation
 // MARK: - API Models
 
 /// Source platforms for lyrics search
-enum LDDCSource: String, CaseIterable, Identifiable, Codable {
+enum LDDCSource: String, CaseIterable, Identifiable, Codable, Sendable {
     case LRCLIB
     case QM
     case KG
@@ -32,7 +32,7 @@ enum LDDCSource: String, CaseIterable, Identifiable, Codable {
 }
 
 /// Lyrics mode - line-by-line or verbatim (word-by-word)
-enum LDDCMode: String, CaseIterable, Identifiable, Codable {
+enum LDDCMode: String, CaseIterable, Identifiable, Codable, Sendable {
     case line
     case verbatim
 
@@ -47,7 +47,7 @@ enum LDDCMode: String, CaseIterable, Identifiable, Codable {
 }
 
 /// A lyrics search result candidate from /search API
-struct LDDCCandidate: Identifiable, Codable, Equatable {
+struct LDDCCandidate: Identifiable, Codable, Equatable, Sendable {
     let source: String
     let songId: String
     let score: Double
@@ -90,19 +90,29 @@ struct LDDCCandidate: Identifiable, Codable, Equatable {
 }
 
 /// Response from /search API
-struct LDDCSearchResponse: Codable {
+struct LDDCSearchResponse: Codable, Sendable {
     let results: [LDDCCandidate]
     let errors: [String]?
 }
 
+/// Results returned by one LDDC provider.
+///
+/// Keeping provider outcomes separate prevents one slow or unavailable source
+/// from erasing results returned by the other sources.
+struct LDDCSourceSearchResult: Sendable {
+    let source: LDDCSource
+    let results: [LDDCCandidate]
+    let errors: [String]
+}
+
 /// Response from /fetch_by_id API
-struct LDDCFetchResponse: Codable {
+struct LDDCFetchResponse: Codable, Sendable {
     let lrc: String?
     let error: String?
 }
 
 /// Response from /fetch_by_id_separate API
-struct LDDCFetchSeparateResponse: Codable {
+struct LDDCFetchSeparateResponse: Codable, Sendable {
     let lrcOrig: String?
     let lrcTrans: String?
     let error: String?
@@ -116,7 +126,7 @@ struct LDDCFetchSeparateResponse: Codable {
 
 // MARK: - Error Types
 
-enum LDDCError: LocalizedError {
+enum LDDCError: LocalizedError, Sendable {
     case serverNotRunning
     case healthCheckFailed
     case startupFailed(String)
