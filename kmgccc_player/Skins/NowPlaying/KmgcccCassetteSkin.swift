@@ -146,8 +146,13 @@ private final class CassetteThemeAssetCache {
         cache.totalCostLimit = 32 * 1024 * 1024
     }
 
-    func imageSet(colorScheme: ColorScheme, maxPixel: Int) -> CassetteThemeImageSet? {
-        let key = "\(colorScheme == .dark ? "dark" : "light")-\(maxPixel)" as NSString
+    func imageSet(
+        colorScheme: ColorScheme,
+        cassetteTint: CassetteTintPalette,
+        maxPixel: Int
+    ) -> CassetteThemeImageSet? {
+        let tintSignature = colorScheme == .dark ? cassetteTint.signature : 0
+        let key = "\(colorScheme == .dark ? "dark" : "light")-\(maxPixel)-tint:\(tintSignature)" as NSString
         if let cached = cache.object(forKey: key) {
             return cached.value
         }
@@ -155,7 +160,8 @@ private final class CassetteThemeAssetCache {
         guard
             let shell = loadImage(
                 resource: colorScheme == .dark ? .dark : .light,
-                maxPixel: maxPixel
+                maxPixel: maxPixel,
+                tint: colorScheme == .dark ? cassetteTint : nil
             ),
             let gray = loadImage(resource: .gray, maxPixel: maxPixel),
             let paper = loadImage(resource: .paper, maxPixel: maxPixel),
@@ -205,8 +211,19 @@ private final class CassetteThemeAssetCache {
         return ratio
     }
 
-    private func loadImage(resource: Resource, maxPixel: Int) -> NSImage? {
-        ArtAssetLoader.shared.xcAssetImage(named: resource.rawValue, maxPixel: max(1, maxPixel))
+    private func loadImage(
+        resource: Resource,
+        maxPixel: Int,
+        tint: CassetteTintPalette? = nil
+    ) -> NSImage? {
+        guard let image = ArtAssetLoader.shared.xcAssetImage(
+            named: resource.rawValue,
+            maxPixel: max(1, maxPixel)
+        ) else {
+            return nil
+        }
+        guard resource == .dark, let tint else { return image }
+        return CassetteAssetToneMapper.colorized(image, tint: tint) ?? image
     }
 
     private func estimatedCost(for imageSet: CassetteThemeImageSet) -> Int {
@@ -222,6 +239,128 @@ private final class CassetteThemeAssetCache {
         }
         let size = image.size
         return max(1, Int(ceil(size.width)) * Int(ceil(size.height)) * 4)
+    }
+}
+
+/// Maps only the grayscale value of the encrypted dark cassette art to the
+/// semantic night tint. Alpha and the source's luminance structure remain
+/// owned by the asset; no other cassette layer passes through this mapper.
+private enum CassetteAssetToneMapper {
+    private struct RGBA {
+        let red: CGFloat
+        let green: CGFloat
+        let blue: CGFloat
+        let alpha: CGFloat
+    }
+
+    static func colorized(_ image: NSImage, tint: CassetteTintPalette) -> NSImage? {
+        guard let source = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let rendered = colorized(source, tint: tint) else {
+            return nil
+        }
+        return NSImage(
+            cgImage: rendered,
+            size: NSSize(width: rendered.width, height: rendered.height)
+        )
+    }
+
+    private static func colorized(_ image: CGImage, tint: CassetteTintPalette) -> CGImage? {
+        autoreleasepool {
+            guard let gradient = makeColorMapImage(colors: tint.colors) else { return nil }
+            let input = CIImage(cgImage: image)
+            let grayscale = input.applyingFilter(
+                "CIColorControls",
+                parameters: [kCIInputSaturationKey: 0.0]
+            )
+            let gammaLifted = grayscale.applyingFilter(
+                "CIGammaAdjust",
+                parameters: [
+                    "inputPower": ColorSystemTokens.Cassette.lowLuminanceGamma,
+                ]
+            )
+            let mapped = gammaLifted.applyingFilter(
+                "CIColorMap",
+                parameters: ["inputGradientImage": gradient]
+            )
+            let context = CIContext(options: [.cacheIntermediates: false])
+            let outputSpace = CGColorSpace(name: CGColorSpace.displayP3)
+                ?? CGColorSpaceCreateDeviceRGB()
+            let rendered = context.createCGImage(
+                mapped,
+                from: input.extent,
+                format: .RGBA8,
+                colorSpace: outputSpace
+            )
+            context.clearCaches()
+            return rendered
+        }
+    }
+
+    private static func makeColorMapImage(colors: [NSColor]) -> CIImage? {
+        let components = colors.compactMap { color -> RGBA? in
+            guard let resolved = ColorRenderingAdapter.resolve(color, target: .displayP3) else {
+                return nil
+            }
+            return RGBA(
+                red: CGFloat(resolved.red),
+                green: CGFloat(resolved.green),
+                blue: CGFloat(resolved.blue),
+                alpha: CGFloat(resolved.alpha)
+            )
+        }
+        guard !components.isEmpty else { return nil }
+
+        let width = 256
+        var data = [UInt8](repeating: 0, count: width * 4)
+        for x in 0..<width {
+            let t = CGFloat(x) / CGFloat(width - 1)
+            let (left, right, localT): (RGBA, RGBA, CGFloat)
+            if components.count == 1 {
+                left = components[0]
+                right = components[0]
+                localT = 0
+            } else {
+                let position = t * CGFloat(components.count - 1)
+                let leftIndex = min(components.count - 2, max(0, Int(floor(position))))
+                left = components[leftIndex]
+                right = components[leftIndex + 1]
+                localT = position - CGFloat(leftIndex)
+            }
+            let index = x * 4
+            data[index] = byte(lerp(left.red, right.red, t: localT))
+            data[index + 1] = byte(lerp(left.green, right.green, t: localT))
+            data[index + 2] = byte(lerp(left.blue, right.blue, t: localT))
+            data[index + 3] = byte(lerp(left.alpha, right.alpha, t: localT))
+        }
+
+        guard let provider = CGDataProvider(data: Data(data) as CFData) else { return nil }
+        let colorSpace = CGColorSpace(name: CGColorSpace.displayP3)
+            ?? CGColorSpaceCreateDeviceRGB()
+        guard let cgImage = CGImage(
+            width: width,
+            height: 1,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: true,
+            intent: .defaultIntent
+        ) else {
+            return nil
+        }
+        return CIImage(cgImage: cgImage)
+    }
+
+    private static func lerp(_ lhs: CGFloat, _ rhs: CGFloat, t: CGFloat) -> CGFloat {
+        let p = max(0, min(1, t))
+        return lhs + (rhs - lhs) * p
+    }
+
+    private static func byte(_ value: CGFloat) -> UInt8 {
+        UInt8((max(0, min(1, value)) * 255).rounded())
     }
 }
 
@@ -265,6 +404,7 @@ private struct CassetteArtwork: View, Equatable {
             && lhs.context.lyricsVisible == rhs.context.lyricsVisible
             && lhs.context.contentBounds.size == rhs.context.contentBounds.size
             && waveformPaletteSignature(for: lhs.context) == waveformPaletteSignature(for: rhs.context)
+            && cassetteTintSignature(for: lhs.context) == cassetteTintSignature(for: rhs.context)
     }
 
     var body: some View {
@@ -394,6 +534,10 @@ private struct CassetteArtwork: View, Equatable {
         }
         append(color: context.theme.artworkAverageColor, to: &hasher)
         return hasher.finalize()
+    }
+
+    private static func cassetteTintSignature(for context: SkinContext) -> Int {
+        context.theme.colorScheme == .dark ? context.theme.cassetteTint.signature : 0
     }
 
     private static func append(color: NSColor?, to hasher: inout Hasher) {
@@ -559,6 +703,7 @@ private struct CassetteArtwork: View, Equatable {
     private func cassetteThemeImages(for size: CGSize) -> CassetteThemeImageSet? {
         CassetteThemeAssetCache.shared.imageSet(
             colorScheme: context.theme.colorScheme,
+            cassetteTint: context.theme.cassetteTint,
             maxPixel: themeMaxPixel(for: size)
         )
     }
@@ -568,7 +713,10 @@ private struct CassetteArtwork: View, Equatable {
             return Image(nsImage: image)
         }
         if let image = ArtAssetLoader.shared.xcAssetImage(named: name, maxPixel: 1_600) {
-            return Image(nsImage: image)
+            let rendered = context.theme.colorScheme == .dark && name == "tapedark"
+                ? CassetteAssetToneMapper.colorized(image, tint: context.theme.cassetteTint) ?? image
+                : image
+            return Image(nsImage: rendered)
         }
         return Image(systemName: "photo")
     }
@@ -934,8 +1082,10 @@ private enum WaveformCapsulesConstants {
     static let spacingRatio: CGFloat = 0.017
     static let maxBarHeightRatio: CGFloat = 0.14
     static let heightBoost: CGFloat = 1.0
-    static let darkBrightnessMin: CGFloat = 0.10
-    static let darkBrightnessMax: CGFloat = 0.14
+    static let darkBrightnessMin: CGFloat = 0.055
+    static let darkBrightnessMax: CGFloat = 0.115
+    static let darkBrightnessScale: CGFloat = 0.22
+    static let darkAlpha: CGFloat = 0.72
     static let lightBrightnessMax: CGFloat = 0.55
 }
 
@@ -1101,9 +1251,12 @@ private enum WaveformCapsulesPalette {
         if isDark {
             targetBrightness = max(
                 WaveformCapsulesConstants.darkBrightnessMin,
-                min(WaveformCapsulesConstants.darkBrightnessMax, brightness * 0.4)
+                min(
+                    WaveformCapsulesConstants.darkBrightnessMax,
+                    brightness * WaveformCapsulesConstants.darkBrightnessScale
+                )
             )
-            targetAlpha = 0.8
+            targetAlpha = WaveformCapsulesConstants.darkAlpha
             saturation *= 0.9
         } else {
             targetBrightness = min(
@@ -1131,6 +1284,7 @@ private struct HolesOverlay: View {
     var body: some View {
         CassetteHoleRotationRepresentable(
             imageName: context.theme.colorScheme == .dark ? "darkhole" : "lighthole",
+            tint: context.theme.cassetteTint,
             isPlaying: context.playback.isPlaying,
             displayScale: displayScale
         )
@@ -1140,17 +1294,28 @@ private struct HolesOverlay: View {
 
 private struct CassetteHoleRotationRepresentable: NSViewRepresentable {
     let imageName: String
+    let tint: CassetteTintPalette
     let isPlaying: Bool
     let displayScale: CGFloat
 
     func makeNSView(context: Context) -> CassetteHoleRotationHostView {
         let view = CassetteHoleRotationHostView()
-        view.configure(imageName: imageName, isPlaying: isPlaying, displayScale: displayScale)
+        view.configure(
+            imageName: imageName,
+            tint: tint,
+            isPlaying: isPlaying,
+            displayScale: displayScale
+        )
         return view
     }
 
     func updateNSView(_ nsView: CassetteHoleRotationHostView, context: Context) {
-        nsView.configure(imageName: imageName, isPlaying: isPlaying, displayScale: displayScale)
+        nsView.configure(
+            imageName: imageName,
+            tint: tint,
+            isPlaying: isPlaying,
+            displayScale: displayScale
+        )
     }
 
     static func dismantleNSView(_ nsView: CassetteHoleRotationHostView, coordinator: ()) {
@@ -1178,6 +1343,8 @@ private final class CassetteHoleRotationHostView: NSView {
     private let leftHoleLayer = CALayer()
     private let rightHoleLayer = CALayer()
     private var imageName = ""
+    private var tint: CassetteTintPalette?
+    private var tintSignature = 0
     private var loadedMaxPixel = 0
     private var displayScale: CGFloat = 2
     private var requestedPlaying = false
@@ -1224,12 +1391,20 @@ private final class CassetteHoleRotationHostView: NSView {
         }
     }
 
-    func configure(imageName: String, isPlaying: Bool, displayScale: CGFloat) {
+    func configure(
+        imageName: String,
+        tint: CassetteTintPalette,
+        isPlaying: Bool,
+        displayScale: CGFloat
+    ) {
         let imageChanged = self.imageName != imageName
+        let tintChanged = tintSignature != tint.signature
         let scaleChanged = abs(self.displayScale - displayScale) > 0.01
         self.imageName = imageName
+        self.tint = tint
+        self.tintSignature = tint.signature
         self.displayScale = max(1, displayScale)
-        if imageChanged || scaleChanged {
+        if imageChanged || tintChanged || scaleChanged {
             loadedMaxPixel = 0
             needsLayout = true
         }
@@ -1269,11 +1444,17 @@ private final class CassetteHoleRotationHostView: NSView {
         let maxPixel = max(1, Int(ceil(holeSide * 2)))
         guard maxPixel != loadedMaxPixel else { return }
         loadedMaxPixel = maxPixel
-        let image = ArtAssetLoader.shared.xcAssetImage(
+        let sourceImage = ArtAssetLoader.shared.xcAssetImage(
             named: imageName,
             maxPixel: maxPixel,
             fallbackToProgrammaticArt: true
         )
+        let image: NSImage?
+        if imageName == "darkhole", let sourceImage, let tint {
+            image = CassetteAssetToneMapper.colorized(sourceImage, tint: tint) ?? sourceImage
+        } else {
+            image = sourceImage
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         leftHoleLayer.contents = image

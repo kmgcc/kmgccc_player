@@ -694,6 +694,31 @@ nonisolated enum ColorSystemTokens {
         static let lyricsNearMonoSeedTrustChromaAssertion: CGFloat = 0.040
     }
 
+    // MARK: - Cassette night tint
+    //
+    // The dark cassette artwork is a luminance source rather than a flat
+    // replacement colour. These stops keep the original material depth while
+    // letting the resolved theme hue travel through the tape body and reels.
+    enum Cassette {
+        // The dark source asset carries most of its structure in the lower
+        // luminance range. Lift all three stops substantially so the mapped
+        // shell and reels remain legible against the night background.
+        static let shadowLightness: CGFloat = 0.160
+        static let midtoneLightness: CGFloat = 0.650
+        static let highlightLightness: CGFloat = 0.980
+
+        // Lift the low-luminance source range without lifting true black.
+        // Values below 1 expand shadow detail before the colour map.
+        static let lowLuminanceGamma: CGFloat = 0.720
+
+        static let sourceChromaScale: CGFloat = 0.78
+        static let shadowChromaScale: CGFloat = 0.42
+        static let midtoneChromaScale: CGFloat = 0.76
+        static let highlightChromaScale: CGFloat = 0.88
+        static let chromaFloor: CGFloat = 0.030
+        static let chromaCeiling: CGFloat = 0.090
+    }
+
     // MARK: - UltraDark profile
     //
     // Tone / Darkness axis — describes "the cover is so dark we should

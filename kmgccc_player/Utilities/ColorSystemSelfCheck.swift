@@ -4842,6 +4842,12 @@ nonisolated enum ColorSystemSelfCheck {
             readabilityCandidates: SemanticPaletteSelfCheck.readabilityCandidates(analysis),
             coverGradientTextCandidates: SemanticPaletteSelfCheck.coverGradientTextCandidates(analysis),
             miniPlayerControl: control,
+            cassetteTint: SemanticPaletteFactory.makeCassetteTintPalette(
+                analysis: analysis,
+                globalAccent: fallbackAccent,
+                scheme: scheme,
+                useArtworkTint: false
+            ),
             plusBlendText: plusBlendText,
             appForeground: appForeground,
             lyrics: lyrics
