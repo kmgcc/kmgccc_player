@@ -2,5 +2,5 @@
   "latestVersion": "2.2.1",
   "build_number": 9,
   "releaseURL": "https://github.com/kmgcc/kmgccc_player/releases/latest",
-  "notes": "无缝播放，让专辑里的歌曲自然相连\n窗口 MiniPlayer 支持音频可视化\n进入多选模式后，可拖动一首或多首歌曲整理顺序\n全屏全景皮肤加入交叠模糊过渡\n搜索歌词内容，并从匹配结果直接跳转播放"
+  "notes": "新增本地播放历史、下一首播放和按皮肤保存的全屏歌词字体设置\n窗口 MiniPlayer 支持音频可视化，并在不可见时暂停采样以降低占用\n新增异常退出报告保存与发送流程\n改进全景、画框等皮肤的过渡、色彩和频谱表现\n修复退出延迟、频谱无信号、多选状态丢失和无封面异常等问题"
 }
