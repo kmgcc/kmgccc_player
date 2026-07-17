@@ -99,19 +99,16 @@ struct ExpandableVolumeControl: View {
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
-        .help("volume")
+        .help(volume == 0 ? "Unmute" : "Mute")
     }
 
     private var sliderView: some View {
-        Slider(
-            value: $volume,
-            in: 0...1
-        ) { editing in
-            onAdjustingChanged(editing)
-            if editing {
-                onInteraction()
-            }
-        }
+        VolumeSlider(
+            volume: $volume,
+            onInteraction: onInteraction,
+            onAdjustingChanged: onAdjustingChanged,
+            markerColor: controlPrimaryColor.opacity(0.8)
+        )
             .controlSize(.regular)
             .tint(controlPrimaryColor)
             .compositingGroup()
@@ -123,9 +120,6 @@ struct ExpandableVolumeControl: View {
             .allowsHitTesting(isExpanded)
             .disabled(!isEnabled)
             .accessibilityHidden(!isExpanded)
-            .onChange(of: volume) { _, _ in
-                onInteraction()
-            }
     }
 
     private var currentWidth: CGFloat {
@@ -190,13 +184,7 @@ struct ExpandableVolumeControl: View {
     private func toggleMute() {
         guard isEnabled else { return }
         onInteraction()
-        if volume > 0 {
-            UserDefaults.standard.set(volume, forKey: "_expandableVolume_lastVolume")
-            volume = 0
-        } else {
-            let lastVolume = UserDefaults.standard.double(forKey: "_expandableVolume_lastVolume")
-            volume = lastVolume > 0 ? lastVolume : 0.5
-        }
+        volume = VolumeControlBehavior.volumeAfterMuteToggle(volume)
     }
 }
 

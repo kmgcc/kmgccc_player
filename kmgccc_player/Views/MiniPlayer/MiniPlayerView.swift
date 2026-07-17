@@ -429,17 +429,24 @@ struct MiniPlayerView: View {
     private var volumeView: some View {
         let isEnabled = playbackCoordinator.presentation.isVolumeControlEnabled
         return HStack(spacing: 6) {
-            Image(systemName: volumeIcon)
-                .font(.caption)
-                .foregroundStyle(isEnabled ? Color.secondary : Color.secondary.opacity(0.4))
-                .frame(width: 14)
+            Button(action: toggleMute) {
+                Image(systemName: volumeIcon)
+                    .font(.caption)
+                    .foregroundStyle(isEnabled ? Color.secondary : Color.secondary.opacity(0.4))
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!isEnabled)
+            .help(volume == 0 ? "Unmute" : "Mute")
 
-            Slider(
-                value: Binding(
+            VolumeSlider(
+                volume: Binding(
                     get: { playbackCoordinator.presentation.volume },
                     set: { playbackCoordinator.setVolume($0) }
                 ),
-                in: 0...1
+                markerColor: themeStore.accentColor.opacity(0.85),
+                hidesMarkerAtDefault: true
             )
             .frame(width: 80)
             .controlSize(.small)
@@ -447,6 +454,15 @@ struct MiniPlayerView: View {
             .disabled(!isEnabled)
             .opacity(isEnabled ? 1 : 0.45)
         }
+    }
+
+    private var volume: Double {
+        playbackCoordinator.presentation.volume
+    }
+
+    private func toggleMute() {
+        guard playbackCoordinator.presentation.isVolumeControlEnabled else { return }
+        playbackCoordinator.setVolume(VolumeControlBehavior.volumeAfterMuteToggle(volume))
     }
 
     private var volumeIcon: String {
