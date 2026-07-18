@@ -31,6 +31,7 @@ struct MiniPlayerView: View {
     @State private var isDragging = false
     @State private var dragProgress: Double = 0
     @State private var trackToEdit: Track?
+    @State private var trackDeletionRequest: TrackDeletionConfirmationRequest?
     @State private var isProgressHovering = false
     @State private var previousSymbolEffectTrigger = 0
     @State private var playPauseSymbolEffectTrigger = 0
@@ -38,6 +39,7 @@ struct MiniPlayerView: View {
     @State private var artworkImage: NSImage?
     @State private var isPlaybackModeExpanded = false
     @State private var isShowingExternalMatchEditor = false
+    @State private var showPlaybackModeRetapTip = false
 
     private var playbackModeExpandedWidth: CGFloat { 168 }
     private var playbackModeCollapsedWidth: CGFloat { 44 }
@@ -49,16 +51,17 @@ struct MiniPlayerView: View {
         .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
     }
     private var trackInfoIdealWidth: CGFloat { 100 }
-    private var trackInfoMinWidth: CGFloat { 56 }
+    private var trackInfoMinWidth: CGFloat { 32 }
     private var trackInfoMaxWidth: CGFloat { 136 }
-    private var progressAreaMinWidth: CGFloat { 72 }
+    private var progressAreaMinWidth: CGFloat { 96 }
 
     var body: some View {
         let _ = ContextMenuDiagnostics.markBodyUpdate(
             "contextMenu.miniPlayerBodyUpdate",
             detail: "surface=MiniPlayerView, track=\(FirstUseHitchDiagnostics.trackIDPrefix(playbackCoordinator.presentation.localTrack?.id)), isPlaying=\(playbackCoordinator.presentation.isPlaying)"
         )
-        return HStack(spacing: 12) {
+        return ZStack(alignment: .topLeading) {
+            HStack(spacing: 12) {
             // MARK: - Left: Cover enters embedded fullscreen player, text keeps library/now playing toggle
             MiniPlayerLeftSection(
                 hasTrack: playbackCoordinator.presentation.hasTrack,
@@ -70,8 +73,12 @@ struct MiniPlayerView: View {
                 contextMenuRefreshTrigger: libraryVM.refreshTrigger,
                 isFullscreenPresented: fullscreenWindowManager.isFullscreenPlayerPresented,
                 isRefetchingLyrics: playbackCoordinator.presentation.isRefetchingLyrics,
+                textForegroundProfile: miniPlayerTextForegroundProfile,
                 trackToEdit: $trackToEdit,
                 isShowingExternalMatchEditor: $isShowingExternalMatchEditor,
+                onDeleteTrack: { track in
+                    trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: [track])
+                },
                 onFullscreen: { fullscreenWindowManager.showFullscreenPlayerInWindow() },
                 onToggleNowPlaying: {
                     if uiState.contentMode == .nowPlaying {
@@ -91,6 +98,16 @@ struct MiniPlayerView: View {
             // MARK: - Playback Mode
             playbackModeView
                 .frame(width: playbackModeWidth, height: 24)
+                .popover(
+                    isPresented: $showPlaybackModeRetapTip,
+                    attachmentAnchor: .rect(.bounds),
+                    arrowEdge: .bottom
+                ) {
+                    PlaybackModeRetapTipView(
+                        onClose: dismissPlaybackModeRetapTip,
+                        usesStandaloneBackground: false
+                    )
+                }
                 .layoutPriority(2)
 
             // MARK: - Progress bar (draggable + hover time labels)
@@ -102,18 +119,19 @@ struct MiniPlayerView: View {
             volumeView
                 .layoutPriority(2)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 8)
-        .frame(height: GlassStyleTokens.miniPlayerHeight)
-        .liquidGlassPill(
-            colorScheme: colorScheme,
-            accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
-            prominence: .prominent,
-            materialStyle: .regular,
-            isFloating: true
-        )
-        .contentShape(Capsule())
-        .onTapGesture {}
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+            .frame(height: GlassStyleTokens.miniPlayerHeight)
+            .liquidGlassPill(
+                colorScheme: colorScheme,
+                accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
+                prominence: .prominent,
+                materialStyle: .regular,
+                isFloating: true
+            )
+            .contentShape(Capsule())
+            .onTapGesture {}
+        }
         .animation(layoutAnimation, value: isPlaybackModeExpanded)
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
@@ -128,8 +146,25 @@ struct MiniPlayerView: View {
             )
             .environmentObject(themeStore)
         }
+        .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in
+            Task {
+                await libraryVM.deleteTracks(tracks)
+            }
+        }
         .task(id: currentArtworkTaskKey) {
             await loadArtworkThumbnail()
+        }
+        .task(id: playbackModeRetapTipTaskID) {
+            await schedulePlaybackModeRetapTipIfNeeded()
+        }
+        .onDisappear {
+            guard showPlaybackModeRetapTip else { return }
+            AppVersionGate.shared.markPlaybackModeRetapFeatureTipDismissed()
+            showPlaybackModeRetapTip = false
+        }
+        .onChange(of: showPlaybackModeRetapTip) { wasPresented, isPresented in
+            guard wasPresented, !isPresented else { return }
+            AppVersionGate.shared.markPlaybackModeRetapFeatureTipDismissed()
         }
     }
 
@@ -270,6 +305,44 @@ struct MiniPlayerView: View {
             AppKitMainSplitWindowController.setLyricsVisible(true, animated: true)
             uiState.lyricsVisible = true
             uiState.showWindowPlaybackQueue()
+        }
+    }
+
+    private var playbackModeRetapTipTaskID: String {
+        let presentation = playbackCoordinator.presentation
+        guard !fullscreenWindowManager.isFullscreenPlayerPresented,
+              presentation.source == .local,
+              presentation.hasTrack,
+              presentation.isPlaying
+        else {
+            return "inactive"
+        }
+        return presentation.localTrack?.id.uuidString ?? "local-track-unknown"
+    }
+
+    @MainActor
+    private func schedulePlaybackModeRetapTipIfNeeded() async {
+        guard playbackModeRetapTipTaskID != "inactive" else { return }
+        do {
+            try await Task.sleep(for: .seconds(FeatureTipCatalog.PlaybackModeRetap.playbackStartDelay))
+        } catch {
+            return
+        }
+        guard !Task.isCancelled,
+              playbackModeRetapTipTaskID != "inactive",
+              showPlaybackModeRetapTip == false,
+              AppVersionGate.shared.claimPlaybackModeRetapFeatureTipDisplay()
+        else { return }
+
+        withAnimation(layoutAnimation) {
+            showPlaybackModeRetapTip = true
+        }
+    }
+
+    private func dismissPlaybackModeRetapTip() {
+        AppVersionGate.shared.markPlaybackModeRetapFeatureTipDismissed()
+        withAnimation(layoutAnimation) {
+            showPlaybackModeRetapTip = false
         }
     }
 
@@ -428,17 +501,24 @@ struct MiniPlayerView: View {
     private var volumeView: some View {
         let isEnabled = playbackCoordinator.presentation.isVolumeControlEnabled
         return HStack(spacing: 6) {
-            Image(systemName: volumeIcon)
-                .font(.caption)
-                .foregroundStyle(isEnabled ? Color.secondary : Color.secondary.opacity(0.4))
-                .frame(width: 14)
+            Button(action: toggleMute) {
+                Image(systemName: volumeIcon)
+                    .font(.caption)
+                    .foregroundStyle(isEnabled ? Color.secondary : Color.secondary.opacity(0.4))
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!isEnabled)
+            .help(volume == 0 ? "Unmute" : "Mute")
 
-            Slider(
-                value: Binding(
+            VolumeSlider(
+                volume: Binding(
                     get: { playbackCoordinator.presentation.volume },
                     set: { playbackCoordinator.setVolume($0) }
                 ),
-                in: 0...1
+                markerColor: themeStore.accentColor.opacity(0.85),
+                hidesMarkerAtDefault: true
             )
             .frame(width: 80)
             .controlSize(.small)
@@ -446,6 +526,15 @@ struct MiniPlayerView: View {
             .disabled(!isEnabled)
             .opacity(isEnabled ? 1 : 0.45)
         }
+    }
+
+    private var volume: Double {
+        playbackCoordinator.presentation.volume
+    }
+
+    private func toggleMute() {
+        guard playbackCoordinator.presentation.isVolumeControlEnabled else { return }
+        playbackCoordinator.setVolume(VolumeControlBehavior.volumeAfterMuteToggle(volume))
     }
 
     private var volumeIcon: String {
@@ -473,6 +562,14 @@ struct MiniPlayerView: View {
     private var controlDisabledColor: Color {
         Color.secondary.opacity(0.5)
     }
+
+    private var miniPlayerTextForegroundProfile: PlusBlendTextForegroundProfile {
+        themeStore.plusBlendTextPalette.profile(
+            for: colorScheme == .dark
+                ? .lightOnDarkBackground
+                : .darkOnLightBackground
+        )
+    }
 }
 
 // MARK: - Left section (isolated from high-frequency presentation ticks)
@@ -488,10 +585,12 @@ private struct MiniPlayerLeftSection: View, Equatable {
     let contextMenuRefreshTrigger: Int
     let isFullscreenPresented: Bool
     let isRefetchingLyrics: Bool
+    let textForegroundProfile: PlusBlendTextForegroundProfile
 
     @Binding var trackToEdit: Track?
     @Binding var isShowingExternalMatchEditor: Bool
 
+    let onDeleteTrack: (Track) -> Void
     let onFullscreen: () -> Void
     let onToggleNowPlaying: () -> Void
 
@@ -499,7 +598,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
 
     @State private var isArtworkHovering = false
 
-    private var trackInfoMinWidth: CGFloat { 56 }
+    private var trackInfoMinWidth: CGFloat { 32 }
     private var trackInfoIdealWidth: CGFloat { 100 }
     private var trackInfoMaxWidth: CGFloat { 136 }
 
@@ -513,6 +612,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
             && lhs.contextMenuRefreshTrigger == rhs.contextMenuRefreshTrigger
             && lhs.isFullscreenPresented == rhs.isFullscreenPresented
             && lhs.isRefetchingLyrics == rhs.isRefetchingLyrics
+            && lhs.textForegroundProfile == rhs.textForegroundProfile
     }
 
     var body: some View {
@@ -605,9 +705,11 @@ private struct MiniPlayerLeftSection: View, Equatable {
                         text: displayTitle,
                         style: .subheadline,
                         fontWeight: .medium,
-                        color: .primary,
+                        color: textForegroundProfile.primaryColor,
                         enablesContentTransition: true
                     )
+                    .compositingGroup()
+                    .blendMode(textForegroundProfile.blendMode)
 
                     SeamlessMarqueeText(
                         text: displayArtist.isEmpty
@@ -615,9 +717,11 @@ private struct MiniPlayerLeftSection: View, Equatable {
                             : displayArtist,
                         style: .caption,
                         fontWeight: .regular,
-                        color: .secondary,
+                        color: textForegroundProfile.secondaryColor,
                         enablesContentTransition: true
                     )
+                    .compositingGroup()
+                    .blendMode(textForegroundProfile.blendMode)
                 } else {
                     Text(LocalizedStringKey(emptyTitleKey))
                         .font(.subheadline)
@@ -661,6 +765,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
                 onEditTrack: { t in
                     trackToEdit = t
                 },
+                onDeleteFromLibraryRequest: onDeleteTrack,
                 showsPlay: false,
                 diagnosticSurface: "MiniPlayerContextMenu"
             )
@@ -852,12 +957,9 @@ struct PlaybackModeSlider: View {
                         onInteraction?()
                         let raw = baseOffset + value.translation.width
                         let index = Int(round(raw / segmentWidth))
-                        dragTranslation = 0
-                        isDragging = false
                         let clampedIndex = max(0, min(3, index))
                         let targetMode = modeForIndex(clampedIndex)
-                        guard targetMode != mode else { return }
-                        commitModeChange(targetMode, snap: snap)
+                        finishDrag(at: targetMode, snap: snap)
                     }
             )
         }
@@ -884,6 +986,34 @@ struct PlaybackModeSlider: View {
             withAnimation(snap) {
                 onModeChange(newMode)
             }
+        }
+    }
+
+    /// Finish a drag in one transaction so the knob animates directly from
+    /// the release position to the selected segment. Resetting the drag state
+    /// before changing `mode` makes the knob briefly jump back to its old
+    /// segment before the mode animation starts.
+    private func finishDrag(at newMode: PlaybackOrderMode, snap: Animation) {
+        if newMode != mode {
+            // Keep the existing interaction pulse for a drag that commits a
+            // new mode; `onEnded` already emitted the first interaction event.
+            onInteraction?()
+        }
+
+        let update = {
+            dragTranslation = 0
+            isDragging = false
+            if newMode != mode {
+                onModeChange(newMode)
+            }
+        }
+
+        if reduceMotion {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction, update)
+        } else {
+            withAnimation(snap, update)
         }
     }
 

@@ -415,11 +415,11 @@ final class LyricsViewModel {
             min(5000, settings.lyricsGlobalAdvanceMs + overlay.globalAdvanceDeltaMs)
         )
         let combinedOffsetMs = max(-20000, min(20000, trackOffsetMs - effectiveGlobalAdvanceMs))
-        let mainFontFamily = cssFontFamily([
-            settings.lyricsFontNameEn,
-            settings.lyricsFontNameZh,
-        ])
-        let translationFontFamily = cssFontFamily([
+        let mainFontFamily = LyricsFontResolver.cssMainFontFamily(
+            english: settings.lyricsFontNameEn,
+            chinese: settings.lyricsFontNameZh
+        )
+        let translationFontFamily = LyricsFontResolver.cssFontFamily([
             settings.lyricsTranslationFontName
         ])
         let modeWeight = isDarkMode ? settings.lyricsFontWeightDark : settings.lyricsFontWeightLight
@@ -468,18 +468,6 @@ final class LyricsViewModel {
                 store.scheduleDebugVisibleLayerProbe(label: "main-config", delay: 0.75)
             }
         }
-    }
-
-    private func cssFontFamily(_ names: [String]) -> String {
-        let sanitized =
-            names
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .map { name in
-                "\"\(name.replacingOccurrences(of: "\"", with: "\\\""))\""
-            }
-        let fallbacks = ["-apple-system", "\"Helvetica Neue\"", "sans-serif"]
-        return (sanitized + fallbacks).joined(separator: ", ")
     }
 
     // MARK: - Dynamic Color (Moved to ThemeStore)

@@ -25,7 +25,9 @@ func clearExternalPlaybackCachesAction(
 struct ExternalPlaybackSettingsView: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(AppSettings.self) private var settings
+    @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     @State private var sourceStore = ExternalPlaybackSourceStore.shared
     @State private var showClearCacheAlert = false
@@ -156,10 +158,10 @@ struct ExternalPlaybackSettingsView: View {
                     .settingsRowLabelStyle()
                 Text("拖动排序")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(appColors?.secondary ?? .secondary)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
-                    .background(Capsule().fill(Color.secondary.opacity(0.08)))
+                    .background(Capsule().fill((appColors?.secondary ?? .secondary).opacity(0.08)))
             }
 
             VStack(alignment: .leading, spacing: 0) {
@@ -198,7 +200,7 @@ struct ExternalPlaybackSettingsView: View {
     private func sourceSectionTitle(_ title: String) -> some View {
         Text(title)
             .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(appColors?.secondary ?? .secondary)
             .frame(height: sourceSectionTitleHeight, alignment: .center)
     }
 
@@ -235,15 +237,15 @@ struct ExternalPlaybackSettingsView: View {
     private func sourceEmptyPill(isDisabledSection: Bool) -> some View {
         Text(isDisabledSection ? "没有禁用的播放源" : "尚未检测到播放源")
             .font(.system(size: 12))
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(appColors?.tertiary ?? Color.secondary)
             .frame(maxWidth: .infinity, minHeight: sourceRowHeight)
-            .background(Capsule().fill(Color.secondary.opacity(0.045)))
+            .background(Capsule().fill((appColors?.secondary ?? .secondary).opacity(0.045)))
             .contentShape(Capsule())
     }
 
     private func sourcePlaceholderPill() -> some View {
         Capsule()
-            .fill(Color.secondary.opacity(0.035))
+            .fill((appColors?.secondary ?? .secondary).opacity(0.035))
             .frame(maxWidth: .infinity)
             .contentShape(Capsule())
     }
@@ -259,12 +261,20 @@ struct ExternalPlaybackSettingsView: View {
     ) -> some View {
         HStack(spacing: 10) {
             Circle()
-                .fill(source.isCurrent && !isDisabledSection ? Color.accentColor : Color.secondary.opacity(0.38))
+                .fill(
+                    source.isCurrent && !isDisabledSection
+                        ? themeStore.accentColor
+                        : (appColors?.secondary ?? .secondary).opacity(0.38)
+                )
                 .frame(width: 7, height: 7)
 
             Text(source.displayName)
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(isDisabledSection ? .secondary : .primary)
+                .foregroundStyle(
+                    isDisabledSection
+                        ? (appColors?.secondary ?? .secondary)
+                        : (appColors?.primary ?? .primary)
+                )
                 .lineLimit(1)
 
             Spacer(minLength: 10)
@@ -272,15 +282,15 @@ struct ExternalPlaybackSettingsView: View {
             if source.isCurrent && !isDisabledSection {
                 Text("当前")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(themeStore.accentColor)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
-                    .background(Capsule().fill(Color.accentColor.opacity(0.12)))
+                    .background(Capsule().fill(themeStore.accentColor.opacity(0.12)))
             }
 
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(appColors?.tertiary ?? Color.secondary)
                 .frame(width: 20)
                 .help("拖动排序")
         }
@@ -307,12 +317,12 @@ struct ExternalPlaybackSettingsView: View {
         isFloating: Bool
     ) -> Color {
         if isDisabledSection {
-            return Color.secondary.opacity(0.045)
+            return (appColors?.secondary ?? .secondary).opacity(0.045)
         }
         if source.isCurrent || isFloating {
-            return Color.accentColor.opacity(colorScheme == .dark ? 0.16 : 0.11)
+            return themeStore.accentColor.opacity(colorScheme == .dark ? 0.16 : 0.11)
         }
-        return Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.035)
+        return (appColors?.primary ?? .primary).opacity(colorScheme == .dark ? 0.05 : 0.035)
     }
 
     private func reorderGesture(
@@ -446,12 +456,18 @@ struct ExternalPlaybackSettingsView: View {
 
             Text(state.title)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(state == .allowed ? Color.accentColor : .secondary)
+                .foregroundStyle(
+                    state == .allowed ? themeStore.accentColor : (appColors?.secondary ?? .secondary)
+                )
                 .padding(.horizontal, 9)
                 .padding(.vertical, 4)
                 .background(
                     Capsule()
-                        .fill(state == .allowed ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08))
+                        .fill(
+                            state == .allowed
+                                ? themeStore.accentColor.opacity(0.12)
+                                : (appColors?.secondary ?? .secondary).opacity(0.08)
+                        )
                 )
 
             if let buttonTitle {

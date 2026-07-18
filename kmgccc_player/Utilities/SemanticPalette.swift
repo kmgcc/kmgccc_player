@@ -58,6 +58,16 @@ struct SemanticPalette: Equatable, Sendable {
     /// faint pastels under grey covers.
     let miniPlayerControl: MiniPlayerControlPalette
 
+    /// Three luminance-mapped stops for the dark cassette assets. The skin
+    /// applies this only to `tapedark` and `darkhole`; all other cassette
+    /// artwork remains source-authored.
+    let cassetteTint: CassetteTintPalette
+
+    /// Neutralized source colours for text rendered with Plus Lighter / Plus
+    /// Darker. Both polarities are generated up front so a surface can choose
+    /// its locally-correct foreground without doing colour math in the view.
+    let plusBlendText: PlusBlendTextPalette
+
     /// Tinted-neutral foreground palette for ordinary App UI (sidebar text,
     /// library lists, settings labels, Home captions). Each role is derived
     /// from `globalAccent` hue at very low OKLCH chroma, crushing to
@@ -778,19 +788,16 @@ struct AppForegroundPalette: Equatable, Sendable {
     let primary: NSColor
 
     /// Second-tier foreground — artist rows, secondary metadata,
-    /// captions. OKLCH L≈0.78 dark / L≈0.30 light.
+    /// captions. Hierarchy is primarily alpha-driven.
     let secondary: NSColor
 
     /// Third-tier foreground — timestamps, hints, small metadata.
-    /// OKLCH L≈0.59 dark / L≈0.48 light.
     let tertiary: NSColor
 
     /// Fourth-tier foreground — faint hints, placeholder text.
-    /// OKLCH L≈0.44 dark / L≈0.60 light.
     let quaternary: NSColor
 
-    /// Disabled state — always achromatic regardless of artwork
-    /// (chroma = 0). OKLCH L≈0.36 dark / L≈0.65 light.
+    /// Disabled state — always achromatic regardless of artwork (chroma = 0).
     let disabled: NSColor
 }
 
@@ -818,6 +825,73 @@ struct MiniPlayerControlPalette: Equatable, Sendable {
 
     /// Progress bar track source.
     let progressTrack: NSColor
+}
+
+/// Colour stops used to map the luminance of the dark cassette body and reels.
+/// The stops are semantic output from `SemanticPaletteFactory`; rasterisation
+/// remains a skin-local rendering concern.
+struct CassetteTintPalette: Equatable, Sendable {
+    let shadow: NSColor
+    let midtone: NSColor
+    let highlight: NSColor
+
+    var colors: [NSColor] {
+        [shadow, midtone, highlight]
+    }
+
+    /// Stable enough for in-process image caches and AppKit representable
+    /// refreshes. Components are quantised because the cache does not need
+    /// sub-1/1000 colour precision.
+    var signature: Int {
+        var hasher = Hasher()
+        for color in colors {
+            let resolved = color.usingColorSpace(.deviceRGB) ?? color
+            hasher.combine(Int(resolved.redComponent * 1_000))
+            hasher.combine(Int(resolved.greenComponent * 1_000))
+            hasher.combine(Int(resolved.blueComponent * 1_000))
+            hasher.combine(Int(resolved.alphaComponent * 1_000))
+        }
+        return hasher.finalize()
+    }
+}
+
+/// One title/metadata hierarchy prepared for a specific Plus blend polarity.
+/// These are intentionally pre-blend colours rather than final display inks:
+/// their middle-band lightness prevents `.plusLighter` from clipping near
+/// white and `.plusDarker` from crushing near black.
+struct PlusBlendTextColorSet: Equatable, Sendable {
+    let primary: NSColor
+    let secondary: NSColor
+    let tertiary: NSColor
+    let quaternary: NSColor
+}
+
+/// Both candidates for Plus-blended text. This is a reusable colour-system
+/// primitive; current consumers are Mini Player title/artist text and the
+/// Home Hero text hierarchy.
+struct PlusBlendTextPalette: Equatable, Sendable {
+    let lightOnDarkBackground: PlusBlendTextColorSet
+    let darkOnLightBackground: PlusBlendTextColorSet
+
+    func profile(for polarity: ArtworkForegroundPolarity) -> PlusBlendTextForegroundProfile {
+        switch polarity {
+        case .lightOnDarkBackground:
+            return PlusBlendTextForegroundProfile(
+                polarity: polarity,
+                colors: lightOnDarkBackground
+            )
+        case .darkOnLightBackground:
+            return PlusBlendTextForegroundProfile(
+                polarity: polarity,
+                colors: darkOnLightBackground
+            )
+        }
+    }
+}
+
+struct PlusBlendTextForegroundProfile: Equatable, Sendable {
+    let polarity: ArtworkForegroundPolarity
+    let colors: PlusBlendTextColorSet
 }
 
 extension SemanticPalette {
@@ -872,6 +946,20 @@ extension MiniPlayerControlPalette {
     var progressTrackColor: Color { ColorRenderingAdapter.makeSwiftUIColor(progressTrack) }
 }
 
+extension PlusBlendTextForegroundProfile {
+    var primaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(colors.primary) }
+    var secondaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(colors.secondary) }
+    var tertiaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(colors.tertiary) }
+    var quaternaryColor: Color { ColorRenderingAdapter.makeSwiftUIColor(colors.quaternary) }
+
+    var blendMode: BlendMode {
+        switch polarity {
+        case .lightOnDarkBackground: return .plusLighter
+        case .darkOnLightBackground: return .plusDarker
+        }
+    }
+}
+
 nonisolated enum SemanticPaletteFactory {
     private static var shouldUseLegacyFullscreenLyricsPolicy: Bool {
         ProcessInfo.processInfo.environment["COLOR_SYSTEM_LEGACY_FULLSCREEN_LYRICS"] == "1"
@@ -916,6 +1004,16 @@ nonisolated enum SemanticPaletteFactory {
             analysis: analysis,
             globalAccent: globalAccent
         )
+        let cassetteTint = makeCassetteTintPalette(
+            analysis: analysis,
+            globalAccent: globalAccent,
+            scheme: scheme,
+            useArtworkTint: useArtworkTint
+        )
+        let plusBlendText = plusBlendText(
+            analysis: analysis,
+            globalAccent: globalAccent
+        )
         let appFg = appForeground(
             analysis: analysis,
             globalAccent: globalAccent,
@@ -948,12 +1046,60 @@ nonisolated enum SemanticPaletteFactory {
             readabilityCandidates: readabilityCandidatePair,
             coverGradientTextCandidates: coverGradientTextCandidatePair,
             miniPlayerControl: control,
+            cassetteTint: cassetteTint,
+            plusBlendText: plusBlendText,
             appForeground: appFg,
             lyrics: lyrics
         )
     }
 
     // MARK: - Readability and MiniPlayer control
+
+    /// Builds the night cassette luminance map from the same resolved accent
+    /// that drives the rest of the theme. Artwork-derived near-monochrome
+    /// palettes stay achromatic; when artwork tinting is disabled, the user's
+    /// resolved accent remains the source of the cassette hue.
+    nonisolated static func makeCassetteTintPalette(
+        analysis: ArtworkColorAnalysis,
+        globalAccent: NSColor,
+        scheme: ColorScheme,
+        useArtworkTint: Bool
+    ) -> CassetteTintPalette {
+        let T = ColorSystemTokens.Cassette.self
+        let source = OKColor.nsColorToOKLCH(globalAccent)
+            ?? OKColor.OKLCH(l: 0.72, c: 0, h: 0)
+        let artworkHasNoTrustedHue = useArtworkTint
+            && analysis.isNearMonochrome
+            && !analysis.hasTrustedHueCandidate
+        let hue = artworkHasNoTrustedHue ? 0 : source.h
+        let sourceChroma = artworkHasNoTrustedHue ? 0 : source.c
+        let chroma = ColorMath.clamp(
+            sourceChroma * T.sourceChromaScale,
+            artworkHasNoTrustedHue ? 0 : T.chromaFloor,
+            T.chromaCeiling
+        )
+
+        func make(lightness: CGFloat, chromaScale: CGFloat) -> NSColor {
+            OKColor.okLCHToNSColor(
+                OKColor.OKLCH(
+                    l: lightness,
+                    c: chroma * chromaScale,
+                    h: chroma > 0.0005 ? hue : 0
+                ),
+                alpha: 1
+            )
+        }
+
+        // Keep a valid neutral palette in light mode as well. The cassette
+        // renderer deliberately ignores it there, making the dark-only scope
+        // explicit at both the semantic and asset layers.
+        let lightnessScale: CGFloat = scheme == .dark ? 1 : 0.92
+        return CassetteTintPalette(
+            shadow: make(lightness: T.shadowLightness * lightnessScale, chromaScale: T.shadowChromaScale),
+            midtone: make(lightness: T.midtoneLightness * lightnessScale, chromaScale: T.midtoneChromaScale),
+            highlight: make(lightness: T.highlightLightness * lightnessScale, chromaScale: T.highlightChromaScale)
+        )
+    }
 
     /// Owner of the "compress UI on top of artwork" readability decision.
     /// Wraps the legacy `readableTextOnArtwork` HSL derivation in an OKLCH
@@ -1096,26 +1242,26 @@ nonisolated enum SemanticPaletteFactory {
 
         let ceiling = isDark ? T.chromaCeiling : T.lightChromaCeiling
 
-        func make(targetL: CGFloat, chromaCap: CGFloat) -> NSColor {
+        func make(targetL: CGFloat, chromaCap: CGFloat, alpha: CGFloat) -> NSColor {
             let c = Swift.min(chromaScale * chromaCap * hueChromaFactor, ceiling)
-            return OKColor.okLCHToNSColor(OKColor.OKLCH(l: targetL, c: c, h: hue), alpha: 1.0)
+            return OKColor.okLCHToNSColor(OKColor.OKLCH(l: targetL, c: c, h: hue), alpha: alpha)
         }
 
         if isDark {
             return AppForegroundPalette(
-                primary:    make(targetL: T.darkPrimaryL,    chromaCap: T.primaryChromaCap),
-                secondary:  make(targetL: T.darkSecondaryL,  chromaCap: T.secondaryChromaCap),
-                tertiary:   make(targetL: T.darkTertiaryL,   chromaCap: T.tertiaryChromaCap),
-                quaternary: make(targetL: T.darkQuaternaryL, chromaCap: T.quaternaryChromaCap),
-                disabled:   make(targetL: T.darkDisabledL,   chromaCap: T.disabledChromaCap)
+                primary:    make(targetL: T.darkPrimaryL,    chromaCap: T.primaryChromaCap,    alpha: T.primaryAlpha),
+                secondary:  make(targetL: T.darkSecondaryL,  chromaCap: T.secondaryChromaCap,  alpha: T.secondaryAlpha),
+                tertiary:   make(targetL: T.darkTertiaryL,   chromaCap: T.tertiaryChromaCap,   alpha: T.tertiaryAlpha),
+                quaternary: make(targetL: T.darkQuaternaryL, chromaCap: T.quaternaryChromaCap, alpha: T.quaternaryAlpha),
+                disabled:   make(targetL: T.darkDisabledL,   chromaCap: T.disabledChromaCap,   alpha: T.disabledAlpha)
             )
         } else {
             return AppForegroundPalette(
-                primary:    make(targetL: T.lightPrimaryL,    chromaCap: T.lightPrimaryChromaCap),
-                secondary:  make(targetL: T.lightSecondaryL,  chromaCap: T.lightSecondaryChromaCap),
-                tertiary:   make(targetL: T.lightTertiaryL,   chromaCap: T.lightTertiaryChromaCap),
-                quaternary: make(targetL: T.lightQuaternaryL, chromaCap: T.lightQuaternaryChromaCap),
-                disabled:   make(targetL: T.lightDisabledL,   chromaCap: T.disabledChromaCap)
+                primary:    make(targetL: T.lightPrimaryL,    chromaCap: T.lightPrimaryChromaCap,    alpha: T.primaryAlpha),
+                secondary:  make(targetL: T.lightSecondaryL,  chromaCap: T.lightSecondaryChromaCap,  alpha: T.secondaryAlpha),
+                tertiary:   make(targetL: T.lightTertiaryL,   chromaCap: T.lightTertiaryChromaCap,   alpha: T.tertiaryAlpha),
+                quaternary: make(targetL: T.lightQuaternaryL, chromaCap: T.lightQuaternaryChromaCap, alpha: T.quaternaryAlpha),
+                disabled:   make(targetL: T.lightDisabledL,   chromaCap: T.disabledChromaCap,        alpha: T.disabledAlpha)
             )
         }
     }
@@ -1152,6 +1298,68 @@ nonisolated enum SemanticPaletteFactory {
             h: 0
         )
         return OKColor.okLCHToNSColor(lch, alpha: 1)
+    }
+
+    /// Builds middle-band source colours for Plus blending. Hue follows the
+    /// resolved theme accent only as a very low-chroma temperature cue; when
+    /// artwork has no trustworthy hue the candidates become fully achromatic.
+    nonisolated fileprivate static func plusBlendText(
+        analysis: ArtworkColorAnalysis,
+        globalAccent: NSColor
+    ) -> PlusBlendTextPalette {
+        let T = ColorSystemTokens.PlusBlendText.self
+        let hue = OKColor.nsColorToOKLCH(globalAccent)?.h ?? 0
+        let hasNoTrustedHue = analysis.isNearMonochrome && !analysis.hasTrustedHueCandidate
+        let chromaScale: CGFloat = hasNoTrustedHue
+            ? 0
+            : Swift.min(analysis.colorfulness / T.colorfulnessSaturationPoint, 1)
+        let chroma = Swift.min(T.chromaCap * chromaScale, T.chromaCap)
+
+        func make(lightness: CGFloat, alpha: CGFloat) -> NSColor {
+            OKColor.okLCHToNSColor(
+                OKColor.OKLCH(l: lightness, c: chroma, h: hue),
+                alpha: alpha
+            )
+        }
+
+        return PlusBlendTextPalette(
+            lightOnDarkBackground: PlusBlendTextColorSet(
+                primary: make(
+                    lightness: T.plusLighterPrimaryL,
+                    alpha: T.primaryAlpha
+                ),
+                secondary: make(
+                    lightness: T.plusLighterSecondaryL,
+                    alpha: T.secondaryAlpha
+                ),
+                tertiary: make(
+                    lightness: T.plusLighterTertiaryL,
+                    alpha: T.tertiaryAlpha
+                ),
+                quaternary: make(
+                    lightness: T.plusLighterQuaternaryL,
+                    alpha: T.quaternaryAlpha
+                )
+            ),
+            darkOnLightBackground: PlusBlendTextColorSet(
+                primary: make(
+                    lightness: T.plusDarkerPrimaryL,
+                    alpha: T.primaryAlpha
+                ),
+                secondary: make(
+                    lightness: T.plusDarkerSecondaryL,
+                    alpha: T.secondaryAlpha
+                ),
+                tertiary: make(
+                    lightness: T.plusDarkerTertiaryL,
+                    alpha: T.tertiaryAlpha
+                ),
+                quaternary: make(
+                    lightness: T.plusDarkerQuaternaryL,
+                    alpha: T.quaternaryAlpha
+                )
+            )
+        )
     }
 
     /// Crush OKLCH chroma below the perceptual threshold when the cover
@@ -2379,6 +2587,16 @@ nonisolated enum SemanticPaletteSelfCheck {
             analysis: analysis,
             globalAccent: globalAccent,
             isDark: isDark
+        )
+    }
+
+    nonisolated static func plusBlendText(
+        analysis: ArtworkColorAnalysis,
+        globalAccent: NSColor
+    ) -> PlusBlendTextPalette {
+        SemanticPaletteFactory.plusBlendText(
+            analysis: analysis,
+            globalAccent: globalAccent
         )
     }
 

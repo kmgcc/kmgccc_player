@@ -13,6 +13,7 @@ struct AppearanceSettingsView: View {
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     @State private var globalArtworkTintEnabled: Bool = AppSettings.shared.globalArtworkTintEnabled
     @State private var dockProgressVisible: Bool = AppSettings.shared.dockProgressVisible
@@ -142,13 +143,15 @@ struct AppearanceSettingsView: View {
                         .font(.system(size: 11, weight: isSelected ? .medium : .regular))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
-                        .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
+                        .foregroundStyle(
+                            isSelected ? themeStore.accentColor : (appColors?.secondary ?? .secondary)
+                        )
                 }
             )
             .padding(3)
             .background(
                 Capsule()
-                    .fill(Color.secondary.opacity(0.08))
+                    .fill((appColors?.secondary ?? .secondary).opacity(0.08))
             )
             .fixedSize(horizontal: true, vertical: false)
         }
@@ -178,13 +181,15 @@ struct AppearanceSettingsView: View {
                         .font(.system(size: 11, weight: isSelected ? .medium : .regular))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
-                        .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
+                        .foregroundStyle(
+                            isSelected ? themeStore.accentColor : (appColors?.secondary ?? .secondary)
+                        )
                 }
             )
             .padding(3)
             .background(
                 Capsule()
-                    .fill(Color.secondary.opacity(0.08))
+                    .fill((appColors?.secondary ?? .secondary).opacity(0.08))
             )
             .fixedSize(horizontal: true, vertical: false)
         }
@@ -353,11 +358,11 @@ struct AppearanceSettingsView: View {
     }
 
     private func homeSectionOrderRowContent(_ section: HomeSection) -> some View {
-        homeSectionRowLayout(section, handleColor: .tertiary)
+        homeSectionRowLayout(section, handleColor: appColors?.tertiary ?? Color.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 Capsule()
-                    .fill(Color.primary.opacity(0.035))
+                    .fill((appColors?.primary ?? .primary).opacity(0.035))
             )
             .clipShape(Capsule())
             .contentShape(Capsule())
@@ -365,14 +370,14 @@ struct AppearanceSettingsView: View {
 
     private func homeSectionOrderPlaceholder() -> some View {
         Capsule()
-            .fill(Color.secondary.opacity(0.035))
+            .fill((appColors?.secondary ?? .secondary).opacity(0.035))
             .frame(maxWidth: .infinity)
             .contentShape(Capsule())
     }
 
     // Custom clear-glass floating pill. Full width, stable size, readable text.
     private func homeSectionOrderFloatingRow(_ section: HomeSection) -> some View {
-        homeSectionRowLayout(section, handleColor: .secondary)
+        homeSectionRowLayout(section, handleColor: appColors?.secondary ?? .secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .liquidGlassPill(
                 colorScheme: colorScheme,
@@ -386,7 +391,7 @@ struct AppearanceSettingsView: View {
     // Shared row layout so normal / floating rows are pixel-identical.
     private func homeSectionRowLayout(
         _ section: HomeSection,
-        handleColor: HierarchicalShapeStyle
+        handleColor: Color
     ) -> some View {
         HStack(spacing: 10) {
             Image(systemName: section.systemImage)

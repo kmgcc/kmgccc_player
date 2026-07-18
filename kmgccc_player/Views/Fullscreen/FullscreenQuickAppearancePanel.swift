@@ -9,18 +9,19 @@ import SwiftUI
 
 struct FullscreenQuickAppearancePanel: View {
     let scale: CGFloat
+    let foregroundProfile: FullscreenOverlayForegroundProfile
     let onDismiss: () -> Void
 
     @State private var dismissRegistrationID: UUID?
 
     private var presentationStyle: FullscreenSettingsPresentationStyle {
-        .fullscreenOverlay(scale: scale)
+        .fullscreenOverlay(scale: scale, foregroundProfile: foregroundProfile)
     }
 
     static func panelSize(
         for scale: CGFloat
     ) -> CGSize {
-        FullscreenSettingsPresentationStyle.fullscreenOverlay(scale: scale).panelSize
+        CGSize(width: 560 * scale, height: 690 * scale)
     }
 
     private var panelWidth: CGFloat { presentationStyle.panelSize.width }
@@ -31,10 +32,10 @@ struct FullscreenQuickAppearancePanel: View {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            // A very light scrim to improve readability over busy fullscreen artwork.
-            // Does not change the glass/material types; it only reduces background contrast.
+            // Clear Glass remains the surface. This is a single polarity-aware
+            // tint layer (not another material) that quiets busy artwork.
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(Color.black.opacity(0.13))
+                .fill(presentationStyle.surfaceTintColor.opacity(0.20))
                 .allowsHitTesting(false)
 
             FullscreenSettingsContainerView(
@@ -44,7 +45,7 @@ struct FullscreenQuickAppearancePanel: View {
             .padding(.horizontal, contentPadding)
             .padding(.top, contentPadding)
             .padding(.bottom, presentationStyle.panelBottomPadding)
-            .environment(\.colorScheme, .light)
+            .environment(\.colorScheme, foregroundProfile.colorScheme)
 
             closeButton
                 .padding(.top, presentationStyle.panelBottomPadding)
@@ -57,17 +58,20 @@ struct FullscreenQuickAppearancePanel: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(GlassStyleTokens.glassBorderColor, lineWidth: GlassStyleTokens.hairlineWidth)
+                .strokeBorder(
+                    GlassStyleTokens.glassBorderColor(for: foregroundProfile.colorScheme),
+                    lineWidth: presentationStyle.scaled(GlassStyleTokens.hairlineWidth)
+                )
                 .allowsHitTesting(false)
         )
         .background(
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(Color.white.opacity(0.06))
+                .fill(presentationStyle.surfaceTintColor.opacity(0.08))
                 .allowsHitTesting(false)
         )
         .subtleFloatingShadow()
         .controlSize(presentationStyle.controlSize)
-        .environment(\.colorScheme, .light)
+        .environment(\.colorScheme, foregroundProfile.colorScheme)
         .onAppear(perform: registerDismissHandler)
         .onDisappear(perform: unregisterDismissHandler)
     }
@@ -76,12 +80,12 @@ struct FullscreenQuickAppearancePanel: View {
         Button(action: onDismiss) {
             Image(systemName: "xmark")
                 .font(.system(size: 12 * scale, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.92))
+                .foregroundStyle(presentationStyle.primaryTextColor)
                 .frame(width: closeButtonSize, height: closeButtonSize)
                 .contentShape(Circle())
                 .background(
                     Circle()
-                        .fill(Color.white.opacity(0.10))
+                        .fill(presentationStyle.primaryTextColor.opacity(0.10))
                 )
         }
         .buttonStyle(.plain)

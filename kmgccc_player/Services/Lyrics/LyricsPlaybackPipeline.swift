@@ -9,10 +9,23 @@ import Foundation
 
 @MainActor
 final class LyricsPlaybackPipeline {
+    private struct ContentState: Equatable {
+        let source: PlaybackSource
+        let trackID: UUID?
+        let lyricsIdentity: String?
+        let presentationLyricsText: String?
+        let trackTTMLText: String?
+        let trackLyricsText: String?
+        let ttmlFileName: String?
+        let lyricsFileName: String?
+        let externalStableKey: String?
+        let externalStatusMessage: String?
+    }
+
     private weak var lyricsVM: LyricsViewModel?
     private weak var playbackCoordinator: PlaybackCoordinator?
 
-    private var lastContentSignature: String?
+    private var lastContentState: ContentState?
     private var lastHadTrack = false
     private var lastIsPlaying: Bool?
     private var lastSyncedTime: Double?
@@ -50,9 +63,9 @@ final class LyricsPlaybackPipeline {
         to newPresentation: NowPlayingPresentation,
         reason: String
     ) {
-        let oldSignature = contentSignature(for: oldPresentation)
-        let newSignature = contentSignature(for: newPresentation)
-        let contentChanged = lastContentSignature != newSignature || oldSignature != newSignature
+        let oldContentState = contentState(for: oldPresentation)
+        let newContentState = contentState(for: newPresentation)
+        let contentChanged = lastContentState != newContentState || oldContentState != newContentState
         let trackAppeared = !lastHadTrack && newPresentation.hasTrack
 
         if contentChanged || trackAppeared {
@@ -65,7 +78,7 @@ final class LyricsPlaybackPipeline {
         }
 
         syncPlaybackState(newPresentation)
-        remember(presentation: newPresentation, signature: newSignature)
+        remember(presentation: newPresentation, contentState: newContentState)
     }
 
     private func applyPresentation(
@@ -74,7 +87,7 @@ final class LyricsPlaybackPipeline {
         forceLyricsReload: Bool
     ) {
         guard let lyricsVM else { return }
-        let signature = contentSignature(for: presentation)
+        let contentState = contentState(for: presentation)
 
         switch presentation.source {
         case .local:
@@ -93,7 +106,7 @@ final class LyricsPlaybackPipeline {
             )
         }
 
-        remember(presentation: presentation, signature: signature)
+        remember(presentation: presentation, contentState: contentState)
     }
 
     private func syncPlaybackState(_ presentation: NowPlayingPresentation) {
@@ -120,43 +133,43 @@ final class LyricsPlaybackPipeline {
 
     private func remember(
         presentation: NowPlayingPresentation,
-        signature: String
+        contentState: ContentState
     ) {
-        lastContentSignature = signature
+        lastContentState = contentState
         lastHadTrack = presentation.hasTrack
         lastIsPlaying = presentation.effectiveLyricsIsPlaying
         lastSyncedTime = presentation.lyricsCurrentTime
     }
 
-    private func contentSignature(for presentation: NowPlayingPresentation) -> String {
+    private func contentState(for presentation: NowPlayingPresentation) -> ContentState {
         switch presentation.source {
         case .local:
             let track = presentation.localTrack
-            return [
-                "local",
-                track?.id.uuidString ?? "nil",
-                presentation.lyricsIdentity ?? "nil",
-                textSignature(presentation.lyricsText),
-                textSignature(track?.ttmlLyricText),
-                textSignature(track?.lyricsText),
-                track?.ttmlLyricsFileName ?? "no-ttml-file",
-                track?.lyricsFileName ?? "no-lyrics-file",
-            ].joined(separator: "|")
+            return ContentState(
+                source: presentation.source,
+                trackID: track?.id,
+                lyricsIdentity: presentation.lyricsIdentity,
+                presentationLyricsText: presentation.lyricsText,
+                trackTTMLText: track?.ttmlLyricText,
+                trackLyricsText: track?.lyricsText,
+                ttmlFileName: track?.ttmlLyricsFileName,
+                lyricsFileName: track?.lyricsFileName,
+                externalStableKey: nil,
+                externalStatusMessage: nil
+            )
         case .appleMusic, .systemNowPlaying:
-            return [
-                presentation.source.rawValue,
-                presentation.externalStableKey ?? "nil",
-                presentation.lyricsIdentity ?? "nil",
-                textSignature(presentation.lyricsText),
-                presentation.externalLyricsStatusMessage ?? "nil",
-            ].joined(separator: "|")
+            return ContentState(
+                source: presentation.source,
+                trackID: nil,
+                lyricsIdentity: presentation.lyricsIdentity,
+                presentationLyricsText: presentation.lyricsText,
+                trackTTMLText: nil,
+                trackLyricsText: nil,
+                ttmlFileName: nil,
+                lyricsFileName: nil,
+                externalStableKey: presentation.externalStableKey,
+                externalStatusMessage: presentation.externalLyricsStatusMessage
+            )
         }
-    }
-
-    private func textSignature(_ text: String?) -> String {
-        guard let text, !text.isEmpty else { return "empty" }
-        let head = String(text.prefix(16))
-        let tail = String(text.suffix(16))
-        return "\(text.count):\(head):\(tail)"
     }
 }

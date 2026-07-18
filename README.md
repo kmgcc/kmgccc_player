@@ -14,6 +14,8 @@
 
 [kmgccc_player 官网](https://player.kmgccc.cn)
 
+作为喜欢音乐，绘画多年的枸，我想为音乐播放器添加一份随性与独特的美感。感谢你的使用和喜欢！
+
 ## 主要功能
 
 - **本地曲库**：管理本地音乐文件，支持按专辑、歌手、播放列表浏览和搜索，批量编辑元数据。
@@ -48,7 +50,19 @@ git submodule update --init --recursive
 
 `verify.sh` 在提交改动前运行，依次执行 bootstrap、ARM64 Debug 构建、LRC 回归测试、单元测试和 App bundle 检查。
 
-本地构建输入可以通过 `Config/LocalOverrides.xcconfig` 配置。该文件可选，缺省时工程照常构建。
+构建并运行 Debug App：
+
+```sh
+./scripts/build_and_run.sh
+```
+
+验证 Release 构建及 App bundle 完整性：
+
+```sh
+./scripts/build_app.sh Release
+```
+
+本机可选构建输入通过 `Config/LocalOverrides.xcconfig` 配置；可从同目录的 `.example` 复制。该文件缺失时工程照常构建，`verify.sh` 与 `build_app.sh` 会显式禁用本机构建扩展，确保结果可由 clean clone 复现。
 
 开发环境需要：
 
@@ -59,6 +73,10 @@ git submodule update --init --recursive
 - Git、curl 和 Xcode Command Line Tools
 
 外部组件的详细说明见 `docs/dependencies.md`。
+
+## 技术文档
+
+已大致整理出一份技术文档，从 [`docs/README.md`](docs/README.md) 开始，覆盖应用架构、歌词渲染、OKLCH 色彩系统、资料库存储、曲库搜索和偏好随机播放。文档只描述可公开复用的原理、API 与工程设计。
 
 ## 常见问题
 
@@ -88,10 +106,11 @@ git submodule update --init --recursive
 - **[QQMusicApi](https://github.com/L-1124/QQMusicApi)** — QQ 音乐元数据与封面查询
 - **[MediaRemote Adapter](https://github.com/ungive/mediaremote-adapter)** — macOS 外部播放状态读取与控制
 - **[WhatsNewKit](https://github.com/SvenTiigi/WhatsNewKit)** — 应用更新说明展示
+- **[PLCrashReporter](https://github.com/microsoft/plcrashreporter)** — 主 App 进程崩溃报告捕获
 
 ## 美术素材版权声明
 
-除代码及另有说明的第三方内容外，本项目相关的美术素材（包括界面插画、UI 装饰、皮肤、贴图、角色设计、图形元素及其他视觉素材）均为作者原创作品，著作权及相关权利均由作者保留。未经作者事先书面授权，不得复制、转载、分发、修改、改编、商用、二次创作、提取，或用于机器学习与生成式 AI 相关用途。
+除代码及另有说明的第三方内容外，本项目相关的美术素材（包括界面插画、UI 装饰、贴图、角色设计、图形元素及其他视觉素材）均为作者原创作品，著作权及相关权利均由作者保留。未经作者事先书面授权，不得复制、转载、分发、修改、改编、商用、二次创作、提取，或用于机器学习与生成式 AI 相关用途。
 
 保留一切权利。Copyright © kmg. All rights reserved.
 

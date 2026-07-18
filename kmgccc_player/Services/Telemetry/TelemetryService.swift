@@ -7,7 +7,6 @@
 
 import AppKit
 import Foundation
-import Synchronization
 
 enum TelemetryPlaybackMode: String, Codable, Sendable {
     case local
@@ -117,6 +116,8 @@ final class TelemetryService: NSObject {
     private var accumulator: SessionMetricsAccumulator?
     private weak var playbackCoordinator: PlaybackCoordinator?
     private var isWindowNowPlayingVisible = false
+    private var crashVisibleSurface: String?
+    private var crashSelectedSkinID: String?
     private var checkpointTimer: Timer?
     private var uploadTask: Task<Void, Never>?
     // Coarse anonymous device info, computed once per launch. Only attached to
@@ -130,6 +131,26 @@ final class TelemetryService: NSObject {
 
     var anonymousInstallID: String {
         identityStore.installID
+    }
+
+    /// Returns the install identity after attempting the existing TOFU key
+    /// registration flow. A 409 registration conflict may rotate the install
+    /// ID, so crash reports must bind to the value returned here rather than a
+    /// value captured before registration finishes.
+    func prepareAnonymousInstallIDForSignedUpload() async -> String {
+        _ = await ensureRegistered()
+        return identityStore.installID
+    }
+
+    /// Recovers when a signed diagnostic endpoint no longer recognizes the
+    /// locally registered key. The server can lose its TOFU binding after a
+    /// database restore while UserDefaults still records registration success.
+    /// Force the normal registration flow instead of leaving crash reports in
+    /// an endless HTTP 401 retry loop.
+    func recoverDiagnosticSigningRegistrationAfterUnauthorized() async -> String? {
+        UserDefaults.standard.set(0, forKey: TelemetryDefaults.signingRegisteredKey)
+        guard await ensureRegistered() else { return nil }
+        return identityStore.installID
     }
 
     private override init() {
@@ -146,6 +167,12 @@ final class TelemetryService: NSObject {
                 self?.updatePlaybackState(source: source, isPlaying: isPlaying)
             }
         }
+        syncCrashPlaybackContext(
+            source: playbackCoordinator.activeSource,
+            isPlaying: playbackCoordinator.presentation.isPlaying,
+            recordTransition: false
+        )
+        syncCrashPresentationContext(recordTransition: false)
 
         NotificationCenter.default.addObserver(
             self,
@@ -185,6 +212,7 @@ final class TelemetryService: NSObject {
             uploadTask?.cancel()
             uploadTask = nil
             accumulator = nil
+            CrashBreadcrumbRecorder.shared.updateSessionID(nil)
             checkpointTimer?.invalidate()
             checkpointTimer = nil
             queue.keepOnlyInstallSeenEvents()
@@ -198,11 +226,20 @@ final class TelemetryService: NSObject {
         guard consentStore.isEnabled, let summary = accumulator?.finish(reason: reason) else { return }
         queue.enqueue(summaryEvent(from: summary))
         accumulator = nil
+        if reason != .appTerminated {
+            CrashBreadcrumbRecorder.shared.updateSessionID(nil)
+        }
         checkpointTimer?.invalidate()
         checkpointTimer = nil
         recoveryStore.clear()
         if reason == .appTerminated {
-            flushQueueSynchronouslyForTermination()
+            // The summary is already durable in the local queue. Do not perform
+            // network I/O while AppKit is synchronously terminating the process;
+            // the next launch flushes this queue asynchronously.
+            Log.info(
+                "[Telemetry] session persisted for next launch; skipping termination upload",
+                category: .telemetry
+            )
         } else {
             flushQueue()
         }
@@ -226,6 +263,7 @@ final class TelemetryService: NSObject {
             fullscreenSkinID: currentFullscreenSkinID(),
             skinContext: currentSkinUsageContext()
         )
+        CrashBreadcrumbRecorder.shared.updateSessionID(sessionID)
         queue.enqueue(baseEvent(
             eventID: UUID().uuidString,
             occurredAt: now,
@@ -260,6 +298,7 @@ final class TelemetryService: NSObject {
     }
 
     private func updatePlaybackState(source: PlaybackSource, isPlaying: Bool) {
+        syncCrashPlaybackContext(source: source, isPlaying: isPlaying, recordTransition: true)
         guard consentStore.isEnabled else { return }
         startSessionIfNeeded()
         accumulator?.update(mode: TelemetryPlaybackMode(source: source), isPlaying: isPlaying)
@@ -281,6 +320,7 @@ final class TelemetryService: NSObject {
     }
 
     func updateSkinState() {
+        syncCrashPresentationContext(recordTransition: true)
         guard consentStore.isEnabled else { return }
         startSessionIfNeeded()
         accumulator?.updateSkins(
@@ -295,6 +335,59 @@ final class TelemetryService: NSObject {
         guard isWindowNowPlayingVisible != isVisible else { return }
         isWindowNowPlayingVisible = isVisible
         updateSkinState()
+    }
+
+    private func syncCrashPlaybackContext(
+        source: PlaybackSource,
+        isPlaying: Bool,
+        recordTransition: Bool
+    ) {
+        let sourceCategory = TelemetryPlaybackMode(source: source).rawValue
+        CrashBreadcrumbRecorder.shared.updateAppContext { context in
+            context.playbackSourceCategory = sourceCategory
+            context.isPlaying = isPlaying
+        }
+        if recordTransition {
+            CrashBreadcrumbRecorder.shared.record(
+                .playbackStateChanged,
+                metadata: [
+                    .source: .string(sourceCategory),
+                    .state: .string(isPlaying ? "playing" : "not_playing"),
+                ]
+            )
+        }
+    }
+
+    private func syncCrashPresentationContext(recordTransition: Bool) {
+        let isFullScreen = FullscreenWindowManager.shared.usesFullscreenPlayerUI
+        let visibleSurface: String
+        if isFullScreen {
+            visibleSurface = CrashVisibleSurface.fullScreen.rawValue
+        } else if isWindowNowPlayingVisible {
+            visibleSurface = CrashVisibleSurface.nowPlaying.rawValue
+        } else {
+            visibleSurface = CrashVisibleSurface.unknown.rawValue
+        }
+        let selectedSkinID = isFullScreen ? currentFullscreenSkinID() : currentWindowSkinID()
+        let didChange = crashVisibleSurface != nil
+            && (crashVisibleSurface != visibleSurface || crashSelectedSkinID != selectedSkinID)
+
+        crashVisibleSurface = visibleSurface
+        crashSelectedSkinID = selectedSkinID
+        CrashBreadcrumbRecorder.shared.updateAppContext { context in
+            context.visibleSurface = visibleSurface
+            context.isFullScreen = isFullScreen
+            context.selectedSkinIdentifier = selectedSkinID
+        }
+        if recordTransition, didChange {
+            CrashBreadcrumbRecorder.shared.record(
+                .presentationChanged,
+                metadata: [
+                    .surface: .string(visibleSurface),
+                    .skin: .string(selectedSkinID),
+                ]
+            )
+        }
     }
 
     private func startCheckpointTimer() {
@@ -428,29 +521,6 @@ final class TelemetryService: NSObject {
         }
     }
 
-    private func flushQueueSynchronouslyForTermination() {
-        guard consentStore.isEnabled else { return }
-        let events = queue.pendingEvents()
-        guard !events.isEmpty else { return }
-
-        // The process is exiting: do not block on a network registration round-trip.
-        // Sign only if registration already succeeded in a prior run; otherwise the
-        // upload goes out unsigned and the server compat path accepts it.
-        let isRegistered = UserDefaults.standard.integer(forKey: TelemetryDefaults.signingRegisteredKey) >= 1
-        let clientID = identityStore.installID
-        let eventsToUpload = rewriteInstallIDIfNeeded(events: events, to: clientID)
-        Log.info("[Telemetry] flushQueueSynchronouslyForTermination events=\(eventsToUpload.count) isRegistered=\(isRegistered) willSign=\(isRegistered)", category: .telemetry)
-        do {
-            let response = try uploader.uploadSynchronously(
-                events: eventsToUpload, timeout: 3, device: deviceSnapshot,
-                signer: isRegistered ? signer : nil,
-                clientID: isRegistered ? clientID : nil)
-            applyUploadResponse(response, uploadedEvents: eventsToUpload)
-        } catch {
-            Log.warning("[Telemetry] termination upload failed: \(error)", category: .telemetry)
-        }
-    }
-
     private func flushInstallSeenQueue() {
         guard uploadTask == nil else { return }
         let events = queue.pendingEvents().filter { $0.eventType == "app_install_seen" }
@@ -520,7 +590,7 @@ final class TelemetryService: NSObject {
     private func summaryEvent(from summary: TelemetrySessionSummary) -> TelemetryQueuedEvent {
         baseEvent(
             eventID: UUID().uuidString,
-            occurredAt: Date(),
+            occurredAt: summary.endedAt,
             sessionID: summary.sessionID,
             eventType: "app_session_summary",
             properties: [
@@ -707,7 +777,7 @@ private struct SessionMetricsAccumulator {
         let now = Date()
         settle(now: now)
         closeOpenTimelineSegments(at: now)
-        return summary(reason: reason)
+        return summary(reason: reason, endedAt: now)
     }
 
     mutating func checkpoint() -> TelemetrySessionCheckpoint {
@@ -839,11 +909,12 @@ private struct SessionMetricsAccumulator {
         ))
     }
 
-    private func summary(reason: TelemetrySessionEndReason) -> TelemetrySessionSummary {
+    private func summary(reason: TelemetrySessionEndReason, endedAt: Date) -> TelemetrySessionSummary {
         let playbackTotal = playbackLocalDuration + playbackAppleMusicDuration + playbackExternalDuration
         return TelemetrySessionSummary(
             sessionID: sessionID,
-            sessionDurationSeconds: Int(max(0, Date().timeIntervalSince(startedAt)).rounded()),
+            endedAt: endedAt,
+            sessionDurationSeconds: Int(max(0, endedAt.timeIntervalSince(startedAt)).rounded()),
             foregroundDurationSeconds: Int(foregroundDuration.rounded()),
             localModeDurationSeconds: Int(localModeDuration.rounded()),
             appleMusicModeDurationSeconds: Int(appleMusicModeDuration.rounded()),
@@ -897,6 +968,7 @@ private struct SessionMetricsAccumulator {
 
 private struct TelemetrySessionSummary {
     let sessionID: String
+    let endedAt: Date
     let sessionDurationSeconds: Int
     let foregroundDurationSeconds: Int
     let localModeDurationSeconds: Int
@@ -946,6 +1018,7 @@ private struct TelemetrySessionCheckpoint: Codable {
         )
         return TelemetrySessionSummary(
             sessionID: sessionID,
+            endedAt: lastCheckpointAt,
             sessionDurationSeconds: sessionDuration,
             foregroundDurationSeconds: foregroundDurationSeconds,
             localModeDurationSeconds: localModeDurationSeconds,
@@ -1306,55 +1379,6 @@ private final class TelemetryUploader {
         return try Self.decodeUploadResponse(data: data, response: response)
     }
 
-    func uploadSynchronously(
-        events: [TelemetryQueuedEvent],
-        timeout: TimeInterval,
-        device: DeviceTelemetrySnapshot? = nil,
-        signer: TelemetryRequestSigner? = nil,
-        clientID: String? = nil
-    ) throws -> TelemetryUploadResponse {
-        let request = try makeRequest(events: events, timeout: timeout, device: device,
-                                      signer: signer, clientID: clientID)
-        let semaphore = DispatchSemaphore(value: 0)
-        let outcome = Mutex<TelemetrySynchronousUploadOutcome?>(nil)
-
-        let task = Task.detached(priority: .utility) {
-            let uploadOutcome: TelemetrySynchronousUploadOutcome
-            do {
-                let response = try await Self.uploadOnce(request: request, timeout: timeout)
-                uploadOutcome = .success(response)
-            } catch let error as TelemetrySynchronousUploadError {
-                uploadOutcome = .failure(error)
-            } catch let error as URLError {
-                uploadOutcome = .failure(.url(error.code))
-            } catch let error as DecodingError {
-                uploadOutcome = .failure(.decoding(String(describing: error)))
-            } catch {
-                uploadOutcome = .failure(.unexpected(String(describing: error)))
-            }
-
-            outcome.withLock { value in
-                value = uploadOutcome
-            }
-            semaphore.signal()
-        }
-
-        if semaphore.wait(timeout: .now() + timeout) == .timedOut {
-            task.cancel()
-            throw URLError(.timedOut)
-        }
-
-        guard let uploadOutcome = outcome.withLock({ $0 }) else {
-            throw TelemetrySynchronousUploadError.missingResult
-        }
-        switch uploadOutcome {
-        case .success(let response):
-            return response
-        case .failure(let error):
-            throw error
-        }
-    }
-
     private func makeRequest(
         events: [TelemetryQueuedEvent],
         timeout: TimeInterval,
@@ -1407,20 +1431,6 @@ private final class TelemetryUploader {
         return request
     }
 
-    private static func uploadOnce(
-        request: URLRequest,
-        timeout: TimeInterval
-    ) async throws -> TelemetryUploadResponse {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = timeout
-        configuration.timeoutIntervalForResource = timeout
-        let session = URLSession(configuration: configuration)
-        defer { session.invalidateAndCancel() }
-
-        let (data, response) = try await session.data(for: request)
-        return try decodeUploadResponse(data: data, response: response)
-    }
-
     private static func decodeUploadResponse(
         data: Data,
         response: URLResponse
@@ -1441,31 +1451,6 @@ private final class TelemetryUploader {
         Log.info("[Telemetry] upload HTTP \(httpResponse.statusCode) accepted (signed/unsigned determined server-side)", category: .telemetry)
         let decoder = JSONDecoder()
         return try decoder.decode(TelemetryUploadResponse.self, from: data)
-    }
-}
-
-private enum TelemetrySynchronousUploadOutcome: Sendable {
-    case success(TelemetryUploadResponse)
-    case failure(TelemetrySynchronousUploadError)
-}
-
-private enum TelemetrySynchronousUploadError: Error, Sendable, CustomStringConvertible {
-    case missingResult
-    case url(URLError.Code)
-    case decoding(String)
-    case unexpected(String)
-
-    var description: String {
-        switch self {
-        case .missingResult:
-            return "upload finished without a result"
-        case .url(let code):
-            return "url error: \(code)"
-        case .decoding(let detail):
-            return "decoding error: \(detail)"
-        case .unexpected(let detail):
-            return "unexpected error: \(detail)"
-        }
     }
 }
 

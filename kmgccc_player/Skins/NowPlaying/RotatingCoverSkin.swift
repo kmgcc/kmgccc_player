@@ -946,7 +946,7 @@ private struct RotatingCoverArtwork: View {
 
     private let windowCoverScaleEffect: CGFloat = 1.08
 
-    @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = false
+    @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = true
     @AppStorage("skin.rotatingCover.visualizerMode") private var normalVisualizerMode: String = "off"
     @AppStorage("skin.rotatingCover.fullscreen.visualizerMode") private var fullscreenVisualizerMode: String = "led"
 
@@ -999,7 +999,8 @@ private struct RotatingCoverArtwork: View {
                     spacing: usesFullscreen ? 10 : 8,
                     pillTint: context.theme.artworkAccentColor,
                     isPlaying: context.playback.isPlaying,
-                    forceBrightLEDColors: context.theme.artBackgroundIsUltraDark
+                    forceBrightLEDColors: context.theme.artBackgroundIsUltraDark,
+                    levelToneVariant: .skinLight
                 )
             } else if visualizerMode == "spectrum" {
                 PillSpectrumView(
@@ -1084,7 +1085,7 @@ private struct RotatingCoverArtwork: View {
     }
 }
 private struct RotatingCoverSkinNormalSettingsView: View {
-    @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = false
+    @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = true
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @State private var visualizationPreferences = AudioVisualizationPreferences.shared
 
@@ -1112,9 +1113,10 @@ private struct RotatingCoverSkinNormalSettingsView: View {
 }
 
 private struct RotatingCoverSkinFullscreenSettingsView: View {
-    @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = false
+    @AppStorage("skin.rotatingCover.cdMode") private var cdMode: Bool = true
     @AppStorage("fullscreenArtBackgroundEnabled") private var fullscreenArtBackgroundEnabled: Bool = true
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     var body: some View {
         VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
@@ -1124,15 +1126,15 @@ private struct RotatingCoverSkinFullscreenSettingsView: View {
                 detail: "遇到性能问题时，可以关闭此选项",
                 titleFont: presentationStyle.rowLabelFont,
                 detailFont: presentationStyle.captionFont,
-                titleColor: presentationStyle.primaryTextColor,
-                detailColor: presentationStyle.secondaryTextColor
+                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors),
+                detailColor: presentationStyle.settingsSecondaryTextColor(appColors: appColors)
             )
 
             SettingsSwitchRow(
                 title: "CD 模式",
                 isOn: $cdMode,
                 titleFont: presentationStyle.rowLabelFont,
-                titleColor: presentationStyle.primaryTextColor
+                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors)
             )
 
             AudioVisualizationSelectorRow(
@@ -1156,11 +1158,13 @@ private struct PillSpectrumView: View {
 
     private let capsuleCount: CGFloat = 9
     private let capsuleWidth: CGFloat = 7
-    private let capsuleSpacing: CGFloat = 6
+    // Keep the capsule size unchanged while tightening the gaps so the
+    // spectrum reads as one continuous waveform.
+    private let capsuleSpacing: CGFloat = 4
     private let horizontalPadding: CGFloat = 28
     private let contentHeight: CGFloat = 52  // Spectrum bars height (increased from 48)
     private var verticalPadding: CGFloat {
-        isFullscreen ? 5 : 8  // Slightly shorter background pill in fullscreen
+        isFullscreen ? 1 : 2  // Fullscreen shell gets one final compacting pass
     }
 
     private var contentWidth: CGFloat {

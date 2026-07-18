@@ -213,6 +213,42 @@ enum LibrarySelection: Hashable {
     case album(String)
 }
 
+extension LibrarySelection {
+    /// Stable identity used by library pages, artwork state, and page caches.
+    ///
+    /// Artist and album selections are stored as canonical keys, but their
+    /// runtime page identity is the persisted entry UUID whenever the entry is
+    /// available. The canonical key remains the safe fallback while the
+    /// library snapshot is still being assembled.
+    @MainActor
+    func selectionIdentity(in libraryVM: LibraryViewModel?) -> String {
+        switch self {
+        case .home:
+            return "home"
+        case .allSongs:
+            return "allSongs"
+        case .allPlaylists:
+            return "allPlaylists"
+        case .allAlbums:
+            return "allAlbums"
+        case .allArtists:
+            return "allArtists"
+        case .playlist(let id):
+            return "playlist-\(id.uuidString)"
+        case .artist(let key):
+            if let entry = libraryVM?.artistEntries.first(where: { $0.canonicalName == key }) {
+                return "artist-\(entry.id.uuidString)"
+            }
+            return "artist-\(key)"
+        case .album(let key):
+            if let entry = libraryVM?.albumEntries.first(where: { $0.canonicalKey == key }) {
+                return "album-\(entry.id.uuidString)"
+            }
+            return "album-\(key)"
+        }
+    }
+}
+
 /// Observable ViewModel for library content.
 /// Manages playlists and selected playlist state.
 @Observable
@@ -259,41 +295,22 @@ final class LibraryViewModel {
     @ObservationIgnored
     private var albumKeyFirstTrackMap: [String: Track]?
 
-    /// Currently selected playlist (nil = All Songs, unless artist/album selected).
-    /// Published so UI can react to changes.
+    /// Compatibility view of the currently selected playlist.
     var selectedPlaylistId: UUID? {
-        didSet {
-            if selectedPlaylistId != nil {
-                selectedArtistKey = nil
-                selectedAlbumKey = nil
-                selectedAlbumName = nil
-                applySortPreferenceForCurrentSelection()
-            } else if selectedArtistKey == nil && selectedAlbumKey == nil {
-                // Only apply sort if we reverted to All Songs (no other selection active)
-                applySortPreferenceForCurrentSelection()
-            }
-        }
+        guard case .playlist(let id) = currentSelection else { return nil }
+        return id
     }
 
-    /// Currently selected artist key (normalized).
+    /// Compatibility view of the currently selected artist key.
     var selectedArtistKey: String? {
-        didSet {
-            if selectedArtistKey != nil {
-                selectedPlaylistId = nil
-                selectedAlbumKey = nil
-                selectedAlbumName = nil
-            }
-        }
+        guard case .artist(let key) = currentSelection else { return nil }
+        return key
     }
 
-    /// Currently selected album key (normalized logical album identity).
+    /// Compatibility view of the currently selected album key.
     var selectedAlbumKey: String? {
-        didSet {
-            if selectedAlbumKey != nil {
-                selectedPlaylistId = nil
-                selectedArtistKey = nil
-            }
-        }
+        guard case .album(let key) = currentSelection else { return nil }
+        return key
     }
 
     /// Selected album display name for header.
@@ -305,31 +322,17 @@ final class LibraryViewModel {
         didSet {
             if currentSelection != oldValue {
                 searchResetTrigger += 1
+
+                // Album display names are a separate presentation value and
+                // may be supplied immediately before changing selection.
+                // Keep that value while staying on an album; all other
+                // selection changes invalidate it.
+                if case .album = currentSelection {
+                    // Keep selectedAlbumName.
+                } else {
+                    selectedAlbumName = nil
+                }
             }
-            // Sync legacy properties for backward compatibility during transition
-            switch currentSelection {
-            case .home, .allPlaylists, .allAlbums, .allArtists:
-                selectedPlaylistId = nil
-                selectedArtistKey = nil
-                selectedAlbumKey = nil
-            case .allSongs:
-                selectedPlaylistId = nil
-                selectedArtistKey = nil
-                selectedAlbumKey = nil
-            case .playlist(let id):
-                selectedPlaylistId = id
-                selectedArtistKey = nil
-                selectedAlbumKey = nil
-            case .artist(let key):
-                selectedPlaylistId = nil
-                selectedArtistKey = key
-                selectedAlbumKey = nil
-            case .album(let key):
-                selectedPlaylistId = nil
-                selectedArtistKey = nil
-                selectedAlbumKey = key
-            }
-            selectedAlbumName = nil
             applySortPreferenceForCurrentSelection()
         }
     }
@@ -351,10 +354,22 @@ final class LibraryViewModel {
     /// Select a library navigation target. Re-selecting the active target is a
     /// refresh/reset gesture for page-local search state.
     func selectOrResetCurrentSelection(_ selection: LibrarySelection) {
-        if currentSelection == selection {
+        let isSameSelection = currentSelection == selection
+        if isSameSelection {
             searchResetTrigger += 1
         } else {
             currentSelection = selection
+        }
+
+        if case .album(let key) = selection {
+            // Normalize sidebar-driven album changes as well as Home/All
+            // Albums callers that set a preferred display name first.
+            if !isSameSelection || selectedAlbumName == nil {
+                selectedAlbumName = albumDisplayNameWithoutSelectionOverride(for: key)
+                    ?? selectedAlbumName
+            }
+        } else {
+            selectedAlbumName = nil
         }
     }
 
@@ -375,7 +390,6 @@ final class LibraryViewModel {
     }
 
     /// Sort key for the All Playlists page and Sidebar playlist section.
-    /// Sort order is shared with `trackSortOrder`.
     var playlistSortKey: PlaylistSortKey {
         didSet {
             if playlistSortKey != oldValue {
@@ -384,6 +398,29 @@ final class LibraryViewModel {
                     forKey: DefaultsKey.playlistSortKey
                 )
             }
+        }
+    }
+
+    /// Sort order for the All Playlists page and Sidebar playlist section.
+    /// This is global so selecting a playlist cannot change the Sidebar order.
+    var playlistSortOrder: TrackSortOrder {
+        didSet {
+            if playlistSortOrder != oldValue {
+                UserDefaults.standard.set(
+                    playlistSortOrder.rawValue,
+                    forKey: DefaultsKey.playlistSortOrder
+                )
+            }
+        }
+    }
+
+    /// The order currently represented by the shared toolbar sort menu.
+    var sortOrderForCurrentSelection: TrackSortOrder {
+        switch currentSelection {
+        case .allPlaylists:
+            return playlistSortOrder
+        default:
+            return trackSortOrder
         }
     }
 
@@ -457,6 +494,11 @@ final class LibraryViewModel {
                     forKey: DefaultsKey.trackSortOrder
                 ) ?? ""
             ) ?? .descending
+        let persistedPlaylistSortOrder =
+            UserDefaults.standard.string(forKey: DefaultsKey.playlistSortOrder)
+            ?? UserDefaults.standard.string(forKey: DefaultsKey.trackSortOrder)
+        self.playlistSortOrder =
+            TrackSortOrder(rawValue: persistedPlaylistSortOrder ?? "") ?? .descending
         self.playlistSortKey =
             PlaylistSortKey(
                 rawValue: UserDefaults.standard.string(
@@ -650,7 +692,7 @@ final class LibraryViewModel {
             if useNaturalDescending {
                 return result == .orderedDescending
             }
-            return trackSortOrder == .ascending
+            return playlistSortOrder == .ascending
                 ? result == .orderedAscending
                 : result == .orderedDescending
         }
@@ -1066,6 +1108,14 @@ final class LibraryViewModel {
         )
     }
 
+    private func albumDisplayNameWithoutSelectionOverride(for key: String) -> String? {
+        trimmedNonEmpty(
+            albumEntries.first { $0.canonicalKey == key }?.displayTitle
+                ?? runtimeAlbums.first { $0.key == key }?.name
+                ?? LibraryNormalization.displayAlbum(key)
+        )
+    }
+
     private func albumDisplayName(for key: String) -> String? {
         let selectedName = selectedAlbumKey == key ? selectedAlbumName : nil
         return trimmedNonEmpty(
@@ -1112,7 +1162,7 @@ final class LibraryViewModel {
         Log.debug("createPlaylist: '\(name)'", category: .library)
         let playlist = await repository.createPlaylist(name: name)
         playlists = await repository.fetchPlaylists()
-        selectedPlaylistId = playlist.id
+        selectOrResetCurrentSelection(.playlist(playlist.id))
         refreshTrigger += 1
         return playlist
     }
@@ -1127,11 +1177,8 @@ final class LibraryViewModel {
 
     /// Select a playlist by ID.
     func selectPlaylist(_ playlist: Playlist?) {
-        searchResetTrigger += 1
-        selectedPlaylistId = playlist?.id
-        selectedArtistKey = nil
-        selectedAlbumKey = nil
-        selectedAlbumName = nil
+        let selection = playlist.map { LibrarySelection.playlist($0.id) } ?? .allSongs
+        selectOrResetCurrentSelection(selection)
         if let id = playlist?.id {
             UserDefaults.standard.set(id.uuidString, forKey: "lastSelectedPlaylistId")
         }
@@ -1140,17 +1187,13 @@ final class LibraryViewModel {
 
     /// Select an artist.
     func selectArtist(_ artist: ArtistSection) {
-        searchResetTrigger += 1
-        selectedArtistKey = artist.key
-        // selectedPlaylistId handled by didSet
+        selectOrResetCurrentSelection(.artist(artist.key))
     }
 
     /// Select an album.
     func selectAlbum(_ album: AlbumSection) {
-        searchResetTrigger += 1
-        selectedAlbumKey = album.key
         selectedAlbumName = album.name
-        // selectedPlaylistId handled by didSet
+        selectOrResetCurrentSelection(.album(album.key))
     }
 
     func navigateToArtist(for track: Track, uiState: UIStateViewModel? = nil) {
@@ -1161,8 +1204,7 @@ final class LibraryViewModel {
         if let uiState {
             uiState.pushSelectionInHomeContext(target, libraryVM: self)
         } else {
-            searchResetTrigger += 1
-            currentSelection = target
+            selectOrResetCurrentSelection(target)
         }
     }
 
@@ -1173,8 +1215,7 @@ final class LibraryViewModel {
         if let uiState {
             uiState.pushSelectionInHomeContext(target, libraryVM: self)
         } else {
-            searchResetTrigger += 1
-            currentSelection = target
+            selectOrResetCurrentSelection(target)
         }
     }
 
@@ -1191,8 +1232,8 @@ final class LibraryViewModel {
             name: trimmedName,
             description: description
         )
-        await invalidateDetailSelectionCacheIfNeeded(
-            selectionIdentity: "playlist-\(playlist.id.uuidString)"
+        await invalidateDetailSelectionCachesIfNeeded(
+            selectionIdentities: selectionIdentityVariants(for: .playlist(playlist.id))
         )
         await refresh()
     }
@@ -1204,8 +1245,8 @@ final class LibraryViewModel {
         if currentSelection == .playlist(playlist.id) {
             currentSelection = .allSongs
         }
-        await invalidateDetailSelectionCacheIfNeeded(
-            selectionIdentity: "playlist-\(playlist.id.uuidString)"
+        await invalidateDetailSelectionCachesIfNeeded(
+            selectionIdentities: selectionIdentityVariants(for: .playlist(playlist.id))
         )
         refreshTrigger += 1
     }
@@ -1219,8 +1260,8 @@ final class LibraryViewModel {
             playlistID: playlist.id,
             previousTrackCount: previousTrackCount
         )
-        await invalidateDetailSelectionCacheIfNeeded(
-            selectionIdentity: "playlist-\(playlist.id.uuidString)"
+        await invalidateDetailSelectionCachesIfNeeded(
+            selectionIdentities: selectionIdentityVariants(for: .playlist(playlist.id))
         )
         refreshTrigger += 1
     }
@@ -1229,8 +1270,8 @@ final class LibraryViewModel {
         await repository.removeTracks(tracks, from: playlist)
         playlists = await repository.fetchPlaylists()
         playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
-        await invalidateDetailSelectionCacheIfNeeded(
-            selectionIdentity: "playlist-\(playlist.id.uuidString)"
+        await invalidateDetailSelectionCachesIfNeeded(
+            selectionIdentities: selectionIdentityVariants(for: .playlist(playlist.id))
         )
         refreshTrigger += 1
     }
@@ -1262,8 +1303,8 @@ final class LibraryViewModel {
             image: image,
             signature: PlaylistArtworkGenerator.contentSignature(tracks: playlist.tracks)
         )
-        await invalidateDetailSelectionCacheIfNeeded(
-            selectionIdentity: "playlist-\(playlistID.uuidString)"
+        await invalidateDetailSelectionCachesIfNeeded(
+            selectionIdentities: selectionIdentityVariants(for: .playlist(playlistID))
         )
         refreshTrigger += 1
     }
@@ -1339,8 +1380,11 @@ final class LibraryViewModel {
         if let idx = artistEntries.firstIndex(where: { $0.id == persisted.id }) {
             artistEntries[idx] = persisted
         }
-        await invalidateDetailSelectionCacheIfNeeded(
-            selectionIdentity: "artist-\(persisted.canonicalName)"
+        await invalidateDetailSelectionCachesIfNeeded(
+            selectionIdentities: selectionIdentityVariants(
+                for: .artist(persisted.canonicalName),
+                entityIDOverride: persisted.id
+            )
         )
     }
 
@@ -1521,11 +1565,16 @@ final class LibraryViewModel {
 
         await repository.applyArtistEdits(original: original, updated: persisted)
         currentSelection = .artist(persisted.canonicalName)
-        await invalidateDetailSelectionCacheIfNeeded(
-            selectionIdentity: "artist-\(original.canonicalName)"
-        )
-        await invalidateDetailSelectionCacheIfNeeded(
-            selectionIdentity: "artist-\(persisted.canonicalName)"
+        await invalidateDetailSelectionCachesIfNeeded(
+            selectionIdentities: selectionIdentityVariants(
+                for: .artist(original.canonicalName),
+                entityIDOverride: original.id
+            ).union(
+                selectionIdentityVariants(
+                    for: .artist(persisted.canonicalName),
+                    entityIDOverride: persisted.id
+                )
+            )
         )
         await refresh()
     }
@@ -1537,8 +1586,11 @@ final class LibraryViewModel {
         if let idx = albumEntries.firstIndex(where: { $0.id == persisted.id }) {
             albumEntries[idx] = persisted
         }
-        await invalidateDetailSelectionCacheIfNeeded(
-            selectionIdentity: "album-\(persisted.canonicalKey)"
+        await invalidateDetailSelectionCachesIfNeeded(
+            selectionIdentities: selectionIdentityVariants(
+                for: .album(persisted.canonicalKey),
+                entityIDOverride: persisted.id
+            )
         )
     }
 
@@ -1634,11 +1686,16 @@ final class LibraryViewModel {
         await repository.applyAlbumEdits(original: original, updated: persisted)
         currentSelection = .album(persisted.canonicalKey)
         selectedAlbumName = persisted.displayTitle
-        await invalidateDetailSelectionCacheIfNeeded(
-            selectionIdentity: "album-\(original.canonicalKey)"
-        )
-        await invalidateDetailSelectionCacheIfNeeded(
-            selectionIdentity: "album-\(persisted.canonicalKey)"
+        await invalidateDetailSelectionCachesIfNeeded(
+            selectionIdentities: selectionIdentityVariants(
+                for: .album(original.canonicalKey),
+                entityIDOverride: original.id
+            ).union(
+                selectionIdentityVariants(
+                    for: .album(persisted.canonicalKey),
+                    entityIDOverride: persisted.id
+                )
+            )
         )
         await refresh()
     }
@@ -1658,8 +1715,11 @@ final class LibraryViewModel {
             albumEntries[idx] = updated
         }
 
-        await invalidateDetailSelectionCacheIfNeeded(
-            selectionIdentity: "album-\(updated.canonicalKey)"
+        await invalidateDetailSelectionCachesIfNeeded(
+            selectionIdentities: selectionIdentityVariants(
+                for: .album(updated.canonicalKey),
+                entityIDOverride: updated.id
+            )
         )
         await refresh()
     }
@@ -1733,8 +1793,8 @@ final class LibraryViewModel {
 
     func savePlaylistDescription(_ playlist: Playlist, description: String) async {
         await repository.updatePlaylistDescription(playlist, description: description)
-        await invalidateDetailSelectionCacheIfNeeded(
-            selectionIdentity: "playlist-\(playlist.id.uuidString)"
+        await invalidateDetailSelectionCachesIfNeeded(
+            selectionIdentities: selectionIdentityVariants(for: .playlist(playlist.id))
         )
     }
 
@@ -1897,6 +1957,26 @@ final class LibraryViewModel {
         await refresh()
     }
 
+    /// Search the current library index through the ViewModel boundary.
+    /// Callers receive an ID-keyed map so page builders do not need to know
+    /// about the index actor or its singleton lifetime.
+    func searchTracks(
+        query: String,
+        scopedTo trackIDs: Set<UUID>,
+        limit: Int = 200
+    ) async -> [UUID: LibrarySearchHit] {
+        guard !trackIDs.isEmpty else { return [:] }
+
+        let hits = await LibrarySearchIndex.shared.search(
+            query: query,
+            scopedTo: trackIDs,
+            limit: max(1, limit)
+        )
+        return hits.reduce(into: [:]) { result, hit in
+            result[hit.trackID] = hit
+        }
+    }
+
     // MARK: - Display Helpers
 
     /// Title for the current view.
@@ -2023,19 +2103,22 @@ final class LibraryViewModel {
         static let customTrackOrderBySelection = "customTrackOrderBySelection"
         static let customCollectionOrderBySelection = "customCollectionOrderBySelection"
         static let playlistSortKey = "playlistSortKey"
+        static let playlistSortOrder = "playlistSortOrder"
         static let albumSortKey = "albumSortKey"
         static let artistSortKey = "artistSortKey"
     }
 
     private var sortContextKey: String {
-        if let id = selectedPlaylistId {
+        switch currentSelection {
+        case .playlist(let id):
             return id.uuidString
-        } else if let artistKey = selectedArtistKey {
+        case .artist(let artistKey):
             return "ARTIST_\(artistKey)"
-        } else if let albumKey = selectedAlbumKey {
+        case .album(let albumKey):
             return "ALBUM_\(albumKey)"
+        case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
+            return "__all_songs__"
         }
-        return "__all_songs__"
     }
 
     private func persistSortPreferenceForCurrentSelection() {
@@ -2167,17 +2250,51 @@ final class LibraryViewModel {
         defaults.set(true, forKey: DefaultsKey.trackSortMigrationDone)
     }
 
-    private func invalidateDetailSelectionCacheIfNeeded(selectionIdentity: String) async {
-        await PlaylistPageModelCacheService.shared.invalidate(selectionIdentity: selectionIdentity)
-
-        guard currentSelectionIdentity == selectionIdentity else { return }
-        refreshTrigger += 1
-    }
-
     private func invalidateSelectionCaches(_ selectionIdentities: Set<String>) async {
         for selectionIdentity in selectionIdentities {
             await PlaylistPageModelCacheService.shared.invalidate(selectionIdentity: selectionIdentity)
         }
+    }
+
+    private func invalidateDetailSelectionCachesIfNeeded(
+        selectionIdentities: Set<String>
+    ) async {
+        await invalidateSelectionCaches(selectionIdentities)
+
+        let currentIdentities = selectionIdentityVariants(for: currentSelection)
+        guard !currentIdentities.isDisjoint(with: selectionIdentities) else { return }
+        refreshTrigger += 1
+    }
+
+    /// Returns both the stable page identity and the canonical-key alias while
+    /// old cache entries and callers are still present in the process.
+    private func selectionIdentityVariants(
+        for selection: LibrarySelection,
+        entityIDOverride: UUID? = nil
+    ) -> Set<String> {
+        let stableIdentity = selection == currentSelection
+            ? currentSelectionIdentity
+            : selection.selectionIdentity(in: self)
+        var identities: Set<String> = [stableIdentity]
+
+        switch selection {
+        case .playlist(let id):
+            identities.insert("playlist-\(id.uuidString)")
+        case .artist(let key):
+            identities.insert("artist-\(key)")
+            if let entityIDOverride {
+                identities.insert("artist-\(entityIDOverride.uuidString)")
+            }
+        case .album(let key):
+            identities.insert("album-\(key)")
+            if let entityIDOverride {
+                identities.insert("album-\(entityIDOverride.uuidString)")
+            }
+        case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
+            break
+        }
+
+        return identities
     }
 
     private func selectionIdentitiesAffectedByDeletedTracks(_ deletedTrackIDs: Set<UUID>) -> Set<String> {
@@ -2189,9 +2306,11 @@ final class LibraryViewModel {
         }
         for track in allTracks where deletedTrackIDs.contains(track.id) {
             for artistKey in LibraryNormalization.artistCanonicalNames(track.artist) {
-                identities.insert("artist-\(artistKey)")
+                identities.formUnion(selectionIdentityVariants(for: .artist(artistKey)))
             }
-            identities.insert("album-\(track.albumGroupKey)")
+            identities.formUnion(
+                selectionIdentityVariants(for: .album(track.albumGroupKey))
+            )
         }
         return identities
     }
@@ -2272,24 +2391,7 @@ final class LibraryViewModel {
     }
 
     private var currentSelectionIdentity: String {
-        switch currentSelection {
-        case .home:
-            return "home"
-        case .allSongs:
-            return "allSongs"
-        case .allPlaylists:
-            return "allPlaylists"
-        case .allAlbums:
-            return "allAlbums"
-        case .allArtists:
-            return "allArtists"
-        case .playlist(let id):
-            return "playlist-\(id.uuidString)"
-        case .artist(let key):
-            return "artist-\(key)"
-        case .album(let key):
-            return "album-\(key)"
-        }
+        currentSelection.selectionIdentity(in: self)
     }
 
     private func compareArtists(
@@ -2537,18 +2639,8 @@ final class LibraryViewModel {
 
     private func customTrackOrderContextKey(for selection: LibrarySelection) -> String? {
         switch selection {
-        case .playlist(let id):
-            return "playlist-\(id.uuidString)"
-        case .artist(let key):
-            if let entry = artistEntries.first(where: { $0.canonicalName == key }) {
-                return "artist-\(entry.id.uuidString)"
-            }
-            return "artist-\(key)"
-        case .album(let key):
-            if let entry = albumEntries.first(where: { $0.canonicalKey == key }) {
-                return "album-\(entry.id.uuidString)"
-            }
-            return "album-\(key)"
+        case .playlist, .artist, .album:
+            return selection.selectionIdentity(in: self)
         case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
             return nil
         }
@@ -2577,8 +2669,12 @@ final class LibraryViewModel {
         for id in persistedIDs where available.contains(id) && seen.insert(id).inserted {
             merged.append(id)
         }
-        for id in displayedTrackIDs where seen.insert(id).inserted {
-            merged.append(id)
+
+        let newIDs = displayedTrackIDs.filter { seen.insert($0).inserted }
+        if trackSortOrder == .descending {
+            merged.insert(contentsOf: newIDs, at: 0)
+        } else {
+            merged.append(contentsOf: newIDs)
         }
         return merged
     }

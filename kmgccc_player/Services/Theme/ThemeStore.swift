@@ -62,6 +62,12 @@ final class ThemeStore: ObservableObject {
         semanticPalette.appForeground
     }
 
+    /// Pre-blend title/metadata candidates for Plus Lighter / Plus Darker.
+    /// Surfaces choose a polarity; colour construction remains centralized.
+    var plusBlendTextPalette: PlusBlendTextPalette {
+        semanticPalette.plusBlendText
+    }
+
     private let defaultBlueNS: NSColor
     private var rawDominantColor: NSColor
     private let dominantColorCache = NSCache<NSString, CachedArtworkBox>()

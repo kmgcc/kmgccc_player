@@ -10,7 +10,7 @@ import SwiftUI
 struct FullscreenSettingsPresentationStyle: Equatable {
     let fullscreenScale: CGFloat
     let isCompact: Bool
-    let forcesWhiteText: Bool
+    let overlayForegroundProfile: FullscreenOverlayForegroundProfile?
     let usesGlassSectionCards: Bool
     let usesMaterialSectionCards: Bool
     let glassMaterialStyle: LiquidGlassPillMaterialStyle
@@ -70,7 +70,7 @@ struct FullscreenSettingsPresentationStyle: Equatable {
     static let settingsWindow = FullscreenSettingsPresentationStyle(
         fullscreenScale: 1,
         isCompact: false,
-        forcesWhiteText: false,
+        overlayForegroundProfile: nil,
         usesGlassSectionCards: false,
         usesMaterialSectionCards: false,
         glassMaterialStyle: .clear,
@@ -129,19 +129,17 @@ struct FullscreenSettingsPresentationStyle: Equatable {
     )
 
     static func fullscreenOverlay(
-        scale: CGFloat
+        scale: CGFloat,
+        foregroundProfile: FullscreenOverlayForegroundProfile
     ) -> FullscreenSettingsPresentationStyle {
         FullscreenSettingsPresentationStyle(
             fullscreenScale: scale,
             isCompact: true,
-            // Quick panel readability is built around a white-text hierarchy.
-            forcesWhiteText: true,
+            overlayForegroundProfile: foregroundProfile,
             usesGlassSectionCards: false,
             usesMaterialSectionCards: true,
             glassMaterialStyle: .clear,
-            // Keep quick panel compact; specifically shrinks .switch toggles without
-            // changing the material hierarchy.
-            controlSize: .regular,
+            controlSize: adaptiveControlSize(for: scale),
             // Narrower + slightly shorter to stay out of the Mini Player's way.
             panelSize: CGSize(width: 560 * scale, height: 690 * scale),
             panelCornerRadius: 30 * scale,
@@ -222,47 +220,87 @@ struct FullscreenSettingsPresentationStyle: Equatable {
         .system(size: segmentedFontSize, weight: .regular)
     }
 
+    var usesCustomSectionCards: Bool {
+        usesGlassSectionCards || usesMaterialSectionCards
+    }
+
+    var scaledHairlineWidth: CGFloat {
+        scaled(0.5)
+    }
+
+    func scaled(_ value: CGFloat) -> CGFloat {
+        isCompact ? value * fullscreenScale : value
+    }
+
     var primaryTextColor: Color {
-        forcesWhiteText ? Color.white.opacity(0.98) : .primary
+        overlayForegroundProfile?.primaryColor ?? .primary
     }
 
     var secondaryTextColor: Color {
-        forcesWhiteText ? Color.white.opacity(0.88) : .secondary
+        overlayForegroundProfile?.secondaryColor ?? .secondary
     }
 
     var tertiaryTextColor: Color {
-        forcesWhiteText ? Color.white.opacity(0.74) : Color.secondary.opacity(0.78)
+        overlayForegroundProfile?.tertiaryColor ?? Color.secondary.opacity(0.78)
+    }
+
+    var usesUnifiedOverlayForeground: Bool {
+        overlayForegroundProfile != nil
+    }
+
+    var overlayColorScheme: ColorScheme? {
+        overlayForegroundProfile?.colorScheme
+    }
+
+    var surfaceTintColor: Color {
+        guard let overlayForegroundProfile else { return .clear }
+        return overlayForegroundProfile.isDarkForeground ? .white : .black
     }
 
     var segmentedTrackColor: Color {
         // Quick panel runs in a light hierarchy, but the capsule tracks should stay neutral-dark
         // so they read consistently on top of ultraThinMaterial section surfaces.
         if usesMaterialSectionCards {
-            return Color.white.opacity(0.12)
+            return primaryTextColor.opacity(0.12)
         }
-        return forcesWhiteText ? Color.white.opacity(0.08) : Color.secondary.opacity(0.08)
+        return usesUnifiedOverlayForeground ? primaryTextColor.opacity(0.08) : Color.secondary.opacity(0.08)
     }
 
     var segmentedTrackStrokeColor: Color {
         if usesMaterialSectionCards {
-            return Color.white.opacity(0.16)
+            return primaryTextColor.opacity(0.16)
         }
         return .clear
     }
 
     func selectedTextColor(accentColor: Color) -> Color {
-        forcesWhiteText ? primaryTextColor : accentColor
+        usesUnifiedOverlayForeground ? primaryTextColor : accentColor
     }
 
     func valueTextColor(accentColor: Color) -> Color {
-        forcesWhiteText ? primaryTextColor : accentColor
+        usesUnifiedOverlayForeground ? primaryTextColor : accentColor
     }
 
     func skinTitleColor(selected: Bool, accentColor: Color, colorScheme: ColorScheme) -> Color {
-        if forcesWhiteText {
+        if usesUnifiedOverlayForeground {
             return selected ? primaryTextColor : secondaryTextColor
         }
         return selected ? accentColor : Color.primary.opacity(colorScheme == .dark ? 0.72 : 0.70)
+    }
+
+    private static func adaptiveControlSize(for scale: CGFloat) -> ControlSize {
+        switch scale {
+        case ..<0.78:
+            return .mini
+        case ..<0.98:
+            return .small
+        case ..<1.28:
+            return .regular
+        case ..<1.62:
+            return .large
+        default:
+            return .extraLarge
+        }
     }
 }
 
@@ -275,6 +313,7 @@ private struct FullscreenSettingsGlassGroupBoxStyle: GroupBoxStyle {
             configuration.label
             configuration.content
         }
+        .padding(presentationStyle.groupPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(
@@ -296,7 +335,7 @@ private struct FullscreenSettingsGlassGroupBoxStyle: GroupBoxStyle {
                 cornerRadius: presentationStyle.sectionCornerRadius,
                 style: .continuous
             )
-            .fill(Color.white.opacity(presentationStyle.forcesWhiteText ? 0.018 : 0.01))
+            .fill(presentationStyle.primaryTextColor.opacity(presentationStyle.usesUnifiedOverlayForeground ? 0.018 : 0.01))
             .allowsHitTesting(false)
         )
         .clipShape(
@@ -316,6 +355,7 @@ private struct FullscreenSettingsMaterialGroupBoxStyle: GroupBoxStyle {
             configuration.label
             configuration.content
         }
+        .padding(presentationStyle.groupPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(
@@ -324,13 +364,13 @@ private struct FullscreenSettingsMaterialGroupBoxStyle: GroupBoxStyle {
             )
             .fill(.ultraThinMaterial)
             .overlay(
-                // Light ultraThinMaterial can be too bright against white text; add a tiny tint
-                // without changing the material type.
+                // Keep the Ultra Thin Material, then add one polarity-aware
+                // tint layer so every nested section follows the same ink mode.
                 RoundedRectangle(
                     cornerRadius: presentationStyle.sectionCornerRadius,
                     style: .continuous
                 )
-                .fill(Color.black.opacity(0.06))
+                .fill(presentationStyle.surfaceTintColor.opacity(0.10))
             )
         )
         .overlay(
@@ -338,7 +378,10 @@ private struct FullscreenSettingsMaterialGroupBoxStyle: GroupBoxStyle {
                 cornerRadius: presentationStyle.sectionCornerRadius,
                 style: .continuous
             )
-            .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5)
+            .strokeBorder(
+                presentationStyle.primaryTextColor.opacity(0.10),
+                lineWidth: presentationStyle.scaledHairlineWidth
+            )
             .allowsHitTesting(false)
         )
         .clipShape(
@@ -364,6 +407,7 @@ extension EnvironmentValues {
 /// Container view for Fullscreen settings with "皮肤" and "歌词" tabs.
 struct FullscreenSettingsContainerView: View {
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     let presentationStyle: FullscreenSettingsPresentationStyle
     let embedsScrollView: Bool
@@ -409,8 +453,12 @@ struct FullscreenSettingsContainerView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .foregroundStyle(presentationStyle.primaryTextColor)
-        .tint(themeStore.accentColor)
+        .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
+        .tint(
+            presentationStyle.usesUnifiedOverlayForeground
+                ? presentationStyle.primaryTextColor
+                : themeStore.accentColor
+        )
         .controlSize(presentationStyle.controlSize)
         .environment(\.fullscreenSettingsPresentationStyle, presentationStyle)
         .environmentObject(themeStore)

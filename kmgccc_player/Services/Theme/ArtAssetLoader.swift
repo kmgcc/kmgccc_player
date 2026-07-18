@@ -265,6 +265,8 @@ struct ArtAssetImage: View {
 }
 
 enum ArtAssetImages {
+    static let emptyLyricsName = "Empty Lyrics"
+
     static func image(named name: String, maxPixel: Int = 1_600, fallbackSystemName: String = "photo") -> Image {
         if let image = ArtAssetLoader.shared.xcAssetImage(
             named: name,

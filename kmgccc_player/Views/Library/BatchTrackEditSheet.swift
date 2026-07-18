@@ -1542,11 +1542,11 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
             "theme": themeName,
             "fontSize": settings.lyricsFontSize + overlay.mainFontSizeDeltaPx,
             "fontWeight": clampedWeight,
-            "fontFamilyMain": cssFontFamily([
-                settings.lyricsFontNameEn,
-                settings.lyricsFontNameZh,
-            ]),
-            "fontFamilyTranslation": cssFontFamily([
+            "fontFamilyMain": LyricsFontResolver.cssMainFontFamily(
+                english: settings.lyricsFontNameEn,
+                chinese: settings.lyricsFontNameZh
+            ),
+            "fontFamilyTranslation": LyricsFontResolver.cssFontFamily([
                 settings.lyricsTranslationFontName
             ]),
             "translationFontSize": settings.lyricsTranslationFontSize + overlay.translationFontSizeDeltaPx,
@@ -1575,17 +1575,6 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
         return colorScheme == .dark
             ? "{\"theme\":\"dark\"}"
             : "{\"theme\":\"light\"}"
-    }
-
-    private static func cssFontFamily(_ names: [String]) -> String {
-        let sanitized = names
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .map { name in
-                "\"\(name.replacingOccurrences(of: "\"", with: "\\\""))\""
-            }
-        return (sanitized + ["-apple-system", "\"Helvetica Neue\"", "sans-serif"])
-            .joined(separator: ", ")
     }
 
     private var backgroundColor: Color {

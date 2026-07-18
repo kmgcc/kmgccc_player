@@ -298,12 +298,18 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
         
         fetchTask = Task { @MainActor in
             let completedLyrics = await Task.detached(priority: .userInitiated) { @Sendable in
-                let client = LDDCClient()
                 let totalCount = snapshots.count
 
                 actor ProgressState {
+                    var nextIndex = 0
                     var completedCount = 0
                     var completedLyrics: [(id: String, ttml: String)] = []
+
+                    func nextSnapshot(from snapshots: [TrackSnapshot]) -> TrackSnapshot? {
+                        guard nextIndex < snapshots.count else { return nil }
+                        defer { nextIndex += 1 }
+                        return snapshots[nextIndex]
+                    }
 
                     func addCompleted(id: String, ttml: String?) {
                         completedCount += 1
@@ -322,64 +328,33 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
                 }
 
                 let state = ProgressState()
+                let workerCount = min(2, snapshots.count)
 
                 await withTaskGroup(of: Void.self) { group in
-                    for snapshot in snapshots {
+                    for _ in 0..<workerCount {
                         group.addTask {
-                            let itemId = snapshot.id
+                            while !Task.isCancelled,
+                                  let snapshot = await state.nextSnapshot(from: snapshots)
+                            {
+                                let itemId = snapshot.id
 
-                            do {
                                 await MainActor.run {
                                     viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .searching)
                                 }
 
-                                let response = try await client.search(
+                                let ttml = await LyricsSearchHelper.searchAndFetchBestLyrics(
                                     title: snapshot.title,
                                     artist: snapshot.artist.isEmpty ? nil : snapshot.artist,
-                                    sources: [.QM, .KG, .NE],
-                                    mode: .verbatim,
-                                    translation: true,
-                                    limitPerSource: 5
+                                    album: nil,
+                                    duration: nil
                                 )
 
-                                guard let firstCandidate = response.results.first else {
+                                guard let ttml else {
+                                    await MainActor.run {
+                                        viewModel.markNoResults(id: itemId)
+                                    }
                                     await state.addCompleted(id: itemId, ttml: nil)
-                                    return
-                                }
-
-                                await MainActor.run {
-                                    viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .found)
-                                }
-
-                                let (origLyrics, transLyrics) = try await client.fetchByIdSeparate(
-                                    candidate: firstCandidate,
-                                    mode: .verbatim
-                                )
-
-                                await MainActor.run {
-                                    viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .converting)
-                                }
-
-                                let ttml: String
-                                if let transLyrics = transLyrics, !transLyrics.isEmpty {
-                                    let converted = try await TTMLConverter.shared.convertToTTMLWithTranslation(
-                                        origLyrics: origLyrics,
-                                        transLyrics: transLyrics,
-                                        stripMetadata: true
-                                    )
-                                    guard let normalized = LyricsFormatSupport.normalizedTTMLText(converted) else {
-                                        throw TTMLConversionError.conversionFailed("LDDC 转换结果 TTML 结构无效")
-                                    }
-                                    ttml = normalized
-                                } else {
-                                    let converted = try await TTMLConverter.shared.convertToTTML(
-                                        rawLyrics: origLyrics,
-                                        stripMetadata: true
-                                    )
-                                    guard let normalized = LyricsFormatSupport.normalizedTTMLText(converted) else {
-                                        throw TTMLConversionError.conversionFailed("LDDC 转换结果 TTML 结构无效")
-                                    }
-                                    ttml = normalized
+                                    continue
                                 }
 
                                 await MainActor.run {
@@ -387,8 +362,9 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
                                 }
 
                                 await state.addCompleted(id: itemId, ttml: ttml)
-                            } catch {
-                                await state.addCompleted(id: itemId, ttml: nil)
+                                await MainActor.run {
+                                    viewModel.updateItem(id: itemId, title: snapshot.title, artist: snapshot.artist, step: .completed)
+                                }
                             }
                         }
                     }

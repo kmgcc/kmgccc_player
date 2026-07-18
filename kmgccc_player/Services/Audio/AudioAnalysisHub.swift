@@ -123,7 +123,24 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     func attachToMixer(_ mixer: AVAudioMixerNode) {
         stateLock.lock()
         mixerNode = mixer
+        // `start()` may have been called before the engine was lazily set up:
+        // the first spectrum/LED consumer can acquire its lease during initial
+        // UI load, before `AVAudioPlaybackService.setupEngine` reaches this
+        // call. In that case `start()` bailed with "No mixer attached" while
+        // still remembering the client (`activeClients > 0`). Install the tap
+        // now that a mixer is available; without this, the tap would never be
+        // installed (nothing re-calls `start()` after the mixer attaches) and
+        // every visualizer would stay frozen for the whole session.
+        let needsInstall = activeClients > 0 && !isInstalled
+        if needsInstall {
+            let format = mixer.outputFormat(forBus: 0)
+            installTapLocked(on: mixer, format: format, bufferSize: tapBufferSize)
+            isInstalled = true
+        }
         stateLock.unlock()
+        if needsInstall {
+            updateTimerState()
+        }
     }
 
     func start() {
@@ -131,9 +148,16 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         activeClients += 1
         if !isInstalled {
             guard let mixer = mixerNode else {
-                activeClients = max(0, activeClients - 1)
+                // No mixer yet (engine not set up). Keep `activeClients`
+                // incremented so `attachToMixer` knows a client is waiting and
+                // installs the tap when the mixer arrives. We must NOT decrement
+                // here: doing so discards the start request, and once the mixer
+                // attaches nothing re-triggers `start()`, leaving the tap
+                // permanently uninstalled. `updateTimerState` is a no-op while
+                // `isInstalled == false`, so the FFT timer stays stopped until
+                // the tap is installed on attach (or by a later `start()`).
                 stateLock.unlock()
-                Log.warning("AudioAnalysisHub: No mixer attached", category: .audio)
+                Log.warning("AudioAnalysisHub: start requested before mixer attached; tap will install on attach", category: .audio)
                 return
             }
 

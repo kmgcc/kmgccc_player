@@ -58,6 +58,7 @@ struct NumericTimeText: View {
     
     var body: some View {
         Text(formattedTime)
+            .lineLimit(1)
             .font(.system(size: fontSize, weight: fontWeight, design: .rounded))
             .monospacedDigit()
             .foregroundStyle(color)

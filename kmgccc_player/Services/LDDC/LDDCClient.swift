@@ -18,6 +18,11 @@ actor LDDCClient {
     private let session: URLSession
     private let timeout: TimeInterval = 30
 
+    private struct SourceAttempt: Sendable {
+        let source: LDDCSource
+        let startedAt: Date
+    }
+
     init() {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
@@ -27,24 +32,20 @@ actor LDDCClient {
 
     // MARK: - Public API
 
-    /// Search for lyrics across multiple platforms.
-    func search(
+    /// Search one provider. Multi-provider callers must use searchBySource so
+    /// each provider has independent timeout and health handling.
+    private func searchSingleSource(
         title: String,
         artist: String?,
-        sources: [LDDCSource],
+        source: LDDCSource,
         mode: LDDCMode = .verbatim,
         translation: Bool = false,
-        limitPerSource: Int = 20
+        limitPerSource: Int = 20,
+        requestTimeout: TimeInterval? = nil
     ) async throws -> LDDCSearchResponse {
-        let manager = await LDDCServerManager.shared
-        try await manager.ensureRunning()
-        await manager.recordRequest()
-
-        let url = await manager.baseURL.appendingPathComponent("search")
-
         var body: [String: Any] = [
             "title": title,
-            "sources": sources.map { $0.rawValue },
+            "sources": [source.rawValue],
             "limit_per_source": limitPerSource,
             "mode": mode.rawValue,
             "translation": translation ? "provider" : "none",
@@ -54,7 +55,11 @@ actor LDDCClient {
             body["artist"] = artist
         }
 
-        let data = try await postJSON(url: url, body: body)
+        let data = try await postJSON(
+            path: "search",
+            body: body,
+            timeout: requestTimeout ?? timeout
+        )
 
         let response = try await MainActor.run {
             try JSONDecoder().decode(LDDCSearchResponse.self, from: data)
@@ -68,19 +73,129 @@ actor LDDCClient {
         return response
     }
 
+    /// Search each provider independently and yield outcomes as they finish.
+    ///
+    /// The bundled server is able to handle these requests concurrently. This
+    /// keeps one slow provider from delaying or erasing results from the others.
+    func searchBySource(
+        title: String,
+        artist: String?,
+        sources: [LDDCSource],
+        mode: LDDCMode = .verbatim,
+        translation: Bool = false,
+        limitPerSource: Int = 20,
+        policy: LDDCSourceSearchPolicy = .adaptive
+    ) -> AsyncStream<LDDCSourceSearchResult> {
+        let client = self
+        let orderedSources = Array(Set(sources)).sorted { $0.rawValue < $1.rawValue }
+        let (stream, continuation) = AsyncStream<LDDCSourceSearchResult>.makeStream()
+        let sourceHealth = LDDCSourceHealthStore.shared
+        let sourceTimeout = LDDCSourceHealthStore.slowSourceTimeout
+
+        let worker = Task {
+            await withTaskGroup(of: LDDCSourceSearchResult?.self) { group in
+                for source in orderedSources {
+                    group.addTask {
+                        guard !Task.isCancelled else { return nil }
+
+                        let decision = await sourceHealth.decision(for: source, policy: policy)
+                        let attemptStartedAt: Date
+                        switch decision {
+                        case .attempt(let startedAt):
+                            attemptStartedAt = startedAt
+                        case .skip(let retryAfter):
+                            let retrySeconds = max(
+                                1,
+                                Int(retryAfter.timeIntervalSinceNow.rounded(.up))
+                            )
+                            return LDDCSourceSearchResult(
+                                source: source,
+                                results: [],
+                                errors: [
+                                    "\(source.displayName) 已暂时跳过：上次请求超过 \(Int(sourceTimeout)) 秒未响应，约 \(retrySeconds) 秒后重试"
+                                ],
+                                status: .skipped
+                            )
+                        }
+
+                        do {
+                            let response = try await client.searchSingleSource(
+                                title: title,
+                                artist: artist,
+                                source: source,
+                                mode: mode,
+                                translation: translation,
+                                limitPerSource: limitPerSource,
+                                requestTimeout: sourceTimeout
+                            )
+
+                            guard !Task.isCancelled else { return nil }
+                            await sourceHealth.recordSuccess(
+                                for: source,
+                                attemptStartedAt: attemptStartedAt
+                            )
+                            return LDDCSourceSearchResult(
+                                source: source,
+                                results: response.results,
+                                errors: response.errors ?? [],
+                                status: .completed
+                            )
+                        } catch {
+                            guard !Task.isCancelled, !Self.isCancellationError(error) else {
+                                return nil
+                            }
+
+                            if Self.isTimeoutError(error) {
+                                await sourceHealth.recordTimeout(
+                                    for: source,
+                                    attemptStartedAt: attemptStartedAt
+                                )
+                                return LDDCSourceSearchResult(
+                                    source: source,
+                                    results: [],
+                                    errors: [
+                                        "\(source.displayName) 请求超过 \(Int(sourceTimeout)) 秒未响应，已暂时降低优先级"
+                                    ],
+                                    status: .timedOut
+                                )
+                            }
+
+                            return LDDCSourceSearchResult(
+                                source: source,
+                                results: [],
+                                errors: [error.localizedDescription],
+                                status: .failed
+                            )
+                        }
+                    }
+                }
+
+                while let result = await group.next() {
+                    if let result {
+                        continuation.yield(result)
+                    }
+                }
+            }
+
+            continuation.finish()
+        }
+
+        continuation.onTermination = { @Sendable _ in
+            worker.cancel()
+        }
+
+        return stream
+    }
+
     /// Fetch lyrics for a specific candidate.
     func fetchById(
         candidate: LDDCCandidate,
         mode: LDDCMode = .verbatim,
         translation: Bool = false,
-        offsetMs: Int = 0
+        offsetMs: Int = 0,
+        requestTimeout: TimeInterval? = nil,
+        policy: LDDCSourceSearchPolicy = .forceAll
     ) async throws -> String {
-        let manager = await LDDCServerManager.shared
-        try await manager.ensureRunning()
-        await manager.recordRequest()
-
-        let url = await manager.baseURL.appendingPathComponent("fetch_by_id")
-
         var body: [String: Any] = [
             "source": candidate.source,
             "id": candidate.songId,
@@ -106,7 +221,19 @@ actor LDDCClient {
             body["extra"] = extra
         }
 
-        let data = try await postJSON(url: url, body: body)
+        let attempt = try await beginSourceAttempt(for: candidate, policy: policy)
+        let data: Data
+        do {
+            data = try await postJSON(
+                path: "fetch_by_id",
+                body: body,
+                timeout: requestTimeout ?? timeout
+            )
+            await finishSourceAttempt(attempt, error: nil)
+        } catch {
+            await finishSourceAttempt(attempt, error: error)
+            throw error
+        }
 
         let response = try await MainActor.run {
             try JSONDecoder().decode(LDDCFetchResponse.self, from: data)
@@ -127,14 +254,10 @@ actor LDDCClient {
     func fetchByIdSeparate(
         candidate: LDDCCandidate,
         mode: LDDCMode = .verbatim,
-        offsetMs: Int = 0
+        offsetMs: Int = 0,
+        requestTimeout: TimeInterval? = nil,
+        policy: LDDCSourceSearchPolicy = .forceAll
     ) async throws -> (orig: String, trans: String?) {
-        let manager = await LDDCServerManager.shared
-        try await manager.ensureRunning()
-        await manager.recordRequest()
-
-        let url = await manager.baseURL.appendingPathComponent("fetch_by_id_separate")
-
         var body: [String: Any] = [
             "source": candidate.source,
             "id": candidate.songId,
@@ -160,7 +283,19 @@ actor LDDCClient {
             body["extra"] = extra
         }
 
-        let data = try await postJSON(url: url, body: body)
+        let attempt = try await beginSourceAttempt(for: candidate, policy: policy)
+        let data: Data
+        do {
+            data = try await postJSON(
+                path: "fetch_by_id_separate",
+                body: body,
+                timeout: requestTimeout ?? timeout
+            )
+            await finishSourceAttempt(attempt, error: nil)
+        } catch {
+            await finishSourceAttempt(attempt, error: error)
+            throw error
+        }
 
         let response = try await MainActor.run {
             try JSONDecoder().decode(LDDCFetchSeparateResponse.self, from: data)
@@ -179,7 +314,61 @@ actor LDDCClient {
 
     // MARK: - Private Methods
 
-    private func postJSON(url: URL, body: [String: Any]) async throws -> Data {
+    private func beginSourceAttempt(
+        for candidate: LDDCCandidate,
+        policy: LDDCSourceSearchPolicy
+    ) async throws -> SourceAttempt? {
+        guard let source = LDDCSource(rawValue: candidate.source) else {
+            return nil
+        }
+
+        let decision = await LDDCSourceHealthStore.shared.decision(
+            for: source,
+            policy: policy
+        )
+        switch decision {
+        case .attempt(let startedAt):
+            return SourceAttempt(source: source, startedAt: startedAt)
+        case .skip(let retryAfter):
+            let retrySeconds = max(
+                1,
+                Int(retryAfter.timeIntervalSinceNow.rounded(.up))
+            )
+            throw LDDCError.sourceTemporarilyUnavailable(
+                "\(source.displayName) 已暂时跳过：上次请求超过 \(Int(LDDCSourceHealthStore.slowSourceTimeout)) 秒未响应，约 \(retrySeconds) 秒后重试"
+            )
+        }
+    }
+
+    private func finishSourceAttempt(
+        _ attempt: SourceAttempt?,
+        error: Error?
+    ) async {
+        guard let attempt else { return }
+
+        if let error {
+            guard Self.isTimeoutError(error) else { return }
+            await LDDCSourceHealthStore.shared.recordTimeout(
+                for: attempt.source,
+                attemptStartedAt: attempt.startedAt
+            )
+        } else {
+            await LDDCSourceHealthStore.shared.recordSuccess(
+                for: attempt.source,
+                attemptStartedAt: attempt.startedAt
+            )
+        }
+    }
+
+    private func postJSON(
+        path: String,
+        body: [String: Any],
+        timeout: TimeInterval
+    ) async throws -> Data {
+        let manager = await LDDCServerManager.shared
+        try await manager.ensureRunning()
+
+        let url = await manager.baseURL.appendingPathComponent(path)
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -187,7 +376,17 @@ actor LDDCClient {
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await session.data(for: request)
+        await manager.beginRequest()
+        let networkResponse: (Data, URLResponse)
+        do {
+            networkResponse = try await session.data(for: request)
+        } catch {
+            await manager.endRequest()
+            throw error
+        }
+        await manager.endRequest()
+
+        let (data, response) = networkResponse
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw LDDCError.invalidResponse
@@ -204,5 +403,16 @@ actor LDDCClient {
         }
 
         return data
+    }
+
+    nonisolated private static func isCancellationError(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+        return (error as? URLError)?.code == .cancelled
+    }
+
+    nonisolated private static func isTimeoutError(_ error: Error) -> Bool {
+        (error as? URLError)?.code == .timedOut
     }
 }

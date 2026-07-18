@@ -115,6 +115,7 @@ private struct AppleStyleSettingsView: View {
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     @AppStorage("skin.appleStyle.dynamicBackgroundEnabled") private var dynamicBackgroundEnabled: Bool = true
     @AppStorage("skin.appleStyle.flowSpeed") private var flowSpeed: String = AppleMeshBackgroundSpeed.standard.rawValue
@@ -129,10 +130,7 @@ private struct AppleStyleSettingsView: View {
 
     private var slidingKnobColor: Color {
         if presentationStyle.usesMaterialSectionCards {
-            return FullscreenSelectionAccentStyle.dimmedAccentColor(
-                from: themeStore.accentNSColor,
-                lightnessDelta: 0.30
-            )
+            return presentationStyle.settingsPrimaryTextColor(appColors: appColors)
         }
         return themeStore.accentColor
     }
@@ -143,7 +141,7 @@ private struct AppleStyleSettingsView: View {
                 title: "动态背景",
                 isOn: $dynamicBackgroundEnabled,
                 titleFont: presentationStyle.rowLabelFont,
-                titleColor: presentationStyle.primaryTextColor
+                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors)
             )
 
             speedPicker
@@ -184,7 +182,7 @@ private struct AppleStyleSettingsView: View {
         HStack(spacing: presentationStyle.compactInlineSpacing) {
             Text("流体速度")
                 .font(presentationStyle.rowLabelFont)
-                .foregroundStyle(presentationStyle.primaryTextColor)
+                .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
 
             Spacer()
 
@@ -207,8 +205,11 @@ private struct AppleStyleSettingsView: View {
                         .padding(.vertical, presentationStyle.segmentedVerticalPadding)
                         .foregroundStyle(
                             isSelected
-                                ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
-                                : presentationStyle.secondaryTextColor
+                                ? presentationStyle.settingsSelectedTextColor(
+                                    accentColor: themeStore.accentColor,
+                                    appColors: appColors
+                                )
+                                : presentationStyle.settingsSecondaryTextColor(appColors: appColors)
                         )
                 }
             )
@@ -216,12 +217,14 @@ private struct AppleStyleSettingsView: View {
             .padding(.vertical, presentationStyle.segmentedTrackVerticalPadding)
             .background(
                 Capsule()
-                    .fill(presentationStyle.segmentedTrackColor)
+                    .fill(presentationStyle.settingsSegmentedTrackColor(appColors: appColors))
                     .overlay(
                         Capsule()
                             .strokeBorder(
                                 presentationStyle.segmentedTrackStrokeColor,
-                                lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear ? 0 : 0.5
+                                lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear
+                                    ? 0
+                                    : presentationStyle.scaledHairlineWidth
                             )
                             .allowsHitTesting(false)
                     )

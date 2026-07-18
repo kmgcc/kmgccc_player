@@ -133,6 +133,7 @@ struct BKArtBackgroundView: View {
     let trackID: UUID?
     let artworkData: Data?
     let isPlaying: Bool
+    var animationEnabled: Bool = true
     var avoidanceRect: CGRect? = nil
     var resourceProfile: ResourceProfile = .standard
     var dotRenderStyle: DotRenderStyle = .dotGrid
@@ -158,6 +159,7 @@ struct BKArtBackgroundView: View {
             palette: displayPalette,
             isDark: colorScheme == .dark,
             isPlaying: isPlaying,
+            animationEnabled: animationEnabled,
             avoidanceRect: avoidanceRect,
             resourceProfile: resourceProfile,
             dotRenderStyle: dotRenderStyle,
@@ -433,6 +435,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
     let palette: [NSColor]
     let isDark: Bool
     let isPlaying: Bool
+    let animationEnabled: Bool
     let avoidanceRect: CGRect?
     let resourceProfile: BKArtBackgroundView.ResourceProfile
     let dotRenderStyle: BKArtBackgroundView.DotRenderStyle
@@ -449,6 +452,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
         contentView.updateResourceProfile(resourceProfile)
         contentView.updateDotRenderStyle(dotRenderStyle)
         contentView.updateMotionProfile(motionProfile)
+        contentView.setAnimationEnabled(animationEnabled)
         contentView.ensureBaseContainer(seed: seed)
         contentView.setPlayback(isPlaying: isPlaying)
         contentView.currentTransitionID = transitionID
@@ -464,6 +468,7 @@ private struct BKArtBackgroundRepresentable: NSViewRepresentable {
         nsView.updateResourceProfile(resourceProfile)
         nsView.updateDotRenderStyle(dotRenderStyle)
         nsView.updateMotionProfile(motionProfile)
+        nsView.setAnimationEnabled(animationEnabled)
         nsView.ensureBaseContainer(seed: seed)
         nsView.setPlayback(isPlaying: isPlaying)
 
@@ -719,6 +724,10 @@ private final class BKArtBackgroundLayerView: NSView {
     private var fromContainer: Container?
     private var toContainer: Container?
     private var transitionMaskLayer: CALayer?
+    // A running transition owns the exact frame sequence it started with.
+    // Background/circle asset refreshes may consult an evictable NSCache and
+    // must not invalidate an in-flight mask animation.
+    private var activeTransitionMaskFrames: [CGImage] = []
 
     private var backgroundPhase: Int = 0
     private var backgroundPhaseFloat: Double = 0
@@ -756,6 +765,8 @@ private final class BKArtBackgroundLayerView: NSView {
     private var resourceProfile: BKArtBackgroundView.ResourceProfile = .standard
     private var dotRenderStyle: BKArtBackgroundView.DotRenderStyle = .dotGrid
     private var motionProfile: BKArtBackgroundView.MotionProfile = .window
+    private var animationEnabled = true
+    private var isVisibilitySuspended = true
 
     private static let fullscreenDiagnosticsEnabled =
         ProcessInfo.processInfo.environment["KMGCCC_FULLSCREEN_BK_DIAGNOSTICS"] == "1"
@@ -796,22 +807,34 @@ private final class BKArtBackgroundLayerView: NSView {
             initialResourceUpgradeTask?.cancel()
             rebuildDebounceTask?.cancel()
             backgroundRenderTasks.values.forEach { $0.cancel() }
+            NotificationCenter.default.removeObserver(self)
         }
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        stopObservingWindowActivity()
         if window == nil {
-            stopTimers()
+            isVisibilitySuspended = true
+            suspendTimersForVisibility()
             releaseHeavyResources()
         } else {
-            startTimersIfNeeded()
+            startObservingWindowActivity()
+            updateAnimationActivity()
+        }
+    }
+
+    override var isHidden: Bool {
+        didSet {
+            guard oldValue != isHidden else { return }
+            updateAnimationActivity()
         }
     }
 
     func prepareForDismissal() {
         FSDiagnostics.emit("BKArtBackground.prepareForDismissal BEGIN t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .ui)
         stopTimers()
+        stopObservingWindowActivity()
         releaseHeavyResources()
         activeAvoidanceRect = nil
         backgroundController = nil
@@ -858,6 +881,80 @@ private final class BKArtBackgroundLayerView: NSView {
             startDotTimerIfNeeded()
         }
         updateClockActivity()
+    }
+
+    func setAnimationEnabled(_ enabled: Bool) {
+        guard animationEnabled != enabled else { return }
+        animationEnabled = enabled
+        updateAnimationActivity()
+    }
+
+    private func startObservingWindowActivity() {
+        guard let window else { return }
+        let center = NotificationCenter.default
+        for name in [
+            NSWindow.didBecomeKeyNotification,
+            NSWindow.didResignKeyNotification,
+            NSWindow.didMiniaturizeNotification,
+            NSWindow.didDeminiaturizeNotification,
+            NSWindow.didChangeOcclusionStateNotification,
+        ] {
+            center.addObserver(
+                self,
+                selector: #selector(animationVisibilityDidChange(_:)),
+                name: name,
+                object: window
+            )
+        }
+        center.addObserver(
+            self,
+            selector: #selector(animationVisibilityDidChange(_:)),
+            name: NSApplication.didBecomeActiveNotification,
+            object: NSApp
+        )
+        center.addObserver(
+            self,
+            selector: #selector(animationVisibilityDidChange(_:)),
+            name: NSApplication.didResignActiveNotification,
+            object: NSApp
+        )
+    }
+
+    private func stopObservingWindowActivity() {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func animationVisibilityDidChange(_ notification: Notification) {
+        updateAnimationActivity()
+    }
+
+    private func updateAnimationActivity() {
+        let shouldAnimate: Bool
+        if let window {
+            shouldAnimate = animationEnabled
+                && !isHidden
+                && NSApp.isActive
+                && window.isVisible
+                && window.isKeyWindow
+                && !window.isMiniaturized
+                && window.occlusionState.contains(.visible)
+        } else {
+            shouldAnimate = false
+        }
+
+        guard isVisibilitySuspended == shouldAnimate else { return }
+        isVisibilitySuspended = !shouldAnimate
+        if shouldAnimate {
+            lastTickTime = CACurrentMediaTime()
+            if abs(speedTarget - speedCurrent) > 0.01 {
+                startSpeedRampTimerIfNeeded()
+            }
+            if !isPausedFrozen {
+                startTimersIfNeeded()
+            }
+        } else {
+            suspendTimersForVisibility()
+        }
     }
 
     private static let resizeRebuildThreshold: CGFloat = 48
@@ -1027,6 +1124,10 @@ private final class BKArtBackgroundLayerView: NSView {
     @discardableResult
     func triggerTransition(seed: UInt64) -> TransitionRequestResult {
         guard !bounds.isEmpty else { return .ignored }
+        guard !isVisibilitySuspended else {
+            pendingTransitionSeed = seed
+            return .deferred
+        }
         guard speedTarget > 0.01 else {
             pendingTransitionSeed = seed
             return .deferred
@@ -1067,6 +1168,7 @@ private final class BKArtBackgroundLayerView: NSView {
         mask.contents = maskFrames[0]
         next.layer.mask = mask
         transitionMaskLayer = mask
+        activeTransitionMaskFrames = maskFrames
         maskFrameIndex = 0
         maskFrameProgress = 0
         startTransitionTimer()
@@ -1102,6 +1204,7 @@ private final class BKArtBackgroundLayerView: NSView {
         stopTransitionTimer()
         transitionMaskLayer?.contents = nil
         transitionMaskLayer?.removeFromSuperlayer()
+        activeTransitionMaskFrames.removeAll(keepingCapacity: false)
         let replacement = buildContainer(seed: rebuildSeed)
         fromContainer?.layer.removeFromSuperlayer()
         toContainer?.layer.removeFromSuperlayer()
@@ -1891,7 +1994,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func startTimersIfNeeded() {
-        guard window != nil, !isPausedFrozen else { return }
+        guard window != nil, !isPausedFrozen, !isVisibilitySuspended else { return }
         startShapeTimerIfNeeded()
         if !isTransitionInFlight {
             startBackgroundTimerIfNeeded()
@@ -1912,7 +2015,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func resumeDeferredTransitionWorkIfNeeded() {
-        guard window != nil, speedTarget > 0.01 else { return }
+        guard window != nil, !isVisibilitySuspended, speedTarget > 0.01 else { return }
         guard !isTransitionInFlight, toContainer == nil else { return }
 
         if pendingBoundsRebuild {
@@ -1927,6 +2030,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func startBackgroundTimerIfNeeded() {
+        guard !isVisibilitySuspended else { return }
         guard motionProfile.allowsAutomaticBackgroundPhaseCycling else { return }
         guard backgroundClockSubscription == nil else { return }
         backgroundClockSubscription = animationClock.backgroundPublisher
@@ -1936,6 +2040,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func startDotTimerIfNeeded() {
+        guard !isVisibilitySuspended else { return }
         guard !isDotAnimationDriverRunning else { return }
         let publisher = motionProfile.usesHighRateDotClock(for: dotRenderStyle)
             ? animationClock.dotHighRatePublisher
@@ -1947,6 +2052,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func startShapeTimerIfNeeded() {
+        guard !isVisibilitySuspended else { return }
         guard shapeClockSubscription == nil else { return }
         shapeClockSubscription = animationClock.shapePublisher
             .sink { [weak self] in
@@ -1970,7 +2076,23 @@ private final class BKArtBackgroundLayerView: NSView {
         updateClockActivity()
     }
 
+    private func suspendTimersForVisibility() {
+        backgroundClockSubscription?.cancel()
+        backgroundClockSubscription = nil
+        shapeClockSubscription?.cancel()
+        shapeClockSubscription = nil
+        stopDotAnimationDriver()
+        autoTransitionTimer?.cancel()
+        autoTransitionTimer = nil
+        transitionClockSubscription?.cancel()
+        transitionClockSubscription = nil
+        speedRampClockSubscription?.cancel()
+        speedRampClockSubscription = nil
+        updateClockActivity()
+    }
+
     private func startTransitionTimer() {
+        guard !isVisibilitySuspended else { return }
         guard transitionClockSubscription == nil else { return }
         transitionClockSubscription = animationClock.transitionPublisher
             .sink { [weak self] in
@@ -2094,6 +2216,7 @@ private final class BKArtBackgroundLayerView: NSView {
         let backgroundsChanged =
             loadedBudget.background != snapshot.budget.background
             || loadedBackgroundSourceIndices != snapshot.backgroundSourceIndices
+        let maskBudgetChanged = loadedBudget.mask != snapshot.budget.mask
 
         if backgroundsChanged {
             cancelBackgroundRenderTasks()
@@ -2105,7 +2228,9 @@ private final class BKArtBackgroundLayerView: NSView {
         loadedShapes = snapshot.shapes
         loadedFullscreenCircleImages = snapshot.fullscreenCircleImages
         loadedFullscreenCircleMaxPixel = snapshot.budget.background
-        loadedMaskFrames = snapshot.maskFrames
+        if maskBudgetChanged || !snapshot.maskFrames.isEmpty || loadedMaskFrames.isEmpty {
+            loadedMaskFrames = snapshot.maskFrames
+        }
         tintedBackgroundCache.removeAllObjects()
         prewarmTintedBackgroundsIfNeeded()
     }
@@ -2144,6 +2269,7 @@ private final class BKArtBackgroundLayerView: NSView {
     }
 
     private func startSpeedRampTimerIfNeeded() {
+        guard !isVisibilitySuspended else { return }
         guard speedRampClockSubscription == nil else { return }
         speedRampClockSubscription = animationClock.speedRampPublisher
             .sink { [weak self] in
@@ -2354,6 +2480,10 @@ private final class BKArtBackgroundLayerView: NSView {
 
     private func scheduleNextAutoTransition() {
         autoTransitionTimer?.cancel()
+        guard !isVisibilitySuspended else {
+            autoTransitionTimer = nil
+            return
+        }
 
         // Dynamic interval: 20s if Dot (to let animation breathe), 15s if Image
         let interval: TimeInterval = (fromContainer?.style == .dot) ? 20.0 : 15.0
@@ -2371,7 +2501,7 @@ private final class BKArtBackgroundLayerView: NSView {
         autoTransitionTimer?.cancel()
         autoTransitionTimer = nil
 
-        guard speedTarget > 0.01, speedCurrent > 0.01 else {
+        guard !isVisibilitySuspended, speedTarget > 0.01, speedCurrent > 0.01 else {
             return
         }
         let seed = nextTransitionSeed()
@@ -2489,7 +2619,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private func tickTransitionMask() {
         guard transitionClockSubscription != nil else { return }
         guard let toContainer, let maskLayer = transitionMaskLayer else { return }
-        let maskFrames = resolvedMaskFrames()
+        let maskFrames = activeTransitionMaskFrames
         guard !maskFrames.isEmpty else {
             abortTransitionKeepingCurrent(pendingSeed: rebuildSeed)
             return
@@ -2521,6 +2651,7 @@ private final class BKArtBackgroundLayerView: NSView {
         transitionMaskLayer?.contents = nil
         transitionMaskLayer?.removeFromSuperlayer()
         transitionMaskLayer = nil
+        activeTransitionMaskFrames.removeAll(keepingCapacity: false)
         maskFrameIndex = 0
         maskFrameProgress = 0
         stopTransitionTimer()
@@ -2542,6 +2673,7 @@ private final class BKArtBackgroundLayerView: NSView {
         next.layer.mask = nil
         transitionMaskLayer?.contents = nil
         transitionMaskLayer = nil
+        activeTransitionMaskFrames.removeAll(keepingCapacity: false)
         fromContainer?.layer.removeFromSuperlayer()
         fromContainer = next
         toContainer = nil
@@ -3186,7 +3318,9 @@ private final class BKArtBackgroundLayerView: NSView {
             loadedFullscreenCircleImages = assets.fullscreenCircleImages(maxPixel: budget.background)
             loadedFullscreenCircleMaxPixel = budget.background
         }
-        loadedMaskFrames = assets.cachedMaskFrames(maxPixel: budget.mask) ?? []
+        if let cachedMaskFrames = assets.cachedMaskFrames(maxPixel: budget.mask) {
+            loadedMaskFrames = cachedMaskFrames
+        }
         tintedBackgroundCache.removeAllObjects()
         prewarmTintedBackgroundsIfNeeded()
         if allowMaskWarmup {
@@ -3341,6 +3475,7 @@ private final class BKArtBackgroundLayerView: NSView {
         transitionMaskLayer?.contents = nil
         transitionMaskLayer?.removeFromSuperlayer()
         transitionMaskLayer = nil
+        activeTransitionMaskFrames.removeAll(keepingCapacity: false)
         loadedBackgrounds.removeAll(keepingCapacity: false)
         loadedBackgroundSourceIndices.removeAll(keepingCapacity: false)
         loadedShapes = BKThemeAssets.ShapeLoadResult(images: [], scaleByIndex: [:], edgePinnedIndices: [])
@@ -3651,7 +3786,10 @@ private final class BKArtBackgroundLayerView: NSView {
                 slot.maskSmall = solid2
             }
         } else {
-            let dotSpacing: CGFloat = 30
+            // The window profile uses a slightly wider grid: the visual rhythm
+            // remains the same while reducing replicated dot instances by about
+            // one third on typical window sizes.
+            let dotSpacing: CGFloat = motionProfile == .window ? 36 : 30
             let cols = Int(baseSize / dotSpacing) + 6
             let rows = Int(baseSize / dotSpacing) + 6
 
@@ -4144,7 +4282,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private func dotLeadInOverlapRange() -> ClosedRange<Double> {
         switch dotRenderStyle {
         case .dotGrid:
-            return 0.55...0.75
+            return motionProfile == .window ? 0.78...0.88 : 0.55...0.75
         case .solidCircles:
             return 0.72...0.84
         }
@@ -4153,7 +4291,7 @@ private final class BKArtBackgroundLayerView: NSView {
     private func dotFallbackLeadInOverlapRange() -> ClosedRange<Double> {
         switch dotRenderStyle {
         case .dotGrid:
-            return 0.55...0.70
+            return motionProfile == .window ? 0.78...0.86 : 0.55...0.70
         case .solidCircles:
             return 0.72...0.82
         }

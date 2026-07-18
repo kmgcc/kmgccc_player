@@ -68,6 +68,8 @@ struct SkinContext {
         /// Reuses the exact same inputs as MiniPlayerSpectrumView.
         let spectrumArtworkColors: [NSColor]
         let spectrumUsesDarkForeground: Bool
+        /// Night-only luminance map for the cassette's dark shell and reels.
+        let cassetteTint: CassetteTintPalette
         /// Background dynamics (transient overlays).
         let kickToBrightnessMix: Double
         let kickDisplaceAmount: Double

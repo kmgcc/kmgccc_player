@@ -7,6 +7,8 @@ import argparse
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
+from threading import Lock
 from typing import Any
 
 from lddc_fetch_core.fetch import fetch_lrc, fetch_lyrics_bundle
@@ -20,24 +22,44 @@ from lddc_fetch_core.providers.qm import QMProvider
 
 # Provider instances (lazy initialized)
 _PROVIDERS: dict[Source, object] = {}
+_PROVIDERS_LOCK = Lock()
+_PROVIDER_INIT_LOCKS: dict[Source, Lock] = {}
 
 
 def _get_provider(source: Source) -> object:
-    if source in _PROVIDERS:
-        return _PROVIDERS[source]
-    provider: object
-    if source == Source.LRCLIB:
-        provider = LrclibProvider()
-    elif source == Source.QM:
-        provider = QMProvider()
-    elif source == Source.KG:
-        provider = KGProvider()
-    elif source == Source.NE:
-        provider = NEProvider()
-    else:
-        raise ValueError(f"Unsupported source: {source}")
-    _PROVIDERS[source] = provider
-    return provider
+    with _PROVIDERS_LOCK:
+        existing = _PROVIDERS.get(source)
+        if existing is not None:
+            return existing
+        init_lock = _PROVIDER_INIT_LOCKS.setdefault(source, Lock())
+
+    with init_lock:
+        with _PROVIDERS_LOCK:
+            existing = _PROVIDERS.get(source)
+            if existing is not None:
+                return existing
+
+        if source == Source.LRCLIB:
+            provider: object = LrclibProvider()
+        elif source == Source.QM:
+            provider = QMProvider()
+        elif source == Source.KG:
+            provider = KGProvider()
+        elif source == Source.NE:
+            provider = NEProvider()
+        else:
+            raise ValueError(f"Unsupported source: {source}")
+
+        with _PROVIDERS_LOCK:
+            _PROVIDERS[source] = provider
+        return provider
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """Handle independent provider requests without head-of-line blocking."""
+
+    daemon_threads = True
+    allow_reuse_address = True
 
 
 def _song_to_dict(song: Song, score: float) -> dict[str, Any]:
@@ -355,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     print(f"Starting LDDC server on {args.host}:{args.port}")
-    httpd = HTTPServer((args.host, args.port), Handler)
+    httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     httpd.serve_forever()
     return 0
 

@@ -7,6 +7,57 @@
 
 import SwiftUI
 
+struct TrackDeletionConfirmationRequest: Identifiable {
+    let tracks: [Track]
+    let id = UUID()
+
+    var message: String {
+        if tracks.count == 1, let track = tracks.first {
+            return String(
+                format: NSLocalizedString("context.delete_track_confirm_message", comment: ""),
+                track.title
+            )
+        }
+
+        return String(
+            format: NSLocalizedString("context.delete_tracks_confirm_message", comment: ""),
+            tracks.count
+        )
+    }
+}
+
+extension View {
+    func trackDeletionConfirmation(
+        item: Binding<TrackDeletionConfirmationRequest?>,
+        onConfirm: @escaping ([Track]) -> Void
+    ) -> some View {
+        alert(
+            NSLocalizedString("context.delete_track_confirm_title", comment: ""),
+            isPresented: Binding(
+                get: { item.wrappedValue != nil },
+                set: { if !$0 { item.wrappedValue = nil } }
+            ),
+            presenting: item.wrappedValue
+        ) { request in
+            Button(
+                NSLocalizedString("context.delete_confirm", comment: ""),
+                role: .destructive
+            ) {
+                item.wrappedValue = nil
+                onConfirm(request.tracks)
+            }
+            Button(
+                NSLocalizedString("edit.track.cancel", comment: ""),
+                role: .cancel
+            ) {
+                item.wrappedValue = nil
+            }
+        } message: { request in
+            Text(request.message)
+        }
+    }
+}
+
 struct TrackActionMenuContent: View {
     let track: Track
     var canSelectMultiple = false
@@ -15,6 +66,7 @@ struct TrackActionMenuContent: View {
     let onPlay: () -> Void
     var onPlayNext: (() -> Int)?
     let onEditTrack: (Track) -> Void
+    let onDeleteFromLibraryRequest: (Track) -> Void
     var onRemoveFromCurrentPlaylist: ((Track) -> Void)?
     var showsPlay: Bool = true
     var showsNavigation: Bool = true
@@ -32,6 +84,7 @@ struct TrackActionMenuContent: View {
         onPlay: @escaping () -> Void,
         onPlayNext: (() -> Int)? = nil,
         onEditTrack: @escaping (Track) -> Void,
+        onDeleteFromLibraryRequest: @escaping (Track) -> Void,
         onRemoveFromCurrentPlaylist: ((Track) -> Void)? = nil,
         showsPlay: Bool = true,
         showsNavigation: Bool = true,
@@ -51,6 +104,7 @@ struct TrackActionMenuContent: View {
         self.onPlay = onPlay
         self.onPlayNext = onPlayNext
         self.onEditTrack = onEditTrack
+        self.onDeleteFromLibraryRequest = onDeleteFromLibraryRequest
         self.onRemoveFromCurrentPlaylist = onRemoveFromCurrentPlaylist
         self.showsPlay = showsPlay
         self.showsNavigation = showsNavigation
@@ -177,10 +231,8 @@ struct TrackActionMenuContent: View {
                     surface: diagnosticSurface,
                     detail: "action=deleteTrack, track=\(trackIDPrefix)"
                 )
-                Task {
-                    await libraryVM.deleteTrack(track)
-                    ContextMenuDiagnostics.end(token)
-                }
+                onDeleteFromLibraryRequest(track)
+                ContextMenuDiagnostics.end(token)
             } label: {
                 Label("从资料库删除", systemImage: "trash")
             }

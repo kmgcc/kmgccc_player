@@ -35,6 +35,11 @@ if [[ ! -e "$AMLL_SOURCE/.git" ]]; then
   exit 1
 fi
 
+# Build tools resolve macOS /tmp through /private/tmp before embedding source
+# paths. Canonicalize the source first so sanitization removes the same prefix
+# regardless of whether the checkout was reached through a symlinked directory.
+AMLL_SOURCE="$(cd "$AMLL_SOURCE" && pwd -P)"
+
 mkdir -p "$AMLL_OUTPUT_DIR"
 
 if [[ "${1:-}" == "--sanitize-existing" ]]; then

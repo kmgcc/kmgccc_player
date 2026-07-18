@@ -56,9 +56,6 @@ final class LyricsWebViewStore: NSObject {
         let reason: String
     }
 
-    // MARK: - Singleton
-
-    static let shared = LyricsWebViewStore()
     private nonisolated static let ttmlDiagnosticsEnabled =
         ProcessInfo.processInfo.environment["AMLL_TTML_DIAGNOSTICS"] == "1"
     private nonisolated static let visibleLayerProbeEnabled =

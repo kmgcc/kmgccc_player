@@ -5,6 +5,7 @@
 //
 
 import Foundation
+import CryptoKit
 import Observation
 
 @Observable
@@ -29,8 +30,7 @@ final class PlaybackCoordinator {
     private var lastTelemetryIsPlaying: Bool?
     private var sidecarHydrationTask: Task<Void, Never>?
     private var sidecarHydratingTrackID: UUID?
-    private var trackArtworkWarmupTask: Task<Void, Never>?
-    private var trackArtworkWarmupSignature: String?
+    private let artworkWarmer: PlaybackArtworkWarmer
     private let lyricSnippetSeekLeadInSeconds: Double = 0.8
 
     private struct LyricsRefetchContext: Equatable {
@@ -53,20 +53,22 @@ final class PlaybackCoordinator {
         appleMusicAdapter: AppleMusicPlaybackAdapter,
         systemNowPlayingProvider: SystemNowPlayingProvider,
         settings: AppSettings? = nil,
-        meterProvider: AudioLevelMeterProtocol? = nil
+        meterProvider: AudioLevelMeterProtocol? = nil,
+        artworkWarmer: PlaybackArtworkWarmer = PlaybackArtworkWarmer()
     ) {
         self.playerVM = playerVM
         self.appleMusicAdapter = appleMusicAdapter
         self.systemNowPlayingProvider = systemNowPlayingProvider
         self.settings = settings ?? AppSettings.shared
         self.meterProvider = meterProvider
+        self.artworkWarmer = artworkWarmer
         self.activeSource = PlaybackSource(
             rawValue: UserDefaults.standard.string(forKey: Keys.activeSource) ?? ""
         ) ?? .local
         if activeSource.isExternal {
             externalProvider(for: activeSource)?.start()
-            ExternalPlaybackSpectrumSimulator.shared.start()
         }
+        AudioVisualizationVisibilityRegistry.shared.setExternalMode(activeSource.isExternal)
         refreshPresentation()
         startPresentationTimer()
         NowPlayingService.shared.register(coordinator: self)
@@ -82,6 +84,11 @@ final class PlaybackCoordinator {
             return
         }
 
+        CrashBreadcrumbRecorder.shared.record(
+            .playbackSourceChanged,
+            metadata: [.source: .string(TelemetryPlaybackMode(source: source).rawValue)]
+        )
+
         Log.info(
             "[PlaybackCoordinator] source switch \(activeSource.rawValue) -> \(source.rawValue)",
             category: .playback
@@ -96,16 +103,15 @@ final class PlaybackCoordinator {
         switch source {
         case .local:
             stopExternalProviders()
-            ExternalPlaybackSpectrumSimulator.shared.stop()
         case .appleMusic, .systemNowPlaying:
             if playerVM.isPlaying {
                 playerVM.pause()
             }
             externalProvider(for: source)?.start()
-            ExternalPlaybackSpectrumSimulator.shared.start()
         }
 
         activeSource = source
+        AudioVisualizationVisibilityRegistry.shared.setExternalMode(source.isExternal)
         lastSyncedPlayingState = nil
         UserDefaults.standard.set(source.rawValue, forKey: Keys.activeSource)
         onActiveSourceChanged?(source)
@@ -115,6 +121,7 @@ final class PlaybackCoordinator {
     }
 
     func playPause() {
+        recordCrashPlaybackCommand(.playPause)
         switch activeSource {
         case .local:
             playerVM.togglePlayPause()
@@ -126,6 +133,7 @@ final class PlaybackCoordinator {
     }
 
     func pause() {
+        recordCrashPlaybackCommand(.pause)
         switch activeSource {
         case .local:
             playerVM.pause()
@@ -137,6 +145,7 @@ final class PlaybackCoordinator {
     }
 
     func resume() {
+        recordCrashPlaybackCommand(.resume)
         switch activeSource {
         case .local:
             playerVM.resume()
@@ -148,6 +157,7 @@ final class PlaybackCoordinator {
     }
 
     func stop() {
+        recordCrashPlaybackCommand(.stop)
         switch activeSource {
         case .local:
             playerVM.stop()
@@ -159,6 +169,7 @@ final class PlaybackCoordinator {
     }
 
     func next() {
+        recordCrashPlaybackCommand(.next)
         switch activeSource {
         case .local:
             playerVM.next()
@@ -170,6 +181,7 @@ final class PlaybackCoordinator {
     }
 
     func previous() {
+        recordCrashPlaybackCommand(.previous)
         switch activeSource {
         case .local:
             playerVM.previous()
@@ -181,6 +193,7 @@ final class PlaybackCoordinator {
     }
 
     func seek(to seconds: Double) {
+        recordCrashPlaybackCommand(.seek)
         switch activeSource {
         case .local:
             playerVM.seek(to: seconds)
@@ -386,6 +399,7 @@ final class PlaybackCoordinator {
         libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil,
         startPolicy: PlaybackStartPolicy = .useSavedMode
     ) {
+        recordCrashPlaybackCommand(.playQueue)
         if activeSource != .local {
             setActiveSource(.local)
         }
@@ -428,9 +442,9 @@ final class PlaybackCoordinator {
     }
 
     func playRandomTracks(_ tracks: [Track], libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil) {
-        let queue = Self.availableUniqueTracks(from: tracks)
+        let queue = WeightedPlaybackSampler.playableUniqueTracks(from: tracks)
         guard !queue.isEmpty else { return }
-        let startTrack = Self.smartRandomPick(from: queue) ?? queue[0]
+        let startTrack = WeightedPlaybackSampler.pick(from: queue) ?? queue[0]
         let startIndex = queue.firstIndex(where: { $0.id == startTrack.id }) ?? 0
         playTracks(
             queue,
@@ -445,7 +459,7 @@ final class PlaybackCoordinator {
         inQueueFrom tracks: [Track],
         libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil
     ) {
-        let queue = Self.availableUniqueTracks(from: tracks)
+        let queue = WeightedPlaybackSampler.playableUniqueTracks(from: tracks)
         guard !queue.isEmpty else { return }
         let startIndex = queue.firstIndex(where: { $0.id == track.id }) ?? 0
         playTracks(
@@ -461,7 +475,7 @@ final class PlaybackCoordinator {
         seekTo seconds: Double,
         libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil
     ) {
-        let queue = Self.availableUniqueTracks(from: tracks)
+        let queue = WeightedPlaybackSampler.playableUniqueTracks(from: tracks)
         guard !queue.isEmpty else { return }
         let startIndex = queue.firstIndex(where: { $0.id == track.id }) ?? 0
         playTracks(
@@ -494,6 +508,7 @@ final class PlaybackCoordinator {
     }
 
     func play(track: Track) {
+        recordCrashPlaybackCommand(.playTrack)
         if activeSource != .local {
             setActiveSource(.local)
         }
@@ -503,6 +518,7 @@ final class PlaybackCoordinator {
     }
 
     func playTrackFromQueue(_ track: Track) {
+        recordCrashPlaybackCommand(.playTrackFromQueue)
         if activeSource != .local {
             setActiveSource(.local)
         }
@@ -525,9 +541,7 @@ final class PlaybackCoordinator {
         }
 
         let isPlaying = newPresentation.isPlaying
-        if activeSource.isExternal {
-            ExternalPlaybackSpectrumSimulator.shared.setPlaying(isPlaying)
-        }
+        AudioVisualizationVisibilityRegistry.shared.setPlaying(isPlaying)
         // Propagate play/pause to the meter + FFT chain for ALL sources (local
         // included, which previously never notified the meter) so the shared
         // analysis hub can suspend the FFT while paused, and re-cadence the
@@ -539,7 +553,11 @@ final class PlaybackCoordinator {
         }
 
         notifyTelemetryIfNeeded(source: activeSource, isPlaying: isPlaying)
-        scheduleTrackArtworkWarmupIfNeeded(for: newPresentation)
+        artworkWarmer.update(
+            activeSource: activeSource,
+            presentation: newPresentation,
+            queue: playerVM.currentQueueTracks
+        )
 
         let previousPresentation = presentation
         guard !newPresentation.isEffectivelyEqual(to: previousPresentation) else { return }
@@ -554,67 +572,14 @@ final class PlaybackCoordinator {
     @available(*, deprecated, message: "Use smartRandomPick for single picks or playRandomTracks for ShuffleSession-backed playback.")
     static func smartRandomQueue(from tracks: [Track], startingWith startTrack: Track? = nil) -> [Track] {
         if let startTrack,
-           let matched = availableUniqueTracks(from: tracks).first(where: { $0.id == startTrack.id }) {
+           let matched = WeightedPlaybackSampler.playableUniqueTracks(from: tracks).first(where: { $0.id == startTrack.id }) {
             return [matched]
         }
-        return smartRandomPick(from: tracks).map { [$0] } ?? []
+        return WeightedPlaybackSampler.pick(from: tracks).map { [$0] } ?? []
     }
 
     static func smartRandomPick(from tracks: [Track]) -> Track? {
-        let uniqueTracks = availableUniqueTracks(from: tracks)
-        guard !uniqueTracks.isEmpty else { return nil }
-
-        let trackByID = Dictionary(uniqueKeysWithValues: uniqueTracks.map { ($0.id, $0) })
-        let weights = Dictionary(uniqueKeysWithValues: uniqueTracks.map { track in
-            let stats = PreferenceStatsService.shared.getStats(for: track.id)
-            let score = PreferenceScorerV2.calculateScore(
-                stats: stats,
-                duration: track.duration,
-                manualLikeState: stats.manualLikeState
-            )
-            return (track.id, score.baseWeight)
-        })
-
-        return weightedSample(
-            from: uniqueTracks,
-            weights: weights,
-            recentHistory: [],
-            trackByID: trackByID
-        )
-    }
-
-    private static func availableUniqueTracks(from tracks: [Track]) -> [Track] {
-        var seenIDs = Set<UUID>()
-        return tracks.filter { track in
-            guard !seenIDs.contains(track.id) else { return false }
-            seenIDs.insert(track.id)
-            return track.availability != .missing
-        }
-    }
-
-    private static func weightedSample(
-        from tracks: [Track],
-        weights: [UUID: Double],
-        recentHistory: [UUID],
-        trackByID: [UUID: Track]
-    ) -> Track? {
-        let adjustedWeights = Dictionary(uniqueKeysWithValues: tracks.map { track in
-            let baseWeight = weights[track.id] ?? 1
-            let runtimeWeight = PreferenceScorerV2.applyRuntimePenalties(
-                baseWeight: baseWeight,
-                track: track,
-                recentHistory: recentHistory,
-                tracks: trackByID
-            )
-            return (track.id, runtimeWeight)
-        })
-
-        guard let selectedID = WeightedRandomSampler.sample(
-            from: tracks.map(\.id),
-            weights: adjustedWeights
-        ) else { return nil }
-
-        return trackByID[selectedID]
+        WeightedPlaybackSampler.pick(from: tracks)
     }
 
     private func externalProvider(for source: PlaybackSource) -> (any ExternalPlaybackProvider)? {
@@ -633,6 +598,13 @@ final class PlaybackCoordinator {
         lastTelemetrySource = source
         lastTelemetryIsPlaying = isPlaying
         onTelemetryPlaybackStateChanged?(source, isPlaying)
+    }
+
+    private func recordCrashPlaybackCommand(_ command: CrashPlaybackCommand) {
+        CrashBreadcrumbRecorder.shared.record(
+            .playbackCommand(command),
+            metadata: [.source: .string(TelemetryPlaybackMode(source: activeSource).rawValue)]
+        )
     }
 
     private func isPlayingForTelemetry(_ source: PlaybackSource) -> Bool {
@@ -771,58 +743,10 @@ final class PlaybackCoordinator {
         ].joined(separator: ":")
     }
 
-    private func scheduleTrackArtworkWarmupIfNeeded(for presentation: NowPlayingPresentation) {
-        guard activeSource == .local, let currentTrack = presentation.localTrack else {
-            trackArtworkWarmupTask?.cancel()
-            trackArtworkWarmupTask = nil
-            trackArtworkWarmupSignature = nil
-            return
-        }
-
-        let queue = playerVM.currentQueueTracks
-        let currentIndex = queue.firstIndex(where: { $0.id == currentTrack.id })
-        var targets: [Track] = [currentTrack]
-        if let currentIndex {
-            for offset in 1...2 {
-                let index = currentIndex + offset
-                if queue.indices.contains(index) {
-                    targets.append(queue[index])
-                }
-            }
-            let previousIndex = currentIndex - 1
-            if queue.indices.contains(previousIndex) {
-                targets.append(queue[previousIndex])
-            }
-        }
-
-        var seen = Set<UUID>()
-        let sources = targets.compactMap { track -> TrackArtworkSource? in
-            guard seen.insert(track.id).inserted else { return nil }
-            let fallbackData = track.id == currentTrack.id ? presentation.artworkData : track.artworkData
-            return track.trackArtworkSource(fallbackData: fallbackData)
-        }
-        guard !sources.isEmpty else {
-            trackArtworkWarmupTask?.cancel()
-            trackArtworkWarmupTask = nil
-            trackArtworkWarmupSignature = nil
-            return
-        }
-
-        let signature = sources.map(\.sourceKey).joined(separator: "||")
-        guard signature != trackArtworkWarmupSignature else { return }
-        trackArtworkWarmupSignature = signature
-        trackArtworkWarmupTask?.cancel()
-        trackArtworkWarmupTask = TrackArtworkCache.shared.preloadPlaybackArtwork(
-            for: sources,
-            reason: "playback-current-window"
-        )
-    }
-
     private func textSignature(_ text: String?) -> String {
         guard let text, !text.isEmpty else { return "empty" }
-        let head = String(text.prefix(16))
-        let tail = String(text.suffix(16))
-        return "\(text.count):\(head):\(tail)"
+        let digest = SHA256.hash(data: Data(text.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
     }
 
     private func scheduleSidecarHydrationIfNeeded(for track: Track) {

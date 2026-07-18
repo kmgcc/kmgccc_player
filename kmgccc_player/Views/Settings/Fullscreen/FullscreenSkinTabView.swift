@@ -12,6 +12,7 @@ struct FullscreenSkinTabView: View {
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     @State private var fullscreenArtworkScale: Double = AppSettings.shared.fullscreenArtworkScale
     @State private var fullscreenMiniPlayerAutoHideSeconds: Double = AppSettings.shared.fullscreenMiniPlayerAutoHideSeconds
@@ -19,10 +20,7 @@ struct FullscreenSkinTabView: View {
 
     private var slidingKnobColor: Color {
         if presentationStyle.usesMaterialSectionCards {
-            return FullscreenSelectionAccentStyle.dimmedAccentColor(
-                from: themeStore.accentNSColor,
-                lightnessDelta: 0.30
-            )
+            return presentationStyle.settingsPrimaryTextColor(appColors: appColors)
         }
         return themeStore.accentColor
     }
@@ -124,7 +122,7 @@ struct FullscreenSkinTabView: View {
         HStack(spacing: presentationStyle.compactInlineSpacing) {
             Text("自动隐藏")
                 .font(presentationStyle.rowLabelFont)
-                .foregroundStyle(presentationStyle.primaryTextColor)
+                .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
             Spacer()
             SlidingSelector(
                 segments: fullscreenMiniPlayerAutoHideOptions.map(\.seconds),
@@ -146,8 +144,11 @@ struct FullscreenSkinTabView: View {
                         .padding(.vertical, presentationStyle.segmentedVerticalPadding)
                         .foregroundStyle(
                             isSelected
-                                ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
-                                : presentationStyle.secondaryTextColor
+                                ? presentationStyle.settingsSelectedTextColor(
+                                    accentColor: themeStore.accentColor,
+                                    appColors: appColors
+                                )
+                                : presentationStyle.settingsSecondaryTextColor(appColors: appColors)
                         )
                 }
             )
@@ -162,7 +163,7 @@ struct FullscreenSkinTabView: View {
         HStack(spacing: presentationStyle.compactInlineSpacing) {
             Text("材质")
                 .font(presentationStyle.rowLabelFont)
-                .foregroundStyle(presentationStyle.primaryTextColor)
+                .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
             Spacer()
             SlidingSelector(
                 segments: fullscreenMiniPlayerGlassMaterialOptions.map(\.material),
@@ -184,8 +185,11 @@ struct FullscreenSkinTabView: View {
                         .padding(.vertical, presentationStyle.segmentedVerticalPadding)
                         .foregroundStyle(
                             isSelected
-                                ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
-                                : presentationStyle.secondaryTextColor
+                                ? presentationStyle.settingsSelectedTextColor(
+                                    accentColor: themeStore.accentColor,
+                                    appColors: appColors
+                                )
+                                : presentationStyle.settingsSecondaryTextColor(appColors: appColors)
                         )
                 }
             )
@@ -214,7 +218,7 @@ struct FullscreenSkinTabView: View {
             HStack {
                 Text("封面缩放")
                     .font(presentationStyle.rowLabelFont)
-                    .foregroundStyle(presentationStyle.primaryTextColor)
+                    .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                 Spacer()
                 Text(String(format: "%.2f", fullscreenArtworkScale))
                     .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
@@ -251,12 +255,14 @@ struct FullscreenSkinTabView: View {
                 )
         } else {
             Capsule()
-                .fill(presentationStyle.segmentedTrackColor)
+                .fill(presentationStyle.settingsSegmentedTrackColor(appColors: appColors))
                 .overlay(
                     Capsule()
                         .strokeBorder(
                             presentationStyle.segmentedTrackStrokeColor,
-                            lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear ? 0 : 0.5
+                            lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear
+                                ? 0
+                                : presentationStyle.scaledHairlineWidth
                         )
                         .allowsHitTesting(false)
                 )

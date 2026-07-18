@@ -20,6 +20,7 @@ struct LyricsTimingConfigSection: View {
     @Environment(LyricsViewModel.self) private var lyricsVM
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     // Local state for slider binding (fixes UI update issue with @ObservationIgnored properties)
     @State private var leadInMs: Double = Defaults.leadInMs
@@ -38,19 +39,23 @@ struct LyricsTimingConfigSection: View {
                 Divider().padding(.vertical, presentationStyle.dividerVerticalPadding)
                 globalAdvanceSection
             }
-            .padding(presentationStyle.groupPadding)
+            .padding(
+                presentationStyle.usesCustomSectionCards
+                    ? 0
+                    : presentationStyle.groupPadding
+            )
         } label: {
             HStack(spacing: presentationStyle.compactInlineSpacing) {
                 Text("settings.lyrics.timing")
                     .font(presentationStyle.sectionTitleFont)
-                    .foregroundStyle(presentationStyle.secondaryTextColor)
+                    .foregroundStyle(presentationStyle.settingsSecondaryTextColor(appColors: appColors))
                 Spacer()
                 Button("恢复默认值") {
                     resetToDefaults()
                 }
                 .buttonStyle(.borderless)
                 .font(.system(size: presentationStyle.captionFontSize))
-                .foregroundStyle(presentationStyle.secondaryTextColor)
+                .foregroundStyle(presentationStyle.settingsSecondaryTextColor(appColors: appColors))
             }
         }
         .onAppear {
@@ -66,9 +71,9 @@ struct LyricsTimingConfigSection: View {
     private var leadInSection: some View {
         VStack(alignment: .leading, spacing: presentationStyle.sliderBlockSpacing) {
             HStack {
-                Text("settings.lyrics.leadin")
-                    .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
-                    .foregroundStyle(presentationStyle.primaryTextColor)
+                    Text("settings.lyrics.leadin")
+                        .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                        .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                 Spacer()
                 Text("\(Int(leadInMs)) ms")
                     .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
@@ -91,9 +96,9 @@ struct LyricsTimingConfigSection: View {
     private var nearSwitchGapSection: some View {
         VStack(alignment: .leading, spacing: presentationStyle.sliderBlockSpacing) {
             HStack {
-                Text("settings.lyrics.near_switch_gap")
-                    .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
-                    .foregroundStyle(presentationStyle.primaryTextColor)
+                    Text("settings.lyrics.near_switch_gap")
+                        .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                        .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                 Spacer()
                 Text("\(Int(nearSwitchGapMs)) ms")
                     .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))
@@ -109,9 +114,9 @@ struct LyricsTimingConfigSection: View {
     private var globalAdvanceSection: some View {
         VStack(alignment: .leading, spacing: presentationStyle.sliderBlockSpacing) {
             HStack {
-                Text("歌词整体提前量")
-                    .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
-                    .foregroundStyle(presentationStyle.primaryTextColor)
+                    Text("歌词整体提前量")
+                        .font(.system(size: presentationStyle.rowFontSize, weight: .medium))
+                        .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                 Spacer()
                 Text("\(Int(globalAdvanceMs)) ms")
                     .foregroundStyle(presentationStyle.valueTextColor(accentColor: themeStore.accentColor))

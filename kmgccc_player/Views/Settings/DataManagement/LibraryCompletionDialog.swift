@@ -315,7 +315,7 @@ private struct LibraryCompletionDialogView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("扫描本地曲库，补全缺失内容。已有歌曲信息、封面和歌词会保留。")
                 .font(.system(size: 14))
-                .foregroundStyle(.primary)
+                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 12) {
@@ -346,7 +346,7 @@ private struct LibraryCompletionDialogView: View {
                         Text("\(Int(viewModel.progress.fractionCompleted * 100))%")
                             .font(.system(size: 13, weight: .medium))
                             .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                     }
 
                     ProgressView(value: viewModel.progress.fractionCompleted)
@@ -371,13 +371,13 @@ private struct LibraryCompletionDialogView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(currentTrackTitle)
                                 .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                                 .lineLimit(1)
 
                             if !currentTrackSubtitle.isEmpty {
                                 Text(currentTrackSubtitle)
                                     .font(.system(size: 12))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                                     .lineLimit(1)
                             }
                         }
@@ -390,7 +390,7 @@ private struct LibraryCompletionDialogView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("已找到内容")
                             .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
 
                         ForEach(viewModel.progress.recentEvents) { event in
                             HStack(alignment: .top, spacing: 10) {
@@ -402,10 +402,10 @@ private struct LibraryCompletionDialogView: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(event.title)
                                         .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(.primary)
+                                        .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                                     Text(event.detail)
                                         .font(.system(size: 12))
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                                         .lineLimit(1)
                                 }
 
@@ -436,7 +436,7 @@ private struct LibraryCompletionDialogView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("未补全项目")
                             .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
 
                         ScrollView {
                             VStack(alignment: .leading, spacing: 10) {
@@ -444,11 +444,11 @@ private struct LibraryCompletionDialogView: View {
                                     VStack(alignment: .leading, spacing: 4) {
                                         Text(failure.title)
                                             .font(.system(size: 13, weight: .medium))
-                                            .foregroundStyle(.primary)
+                                            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                                             .lineLimit(1)
                                         Text(failure.reason)
                                             .font(.system(size: 12))
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                                             .fixedSize(horizontal: false, vertical: true)
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -488,11 +488,11 @@ private struct LibraryCompletionDialogView: View {
         HStack {
             Text(title)
                 .font(.system(size: 13))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
             Spacer()
             Text(value)
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                 .monospacedDigit()
         }
     }
