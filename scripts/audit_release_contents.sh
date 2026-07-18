@@ -22,6 +22,7 @@ Options:
   --ref <ref>       Audit one ref or commit; repeatable. Default: HEAD.
   --all-refs        Audit every local ref, remote ref, tag, stash, and tool ref.
   --reflogs         Include reflog-only commits for the selected checkout.
+  --unreachable     Include unreachable/dangling objects in the local object database.
   --app <path>      Audit a built .app bundle; repeatable.
   -h, --help        Show this help.
 
@@ -31,6 +32,7 @@ USAGE
 
 all_refs=0
 include_reflogs=0
+include_unreachable=0
 declare -a selected_refs=()
 declare -a app_paths=()
 
@@ -47,6 +49,10 @@ while (($#)); do
       ;;
     --reflogs)
       include_reflogs=1
+      shift
+      ;;
+    --unreachable)
+      include_unreachable=1
       shift
       ;;
     --app)
@@ -358,7 +364,9 @@ scan_known_restricted_worktree_roots
 collect_ref_tips
 collect_commits
 scan_history
-scan_unreachable_objects
+if ((include_unreachable)); then
+  scan_unreachable_objects
+fi
 scan_app_bundles
 
 if ((violations)); then

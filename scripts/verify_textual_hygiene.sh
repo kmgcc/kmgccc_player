@@ -3,7 +3,7 @@
 # repository and resource names in committed text.
 #
 # The release audit (audit_release_contents.sh) already guards file PATHS in
-# the worktree, git history, unreachable objects, and app bundles. This guard
+# the worktree, selected Git history, optional unreachable objects, and app bundles. This guard
 # covers the words themselves in docs, comments, and scripts, so a stray
 # mention in a comment or document cannot hint at local-only repositories or
 # proprietary sources.
