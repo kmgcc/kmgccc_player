@@ -88,6 +88,12 @@ Xcode 的 `Run Optional Build Hook` Build Phase 调用此适配器。默认设�
 
 最终 App 中受控路径下的加密素材容器和编译后 Metal library 属于可分发运行产物；源码、明文素材、脚本，以及这些运行产物出现在公开工作树或 Git 历史中仍会阻断发布。它们不属于 `verify.sh` 的 PR 门禁。
 
+公开发布按以下顺序收口：
+
+1. 用已合并且通过 CI 的精确提交构建、审计并准备 Draft Release；Draft 只包含 DMG、`.symbols.zip` 和 `.sha256`。
+2. 复核 Draft 的目标提交、资产 digest、签名说明和安装说明后，先发布 GitHub Release。
+3. Release 已公开且 `/releases/latest` 指向新版本后，再通过独立 PR 更新 `pages/version.json`。不要让在线更新元数据提前指向仍处于 Draft 的版本。
+
 ## 约定
 
 - 脚本从仓库根目录运行，并自行解析仓库路径。
