@@ -30,6 +30,8 @@ CONFIGURATION=Release ./scripts/build_and_run.sh
 
 在新的 DerivedData 中构建可由 clean clone 复现的 App，并执行 bundle 完整性检查。该入口显式禁用本机构建扩展。
 
+用户协议和隐私政策位于受版本控制的 `kmgccc_player/LegalDocuments/`，属于公开且必需的运行资源；不要用本机忽略目录替代它们。
+
 ```sh
 ./scripts/build_app.sh Debug
 ./scripts/build_app.sh Release

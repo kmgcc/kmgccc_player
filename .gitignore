@@ -1,8 +1,7 @@
 # Local working copy of notes and documentation (excluded from the published source).
 /docs-private/
-# Documentation is tracked under docs/ as part of the published source.
-!kmgccc_player/Docs/
-kmgccc_player/Docs/*
+# Legacy local developer notes; published documentation lives under docs/.
+/kmgccc_player/Docs/
 
 # Local-only build configuration (the .example is committed)
 /Config/LocalOverrides.xcconfig

@@ -60,8 +60,8 @@ require_file "$RESOURCES/mediaremote-adapter/build/MediaRemoteAdapter.framework/
 require_executable "$RESOURCES/mediaremote-adapter/build/MediaRemoteAdapterTestClient" "MediaRemoteAdapter client"
 
 require_file "$RESOURCES/zh-Hans.lproj/Localizable.strings" "Simplified Chinese localization"
-require_file "$RESOURCES/Docs/policy.md" "User agreement document"
-require_file "$RESOURCES/Docs/privacy.md" "Privacy policy document"
+require_file "$RESOURCES/LegalDocuments/policy.md" "User agreement document"
+require_file "$RESOURCES/LegalDocuments/privacy.md" "Privacy policy document"
 for license in \
   AGPL-3.0.txt \
   GPL-3.0.txt \
