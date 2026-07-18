@@ -82,7 +82,9 @@ Xcode 的 `Run Optional Build Hook` Build Phase 调用此适配器。默认设�
 ./scripts/verify_repository_hygiene.sh
 ```
 
-`audit_release_contents.sh` 检查跟踪路径、所选 Git 历史和可选 App bundle；`verify_repository_hygiene.sh` 先运行文本卫生检查，再执行完整发布审计。最终 App 中受控路径下的加密素材容器和编译后 Metal library 属于可分发运行产物；源码、明文素材、脚本，以及这些运行产物出现在公开工作树或 Git 历史中仍会阻断发布。它们不属于 `verify.sh` 的 PR 门禁。
+`audit_release_contents.sh` 检查跟踪路径、所选 Git 历史和可选 App bundle。准备推送或发布时，应在只含待发布 refs 的干净克隆中运行上面的命令；它不会把不随 refs 传输的本机不可达对象误算进发布范围。需要对当前本机对象库做取证时，额外传入 `--unreachable`；`verify_repository_hygiene.sh` 会先运行文本卫生检查，再自动包含该取证检查。
+
+最终 App 中受控路径下的加密素材容器和编译后 Metal library 属于可分发运行产物；源码、明文素材、脚本，以及这些运行产物出现在公开工作树或 Git 历史中仍会阻断发布。它们不属于 `verify.sh` 的 PR 门禁。
 
 ## 约定
 
