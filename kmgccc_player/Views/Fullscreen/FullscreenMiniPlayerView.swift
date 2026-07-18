@@ -15,6 +15,44 @@ struct FullscreenControlsGlassStyle {
     let materialStyle: LiquidGlassPillMaterialStyle
 }
 
+/// Shared content metrics for the fullscreen Mini Player. The outer pill owns
+/// the animated container width; every section except progress has a stable
+/// footprint, so progress is the single continuous compression/expansion zone.
+/// Keeping these values in one type lets geometry self-checks detect future
+/// changes that would make the content wider than an expanded pill.
+nonisolated struct FullscreenMiniPlayerLayoutMetrics: Equatable, Sendable {
+    let scale: CGFloat
+
+    var trackInfoWidth: CGFloat { 196 * scale }
+    var controlsWidth: CGFloat { 174 * scale }
+    var playbackModeExpandedWidth: CGFloat { 178 * scale }
+    var externalPlaybackModeExpandedWidth: CGFloat { 160 * scale }
+    var playbackModeCollapsedWidth: CGFloat { 56 * scale }
+    var preferredProgressAreaWidth: CGFloat { 320 * scale }
+    var minimumProgressAreaWidth: CGFloat { 104 * scale }
+    var sectionSpacing: CGFloat { 18 * scale }
+    var horizontalPadding: CGFloat { 20 * scale }
+
+    var maximumPlaybackModeWidth: CGFloat {
+        max(playbackModeExpandedWidth, externalPlaybackModeExpandedWidth)
+    }
+
+    func availableProgressAreaWidth(
+        containerWidth: CGFloat,
+        playbackModeWidth: CGFloat
+    ) -> CGFloat {
+        max(
+            0,
+            containerWidth
+                - horizontalPadding * 2
+                - sectionSpacing * 3
+                - trackInfoWidth
+                - controlsWidth
+                - playbackModeWidth
+        )
+    }
+}
+
 /// Enlarged mini player bar for fullscreen mode.
 /// Layout: Cover+Title | Controls | Playback Mode | Progress | Volume
 struct FullscreenMiniPlayerView: View {
@@ -52,6 +90,7 @@ struct FullscreenMiniPlayerView: View {
     @State private var artworkImage: NSImage?
     @State private var isPlaybackModeExpanded = false
     @State private var isMiniPlayerHovering = false
+    @State private var trackDeletionRequest: TrackDeletionConfirmationRequest?
 
     // Computed properties based on settings and scale
     private var barHeight: CGFloat { fixedBarHeight * scale }
@@ -59,21 +98,25 @@ struct FullscreenMiniPlayerView: View {
     private var controlSize: CGFloat { barHeight * 0.6 }
     private var iconSize: CGFloat { barHeight * 0.27 }
     private var primaryIconSize: CGFloat { barHeight * 0.33 }
+    private var layoutMetrics: FullscreenMiniPlayerLayoutMetrics {
+        FullscreenMiniPlayerLayoutMetrics(scale: scale)
+    }
     
     // Layout constants scaled
-    private var trackInfoWidth: CGFloat { 196 * scale }
-    private var controlsWidth: CGFloat { 174 * scale }
-    private var playbackModeExpandedWidth: CGFloat { 178 * scale }
-    private var playbackModeCollapsedWidth: CGFloat { 56 * scale }
+    private var trackInfoWidth: CGFloat { layoutMetrics.trackInfoWidth }
+    private var controlsWidth: CGFloat { layoutMetrics.controlsWidth }
+    private var playbackModeExpandedWidth: CGFloat { layoutMetrics.playbackModeExpandedWidth }
+    private var playbackModeCollapsedWidth: CGFloat { layoutMetrics.playbackModeCollapsedWidth }
     private var playbackModeOccupancyWidth: CGFloat {
         let expandedWidth = playbackCoordinator.presentation.source.isExternal
-            ? 160 * scale
+            ? layoutMetrics.externalPlaybackModeExpandedWidth
             : playbackModeExpandedWidth
         return isPlaybackModeExpanded ? expandedWidth : playbackModeCollapsedWidth
     }
-    private var minProgressWidth: CGFloat { 320 * scale }
-    private var hStackSpacing: CGFloat { 18 * scale }
-    private var hPadding: CGFloat { 20 * scale }
+    private var minimumProgressAreaWidth: CGFloat { layoutMetrics.minimumProgressAreaWidth }
+    private var preferredProgressAreaWidth: CGFloat { layoutMetrics.preferredProgressAreaWidth }
+    private var hStackSpacing: CGFloat { layoutMetrics.sectionSpacing }
+    private var hPadding: CGFloat { layoutMetrics.horizontalPadding }
     private var vPadding: CGFloat { 8 * scale }
     private var trackInfoHSpacing: CGFloat { 16 * scale }
     private var trackInfoVSpacing: CGFloat { 6 * scale }
@@ -120,12 +163,17 @@ struct FullscreenMiniPlayerView: View {
                 artworkImage: artworkImage,
                 isRefetchingLyrics: playbackCoordinator.presentation.isRefetchingLyrics,
                 scale: scale,
-                primaryColor: lyricsDynamicPrimaryColor,
-                secondaryColor: lyricsDynamicSecondaryColor,
+                textForegroundProfile: miniPlayerTextForegroundProfile,
+                placeholderColor: lyricsDynamicSecondaryColor,
+                activityIndicatorColor: controlPrimaryColor,
                 contextMenuRefreshTrigger: libraryVM.refreshTrigger,
                 onEditTrack: { track in
                     onInteraction()
                     onEditTrackRequested(track)
+                },
+                onDeleteTrack: { track in
+                    onInteraction()
+                    trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: [track])
                 },
                 onEditExternalInfo: {
                     onInteraction()
@@ -134,20 +182,30 @@ struct FullscreenMiniPlayerView: View {
                 onInteraction: onInteraction
             )
             .equatable()
+            .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
             .frame(width: trackInfoWidth, alignment: .leading)
             .contentShape(Rectangle())
 
             // Center: Playback Controls
             controlsView
+                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
                 .frame(width: controlsWidth)
 
             // Playback Mode
             playbackModeView
+                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
                 .frame(width: playbackModeOccupancyWidth, alignment: .leading)
 
-            // Progress bar
+            // The progress/spectrum row is the only flexible section. Its
+            // proposal follows the outer pill's animated width on every frame,
+            // while the fixed controls keep their positions and dimensions.
             progressArea
-                .frame(minWidth: minProgressWidth, maxWidth: .infinity)
+                .frame(
+                    minWidth: minimumProgressAreaWidth,
+                    idealWidth: preferredProgressAreaWidth,
+                    maxWidth: .infinity
+                )
+                .layoutPriority(-1)
                 .frame(height: barHeight - vPadding * 2, alignment: .center)
 
             // Volume removed - now external component
@@ -162,11 +220,17 @@ struct FullscreenMiniPlayerView: View {
             materialStyle: glassStyle.materialStyle,
             isFloating: true
         )
+        .animation(nil, value: resolvedForegroundProfile)
         .onHover { hovering in
             isMiniPlayerHovering = hovering
             onHoverStateChanged(hovering)
             if hovering {
                 onInteraction()
+            }
+        }
+        .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in
+            Task {
+                await libraryVM.deleteTracks(tracks)
             }
         }
         .task(id: currentArtworkTaskKey) {
@@ -278,6 +342,10 @@ struct FullscreenMiniPlayerView: View {
             }
         }
         .frame(width: playbackModeOccupancyWidth, height: 36 * scale, alignment: .leading)
+        .anchorPreference(
+            key: PlaybackModeRetapTipAnchorPreferenceKey.self,
+            value: .bounds
+        ) { $0 }
         .contentShape(Capsule())
         .animation(layoutAnimation, value: isPlaybackModeExpanded)
         .onHover { hovering in
@@ -334,18 +402,6 @@ struct FullscreenMiniPlayerView: View {
         )
     }
 
-    // MARK: - Legacy Progress Views (kept for reference, no longer used)
-    
-    @available(*, deprecated, message: "Replaced by MiniPlayerProgressSpectrumRow")
-    private var progressBarWithSpectrum: some View {
-        EmptyView()
-    }
-    
-    @available(*, deprecated, message: "Replaced by MiniPlayerProgressSpectrumRow")
-    private var progressBar: some View {
-        EmptyView()
-    }
-    
     private var currentArtworkTaskKey: String {
         let presentation = playbackCoordinator.presentation
         if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
@@ -461,6 +517,14 @@ struct FullscreenMiniPlayerView: View {
 
     private var lyricsDynamicSecondaryColor: Color {
         controlPrimaryColor.opacity(0.78)
+    }
+
+    private var miniPlayerTextForegroundProfile: PlusBlendTextForegroundProfile {
+        themeStore.plusBlendTextPalette.profile(
+            for: resolvedForegroundProfile.isDarkForeground
+                ? .darkOnLightBackground
+                : .lightOnDarkBackground
+        )
     }
 
     private var controlSecondaryColor: Color {
@@ -600,11 +664,13 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
     let artworkImage: NSImage?
     let isRefetchingLyrics: Bool
     let scale: CGFloat
-    let primaryColor: Color
-    let secondaryColor: Color
+    let textForegroundProfile: PlusBlendTextForegroundProfile
+    let placeholderColor: Color
+    let activityIndicatorColor: Color
     let contextMenuRefreshTrigger: Int
 
     let onEditTrack: (Track) -> Void
+    let onDeleteTrack: (Track) -> Void
     let onEditExternalInfo: () -> Void
     let onInteraction: () -> Void
 
@@ -627,8 +693,9 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
             && lhs.artworkImage === rhs.artworkImage
             && lhs.isRefetchingLyrics == rhs.isRefetchingLyrics
             && lhs.scale == rhs.scale
-            && lhs.primaryColor == rhs.primaryColor
-            && lhs.secondaryColor == rhs.secondaryColor
+            && lhs.textForegroundProfile == rhs.textForegroundProfile
+            && lhs.placeholderColor == rhs.placeholderColor
+            && lhs.activityIndicatorColor == rhs.activityIndicatorColor
             && lhs.contextMenuRefreshTrigger == rhs.contextMenuRefreshTrigger
     }
 
@@ -647,9 +714,11 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
                             text: displayTitle,
                             fontSize: titleFontSize,
                             fontWeight: .semibold,
-                            color: primaryColor,
+                            color: textForegroundProfile.primaryColor,
                             enablesContentTransition: true
                         )
+                        .compositingGroup()
+                        .blendMode(textForegroundProfile.blendMode)
 
                         SeamlessMarqueeText(
                             text: displayArtist.isEmpty
@@ -657,13 +726,15 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
                                 : displayArtist,
                             fontSize: artistFontSize,
                             fontWeight: .medium,
-                            color: secondaryColor,
+                            color: textForegroundProfile.secondaryColor,
                             enablesContentTransition: true
                         )
+                        .compositingGroup()
+                        .blendMode(textForegroundProfile.blendMode)
                     } else {
                         Text(LocalizedStringKey(emptyTitleKey))
                             .font(.system(size: titleFontSize, weight: .semibold))
-                            .foregroundStyle(secondaryColor)
+                            .foregroundStyle(placeholderColor)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -671,6 +742,8 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
 
                 ProgressView()
                     .controlSize(.small)
+                    .tint(activityIndicatorColor)
+                    .foregroundStyle(activityIndicatorColor)
                     .frame(width: 12, height: 12)
                     .scaleEffect(scale)
                     .opacity(isRefetchingLyrics ? 1 : 0)
@@ -700,6 +773,8 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
                 ArtworkPlaceholderView.fullscreenMiniPlayer(artworkSize: 44, scale: scale)
                 ProgressView()
                     .controlSize(.small)
+                    .tint(activityIndicatorColor)
+                    .foregroundStyle(activityIndicatorColor)
                     .scaleEffect(0.78 * scale)
             }
             .frame(width: artworkSize, height: artworkSize)
@@ -727,6 +802,7 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
                     onInteraction()
                     onEditTrack(t)
                 },
+                onDeleteFromLibraryRequest: onDeleteTrack,
                 showsPlay: false,
                 showsNavigation: false,
                 diagnosticSurface: "MiniPlayerContextMenu"

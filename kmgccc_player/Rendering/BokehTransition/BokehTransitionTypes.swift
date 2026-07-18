@@ -2,30 +2,17 @@
 //  BokehTransitionTypes.swift
 //  myPlayer2
 //
-//  User-facing configuration and value-only contracts for the fullscreen
-//  Cover Gradient Blur transition. Metal-specific uniforms live alongside the
-//  renderer so this file remains safe to use from settings views.
+//  Value-only contracts for the fullscreen Cover Gradient Blur transition.
+//  Metal-specific uniforms live alongside the renderer.
 //
 
 import CoreGraphics
 import Foundation
 import simd
 
-enum CoverBlurTransitionEffect: String, CaseIterable, Sendable {
-    case bokeh
-    case gaussian
-
-    var displayName: String {
-        switch self {
-        case .bokeh: "散景"
-        case .gaussian: "高斯"
-        }
-    }
-}
-
-/// The only persisted choice is whether the transition uses Bokeh or Gaussian.
 /// Bokeh's visual and performance parameters are intentionally fixed so every
-/// installation uses the same transition result.
+/// installation uses the same transition result. Gaussian is only a runtime
+/// fallback when the Metal renderer cannot be used.
 struct BokehTransitionConfig: Equatable, Sendable {
     static let defaultRadiusAt1080 = 60.0
     static let defaultHighlightPower = 5.0
@@ -34,23 +21,19 @@ struct BokehTransitionConfig: Equatable, Sendable {
     static let defaultApertureRotationRadians = 0.0
     static let defaultApertureRoundness = 0.0
 
-    var effect: CoverBlurTransitionEffect
+    /// The Metal surface is intentionally low resolution while it is strongly
+    /// blurred. Once the radius is nearly clear, dissolve it into the static
+    /// high-resolution surface instead of exposing the upscaled source.
+    static let opticalFadeInvisibleRadiusAt1080 = 0.0
+    static let opticalFadeOpaqueRadiusAt1080 = 8.0
 
-    init(
-        effect: CoverBlurTransitionEffect = .bokeh
-    ) {
-        self.effect = effect
+    static func opticalVisibility(forRadiusAt1080 radius: CGFloat) -> CGFloat {
+        let lower = CGFloat(opticalFadeInvisibleRadiusAt1080)
+        let upper = CGFloat(opticalFadeOpaqueRadiusAt1080)
+        let progress = min(max((radius - lower) / (upper - lower), 0), 1)
+        return progress * progress * (3 - 2 * progress)
     }
 
-    static func load(from defaults: UserDefaults = .standard) -> Self {
-        Self(
-            effect: CoverBlurTransitionEffect(rawValue: defaults.string(forKey: Keys.effect) ?? "") ?? .bokeh
-        )
-    }
-
-    enum Keys {
-        static let effect = "skin.coverGradientBlur.transitionBokeh.effect"
-    }
 }
 
 // MARK: - Metal contracts
@@ -61,22 +44,24 @@ enum BokehTransitionRenderTier: String, Sendable {
 
     nonisolated var sampleBudget: UInt32 {
         switch self {
-        case .low: 128
-        case .balanced: 256
+        // Keep the gather kernel dense in both tiers. Sparse samples turn a
+        // point highlight into a visible flower/dot pattern; lowering spatial
+        // resolution is much less objectionable for an already-blurred layer.
+        case .low, .balanced: 640
         }
     }
 
     nonisolated var pixelBudget: Int {
         switch self {
-        case .low: 500_000
-        case .balanced: 900_000
+        case .low: 180_000
+        case .balanced: 260_000
         }
     }
 
     nonisolated var shortEdgeRange: ClosedRange<Int> {
         switch self {
-        case .low: 360...540
-        case .balanced: 540...720
+        case .low: 280...380
+        case .balanced: 360...480
         }
     }
 }
@@ -154,6 +139,10 @@ struct BokehTransitionSnapshot: Equatable, Sendable {
     var bokehRadius: CGFloat
     var surfaceOpacity: CGFloat
     var opticalOpacity: CGFloat
+    /// A transition-wide handoff from the low-resolution Metal surfaces to
+    /// the settled high-resolution SwiftUI background. This is separate from
+    /// per-surface opticalOpacity so artwork swaps retain their own crossfade.
+    var handoffOpacity: CGFloat
     var transitionCanvasSizeRatio: CGSize
     var transitionCanvasOffsetRatio: CGFloat
     var configuration: BokehTransitionConfig
@@ -167,6 +156,7 @@ struct BokehTransitionSnapshot: Equatable, Sendable {
         bokehRadius: 0,
         surfaceOpacity: 0,
         opticalOpacity: 0,
+        handoffOpacity: 0,
         transitionCanvasSizeRatio: CGSize(width: 1, height: 1),
         transitionCanvasOffsetRatio: 0,
         configuration: BokehTransitionConfig(),

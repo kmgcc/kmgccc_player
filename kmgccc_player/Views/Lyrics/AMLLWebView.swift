@@ -21,15 +21,7 @@ struct AMLLWebView: NSViewRepresentable {
     var forcedAppearanceMode: AppSettings.AppearanceMode?
     var animatesAttachment: Bool
 
-    @MainActor
-    init(
-        forcedAppearanceMode: AppSettings.AppearanceMode? = nil,
-        animatesAttachment: Bool = false
-    ) {
-        self.store = .shared
-        self.forcedAppearanceMode = forcedAppearanceMode
-        self.animatesAttachment = animatesAttachment
-    }
+
 
     @MainActor
     init(
@@ -371,6 +363,7 @@ final class WebViewHostView: NSView {
     var onLayout: ((CGRect) -> Void)?
     var onWindowStateChange: ((String) -> Void)?
     var webViewLayoutScale: CGFloat = 1
+    private var lastNotifiedLayoutBounds: CGRect?
 
     var isMouseInteractionSuppressed = false {
         didSet {
@@ -475,6 +468,8 @@ final class WebViewHostView: NSView {
     override func layout() {
         LyricsRuntimeProfile.increment("WebViewHostView.layout")
         super.layout()
+        guard lastNotifiedLayoutBounds != bounds else { return }
+        lastNotifiedLayoutBounds = bounds
         onLayout?(bounds)
     }
 
@@ -485,6 +480,7 @@ final class WebViewHostView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        lastNotifiedLayoutBounds = nil
         LyricsRuntimeProfile.increment("WebViewHostView.viewDidMoveToWindow")
         LyricsRuntimeProfile.setMetadata(
             "WebViewHostView.windowAttached",
@@ -503,7 +499,7 @@ final class WebViewHostView: NSView {
 // MARK: - Preview
 
 #Preview("AMLL WebView") {
-    AMLLWebView()
+    AMLLWebView(store: LyricsWebViewStore())
         .frame(width: 400, height: 500)
         .background(Color.black.opacity(0.8))
 }

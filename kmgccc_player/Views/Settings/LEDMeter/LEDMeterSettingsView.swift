@@ -14,6 +14,7 @@ struct LEDMeterSettingsView: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     /// Hide the embedded "LED Meter" header when this view is rendered as a tab
     /// inside another settings container that already shows a title.
@@ -28,28 +29,35 @@ struct LEDMeterSettingsView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: presentationStyle.scaled(20)) {
             if showTitle {
                 SettingsHeaderLabel("settings.section.led", systemImage: "waveform.path.ecg")
             }
 
             // Live Preview
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: presentationStyle.scaled(12)) {
                 SettingsSectionTitle("settings.led.live_preview")
 
                 LedMeterView(
                     level: Double(ledMeterProvider.normalizedLevel),
                     ledValues: ledMeterProvider.metrics.leds,
-                    dotSize: 14,
-                    spacing: 7,
+                    dotSize: presentationStyle.scaled(14),
+                    spacing: presentationStyle.scaled(7),
+                    contentScale: presentationStyle.fullscreenScale,
                     isPlaying: playerVM.isPlaying
                 )
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 40)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .padding(.vertical, presentationStyle.scaled(40))
+                .background(
+                    .ultraThinMaterial,
+                    in: RoundedRectangle(cornerRadius: presentationStyle.scaled(16))
+                )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .strokeBorder(Color.primary.opacity(0.05))
+                    RoundedRectangle(cornerRadius: presentationStyle.scaled(16))
+                        .strokeBorder(
+                            presentationStyle.settingsPrimaryTextColor(appColors: appColors).opacity(0.05),
+                            lineWidth: presentationStyle.scaledHairlineWidth
+                        )
                 )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -77,7 +85,7 @@ struct LEDMeterSettingsView: View {
 
     private var visualConfigSection: some View {
         SettingsSection("settings.led.config") {
-            VStack(spacing: 16) {
+            VStack(spacing: presentationStyle.scaled(16)) {
                 ledCountPicker
                 brightnessLevelsPicker
             }
@@ -85,7 +93,7 @@ struct LEDMeterSettingsView: View {
     }
 
     private var ledCountPicker: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: presentationStyle.scaled(8)) {
             Text("settings.led.count")
                 .settingsRowLabelStyle()
             Spacer()
@@ -99,27 +107,37 @@ struct LEDMeterSettingsView: View {
                 },
                 knob: {
                     Capsule()
-                        .fill(themeStore.accentColor.opacity(0.18))
+                        .fill(selectorKnobColor.opacity(0.18))
                 },
                 content: { count, isSelected in
                     Text("\(count)")
-                        .font(.system(size: 11, weight: isSelected ? .medium : .regular))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
+                        .font(.system(
+                            size: presentationStyle.scaled(11),
+                            weight: isSelected ? .medium : .regular
+                        ))
+                        .padding(.horizontal, presentationStyle.scaled(10))
+                        .padding(.vertical, presentationStyle.scaled(4))
+                        .foregroundStyle(
+                            isSelected
+                                ? presentationStyle.settingsSelectedTextColor(
+                                    accentColor: themeStore.accentColor,
+                                    appColors: appColors
+                                )
+                                : presentationStyle.settingsSecondaryTextColor(appColors: appColors)
+                        )
                 }
             )
-            .padding(3)
+            .padding(presentationStyle.scaled(3))
             .background(
                 Capsule()
-                    .fill(Color.secondary.opacity(0.08))
+                    .fill(presentationStyle.settingsSegmentedTrackColor(appColors: appColors))
             )
             .fixedSize(horizontal: true, vertical: false)
         }
     }
 
     private var brightnessLevelsPicker: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: presentationStyle.scaled(8)) {
             Text("settings.led.brightness")
                 .settingsRowLabelStyle()
             Spacer()
@@ -133,30 +151,46 @@ struct LEDMeterSettingsView: View {
                 },
                 knob: {
                     Capsule()
-                        .fill(themeStore.accentColor.opacity(0.18))
+                        .fill(selectorKnobColor.opacity(0.18))
                 },
                 content: { level, isSelected in
                     Text("\(level)")
-                        .font(.system(size: 11, weight: isSelected ? .medium : .regular))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
+                        .font(.system(
+                            size: presentationStyle.scaled(11),
+                            weight: isSelected ? .medium : .regular
+                        ))
+                        .padding(.horizontal, presentationStyle.scaled(10))
+                        .padding(.vertical, presentationStyle.scaled(4))
+                        .foregroundStyle(
+                            isSelected
+                                ? presentationStyle.settingsSelectedTextColor(
+                                    accentColor: themeStore.accentColor,
+                                    appColors: appColors
+                                )
+                                : presentationStyle.settingsSecondaryTextColor(appColors: appColors)
+                        )
                 }
             )
-            .padding(3)
+            .padding(presentationStyle.scaled(3))
             .background(
                 Capsule()
-                    .fill(Color.secondary.opacity(0.08))
+                    .fill(presentationStyle.settingsSegmentedTrackColor(appColors: appColors))
             )
             .fixedSize(horizontal: true, vertical: false)
         }
+    }
+
+    private var selectorKnobColor: Color {
+        presentationStyle.usesMaterialSectionCards
+            ? presentationStyle.settingsPrimaryTextColor(appColors: appColors)
+            : themeStore.accentColor
     }
 
     private func applyLedConfig() {
         settings.ledCount = ledCount
         settings.ledBrightnessLevels = brightnessLevels
 
-        ledMeterProvider.getOrCreate()?.updateConfig(
+        ledMeterProvider.updateConfig(
             LEDMeterConfig(
                 ledCount: ledCount,
                 levels: brightnessLevels,

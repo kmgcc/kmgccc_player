@@ -38,6 +38,7 @@ RESOURCES="$CONTENTS/Resources"
 
 require_directory "$APP" "App bundle"
 require_executable "$CONTENTS/MacOS/kmgccc_player" "App executable"
+require_file "$CONTENTS/Info.plist" "App Info.plist"
 require_file "$RESOURCES/Assets.car" "Asset catalog"
 
 require_file "$RESOURCES/AMLL/index.html" "AMLL entry page"
@@ -59,6 +60,8 @@ require_file "$RESOURCES/mediaremote-adapter/build/MediaRemoteAdapter.framework/
 require_executable "$RESOURCES/mediaremote-adapter/build/MediaRemoteAdapterTestClient" "MediaRemoteAdapter client"
 
 require_file "$RESOURCES/zh-Hans.lproj/Localizable.strings" "Simplified Chinese localization"
+require_file "$RESOURCES/LegalDocuments/policy.md" "User agreement document"
+require_file "$RESOURCES/LegalDocuments/privacy.md" "Privacy policy document"
 for license in \
   AGPL-3.0.txt \
   GPL-3.0.txt \

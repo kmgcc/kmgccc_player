@@ -734,7 +734,8 @@ struct TrackInfoEditorCore: View {
                     title: title,
                     artist: artist,
                     album: album,
-                    duration: duration
+                    duration: duration,
+                    autoSearchOnAppear: false
                 ) { ttml in
                     lyricsText = ttml
                 }

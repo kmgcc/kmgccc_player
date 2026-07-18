@@ -50,6 +50,7 @@ struct DeferredLyricsFontPickerRows: View {
 
     @ObservedObject private var fontProvider = SystemFontFamilyProvider.shared
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     var body: some View {
         Group {
@@ -60,27 +61,26 @@ struct DeferredLyricsFontPickerRows: View {
                     fontPickerRow(title: translationTitle, selection: $translationFontName)
                 }
             } else if fontProvider.isLoading {
-                HStack(spacing: 8) {
+                HStack(spacing: presentationStyle.scaled(8)) {
                     ProgressView()
-                        .controlSize(.small)
                     Text("正在加载字体…")
                         .font(presentationStyle.captionFont)
-                        .foregroundStyle(presentationStyle.secondaryTextColor)
+                        .foregroundStyle(presentationStyle.settingsSecondaryTextColor(appColors: appColors))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                HStack(spacing: 10) {
+                HStack(spacing: presentationStyle.scaled(10)) {
                     Text("字体列表尚未加载")
                         .font(presentationStyle.captionFont)
-                        .foregroundStyle(presentationStyle.secondaryTextColor)
+                        .foregroundStyle(presentationStyle.settingsSecondaryTextColor(appColors: appColors))
                     Spacer()
                     Button {
                         fontProvider.loadIfNeeded()
                     } label: {
                         Label("加载字体", systemImage: "textformat")
-                            .foregroundStyle(presentationStyle.primaryTextColor)
+                            .font(presentationStyle.captionFont)
+                            .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
                     }
-                    .controlSize(.small)
                 }
             }
         }
@@ -93,12 +93,12 @@ struct DeferredLyricsFontPickerRows: View {
         HStack {
             Text(title)
                 .font(presentationStyle.rowLabelFont)
-                .foregroundStyle(presentationStyle.primaryTextColor)
+                .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
             Spacer()
             Picker("", selection: selection) {
                 ForEach(families(including: selection.wrappedValue), id: \.self) { family in
                     Text(family)
-                        .font(.custom(family, size: 12))
+                        .font(.custom(family, size: presentationStyle.scaled(12)))
                         .tag(family)
                 }
             }

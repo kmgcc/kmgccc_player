@@ -192,11 +192,9 @@ struct LyricsPanelView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         } else {
             ZStack {
-                if !playbackCoordinator.presentation.hasTrack && !shouldHostLyricsWebView {
+                if !playbackCoordinator.presentation.hasTrack {
                     emptyStateView
-                }
-
-                if shouldHostLyricsWebView {
+                } else if shouldHostLyricsWebView {
                     AMLLWebView(store: lyricsVM.webViewStore, animatesAttachment: false)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(.horizontal, 24)
@@ -328,7 +326,11 @@ struct LyricsPanelView: View {
 
     private var emptyStateView: some View {
         VStack(spacing: 6) {
-            Image("EmptyLyric")
+            ArtAssetImages.image(
+                named: ArtAssetImages.emptyLyricsName,
+                maxPixel: 720,
+                fallbackSystemName: "text.quote"
+            )
                 .resizable()
                 .scaledToFit()
                 .frame(width: 180, height: 180)
@@ -354,7 +356,11 @@ struct LyricsPanelView: View {
 
     private func lyricsUnavailableOverlay(message: String) -> some View {
         VStack(spacing: 8) {
-            Image("EmptyLyric")
+            ArtAssetImages.image(
+                named: ArtAssetImages.emptyLyricsName,
+                maxPixel: 560,
+                fallbackSystemName: "text.quote"
+            )
                 .resizable()
                 .scaledToFit()
                 .frame(width: 120, height: 120)
@@ -758,18 +764,18 @@ struct LyricsSettingsObserver: ViewModifier {
     var lyricsVM: LyricsViewModel
     var isActive: Bool = true
 
-    @AppStorage("lyricsFontSize") private var lyricsFontSize: Double = 26.0
-    @AppStorage("lyricsFontNameZh") private var lyricsFontNameZh: String = "PingFang SC"
-    @AppStorage("lyricsFontNameEn") private var lyricsFontNameEn: String = "SF Pro Text"
+    @AppStorage("lyricsFontSize") private var lyricsFontSize: Double = 32.0
+    @AppStorage("lyricsFontNameZh") private var lyricsFontNameZh: String = LyricsFontDefaults.chinese
+    @AppStorage("lyricsFontNameEn") private var lyricsFontNameEn: String = LyricsFontDefaults.english
     @AppStorage("lyricsTranslationFontName") private var lyricsTranslationFontName: String =
-        "SF Pro Text"
+        LyricsFontDefaults.translation
     @AppStorage("lyricsFontWeightLight") private var lyricsFontWeightLight: Int = 600
-    @AppStorage("lyricsFontWeightDark") private var lyricsFontWeightDark: Int = 600
-    @AppStorage("lyricsTranslationFontSize") private var lyricsTranslationFontSize: Double = 16.0
+    @AppStorage("lyricsFontWeightDark") private var lyricsFontWeightDark: Int = 100
+    @AppStorage("lyricsTranslationFontSize") private var lyricsTranslationFontSize: Double = 18.0
     @AppStorage("lyricsTranslationFontWeightLight") private var lyricsTranslationFontWeightLight:
-        Int = 400
+        Int = 500
     @AppStorage("lyricsTranslationFontWeightDark") private var lyricsTranslationFontWeightDark:
-        Int = 400
+        Int = 100
     @AppStorage("lyricsLeadInMs") private var lyricsLeadInMs: Double = 300
     @AppStorage("lyricsNearSwitchGapMs") private var lyricsNearSwitchGapMs: Double = 70
     @AppStorage("lyricsGlobalAdvanceMs") private var lyricsGlobalAdvanceMs: Double = 0

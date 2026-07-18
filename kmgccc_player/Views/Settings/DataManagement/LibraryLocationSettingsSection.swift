@@ -11,6 +11,7 @@ import AppKit
 /// Settings section for configuring the music library root path.
 struct LibraryLocationSettingsSection: View {
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     @State private var showChangeConfirmAlert = false
     @State private var showRestoreConfirmAlert = false
@@ -31,7 +32,7 @@ struct LibraryLocationSettingsSection: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text(currentPath)
                     .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(appColors?.secondary ?? .secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(currentPath)

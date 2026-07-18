@@ -22,6 +22,7 @@ struct SkinPreviewCard<Preview: View>: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     private var selectionAccentColor: Color {
         FullscreenSelectionAccentStyle.adjustedAccentColor(from: themeStore.accentNSColor)
@@ -31,16 +32,16 @@ struct SkinPreviewCard<Preview: View>: View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     }
 
-    private var contentPaddingH: CGFloat { 12 }
-    private var contentPaddingV: CGFloat { 12 }
-    private var innerSpacing: CGFloat { 10 }
+    private var contentPaddingH: CGFloat { presentationStyle.scaled(12) }
+    private var contentPaddingV: CGFloat { presentationStyle.scaled(12) }
+    private var innerSpacing: CGFloat { presentationStyle.scaled(10) }
 
     private var titleMinHeight: CGFloat {
         presentationStyle.isCompact ? presentationStyle.skinTitleMinHeight : 16
     }
 
     private var outerStrokeLineWidth: CGFloat {
-        isSelected ? 2 : 1
+        presentationStyle.scaled(isSelected ? 2 : 1)
     }
 
     init(
@@ -66,17 +67,11 @@ struct SkinPreviewCard<Preview: View>: View {
     var body: some View {
         Button(action: action) {
             ZStack {
-                outerShape
-                    .fill(Color.clear)
-                    .glassEffect(.clear, in: outerShape)
-                    .overlay(
-                        outerShape
-                            .fill(isSelected ? selectionAccentColor.opacity(0.10) : Color.clear)
-                            .allowsHitTesting(false)
-                    )
+                cardSurface
 
                 VStack(spacing: innerSpacing) {
                     preview()
+                        .scaleEffect(presentationStyle.fullscreenScale)
                         .frame(width: previewSize, height: previewSize)
 
                     Text(title)
@@ -105,17 +100,54 @@ struct SkinPreviewCard<Preview: View>: View {
 
     // MARK: - Appearance
 
-    private var titleColor: Color {
-        // Always neutral gray; never theme-tinted.
-        if colorScheme == .dark {
-            return Color.white.opacity(0.82)
+    @ViewBuilder
+    private var cardSurface: some View {
+        if presentationStyle.usesUnifiedOverlayForeground {
+            // The Quick Panel already sits on Clear Glass and its sections use
+            // Ultra Thin Material. A plain translucent fill avoids glass-on-
+            // glass while keeping the preview card visibly interactive.
+            outerShape
+                .fill(
+                    presentationStyle.primaryTextColor.opacity(isSelected ? 0.10 : 0.035)
+                )
+        } else {
+            outerShape
+                .fill(Color.clear)
+                .glassEffect(.clear, in: outerShape)
+                .overlay(
+                    outerShape
+                        .fill(isSelected ? selectionAccentColor.opacity(0.10) : Color.clear)
+                        .allowsHitTesting(false)
+                )
         }
-        return Color.black.opacity(0.62)
+    }
+
+    private var titleColor: Color {
+        if presentationStyle.usesUnifiedOverlayForeground {
+            return presentationStyle.skinTitleColor(
+                selected: isSelected,
+                accentColor: selectionAccentColor,
+                colorScheme: colorScheme
+            )
+        }
+        if isSelected {
+            return selectionAccentColor
+        }
+        if let appColors {
+            return appColors.secondary
+        }
+        return colorScheme == .dark ? Color.white.opacity(0.82) : Color.black.opacity(0.62)
     }
 
     private var outerStrokeColor: Color {
+        if presentationStyle.usesUnifiedOverlayForeground {
+            return presentationStyle.primaryTextColor.opacity(isSelected ? 0.72 : 0.12)
+        }
         if isSelected {
             return selectionAccentColor.opacity(0.98)
+        }
+        if let appColors {
+            return appColors.secondary.opacity(0.16)
         }
         if colorScheme == .dark {
             return Color.white.opacity(0.10)

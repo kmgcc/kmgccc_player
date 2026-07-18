@@ -494,8 +494,10 @@ private struct HomePreferenceRankingView: View {
     var primaryColor: Color = Color.primary
     var subtitleColor: Color = Color.secondary
     var tertiaryColor: Color = Color(nsColor: .tertiaryLabelColor)
+    @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(\.colorScheme) private var colorScheme
     @State private var trackToEdit: Track?
+    @State private var trackDeletionRequest: TrackDeletionConfirmationRequest?
 
     var body: some View {
         let isHeightConstrained = fixedHeight != nil
@@ -552,7 +554,10 @@ private struct HomePreferenceRankingView: View {
                                     accentColor: accentColor,
                                     primaryColor: primaryColor,
                                     subtitleColor: subtitleColor,
-                                    onEditTrack: { trackToEdit = $0 }
+                                    onEditTrack: { trackToEdit = $0 },
+                                    onDeleteTrack: { track in
+                                        trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: [track])
+                                    }
                                 )
                                 if index < visibleItems.count - 1 {
                                     Divider()
@@ -570,6 +575,11 @@ private struct HomePreferenceRankingView: View {
         }
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
+        }
+        .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in
+            Task {
+                await libraryVM.deleteTracks(tracks)
+            }
         }
     }
 
@@ -590,6 +600,7 @@ private struct HomeRankRow: View {
     var primaryColor: Color = Color.primary
     var subtitleColor: Color = Color.secondary
     let onEditTrack: (Track) -> Void
+    let onDeleteTrack: (Track) -> Void
     @State private var isHovering = false
     @Environment(\.colorScheme) private var colorScheme
 
@@ -671,7 +682,8 @@ private struct HomeRankRow: View {
                 onPlayNext: playbackCoordinator.canInsertTracksAfterCurrent
                     ? { playbackCoordinator.insertTracksAfterCurrent([item.track]) }
                     : nil,
-                onEditTrack: onEditTrack
+                onEditTrack: onEditTrack,
+                onDeleteFromLibraryRequest: onDeleteTrack
             )
         }
     }

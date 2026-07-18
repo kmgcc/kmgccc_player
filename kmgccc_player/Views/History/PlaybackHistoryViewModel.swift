@@ -64,6 +64,11 @@ final class PlaybackHistoryViewModel {
     var isMultiselectMode = false
     var selectedEventIDs: Set<UUID> = []
 
+    /// Shift-range anchor. Event ID, never a track ID — mirrors
+    /// `selectedEventIDs` semantics. Cleared when multiselect exits or when
+    /// the anchored event is no longer in the loaded set.
+    private(set) var selectionAnchorEventID: UUID?
+
     /// This is an event ID, never a track ID. Two sessions for the same song
     /// must remain independently selectable and independently highlightable.
     private(set) var activeEventID: UUID?
@@ -129,6 +134,9 @@ final class PlaybackHistoryViewModel {
         if let activeEventID, !itemIDs.contains(activeEventID) {
             self.activeEventID = nil
         }
+        if let selectionAnchorEventID, !itemIDs.contains(selectionAnchorEventID) {
+            self.selectionAnchorEventID = nil
+        }
         isLoading = false
     }
 
@@ -140,21 +148,38 @@ final class PlaybackHistoryViewModel {
         isMultiselectMode.toggle()
         if !isMultiselectMode {
             selectedEventIDs.removeAll()
+            selectionAnchorEventID = nil
         }
     }
 
     func clearMultiselectState() {
         isMultiselectMode = false
         selectedEventIDs.removeAll()
+        selectionAnchorEventID = nil
     }
 
-    func toggleSelection(for eventID: UUID) {
+    func toggleSelection(for eventID: UUID, extendingRange: Bool) {
         guard isMultiselectMode else { return }
+
+        if extendingRange,
+           let anchorID = selectionAnchorEventID {
+            let ordered = visibleItems.map(\.id)
+            if let anchorIndex = ordered.firstIndex(of: anchorID),
+               let currentIndex = ordered.firstIndex(of: eventID) {
+                let bounds = anchorIndex <= currentIndex
+                    ? anchorIndex...currentIndex
+                    : currentIndex...anchorIndex
+                selectedEventIDs.formUnion(ordered[bounds])
+                return
+            }
+        }
+
         if selectedEventIDs.contains(eventID) {
             selectedEventIDs.remove(eventID)
         } else {
             selectedEventIDs.insert(eventID)
         }
+        selectionAnchorEventID = eventID
     }
 
     func setActiveEvent(_ eventID: UUID) {
@@ -166,12 +191,37 @@ final class PlaybackHistoryViewModel {
     }
 
     @discardableResult
+    func delete(eventIDs: some Collection<UUID>, using store: PlaybackHistoryStore) -> Bool {
+        let ids = Set(eventIDs)
+        guard !ids.isEmpty else { return true }
+
+        let didDelete = store.delete(itemIDs: ids)
+        guard didDelete else { return false }
+
+        items.removeAll { ids.contains($0.id) }
+        selectedEventIDs.subtract(ids)
+        if let activeEventID, ids.contains(activeEventID) {
+            self.activeEventID = nil
+        }
+        if let selectionAnchorEventID, ids.contains(selectionAnchorEventID) {
+            self.selectionAnchorEventID = nil
+        }
+        if selectedEventIDs.isEmpty {
+            isMultiselectMode = false
+        }
+        return true
+    }
+
+    @discardableResult
     func delete(eventID: UUID, using store: PlaybackHistoryStore) -> Bool {
         let didDelete = store.delete(itemID: eventID)
         guard didDelete else { return false }
         selectedEventIDs.remove(eventID)
         if activeEventID == eventID {
             activeEventID = nil
+        }
+        if selectionAnchorEventID == eventID {
+            selectionAnchorEventID = nil
         }
         items.removeAll { $0.id == eventID }
         return true
@@ -187,6 +237,7 @@ final class PlaybackHistoryViewModel {
         if let activeEventID, ids.contains(activeEventID) {
             self.activeEventID = nil
         }
+        selectionAnchorEventID = nil
         selectedEventIDs.removeAll()
         isMultiselectMode = false
         return true

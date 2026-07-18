@@ -1,120 +1,103 @@
 # 外部组件与构建依赖
 
-kmgccc_player 的 Swift 代码由 Xcode 直接构建，但歌词渲染、在线搜索、封面查询和外部播放状态读取这些能力依赖前端资源、Python 服务或原生 framework。这些外部组件不会被提交到 Xcode 工程内部，而是由 `scripts/bootstrap.sh` 统一取得和构建，产物放在 `.build/products/` 下，再由 Xcode 的 Build Phase 复制进 App bundle。
+kmgccc_player 的 Swift 代码由 Xcode 构建，歌词渲染、歌词搜索、封面候选和系统播放状态读取还依赖若干独立运行组件。`scripts/bootstrap.sh` 统一取得、校验和构建这些组件，Xcode 只消费 bootstrap 生成的产品。
 
-只要环境满足要求，`bootstrap.sh` 会处理所有外部组件的获取、校验、编译和缓存，贡献者不需要手工下载任何二进制文件。
+```mermaid
+flowchart LR
+    Sources["固定版本的源码或归档"] --> Bootstrap["scripts/bootstrap.sh"]
+    Bootstrap --> Products["可复现的 arm64 产品"]
+    Products --> Xcode["Xcode Build Phases"]
+    Xcode --> App["App bundle"]
+```
 
-## 一键准备
+## 准备环境
 
 ```sh
 ./scripts/bootstrap.sh
 ```
 
-首次运行会下载依赖并编译所有 ARM64 产物，耗时较长。之后每次运行会比较源码、架构和工具链，未变化的组件直接复用缓存。CI 和新环境都应从此命令开始。
+首次运行会下载依赖并构建 Apple Silicon 产物，之后根据源码、工具链和架构状态复用缓存。CI 与本地开发使用同一入口，贡献者不需要手工寻找或替换二进制文件。
+
+支持按组件检查或重建：
+
+```sh
+./scripts/bootstrap.sh --check
+./scripts/bootstrap.sh --check --component amll
+./scripts/bootstrap.sh --force --component amll
+```
+
+组件名为 `amll`、`lddc`、`qqmusic-helper`、`mediaremote` 和 `sacad`。
 
 ## 组件概览
 
-| 组件 | 用途 | 来源方式 | 修改 |
+| 组件 | 运行边界 | 用途 | 失败时的降级 |
 | --- | --- | --- | --- |
-| AMLL | 歌词渲染 | Git submodule（项目 fork） | 有 |
-| LDDC Fetch Core | 歌词搜索 | 主仓库版本化源码 | 有 |
-| QQ Music Helper | QQ 音乐封面查询 | 固定 PyPI 版本 + 包装层 | 有 |
-| MediaRemoteAdapter | 系统播放状态 | 固定源码归档下载 | 有（补丁） |
-| SACAD | 封面搜索 | 固定二进制下载 | 无 |
+| AMLL | WKWebView 中的 JavaScript 与 DOM | TTML 解析和逐词歌词渲染 | 对应歌词 surface 无法显示 |
+| LDDC Fetch Core | 本机回环 HTTP 服务 | 多来源歌词搜索、获取和格式处理 | LDDC 搜索不可用，本地 AMLL DB 仍可用 |
+| QQ Music Helper | stdin/stdout JSON 子进程 | QQ 音乐元数据和封面候选 | QQ 候选不可用，其他来源独立 |
+| MediaRemoteAdapter | 原生 framework 与流式 JSON | 系统 Now Playing 状态和控制 | 系统外部播放不可用，本地与 Apple Music 独立 |
+| SACAD | 单次命令行进程 | 专辑封面搜索和下载 | SACAD 候选不可用 |
+
+这些组件都按进程或 WebView 边界隔离。Swift 侧只依赖稳定协议，不直接调用第三方服务内部 API。
 
 ## AMLL
 
-AMLL（applemusic-like-lyrics）是歌词渲染引擎，App 在 WKWebView 中加载它的 DOM LyricPlayer 来渲染逐词歌词。
+[applemusic-like-lyrics](https://github.com/amll-dev/applemusic-like-lyrics) 提供逐词歌词渲染能力。项目使用固定 submodule 版本构建普通 DOM `LyricPlayer`、TTML parser 和背景渲染 bundle，App 通过 WKWebView 加载。
 
-**关键约束：项目使用的不是 AMLL 官方仓库的最新源码。** 项目维护了一个独立的 integration fork：[kmgcc/applemusic-like-lyrics-kmgcccplayer-integration](https://github.com/kmgcc/applemusic-like-lyrics-kmgcccplayer-integration)，主仓库通过 Git submodule 将它固定在 `Dependencies/Submodules/AMLLIntegration/`，指向一个经过完整歌词显示回归验证的 commit（当前为 `91939107e9ec338c20c5a6a672e4d894868ecf2f`）。
+AMLL 资源分为两层：上游或集成层构建生成 JavaScript 与 CSS，App 适配层负责 bridge、surface 配置、时间预处理和原生状态投递。生成文件不作为手工编辑入口。
 
-这个 fork 包含播放器集成所必需的行为调整：浏览器 bundle 入口、少量无法放在适配层的 renderer patch，以及构建配置。主仓库还维护了 `index.html`、`bridge.js`、样式和 timing 预处理来适配 App 的 WebView 环境，这些属于 App 层代码，不属于 AMLL 核心。
-
-**不要做这几件事：**
-
-- 不要将 submodule 改为指向 AMLL 官方 main 分支；
-- 不要随意更新 submodule 的 commit；
-- 不要手工修改 `kmgccc_player/Resources/AMLL/` 下的 `amll-core.js`、`amll-lyric.js`、`amll-background.js` 和 `style.css`——它们是生成文件，任何改动都会在下次构建时被覆盖。
-
-**更新 AMLL commit 的正确流程：** 在 fork 仓库中修改 TypeScript 源码，构建后运行 `scripts/sync-amll-from-fork.sh` 同步生成文件到 App 的 Resources 目录，然后通过完整歌词回归验证（窗口歌词、全屏、cover blur、seek、暂停、重叠行和 lead-in），最后同时提交 fork 和主仓库的变更。
-
-`bootstrap.sh` 使用 Node.js 22 和 pnpm 11.1.0 构建。产物包括 `.build/products/amll/` 下的四个文件，这些文件也会同步到 `kmgccc_player/Resources/AMLL/` 供 Xcode 打包。
-
-许可证：AGPL-3.0-only。
+许可证：AGPL-3.0-only。宿主边界和时间算法见 [歌词渲染系统](lyric-rendering.md)。
 
 ## LDDC Fetch Core
 
-LDDC Fetch Core 是基于 [LDDC](https://github.com/chenmozhijin/LDDC)（commit `84631e8cd011fcc3f71ca0ae017e2c9758958ffc`，对应上游 v0.9.2）修改的歌词搜索服务。源码随主仓库版本化在 `Dependencies/Sources/LDDCFetchCore/` 下。
+[LDDC](https://github.com/chenmozhijin/LDDC) 的无界面 fetch core 被封装为本机 HTTP 服务，由 `LDDCServerManager` 按需启动。服务提供健康检查、搜索和歌词格式处理，Swift 不需要嵌入 Python 解释器 API。
 
-仓库从上游提取了无 GUI 的 fetch core，增加了本地 HTTP 服务、播放器需要的数据模型和 PyInstaller 打包入口（本地包版本 0.1.0）。App 运行时通过 `LDDCServerManager` 启动服务，在 `127.0.0.1` 随机端口上提供 `/health`、`/search` 等接口，供歌词搜索管线使用。搜索失败时，AMLL DB 本地索引仍是独立来源，不会完全阻断歌词功能。
-
-`bootstrap.sh` 使用 ARM64 Python 3.12 和 PyInstaller 6.21.0 构建，产物为 `.build/products/lddc/` 下的 onedir 可执行程序。贡献者不需要手工运行 Python 服务。
+bootstrap 使用 ARM64 Python 与 PyInstaller 生成 onedir 产品。运行时只使用 App bundle 中的服务，不依赖系统 Python 或开发目录。
 
 许可证：GPL-3.0-only。
 
 ## QQ Music Helper
 
-QQ Music Helper 是 QQ 音乐元数据和封面候选的查询工具。`Tools/QQMusicHelper/` 保存的是本项目自己的通信包装层（`main.py`），负责 stdio JSON 协议：App 通过 `QQMusicHelperProcess` 以子进程方式启动 helper，逐行发送 JSON 请求，读取 JSON 响应，所有诊断信息走 stderr。实际使用的 QQMusicApi 库通过 `qqmusic-api-python==0.5.3` 固定版本安装。
+QQ Music Helper 将 [QQMusicApi](https://github.com/L-1124/QQMusicApi) 包装为逐行 JSON 子进程。App 每行写入一个请求，helper 每行返回一个 JSON 响应；诊断信息写入 stderr，保证 stdout 始终可由程序解析。
 
-`bootstrap.sh` 使用 ARM64 Python 3.12 和 PyInstaller 6.21.0 将包装层和依赖打包成独立的 ARM64 可执行文件，产物为 `.build/products/qqmusic-helper/`。Xcode 的 Build Phase 将其复制到 App bundle 的 `Contents/Resources/Tools/qqmusic-helper/`。helper 从 bundle 路径启动；不可用时 QQ 音乐候选查询失败，其他封面来源仍由共享管线决定。
+查询结果只是候选，仍须进入共享封面或元数据管线。Swift 不直接调用 QQ Music API，也不让 helper 绕过资料库持久化边界。
 
-许可证：QQMusicApi 为 GPL-3.0-or-later；包装层随主仓库 AGPL-3.0。
+许可证：QQMusicApi 为 GPL-3.0-or-later，包装层随主仓库许可证。
 
 ## MediaRemoteAdapter
 
-MediaRemoteAdapter 负责读取 macOS 系统正在播放的外部媒体状态，并提供可用的播放控制。运行时由 `SystemNowPlayingProvider` 使用 bundle 内 Perl launcher、framework 和 test client 建立连接。
+[MediaRemoteAdapter](https://github.com/ungive/mediaremote-adapter) 负责读取 macOS 系统正在播放的外部媒体状态，并提供当前可用的控制能力。`SystemNowPlayingProvider` 消费它的流式 JSON，维护连接状态、稳定曲目和进度基线。
 
-`bootstrap.sh` 下载 [ungive/mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) 的固定 commit `3ac3d4bdf862c7b5399b4fba4df5689f5c38609a` 源码归档（SHA-256: `111e285e7a8acfb05b7339883e303a360f8a7a9b7acb4f0f5c01b647deb8ceb5`），不提交预编译 framework。项目保留了一个版本化补丁 `Tools/MediaRemoteAdapter/unbuffered-output.patch`，它只在 Perl stdout 上开启 autoflush（`$| = 1`），避免流式 JSON 输出被缓冲，不改变任何业务逻辑。bootstrap 会先应用补丁，再用 CMake 生成 Xcode 工程，以 Release、ARM64、无签名方式构建，产物为 `.build/products/mediaremote/`。
+bootstrap 从固定源码构建 Apple Silicon framework 与 client，避免提交或信任来源不明的预编译 framework。
 
 许可证：BSD-3-Clause。
 
 ## SACAD
 
-SACAD 用于按 artist、album 和尺寸参数搜索并下载专辑封面。`bootstrap.sh` 下载 [desbma/sacad](https://github.com/desbma/sacad) 的 release 3.0.1 macOS ARM64 归档（SHA-256: `6d0fe6e1f3e494be88a7a3fcf6ae88c998c3c70194d2b4b3749c7fc150c162f7`），校验后直接使用上游二进制，不本地编译。产物为 `.build/products/sacad/sacad`。
+[SACAD](https://github.com/desbma/sacad) 按歌手、专辑和尺寸搜索封面。App 通过 `CoverDownloadService` 调用命令行程序，结果进入共享候选管线，SACAD 不直接修改资料库。
 
-App 通过 `CoverDownloadService` 以子进程方式调用 SACAD，搜索结果进入共享封面候选管线，SACAD 不直接写曲库。SACAD 失败时，QQ Music Helper 和本地缓存等其他来源不受影响。
+bootstrap 使用固定的 macOS ARM64 预编译产物并校验归档，不在本地重复编译。
 
 许可证：MPL-2.0。
 
-## Swift Package 依赖
+## Swift Package
 
-工程通过 Swift Package Manager 固定使用 [WhatsNewKit](https://github.com/SvenTiigi/WhatsNewKit) 2.2.1，由 Xcode 自动解析，不属于 bootstrap 管理的外部可执行组件。
+工程通过 Swift Package Manager 使用以下编译期依赖，由 Xcode 根据已固定的 package resolution 解析；它们不进入 bootstrap 的外部进程构建链：
 
-## 缓存和构建产物
+- [WhatsNewKit](https://github.com/SvenTiigi/WhatsNewKit)：更新说明展示。
+- [PLCrashReporter](https://github.com/microsoft/plcrashreporter)：在主 App 进程发生异常退出时生成 crash-safe pending report；App 只在下一次正常启动时导入和处理报告。
 
-bootstrap 的目录结构：
+## 可复现构建
 
-| 目录 | 内容 |
-| --- | --- |
-| `.build/downloads/` | 已校验的下载归档 |
-| `.build/sources/` | 展开的第三方源码 |
-| `.build/work/` | 虚拟环境、CMake 和 PyInstaller 中间文件 |
-| `.build/products/` | Xcode 复制外部组件的唯一产物根目录 |
-| `.build/logs/` | 构建日志 |
+bootstrap 把下载、源码、中间工作目录、最终产品和日志分开保存。Xcode 只复制最终产品，不从下载缓存、虚拟环境或构建中间目录取文件。
 
-AMLL 稍有不同：生成文件先进入 `.build/products/amll/`，再同步到 `kmgccc_player/Resources/AMLL/`，Xcode 随整个 `AMLL` 文件夹复制。
+组件检查会验证固定版本、校验值、工具链状态、产品结构和 `arm64` 架构。App 运行时只从 `Bundle.main.resourceURL` 解析组件，不扫描仓库路径，不退回系统解释器，也不依赖环境变量寻找替代文件。
 
-## 单独重建
-
-```sh
-./scripts/bootstrap.sh --check --component mediaremote    # 检查单个组件
-./scripts/bootstrap.sh --force --component mediaremote   # 强制重建
-./scripts/bootstrap.sh --check                            # 全部检查（不下载不构建）
-```
-
-组件名：`amll`、`lddc`、`qqmusic-helper`、`mediaremote`、`sacad`。
-
-## 常见问题
-
-**构建失败，日志在哪里？** 查看 `.build/logs/` 目录。每个组件有独立的日志文件。
-
-**为什么 bootstrap 说产物 stale？** 源码、构建脚本、工具链版本或架构发生了变化。用 `--force --component <name>` 强制重建。
-
-**可以不用 bootstrap 手动准备这些组件吗？** 技术上可以，但 CI 和 `verify.sh` 都依赖 bootstrap 确保产物版本一致。手动替换的二进制可能通过不了 stamp 校验。
+这条边界保证干净 clone、CI 和日常开发使用相同产品布局，也让单个组件失败时能够沿表中的方式独立降级。
 
 ## 许可证
 
-各组件的许可证文本随 App 打包在 `Contents/Resources/Licenses/` 下：
+第三方许可证文本随 App 一同提供：
 
 | 组件 | 许可证 |
 | --- | --- |
@@ -123,3 +106,4 @@ AMLL 稍有不同：生成文件先进入 `.build/products/amll/`，再同步到
 | QQMusicApi | GPL-3.0-or-later |
 | MediaRemoteAdapter | BSD-3-Clause |
 | SACAD | MPL-2.0 |
+| PLCrashReporter | MIT；内含 protobuf-c Apache-2.0 部分 |

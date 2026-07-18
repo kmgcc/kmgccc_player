@@ -8,10 +8,18 @@
 import Foundation
 
 enum FeatureTipCatalog {
+    enum PlaybackModeRetap {
+        static let key = "fullscreen.playbackModeRetap"
+        static let introducedBuild = AppBuild(8)
+        static let maxDisplayCount = 2
+        static let playbackStartDelay: TimeInterval = 3
+        static let behaviorRevision = 2
+    }
+
     static let enabledFeatureKeys: Set<String> = [
-        "fullscreen.playbackModeRetap",
-        "playbackSource.externalAppPlayback",
-        "playlist.shiftRangeSelection"
+        PlaybackModeRetap.key,
+        "playlist.shiftRangeSelection",
+        "dataSharing.automaticCrashReports"
     ]
 
     static func isEnabled(featureKey: String) -> Bool {
@@ -31,6 +39,8 @@ final class AppVersionGate {
         static let legacyLastSeenWhatsNewVersion = "kmgccc_player.lastSeenWhatsNewVersion"
         static let dismissedFeatureTipPrefix = "kmgccc_player.dismissedFeatureTip."
         static let featureTipDisplayCountPrefix = "kmgccc_player.featureTipDisplayCount."
+        static let featureTipReadyForNextLaunchPrefix = "kmgccc_player.featureTipReadyForNextLaunch."
+        static let featureTipBehaviorRevisionPrefix = "kmgccc_player.featureTipBehaviorRevision."
     }
 
     private static let legacyVersionBuilds: [String: AppBuild] = [
@@ -46,6 +56,7 @@ final class AppVersionGate {
     ]
 
     private let defaults: UserDefaults
+    private var claimedFeatureTipsThisLaunch = Set<String>()
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -72,6 +83,7 @@ final class AppVersionGate {
 
     func recordCurrentAppLaunch(currentBuild: AppBuild = AppBuild.current) {
         let storedLatest = latestInstalledBuild
+        migratePlaybackModeRetapTipIfNeeded(currentBuild: currentBuild)
 
         if storedLatest == currentBuild {
             // Legacy migration: users upgrading from versions that predate build
@@ -95,6 +107,7 @@ final class AppVersionGate {
             defaults.removeObject(forKey: featureTipDisplayCountKey("playlist.shiftRangeSelection"))
             Log.debug("[AppVersionGate] Reset playlist.shiftRangeSelection state for upgrade from Build \(previous.rawValue) to Build \(currentBuild.rawValue)", category: .ui)
         }
+
     }
 
     func wasUpgradedFromBuildBelow(_ buildNumber: Int) -> Bool {
@@ -139,19 +152,76 @@ final class AppVersionGate {
         defaults.set(defaults.integer(forKey: key) + 1, forKey: key)
     }
 
+    /// Claims a display slot for a tip that must be shown at most once per app
+    /// launch. The playback-order tip uses the second slot only after the
+    /// first presentation was closed and a new app launch has begun.
+    func claimFeatureTipDisplay(
+        featureKey: String,
+        introducedBuild: AppBuild,
+        maxDisplayCount: Int,
+        requiresDismissalBeforeNextLaunch: Bool = false,
+        allowsCurrentBehaviorRevision: Bool = false
+    ) -> Bool {
+        guard !claimedFeatureTipsThisLaunch.contains(featureKey) else { return false }
+        guard shouldShowFeatureTip(
+            featureKey: featureKey,
+            introducedBuild: introducedBuild,
+            maxDisplayCount: maxDisplayCount,
+            allowsCurrentBehaviorRevision: allowsCurrentBehaviorRevision
+        ) else { return false }
+
+        let count = featureTipDisplayCount(featureKey: featureKey)
+        if requiresDismissalBeforeNextLaunch, count > 0 {
+            guard defaults.bool(forKey: featureTipReadyForNextLaunchKey(featureKey)) else {
+                return false
+            }
+        }
+
+        recordFeatureTipDisplayed(featureKey: featureKey)
+        claimedFeatureTipsThisLaunch.insert(featureKey)
+        defaults.removeObject(forKey: featureTipReadyForNextLaunchKey(featureKey))
+        return true
+    }
+
+    func claimPlaybackModeRetapFeatureTipDisplay() -> Bool {
+        claimFeatureTipDisplay(
+            featureKey: FeatureTipCatalog.PlaybackModeRetap.key,
+            introducedBuild: FeatureTipCatalog.PlaybackModeRetap.introducedBuild,
+            maxDisplayCount: FeatureTipCatalog.PlaybackModeRetap.maxDisplayCount,
+            requiresDismissalBeforeNextLaunch: true,
+            allowsCurrentBehaviorRevision: true
+        )
+    }
+
+    /// Temporary close semantics for the playback-order tip. The next slot
+    /// is intentionally unlocked only for the next app launch.
+    func markPlaybackModeRetapFeatureTipDismissed() {
+        let featureKey = FeatureTipCatalog.PlaybackModeRetap.key
+        guard featureTipDisplayCount(featureKey: featureKey) > 0 else { return }
+        defaults.set(true, forKey: featureTipReadyForNextLaunchKey(featureKey))
+    }
+
     func shouldShowFeatureTip(featureKey: String, introducedBuild: AppBuild) -> Bool {
-        shouldShowFeatureTip(featureKey: featureKey, introducedBuild: introducedBuild, maxDisplayCount: 4)
+        shouldShowFeatureTip(
+            featureKey: featureKey,
+            introducedBuild: introducedBuild,
+            maxDisplayCount: 4
+        )
     }
 
     func shouldShowFeatureTip(
         featureKey: String,
         introducedBuild: AppBuild,
-        maxDisplayCount: Int
+        maxDisplayCount: Int,
+        allowsCurrentBehaviorRevision: Bool = false
     ) -> Bool {
         FeatureTipCatalog.isEnabled(featureKey: featureKey)
             && !isFeatureTipDismissed(featureKey: featureKey)
             && featureTipDisplayCount(featureKey: featureKey) < maxDisplayCount
-            && wasUpgradedFromBuildBelow(introducedBuild)
+            && (
+                wasUpgradedFromBuildBelow(introducedBuild)
+                    || (allowsCurrentBehaviorRevision && hasCurrentBehaviorRevision(featureKey: featureKey))
+            )
     }
 
     func resetStoredState() {
@@ -161,10 +231,13 @@ final class AppVersionGate {
         defaults.removeObject(forKey: Keys.legacyPreviousInstalledVersion)
         defaults.removeObject(forKey: Keys.legacyLatestInstalledVersion)
         defaults.removeObject(forKey: Keys.legacyLastSeenWhatsNewVersion)
+        claimedFeatureTipsThisLaunch.removeAll()
 
         for key in defaults.dictionaryRepresentation().keys
             where key.hasPrefix(Keys.dismissedFeatureTipPrefix)
                 || key.hasPrefix(Keys.featureTipDisplayCountPrefix)
+                || key.hasPrefix(Keys.featureTipReadyForNextLaunchPrefix)
+                || key.hasPrefix(Keys.featureTipBehaviorRevisionPrefix)
         {
             defaults.removeObject(forKey: key)
         }
@@ -176,6 +249,38 @@ final class AppVersionGate {
 
     private func featureTipDisplayCountKey(_ featureKey: String) -> String {
         Keys.featureTipDisplayCountPrefix + featureKey
+    }
+
+    private func featureTipReadyForNextLaunchKey(_ featureKey: String) -> String {
+        Keys.featureTipReadyForNextLaunchPrefix + featureKey
+    }
+
+    private func featureTipBehaviorRevisionKey(_ featureKey: String) -> String {
+        Keys.featureTipBehaviorRevisionPrefix + featureKey
+    }
+
+    private func hasCurrentBehaviorRevision(featureKey: String) -> Bool {
+        guard featureKey == FeatureTipCatalog.PlaybackModeRetap.key else { return false }
+        return defaults.integer(forKey: featureTipBehaviorRevisionKey(featureKey))
+            >= FeatureTipCatalog.PlaybackModeRetap.behaviorRevision
+    }
+
+    private func migratePlaybackModeRetapTipIfNeeded(currentBuild: AppBuild) {
+        let featureKey = FeatureTipCatalog.PlaybackModeRetap.key
+        let introducedBuild = FeatureTipCatalog.PlaybackModeRetap.introducedBuild
+        let behaviorRevision = FeatureTipCatalog.PlaybackModeRetap.behaviorRevision
+        guard currentBuild >= introducedBuild,
+              defaults.integer(forKey: featureTipBehaviorRevisionKey(featureKey)) < behaviorRevision
+        else { return }
+
+        defaults.removeObject(forKey: dismissedFeatureTipKey(featureKey))
+        defaults.removeObject(forKey: featureTipDisplayCountKey(featureKey))
+        defaults.removeObject(forKey: featureTipReadyForNextLaunchKey(featureKey))
+        defaults.set(behaviorRevision, forKey: featureTipBehaviorRevisionKey(featureKey))
+        Log.debug(
+            "[AppVersionGate] Reset \(featureKey) state for behavior revision \(behaviorRevision) at Build \(currentBuild.rawValue)",
+            category: .ui
+        )
     }
 
     private func build(forKey key: String) -> AppBuild? {

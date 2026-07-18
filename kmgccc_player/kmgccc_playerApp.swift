@@ -85,6 +85,16 @@ struct KmgcccPlayerApp: App {
     let sharedModelContainer: ModelContainer
 
     init() {
+        // Register the bundled Inter family before any settings preview or
+        // lyric surface asks CoreText/SwiftUI to resolve it.
+        BundledFontRegistrar.register()
+
+        // Install the crash handler before SwiftData or the main window is
+        // created. The handler only writes PLCrashReporter's pending file;
+        // parsing, redaction and all network work happen on a later launch.
+        CrashReporterBootstrap.shared.enable()
+        CrashBreadcrumbRecorder.shared.record(.appLaunchStarted)
+
         // Phase 2 colour-system self-check. No-op unless invoked via
         // `COLOR_SYSTEM_SELF_CHECK=1`, in which case the process exits
         // here after printing the report.
@@ -220,7 +230,14 @@ struct KmgcccPlayerApp: App {
                 Divider()
 
                 Button(NSLocalizedString("menu.toggle_queue", comment: "Toggle Queue")) {
-                    NotificationCenter.default.post(name: .toggleQueuePanel, object: nil)
+                    Task { @MainActor in
+                        await appSession.setupIfNeeded()
+                        if FullscreenWindowManager.shared.usesFullscreenPlayerUI {
+                            NotificationCenter.default.post(name: .toggleQueuePanel, object: nil)
+                        } else {
+                            appSession.uiState.toggleWindowPlaybackQueue()
+                        }
+                    }
                 }
                 .keyboardShortcut("q", modifiers: [.command, .option])
 

@@ -46,6 +46,7 @@ struct AppKitMainSidebarPaneRoot: View {
 struct AppKitMainContentPaneRoot: View {
     @ObservedObject var appSession: AppSessionHost
     @ObservedObject private var fullscreenWindowManager = FullscreenWindowManager.shared
+    @ObservedObject private var crashReportService = CrashReportService.shared
     @StateObject private var themeStore = ThemeStore.shared
     @ObservedObject var artBackgroundController: BKArtBackgroundController
     @State private var settings = AppSettings.shared
@@ -326,6 +327,26 @@ struct AppKitMainContentPaneRoot: View {
             .modelContainer(appSession.sharedModelContainer)
             .tint(themeStore.accentColor)
             .accentColor(themeStore.accentColor)
+            .sheet(item: crashPromptBinding) { _ in
+                CrashReportPromptSheet(
+                    onCancel: {
+                        crashReportService.cancelCurrentPrompt()
+                    },
+                    onExport: { description in
+                        try await crashReportService.exportCurrentPrompt(description: description)
+                    },
+                    onSend: { description in
+                        crashReportService.sendCurrentPrompt(description: description)
+                    }
+                )
+            }
+    }
+
+    private var crashPromptBinding: Binding<CrashReportPromptPresentation?> {
+        Binding(
+            get: { crashReportService.currentPrompt },
+            set: { _ in }
+        )
     }
 
     private func handleContentModeChange(
@@ -527,6 +548,8 @@ struct AppKitMainWindowArtBackgroundLayer: View {
                         trackID: artworkBackgroundTrackID(playbackCoordinator: playbackCoordinator),
                         artworkData: renderingArtworkData(playbackCoordinator: playbackCoordinator),
                         isPlaying: playbackCoordinator.presentation.isPlaying,
+                        animationEnabled: appSession.uiState.contentMode == .nowPlaying
+                            && !fullscreenWindowManager.usesFullscreenPlayerUI,
                         resourceProfile: settings.selectedNowPlayingSkinID == "kmgccc.cassette"
                             ? .cassetteForeground
                             : .standard,
@@ -690,6 +713,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
             artBackgroundIsUltraDark: false,
             spectrumArtworkColors: spectrumArtworkColors,
             spectrumUsesDarkForeground: analysis.usesDarkForeground,
+            cassetteTint: themeStore.semanticPalette.cassetteTint,
             kickToBrightnessMix: settings.bgKickToBrightnessMix,
             kickDisplaceAmount: settings.bgKickDisplaceAmount,
             kickScaleAmount: settings.bgKickScaleAmount

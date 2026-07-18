@@ -66,23 +66,23 @@ struct ExpandableVolumeControl: View {
             materialStyle: materialStyle,
             isFloating: true
         )
+        .animation(nil, value: foregroundProfile)
         .onHover { hovering in
             guard isEnabled else {
                 if usesInternalHoverExpansion {
-                    isExpanded = false
+                    setExpanded(false)
                 }
                 onHoverStateChanged(false)
                 return
             }
             if usesInternalHoverExpansion {
-                isExpanded = hovering
+                setExpanded(hovering)
             }
             onHoverStateChanged(hovering)
             if hovering {
                 onInteraction()
             }
         }
-        .animation(expandAnimation, value: isExpanded)
     }
 
     private var volumeIconButton: some View {
@@ -93,37 +93,33 @@ struct ExpandableVolumeControl: View {
                 .opacity(isEnabled ? 1 : 0.4)
                 .compositingGroup()
                 .blendMode(isEnabled ? controlBlendMode : .normal)
+                .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
                 .frame(width: scaledIconAreaWidth, height: scaledControlHeight)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
-        .help("volume")
+        .help(volume == 0 ? "Unmute" : "Mute")
     }
 
     private var sliderView: some View {
-        Slider(
-            value: $volume,
-            in: 0...1
-        ) { editing in
-            onAdjustingChanged(editing)
-            if editing {
-                onInteraction()
-            }
-        }
+        VolumeSlider(
+            volume: $volume,
+            onInteraction: onInteraction,
+            onAdjustingChanged: onAdjustingChanged,
+            markerColor: controlPrimaryColor.opacity(0.8)
+        )
             .controlSize(.regular)
             .tint(controlPrimaryColor)
             .compositingGroup()
             .blendMode(controlBlendMode)
+            .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
             .frame(maxWidth: .infinity)
             .padding(.trailing, sliderTrailingPadding)
             .opacity(isExpanded ? 1 : 0)
             .allowsHitTesting(isExpanded)
             .disabled(!isEnabled)
             .accessibilityHidden(!isExpanded)
-            .onChange(of: volume) { _, _ in
-                onInteraction()
-            }
     }
 
     private var currentWidth: CGFloat {
@@ -135,6 +131,13 @@ struct ExpandableVolumeControl: View {
             return .easeInOut(duration: 0.18)
         }
         return .spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
+    }
+
+    private func setExpanded(_ expanded: Bool) {
+        guard isExpanded != expanded else { return }
+        FullscreenBottomControlsAnimationPolicy.animateGeometry(with: expandAnimation) {
+            isExpanded = expanded
+        }
     }
 
     private var volumeIcon: String {
@@ -181,13 +184,7 @@ struct ExpandableVolumeControl: View {
     private func toggleMute() {
         guard isEnabled else { return }
         onInteraction()
-        if volume > 0 {
-            UserDefaults.standard.set(volume, forKey: "_expandableVolume_lastVolume")
-            volume = 0
-        } else {
-            let lastVolume = UserDefaults.standard.double(forKey: "_expandableVolume_lastVolume")
-            volume = lastVolume > 0 ? lastVolume : 0.5
-        }
+        volume = VolumeControlBehavior.volumeAfterMuteToggle(volume)
     }
 }
 

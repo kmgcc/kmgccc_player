@@ -9,8 +9,8 @@
 //    1. `ArtworkForegroundPolarityPolicy.globalPolarity` - a conservative,
 //       whole-image decision derived from `ArtworkColorAnalysis` statistics.
 //       It replaces the old single `avgHslL >= 0.58` threshold, which switched
-//       too many mid-tone covers to dark ink. The new gate keeps the 0.58
-//       eligibility floor but only commits to dark foreground when the cover
+//       too many mid-tone covers to dark ink. The stricter gate raises the
+//       eligibility floor and only commits to dark foreground when the cover
 //       is *clearly* bright (HSL, WCAG luma, or pale-high-brightness). This is
 //       the value baked into `ArtworkColorAnalysis.usesDarkForeground` and the
 //       `SemanticPalette` global readability profile.
@@ -20,7 +20,7 @@
 //       exact pixel regions where text/controls land, and compares the two
 //       candidate foregrounds' contrast directly. Local polarity may override
 //       the global default for a single surface only (Home Hero, Cover Gradient
-//       Blur fullscreen controls).
+//       Blur fullscreen controls, queue, and Quick Panel).
 //
 //  Invariant: within one visual group (one Mini Player, one Hero card) there
 //  is exactly one polarity. Colour, blend mode, spectrum depth and glass

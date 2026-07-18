@@ -30,8 +30,11 @@ struct SidebarView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var currentColorScheme
     @ObservedObject private var updateDownloadManager = UpdatePackageDownloadManager.shared
+    @ObservedObject private var crashReportService = CrashReportService.shared
 
     @State private var showSettings = false
+    @State private var showCrashReportSettingsTip = false
+    @State private var crashReportTipTask: Task<Void, Never>?
     @State private var showingPlaylistSheet = false
     @State private var deletionRequest: SidebarDeletionRequest?
     @State private var editingArtistEntry: ArtistEntry?
@@ -52,7 +55,6 @@ struct SidebarView: View {
         VStack(spacing: 0) {
             if settings.showPlaybackSourceSwitcher {
                 playbackSourceSwitcher
-                    .background(SourceSwitchAnchorProbe())
                     .padding(.horizontal, 14)
                     .padding(.top, 5)
                     .padding(.bottom, 12)
@@ -63,71 +65,7 @@ struct SidebarView: View {
                     .padding(.bottom, 12)
             }
 
-            // Home Link
-            Button {
-                uiState.clearHomeNavigationContext()
-                libraryVM.selectOrResetCurrentSelection(.home)
-                uiState.showLibrary()
-            } label: {
-                HStack {
-                    Label("主页", systemImage: "house")
-                    Spacer()
-                }
-                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(
-                    selectionFill(isSelected: currentSelection == .home)
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 14)
-            .padding(.top, 4)
-
-            // Main Library Link
-            Button {
-                libraryVM.selectOrResetCurrentSelection(.allSongs)
-                uiState.showLibrary()
-            } label: {
-                HStack {
-                    Label(
-                        "sidebar.all_songs",
-                        systemImage: "music.note.list")
-                    Spacer()
-                }
-                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(
-                    selectionFill(isSelected: currentSelection == .allSongs)
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 14)
-            .padding(.bottom, 4)
-
-            // Playback History Link
-            Button {
-                uiState.clearHomeNavigationContext()
-                uiState.showPlaybackHistory()
-            } label: {
-                HStack {
-                    Label("播放历史", systemImage: "clock.arrow.circlepath")
-                    Spacer()
-                }
-                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(
-                    selectionFill(isSelected: currentSelection == .history)
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 14)
-            .padding(.bottom, 12)
+            primaryNavigation
 
             // Playlists List
             List {
@@ -420,6 +358,22 @@ struct SidebarView: View {
         .onPreferenceChange(SidebarWidthPreferenceKey.self) { width in
             uiState.updateSidebarWidth(width)
         }
+        .onAppear {
+            scheduleCrashReportSettingsTipIfNeeded()
+        }
+        .onDisappear {
+            crashReportTipTask?.cancel()
+            crashReportTipTask = nil
+            showCrashReportSettingsTip = false
+        }
+        .onChange(of: crashReportService.isPromptFlowActive) { _, isActive in
+            if isActive {
+                crashReportTipTask?.cancel()
+                showCrashReportSettingsTip = false
+            } else {
+                scheduleCrashReportSettingsTipIfNeeded()
+            }
+        }
         .sheet(isPresented: $showSettings) {
             SettingsView()
                 .environment(settings)
@@ -484,6 +438,68 @@ struct SidebarView: View {
                 .foregroundStyle(.primary, themeStore.accentColor)
         }
         .buttonStyle(.plain)
+    }
+
+    private var primaryNavigation: some View {
+        VStack(spacing: 2) {
+            sidebarNavigationRow(
+                title: "主页",
+                systemImage: "house",
+                selection: .home
+            ) {
+                uiState.clearHomeNavigationContext()
+                libraryVM.selectOrResetCurrentSelection(.home)
+                uiState.showLibrary()
+            }
+
+            sidebarNavigationRow(
+                title: "sidebar.all_songs",
+                systemImage: "music.note.list",
+                selection: .allSongs
+            ) {
+                libraryVM.selectOrResetCurrentSelection(.allSongs)
+                uiState.showLibrary()
+            }
+
+            sidebarNavigationRow(
+                title: "播放历史",
+                systemImage: "clock.arrow.circlepath",
+                selection: .history
+            ) {
+                uiState.clearHomeNavigationContext()
+                uiState.showPlaybackHistory()
+            }
+        }
+        .padding(.top, 4)
+        .padding(.bottom, 12)
+    }
+
+    private func sidebarNavigationRow(
+        title: LocalizedStringKey,
+        systemImage: String,
+        selection: SidebarSelection,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 15, weight: .medium))
+                    .frame(width: 18, height: 18, alignment: .center)
+
+                Text(title)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+            .padding(.horizontal, 16)
+            .frame(height: 32, alignment: .center)
+            .background(
+                selectionFill(isSelected: currentSelection == selection)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
     }
 
     private var hasSidebarTaskProgress: Bool {
@@ -604,6 +620,54 @@ struct SidebarView: View {
             showSettings = true
         }
         .symbolEffect(.rotate, value: settingsRotateTrigger)
+        .popover(isPresented: $showCrashReportSettingsTip, arrowEdge: .bottom) {
+            CrashReportSettingsTipView(
+                onOpenSettings: {
+                    showCrashReportSettingsTip = false
+                    AppVersionGate.shared.markFeatureTipDismissed(
+                        featureKey: CrashReportFeatureTip.key
+                    )
+                    settingsRotateTrigger += 1
+                    showSettings = true
+                },
+                onDismiss: {
+                    showCrashReportSettingsTip = false
+                }
+            )
+        }
+    }
+
+    private enum CrashReportFeatureTip {
+        static let key = "dataSharing.automaticCrashReports"
+        static let introducedBuild = AppBuild(8)
+        static let maxDisplayCount = 2
+    }
+
+    private func scheduleCrashReportSettingsTipIfNeeded() {
+        crashReportTipTask?.cancel()
+        guard !crashReportService.isPromptFlowActive,
+              !showSettings,
+              !showingPlaylistSheet,
+              !showCrashReportSettingsTip,
+              AppVersionGate.shared.shouldShowFeatureTip(
+                featureKey: CrashReportFeatureTip.key,
+                introducedBuild: CrashReportFeatureTip.introducedBuild,
+                maxDisplayCount: CrashReportFeatureTip.maxDisplayCount
+              )
+        else { return }
+
+        crashReportTipTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled,
+                  !crashReportService.isPromptFlowActive,
+                  !showSettings,
+                  !showingPlaylistSheet
+            else { return }
+            showCrashReportSettingsTip = true
+            AppVersionGate.shared.recordFeatureTipDisplayed(
+                featureKey: CrashReportFeatureTip.key
+            )
+        }
     }
 
     private var appearanceSwitchButton: some View {

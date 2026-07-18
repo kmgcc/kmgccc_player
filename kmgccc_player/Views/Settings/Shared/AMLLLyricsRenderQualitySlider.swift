@@ -11,14 +11,15 @@ struct AMLLLyricsRenderQualitySlider: View {
     @Binding var quality: AppSettings.AMLLLyricsRenderQuality
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: presentationStyle.scaled(12)) {
             Text("歌词渲染质量")
                 .font(presentationStyle.rowLabelFont)
-                .foregroundStyle(presentationStyle.primaryTextColor)
+                .foregroundStyle(presentationStyle.settingsPrimaryTextColor(appColors: appColors))
 
-            Spacer(minLength: 12)
+            Spacer(minLength: presentationStyle.scaled(12))
 
             SlidingSelector(
                 segments: AppSettings.AMLLLyricsRenderQuality.allCases,
@@ -37,12 +38,21 @@ struct AMLLLyricsRenderQualitySlider: View {
                         .font(.system(size: presentationStyle.segmentedFontSize, weight: isSelected ? .medium : .regular))
                         .foregroundStyle(
                             isSelected
-                                ? presentationStyle.selectedTextColor(accentColor: themeStore.accentColor)
-                                : presentationStyle.secondaryTextColor
+                                ? presentationStyle.settingsSelectedTextColor(
+                                    accentColor: themeStore.accentColor,
+                                    appColors: appColors
+                                )
+                                : presentationStyle.settingsSecondaryTextColor(appColors: appColors)
                         )
-                        .frame(minWidth: 30, minHeight: max(22, presentationStyle.tabHeight - 4))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 2)
+                        .frame(
+                            minWidth: presentationStyle.scaled(30),
+                            minHeight: max(
+                                presentationStyle.scaled(22),
+                                presentationStyle.tabHeight - presentationStyle.scaled(4)
+                            )
+                        )
+                        .padding(.horizontal, presentationStyle.scaled(8))
+                        .padding(.vertical, presentationStyle.scaled(2))
                         .contentShape(Rectangle())
                 }
             )
@@ -55,10 +65,7 @@ struct AMLLLyricsRenderQualitySlider: View {
 
     private var selectionTint: Color {
         if presentationStyle.usesMaterialSectionCards {
-            return FullscreenSelectionAccentStyle.dimmedAccentColor(
-                from: themeStore.accentNSColor,
-                lightnessDelta: 0.30
-            )
+            return presentationStyle.settingsPrimaryTextColor(appColors: appColors)
         }
         return themeStore.accentColor
     }
@@ -87,12 +94,14 @@ struct AMLLLyricsRenderQualitySlider: View {
                 }
 
                 Capsule()
-                    .fill(presentationStyle.segmentedTrackColor)
+                    .fill(presentationStyle.settingsSegmentedTrackColor(appColors: appColors))
                     .overlay(
                         Capsule()
                             .strokeBorder(
                                 presentationStyle.segmentedTrackStrokeColor,
-                                lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear ? 0 : 0.5
+                                lineWidth: presentationStyle.segmentedTrackStrokeColor == .clear
+                                    ? 0
+                                    : presentationStyle.scaledHairlineWidth
                             )
                             .allowsHitTesting(false)
                     )

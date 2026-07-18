@@ -16,11 +16,13 @@ struct CapsulePicker<T: Hashable & Identifiable>: View where T.ID: Hashable {
     @Binding var selection: T.ID
     let accentColor: Color
 
+    @Environment(\.settingsAppForegroundColors) private var appColors
+
     var body: some View {
         HStack(spacing: 8) {
             Text(label)
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(appColors?.secondary ?? .secondary)
 
             Spacer()
 
@@ -42,13 +44,13 @@ struct CapsulePicker<T: Hashable & Identifiable>: View where T.ID: Hashable {
                         .font(.system(size: 11, weight: isSelected ? .medium : .regular))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
-                        .foregroundStyle(isSelected ? accentColor : .secondary)
+                        .foregroundStyle(isSelected ? accentColor : (appColors?.secondary ?? .secondary))
                 }
             )
             .padding(3)
             .background(
                 Capsule()
-                    .fill(Color.secondary.opacity(0.08))
+                    .fill((appColors?.secondary ?? .secondary).opacity(0.08))
             )
             .fixedSize(horizontal: true, vertical: false)
         }

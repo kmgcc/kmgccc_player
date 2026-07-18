@@ -24,19 +24,17 @@ struct HomeHeroView: View {
     @State private var coverImage: NSImage?
     @State private var artworkData: Data?
     @State private var heroBackdropImage: CGImage?
-    @State private var heroCoverHoverBackdropImage: CGImage?
+    @State private var heroBackdropLayoutSize: CGSize = .zero
     @State private var heroArtworkChecksum: UInt64 = 0
     @State private var heroAnalysis: ArtworkColorAnalysis?
     @State private var isHovering = false
-    @State private var isCoverHovering = false
+    @State private var trackDeletionRequest: TrackDeletionConfirmationRequest?
 
-    /// Local rendered-region polarity for this hero card's backdrop. Nil until
-    /// the normal backdrop readability map has been scored; the foreground
-    /// accessors then fall back to light ink (never the global dark fallback)
-    /// per the readability plan. See `updateHeroLocalPolarity`.
+    /// Local rendered-region polarity for this Hero's text and action icons.
+    /// The same decision selects both the ordinary icon foreground and the
+    /// adaptive Plus Lighter / Plus Darker text profile.
     @State private var heroLocalPolarity: ArtworkForegroundPolarity?
     @State private var heroNormalReadabilityMap: RenderedBackdropReadabilityMap?
-    @State private var heroHoverReadabilityMap: RenderedBackdropReadabilityMap?
     @State private var heroLocalDecision: LocalForegroundDecision?
 
     /// Cached hero palette. Invariant: equals `Self.makeHeroPalette(...)` for
@@ -80,27 +78,29 @@ struct HomeHeroView: View {
         )
     }
 
-    /// Foreground polarity actually applied to this hero card. The local
-    /// rendered-region decision wins once the backdrop map is ready; until then
-    /// light ink is used (never the global dark fallback), so a pending card
-    /// does not flash dark text that the local pass would reject.
+    /// Foreground polarity applied consistently to Hero text and action icons.
+    /// Until the local rendered-region map is ready, light ink avoids an
+    /// initial dark flash.
     private var heroResolvedPolarity: ArtworkForegroundPolarity {
         heroLocalPolarity ?? .lightOnDarkBackground
     }
 
-    /// Readability profile variant for the resolved polarity. Both variants
-    /// are precomputed in `readabilityCandidates`; selecting by polarity keeps
-    /// colour, blend and alpha tiers in lockstep with one decision.
+    /// Readability profile variant for adaptive action icons. Both variants are
+    /// precomputed in `readabilityCandidates`.
     private var heroResolvedReadabilityProfile: ArtworkReadabilityProfile {
         heroPalette.readabilityCandidates.profile(for: heroResolvedPolarity)
     }
 
-    private var artworkTextPrimary: Color {
-        ColorRenderingAdapter.makeSwiftUIColor(heroResolvedReadabilityProfile.foregroundPrimary)
+    /// Hero text follows the same local polarity as the action icons, selecting
+    /// Plus Lighter over dark regions and Plus Darker over light regions. The
+    /// colours come from this Hero track's own palette rather than current
+    /// playback.
+    private var heroPlusBlendTextProfile: PlusBlendTextForegroundProfile {
+        heroPalette.plusBlendText.profile(for: heroResolvedPolarity)
     }
 
-    private var artworkTextSecondary: Color {
-        ColorRenderingAdapter.makeSwiftUIColor(heroResolvedReadabilityProfile.foregroundSecondary)
+    private var artworkTextPrimary: Color {
+        ColorRenderingAdapter.makeSwiftUIColor(heroResolvedReadabilityProfile.foregroundPrimary)
     }
 
     private var artworkDominantColor: NSColor {
@@ -136,7 +136,13 @@ struct HomeHeroView: View {
     }
 
     private var heroHeight: CGFloat {
-        baseHeroHeight + wideExpansion * 80
+        guard mode == .wide else { return baseHeroHeight }
+
+        // Keep the extra-wide Hero visually balanced instead of letting the
+        // banner become an increasingly thin strip. The wide layout starts at
+        // the existing 320 pt floor, then follows the card width until a
+        // desktop-friendly ceiling is reached.
+        return min(max(containerWidth / 3.05, baseHeroHeight), 520)
     }
 
     private var heroTopPadding: CGFloat {
@@ -254,8 +260,6 @@ struct HomeHeroView: View {
                 .allowsHitTesting(false)
             heroContent
                 .zIndex(1)
-            coverHoverHitRegion
-                .zIndex(2)
         }
         .frame(height: heroHeight)
         .frame(maxWidth: .infinity)
@@ -279,8 +283,16 @@ struct HomeHeroView: View {
             TrackEditSheet(track: track)
                 .environmentObject(themeStore)
         }
+        .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in
+            Task {
+                await libraryVM.deleteTracks(tracks)
+            }
+        }
         .task(id: track.id) {
             await loadCoverImage()
+        }
+        .task(id: heroBackdropRequestID) {
+            await refreshHeroBackdropsForCurrentLayout()
         }
         .onAppear { recomputeHeroPalette() }
         .onChange(of: heroAnalysis) { _, _ in recomputeHeroPalette() }
@@ -301,12 +313,12 @@ struct HomeHeroView: View {
 
     // MARK: - Local rendered-region readability
 
-    /// Three view-space sampling rectangles covering where the hero's
-    /// foreground elements actually render (track info, action buttons, stats),
+    /// Three view-space sampling rectangles covering where the Hero's adaptive
+    /// foreground actually renders (track info, action buttons and stats),
     /// expanded by `regionExpansionPoints` and mapped through the backdrop's
     /// leading-aligned aspect-fill into normalized image regions.
     private var heroReadabilityRegions: [NormalizedReadabilityRegion] {
-        let viewSize = CGSize(width: containerWidth, height: heroHeight)
+        let viewSize = CGSize(width: heroLayoutWidth, height: heroHeight)
         let imageSize = heroBackdropTargetSize
         let expansion = ColorSystemTokens.ReadabilityForeground.regionExpansionPoints
         var regions: [NormalizedReadabilityRegion] = []
@@ -327,7 +339,7 @@ struct HomeHeroView: View {
 
         // trackInfo: title (≤2 lines) + artist/album line + description scroll.
         let trackLeading = heroPadding + artworkLeadingWidth
-        let trackWidth = max(0, containerWidth - trackLeading - heroPadding)
+        let trackWidth = max(0, heroLayoutWidth - trackLeading - heroPadding)
         let titleHeight = ceil(titleFontSize * 1.2) * 2
         let artistHeight = ceil(14 * 1.3)
         let trackHeight = titleHeight + 6 + artistHeight + 6 + descriptionScrollHeight + 4
@@ -342,7 +354,7 @@ struct HomeHeroView: View {
         // stats: bottom-trailing caption (duration + play count).
         let statsWidth: CGFloat = 112
         let statsHeight: CGFloat = 16
-        let statsRight = containerWidth - statsTrailingPadding
+        let statsRight = heroLayoutWidth - statsTrailingPadding
         let statsBottom = heroHeight - statsBottomPadding
         expandAndMap(CGRect(x: statsRight - statsWidth, y: statsBottom - statsHeight, width: statsWidth, height: statsHeight))
 
@@ -353,7 +365,7 @@ struct HomeHeroView: View {
     private var heroReadabilityDebugViewRects: [CGRect] {
         let expansion = ColorSystemTokens.ReadabilityForeground.regionExpansionPoints
         let trackLeading = heroPadding + artworkLeadingWidth
-        let trackWidth = max(0, containerWidth - trackLeading - heroPadding)
+        let trackWidth = max(0, heroLayoutWidth - trackLeading - heroPadding)
         let titleHeight = ceil(titleFontSize * 1.2) * 2
         let artistHeight = ceil(14 * 1.3)
         let trackHeight = titleHeight + 6 + artistHeight + 6 + descriptionScrollHeight + 4
@@ -362,7 +374,7 @@ struct HomeHeroView: View {
         let actionWidth = playWidth + heroButtonHeight * 2 + 20
         let statsWidth: CGFloat = 112
         let statsHeight: CGFloat = 16
-        let statsRight = containerWidth - statsTrailingPadding
+        let statsRight = heroLayoutWidth - statsTrailingPadding
         let statsBottom = heroHeight - statsBottomPadding
         return [
             CGRect(x: trackLeading, y: heroTopPadding, width: trackWidth, height: trackHeight),
@@ -371,24 +383,17 @@ struct HomeHeroView: View {
         ].map { $0.insetBy(dx: -expansion, dy: -expansion) }
     }
 
-    /// Re-score the local polarity from the current backdrop maps, candidate
-    /// colours and layout. No-op until the normal map exists; the hover map is
-    /// folded in when it arrives (one further update, no animation).
+    /// Re-score the local polarity from the current backdrop map, candidate
+    /// colours and layout. No-op until the normal map exists.
     private func updateHeroLocalPolarity() {
         guard let normalMap = heroNormalReadabilityMap else { return }
         let regions = heroReadabilityRegions
         guard !regions.isEmpty else { return }
-        var samples: [(map: RenderedBackdropReadabilityMap, regions: [NormalizedReadabilityRegion])] = [
-            (normalMap, regions)
-        ]
-        if let hoverMap = heroHoverReadabilityMap {
-            samples.append((hoverMap, regions))
-        }
         let candidates = heroPalette.readabilityCandidates
         let decision = RenderedBackdropReadability.decide(
             darkForeground: candidates.darkOnLightBackground.foregroundPrimary,
             lightForeground: candidates.lightOnDarkBackground.foregroundPrimary,
-            samples: samples
+            samples: [(normalMap, regions)]
         )
         heroLocalDecision = decision
         // Disable implicit animation so blend-mode/colour tiers don't
@@ -429,114 +434,110 @@ struct HomeHeroView: View {
         #endif
     }
 
-    private func heroBlurConfig(variant: HomeHeroBackdropVariant) -> CoverGradientBlurConfig {
-        let isCoverHover = variant == .coverHover
-        return CoverGradientBlurConfig(
-            blurRadius: isCoverHover ? 560 : 240,
+    private var heroBlurConfig: CoverGradientBlurConfig {
+        CoverGradientBlurConfig(
+            blurRadius: 240,
             colorOverlayOpacity: 0.46,
-            transitionDuration: isCoverHover ? 0.28 : 0.35,
+            transitionDuration: 0.35,
             edgeStripWidth: 3.0,
             blurStartRatio: 0.08,
             blurEndRatio: 0.9,
             overlayOffsetRatio: 0.0,
             blurCurveGamma: 5.0,
             overlayCurveGamma: 3.0,
-            overlayStartRatioFromEdge: isCoverHover ? 0.0 : 0.28,
+            overlayStartRatioFromEdge: 0.28,
             edgeFillMode: .pixelStretch,
-            blurMaskMode: isCoverHover ? .extensionOnly : .progressiveRamp,
-            // Cover hover selects only the right-side extension so the square
-            // cover area stays clean. Normal uses the same narrow strip as
-            // fullscreen (30% of cover width) so the crisp cover region is wide.
-            blurStartRatioFromEdge: isCoverHover ? 0.0 : 0.30,
-            // Quadratic-dominant ramp matching the fullscreen skin: ~0 at the
-            // strip's inner side, accelerating smoothly to a strong edge value
-            // so the cover↔fill junction is well masked. Cover hover retains its
-            // own curve unchanged.
-            blurAlphaCoefficients: isCoverHover ? (0, 0.36, 0.38, 0.26) : (0, 0, 1.8, -0.8),
-            // Continuous blur ramp across the fill (pixel-stretch) region:
-            // 0 at the cover's right edge, easing up toward the right with no
-            // hard seam at the cover→fill boundary. Matches fullscreen value.
-            extensionFloorStrength: isCoverHover ? 0 : 0.2
+            blurMaskMode: .progressiveRamp,
+            // Keep the cover mostly crisp, then start the progressive ramp a
+            // little inside its right edge and continue it through the
+            // pixel-stretched extension.
+            blurStartRatioFromEdge: 0.30,
+            blurAlphaCoefficients: (0, 0, 1.8, -0.8),
+            extensionFloorStrength: 0.2
         )
     }
 
-    /// Width the background renderer draws the artwork at (scale-to-height).
-    /// Used to push the text content past the visible cover art.
-    /// Uses `heroHeight` so the square cover fills the full card height and
-    /// text/buttons stay in the blurred extension region.
+    /// The Hero always reserves a square, full-height artwork column. This is
+    /// intentionally independent of image load state and source pixel aspect
+    /// ratio so text/buttons never slide left onto the cover while loading or
+    /// during a wide-window resize.
     private var artworkLeadingWidth: CGFloat {
-        guard artworkData != nil else { return 0 }
-        if let img = coverImage {
-            return heroHeight * (img.size.width / max(1, img.size.height))
-        }
-        return heroHeight  // assume square while image is loading
+        heroHeight
+    }
+
+    /// Width of the card as laid out by SwiftUI. `containerWidth` is a
+    /// quantized parent-layout hint; using the measured width here prevents a
+    /// small mismatch from making the display-side aspect-fill crop the
+    /// artwork vertically at particular window widths.
+    private var heroLayoutWidth: CGFloat {
+        heroBackdropLayoutSize.width > 1 ? heroBackdropLayoutSize.width : containerWidth
     }
 
     /// Dynamic backdrop render target size matching the actual card aspect
     /// ratio so the cover area is not cropped by a mismatched fixed size.
     private var heroBackdropTargetSize: CGSize {
-        let aspect = containerWidth / max(1, heroHeight)
+        let aspect = heroLayoutWidth / max(1, heroHeight)
         let targetHeight: CGFloat = 380
         let targetWidth = round(targetHeight * aspect)
-        return CGSize(width: max(380, targetWidth), height: targetHeight)
+        return CGSize(width: max(1, targetWidth), height: targetHeight)
+    }
+
+    private func updateHeroBackdropLayoutSize(_ size: CGSize) {
+        guard size.width > 1, size.height > 1 else { return }
+        guard abs(size.width - heroBackdropLayoutSize.width) > 0.5
+                || abs(size.height - heroBackdropLayoutSize.height) > 0.5 else {
+            return
+        }
+        heroBackdropLayoutSize = size
+    }
+
+    /// Changes when either the artwork or the rendered card aspect ratio
+    /// changes. The matching task debounces live resize and replaces the
+    /// existing composite only after a correctly sized render is ready.
+    private var heroBackdropRequestID: String {
+        let targetSize = heroBackdropTargetSize
+        return "\(track.id)-\(heroArtworkChecksum)-\(Int(targetSize.width))x\(Int(targetSize.height))"
     }
 
     @ViewBuilder
     private var backdropView: some View {
-        if let heroBackdropImage {
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
+        GeometryReader { geometry in
+            Group {
+                if let heroBackdropImage {
                     heroBackdropLayer(heroBackdropImage, geometry: geometry)
-
-                    if let heroCoverHoverBackdropImage {
-                        heroBackdropLayer(heroCoverHoverBackdropImage, geometry: geometry)
-                            .opacity(isCoverHovering ? 1 : 0)
-                    }
+                } else {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(
+                            ColorRenderingAdapter.makeSwiftUIColor(artworkDominantColor)
+                                .opacity(colorScheme == .dark ? 0.42 : 0.26)
+                        )
+                        .overlay(
+                            LinearGradient(
+                                colors: [
+                                    Color.black.opacity(colorScheme == .dark ? 0.34 : 0.08),
+                                    Color.black.opacity(colorScheme == .dark ? 0.16 : 0.02),
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
                 }
-                .animation(.easeInOut(duration: 0.24), value: isCoverHovering)
-                .animation(.easeInOut(duration: 0.24), value: heroCoverHoverBackdropImage != nil)
             }
-        } else {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(
-                    ColorRenderingAdapter.makeSwiftUIColor(artworkDominantColor)
-                        .opacity(colorScheme == .dark ? 0.42 : 0.26)
-                )
-                .overlay(
-                    LinearGradient(
-                        colors: [
-                            Color.black.opacity(colorScheme == .dark ? 0.34 : 0.08),
-                            Color.black.opacity(colorScheme == .dark ? 0.16 : 0.02),
-                        ],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
+            .onAppear {
+                updateHeroBackdropLayoutSize(geometry.size)
+            }
+            .onChange(of: geometry.size) { _, newSize in
+                updateHeroBackdropLayoutSize(newSize)
+            }
         }
     }
 
     private func heroBackdropLayer(_ image: CGImage, geometry: GeometryProxy) -> some View {
-        let imageAspect = CGFloat(image.width) / max(1, CGFloat(image.height))
         return Image(decorative: image, scale: 1, orientation: .up)
             .resizable()
             .interpolation(.medium)
-            .aspectRatio(imageAspect, contentMode: .fill)
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .leading)
             .clipped()
-    }
-
-    private var coverHoverSide: CGFloat {
-        let side = artworkLeadingWidth > 0 ? artworkLeadingWidth : baseHeroHeight
-        return min(heroHeight, max(1, side))
-    }
-
-    private var coverHoverHitRegion: some View {
-        Color.clear
-            .frame(width: coverHoverSide, height: coverHoverSide, alignment: .topLeading)
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                isCoverHovering = hovering
-            }
     }
 
     private var heroContent: some View {
@@ -577,7 +578,9 @@ struct HomeHeroView: View {
                 .font(.system(size: titleFontSize, weight: .semibold))
                 .tracking(0)
                 .lineLimit(2)
-                .foregroundStyle(heroPrimaryForeground)
+                .foregroundStyle(heroPlusBlendTextProfile.primaryColor)
+                .compositingGroup()
+                .blendMode(heroPlusBlendTextProfile.blendMode)
 
             artistAlbumLine
             descriptionLine
@@ -604,13 +607,19 @@ struct HomeHeroView: View {
     private var artistAlbumLine: some View {
         HStack(spacing: 0) {
             Text(track.artist)
-                .foregroundStyle(heroSecondaryForeground)
+                .foregroundStyle(heroPlusBlendTextProfile.secondaryColor)
+                .compositingGroup()
+                .blendMode(heroPlusBlendTextProfile.blendMode)
             let albumTitle = LibraryNormalization.displayAlbum(track.album)
             if !LibraryNormalization.isUnknownAlbum(track.album), !albumTitle.isEmpty {
                 Text(" \u{00B7} ")
-                    .foregroundStyle(heroQuaternaryForeground)
+                    .foregroundStyle(heroPlusBlendTextProfile.tertiaryColor)
+                    .compositingGroup()
+                    .blendMode(heroPlusBlendTextProfile.blendMode)
                 Text(albumTitle)
-                    .foregroundStyle(heroSecondaryForeground)
+                    .foregroundStyle(heroPlusBlendTextProfile.secondaryColor)
+                    .compositingGroup()
+                    .blendMode(heroPlusBlendTextProfile.blendMode)
             }
         }
         .font(.system(size: mode == .narrow ? 12 : 14, weight: .medium))
@@ -621,15 +630,17 @@ struct HomeHeroView: View {
     private var descriptionLine: some View {
         let description = heroDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         if !description.isEmpty {
-            ScrollView(.vertical, showsIndicators: true) {
-                Text(description)
-                    .font(.system(size: descriptionFontSize, weight: .ultraLight))
-                    .lineSpacing(1.5)
-                    .foregroundStyle(heroDescriptionForeground)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            AppKitFullTextScrollView(
+                text: description,
+                font: NSFont.systemFont(ofSize: descriptionFontSize, weight: .ultraLight),
+                textColor: NSColor(heroPlusBlendTextProfile.secondaryColor),
+                lineSpacing: 1.5,
+                showsVerticalScroller: true
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .compositingGroup()
+            .blendMode(heroPlusBlendTextProfile.blendMode)
             .frame(height: descriptionScrollHeight, alignment: .top)
-            .scrollClipDisabled(false)
             .clipped()
             .layoutPriority(1)
             .padding(.top, 4)
@@ -656,7 +667,9 @@ struct HomeHeroView: View {
             }
         }
         .font(.caption)
-        .foregroundStyle(heroTertiaryForeground)
+        .foregroundStyle(heroPlusBlendTextProfile.tertiaryColor)
+        .compositingGroup()
+        .blendMode(heroPlusBlendTextProfile.blendMode)
     }
 
     private var playButton: some View {
@@ -666,10 +679,13 @@ struct HomeHeroView: View {
             HStack(spacing: 6) {
                 Image(systemName: "play.fill")
                     .font(.system(size: heroButtonIconSize, weight: .semibold))
+                    .foregroundStyle(heroButtonForeground)
                 Text("播放")
                     .font(.system(size: heroButtonTextSize, weight: .medium))
+                    .foregroundStyle(heroPlusBlendTextProfile.primaryColor)
+                    .compositingGroup()
+                    .blendMode(heroPlusBlendTextProfile.blendMode)
             }
-            .foregroundStyle(heroButtonForeground)
             .padding(.horizontal, heroButtonHorizontalPadding)
             .frame(height: heroButtonHeight)
             .contentShape(Capsule())
@@ -692,7 +708,10 @@ struct HomeHeroView: View {
                 onPlayNext: playbackCoordinator.canInsertTracksAfterCurrent
                     ? { playbackCoordinator.insertTracksAfterCurrent([track]) }
                     : nil,
-                onEditTrack: { trackToEdit = $0 }
+                onEditTrack: { trackToEdit = $0 },
+                onDeleteFromLibraryRequest: { track in
+                    trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: [track])
+                }
             )
         } label: {
             ZStack {
@@ -757,22 +776,6 @@ struct HomeHeroView: View {
         artworkTextPrimary
     }
 
-    private var heroSecondaryForeground: Color {
-        artworkTextSecondary
-    }
-
-    private var heroDescriptionForeground: Color {
-        artworkTextPrimary.opacity(0.80)
-    }
-
-    private var heroTertiaryForeground: Color {
-        artworkTextPrimary.opacity(0.68)
-    }
-
-    private var heroQuaternaryForeground: Color {
-        artworkTextPrimary.opacity(0.54)
-    }
-
     private var formattedDuration: String {
         let minutes = Int(track.duration) / 60
         let seconds = Int(track.duration) % 60
@@ -799,7 +802,6 @@ struct HomeHeroView: View {
         )
         artworkData = nil
         heroBackdropImage = nil
-        heroCoverHoverBackdropImage = nil
         heroArtworkChecksum = 0
         heroAnalysis = nil
         // New track: clear the previous track's local decision and maps so a
@@ -807,7 +809,6 @@ struct HomeHeroView: View {
         heroLocalPolarity = nil
         heroLocalDecision = nil
         heroNormalReadabilityMap = nil
-        heroHoverReadabilityMap = nil
         let data = await track.loadArtworkDataOffMainIfNeeded()
         guard let data, !data.isEmpty else { return }
         let checksum = ArtworkLoader.checksum(for: data)
@@ -823,18 +824,12 @@ struct HomeHeroView: View {
             cacheKey: key,
             targetPixelSize: CGSize(width: 480, height: 480)
         )
-        async let backdropTask: HomeHeroBackdropArtifact? = renderHeroBackdrop(
-            artworkData: data,
-            checksum: checksum,
-            variant: .normal
-        )
         // Analyze locally so the hero's text/dominant colours track this card's
         // artwork, not the currently-playing track's ThemeStore palette.
         async let analysisTask: ArtworkColorAnalysis? = Task.detached(priority: .userInitiated) {
             ArtworkColorExtractor.analyze(from: data)
         }.value
         let image = await imageTask
-        let backdrop = await backdropTask
         let analysis = await analysisTask
         // Guard against a stale completion from a previous track — only apply
         // the result if this hero card's artwork hasn't changed underneath us.
@@ -846,37 +841,57 @@ struct HomeHeroView: View {
                 for: HomeArtworkMemoryStore.heroCoverKey(for: track)
             )
         }
-        heroBackdropImage = backdrop?.image
-        heroNormalReadabilityMap = backdrop?.readabilityMap ?? nil
         heroAnalysis = analysis
-        // Image and map arrive together (built in one detached task), so score
-        // immediately - no foreground-late-by-a-beat. The palette .onChange
-        // re-scores once heroAnalysis propagates into the candidates.
-        updateHeroLocalPolarity()
+    }
 
-        let hoverBackdrop = await renderHeroBackdrop(
-            artworkData: data,
+    /// Regenerate the single composited cover + progressive-blur backdrop for
+    /// the current card aspect ratio. A short debounce prevents detached Core
+    /// Image renders from piling up during live resize; the old composite stays
+    /// visible until the new one is ready, so there is no empty flash.
+    private func refreshHeroBackdropsForCurrentLayout() async {
+        guard
+            heroArtworkChecksum != 0,
+            let artworkData,
+            !artworkData.isEmpty
+        else { return }
+
+        do {
+            try await Task.sleep(for: .milliseconds(120))
+        } catch {
+            return
+        }
+        guard !Task.isCancelled else { return }
+
+        let checksum = heroArtworkChecksum
+        let requestID = heroBackdropRequestID
+        let targetSize = heroBackdropTargetSize
+        let backdrop = await renderHeroBackdrop(
+            artworkData: artworkData,
             checksum: checksum,
-            variant: .coverHover
+            targetSize: targetSize
         )
-        guard heroArtworkChecksum == checksum else { return }
-        heroCoverHoverBackdropImage = hoverBackdrop?.image
-        heroHoverReadabilityMap = hoverBackdrop?.readabilityMap ?? nil
-        // Fold the hover map in (one further update, animation disabled).
+        guard
+            !Task.isCancelled,
+            heroArtworkChecksum == checksum,
+            heroBackdropRequestID == requestID,
+            let backdrop
+        else { return }
+
+        heroBackdropImage = backdrop.image
+        heroNormalReadabilityMap = backdrop.readabilityMap
         updateHeroLocalPolarity()
     }
 
     private func renderHeroBackdrop(
         artworkData: Data,
         checksum: UInt64,
-        variant: HomeHeroBackdropVariant
+        targetSize: CGSize
     ) async -> HomeHeroBackdropArtifact? {
-        let config = heroBlurConfig(variant: variant)
-        let targetSize = heroBackdropTargetSize
+        let config = heroBlurConfig
         let sizeTag = "\(Int(targetSize.width))x\(Int(targetSize.height))"
-        // Bumped to v8: target size is now dynamic (card aspect ratio) so the
-        // cache key includes the resolved size tag.
-        let cacheKey = "\(checksum)-\(sizeTag)-home-hero-\(variant.cacheKey)-v8" as NSString
+        // Bumped to v9: the Hero now uses one normal progressive composite;
+        // the old clear-cover hover variant must never be reused.
+        let cacheKey = "\(checksum)-\(sizeTag)-home-hero-v9" as NSString
 
         if let cached = HomeHeroBackdropCache.shared.artifact(for: cacheKey) {
             return cached
@@ -923,18 +938,6 @@ struct HomeHeroView: View {
 private struct HomeHeroBackdropArtifact: Sendable {
     let image: CGImage
     let readabilityMap: RenderedBackdropReadabilityMap?
-}
-
-private enum HomeHeroBackdropVariant {
-    case normal
-    case coverHover
-
-    var cacheKey: String {
-        switch self {
-        case .normal: return "normal"
-        case .coverHover: return "cover-hover"
-        }
-    }
 }
 
 private final class HomeHeroBackdropCache {

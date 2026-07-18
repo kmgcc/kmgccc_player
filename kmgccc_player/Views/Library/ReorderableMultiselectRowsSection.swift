@@ -99,7 +99,14 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
                 }
             )
             .onPreferenceChange(ReorderableRowFramePreferenceKey.self) { frames in
-                rowFrames = frames
+                // Merge instead of replace: LazyVStack stops reporting frames
+                // for recycled (off-screen) rows, and a full replace would
+                // drop them. Frames are measured in the stack's own coordinate
+                // space, whose origin does not move with scrolling, so a
+                // recycled row's last-known frame stays accurate and the
+                // selection-run background can keep spanning it. Stale entries
+                // for removed rows are purged in the rows-id onChange below.
+                rowFrames.merge(frames, uniquingKeysWith: { _, new in new })
             }
 
             if let rect = dragPlaceholderRect, !isFinishingDrag {
@@ -155,7 +162,13 @@ where Row: Identifiable, Row.ID == UUID, RowContent: View, FloatingContent: View
             cancelDrag()
             stopAutoScroll()
         }
-        .onChange(of: rows.map(\.id)) { _, _ in
+        .onChange(of: rows.map(\.id)) { _, newIDs in
+            // Purge cached frames for rows that no longer exist so the merge
+            // above cannot leave ghost frames behind after deletions. Pure
+            // scrolling does not change rows.map(\.id), so this does not fire
+            // on scroll and cached off-screen frames survive.
+            let validIDs = Set(newIDs)
+            rowFrames = rowFrames.filter { validIDs.contains($0.key) }
             if draggingID == nil {
                 visualOrderIDs = nil
             } else if !isFinishingDrag {

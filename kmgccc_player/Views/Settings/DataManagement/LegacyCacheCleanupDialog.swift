@@ -268,17 +268,17 @@ private struct LegacyCacheCleanupDialogView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("现在会把 App 自身的缓存集中到资料库内，减少旧缓存散落。可以现在清理旧路径中的可再生成缓存。")
                 .font(.system(size: 14))
-                .foregroundStyle(.primary)
+                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                 .fixedSize(horizontal: false, vertical: true)
 
             SettingsTaskPanel(accentColor: themeStore.accentColor) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("您的数据将保留")
                         .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                     Text("歌曲文件、播放列表、元数据和手动外部播放规则将保持原样。")
                         .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -293,7 +293,7 @@ private struct LegacyCacheCleanupDialogView: View {
                     .controlSize(.small)
                 Text("正在清理旧路径中的缓存。")
                     .font(.system(size: 13))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -308,7 +308,7 @@ private struct LegacyCacheCleanupDialogView: View {
                     resultRow("未清理项目", value: "\(failed)")
                     Text("遇到问题，这些项目未清理")
                         .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -337,11 +337,11 @@ private struct LegacyCacheCleanupDialogView: View {
         HStack {
             Text(title)
                 .font(.system(size: 13))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
             Spacer()
             Text(value)
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
                 .monospacedDigit()
         }
     }

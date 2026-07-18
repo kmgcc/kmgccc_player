@@ -104,26 +104,45 @@ struct LyricsSearchHelper {
         }
         Self.logger.debug("[LyricsSearchHelper] Starting full search - title: '\(title)', artist: '\(artist ?? "nil")', album: '\(album ?? "nil")'")
 
-        // Run AMLLDB and LDDC searches in parallel
-        async let amlldbTask: [LDDCCandidate] = performAMLLDBSearch(
+        var amlldbResults: [LDDCCandidate] = []
+        var lddcResults: [LDDCCandidate] = []
+
+        let updates = LyricsSearchCoordinator.shared.search(
             title: title,
             artist: artist,
             album: album,
             duration: duration,
-            limit: amlldbLimit
-        )
-
-        async let lddcTask: [LDDCCandidate] = performLDDCSearch(
-            title: title,
-            artist: artist,
-            sources: lddcSources,
+            lddcSources: lddcSources,
+            enableAMLLDB: true,
             mode: mode,
             translation: translation,
-            limitPerSource: lddcLimitPerSource
+            amlldbLimit: amlldbLimit,
+            lddcLimitPerSource: lddcLimitPerSource
         )
 
-        let amlldbResults = await amlldbTask
-        let lddcResults = await lddcTask
+        for await update in updates {
+            guard !Task.isCancelled else { break }
+
+            switch update {
+            case .amlldbStatus(let message, _):
+                Self.logger.debug("[LyricsSearchHelper] AMLLDB status: \(message)")
+
+            case .amlldbResults(let results):
+                amlldbResults = results
+
+            case .amlldbFailure(let message):
+                Self.logger.warning("[LyricsSearchHelper] AMLLDB search failed: \(message)")
+
+            case .lddc(let outcome):
+                lddcResults.append(contentsOf: outcome.results)
+                if !outcome.errors.isEmpty {
+                    Self.logger.warning(
+                        "[LyricsSearchHelper] \(outcome.source.rawValue) partial errors: \(outcome.errors.joined(separator: ", "))"
+                    )
+                }
+            }
+        }
+
         guard !Task.isCancelled else {
             return SearchResult(
                 candidates: [],
@@ -180,88 +199,6 @@ struct LyricsSearchHelper {
             queryArtist: artist,
             queryAlbum: album
         )
-    }
-
-    // MARK: - AMLLDB Search
-
-    /// Perform AMLLDB lyrics search
-    private static func performAMLLDBSearch(
-        title: String,
-        artist: String?,
-        album: String?,
-        duration: Double?,
-        limit: Int
-    ) async -> [LDDCCandidate] {
-        guard !Task.isCancelled else { return [] }
-        let amlldbService = AMLLDBService.shared
-
-        // Ensure index is ready (non-blocking if already ready)
-        let ready = await amlldbService.ensureIndexReady()
-
-        guard ready else {
-            Self.logger.warning("[LyricsSearchHelper] AMLLDB index not ready, skipping AMLLDB search")
-            return []
-        }
-
-        Self.logger.debug("[LyricsSearchHelper] AMLLDB search - title: '\(title)', artist: '\(artist ?? "nil")', album: '\(album ?? "nil")'")
-
-        let results = amlldbService.search(
-            title: title,
-            artist: artist,
-            album: album,
-            duration: duration,
-            limit: limit
-        )
-        guard !Task.isCancelled else { return [] }
-
-        Self.logger.debug("[LyricsSearchHelper] AMLLDB returned \(results.count) results")
-
-        return results.map { $0.toLDDCCandidate() }
-    }
-
-    // MARK: - LDDC Search
-
-    /// Perform LDDC lyrics search
-    private static func performLDDCSearch(
-        title: String,
-        artist: String?,
-        sources: Set<LDDCSource>,
-        mode: LDDCMode,
-        translation: Bool,
-        limitPerSource: Int
-    ) async -> [LDDCCandidate] {
-        guard !Task.isCancelled else { return [] }
-        guard !sources.isEmpty else {
-            Self.logger.debug("[LyricsSearchHelper] No LDDC sources selected, skipping LDDC search")
-            return []
-        }
-
-        Self.logger.debug("[LyricsSearchHelper] LDDC search - title: '\(title)', artist: '\(artist ?? "nil")', sources: \(sources.map { $0.rawValue })")
-
-        let client = LDDCClient()
-
-        do {
-            let response = try await client.search(
-                title: title,
-                artist: artist,
-                sources: Array(sources),
-                mode: mode,
-                translation: translation,
-                limitPerSource: limitPerSource
-            )
-            guard !Task.isCancelled else { return [] }
-
-            Self.logger.debug("[LyricsSearchHelper] LDDC returned \(response.results.count) results")
-
-            if let errors = response.errors, !errors.isEmpty {
-                Self.logger.warning("[LyricsSearchHelper] LDDC partial errors: \(errors.joined(separator: ", "))")
-            }
-
-            return response.results
-        } catch {
-            Self.logger.error("[LyricsSearchHelper] LDDC search failed: \(error.localizedDescription)")
-            return []
-        }
     }
 
     // MARK: - Result Merging & Sorting
@@ -323,14 +260,16 @@ struct LyricsSearchHelper {
             }
 
             // LDDC candidates need conversion
-            let client = LDDCClient()
+            let client = LDDCClient.shared
 
             if translation {
                 let (origLyrics, transLyrics): (String, String?)
                 do {
                     (origLyrics, transLyrics) = try await client.fetchByIdSeparate(
                         candidate: candidate,
-                        mode: mode
+                        mode: mode,
+                        requestTimeout: LDDCSourceHealthStore.slowSourceTimeout,
+                        policy: .adaptive
                     )
                 } catch {
                     throw error
@@ -376,7 +315,9 @@ struct LyricsSearchHelper {
                     lyrics = try await client.fetchById(
                         candidate: candidate,
                         mode: mode,
-                        translation: false
+                        translation: false,
+                        requestTimeout: LDDCSourceHealthStore.slowSourceTimeout,
+                        policy: .adaptive
                     )
                 } catch {
                     throw error

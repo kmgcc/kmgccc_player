@@ -57,8 +57,8 @@ public enum FullscreenSkinID: String, CaseIterable, Identifiable {
 
     public var defaultsMiniPlayerSpectrumOn: Bool {
         switch self {
-        case .coverGradientBlur: return true
-        case .coverLed, .appleStyle, .rotatingCover, .kmgcccCassette: return false
+        case .coverLed, .rotatingCover, .coverGradientBlur: return true
+        case .appleStyle, .kmgcccCassette: return false
         }
     }
 

@@ -43,21 +43,13 @@ final class AMLLDBService: ObservableObject {
 
     private let cache = AMLLDBRawIndexCache.shared
     private let client = AMLLDBClient()
+    private var indexReadyTask: Task<Bool, Never>?
 
     private init() {
         // Observe cache state
         Task {
             await observeCacheState()
         }
-    }
-
-    // MARK: - Setup
-
-    /// Setup with SwiftData context (optional, for backward compatibility)
-    func setupModelContext(_ context: ModelContext) {
-        Self.logger.info("[AMLLDB] Model context setup (SwiftData is optional storage)")
-        // We don't require SwiftData for search anymore
-        // But we keep this for backward compatibility
     }
 
     // MARK: - Index Availability
@@ -84,14 +76,39 @@ final class AMLLDBService: ObservableObject {
     func ensureIndexReady() async -> Bool {
         Self.logger.info("[AMLLDB] Ensuring index ready...")
 
+        if isReady && entryCount > 0 {
+            Self.logger.info("[AMLLDB] Index already ready with \(self.entryCount) entries")
+            return true
+        }
+
+        if let existingTask = indexReadyTask {
+            let ready = await existingTask.value
+            isReady = ready
+            entryCount = cache.entryCount
+            if ready {
+                lastError = nil
+            } else {
+                lastError = cache.lastError
+            }
+            return ready
+        }
+
         isInitializing = true
         defer { isInitializing = false }
 
-        let ready = await cache.ensureReady()
+        let cache = self.cache
+        let task = Task { @MainActor in
+            await cache.ensureReady()
+        }
+        indexReadyTask = task
+        let ready = await task.value
+        indexReadyTask = nil
         isReady = ready
         entryCount = cache.entryCount
 
-        if !ready {
+        if ready {
+            lastError = nil
+        } else {
             lastError = cache.lastError
         }
 

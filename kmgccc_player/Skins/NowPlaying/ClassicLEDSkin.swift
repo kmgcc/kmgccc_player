@@ -116,7 +116,7 @@ struct ClassicCoverArtworkView: View {
                     pillTint: context.theme.artworkAccentColor,
                     isPlaying: context.playback.isPlaying,
                     forceBrightLEDColors: forceBrightLEDColors || context.theme.artBackgroundIsUltraDark,
-                    levelToneVariant: presentation == .appleStyle ? .appleStyleBright : .retuned
+                    levelToneVariant: presentation == .appleStyle ? .appleStyleBright : .skinLight
                 )
             } else if visualizerMode == "spectrum" {
                 PillSpectrumView(
@@ -228,10 +228,13 @@ private struct ClassicArtworkCoverContainer: View {
         let assets = BKThemeAssets.shared
         let frameCount = assets.artworkFrameCount
         let key = ClassicArtworkFrameMaskKey(track: context.track)
-        guard ClassicArtworkFrameMaskSelection.shared.advanceMask(
+        // Keep the setting inert when the selected frame cannot be loaded. The
+        // cover remains the plain rounded artwork instead of refreshing toward
+        // another unavailable mask.
+        guard let index = ClassicArtworkFrameMaskSelection.shared.advanceMask(
             for: key,
             frameCount: frameCount
-        ) != nil else {
+        ), assets.artworkFrame(at: index, maxPixel: 1) != nil else {
             return
         }
 
@@ -970,6 +973,7 @@ private struct ClassicLEDSkinNormalSettingsView: View {
     @AppStorage("skin.classicLED.artworkFrameMaskEnabled") private var artworkFrameMaskEnabled: Bool = true
     @AppStorage("skin.classicLED.edgeBlurEnabled") private var edgeBlurEnabled: Bool = true
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
+    @Environment(\.settingsAppForegroundColors) private var appColors
     @State private var visualizationPreferences = AudioVisualizationPreferences.shared
 
     var body: some View {
@@ -981,7 +985,7 @@ private struct ClassicLEDSkinNormalSettingsView: View {
                     .frame(width: 24)
                 
                 Rectangle()
-                    .fill(Color.primary.opacity(0.1))
+                    .fill((appColors?.primary ?? .primary).opacity(0.1))
                     .frame(width: 1, height: 16)
                 
                 Spacer()
@@ -1011,6 +1015,7 @@ private struct ClassicLEDSkinNormalSettingsView: View {
 
 private struct ClassicLEDSkinFullscreenSettingsView: View {
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
+    @Environment(\.settingsAppForegroundColors) private var appColors
     @AppStorage("skin.classicLED.artworkFrameMaskEnabled") private var artworkFrameMaskEnabled: Bool = true
     @AppStorage("fullscreenArtBackgroundEnabled") private var fullscreenArtBackgroundEnabled: Bool = true
     @AppStorage("skin.classicLED.edgeBlurEnabled") private var edgeBlurEnabled: Bool = true
@@ -1023,8 +1028,8 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
                 detail: "遇到性能问题时，可以关闭此选项",
                 titleFont: presentationStyle.rowLabelFont,
                 detailFont: presentationStyle.captionFont,
-                titleColor: presentationStyle.primaryTextColor,
-                detailColor: presentationStyle.secondaryTextColor
+                titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors),
+                detailColor: presentationStyle.settingsSecondaryTextColor(appColors: appColors)
             )
 
             HStack(spacing: 0) {
@@ -1032,24 +1037,29 @@ private struct ClassicLEDSkinFullscreenSettingsView: View {
                     title: "风格化封面边缘",
                     isOn: $artworkFrameMaskEnabled,
                     titleFont: presentationStyle.rowLabelFont,
-                    titleColor: presentationStyle.primaryTextColor
+                    titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors)
                 )
                 
                 Spacer()
-                    .frame(width: 24)
+                    .frame(width: presentationStyle.scaled(24))
                 
                 Rectangle()
-                    .fill(presentationStyle.primaryTextColor.opacity(0.12))
-                    .frame(width: 1, height: 16)
+                    .fill(
+                        presentationStyle.settingsPrimaryTextColor(appColors: appColors).opacity(0.12)
+                    )
+                    .frame(
+                        width: presentationStyle.scaled(1),
+                        height: presentationStyle.scaled(16)
+                    )
                 
                 Spacer()
-                    .frame(width: 24)
+                    .frame(width: presentationStyle.scaled(24))
                 
                 SettingsSwitchRow(
                     title: "边缘模糊",
                     isOn: $edgeBlurEnabled,
                     titleFont: presentationStyle.rowLabelFont,
-                    titleColor: presentationStyle.primaryTextColor
+                    titleColor: presentationStyle.settingsPrimaryTextColor(appColors: appColors)
                 )
             }
 
@@ -1074,11 +1084,13 @@ private struct PillSpectrumView: View {
 
     private let capsuleCount: CGFloat = 9
     private let capsuleWidth: CGFloat = 7
-    private let capsuleSpacing: CGFloat = 6
+    // Keep the capsule size unchanged while tightening the gaps so the
+    // spectrum reads as one continuous waveform.
+    private let capsuleSpacing: CGFloat = 4
     private let horizontalPadding: CGFloat = 28
     private let contentHeight: CGFloat = 52  // Spectrum bars height (increased from 48)
     private var verticalPadding: CGFloat {
-        isFullscreen ? 5 : 8  // Slightly shorter background pill in fullscreen
+        isFullscreen ? 1 : 2  // Fullscreen shell gets one final compacting pass
     }
 
     private var contentWidth: CGFloat {

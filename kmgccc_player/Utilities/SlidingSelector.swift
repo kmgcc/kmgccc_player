@@ -34,6 +34,8 @@ private struct SegmentFramePreferenceKey<ID: Hashable>: PreferenceKey {
 /// - `knob` renders the sliding selection indicator.
 /// - `content` renders each segment's label / icon.
 /// - This view does not force max width/height, padding, inset, or corner radius.
+/// - Each segment reserves the larger of its selected and unselected content
+///   footprints, so selection-dependent styling cannot resize the whole track.
 ///
 /// Supports optional drag-to-switch and tap/retap callbacks.
 struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Content: View>: View {
@@ -147,7 +149,7 @@ struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Conten
                     onTap?(segment)
                     selection = segment
                 } label: {
-                    content(segment, selection == segment)
+                    stableContent(for: segment)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -162,6 +164,20 @@ struct SlidingSelector<Selection: Hashable, Background: View, Knob: View, Conten
                     }
                 )
             }
+        }
+    }
+
+    private func stableContent(for segment: Selection) -> some View {
+        ZStack {
+            content(segment, false)
+                .hidden()
+                .accessibilityHidden(true)
+
+            content(segment, true)
+                .hidden()
+                .accessibilityHidden(true)
+
+            content(segment, selection == segment)
         }
     }
 

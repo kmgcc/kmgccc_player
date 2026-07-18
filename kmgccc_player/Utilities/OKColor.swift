@@ -221,7 +221,7 @@ nonisolated enum OKColor {
 
 // MARK: - Perceptual tone ladder
 //
-// v2 redesign vs v1 (commit 8b6404a):
+// v7 redesign vs v1 (commit 8b6404a):
 //   * LED L band lives in the visible register so OKLCH brightness no longer
 //     fights the opacity ramp in `LEDColorResolver.opacityForLevel`. Chroma is
 //     a monotonic OKLCH scale, not an RGB/alpha brightness proxy.
@@ -258,6 +258,7 @@ nonisolated enum PerceptualToneLadder {
         case migrationReference = "current-candidate"
 #endif
         case retuned = "retuned-candidate"
+        case skinLight = "skin-light-peak-candidate"
         case miniPlayer = "mini-player-candidate"
         case appleStyleBright = "apple-style-bright"
     }
@@ -346,7 +347,7 @@ nonisolated enum PerceptualToneLadder {
             peakL = isDark
                 ? (isUltraDark ? T.ledUltraDarkPeakL : T.ledDarkPeakL)
                 : T.ledMiniPlayerLightPeakL
-        case .retuned:
+        case .retuned, .skinLight:
             lowL = isDark ? T.ledDarkMinL : T.ledLightMinL
             peakL = isDark
                 ? (isUltraDark ? T.ledUltraDarkPeakL : T.ledDarkPeakL)
@@ -366,10 +367,22 @@ nonisolated enum PerceptualToneLadder {
         }
         let lCurve = pow(t, isDark ? 0.92 : 1.04)
         var lightness = lowL + (peakL - lowL) * lCurve
+        if !isDark && variant == .skinLight {
+            // The three in-skin meters need a little more ink at the very
+            // top of the light-mode ladder. Keep the low/mid levels nearly
+            // identical so only the blackest peak is lifted; MiniPlayer and
+            // Apple-style variants never enter this branch.
+            lightness += T.ledSkinLightPeakLightnessLift
+                * pow(t, T.ledSkinLightPeakLightnessLiftExponent)
+        }
 
         let hueRiskScale = ledLevelHueRiskScale(base.h, isNearMonochrome: isNearMonochrome)
-        let shadowT = pow(1 - t, 1.22)
-        let schemeScale: CGFloat = isDark ? 1.0 : 0.82
+        // Model the chromaticity shift of a real LED across drive current:
+        // low/middle current is intentionally more saturated than the peak,
+        // so the color survives the opacity ramp and the peak can read as a
+        // brighter, slightly overexposed version of the same hue family.
+        let shadowT = pow(1 - t, T.ledShadowDriftCurveExponent)
+        let schemeScale: CGFloat = isDark ? 1.0 : 0.92
         let rawDrift = ledLevelFamilyStyleDrift(base.h)
             * T.ledShadowDriftScale
             * shadowT
@@ -377,11 +390,13 @@ nonisolated enum PerceptualToneLadder {
             * hueRiskScale
         var hueDrift = isNearMonochrome ? 0 : rawDrift
 
-        let lowScaleBase = isDark ? T.ledLowChromaScale : T.ledLightLowChromaScale
-        let peakScaleBase = isDark ? T.ledPeakChromaScale : T.ledLightPeakChromaScale
-        let riskLowLift = (1 - hueRiskScale) * 0.07
-        let lowScale = min(peakScaleBase - 0.08, lowScaleBase + riskLowLift)
-        let chromaT = pow(t, isDark ? 2.35 : 1.75)
+        let lowScaleBase = isDark ? T.ledDarkLowChromaScale : T.ledLightLowChromaScale
+        let peakScaleBase = isDark ? T.ledDarkPeakChromaScale : T.ledLightPeakChromaScale
+        let riskLowLift = (1 - hueRiskScale) * 0.12
+        // Do not clamp the low-drive scale to the peak scale. That old guard
+        // erased the very contrast this ladder is meant to create.
+        let lowScale = lowScaleBase + riskLowLift
+        let chromaT = pow(t, isDark ? T.ledDarkChromaCurveExponent : T.ledLightChromaCurveExponent)
         var chromaScale = lowScale + (peakScaleBase - lowScale) * chromaT
 
         if isStroke {
@@ -433,10 +448,13 @@ nonisolated enum PerceptualToneLadder {
         if isNearMonochrome && !seedHasVisibleChroma {
             c = min(c, T.ledNearMonoChromaCap)
         } else {
-            // Floor uses a hue-aware visible-chroma threshold so colourful
-            // artwork never falls into "grey LED" territory even when the
-            // seed's chroma is low.
-            let floor = min(T.ledColorfulMinimumChroma, cap)
+            // The colorful floor is intentionally highest at low drive. A
+            // fixed or upward-rising floor would flatten the low/mid/peak
+            // contrast for semantic seeds near C=.062.
+            let floorProgress = pow(style.levelProgress, T.ledColorfulLevelFloorCurveExponent)
+            let floorScale = T.ledColorfulLevelFloorScale
+                + (1 - T.ledColorfulLevelFloorScale) * floorProgress
+            let floor = min(T.ledColorfulMinimumChroma * floorScale, cap)
             c = max(c, floor)
             c = min(c, cap)
         }
@@ -669,6 +687,7 @@ nonisolated enum PerceptualToneLadder {
         role: ToneRole,
         scheme: ColorScheme
     ) -> CGFloat {
+        let T = ColorSystemTokens.ToneLadder.self
         let baseCap: CGFloat
         switch h {
         case 0.06..<0.20: baseCap = 0.110  // yellow/orange — keeps room for amber identity
@@ -682,7 +701,9 @@ nonisolated enum PerceptualToneLadder {
 
         switch role {
         case .led:
-            return scheme == .dark ? baseCap * 1.10 : baseCap * 0.92
+            return scheme == .dark
+                ? baseCap * T.ledDarkChromaCapScale
+                : baseCap * T.ledLightChromaCapScale
         case .lyrics:
             // Light-mode lyrics are dark text; push the cap down so saturated
             // artwork does not produce glowing tinted text on a bright

@@ -152,9 +152,9 @@ final class ArtRuntimeLoader: @unchecked Sendable {
         }
 
         let runtimeData = try Data(contentsOf: runtimeURL)
-        let hash = SHA256.hash(data: runtimeData)
-            .map { String(format: "%02x", $0) }
-            .joined()
+        let hash = Self.sha256Hex(
+            Self.codeSignatureIndependentData(from: runtimeData)
+        )
         guard hash.caseInsensitiveCompare(manifest.librarySHA256) == .orderedSame else {
             throw ArtRuntimeError.invalidManifest
         }
@@ -183,6 +183,260 @@ final class ArtRuntimeLoader: @unchecked Sendable {
         }
 
         return LoadedRuntime(handle: handle, decrypt: decrypt, free: free)
+    }
+
+    private struct MachHeaderLayout {
+        let loadCommandsOffset: Int
+        let is64Bit: Bool
+    }
+
+    /// Swift's compiler emits an ad-hoc signature for the runtime. The App's
+    /// Release signing replaces it with a distribution signature, so hashing
+    /// the complete Mach-O would make the manifest fail after packaging. This
+    /// reconstructs the unsigned payload that the private build script hashes.
+    nonisolated private static func codeSignatureIndependentData(from data: Data) -> Data {
+        guard let header = machHeaderLayout(in: data),
+              let commandCount = readUInt32LittleEndian(data, at: 16),
+              let commandBytes = readUInt32LittleEndian(data, at: 20)
+        else {
+            return data
+        }
+
+        var cursor = header.loadCommandsOffset
+        var payloadEnd: UInt64 = 0
+        var codeSignatureCommand: (offset: Int, size: Int)?
+        var linkEditSegment: (offset: Int, fileOffset: UInt64)?
+
+        func includeRange(offset: UInt64, size: UInt64) {
+            guard size > 0,
+                  offset <= UInt64(data.count),
+                  size <= UInt64(data.count) - offset
+            else {
+                return
+            }
+            payloadEnd = max(payloadEnd, offset + size)
+        }
+
+        for _ in 0..<commandCount {
+            guard let command = readUInt32LittleEndian(data, at: cursor),
+                  let commandSize = readUInt32LittleEndian(data, at: cursor + 4),
+                  commandSize >= 8,
+                  commandSize <= UInt32(data.count - cursor)
+            else {
+                return data
+            }
+
+            let size = Int(commandSize)
+            let baseCommand = command & 0x7FFF_FFFF
+
+            switch baseCommand {
+            case 0x1D: // LC_CODE_SIGNATURE
+                guard size >= 16,
+                      readUInt32LittleEndian(data, at: cursor + 8) != nil,
+                      readUInt32LittleEndian(data, at: cursor + 12) != nil
+                else {
+                    return data
+                }
+                codeSignatureCommand = (offset: cursor, size: size)
+
+            case 0x01: // LC_SEGMENT
+                guard !header.is64Bit, size >= 56,
+                      let name = machOName(in: data, at: cursor + 8),
+                      let fileOffset = readUInt32LittleEndian(data, at: cursor + 32),
+                      let fileSize = readUInt32LittleEndian(data, at: cursor + 36)
+                else {
+                    break
+                }
+                if name == "__LINKEDIT" {
+                    linkEditSegment = (cursor, UInt64(fileOffset))
+                } else {
+                    includeRange(offset: UInt64(fileOffset), size: UInt64(fileSize))
+                }
+
+            case 0x19: // LC_SEGMENT_64
+                guard header.is64Bit, size >= 72,
+                      let name = machOName(in: data, at: cursor + 8),
+                      let fileOffset = readUInt64LittleEndian(data, at: cursor + 40),
+                      let fileSize = readUInt64LittleEndian(data, at: cursor + 48)
+                else {
+                    break
+                }
+                if name == "__LINKEDIT" {
+                    linkEditSegment = (cursor, fileOffset)
+                } else {
+                    includeRange(offset: fileOffset, size: fileSize)
+                }
+
+            case 0x02: // LC_SYMTAB
+                guard size >= 24,
+                      let symbolOffset = readUInt32LittleEndian(data, at: cursor + 8),
+                      let symbolCount = readUInt32LittleEndian(data, at: cursor + 12),
+                      let stringOffset = readUInt32LittleEndian(data, at: cursor + 16),
+                      let stringSize = readUInt32LittleEndian(data, at: cursor + 20)
+                else {
+                    break
+                }
+                let symbolStride: UInt64 = header.is64Bit ? 16 : 12
+                includeRange(
+                    offset: UInt64(symbolOffset),
+                    size: UInt64(symbolCount) * symbolStride
+                )
+                includeRange(offset: UInt64(stringOffset), size: UInt64(stringSize))
+
+            case 0x0B: // LC_DYSYMTAB
+                guard size >= 80 else { break }
+                let tables: [(offset: Int, count: Int, stride: UInt64)] = [
+                    (32, 36, 12),
+                    (40, 44, header.is64Bit ? 56 : 52),
+                    (48, 52, 4),
+                    (56, 60, 4),
+                    (64, 68, 8),
+                    (72, 76, 8),
+                ]
+                for table in tables {
+                    guard let offset = readUInt32LittleEndian(data, at: cursor + table.offset),
+                          let count = readUInt32LittleEndian(data, at: cursor + table.count)
+                    else {
+                        return data
+                    }
+                    includeRange(
+                        offset: UInt64(offset),
+                        size: UInt64(count) * table.stride
+                    )
+                }
+
+            case 0x22: // LC_DYLD_INFO / LC_DYLD_INFO_ONLY
+                guard size >= 48 else { break }
+                for pairOffset in stride(from: 8, through: 40, by: 8) {
+                    guard let offset = readUInt32LittleEndian(data, at: cursor + pairOffset),
+                          let size = readUInt32LittleEndian(data, at: cursor + pairOffset + 4)
+                    else {
+                        return data
+                    }
+                    includeRange(offset: UInt64(offset), size: UInt64(size))
+                }
+
+            case 0x1E, 0x26, 0x29, 0x2B, 0x2E, 0x33, 0x34:
+                // Link-edit data commands with one offset/size pair.
+                guard size >= 16,
+                      let offset = readUInt32LittleEndian(data, at: cursor + 8),
+                      let size = readUInt32LittleEndian(data, at: cursor + 12)
+                else {
+                    break
+                }
+                includeRange(offset: UInt64(offset), size: UInt64(size))
+
+            default:
+                break
+            }
+
+            cursor += size
+        }
+
+        guard let codeSignatureCommand,
+              payloadEnd > 0,
+              payloadEnd <= UInt64(data.count),
+              codeSignatureCommand.offset + codeSignatureCommand.size <= Int(payloadEnd),
+              commandCount > 0,
+              commandBytes >= UInt32(codeSignatureCommand.size)
+        else {
+            return data
+        }
+
+        var canonical = Data(data.prefix(Int(payloadEnd)))
+        canonical.replaceSubrange(
+            codeSignatureCommand.offset..<(codeSignatureCommand.offset + codeSignatureCommand.size),
+            with: Data(repeating: 0, count: codeSignatureCommand.size)
+        )
+        writeUInt32LittleEndian(commandCount - 1, to: &canonical, at: 16)
+        writeUInt32LittleEndian(
+            commandBytes - UInt32(codeSignatureCommand.size),
+            to: &canonical,
+            at: 20
+        )
+
+        if let linkEditSegment {
+            let linkEditSize = payloadEnd - linkEditSegment.fileOffset
+            if header.is64Bit {
+                writeUInt64LittleEndian(
+                    linkEditSize,
+                    to: &canonical,
+                    at: linkEditSegment.offset + 48
+                )
+            } else {
+                writeUInt32LittleEndian(
+                    UInt32(linkEditSize),
+                    to: &canonical,
+                    at: linkEditSegment.offset + 36
+                )
+            }
+        }
+
+        return canonical
+    }
+
+    nonisolated private static func machHeaderLayout(in data: Data) -> MachHeaderLayout? {
+        guard let magic = readUInt32LittleEndian(data, at: 0) else { return nil }
+        switch magic {
+        case 0xFEED_FACE:
+            return MachHeaderLayout(loadCommandsOffset: 28, is64Bit: false)
+        case 0xFEED_FACF:
+            return MachHeaderLayout(loadCommandsOffset: 32, is64Bit: true)
+        default:
+            return nil
+        }
+    }
+
+    nonisolated private static func machOName(in data: Data, at offset: Int) -> String? {
+        guard offset >= 0, offset + 16 <= data.count else { return nil }
+        let bytes = data[offset..<(offset + 16)]
+        let name = bytes.prefix { $0 != 0 }
+        return String(bytes: name, encoding: .ascii)
+    }
+
+    nonisolated private static func readUInt32LittleEndian(_ data: Data, at offset: Int) -> UInt32? {
+        guard offset >= 0, offset + 4 <= data.count else { return nil }
+        return UInt32(data[offset])
+            | (UInt32(data[offset + 1]) << 8)
+            | (UInt32(data[offset + 2]) << 16)
+            | (UInt32(data[offset + 3]) << 24)
+    }
+
+    nonisolated private static func readUInt64LittleEndian(_ data: Data, at offset: Int) -> UInt64? {
+        guard offset >= 0, offset + 8 <= data.count else { return nil }
+        var value: UInt64 = 0
+        for index in 0..<8 {
+            value |= UInt64(data[offset + index]) << UInt64(index * 8)
+        }
+        return value
+    }
+
+    nonisolated private static func writeUInt32LittleEndian(
+        _ value: UInt32,
+        to data: inout Data,
+        at offset: Int
+    ) {
+        guard offset >= 0, offset + 4 <= data.count else { return }
+        for index in 0..<4 {
+            data[offset + index] = UInt8((value >> UInt32(index * 8)) & 0xFF)
+        }
+    }
+
+    nonisolated private static func writeUInt64LittleEndian(
+        _ value: UInt64,
+        to data: inout Data,
+        at offset: Int
+    ) {
+        guard offset >= 0, offset + 8 <= data.count else { return }
+        for index in 0..<8 {
+            data[offset + index] = UInt8((value >> UInt64(index * 8)) & 0xFF)
+        }
+    }
+
+    nonisolated private static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     nonisolated private static func symbol<T>(_ name: String, in handle: UnsafeMutableRawPointer, as type: T.Type) -> T? {

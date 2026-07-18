@@ -14,6 +14,7 @@ struct DataManagementSettingsView: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @AppStorage("telemetry.anonymousUsageEnabled") private var telemetryEnabled: Bool = true
+    @AppStorage(CrashReportPreferences.automaticUploadKey) private var automaticCrashReportUploadEnabled = true
 
     @State private var showResetDataAlert: Bool = false
     @State private var showClearIndexCacheAlert: Bool = false
@@ -32,7 +33,7 @@ struct DataManagementSettingsView: View {
             SettingsSection {
                 VStack(alignment: .leading, spacing: 12) {
                     SettingsSwitchRow(
-                        title: "导入时延后补全歌词与封面",
+                        title: "导入时延后补全歌曲信息",
                         isOn: Binding(
                             get: { settings.deferImportEnrichment },
                             set: { settings.deferImportEnrichment = $0 }
@@ -98,6 +99,11 @@ struct DataManagementSettingsView: View {
                         isOn: telemetryEnabledBinding,
                         detail: "开启后会发送匿名使用统计，帮助了解用户数量、播放来源和皮肤使用情况。不会上传歌曲内容、本地文件路径等敏感数据。关闭后仅保留首次启动匿名安装计数。"
                     )
+                    SettingsSwitchRow(
+                        title: "自动发送崩溃报告",
+                        isOn: automaticCrashReportUploadBinding,
+                        detail: "App 意外退出后自动发送经过脱敏的技术报告。再次打开 App 时仍会询问你是否愿意补充当时的操作。"
+                    )
                 }
             }
         }
@@ -154,6 +160,17 @@ struct DataManagementSettingsView: View {
             set: { newValue in
                 telemetryEnabled = newValue
                 TelemetryService.shared.setTelemetryEnabled(newValue)
+            }
+        )
+    }
+
+    private var automaticCrashReportUploadBinding: Binding<Bool> {
+        Binding(
+            get: { automaticCrashReportUploadEnabled },
+            set: { newValue in
+                automaticCrashReportUploadEnabled = newValue
+                CrashReportService.shared.automaticUploadPreferenceDidChange(newValue)
+                MetricKitDiagnosticService.shared.automaticUploadPreferenceDidChange(newValue)
             }
         )
     }

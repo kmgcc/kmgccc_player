@@ -1,6 +1,6 @@
-# 架构概览
+# 应用架构
 
-kmgccc_player 不是纯 SwiftUI 应用。SwiftUI 提供场景和大部分内容视图，而主窗口、歌词宿主和部分窗口行为由 AppKit 管理；播放、歌词、主题和全屏状态则由各自的服务或 ViewModel 持有。
+kmgccc_player 使用 SwiftUI 构建场景和大部分内容视图，主窗口、歌词宿主和部分桌面行为由 AppKit 补足。播放、歌词、主题和全屏状态分别由明确的服务或 ViewModel 持有。
 
 核心设计原则：控制命令进入 `PlaybackCoordinator`，当前播放内容由 `NowPlayingPresentation` 统一向外发布。歌词、皮肤、主题和频谱消费这个稳定表示，不各自猜测当前播放来源。
 
@@ -13,7 +13,7 @@ flowchart TD
     Presentation --> UI["界面与皮肤"]
     Presentation --> Lyrics["歌词管线"]
     Presentation --> Theme["主题与颜色"]
-    Playback --> Audio["频谱与可视化"]
+    Playback --> Audio["AudioAnalysisHub / 频谱与可视化"]
     Lyrics --> AMLL["AMLL / WKWebView"]
 ```
 
@@ -62,7 +62,6 @@ flowchart TD
 - 全屏播放器
 - 歌词管线（timing、offset、refetch）
 - Dock 播放状态
-- 遥测事件
 
 ## 歌词
 
@@ -102,11 +101,11 @@ TTML 歌词文本
 
 ## 封面、颜色和频谱
 
-本地曲目的封面来自曲库与缓存，外部播放由相应 provider 解析。在线封面候选可来自 QQ Music Helper 和 SACAD，候选进入共享 cover pipeline 后才由上层决定是否采用，helper 不直接写曲库。
+本地曲目的封面来自曲库与缓存，外部播放由相应 provider 解析。在线封面候选可来自 QQ Music Helper、网易云音乐 API 和 SACAD，候选进入共享 cover pipeline 后才由上层决定是否采用；候选来源不直接写曲库。
 
 `NowPlayingPresentation` 发布当前封面数据和 identity，`NowPlayingHostView` 等待完整图片解码后保持封面图片、checksum 和 track identity 原子切换。`ThemeStore` 是颜色状态 owner：按封面 identity/checksum 去重，复用 `ArtworkAssetStore` 或执行颜色分析，生成 `SemanticPalette`。普通皮肤、全屏和 AMLL 都消费这套语义颜色。新封面尚未完成分析时暂时保留上一张封面的主题，避免切歌时闪回默认色。
 
-本地频谱从 `AVAudioPlaybackService.analysisMixerNode` 进入 `LEDMeterServiceProvider`。provider 按需创建 `LEDMeterService`，根据播放态和消费者数量启停分析；`AudioVisualizationService` 为多个界面分发波形和频谱帧。外部播放没有 mixer，协调器切换到 `ExternalPlaybackSpectrumSimulator`，provider 只在播放且有消费者时轮询。频谱视图应订阅共享 provider，不要各自给 AVAudioEngine 安装 tap。
+本地音频分析从 `AVAudioPlaybackService.analysisMixerNode` 进入共享 `AudioAnalysisHub`。hub 持有唯一的 AVAudioEngine tap 和 FFT 结果，再由 `LEDMeterService` 与 `AudioVisualizationService` 消费；`LEDMeterServiceProvider` 根据播放态和消费者数量管理这些服务的启停与分发。外部播放没有 mixer，协调器切换到 `ExternalPlaybackSpectrumSimulator`，provider 只在播放且有消费者时轮询。频谱视图应订阅共享 provider，不要各自给 AVAudioEngine 安装 tap。
 
 ## 外部运行组件
 
@@ -120,11 +119,11 @@ App 依赖五个外部运行组件，都由 `bootstrap.sh` 构建，产物通过
 | MediaRemoteAdapter | Perl launcher + framework | `SystemNowPlayingProvider` | 系统外部播放不可用，本地和 Apple Music 独立 |
 | SACAD | 单次命令行进程 | `CoverDownloadService` | SACAD 封面候选失败，其他来源独立 |
 
-详细的版本、构建方式和许可证见 `docs/dependencies.md`。
+详细的组件说明和许可证见 [外部组件与构建依赖](dependencies.md)。
 
 ## 修改代码时需要注意的边界
 
-- **播放来源切换**：会影响普通窗口、MiniPlayer、全屏、歌词管线、Dock 和遥测。修改 `PlaybackCoordinator` 或 `NowPlayingPresentation` 后，需要验证本地、Apple Music 和系统 Now Playing 三条路径。
+- **播放来源切换**：会影响普通窗口、MiniPlayer、全屏、歌词管线和 Dock。修改 `PlaybackCoordinator` 或 `NowPlayingPresentation` 后，需要验证本地、Apple Music 和系统 Now Playing 三条路径。
 - **歌词系统**：涉及 `LyricsPlaybackPipeline`、`LyricsViewModel`、`LyricsSurfaceManager` 和多个 surface。改动后需要验证窗口歌词、全屏、cover blur、seek、暂停、重叠行和 lead-in。
 - **AMLL**：不要在未定位根因前叠加 patch。能放在 App 适配层（`index.html`、`bridge.js`、CSS）的修改不要改 fork core。改动 fork TypeScript 核心前，确认该改动无法在适配层完成，并保留退化到上游默认行为的路径。
 - **Fullscreen**：系统全屏、窗口模拟全屏和主窗口内嵌是三条独立路径，不要合并为一个布尔判断。
@@ -132,3 +131,11 @@ App 依赖五个外部运行组件，都由 `bootstrap.sh` 构建，产物通过
 - **主题颜色**：`ThemeStore` 是唯一的状态 owner。界面消费 `SemanticPalette`，不要各自执行颜色分析。
 - **频谱**：所有可视化视图共享 `LEDMeterServiceProvider`，不要各自给 AVAudioEngine 安装 tap。
 - **曲库持久化**：Track 和 Playlist 的持久化路径有多个方法（meta only、meta+lyrics、meta+artwork、全部），匹配方法到改动范围，不要为只改元数据而重写封面和歌词 sidecar。
+
+## 相关文档
+
+- [歌词渲染系统](lyric-rendering.md)
+- [色彩系统](color-system.md)
+- [资料库存储](library-storage.md)
+- [曲库搜索](search.md)
+- [偏好随机播放](smart-shuffle.md)
