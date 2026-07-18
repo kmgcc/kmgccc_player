@@ -253,12 +253,12 @@ struct AboutSettingsView: View {
             Bundle.main.url(
                 forResource: fileName,
                 withExtension: "md",
-                subdirectory: "Docs"
+                subdirectory: "LegalDocuments"
             ),
             Bundle.main.url(
                 forResource: fileName,
                 withExtension: "md",
-                subdirectory: "LegalDocuments"
+                subdirectory: "Docs"
             ),
             Bundle.main.url(forResource: fileName, withExtension: "md")
         ].compactMap { $0 }
