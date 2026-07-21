@@ -95,7 +95,7 @@ struct AboutSettingsView: View {
                     destination: "https://xhslink.com/m/7o53GE3YNQy"
                 )
                 socialIconLink(
-                    title: "K",
+                    title: "官",
                     color: themeStore.accentColor,
                     destination: "https://player.kmgccc.cn/"
                 )

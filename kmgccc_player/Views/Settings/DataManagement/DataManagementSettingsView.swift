@@ -97,12 +97,12 @@ struct DataManagementSettingsView: View {
                     SettingsSwitchRow(
                         title: "帮助改进 kmgccc_player",
                         isOn: telemetryEnabledBinding,
-                        detail: "开启后会发送匿名使用统计，帮助了解用户数量、播放来源和皮肤使用情况。不会上传歌曲内容、本地文件路径等敏感数据。关闭后仅保留首次启动匿名安装计数。"
+                        detail: "开启后会发送匿名使用统计，帮助了解用户数量、播放来源、皮肤使用情况、性能指标等信息。不会上传播放记录、本地文件路径等敏感数据。"
                     )
                     SettingsSwitchRow(
                         title: "自动发送崩溃报告",
                         isOn: automaticCrashReportUploadBinding,
-                        detail: "App 意外退出后自动发送经过脱敏的技术报告。再次打开 App 时仍会询问你是否愿意补充当时的操作。"
+                        detail: "App 意外退出后自动发送经过脱敏的技术报告，来帮助我们定位错误。意外退出后再次打开 App 时会询问你是否愿意补充当时的操作。"
                     )
                 }
             }
