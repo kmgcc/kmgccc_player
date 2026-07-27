@@ -24,6 +24,7 @@ LDDC-main/
 
 # Local editor and tooling configuration (excluded from the published source).
 skills/
+.claude/
 /ARCHITECTURE.md
 /AGENTS.md
 /CLAUDE.md
