@@ -8,6 +8,8 @@
 
 import Foundation
 
+/// Legacy compatibility facade. New library-scoped code must capture `LibraryPaths`.
+/// Remove this facade after all production owners have moved into `LibrarySession`.
 nonisolated enum LocalLibraryPaths {
 
     static let libraryRootName = "kmgccc_player Library"
@@ -16,6 +18,10 @@ nonisolated enum LocalLibraryPaths {
 
     static var libraryRootURL: URL {
         LibraryLocationStore.activeLibraryRootURL
+    }
+
+    static func capturedPaths(rootURL: URL = LibraryLocationStore.activeLibraryRootURL) -> LibraryPaths {
+        LibraryPaths(rootURL: rootURL)
     }
 
     static var tracksRootURL: URL {

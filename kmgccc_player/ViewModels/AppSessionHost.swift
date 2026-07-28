@@ -30,6 +30,7 @@ final class AppSessionHost: ObservableObject {
     let playbackHistoryViewModel: PlaybackHistoryViewModel
 
     private let modelContainer: ModelContainer
+    private let initialLibraryContext: LibraryContext?
     private var hasSetupDependencies = false
     private var playbackModeObserver: NSObjectProtocol?
     private var libraryLocationObserver: NSObjectProtocol?
@@ -44,11 +45,15 @@ final class AppSessionHost: ObservableObject {
 
     init(
         modelContainer: ModelContainer,
-        playbackHistoryStore: PlaybackHistoryStore = .shared,
+        initialLibraryContext: LibraryContext?,
+        playbackHistoryStore: PlaybackHistoryStore? = nil,
         playbackHistoryViewModel: PlaybackHistoryViewModel = PlaybackHistoryViewModel()
     ) {
         self.modelContainer = modelContainer
+        self.initialLibraryContext = initialLibraryContext
         self.playbackHistoryStore = playbackHistoryStore
+            ?? initialLibraryContext.map(PlaybackHistoryStore.init(context:))
+            ?? PlaybackHistoryStore.inMemory()
         self.playbackHistoryViewModel = playbackHistoryViewModel
     }
 
@@ -62,8 +67,12 @@ final class AppSessionHost: ObservableObject {
 
         Log.debug("[Lifecycle] AppSessionHost initial setup", category: .ui)
         mainThreadStallMonitor.start()
-        setupDependencies()
-        await restorePlaybackMemoryIfNeeded()
+        if initialLibraryContext != nil {
+            setupDependencies()
+            await restorePlaybackMemoryIfNeeded()
+        } else {
+            Log.info("[LibrarySession] no active library; waiting for setup", category: .library)
+        }
 
         LegacyCacheCleanupCoordinator.shared.captureBuild7UpgradeEligibilityBeforeLaunchRecord()
         AppVersionGate.shared.recordCurrentAppLaunch()

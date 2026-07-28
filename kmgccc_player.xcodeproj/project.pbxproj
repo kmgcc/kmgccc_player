@@ -34,6 +34,16 @@
 		C02000000000000000000009 /* MetricKitDiagnosticModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0200000000000000000001A /* MetricKitDiagnosticModels.swift */; };
 		C0200000000000000000000A /* MetricKitDiagnosticSanitizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0200000000000000000001B /* MetricKitDiagnosticSanitizer.swift */; };
 		C0200000000000000000000B /* MetricKitDiagnosticStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0200000000000000000001C /* MetricKitDiagnosticStore.swift */; };
+		C03000000000000000000001 /* MusicLibraryRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000011 /* MusicLibraryRegistryTests.swift */; };
+		C03000000000000000000002 /* LibraryPathsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000012 /* LibraryPathsTests.swift */; };
+		C03000000000000000000003 /* LegacyLibraryBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000013 /* LegacyLibraryBootstrapTests.swift */; };
+		C03000000000000000000004 /* MusicLibraryManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000014 /* MusicLibraryManifest.swift */; };
+		C03000000000000000000005 /* MusicLibraryRegistryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000015 /* MusicLibraryRegistryStore.swift */; };
+		C03000000000000000000006 /* LibraryContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000016 /* LibraryContext.swift */; };
+		C03000000000000000000007 /* LibraryPaths.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000017 /* LibraryPaths.swift */; };
+		C03000000000000000000008 /* LegacyLibraryBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000018 /* LegacyLibraryBootstrap.swift */; };
+		C03000000000000000000009 /* LibraryUpgradeJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000019 /* LibraryUpgradeJournal.swift */; };
+		C0300000000000000000000A /* LibraryLocationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0300000000000000000001A /* LibraryLocationStore.swift */; };
 		F01000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000001 /* AppDelegate.swift */; };
 		F01000000000000000000002 /* DockController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000002 /* DockController.swift */; };
 		F01000000000000000000003 /* PlaybackCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000003 /* PlaybackCommands.swift */; };
@@ -70,6 +80,16 @@
 		C0200000000000000000001A /* MetricKitDiagnosticModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MetricKitDiagnosticModels.swift; path = kmgccc_player/Services/CrashReporting/MetricKitDiagnosticModels.swift; sourceTree = "<group>"; };
 		C0200000000000000000001B /* MetricKitDiagnosticSanitizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MetricKitDiagnosticSanitizer.swift; path = kmgccc_player/Services/CrashReporting/MetricKitDiagnosticSanitizer.swift; sourceTree = "<group>"; };
 		C0200000000000000000001C /* MetricKitDiagnosticStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MetricKitDiagnosticStore.swift; path = kmgccc_player/Services/CrashReporting/MetricKitDiagnosticStore.swift; sourceTree = "<group>"; };
+		C03000000000000000000011 /* MusicLibraryRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/MusicLibraryRegistryTests.swift; sourceTree = "<group>"; };
+		C03000000000000000000012 /* LibraryPathsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/LibraryPathsTests.swift; sourceTree = "<group>"; };
+		C03000000000000000000013 /* LegacyLibraryBootstrapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/LegacyLibraryBootstrapTests.swift; sourceTree = "<group>"; };
+		C03000000000000000000014 /* MusicLibraryManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MusicLibraryManifest.swift; path = kmgccc_player/Models/MusicLibraryManifest.swift; sourceTree = "<group>"; };
+		C03000000000000000000015 /* MusicLibraryRegistryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = MusicLibraryRegistryStore.swift; path = kmgccc_player/Services/LibrarySession/MusicLibraryRegistryStore.swift; sourceTree = "<group>"; };
+		C03000000000000000000016 /* LibraryContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LibraryContext.swift; path = kmgccc_player/Services/LibrarySession/LibraryContext.swift; sourceTree = "<group>"; };
+		C03000000000000000000017 /* LibraryPaths.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LibraryPaths.swift; path = kmgccc_player/Services/LibrarySession/LibraryPaths.swift; sourceTree = "<group>"; };
+		C03000000000000000000018 /* LegacyLibraryBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LegacyLibraryBootstrap.swift; path = kmgccc_player/Services/LibrarySession/LegacyLibraryBootstrap.swift; sourceTree = "<group>"; };
+		C03000000000000000000019 /* LibraryUpgradeJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LibraryUpgradeJournal.swift; path = kmgccc_player/Services/LibrarySession/LibraryUpgradeJournal.swift; sourceTree = "<group>"; };
+		C0300000000000000000001A /* LibraryLocationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LibraryLocationStore.swift; path = kmgccc_player/Utilities/LibraryLocationStore.swift; sourceTree = "<group>"; };
 		E01000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = kmgccc_player/AppDelegate.swift; sourceTree = "<group>"; };
 		E01000000000000000000002 /* DockController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DockController.swift; path = kmgccc_player/DockController.swift; sourceTree = "<group>"; };
 		E01000000000000000000003 /* PlaybackCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlaybackCommands.swift; path = kmgccc_player/PlaybackCommands.swift; sourceTree = "<group>"; };
@@ -245,6 +265,16 @@
 				C0200000000000000000001A /* MetricKitDiagnosticModels.swift */,
 				C0200000000000000000001B /* MetricKitDiagnosticSanitizer.swift */,
 				C0200000000000000000001C /* MetricKitDiagnosticStore.swift */,
+				C03000000000000000000011 /* MusicLibraryRegistryTests.swift */,
+				C03000000000000000000012 /* LibraryPathsTests.swift */,
+				C03000000000000000000013 /* LegacyLibraryBootstrapTests.swift */,
+				C03000000000000000000014 /* MusicLibraryManifest.swift */,
+				C03000000000000000000015 /* MusicLibraryRegistryStore.swift */,
+				C03000000000000000000016 /* LibraryContext.swift */,
+				C03000000000000000000017 /* LibraryPaths.swift */,
+				C03000000000000000000018 /* LegacyLibraryBootstrap.swift */,
+				C03000000000000000000019 /* LibraryUpgradeJournal.swift */,
+				C0300000000000000000001A /* LibraryLocationStore.swift */,
 			);
 			name = Tests;
 			sourceTree = "<group>";
@@ -525,6 +555,16 @@
 				C02000000000000000000009 /* MetricKitDiagnosticModels.swift in Sources */,
 				C0200000000000000000000A /* MetricKitDiagnosticSanitizer.swift in Sources */,
 				C0200000000000000000000B /* MetricKitDiagnosticStore.swift in Sources */,
+				C03000000000000000000001 /* MusicLibraryRegistryTests.swift in Sources */,
+				C03000000000000000000002 /* LibraryPathsTests.swift in Sources */,
+				C03000000000000000000003 /* LegacyLibraryBootstrapTests.swift in Sources */,
+				C03000000000000000000004 /* MusicLibraryManifest.swift in Sources */,
+				C03000000000000000000005 /* MusicLibraryRegistryStore.swift in Sources */,
+				C03000000000000000000006 /* LibraryContext.swift in Sources */,
+				C03000000000000000000007 /* LibraryPaths.swift in Sources */,
+				C03000000000000000000008 /* LegacyLibraryBootstrap.swift in Sources */,
+				C03000000000000000000009 /* LibraryUpgradeJournal.swift in Sources */,
+				C0300000000000000000000A /* LibraryLocationStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

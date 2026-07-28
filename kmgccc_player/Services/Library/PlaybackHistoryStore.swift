@@ -37,10 +37,27 @@ final class PlaybackHistoryStore {
 
     init(modelContainer: ModelContainer? = nil) {
         let storeURL = PlaybackHistoryStorePaths.storeURL
-        let container = modelContainer ?? Self.makeContainer(at: storeURL)
+        let container = modelContainer ?? Self.makeLegacyContainer(at: storeURL)
         self.modelContainer = container
         self.modelContext = ModelContext(container)
         self.activeStoreURL = storeURL
+    }
+
+    init(context: LibraryContext) {
+        let container = Self.makeContainer(context: context)
+        self.modelContainer = container
+        self.modelContext = ModelContext(container)
+        self.activeStoreURL = context.paths.playbackHistoryStoreURL
+    }
+
+    private init(inMemoryContainer: ModelContainer) {
+        self.modelContainer = inMemoryContainer
+        self.modelContext = ModelContext(inMemoryContainer)
+        self.activeStoreURL = URL(fileURLWithPath: "/dev/null/kmgccc-playback-history")
+    }
+
+    static func inMemory() -> PlaybackHistoryStore {
+        PlaybackHistoryStore(inMemoryContainer: makeInMemoryContainer())
     }
 
     func record(
@@ -106,7 +123,7 @@ final class PlaybackHistoryStore {
         let newStoreURL = PlaybackHistoryStorePaths.storeURL
         guard newStoreURL.standardizedFileURL != activeStoreURL.standardizedFileURL else { return }
 
-        let container = Self.makeContainer(at: newStoreURL)
+        let container = Self.makeLegacyContainer(at: newStoreURL)
         modelContainer = container
         modelContext = ModelContext(container)
         activeStoreURL = newStoreURL
@@ -297,13 +314,39 @@ final class PlaybackHistoryStore {
         )
     }
 
-    private static func makeContainer(at storeURL: URL) -> ModelContainer {
+    private static func makeContainer(context: LibraryContext) -> ModelContainer {
         let schema = Schema([PlaybackHistoryRecord.self])
         let configuration = ModelConfiguration(
             schema: schema,
-            url: PlaybackHistoryStorePaths.prepareStoreURL(at: storeURL.deletingLastPathComponent().deletingLastPathComponent())
+            url: PlaybackHistoryStorePaths.prepareStoreURL(
+                in: context.paths,
+                libraryID: context.id
+            )
         )
+        return makeContainer(schema: schema, configuration: configuration)
+    }
 
+    private static func makeLegacyContainer(at storeURL: URL) -> ModelContainer {
+        let schema = Schema([PlaybackHistoryRecord.self])
+        let configuration = ModelConfiguration(
+            schema: schema,
+            url: PlaybackHistoryStorePaths.prepareStoreURL(
+                at: storeURL.deletingLastPathComponent().deletingLastPathComponent()
+            )
+        )
+        return makeContainer(schema: schema, configuration: configuration)
+    }
+
+    private static func makeInMemoryContainer() -> ModelContainer {
+        let schema = Schema([PlaybackHistoryRecord.self])
+        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        return makeContainer(schema: schema, configuration: configuration)
+    }
+
+    private static func makeContainer(
+        schema: Schema,
+        configuration: ModelConfiguration
+    ) -> ModelContainer {
         do {
             return try ModelContainer(for: schema, configurations: [configuration])
         } catch {

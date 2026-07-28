@@ -7,7 +7,47 @@
 
 import Foundation
 
+nonisolated struct LibraryStorageLocations: Sendable, Equatable {
+    let paths: LibraryPaths
+
+    var libraryRootURL: URL { paths.rootURL }
+    var libraryCacheRootURL: URL { paths.cacheRootURL }
+    var artworkCacheRootURL: URL { paths.artworkCacheRootURL }
+    var playlistArtworkDerivativesURL: URL {
+        artworkCacheRootURL.appendingPathComponent("PlaylistDerivatives", isDirectory: true)
+    }
+    var trackArtworkOriginalsURL: URL {
+        artworkCacheRootURL.appendingPathComponent("Tracks", isDirectory: true)
+    }
+    var trackArtworkDerivativesURL: URL {
+        artworkCacheRootURL.appendingPathComponent("Derivatives", isDirectory: true)
+    }
+    var qqMusicCoverCacheURL: URL {
+        artworkCacheRootURL.appendingPathComponent("QQMusic", isDirectory: true)
+    }
+    var externalPlaybackArtworkURL: URL {
+        artworkCacheRootURL.appendingPathComponent("ExternalPlayback", isDirectory: true)
+    }
+    var lyricsCacheRootURL: URL { paths.lyricsCacheRootURL }
+    var amllDBCacheURL: URL {
+        lyricsCacheRootURL.appendingPathComponent("AMLLDB", isDirectory: true)
+    }
+    var externalPlaybackLyricsURL: URL {
+        lyricsCacheRootURL.appendingPathComponent("ExternalPlayback", isDirectory: true)
+    }
+    var colorsCacheURL: URL { paths.colorsCacheRootURL }
+    var headerColorCacheURL: URL {
+        colorsCacheURL.appendingPathComponent("Header", isDirectory: true)
+    }
+    var homeCacheURL: URL { paths.homeCacheRootURL }
+    var externalPlaybackCacheRootURL: URL { paths.externalPlaybackCacheRootURL }
+    var importStagingRootURL: URL { paths.importStagingRootURL }
+}
+
 nonisolated enum StorageLocations {
+    static func scoped(to paths: LibraryPaths) -> LibraryStorageLocations {
+        LibraryStorageLocations(paths: paths)
+    }
     static var libraryRootURL: URL {
         LocalLibraryPaths.libraryRootURL
     }

@@ -8,23 +8,36 @@
 import Foundation
 
 nonisolated enum SearchIndexStorePaths {
-    static var storeURL: URL {
-        let appSupport =
-            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory())
-        let bundleID = Bundle.main.bundleIdentifier ?? "kmgccc.player"
-        let dir = appSupport
-            .appendingPathComponent(bundleID, isDirectory: true)
-            .appendingPathComponent("IndexCache", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("LibrarySearch.sqlite")
+    static func storeURL(in paths: LibraryPaths) -> URL {
+        paths.searchIndexStoreURL
     }
 
-    static var relatedStoreFiles: [URL] {
-        [
+    static func prepareStoreURL(
+        in paths: LibraryPaths,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        try fileManager.createDirectory(at: paths.indexRootURL, withIntermediateDirectories: true)
+        return storeURL(in: paths)
+    }
+
+    static func relatedStoreFiles(in paths: LibraryPaths) -> [URL] {
+        let storeURL = storeURL(in: paths)
+        return [
             storeURL,
             URL(fileURLWithPath: storeURL.path + "-wal"),
             URL(fileURLWithPath: storeURL.path + "-shm"),
         ]
+    }
+
+    // Compatibility only; remove after search/session migration.
+    static var storeURL: URL {
+        let paths = LibraryPaths(rootURL: LibraryLocationStore.activeLibraryRootURL)
+        try? FileManager.default.createDirectory(at: paths.indexRootURL, withIntermediateDirectories: true)
+        return storeURL(in: paths)
+    }
+
+    // Compatibility only; remove after search/session migration.
+    static var relatedStoreFiles: [URL] {
+        relatedStoreFiles(in: LibraryPaths(rootURL: LibraryLocationStore.activeLibraryRootURL))
     }
 }

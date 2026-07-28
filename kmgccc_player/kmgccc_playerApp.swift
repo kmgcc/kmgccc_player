@@ -80,9 +80,10 @@ struct KmgcccPlayerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appSession: AppSessionHost
 
-    // MARK: - SwiftData Container
+    // MARK: - Active Library Bootstrap
 
     let sharedModelContainer: ModelContainer
+    let initialLibraryContext: LibraryContext?
 
     init() {
         // Register the bundled Inter family before any settings preview or
@@ -102,14 +103,52 @@ struct KmgcccPlayerApp: App {
         ColorSystemSelfCheck.runIfRequested()
         #endif
 
+        let bootstrap: LegacyLibraryBootstrapResult
+        let shouldUseLegacyFallback: Bool
+        do {
+            bootstrap = try LegacyLibraryBootstrap().run()
+            shouldUseLegacyFallback = false
+        } catch {
+            // A damaged registry must not be replaced by an empty one. Keep the
+            // existing single-library startup path available until recovery UI loads.
+            Log.error("[LibraryBootstrap] pre-container bootstrap failed: \(error)", category: .library)
+            bootstrap = .noLibrary
+            shouldUseLegacyFallback = LegacyLibraryBootstrap.containsLegacyLibrary(
+                at: LibraryLocationStore.activeLibraryRootURL
+            )
+        }
+        let initialLibraryContext = bootstrap.context
+
         let sharedModelContainer: ModelContainer = {
             let schema = Schema([
                 TrackIndexEntry.self
             ])
-            let modelConfiguration = ModelConfiguration(
-                schema: schema,
-                url: TrackIndexStorePaths.storeURL
-            )
+            let modelConfiguration: ModelConfiguration
+            if let initialLibraryContext {
+                do {
+                    modelConfiguration = ModelConfiguration(
+                        schema: schema,
+                        url: try TrackIndexStorePaths.prepareStoreURL(in: initialLibraryContext.paths)
+                    )
+                } catch {
+                    fatalError("Could not prepare library index: \(error)")
+                }
+            } else if shouldUseLegacyFallback {
+                let fallbackPaths = LibraryPaths(rootURL: LibraryLocationStore.activeLibraryRootURL)
+                do {
+                    modelConfiguration = ModelConfiguration(
+                        schema: schema,
+                        url: try TrackIndexStorePaths.prepareStoreURL(in: fallbackPaths)
+                    )
+                } catch {
+                    fatalError("Could not prepare legacy library index: \(error)")
+                }
+            } else {
+                modelConfiguration = ModelConfiguration(
+                    schema: schema,
+                    isStoredInMemoryOnly: true
+                )
+            }
 
             do {
                 return try ModelContainer(for: schema, configurations: [modelConfiguration])
@@ -118,9 +157,11 @@ struct KmgcccPlayerApp: App {
             }
         }()
 
+        self.initialLibraryContext = initialLibraryContext
         self.sharedModelContainer = sharedModelContainer
         let appSessionHost = AppSessionHost(
-            modelContainer: sharedModelContainer
+            modelContainer: sharedModelContainer,
+            initialLibraryContext: initialLibraryContext
         )
         _appSession = StateObject(wrappedValue: appSessionHost)
         AppDelegate.launchMainWindowHandler = { @MainActor in

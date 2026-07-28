@@ -10,20 +10,25 @@ import Foundation
 enum PlaybackHistoryStorePaths {
     static let directoryName = "PlaybackHistory"
     static let storeFileName = "PlaybackHistory.sqlite"
-    private static let legacyMigrationKey = "playbackHistory.libraryStoreMigration.v1"
+    private static let legacyMigrationKeyPrefix = "playbackHistory.libraryStoreMigration.v2"
 
     /// Playback history is user-owned library data, not a regenerable cache.
-    /// Keeping it beside the library makes a custom library self-contained and
-    /// lets switching libraries switch the history timeline with it.
-    static var directoryURL: URL {
-        LocalLibraryPaths.libraryRootURL
-            .appendingPathComponent(directoryName, isDirectory: true)
+    static func directoryURL(in paths: LibraryPaths) -> URL {
+        paths.playbackHistoryRootURL
     }
 
+    static func storeURL(in paths: LibraryPaths) -> URL {
+        paths.playbackHistoryStoreURL
+    }
+
+    // Compatibility only; remove after history/session migration.
+    static var directoryURL: URL {
+        directoryURL(in: LibraryPaths(rootURL: LibraryLocationStore.activeLibraryRootURL))
+    }
+
+    // Compatibility only; remove after history/session migration.
     static var storeURL: URL {
-        LocalLibraryPaths.libraryRootURL
-            .appendingPathComponent(directoryName, isDirectory: true)
-            .appendingPathComponent(storeFileName)
+        storeURL(in: LibraryPaths(rootURL: LibraryLocationStore.activeLibraryRootURL))
     }
 
     /// The pre-library-location store used by the first playback-history build.
@@ -39,28 +44,48 @@ enum PlaybackHistoryStorePaths {
         return directory.appendingPathComponent("PlaybackHistory.sqlite")
     }
 
-    static func prepareStoreURL(at libraryRootURL: URL = LocalLibraryPaths.libraryRootURL) -> URL {
-        let directory = libraryRootURL.appendingPathComponent(directoryName, isDirectory: true)
-        let fileManager = FileManager.default
+    static func prepareStoreURL(
+        in paths: LibraryPaths,
+        libraryID: UUID,
+        fileManager: FileManager = .default,
+        defaults: UserDefaults = .standard
+    ) -> URL {
+        let directory = directoryURL(in: paths)
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let destination = directory.appendingPathComponent(storeFileName)
-        migrateLegacyStoreIfNeeded(to: destination, fileManager: fileManager)
+        let destination = storeURL(in: paths)
+        migrateLegacyStoreIfNeeded(
+            to: destination,
+            libraryID: libraryID,
+            fileManager: fileManager,
+            defaults: defaults
+        )
         return destination
     }
 
-    private static func migrateLegacyStoreIfNeeded(to destination: URL, fileManager: FileManager) {
-        let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: legacyMigrationKey) else { return }
+    // Compatibility only; remove after history/session migration.
+    static func prepareStoreURL(at libraryRootURL: URL = LibraryLocationStore.activeLibraryRootURL) -> URL {
+        let paths = LibraryPaths(rootURL: libraryRootURL)
+        return prepareStoreURL(in: paths, libraryID: stableLegacyLibraryID(for: paths.rootURL))
+    }
+
+    private static func migrateLegacyStoreIfNeeded(
+        to destination: URL,
+        libraryID: UUID,
+        fileManager: FileManager,
+        defaults: UserDefaults
+    ) {
+        let migrationKey = "\(legacyMigrationKeyPrefix).\(libraryID.uuidString)"
+        guard !defaults.bool(forKey: migrationKey) else { return }
 
         if fileManager.fileExists(atPath: destination.path) {
-            defaults.set(true, forKey: legacyMigrationKey)
+            defaults.set(true, forKey: migrationKey)
             return
         }
 
         let legacy = legacyStoreURL
         guard fileManager.fileExists(atPath: legacy.path) else {
-            defaults.set(true, forKey: legacyMigrationKey)
+            defaults.set(true, forKey: migrationKey)
             return
         }
 
@@ -89,6 +114,20 @@ enum PlaybackHistoryStorePaths {
             }
             return
         }
-        defaults.set(true, forKey: legacyMigrationKey)
+        defaults.set(true, forKey: migrationKey)
+    }
+
+    private static func stableLegacyLibraryID(for rootURL: URL) -> UUID {
+        var bytes = [UInt8](repeating: 0, count: 16)
+        for (index, byte) in rootURL.standardizedFileURL.path.utf8.enumerated() {
+            let slot = index % bytes.count
+            bytes[slot] = bytes[slot] &+ byte &+ UInt8(truncatingIfNeeded: index)
+        }
+        return UUID(uuid: (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        ))
     }
 }
