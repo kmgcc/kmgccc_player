@@ -27,6 +27,11 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
     }
 
     func makeSession(for context: LibraryContext) async throws -> any LibrarySessionLifecycle {
+        let rootAccessLease = try LibraryRootAccessLease(
+            context: context,
+            resolver: sourceBookmarkResolver,
+            requiresSecurityScope: requiresSecurityScope
+        )
         let manifest = try MusicLibraryManifest.read(from: context.paths.manifestURL)
         guard manifest.libraryID == context.id else {
             throw LibrarySessionFactoryError.manifestIdentityMismatch
@@ -161,6 +166,17 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             artistArtworkProviderCoordinator: cacheServices.artistArtworkProviderCoordinator
         )
         libraryViewModel.setImportService(fileImportService)
+        if let sourceScope {
+            let deletionService = ReferencedTrackDeletionService(
+                context: context,
+                sourceScope: sourceScope,
+                bookmarkResolver: sourceBookmarkResolver,
+                requiresSecurityScope: requiresSecurityScope
+            )
+            libraryViewModel.prepareTracksForDeletion = { tracks in
+                await deletionService.prepareForAuthorityDeletion(tracks)
+            }
+        }
 
         let smartPlaybackController = SmartPlaybackController(
             playbackHistoryStore: playbackHistoryStore,
@@ -245,6 +261,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
 
         return LibrarySession(
             context: context,
+            rootAccessLease: rootAccessLease,
             modelContainer: modelContainer,
             cacheServices: cacheServices,
             repository: repository,

@@ -68,7 +68,11 @@ actor ProductionLibraryLifecycleFileOperator: LibraryLifecycleFileOperating {
         let paths = LibraryPaths(rootURL: url)
         try paths.createRequiredDirectories(fileManager: fileManager)
         try manifest.write(to: paths.manifestURL, fileManager: fileManager)
-        try Data("{}\n".utf8).write(to: paths.librarySettingsURL, options: .atomic)
+        try LibraryScopedSettingsFile.save(
+            LibraryScopedSettings(),
+            to: paths.librarySettingsURL,
+            fileManager: fileManager
+        )
     }
 
     func validateLibrary(at url: URL, expectedID: UUID, expectedMode: MusicLibraryMode) throws {

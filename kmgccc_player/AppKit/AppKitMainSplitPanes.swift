@@ -34,6 +34,7 @@ struct AppKitMainSidebarPaneRoot: View {
 
                .environment(cacheServices)
                .environment(skinManager)
+               .environmentObject(appSession)
                .environmentObject(ThemeStore.shared)
                 .environment(\.libraryPresentedAccentColor, ThemeStore.shared.accentColor)
                 .modelContainer(appSession.sharedModelContainer)
@@ -42,6 +43,33 @@ struct AppKitMainSidebarPaneRoot: View {
         } else {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+}
+
+private struct NoLibrarySetupPlaceholder: View {
+    @ObservedObject var appSession: AppSessionHost
+    @State private var registry = MusicLibraryRegistry()
+
+    var body: some View {
+        ScrollView {
+            LibrarySetupFlow(
+                flow: appSession.librarySetupFlow,
+                registry: registry,
+                onChange: {}
+            )
+            .environmentObject(appSession)
+            .environmentObject(ThemeStore.shared)
+            .frame(maxWidth: 500)
+            .padding(32)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ThemedBaseBackgroundColorView())
+        .task {
+            registry = await appSession.musicLibraryRegistrySnapshot()
+            if appSession.librarySetupFlow.presentation == .none {
+                appSession.librarySetupFlow.present(.setup(.managed))
+            }
         }
     }
 }
@@ -82,8 +110,7 @@ struct AppKitMainContentPaneRoot: View {
                 skinManager: skinManager
             )
         } else {
-            ProgressView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            NoLibrarySetupPlaceholder(appSession: appSession)
         }
     }
 

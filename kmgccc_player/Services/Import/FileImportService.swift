@@ -314,6 +314,35 @@ final class FileImportService: FileImportServiceProtocol {
         await importURLs(urls, to: nil, metadataOverride: nil, presentation: .automatic)
     }
 
+    /// Setup entry. The caller retains `selection` across this entire call so the
+    /// backend can sign durable folder/file bookmarks before picker access expires.
+    func importInitialSelection(_ selection: LibraryInitialImportSelection) async -> LibraryInitialImportResult {
+        let imported = await importURLs(
+            selection.urls,
+            to: nil,
+            metadataOverride: nil,
+            presentation: .automatic
+        )
+        let plan = storageBackend.lastPreparedInputPlan
+        var failures = plan?.failures ?? []
+        if let plan, imported.count < plan.files.count {
+            failures.append(contentsOf: plan.files.dropFirst(imported.count).map {
+                ImportInputFailure(url: $0.url, message: "Import failed")
+            })
+        } else if let plan, plan.files.isEmpty, !selection.urls.isEmpty {
+            failures.append(contentsOf: selection.urls.map {
+                ImportInputFailure(url: $0, message: "No supported audio found")
+            })
+        }
+        return LibraryInitialImportResult(
+            requested: selection.urls.count,
+            planned: plan?.files.count ?? 0,
+            imported: imported.count,
+            failures: failures,
+            sourceIDs: plan?.directorySources.map(\.source.id) ?? []
+        )
+    }
+
     private enum ImportPresentation {
         case interactive
         case automatic

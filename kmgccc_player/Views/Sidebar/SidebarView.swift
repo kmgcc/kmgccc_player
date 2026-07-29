@@ -28,6 +28,7 @@ struct SidebarView: View {
     @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(AppSettings.self) private var settings
+    @EnvironmentObject private var appSession: AppSessionHost
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var currentColorScheme
     @ObservedObject private var updateDownloadManager = UpdatePackageDownloadManager.shared
@@ -384,6 +385,7 @@ struct SidebarView: View {
                 .environment(lyricsVM)
                 .environment(ledMeterProvider)
                 .environment(cacheServices)
+                .environmentObject(appSession)
                 .environmentObject(themeStore)
         }
         .sheet(isPresented: $showingPlaylistSheet) {
@@ -513,7 +515,9 @@ struct SidebarView: View {
     private var sidebarTaskProgressStack: some View {
         VStack(spacing: 6) {
             if let notice = uiState.sidebarNotice {
-                SidebarNoticeView(notice: notice)
+                SidebarNoticeView(notice: notice) {
+                    showSettings = true
+                }
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
@@ -960,14 +964,15 @@ private struct SidebarPlaylistThumbnail: View {
 
 private struct SidebarNoticeView: View {
     let notice: SidebarNotice
+    let onAction: () -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "checkmark.circle.fill")
+            Image(systemName: notice.style == .warning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(themeStore.accentColor)
+                .foregroundStyle(notice.style == .warning ? Color.orange : themeStore.accentColor)
 
             Text(notice.message)
                 .font(.caption.weight(.semibold))
@@ -975,6 +980,13 @@ private struct SidebarNoticeView: View {
                 .lineLimit(1)
 
             Spacer(minLength: 0)
+
+            if let actionTitle = notice.actionTitle {
+                Button(actionTitle, action: onAction)
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themeStore.accentColor)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)

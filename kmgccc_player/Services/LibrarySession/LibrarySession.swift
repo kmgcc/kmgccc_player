@@ -4,6 +4,7 @@ import SwiftData
 @MainActor
 final class LibrarySession: LibrarySessionLifecycle {
     let context: LibraryContext
+    private let rootAccessLease: LibraryRootAccessLease
     let modelContainer: ModelContainer
     let cacheServices: LibraryCacheServices
     let repository: SwiftDataLibraryRepository
@@ -33,6 +34,7 @@ final class LibrarySession: LibrarySessionLifecycle {
 
     init(
         context: LibraryContext,
+        rootAccessLease: LibraryRootAccessLease,
         modelContainer: ModelContainer,
         cacheServices: LibraryCacheServices,
         repository: SwiftDataLibraryRepository,
@@ -58,6 +60,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         ledMeterProvider: LEDMeterServiceProvider
     ) {
         self.context = context
+        self.rootAccessLease = rootAccessLease
         self.modelContainer = modelContainer
         self.cacheServices = cacheServices
         self.repository = repository
@@ -101,6 +104,27 @@ final class LibrarySession: LibrarySessionLifecycle {
         }
         libraryService.startMonitoring(repository: repository)
         isLoaded = true
+    }
+
+    func importInitialSelection(_ selection: LibraryInitialImportSelection) async throws -> LibraryInitialImportResult {
+        guard !isClosed else {
+            let result = LibraryInitialImportResult(
+                requested: selection.urls.count,
+                planned: 0,
+                imported: 0,
+                failures: selection.urls.map { ImportInputFailure(url: $0, message: "Session closed") },
+                sourceIDs: []
+            )
+            throw LibraryInitialImportError.initialImportFailed(result)
+        }
+        let result = await fileImportService.importInitialSelection(selection)
+        if context.mode == .referenced, !result.sourceIDs.isEmpty {
+            _ = try await refreshReferencedSources()
+        }
+        guard selection.urls.isEmpty || result.didSucceed else {
+            throw LibraryInitialImportError.initialImportFailed(result)
+        }
+        return result
     }
 
     @discardableResult
@@ -160,6 +184,7 @@ final class LibrarySession: LibrarySessionLifecycle {
             do {
                 try await reconciler.reconcile(sourceIDs: sourceIDs)
             } catch {
+                await monitor.markFailed(sourceIDs: sourceIDs)
                 await reconciler.reportMonitorFailure(sourceIDs: sourceIDs, error: error)
             }
         }
@@ -198,6 +223,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         await storageBackend.close()
         await cacheServices.close()
         preferenceStatsService.clearCache()
+        rootAccessLease.release()
         isLoaded = false
     }
 }

@@ -1,6 +1,12 @@
 import CoreServices
 import Foundation
 
+nonisolated enum ReferencedSourceScanState: Sendable, Equatable {
+    case idle
+    case scanning
+    case failed
+}
+
 nonisolated struct LibraryFileEvent: Sendable, Equatable {
     var path: String
     var requiresFullScan: Bool
@@ -77,6 +83,7 @@ actor LibraryChangeMonitor {
     private var scanTask: Task<Void, Never>?
     private var handler: ScanHandler?
     private var stopped = true
+    private var sourceStates: [UUID: ReferencedSourceScanState] = [:]
 
     init(eventSource: LibraryFileEventSource = FSEventsLibraryFileEventSource(), debounceNanoseconds: UInt64 = 750_000_000) {
         self.eventSource = eventSource
@@ -86,6 +93,7 @@ actor LibraryChangeMonitor {
     func start(sourceRoots: [UUID: URL], handler: @escaping ScanHandler) async throws {
         await stopAndWait()
         sourcePaths = sourceRoots.mapValues { $0.standardizedFileURL.path }
+        sourceStates = sourceRoots.mapValues { _ in .idle }
         self.handler = handler
         stopped = false
         do {
@@ -112,6 +120,8 @@ actor LibraryChangeMonitor {
         handler = currentHandler
     }
 
+    func sourceStateSnapshot() -> [UUID: ReferencedSourceScanState] { sourceStates }
+
     func markDirty(sourceIDs: Set<UUID>, fullScan: Bool = false) {
         guard !stopped else { return }
         dirtySourceIDs.formUnion(sourceIDs)
@@ -129,6 +139,7 @@ actor LibraryChangeMonitor {
         scanTask = nil
         sourcePaths.removeAll()
         dirtySourceIDs.removeAll()
+        sourceStates.removeAll()
         handler = nil
     }
 
@@ -141,6 +152,7 @@ actor LibraryChangeMonitor {
         scanTask = nil
         sourcePaths.removeAll()
         dirtySourceIDs.removeAll()
+        sourceStates.removeAll()
         handler = nil
     }
 
@@ -170,13 +182,19 @@ actor LibraryChangeMonitor {
         let full = forceFullScan
         dirtySourceIDs.removeAll()
         forceFullScan = false
+        for id in ids { sourceStates[id] = .scanning }
         scanTask = Task { [weak self] in
             await handler(ids, full)
-            await self?.scanFinished()
+            await self?.scanFinished(ids: ids)
         }
     }
 
-    private func scanFinished() {
+    func markFailed(sourceIDs: Set<UUID>) {
+        for id in sourceIDs { sourceStates[id] = .failed }
+    }
+
+    private func scanFinished(ids: Set<UUID>) {
+        for id in ids where sourceStates[id] == .scanning { sourceStates[id] = .idle }
         scanTask = nil
         guard !stopped, !dirtySourceIDs.isEmpty else { return }
         scheduleDebounce()

@@ -69,6 +69,9 @@ struct SettingsTabSelector: View {
                     .padding(.horizontal, presentationStyle.tabHorizontalPadding)
                     .padding(.vertical, presentationStyle.tabVerticalPadding)
                     .contentShape(Rectangle())
+                    .accessibilityLabel(Text(tabs[index]))
+                    .accessibilityValue(Text(isSelected ? "已选择" : "未选择"))
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
             }
         )
         .padding(.horizontal, presentationStyle.tabTrackHorizontalPadding)

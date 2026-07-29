@@ -22,27 +22,57 @@ final class LibraryLifecycleTransactionGate {
 nonisolated final class LibraryRootAccessLease: @unchecked Sendable {
     let rootURL: URL
     let isStale: Bool
-    private let resolver: any BookmarkResolving
-    private let didStart: Bool
+    private let scopeLease: SecurityScopedResourceLease
 
     init(descriptor: MusicLibraryBookmark, resolver: any BookmarkResolving, requiresSecurityScope: Bool) throws {
         let resolution = try resolver.resolve(descriptor.rootBookmarkData)
         rootURL = resolution.url.standardizedFileURL
         isStale = resolution.isStale
-        didStart = resolver.startAccessing(rootURL)
-        self.resolver = resolver
+        let didStart = resolver.startAccessing(rootURL)
         guard didStart || (!requiresSecurityScope && FileManager.default.isReadableFile(atPath: rootURL.path)) else {
             throw LibraryRootAccessError.permissionDenied
         }
+        scopeLease = didStart
+            ? SecurityScopedResourceLease { resolver.stopAccessing(resolution.url.standardizedFileURL) }
+            : .none
     }
 
-    deinit {
-        if didStart { resolver.stopAccessing(rootURL) }
+    init(context: LibraryContext, resolver: any BookmarkResolving, requiresSecurityScope: Bool) throws {
+        let expectedRoot = context.rootURL.standardizedFileURL
+        let resolution: (url: URL, isStale: Bool)
+        do {
+            resolution = try resolver.resolve(context.rootBookmarkData)
+        } catch {
+            guard !requiresSecurityScope,
+                  FileManager.default.isReadableFile(atPath: expectedRoot.path) else {
+                throw LibraryRootAccessError.permissionDenied
+            }
+            rootURL = expectedRoot
+            isStale = false
+            scopeLease = .none
+            return
+        }
+
+        rootURL = resolution.url.standardizedFileURL
+        isStale = resolution.isStale
+        guard rootURL == expectedRoot else {
+            throw LibraryRootAccessError.identityMismatch
+        }
+        let didStart = resolver.startAccessing(rootURL)
+        guard didStart || (!requiresSecurityScope && FileManager.default.isReadableFile(atPath: rootURL.path)) else {
+            throw LibraryRootAccessError.permissionDenied
+        }
+        scopeLease = didStart
+            ? SecurityScopedResourceLease { resolver.stopAccessing(resolution.url.standardizedFileURL) }
+            : .none
     }
+
+    func release() { scopeLease.release() }
 }
 
 nonisolated enum LibraryRootAccessError: Error, Equatable {
     case permissionDenied
+    case identityMismatch
 }
 
 @MainActor
@@ -68,6 +98,11 @@ final class LibrarySessionFactoryValidator: LibrarySessionValidating {
             throw error
         }
     }
+}
+
+nonisolated enum RegisteredLibraryActivationError: Error, Equatable {
+    case notRegistered
+    case reconnectRequired(UUID)
 }
 
 nonisolated enum LibraryStartupResolution: Sendable, Equatable {
@@ -118,6 +153,17 @@ struct LibraryStartupContextResolver {
             return .context(context)
         }
         return .noActive
+    }
+
+    func resolveRegistered(libraryID: UUID, generation: UInt64 = 1) async throws -> LibraryContext {
+        let registry = await registryStore.snapshot()
+        guard let descriptor = registry.library(id: libraryID) else {
+            throw RegisteredLibraryActivationError.notRegistered
+        }
+        guard let context = await resolve(descriptor, generation: generation) else {
+            throw RegisteredLibraryActivationError.reconnectRequired(libraryID)
+        }
+        return context
     }
 
     private func resolve(_ descriptor: MusicLibraryBookmark, generation: UInt64) async -> LibraryContext? {

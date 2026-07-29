@@ -8,6 +8,7 @@ import Foundation
 @MainActor
 final class ReferencedLocalBackend: LibraryStorageBackend {
     let mode: MusicLibraryMode = .referenced
+    private(set) var lastPreparedInputPlan: ImportInputPlan?
     private let paths: LibraryPaths
     private let sourceStore: ReferencedSourceStore
     private let sourceScope: ReferencedSourceScope
@@ -37,11 +38,13 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         do {
             existingDescriptors = try await sourceStore.loadAll()
         } catch {
-            return ImportInputPlan(
+            let plan = ImportInputPlan(
                 files: [],
                 directorySources: [],
                 failures: [.init(url: paths.sourcesRootURL, message: error.localizedDescription)]
             )
+            lastPreparedInputPlan = plan
+            return plan
         }
         var existingByCanonicalPath: [String: ReferencedSourceDescriptor] = [:]
         for descriptor in existingDescriptors {
@@ -103,11 +106,13 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
             selectedURLs: readableSelections,
             directorySources: sourceIDs
         )
-        return ImportInputPlan(
+        let plan = ImportInputPlan(
             files: scanned.files,
             directorySources: sources,
             failures: failures + scanned.failures
         )
+        lastPreparedInputPlan = plan
+        return plan
     }
 
     private func canonicalPath(_ url: URL) -> String {

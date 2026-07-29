@@ -28,6 +28,7 @@ nonisolated enum LibraryBackendError: Error, Equatable, LocalizedError {
 @MainActor
 protocol LibraryStorageBackend: AnyObject {
     var mode: MusicLibraryMode { get }
+    var lastPreparedInputPlan: ImportInputPlan? { get }
     func prepareInputs(_ selectedURLs: [URL]) async -> ImportInputPlan
     func makePlacement(
         for file: ImportDiscoveredFile,

@@ -7,8 +7,29 @@
 
 import SwiftUI
 
-/// Data management settings: import behavior and cache management.
+/// Data management settings split between music-library controls and app data.
 struct DataManagementSettingsView: View {
+    @State private var selectedTab = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsHeaderLabel("数据", systemImage: "arrow.counterclockwise.circle")
+            SettingsTabSelector(
+                tabs: ["音乐", "应用数据"],
+                selectedTab: $selectedTab,
+                fillsWidth: true
+            )
+
+            if selectedTab == 0 {
+                MusicSettingsView()
+            } else {
+                ApplicationDataSettingsView()
+            }
+        }
+    }
+}
+
+private struct ApplicationDataSettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
@@ -25,11 +46,6 @@ struct DataManagementSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            SettingsHeaderLabel("数据", systemImage: "arrow.counterclockwise.circle")
-
-            // Library relocation is intentionally unavailable until the session
-            // controller owns the complete move/reconnect transaction.
-
             // Import settings
             SettingsSection {
                 VStack(alignment: .leading, spacing: 12) {

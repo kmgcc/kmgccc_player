@@ -22,6 +22,7 @@ final class AppSessionHost: ObservableObject {
     @Published private(set) var skinManager: SkinManager?
 
     let uiState = UIStateViewModel()
+    let librarySetupFlow = LibrarySetupViewModel()
     let activeLibraryBinding: ActiveLibraryBinding
 
     var cacheServices: LibraryCacheServices? {
@@ -137,6 +138,112 @@ final class AppSessionHost: ObservableObject {
         activeLibraryBinding.modelContainer
     }
 
+    func musicLibraryRegistrySnapshot() async -> MusicLibraryRegistry {
+        await registryStore?.snapshot() ?? MusicLibraryRegistry()
+    }
+
+    func openMusicLibrary(at url: URL) async throws {
+        guard let libraryOpenService else { throw LibraryOpenError.libraryNotFound }
+        _ = try await libraryOpenService.open(selectedURL: url)
+    }
+
+    func openInspectedMusicLibrary(_ context: LibraryContext) async throws {
+        let lease = try LibraryRootAccessLease(
+            context: context,
+            resolver: SystemBookmarkResolver(),
+            requiresSecurityScope: false
+        )
+        defer { lease.release() }
+        try await openMusicLibrary(at: context.rootURL)
+    }
+
+    func activateRegisteredLibrary(id: UUID) async throws {
+        guard let registryStore else { throw RegisteredLibraryActivationError.notRegistered }
+        let context = try await LibraryStartupContextResolver(registryStore: registryStore)
+            .resolveRegistered(libraryID: id, generation: activeLibraryBinding.generation &+ 1)
+        try await sessionController.switchToLibrary(context)
+    }
+
+    func createMusicLibrary(
+        mode: MusicLibraryMode,
+        parentURL: URL,
+        displayName: String,
+        initialImportSelection: LibraryInitialImportSelection?
+    ) async throws -> CreateMusicLibraryResult {
+        let selectedMusicURLs = initialImportSelection?.urls ?? []
+        guard let libraryCreationService else { throw LibraryCreationError.stagingFailed }
+        let result = try await libraryCreationService.create(
+            mode: mode,
+            parentURL: parentURL,
+            displayName: displayName,
+            initialImport: LibraryInitialImportPayload(selectedURLs: selectedMusicURLs)
+        )
+        switch result {
+        case .created(let context, _):
+            var initialResult: LibraryInitialImportResult?
+            if let initialImportSelection,
+               !initialImportSelection.urls.isEmpty,
+               let session = activeLibraryBinding.activeSession {
+                initialResult = try await session.importInitialSelection(initialImportSelection)
+            }
+            return .created(context, initialImport: initialResult)
+        case .existingLibrary(let context):
+            return .existingLibrary(context)
+        case .existingLibraryModeMismatch(let context, let requestedMode):
+            return .existingLibraryModeMismatch(context, requestedMode: requestedMode)
+        }
+    }
+
+    func importMusicSelection(_ selection: LibraryInitialImportSelection) async throws -> LibraryInitialImportResult {
+        guard let session = activeLibraryBinding.activeSession else {
+            let result = LibraryInitialImportResult(
+                requested: selection.urls.count,
+                planned: 0,
+                imported: 0,
+                failures: selection.urls.map {
+                    ImportInputFailure(url: $0, message: "No active library")
+                },
+                sourceIDs: []
+            )
+            throw LibraryInitialImportError.initialImportFailed(result)
+        }
+        return try await session.importInitialSelection(selection)
+    }
+
+    func relocateMusicLibrary(id: UUID, to parentURL: URL) async throws {
+        guard let libraryRelocationService else { throw LibraryRelocationError.libraryNotRegistered }
+        _ = try await libraryRelocationService.relocate(libraryID: id, toParent: parentURL)
+    }
+
+    func removeMusicLibrary(id: UUID) async throws {
+        guard let libraryRemovalService else { throw LibraryRemovalError.libraryNotRegistered }
+        _ = try await libraryRemovalService.moveToTrash(libraryID: id)
+    }
+
+    func referencedSourceScanStates() async -> [UUID: ReferencedSourceScanState] {
+        guard let monitor = activeLibraryBinding.activeSession?.libraryChangeMonitor else { return [:] }
+        return await monitor.sourceStateSnapshot()
+    }
+
+    func referencedSources() async throws -> [ReferencedSourceDescriptor] {
+        guard let store = activeLibraryBinding.activeSession?.referencedSourceStore else { return [] }
+        return try await store.loadAll()
+    }
+
+    func removeReferencedSource(id: UUID) async throws {
+        try await activeLibraryBinding.activeSession?.removeReferencedSource(id)
+    }
+
+    func libraryScopedSettings() async throws -> LibraryScopedSettings {
+        guard let context = activeLibraryBinding.context else { return LibraryScopedSettings() }
+        return try await LibraryScopedSettingsStore(paths: context.paths).load()
+    }
+
+    func setReferencedTrackDeletePolicy(_ policy: ReferencedTrackDeletePolicy) async throws {
+        guard let context = activeLibraryBinding.context, context.mode == .referenced else { return }
+        try await LibraryScopedSettingsStore(paths: context.paths).setReferencedTrackDeletePolicy(policy)
+    }
+
     func setupIfNeeded() async {
         guard !hasSetupDependencies else { return }
         hasSetupDependencies = true
@@ -246,6 +353,17 @@ final class AppSessionHost: ObservableObject {
         let lyricsVM = session.lyricsViewModel
         let ledMeterProvider = session.ledMeterProvider
         let importEnrichmentService = session.importEnrichmentService
+        libraryVM.onTrackDeletionPreparationFailures = { [weak self] failures in
+            guard let self, !failures.isEmpty else { return }
+            let message = failures.count == 1
+                ? "原文件未移到废纸篓，歌曲已保留"
+                : "\(failures.count) 首歌曲未删除"
+            self.uiState.showSidebarNotice(
+                message,
+                style: .warning,
+                actionTitle: "打开设置"
+            )
+        }
 
         self.libraryVM = libraryVM
         self.playerVM = playerVM

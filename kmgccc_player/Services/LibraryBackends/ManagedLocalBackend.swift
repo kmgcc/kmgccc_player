@@ -8,6 +8,7 @@ import Foundation
 @MainActor
 final class ManagedLocalBackend: LibraryStorageBackend {
     let mode: MusicLibraryMode = .managed
+    private(set) var lastPreparedInputPlan: ImportInputPlan?
     private let paths: LibraryPaths
     private var selectionLeases: [SecurityScopedResourceLease] = []
 
@@ -19,7 +20,9 @@ final class ManagedLocalBackend: LibraryStorageBackend {
                 selectionLeases.append(SecurityScopedResourceLease { url.stopAccessingSecurityScopedResource() })
             }
         }
-        return await ImportInputScanner.scan(selectedURLs: selectedURLs, directorySources: [:])
+        let plan = await ImportInputScanner.scan(selectedURLs: selectedURLs, directorySources: [:])
+        lastPreparedInputPlan = plan
+        return plan
     }
 
     func makePlacement(

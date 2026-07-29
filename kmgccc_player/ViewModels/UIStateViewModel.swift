@@ -21,9 +21,17 @@ enum ContentMode: Equatable {
     case nowPlaying
 }
 
+enum SidebarNoticeStyle: Sendable {
+    case success
+    case warning
+}
+
 struct SidebarNotice: Equatable, Identifiable, Sendable {
     let id = UUID()
     let message: String
+    let style: SidebarNoticeStyle
+    let actionTitle: String?
+    let sourceID: UUID?
 }
 
 /// Observable ViewModel for UI layout state.
@@ -128,12 +136,24 @@ final class UIStateViewModel {
     /// Compact, transient notice shown in the sidebar bottom status area.
     var sidebarNotice: SidebarNotice?
 
-    func showSidebarNotice(_ message: String, duration: TimeInterval = 1.8) {
-        let notice = SidebarNotice(message: message)
+    func showSidebarNotice(
+        _ message: String,
+        style: SidebarNoticeStyle = .success,
+        duration: TimeInterval? = nil,
+        actionTitle: String? = nil,
+        sourceID: UUID? = nil
+    ) {
+        let notice = SidebarNotice(
+            message: message,
+            style: style,
+            actionTitle: actionTitle,
+            sourceID: sourceID
+        )
         sidebarNotice = notice
 
         sidebarNoticeDismissTask?.cancel()
-        let delay = UInt64(max(0.1, duration) * 1_000_000_000)
+        let visibleDuration = duration ?? (style == .warning ? 8 : 1.8)
+        let delay = UInt64(max(0.1, visibleDuration) * 1_000_000_000)
         sidebarNoticeDismissTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: delay)
             guard !Task.isCancelled else { return }

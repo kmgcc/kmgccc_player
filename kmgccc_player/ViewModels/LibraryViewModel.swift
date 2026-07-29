@@ -466,6 +466,8 @@ final class LibraryViewModel {
     private var importService: FileImportServiceProtocol?
     var currentTrackIDProvider: (() -> UUID?)?
     var onTracksDeleted: ((Set<UUID>) -> Void)?
+    var prepareTracksForDeletion: (([Track]) async -> TrackAuthorityDeletionPreparationResult)?
+    var onTrackDeletionPreparationFailures: (([TrackAuthorityDeletionFailure]) -> Void)?
     private var isApplyingSortPreference = false
     private var trackUpdateRevision = 0
     private var pendingRepositoryDeletionTrackIDs: Set<UUID> = []
@@ -1376,8 +1378,16 @@ final class LibraryViewModel {
     }
 
     func deleteTracks(_ tracks: [Track]) async {
-        let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
+        var uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
             $0.id.uuidString < $1.id.uuidString
+        }
+        guard !uniqueTracks.isEmpty else { return }
+        if let prepareTracksForDeletion {
+            let preparation = await prepareTracksForDeletion(Array(uniqueTracks))
+            if !preparation.failures.isEmpty {
+                onTrackDeletionPreparationFailures?(preparation.failures)
+            }
+            uniqueTracks.removeAll { !preparation.approvedTrackIDs.contains($0.id) }
         }
         let deletedTrackIDs = Set(uniqueTracks.map(\.id))
         guard !deletedTrackIDs.isEmpty else { return }
