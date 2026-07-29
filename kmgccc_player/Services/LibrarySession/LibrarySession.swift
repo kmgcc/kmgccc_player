@@ -17,6 +17,9 @@ final class LibrarySession: LibrarySessionLifecycle {
     let libraryViewModel: LibraryViewModel
     let importEnrichmentService: ImportEnrichmentService
     let fileImportService: FileImportService
+    let storageBackend: any LibraryStorageBackend
+    let referencedSourceStore: ReferencedSourceStore?
+    let referencedSourceScope: ReferencedSourceScope?
     let playerViewModel: PlayerViewModel
     let playbackCoordinator: PlaybackCoordinator
     let lyricsViewModel: LyricsViewModel
@@ -41,6 +44,9 @@ final class LibrarySession: LibrarySessionLifecycle {
         libraryViewModel: LibraryViewModel,
         importEnrichmentService: ImportEnrichmentService,
         fileImportService: FileImportService,
+        storageBackend: any LibraryStorageBackend,
+        referencedSourceStore: ReferencedSourceStore?,
+        referencedSourceScope: ReferencedSourceScope?,
         playbackService: AVAudioPlaybackService,
         playerViewModel: PlayerViewModel,
         playbackCoordinator: PlaybackCoordinator,
@@ -61,6 +67,9 @@ final class LibrarySession: LibrarySessionLifecycle {
         self.libraryViewModel = libraryViewModel
         self.importEnrichmentService = importEnrichmentService
         self.fileImportService = fileImportService
+        self.storageBackend = storageBackend
+        self.referencedSourceStore = referencedSourceStore
+        self.referencedSourceScope = referencedSourceScope
         self.playbackService = playbackService
         self.playerViewModel = playerViewModel
         self.playbackCoordinator = playbackCoordinator
@@ -105,6 +114,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         libraryService.stopMonitoring()
         playbackCoordinator.close()
         await searchIndex.close()
+        await storageBackend.close()
         await cacheServices.close()
         preferenceStatsService.clearCache()
         isLoaded = false

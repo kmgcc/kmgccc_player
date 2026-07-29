@@ -47,6 +47,9 @@ protocol LibraryRepositoryProtocol: AnyObject {
     /// Ordinary metadata/artwork/lyrics updates must use the explicit persistence APIs below.
     func addTracks(_ tracks: [Track]) async
 
+    /// Commit import sidecars first and expose only successfully persisted tracks.
+    func commitImportedTracks(_ tracks: [Track]) async -> LibraryTrackPersistenceResult
+
     /// Add a playlist (used for bootstrap from disk).
     func addPlaylist(_ playlist: Playlist) async
 
@@ -83,8 +86,11 @@ protocol LibraryRepositoryProtocol: AnyObject {
     /// Reload just the specified tracks from the on-disk library sidecars into repository caches.
     func refreshTracks(ids: [UUID]) async -> [Track]
 
-    /// Check if a track with the given file path already exists.
-    func trackExists(filePath: String) async -> Bool
+    /// Resolve an existing referenced track by physical identity, with fingerprint fallback.
+    func track(matching fingerprint: ReferencedFileFingerprint) async -> Track?
+
+    /// Merge authoritative source memberships into an existing referenced locator.
+    func mergeReferencedLocator(_ locator: ReferencedFileLocator, into track: Track) async throws
 
     /// Check if a track with the same title and artist already exists.
     func trackExists(title: String, artist: String) async -> Bool

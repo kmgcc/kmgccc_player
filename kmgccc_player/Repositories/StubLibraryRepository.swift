@@ -53,6 +53,14 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         allTracks.append(contentsOf: tracks)
     }
 
+    func commitImportedTracks(_ tracks: [Track]) async -> LibraryTrackPersistenceResult {
+        allTracks.append(contentsOf: tracks)
+        return LibraryTrackPersistenceResult(
+            persistedTrackIDs: tracks.map(\.id),
+            failedTrackIDs: []
+        )
+    }
+
     func addPlaylist(_ playlist: Playlist) async {
         playlists.append(playlist)
     }
@@ -135,8 +143,28 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         return allTracks.filter { idSet.contains($0.id) }
     }
 
-    func trackExists(filePath: String) async -> Bool {
-        allTracks.contains { $0.originalFilePath == filePath }
+    func track(matching fingerprint: ReferencedFileFingerprint) async -> Track? {
+        let key = ReferencedPhysicalIdentityKey(fingerprint)
+        return allTracks.first { track in
+            guard case let .referenced(locator) = track.mediaLocator,
+                  let existing = locator.fingerprint else { return false }
+            return ReferencedPhysicalIdentityKey(existing) == key
+        }
+    }
+
+    func mergeReferencedLocator(_ incoming: ReferencedFileLocator, into track: Track) async throws {
+        guard case let .referenced(existing) = track.mediaLocator else {
+            throw LibraryBackendError.modeMismatch(expected: .referenced, actual: .managed)
+        }
+        var merged = existing
+        merged.sourceMemberships = Array(Set(existing.sourceMemberships).union(incoming.sourceMemberships))
+        merged.primarySourceID = merged.sourceMemberships.min {
+            $0.relativePath.count < $1.relativePath.count
+        }?.sourceID
+        merged.fileBookmarkData = incoming.fileBookmarkData
+        merged.lastKnownPath = incoming.lastKnownPath
+        merged.fingerprint = incoming.fingerprint
+        track.mediaLocator = .referenced(merged)
     }
 
     func trackExists(title: String, artist: String) async -> Bool {

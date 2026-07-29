@@ -79,6 +79,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private let metadataSync = LibraryMetadataSync()
     private let artworkDerivativeStore: ArtworkDerivativeCacheStore
     private let playlistArtworkPipeline: PlaylistArtworkPipeline
+    private let importSidecarWriter: (Track, String) -> Bool
+    private let locatorSidecarWriter: (Track, TrackMediaLocator, String) -> Bool
 
     init(
         modelContext: ModelContext? = nil,
@@ -86,7 +88,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         preferenceStatsService: PreferenceStatsService = .shared,
         searchIndex: LibrarySearchIndex = .shared,
         artworkDerivativeStore: ArtworkDerivativeCacheStore = .shared,
-        playlistArtworkPipeline: PlaylistArtworkPipeline = .shared
+        playlistArtworkPipeline: PlaylistArtworkPipeline = .shared,
+        importSidecarWriter: ((Track, String) -> Bool)? = nil,
+        locatorSidecarWriter: ((Track, TrackMediaLocator, String) -> Bool)? = nil
     ) {
         self.indexContext = modelContext
         self.libraryService = libraryService
@@ -94,6 +98,12 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         self.searchIndex = searchIndex
         self.artworkDerivativeStore = artworkDerivativeStore
         self.playlistArtworkPipeline = playlistArtworkPipeline
+        self.importSidecarWriter = importSidecarWriter ?? { track, reason in
+            libraryService.writeImportedTrackSidecar(for: track, reason: reason)
+        }
+        self.locatorSidecarWriter = locatorSidecarWriter ?? { track, locator, reason in
+            libraryService.writeMetaOnly(for: track, reason: reason, locatorOverride: locator)
+        }
         self.paths = libraryService.paths
     }
 
@@ -200,7 +210,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     func addTrack(_ track: Track) async {
         allTracks.append(track)
-        persistImportedTrackResources([track], reason: "initialImport")
+        _ = persistImportedTrackResources([track], reason: "initialImport")
         scheduleSearchIndexUpsert(for: [track], reason: "initialImport")
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
@@ -223,7 +233,39 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     func addTracks(_ tracks: [Track]) async {
         allTracks.append(contentsOf: tracks)
-        persistImportedTrackResources(tracks, reason: "initialImport")
+        _ = persistImportedTrackResources(tracks, reason: "initialImport")
+        scheduleSearchIndexUpsert(for: tracks, reason: "initialImport")
+        rebuildRuntimeDerivedState()
+        rebuildTrackIndexCache()
+        let capturedPaths = paths
+        let (artistSidecars, albumSidecars) = await Task.detached { @Sendable in
+            let scanner = LibraryDiskScanner(paths: capturedPaths)
+            return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
+        }.value
+        let (artists, albums) = metadataSync.sync(
+            derivedArtists: runtimeArtists,
+            derivedAlbums: runtimeAlbums,
+            allTracks: allTracks,
+            artistSidecars: artistSidecars,
+            albumSidecars: albumSidecars,
+            libraryService: libraryService
+        )
+        artistEntries = artists
+        albumEntries = albums
+    }
+
+    func commitImportedTracks(_ tracks: [Track]) async -> LibraryTrackPersistenceResult {
+        let result = persistImportedTrackResources(tracks, reason: "initialImportCommit")
+        let persistedIDs = Set(result.persistedTrackIDs)
+        let persistedTracks = tracks.filter { persistedIDs.contains($0.id) }
+        if !persistedTracks.isEmpty {
+            await attachImportedTracks(persistedTracks)
+        }
+        return result
+    }
+
+    private func attachImportedTracks(_ tracks: [Track]) async {
+        allTracks.append(contentsOf: tracks)
         scheduleSearchIndexUpsert(for: tracks, reason: "initialImport")
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
@@ -381,8 +423,39 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         return refreshedTracks
     }
 
-    func trackExists(filePath: String) async -> Bool {
-        allTracks.contains { $0.originalFilePath == filePath }
+    func track(matching fingerprint: ReferencedFileFingerprint) async -> Track? {
+        let incomingKey = ReferencedPhysicalIdentityKey(fingerprint)
+        return allTracks.first { track in
+            guard case let .referenced(locator) = track.mediaLocator,
+                  let existingFingerprint = locator.fingerprint else { return false }
+            return ReferencedPhysicalIdentityKey(existingFingerprint) == incomingKey
+        }
+    }
+
+    func mergeReferencedLocator(_ incoming: ReferencedFileLocator, into track: Track) async throws {
+        guard case let .referenced(existing) = track.mediaLocator else {
+            throw LibraryBackendError.modeMismatch(expected: .referenced, actual: .managed)
+        }
+        let memberships = Array(Set(existing.sourceMemberships).union(incoming.sourceMemberships)).sorted {
+            if $0.relativePath.count != $1.relativePath.count {
+                return $0.relativePath.count < $1.relativePath.count
+            }
+            return $0.sourceID.uuidString < $1.sourceID.uuidString
+        }
+        var merged = existing
+        merged.sourceMemberships = memberships
+        merged.primarySourceID = memberships.min { $0.relativePath.count < $1.relativePath.count }?.sourceID
+        merged.fileBookmarkData = incoming.fileBookmarkData
+        merged.lastKnownPath = incoming.lastKnownPath
+        merged.fingerprint = incoming.fingerprint
+        let mergedLocator = TrackMediaLocator.referenced(merged)
+        guard locatorSidecarWriter(track, mergedLocator, "referencedMembershipMerge") else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        track.mediaLocator = mergedLocator
+        upsertTrackIndexEntries(for: [track])
+        scheduleSearchIndexUpsert(for: [track], reason: "referencedMembershipMerge")
+        changeHandler?(.trackUpdated(track.id))
     }
 
     func trackExists(title: String, artist: String) async -> Bool {
@@ -1547,22 +1620,28 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     /// Import-only full resource persistence for newly created track folders.
-    private func persistImportedTrackResources(_ tracks: [Track], reason: String) {
+    private func persistImportedTrackResources(_ tracks: [Track], reason: String) -> LibraryTrackPersistenceResult {
         let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
             $0.id.uuidString < $1.id.uuidString
         }
-        guard !uniqueTracks.isEmpty else { return }
+        guard !uniqueTracks.isEmpty else {
+            return LibraryTrackPersistenceResult(persistedTrackIDs: [], failedTrackIDs: [])
+        }
 
         Log.warning(
             "[TrackPersistenceRepository] import-only full resource write reason=\(reason) tracks=\(uniqueTracks.count)",
             category: .library
         )
 
+        var persisted: [UUID] = []
+        var failed: [UUID] = []
         for track in uniqueTracks {
-            autoreleasepool {
-                _ = libraryService.writeImportedTrackSidecar(for: track, reason: reason)
+            let didWrite = autoreleasepool {
+                importSidecarWriter(track, reason)
             }
+            if didWrite { persisted.append(track.id) } else { failed.append(track.id) }
         }
+        return LibraryTrackPersistenceResult(persistedTrackIDs: persisted, failedTrackIDs: failed)
     }
 
     private func clearTrackIndexCache() {

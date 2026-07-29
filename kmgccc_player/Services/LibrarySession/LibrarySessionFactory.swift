@@ -5,10 +5,22 @@ import SwiftData
 nonisolated enum LibrarySessionFactoryError: Error, Equatable {
     case manifestIdentityMismatch
     case manifestModeMismatch
+    case missingReferencedSourceServices
 }
 
 @MainActor
 final class LibrarySessionFactory: LibrarySessionBuilding {
+    private let sourceBookmarkResolver: any BookmarkResolving
+    private let requiresSecurityScope: Bool
+
+    init(
+        sourceBookmarkResolver: any BookmarkResolving = SystemBookmarkResolver(),
+        requiresSecurityScope: Bool = false
+    ) {
+        self.sourceBookmarkResolver = sourceBookmarkResolver
+        self.requiresSecurityScope = requiresSecurityScope
+    }
+
     func makeSession(for context: LibraryContext) async throws -> any LibrarySessionLifecycle {
         let manifest = try MusicLibraryManifest.read(from: context.paths.manifestURL)
         guard manifest.libraryID == context.id else {
@@ -25,6 +37,36 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         let libraryService = LocalLibraryService(
             paths: context.paths,
             preferenceStatsService: preferenceStatsService
+        )
+        let sourceStore: ReferencedSourceStore?
+        let sourceScope: ReferencedSourceScope?
+        if context.mode == .referenced {
+            let store = ReferencedSourceStore(paths: context.paths)
+            let scope = ReferencedSourceScope()
+            let descriptors = try await store.loadAll()
+            let issues = await scope.start(
+                descriptors: descriptors,
+                store: store,
+                bookmarkResolver: sourceBookmarkResolver,
+                requiresSecurityScope: requiresSecurityScope
+            )
+            if !issues.isEmpty {
+                Log.warning(
+                    "[LibrarySession] referenced sources unavailable count=\(issues.count)",
+                    category: .library
+                )
+            }
+            sourceStore = store
+            sourceScope = scope
+        } else {
+            sourceStore = nil
+            sourceScope = nil
+        }
+        let storageBackend = try LibraryStorageBackendFactory.make(
+            context: context,
+            sourceStore: sourceStore,
+            sourceScope: sourceScope,
+            requiresSecurityScope: requiresSecurityScope
         )
         let searchIndex = LibrarySearchIndex(paths: context.paths)
         let detailHeaderArtworkResolver = DetailHeaderArtworkResolver(
@@ -62,6 +104,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             repository: repository,
             libraryService: libraryService,
             importEnrichmentService: importEnrichmentService,
+            storageBackend: storageBackend,
             qqMusicCoverService: cacheServices.qqMusicCoverService,
             lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
             amllDBService: cacheServices.amllDBService
@@ -82,7 +125,10 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             preferenceStatsService: preferenceStatsService,
             libraryService: libraryService
         )
-        let playbackService = AVAudioPlaybackService(smartController: smartPlaybackController)
+        let playbackService = AVAudioPlaybackService(
+            smartController: smartPlaybackController,
+            authorizedSourceRootsProvider: sourceScope?.rootsProvider ?? AuthorizedSourceRootsProvider()
+        )
         playbackService.onAudioLocatorResolved = { [weak repository] trackID, locator, availability in
             repository?.persistResolvedAudioLocator(
                 trackID: trackID,
@@ -170,6 +216,9 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             libraryViewModel: libraryViewModel,
             importEnrichmentService: importEnrichmentService,
             fileImportService: fileImportService,
+            storageBackend: storageBackend,
+            referencedSourceStore: sourceStore,
+            referencedSourceScope: sourceScope,
             playbackService: playbackService,
             playerViewModel: playerViewModel,
             playbackCoordinator: playbackCoordinator,

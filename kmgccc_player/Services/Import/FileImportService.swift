@@ -67,6 +67,21 @@ final class FileImportService: FileImportServiceProtocol {
         let displayName: String
         let fileURL: URL
         let metadata: ImportPreview
+        let discoveredFile: ImportDiscoveredFile
+        let trackID: UUID?
+        let placement: ImportPlacement?
+
+        func prepared(trackID: UUID, placement: ImportPlacement) -> ImportCandidate {
+            ImportCandidate(
+                progressID: progressID,
+                displayName: displayName,
+                fileURL: fileURL,
+                metadata: metadata,
+                discoveredFile: discoveredFile,
+                trackID: trackID,
+                placement: placement
+            )
+        }
     }
 
     private struct ResolvedImportFile: Sendable {
@@ -74,6 +89,7 @@ final class FileImportService: FileImportServiceProtocol {
         let displayName: String
         let fileURL: URL
         let ncmResult: NCMConversionResult?
+        let discoveredFile: ImportDiscoveredFile
     }
 
     private struct ImportedTrackRecord {
@@ -108,8 +124,8 @@ final class FileImportService: FileImportServiceProtocol {
         let duration: Double
         let importedAt: Date
         let originalFilePath: String
-        let libraryRelativePath: String
-        let stagedAudioURL: URL
+        let mediaLocator: TrackMediaLocator
+        let stagedAudioURL: URL?
         let artworkData: Data?
         let ttmlLyricText: String?
         let lyricsText: String?
@@ -199,6 +215,7 @@ final class FileImportService: FileImportServiceProtocol {
     private let libraryService: LocalLibraryService
     nonisolated let paths: LibraryPaths
     private let importEnrichmentService: ImportEnrichmentService
+    private let storageBackend: any LibraryStorageBackend
     private let qqMusicCoverService: QQMusicCoverService
     private let lyricsSearchCoordinator: LyricsSearchCoordinator
     private let amllDBService: AMLLDBService
@@ -208,6 +225,7 @@ final class FileImportService: FileImportServiceProtocol {
         repository: LibraryRepositoryProtocol,
         libraryService: LocalLibraryService,
         importEnrichmentService: ImportEnrichmentService,
+        storageBackend: any LibraryStorageBackend,
         qqMusicCoverService: QQMusicCoverService = .shared,
         lyricsSearchCoordinator: LyricsSearchCoordinator = .shared,
         amllDBService: AMLLDBService = .shared
@@ -216,6 +234,7 @@ final class FileImportService: FileImportServiceProtocol {
         self.libraryService = libraryService
         self.paths = libraryService.paths
         self.importEnrichmentService = importEnrichmentService
+        self.storageBackend = storageBackend
         self.qqMusicCoverService = qqMusicCoverService
         self.lyricsSearchCoordinator = lyricsSearchCoordinator
         self.amllDBService = amllDBService
@@ -329,60 +348,48 @@ final class FileImportService: FileImportServiceProtocol {
             totalCount: selectedURLs.count
         )
 
-        // CRITICAL: Start accessing security-scoped resources IMMEDIATELY
-        // NSOpenPanel returns security-scoped URLs that expire if not accessed
-        var accessingURLs: [URL] = []
-        for url in selectedURLs {
-            let didStart = url.startAccessingSecurityScopedResource()
-            Log.trace("startAccessingSecurityScopedResource for '\(url.lastPathComponent)': \(didStart)", category: .import)
-
-            // Additional diagnostics
-            Log.trace("   ↳ URL.isFileURL: \(url.isFileURL)", category: .import)
-            Log.trace("   ↳ URL.path: \(url.path)", category: .import)
-            let isReadable = FileManager.default.isReadableFile(atPath: url.path)
-            Log.trace("   ↳ FileManager.isReadableFile: \(isReadable)", category: .import)
-
-            if didStart {
-                accessingURLs.append(url)
-            } else {
-                Log.warning("Failed to start accessing security-scoped resource!", category: .import)
+        // The backend captures panel/drag scopes before this suspension returns.
+        let inputPlan = await storageBackend.prepareInputs(selectedURLs)
+        defer { storageBackend.finishImportBatch() }
+        var newFiles: [ImportDiscoveredFile] = []
+        var reusedTracks: [Track] = []
+        for file in inputPlan.files {
+            guard storageBackend.mode == .referenced, let fingerprint = file.fingerprint,
+                  let existingTrack = await repository.track(matching: fingerprint) else {
+                newFiles.append(file)
+                continue
             }
-        }
-
-        // Ensure we stop accessing at the end
-        defer {
-            for url in accessingURLs {
-                url.stopAccessingSecurityScopedResource()
-                Log.trace("stopAccessingSecurityScopedResource for '\(url.lastPathComponent)'", category: .import)
-            }
-        }
-
-        // Collect all audio files (including from directories) - OFF MAIN THREAD
-        let (filesToImport, ncmFiles) = await Task.detached(priority: .userInitiated) {
-            var filesToImport: [URL] = []
-            var ncmFiles: [URL] = []
-
-            for url in selectedURLs {
-                if url.hasDirectoryPath {
-                    let audioFiles = FileImportService.findAudioFiles(in: url)
-                    for file in audioFiles {
-                        if FileImportService.isNCMFile(file) {
-                            ncmFiles.append(file)
-                        } else {
-                            filesToImport.append(file)
-                        }
-                    }
-                } else if FileImportService.isAudioFile(url) {
-                    if FileImportService.isNCMFile(url) {
-                        ncmFiles.append(url)
-                    } else {
-                        filesToImport.append(url)
-                    }
+            do {
+                let placement = try await storageBackend.makePlacement(
+                    for: file,
+                    trackID: existingTrack.id,
+                    stagingDirectoryURL: importSession.stagingDirectoryURL
+                )
+                guard case let .referenced(locator) = placement else {
+                    throw LibraryBackendError.modeMismatch(expected: .referenced, actual: placement.storageKind)
                 }
+                try await repository.mergeReferencedLocator(locator, into: existingTrack)
+                reusedTracks.append(existingTrack)
+            } catch {
+                Log.warning("[Import] identity reuse failed track=\(existingTrack.id.uuidString)", category: .import)
             }
-            return (filesToImport, ncmFiles)
-        }.value
-        let discoveredFileCount = filesToImport.count + ncmFiles.count
+        }
+        if !reusedTracks.isEmpty {
+            await repository.addTracks(reusedTracks, to: playlist)
+        }
+        let filesToImport = newFiles.filter { $0.url.pathExtension.lowercased() != "ncm" }
+        let ncmFiles = newFiles.filter { $0.url.pathExtension.lowercased() == "ncm" }
+        for failure in inputPlan.failures {
+            Log.warning(
+                "[Import] input skipped name=\(failure.url.lastPathComponent) reason=\(failure.message)",
+                category: .import
+            )
+        }
+        if storageBackend.mode == .referenced, !ncmFiles.isEmpty {
+            Log.warning("[Import] referenced NCM inputs deferred to the NCM transaction stage", category: .import)
+        }
+        let eligibleNCMFiles = storageBackend.mode == .managed ? ncmFiles : []
+        let discoveredFileCount = filesToImport.count + eligibleNCMFiles.count
         progressController.update(
             stage: .scanning,
             progress: Self.progress(for: .scanning, completed: discoveredFileCount, total: max(discoveredFileCount, 1)),
@@ -394,7 +401,7 @@ final class FileImportService: FileImportServiceProtocol {
         guard discoveredFileCount > 0 else {
             Log.info("No supported audio files found in selection", category: .import)
             importSession.cleanupStaging()
-            return 0
+            return reusedTracks.count
         }
 
         if await isImportCancellationRequested(progressController, cancellationToken) {
@@ -408,19 +415,20 @@ final class FileImportService: FileImportServiceProtocol {
             )
         }
 
-        let discoveredItems = (filesToImport + ncmFiles).map {
-            BatchImportProgressItemSeed(id: $0.path, fileName: $0.lastPathComponent)
+        let discoveredItems = (filesToImport + eligibleNCMFiles).map {
+            BatchImportProgressItemSeed(id: $0.url.path, fileName: $0.url.lastPathComponent)
         }
         progressController.setItems(discoveredItems)
-        for fileURL in filesToImport {
+        for file in filesToImport {
             progressController.updateItem(
-                id: fileURL.path,
+                id: file.url.path,
                 stage: .metadata,
                 status: .waiting,
                 detail: "等待解析歌曲信息"
             )
         }
-        for sourceURL in ncmFiles {
+        for sourceFile in eligibleNCMFiles {
+            let sourceURL = sourceFile.url
             progressController.updateItem(
                 id: sourceURL.path,
                 stage: .ncmConversion,
@@ -431,17 +439,18 @@ final class FileImportService: FileImportServiceProtocol {
 
         var resolvedFiles: [ResolvedImportFile] = filesToImport.map {
             ResolvedImportFile(
-                progressID: $0.path,
-                displayName: $0.lastPathComponent,
-                fileURL: $0,
-                ncmResult: nil
+                progressID: $0.url.path,
+                displayName: $0.url.lastPathComponent,
+                fileURL: $0.url,
+                ncmResult: nil,
+                discoveredFile: $0
             )
         }
 
-        if !ncmFiles.isEmpty {
-            Log.debug("Found \(ncmFiles.count) NCM files to convert", category: .import)
+        if !eligibleNCMFiles.isEmpty {
+            Log.debug("Found \(eligibleNCMFiles.count) NCM files to convert", category: .import)
             let results = await convertNCMFiles(
-                ncmFiles,
+                eligibleNCMFiles.map(\.url),
                 progressController: progressController,
                 session: importSession,
                 cancellationToken: cancellationToken
@@ -463,7 +472,13 @@ final class FileImportService: FileImportServiceProtocol {
                         progressID: output.sourceURL.path,
                         displayName: output.displayName,
                         fileURL: result.audioFileURL,
-                        ncmResult: result
+                        ncmResult: result,
+                        discoveredFile: ImportDiscoveredFile(
+                            url: result.audioFileURL,
+                            memberships: [],
+                            primarySourceID: nil,
+                            fingerprint: try? ReferencedFileIdentityProvider().fingerprint(for: result.audioFileURL)
+                        )
                     )
                 )
             }
@@ -530,6 +545,9 @@ final class FileImportService: FileImportServiceProtocol {
             if let selectedRows = presentDuplicateSelectionDialog(duplicateRows) {
                 Log.info("Dialog confirmed. Selected duplicates to import: \(selectedRows.count)", category: .import)
                 let selectedIDSet = Set(selectedRows.map(\.id))
+                let candidatesByID = Dictionary(
+                    uniqueKeysWithValues: (uniqueCandidates + preparedCandidates.duplicateCandidates).map { ($0.progressID, $0) }
+                )
                 selectedDuplicates = duplicateRows.compactMap { row in
                     if selectedIDSet.contains(row.id) {
                         progressController.updateItem(
@@ -540,12 +558,7 @@ final class FileImportService: FileImportServiceProtocol {
                             status: .success,
                             detail: "已选择继续导入重复歌曲"
                         )
-                        return ImportCandidate(
-                            progressID: row.id,
-                            displayName: row.fileURL.lastPathComponent,
-                            fileURL: row.fileURL,
-                            metadata: row.incoming
-                        )
+                        return candidatesByID[row.id]
                     }
 
                     progressController.updateItem(
@@ -571,7 +584,30 @@ final class FileImportService: FileImportServiceProtocol {
         Log.debug("   Duplicate Rows    : \(duplicateRows.count)", category: .import)
         Log.debug("   Selected Dups     : \(selectedDuplicates.count)", category: .import)
 
-        let finalCandidates = uniqueCandidates + selectedDuplicates
+        let selectedCandidates = uniqueCandidates + selectedDuplicates
+        var finalCandidates: [ImportCandidate] = []
+        for candidate in selectedCandidates {
+            let trackID = UUID()
+            do {
+                let placement = try await storageBackend.makePlacement(
+                    for: candidate.discoveredFile,
+                    trackID: trackID,
+                    stagingDirectoryURL: importSession.stagingDirectoryURL
+                )
+                try storageBackend.validate(placement)
+                finalCandidates.append(candidate.prepared(trackID: trackID, placement: placement))
+            } catch {
+                progressController.updateItem(
+                    id: candidate.progressID,
+                    title: candidate.metadata.title,
+                    artist: candidate.metadata.artist,
+                    stage: .importing,
+                    status: .failed,
+                    detail: "导入失败",
+                    issueMessage: error.localizedDescription
+                )
+            }
+        }
         Log.debug("   -> FINAL Candidates: \(finalCandidates.count)", category: .import)
         Log.debug("--------------------------------------------------", category: .import)
 
@@ -737,64 +773,11 @@ final class FileImportService: FileImportServiceProtocol {
 
         print("✅ Import complete: \(importedRecords.count) imported")
         crashBreadcrumbResult = "completed"
-        crashBreadcrumbImportedCount = importedRecords.count
-        return importedRecords.count
+        crashBreadcrumbImportedCount = importedRecords.count + reusedTracks.count
+        return importedRecords.count + reusedTracks.count
     }
 
     // MARK: - Private Methods
-
-    /// Import a single audio file, creating a Track with bookmark.
-    /// ASSUMES: Parent caller has already started accessing security-scoped resource.
-    private func importFile(
-        url: URL,
-        metadata: (
-            title: String, artist: String, album: String, albumArtist: String?, duration: Double,
-            lyrics: String?
-        ),
-        preloadedArtworkData: Data?
-    ) async -> Track? {
-        let candidate = ImportCandidate(
-            progressID: url.path,
-            displayName: url.lastPathComponent,
-            fileURL: url,
-            metadata: ImportPreview(
-                title: metadata.title,
-                artist: metadata.artist,
-                album: metadata.album,
-                albumArtist: metadata.albumArtist,
-                duration: metadata.duration,
-                lyrics: metadata.lyrics,
-                artworkData: preloadedArtworkData
-            )
-        )
-
-        let cancellationToken = ImportCancellationToken()
-        guard let importSession = try? ImportSession(paths: paths) else { return nil }
-        defer { importSession.cleanupStaging() }
-        let output = await Self.performImportTask(
-            index: 0,
-            candidate: candidate,
-            stagingDirectoryURL: importSession.stagingDirectoryURL,
-            cancellationToken: cancellationToken
-        )
-        guard let payload = output.payload else {
-            if let errorDescription = output.errorDescription {
-                print("❌ Failed to import \(url.lastPathComponent): \(errorDescription)")
-            }
-            return nil
-        }
-        importSession.registerStagedTrack(ImportStagedTrackFile(
-            trackID: payload.id,
-            stagedAudioURL: payload.stagedAudioURL,
-            libraryRelativePath: payload.libraryRelativePath
-        ))
-        do {
-            try await commitStagedAudioFiles(for: Set([payload.id]), session: importSession, cancellationToken: cancellationToken)
-        } catch {
-            return nil
-        }
-        return makeTrack(from: payload)
-    }
 
     private func importCandidatesWithProgress(
         _ candidates: [ImportCandidate],
@@ -843,11 +826,14 @@ final class FileImportService: FileImportServiceProtocol {
                 createdTrackIDs.insert(output.trackID)
 
                 if let payload = output.payload {
-                    session.registerStagedTrack(ImportStagedTrackFile(
-                        trackID: payload.id,
-                        stagedAudioURL: payload.stagedAudioURL,
-                        libraryRelativePath: payload.libraryRelativePath
-                    ))
+                    if case let .managed(relativePath) = payload.mediaLocator,
+                       let stagedAudioURL = payload.stagedAudioURL {
+                        session.registerStagedTrack(ImportStagedTrackFile(
+                            trackID: payload.id,
+                            stagedAudioURL: stagedAudioURL,
+                            libraryRelativePath: relativePath
+                        ))
+                    }
                     importedCount += 1
                     let track = makeTrack(from: payload)
                     orderedRecords[output.index] = ImportedTrackRecord(
@@ -1013,8 +999,11 @@ final class FileImportService: FileImportServiceProtocol {
             return false
         }
 
-        await repository.addTracks(importedTracks)
-        session.markCommitted(trackIDs: importedTracks.map(\.id))
+        let commitResult = await repository.commitImportedTracks(importedTracks)
+        let persistedIDs = Set(commitResult.persistedTrackIDs)
+        let persistedTracks = importedTracks.filter { persistedIDs.contains($0.id) }
+        guard !persistedTracks.isEmpty else { return false }
+        session.markCommitted(trackIDs: persistedTracks.map(\.id))
         progressController.update(
             stage: .savingLibrary,
             progress: Self.progress(for: .savingLibrary, completed: 1, total: 2),
@@ -1023,9 +1012,9 @@ final class FileImportService: FileImportServiceProtocol {
             totalCount: 2
         )
 
-        if !importedTracks.isEmpty {
-            print("🔗 Adding \(importedTracks.count) tracks to playlist '\(playlist.name)'")
-            await repository.addTracks(importedTracks, to: playlist)
+        if !persistedTracks.isEmpty {
+            print("🔗 Adding \(persistedTracks.count) tracks to playlist '\(playlist.name)'")
+            await repository.addTracks(persistedTracks, to: playlist)
         }
 
         progressController.update(
@@ -1044,6 +1033,12 @@ final class FileImportService: FileImportServiceProtocol {
         cancellationToken: ImportCancellationToken
     ) async throws {
         guard !trackIDs.isEmpty else { return }
+        if storageBackend.mode == .referenced {
+            guard session.stagedFiles(for: trackIDs).isEmpty else {
+                throw LibraryBackendError.modeMismatch(expected: .referenced, actual: .managed)
+            }
+            return
+        }
         let stagedFiles = session.stagedFiles(for: trackIDs)
         guard stagedFiles.count == trackIDs.count else {
             let missingCount = trackIDs.count - stagedFiles.count
@@ -1168,7 +1163,7 @@ final class FileImportService: FileImportServiceProtocol {
             importedAt: payload.importedAt,
             fileBookmarkData: Data(),
             originalFilePath: payload.originalFilePath,
-            libraryRelativePath: payload.libraryRelativePath,
+            mediaLocator: payload.mediaLocator,
             artworkData: payload.artworkData,
             ttmlLyricText: payload.ttmlLyricText,
             lyricsText: payload.lyricsText,
@@ -1182,8 +1177,8 @@ final class FileImportService: FileImportServiceProtocol {
         metadataOverride: ImportMetadataOverride?,
         progressController: BatchImportProgressDialogController,
         cancellationToken: ImportCancellationToken
-    ) async -> (unique: [ImportCandidate], duplicates: [DuplicatePairRow]) {
-        guard !files.isEmpty else { return ([], []) }
+    ) async -> (unique: [ImportCandidate], duplicates: [DuplicatePairRow], duplicateCandidates: [ImportCandidate]) {
+        guard !files.isEmpty else { return ([], [], []) }
 
         progressController.update(
             stage: .readingMetadata,
@@ -1272,16 +1267,18 @@ final class FileImportService: FileImportServiceProtocol {
 
         var uniqueCandidates: [ImportCandidate] = []
         var duplicateRows: [DuplicatePairRow] = []
+        var duplicateCandidates: [ImportCandidate] = []
 
         for output in orderedResults.compactMap({ $0 }) {
             if let duplicateRow = output.duplicateRow {
                 duplicateRows.append(duplicateRow)
+                duplicateCandidates.append(output.candidate)
             } else {
                 uniqueCandidates.append(output.candidate)
             }
         }
 
-        return (uniqueCandidates, duplicateRows)
+        return (uniqueCandidates, duplicateRows, duplicateCandidates)
     }
 
     nonisolated private static func buildCandidatePreparationResult(
@@ -1307,7 +1304,10 @@ final class FileImportService: FileImportServiceProtocol {
                     progressID: file.progressID,
                     displayName: file.displayName,
                     fileURL: file.fileURL,
-                    metadata: preview
+                    metadata: preview,
+                    discoveredFile: file.discoveredFile,
+                    trackID: nil,
+                    placement: nil
                 ),
                 duplicateRow: nil
             )
@@ -1347,7 +1347,10 @@ final class FileImportService: FileImportServiceProtocol {
                         progressID: file.progressID,
                         displayName: file.displayName,
                         fileURL: file.fileURL,
-                        metadata: preview
+                        metadata: preview,
+                        discoveredFile: file.discoveredFile,
+                        trackID: nil,
+                        placement: nil
                     ),
                     duplicateRow: nil
                 )
@@ -1368,7 +1371,10 @@ final class FileImportService: FileImportServiceProtocol {
             progressID: file.progressID,
             displayName: file.displayName,
             fileURL: file.fileURL,
-            metadata: effectivePreview
+            metadata: effectivePreview,
+            discoveredFile: file.discoveredFile,
+            trackID: nil,
+            placement: nil
         )
         let dedupKey = LibraryNormalization.normalizedDedupKey(
             title: effectivePreview.title,
@@ -2350,45 +2356,6 @@ final class FileImportService: FileImportServiceProtocol {
         return nil
     }
 
-    /// Recursively find audio files in a directory.
-    /// Made nonisolated static to allow calling from background tasks.
-    nonisolated private static func findAudioFiles(in directory: URL) -> [URL] {
-        var audioFiles: [URL] = []
-
-        let fileManager = FileManager.default
-        guard
-            let enumerator = fileManager.enumerator(
-                at: directory,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
-            )
-        else {
-            return audioFiles
-        }
-
-        for case let fileURL as URL in enumerator {
-            autoreleasepool {
-                if Self.isAudioFile(fileURL) {
-                    audioFiles.append(fileURL)
-                }
-            }
-        }
-
-        return audioFiles
-    }
-
-    /// Check if a URL is a supported audio file.
-    /// Made nonisolated static to allow calling from background tasks.
-    nonisolated private static func isAudioFile(_ url: URL) -> Bool {
-        let ext = url.pathExtension.lowercased()
-        return Self.supportedExtensions.contains(ext)
-    }
-
-    /// Check if a URL is an NCM file.
-    /// Made nonisolated static to allow calling from background tasks.
-    nonisolated private static func isNCMFile(_ url: URL) -> Bool {
-        return url.pathExtension.lowercased() == "ncm"
-    }
 
     /// Convert NCM files and return conversion results with metadata.
     private func convertNCMFiles(
@@ -2565,7 +2532,24 @@ final class FileImportService: FileImportServiceProtocol {
         stagingDirectoryURL: URL,
         cancellationToken: ImportCancellationToken
     ) async -> ImportTaskOutput {
-        let trackId = UUID()
+        guard let trackId = candidate.trackID, let placement = candidate.placement else {
+            return ImportTaskOutput(
+                index: index,
+                trackID: UUID(),
+                progressID: candidate.progressID,
+                displayName: candidate.displayName,
+                metadata: candidate.metadata,
+                payload: nil,
+                needsLyricsEnrichment: false,
+                needsCoverEnrichment: false,
+                needsTrackMetadataEnrichment: false,
+                needsArtistMetadataEnrichment: false,
+                needsAlbumMetadataEnrichment: false,
+                needsArtistArtworkEnrichment: false,
+                needsAlbumArtworkEnrichment: false,
+                errorDescription: "Import placement was not prepared"
+            )
+        }
         let importedAt = Date()
         await LibraryImportCoordinator.shared.beginTrack(trackId)
         defer {
@@ -2591,12 +2575,6 @@ final class FileImportService: FileImportServiceProtocol {
                 candidate.fileURL,
                 knownDuration: candidate.metadata.duration
             )
-            let stagedFile = try await Self.importAudioFileToStaging(
-                from: candidate.fileURL,
-                trackId: trackId,
-                stagingDirectoryURL: stagingDirectoryURL,
-                cancellationToken: cancellationToken
-            )
             try await cancellationToken.checkCancellation()
 
             let artworkData = await extractedArtworkTask
@@ -2618,8 +2596,16 @@ final class FileImportService: FileImportServiceProtocol {
                     duration: candidate.metadata.duration,
                     importedAt: importedAt,
                     originalFilePath: candidate.fileURL.path,
-                    libraryRelativePath: stagedFile.libraryRelativePath,
-                    stagedAudioURL: stagedFile.stagedAudioURL,
+                    mediaLocator: {
+                        switch placement {
+                        case .managed(_, let relativePath): return .managed(libraryRelativePath: relativePath)
+                        case .referenced(let locator): return .referenced(locator)
+                        }
+                    }(),
+                    stagedAudioURL: {
+                        if case .managed(let stagedURL, _) = placement { return stagedURL }
+                        return nil
+                    }(),
                     artworkData: artworkData,
                     ttmlLyricText: ttmlLyricText,
                     lyricsText: nil
@@ -2722,42 +2708,6 @@ final class FileImportService: FileImportServiceProtocol {
         }
     }
 
-    nonisolated private static func importAudioFileToStaging(
-        from sourceURL: URL,
-        trackId: UUID,
-        stagingDirectoryURL: URL,
-        cancellationToken: ImportCancellationToken
-    ) async throws -> ImportStagedTrackFile {
-        try await cancellationToken.checkCancellation()
-        let fileManager = FileManager.default
-
-        try fileManager.createDirectory(
-            at: stagingDirectoryURL,
-            withIntermediateDirectories: true
-        )
-
-        let trackFolder = stagingDirectoryURL
-            .appendingPathComponent(trackId.uuidString, isDirectory: true)
-        try fileManager.createDirectory(at: trackFolder, withIntermediateDirectories: true)
-
-        let ext = sourceURL.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
-        let safeExt = ext.isEmpty ? "audio" : ext
-        let audioFileName = "audio.\(safeExt)"
-        let stagedAudioURL = trackFolder.appendingPathComponent(audioFileName)
-
-        if fileManager.fileExists(atPath: stagedAudioURL.path) {
-            try fileManager.removeItem(at: stagedAudioURL)
-        }
-        try await cancellationToken.checkCancellation()
-        try fileManager.copyItem(at: sourceURL, to: stagedAudioURL)
-        try await cancellationToken.checkCancellation()
-
-        return ImportStagedTrackFile(
-            trackID: trackId,
-            stagedAudioURL: stagedAudioURL,
-            libraryRelativePath: "Tracks/\(trackId.uuidString)/\(audioFileName)"
-        )
-    }
 
     nonisolated private static func metadataConcurrency(for count: Int) -> Int {
         ImportConcurrencyLimiter.metadataReadConcurrency(for: count)

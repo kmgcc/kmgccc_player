@@ -120,6 +120,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// Off-main file preparation (bookmark resolve + AVAudioFile open). See
     /// `AudioFilePreparationActor`.
     private let prepActor = AudioFilePreparationActor()
+    private let authorizedSourceRootsProvider: AuthorizedSourceRootsProvider
     /// Monotonic id for the current play request. Bumped ONLY by
     /// `invalidatePreparation()` (called from `stopPlayback`). A prepared
     /// resource is consumed only if its captured generation still matches —
@@ -235,8 +236,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         analysisMixerNode
     }
 
-    init(smartController: SmartPlaybackController = SmartPlaybackController()) {
+    init(
+        smartController: SmartPlaybackController = SmartPlaybackController(),
+        authorizedSourceRootsProvider: AuthorizedSourceRootsProvider = AuthorizedSourceRootsProvider()
+    ) {
         self.smartController = smartController
+        self.authorizedSourceRootsProvider = authorizedSourceRootsProvider
         self.volume = AppSettings.shared.volume
         // Engine is now lazily initialized on first access (see `engine` property)
         setupSmartController()
@@ -783,7 +788,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         activePlaybackOrderModeOverride ?? AppSettings.shared.playbackOrderMode
     }
 
-    private func makePrepRequest(for track: Track) -> AudioPrepRequest {
+    func makePrepRequest(for track: Track) -> AudioPrepRequest {
         let root = track.libraryRootSnapshot.isEmpty
             ? LocalLibraryPaths.capturedPaths().rootURL
             : URL(fileURLWithPath: track.libraryRootSnapshot, isDirectory: true)
@@ -791,7 +796,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             trackID: track.id,
             locator: track.mediaLocator,
             libraryPaths: LibraryPaths(rootURL: root),
-            authorizedSourceRoots: [:],
+            authorizedSourceRoots: authorizedSourceRootsProvider.snapshot(),
             titleForLog: track.title
         )
     }
