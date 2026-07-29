@@ -94,6 +94,64 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         ) { XCTAssertEqual($0 as? LibraryOpenError, .pathConflict) }
     }
 
+    func testReconnectRegisteredLibraryRejectsWrongIdentityAndModeWithoutMutation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let originalRoot = fixture.root.appendingPathComponent("original")
+        let original = try fixture.makeLibrary(at: originalRoot, mode: .managed)
+        _ = try await fixture.openService.open(selectedURL: originalRoot)
+        let registryBefore = await fixture.registry.snapshot()
+
+        let foreignRoot = fixture.root.appendingPathComponent("foreign")
+        let foreign = try fixture.makeLibrary(at: foreignRoot, mode: .managed)
+        await XCTAssertThrowsErrorAsync(
+            try await fixture.openService.reconnectRegisteredLibrary(
+                id: original.libraryID,
+                selectedURL: foreignRoot
+            )
+        ) {
+            XCTAssertEqual(
+                $0 as? LibraryOpenError,
+                .reconnectIdentifierMismatch(
+                    expected: original.libraryID,
+                    actual: foreign.libraryID
+                )
+            )
+        }
+        let registryAfterIdentityMismatch = await fixture.registry.snapshot()
+        XCTAssertEqual(registryAfterIdentityMismatch, registryBefore)
+        XCTAssertEqual(fixture.controller.activeLibraryContext?.id, original.libraryID)
+
+        let wrongModeRoot = fixture.root.appendingPathComponent("wrong-mode")
+        let wrongMode = kmgccc_player.MusicLibraryManifest(
+            libraryID: original.libraryID,
+            displayName: "Wrong Mode",
+            mode: .referenced
+        )
+        let wrongModePaths = kmgccc_player.LibraryPaths(rootURL: wrongModeRoot)
+        try wrongModePaths.createRequiredDirectories()
+        try wrongMode.write(to: wrongModePaths.manifestURL)
+        try Data("{}".utf8).write(to: wrongModePaths.librarySettingsURL)
+
+        await XCTAssertThrowsErrorAsync(
+            try await fixture.openService.reconnectRegisteredLibrary(
+                id: original.libraryID,
+                selectedURL: wrongModeRoot
+            )
+        ) {
+            XCTAssertEqual(
+                $0 as? LibraryOpenError,
+                .reconnectModeMismatch(expected: .managed, actual: .referenced)
+            )
+        }
+        let registryAfterModeMismatch = await fixture.registry.snapshot()
+        XCTAssertEqual(registryAfterModeMismatch, registryBefore)
+        XCTAssertEqual(
+            fixture.controller.activeLibraryContext?.rootURL.standardizedFileURL.path,
+            originalRoot.standardizedFileURL.path
+        )
+    }
+
     func testActiveRelocationCopiesValidatesLoadsThenUpdatesRegistry() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }

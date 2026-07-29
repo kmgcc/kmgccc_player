@@ -220,7 +220,13 @@ struct MusicSettingsView: View {
 
                         Menu {
                             Button("重新扫描") { refreshSources() }
-                            Button("重新连接…") {}.disabled(true)
+                            Button("重新连接…") {
+                                guard let libraryID = activeContext?.id else { return }
+                                flow.present(.sourceReconnect(
+                                    libraryID: libraryID,
+                                    sourceIDs: [source.id]
+                                ))
+                            }
                             Divider()
                             Button("移除来源…", role: .destructive) { pendingSourceRemoval = source }
                         } label: { Image(systemName: "ellipsis.circle") }
@@ -280,8 +286,12 @@ struct MusicSettingsView: View {
         flow.beginOperation()
         Task {
             do {
-                try await appSession.activateRegisteredLibrary(id: library.id)
-                flow.completeAndDismiss()
+                let sourceIDs = try await appSession.activateRegisteredLibrary(id: library.id)
+                if sourceIDs.isEmpty {
+                    flow.completeAndDismiss()
+                } else {
+                    flow.present(.sourceReconnect(libraryID: library.id, sourceIDs: sourceIDs))
+                }
                 await reload()
             } catch RegisteredLibraryActivationError.reconnectRequired {
                 flow.present(.reconnectRequired(libraryID: library.id, mode: library.modeProjection))
@@ -297,7 +307,16 @@ struct MusicSettingsView: View {
             flow.beginOperation()
             Task {
                 defer { access.release() }
-                do { try await appSession.openMusicLibrary(at: url); flow.completeAndDismiss(); await reload() }
+                do {
+                    let sourceIDs = try await appSession.openMusicLibrary(at: url)
+                    if let libraryID = appSession.activeLibraryBinding.context?.id,
+                       !sourceIDs.isEmpty {
+                        flow.present(.sourceReconnect(libraryID: libraryID, sourceIDs: sourceIDs))
+                    } else {
+                        flow.completeAndDismiss()
+                    }
+                    await reload()
+                }
                 catch { flow.fail("无法打开资料库。"); errorMessage = "所选位置不是可用资料库。" }
             }
         }

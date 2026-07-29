@@ -10,17 +10,20 @@ nonisolated enum LibrarySessionFactoryError: Error, Equatable {
 
 @MainActor
 final class LibrarySessionFactory: LibrarySessionBuilding {
+    private let libraryRootBookmarkResolver: any BookmarkResolving
     private let sourceBookmarkResolver: any BookmarkResolving
     private let requiresSecurityScope: Bool
     private let fileEventSourceFactory: @MainActor () -> any LibraryFileEventSource
 
     init(
+        libraryRootBookmarkResolver: any BookmarkResolving = SystemBookmarkResolver(),
         sourceBookmarkResolver: any BookmarkResolving = SystemBookmarkResolver(),
         requiresSecurityScope: Bool = false,
         fileEventSourceFactory: @escaping @MainActor () -> any LibraryFileEventSource = {
             FSEventsLibraryFileEventSource()
         }
     ) {
+        self.libraryRootBookmarkResolver = libraryRootBookmarkResolver
         self.sourceBookmarkResolver = sourceBookmarkResolver
         self.requiresSecurityScope = requiresSecurityScope
         self.fileEventSourceFactory = fileEventSourceFactory
@@ -29,7 +32,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
     func makeSession(for context: LibraryContext) async throws -> any LibrarySessionLifecycle {
         let rootAccessLease = try LibraryRootAccessLease(
             context: context,
-            resolver: sourceBookmarkResolver,
+            resolver: libraryRootBookmarkResolver,
             requiresSecurityScope: requiresSecurityScope
         )
         let manifest = try MusicLibraryManifest.read(from: context.paths.manifestURL)
@@ -132,6 +135,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             amllDBService: cacheServices.amllDBService
         )
         let referencedSourceReconciler: ReferencedSourceReconciler?
+        let sourceReconnectService: SourceReconnectService?
         let libraryChangeMonitor: LibraryChangeMonitor?
         if let sourceStore, let sourceScope {
             let ncmReservationFilter = NCMScanReservationFilter(
@@ -140,7 +144,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             let scanner = ReferencedSourceScanner(paths: context.paths, isReserved: { url, identity in
                 await ncmReservationFilter.isReserved(url: url, identity: identity)
             })
-            referencedSourceReconciler = ReferencedSourceReconciler(
+            let reconciler = ReferencedSourceReconciler(
                 context: context,
                 repository: repository,
                 importer: fileImportService,
@@ -150,9 +154,20 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
                 bookmarkResolver: sourceBookmarkResolver,
                 requiresSecurityScope: requiresSecurityScope
             )
+            referencedSourceReconciler = reconciler
+            sourceReconnectService = SourceReconnectService(
+                context: context,
+                repository: repository,
+                sourceStore: sourceStore,
+                sourceScope: sourceScope,
+                reconciler: reconciler,
+                bookmarkResolver: sourceBookmarkResolver,
+                requiresSecurityScope: requiresSecurityScope
+            )
             libraryChangeMonitor = LibraryChangeMonitor(eventSource: fileEventSourceFactory())
         } else {
             referencedSourceReconciler = nil
+            sourceReconnectService = nil
             libraryChangeMonitor = nil
         }
 
@@ -175,6 +190,20 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             )
             libraryViewModel.prepareTracksForDeletion = { tracks in
                 await deletionService.prepareForAuthorityDeletion(tracks)
+            }
+        }
+        if let sourceReconnectService {
+            libraryViewModel.prepareTrackRelocationAction = { trackID, selectedURL in
+                try await sourceReconnectService.prepareTrackRelocation(
+                    trackID: trackID,
+                    selectedURL: selectedURL
+                )
+            }
+            libraryViewModel.relocateTrackAction = { proposal, confirmed in
+                try await sourceReconnectService.relocateTrack(
+                    proposal,
+                    confirmedReplacement: confirmed
+                )
             }
         }
 
@@ -279,6 +308,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             referencedSourceStore: sourceStore,
             referencedSourceScope: sourceScope,
             referencedSourceReconciler: referencedSourceReconciler,
+            sourceReconnectService: sourceReconnectService,
             libraryChangeMonitor: libraryChangeMonitor,
             playbackService: playbackService,
             playerViewModel: playerViewModel,

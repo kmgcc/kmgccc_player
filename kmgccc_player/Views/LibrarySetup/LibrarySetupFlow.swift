@@ -9,7 +9,29 @@ struct LibrarySetupFlow: View {
     @EnvironmentObject private var appSession: AppSessionHost
     @EnvironmentObject private var themeStore: ThemeStore
 
+    @ViewBuilder
     var body: some View {
+        switch flow.presentation {
+        case let .reconnectRequired(libraryID, mode):
+            LibraryReconnectView(
+                flow: flow,
+                target: .libraryRoot(libraryID: libraryID, mode: mode),
+                onChange: onChange
+            )
+            .id("library-\(libraryID.uuidString)")
+        case let .sourceReconnect(libraryID, sourceIDs):
+            LibraryReconnectView(
+                flow: flow,
+                target: .sources(libraryID: libraryID, sourceIDs: sourceIDs),
+                onChange: onChange
+            )
+            .id("sources-\(libraryID.uuidString)-\(sourceIDs.map(\.uuidString).joined())")
+        default:
+            setupDialog
+        }
+    }
+
+    private var setupDialog: some View {
         SettingsTaskDialog(
             title: title,
             subtitle: subtitle,
@@ -32,6 +54,7 @@ struct LibrarySetupFlow: View {
         switch flow.presentation {
         case .chooser: return "选择资料库"
         case .reconnectRequired: return "找不到资料库"
+        case .sourceReconnect: return "重新连接来源"
         default:
             switch flow.step {
             case .storage: return "存储方式"
@@ -44,7 +67,8 @@ struct LibrarySetupFlow: View {
     private var subtitle: String {
         switch flow.presentation {
         case .chooser: return "选择要打开的资料库。"
-        case .reconnectRequired: return "重新连接将在后续版本提供。"
+        case .reconnectRequired: return "选择资料库的新位置。"
+        case .sourceReconnect: return "选择外部音乐的新位置。"
         default:
             switch flow.step {
             case .storage: return flow.mode == .managed ? "音乐将复制到资料库。" : "音乐将保留在原位置。"
@@ -57,6 +81,7 @@ struct LibrarySetupFlow: View {
     private var icon: String {
         switch flow.presentation {
         case .reconnectRequired: return "externaldrive.badge.exclamationmark"
+        case .sourceReconnect: return "folder.badge.questionmark"
         case .chooser: return "music.note.list"
         default: return "externaldrive.fill.badge.plus"
         }
@@ -72,6 +97,8 @@ struct LibrarySetupFlow: View {
             )
         case .reconnectRequired:
             ContentUnavailableView("找不到资料库", systemImage: "externaldrive.badge.exclamationmark", description: Text("请使用“打开资料库”选择当前位置。"))
+        case .sourceReconnect:
+            EmptyView()
         case .setup:
             setupContent
         case .none:
@@ -138,6 +165,8 @@ struct LibrarySetupFlow: View {
         case .reconnectRequired:
             SettingsTaskDialogButton("关闭", kind: .secondary) { flow.dismiss() }
             SettingsTaskDialogButton("重新连接", kind: .primary, disabled: true) {}
+        case .sourceReconnect:
+            EmptyView()
         case .chooser:
             SettingsTaskDialogButton("取消", kind: .secondary) { flow.dismiss() }
         case .setup:
@@ -257,8 +286,12 @@ struct LibrarySetupFlow: View {
         flow.beginOperation()
         Task {
             do {
-                try await appSession.openInspectedMusicLibrary(context)
-                flow.completeAndDismiss()
+                let sourceIDs = try await appSession.openInspectedMusicLibrary(context)
+                if sourceIDs.isEmpty {
+                    flow.completeAndDismiss()
+                } else {
+                    flow.present(.sourceReconnect(libraryID: context.id, sourceIDs: sourceIDs))
+                }
                 await onChange()
             } catch {
                 flow.fail("无法打开资料库。")
@@ -299,8 +332,12 @@ struct LibrarySetupFlow: View {
         flow.beginOperation()
         Task {
             do {
-                try await appSession.activateRegisteredLibrary(id: library.id)
-                flow.completeAndDismiss()
+                let sourceIDs = try await appSession.activateRegisteredLibrary(id: library.id)
+                if sourceIDs.isEmpty {
+                    flow.completeAndDismiss()
+                } else {
+                    flow.present(.sourceReconnect(libraryID: library.id, sourceIDs: sourceIDs))
+                }
                 await onChange()
             } catch RegisteredLibraryActivationError.reconnectRequired {
                 flow.present(.reconnectRequired(libraryID: library.id, mode: library.modeProjection))

@@ -5,6 +5,7 @@
 //  Shared context menu for mini player now-playing metadata actions.
 //
 
+import AppKit
 import SwiftUI
 
 struct TrackDeletionConfirmationRequest: Identifiable {
@@ -202,6 +203,17 @@ struct TrackActionMenuContent: View {
             Label("编辑歌曲信息", systemImage: "info.circle")
         }
 
+        if canRelocateAudioFile {
+            Button {
+                TrackAudioRelocationAction(
+                    libraryVM: libraryVM,
+                    uiState: uiState
+                ).run(for: track)
+            } label: {
+                Label("重新定位音频文件…", systemImage: "waveform.badge.magnifyingglass")
+            }
+        }
+
         if showsNavigation && shouldShowArtistNavigation {
             Button {
                 invokeAction("navigateArtist") {
@@ -318,6 +330,14 @@ struct TrackActionMenuContent: View {
         guard case .album = libraryVM.currentSelection else { return true }
         return false
     }
+
+    private var canRelocateAudioFile: Bool {
+        guard track.availability != .available,
+              case let .referenced(locator) = track.mediaLocator else {
+            return false
+        }
+        return locator.sourceMemberships.isEmpty
+    }
 }
 
 struct NowPlayingInfoContextMenu: View {
@@ -325,12 +345,28 @@ struct NowPlayingInfoContextMenu: View {
     let onEditTrack: (Track) -> Void
     let onEditExternalInfo: () -> Void
 
+    @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(UIStateViewModel.self) private var uiState
+
     var body: some View {
         if let track = presentation.localTrack {
             Button {
                 onEditTrack(track)
             } label: {
                 Label("编辑歌曲信息", systemImage: "info.circle")
+            }
+
+            if track.availability != .available,
+               case let .referenced(locator) = track.mediaLocator,
+               locator.sourceMemberships.isEmpty {
+                Button {
+                    TrackAudioRelocationAction(
+                        libraryVM: libraryVM,
+                        uiState: uiState
+                    ).run(for: track)
+                } label: {
+                    Label("重新定位音频文件…", systemImage: "waveform.badge.magnifyingglass")
+                }
             }
         }
 
@@ -342,6 +378,55 @@ struct NowPlayingInfoContextMenu: View {
                 Label("编辑外部播放覆盖信息", systemImage: "slider.horizontal.3")
             }
         }
+    }
+}
+
+@MainActor
+private struct TrackAudioRelocationAction {
+    let libraryVM: LibraryViewModel
+    let uiState: UIStateViewModel
+
+    func run(for track: Track) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = AudioFormatSupport.playableOpenPanelContentTypes
+        panel.prompt = "选择"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let access = LibraryInitialImportSelection(urls: [url])
+        Task {
+            defer { access.release() }
+            do {
+                let proposal = try await libraryVM.prepareTrackRelocation(
+                    trackID: track.id,
+                    selectedURL: url
+                )
+                let confirmed = !proposal.requiresReplacementConfirmation
+                    || confirmReplacement(fileName: url.lastPathComponent)
+                guard confirmed else { return }
+                try await libraryVM.relocateTrack(
+                    proposal,
+                    confirmedReplacement: confirmed
+                )
+                uiState.showSidebarNotice("音频文件已连接")
+            } catch SourceReconnectServiceError.unsupportedAudioFormat {
+                uiState.showSidebarNotice("不支持所选音频格式", style: .warning)
+            } catch {
+                uiState.showSidebarNotice("音频文件没有连接", style: .warning)
+            }
+        }
+    }
+
+    private func confirmReplacement(fileName: String) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "替换音频文件？"
+        alert.informativeText = "“\(fileName)”与原文件身份不同。继续后会保留歌曲信息，只更新音频位置。"
+        alert.addButton(withTitle: "替换")
+        alert.addButton(withTitle: "取消")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 }
 

@@ -61,6 +61,7 @@
 		C09000000000000000000001 /* MusicSettingsStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C09000000000000000000011 /* MusicSettingsStateTests.swift */; };
 		C0A000000000000000000001 /* LibraryInitialImportIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A000000000000000000011 /* LibraryInitialImportIntegrationTests.swift */; };
 		C0B000000000000000000001 /* MusicSettingsRenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0B000000000000000000011 /* MusicSettingsRenderTests.swift */; };
+		C0C000000000000000000001 /* SourceReconnectMatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0C000000000000000000011 /* SourceReconnectMatcherTests.swift */; };
 		F01000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000001 /* AppDelegate.swift */; };
 		F01000000000000000000002 /* DockController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000002 /* DockController.swift */; };
 		F01000000000000000000003 /* PlaybackCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000003 /* PlaybackCommands.swift */; };
@@ -134,6 +135,7 @@
 		C09000000000000000000011 /* MusicSettingsStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/MusicSettingsStateTests.swift; sourceTree = "<group>"; };
 		C0A000000000000000000011 /* LibraryInitialImportIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/LibraryInitialImportIntegrationTests.swift; sourceTree = "<group>"; };
 		C0B000000000000000000011 /* MusicSettingsRenderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/MusicSettingsRenderTests.swift; sourceTree = "<group>"; };
+		C0C000000000000000000011 /* SourceReconnectMatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/SourceReconnectMatcherTests.swift; sourceTree = "<group>"; };
 		E01000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = kmgccc_player/AppDelegate.swift; sourceTree = "<group>"; };
 		E01000000000000000000002 /* DockController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DockController.swift; path = kmgccc_player/DockController.swift; sourceTree = "<group>"; };
 		E01000000000000000000003 /* PlaybackCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlaybackCommands.swift; path = kmgccc_player/PlaybackCommands.swift; sourceTree = "<group>"; };
@@ -336,6 +338,7 @@
 				C09000000000000000000011 /* MusicSettingsStateTests.swift */,
 				C0A000000000000000000011 /* LibraryInitialImportIntegrationTests.swift */,
 				C0B000000000000000000011 /* MusicSettingsRenderTests.swift */,
+				C0C000000000000000000011 /* SourceReconnectMatcherTests.swift */,
 			);
 			name = Tests;
 			sourceTree = "<group>";
@@ -644,6 +647,7 @@
 				C09000000000000000000001 /* MusicSettingsStateTests.swift in Sources */,
 				C0A000000000000000000001 /* LibraryInitialImportIntegrationTests.swift in Sources */,
 				C0B000000000000000000001 /* MusicSettingsRenderTests.swift in Sources */,
+				C0C000000000000000000001 /* SourceReconnectMatcherTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

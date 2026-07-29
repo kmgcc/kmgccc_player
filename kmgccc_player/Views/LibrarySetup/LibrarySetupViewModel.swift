@@ -15,6 +15,7 @@ final class LibrarySetupViewModel {
         case setup(MusicLibraryMode)
         case chooser(MusicLibraryMode)
         case reconnectRequired(libraryID: UUID, mode: MusicLibraryMode)
+        case sourceReconnect(libraryID: UUID, sourceIDs: [UUID])
     }
 
     enum Operation: Equatable {
@@ -90,6 +91,7 @@ final class LibrarySetupViewModel {
         existingRequestedMode = nil
         operation = .working
     }
+    func finishOperation() { operation = .idle }
     func fail(_ message: String) { operation = .failed(message) }
     func failInitialImport(in context: LibraryContext, message: String) {
         createdLibraryAwaitingImport = context

@@ -22,6 +22,7 @@ final class LibrarySession: LibrarySessionLifecycle {
     let referencedSourceStore: ReferencedSourceStore?
     let referencedSourceScope: ReferencedSourceScope?
     let referencedSourceReconciler: ReferencedSourceReconciler?
+    let sourceReconnectService: SourceReconnectService?
     let libraryChangeMonitor: LibraryChangeMonitor?
     let playerViewModel: PlayerViewModel
     let playbackCoordinator: PlaybackCoordinator
@@ -52,6 +53,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         referencedSourceStore: ReferencedSourceStore?,
         referencedSourceScope: ReferencedSourceScope?,
         referencedSourceReconciler: ReferencedSourceReconciler?,
+        sourceReconnectService: SourceReconnectService?,
         libraryChangeMonitor: LibraryChangeMonitor?,
         playbackService: AVAudioPlaybackService,
         playerViewModel: PlayerViewModel,
@@ -78,6 +80,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         self.referencedSourceStore = referencedSourceStore
         self.referencedSourceScope = referencedSourceScope
         self.referencedSourceReconciler = referencedSourceReconciler
+        self.sourceReconnectService = sourceReconnectService
         self.libraryChangeMonitor = libraryChangeMonitor
         self.playbackService = playbackService
         self.playerViewModel = playerViewModel
@@ -174,6 +177,82 @@ final class LibrarySession: LibrarySessionLifecycle {
         }
     }
 
+    func prepareSourceReconnect(
+        sourceID: UUID,
+        candidateRoots: [URL]
+    ) async throws -> SourceReconnectPreparation {
+        guard !isClosed, let sourceReconnectService else {
+            throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        return try await sourceReconnectService.prepareSourceReconnect(
+            sourceID: sourceID,
+            candidateRoots: candidateRoots
+        )
+    }
+
+    func reconnectSource(
+        preparation: SourceReconnectPreparation,
+        planID: String,
+        conflictSelections: [UUID: URL]
+    ) async throws {
+        guard !isClosed,
+              let sourceReconnectService,
+              let referencedSourceReconciler,
+              let libraryChangeMonitor else {
+            throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        let originalRoots = referencedSourceReconciler.sourceRoots
+        await libraryChangeMonitor.stopAndWait()
+        do {
+            try await sourceReconnectService.reconnectSource(
+                preparation: preparation,
+                planID: planID,
+                conflictSelections: conflictSelections
+            )
+            try await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: referencedSourceReconciler,
+                roots: referencedSourceReconciler.sourceRoots
+            )
+        } catch {
+            try? await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: referencedSourceReconciler,
+                roots: sourceReconnectServiceRoots(
+                    fallback: originalRoots,
+                    reconciler: referencedSourceReconciler
+                )
+            )
+            throw error
+        }
+    }
+
+    func prepareTrackRelocation(
+        trackID: UUID,
+        selectedURL: URL
+    ) async throws -> TrackRelocationProposal {
+        guard !isClosed, let sourceReconnectService else {
+            throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        return try await sourceReconnectService.prepareTrackRelocation(
+            trackID: trackID,
+            selectedURL: selectedURL
+        )
+    }
+
+    func relocateTrack(
+        _ proposal: TrackRelocationProposal,
+        confirmedReplacement: Bool
+    ) async throws {
+        guard !isClosed, let sourceReconnectService else {
+            throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        try await sourceReconnectService.relocateTrack(
+            proposal,
+            confirmedReplacement: confirmedReplacement
+        )
+    }
+
     private func startReferencedSourceMonitor(
         _ monitor: LibraryChangeMonitor,
         reconciler: ReferencedSourceReconciler,
@@ -188,6 +267,14 @@ final class LibrarySession: LibrarySessionLifecycle {
                 await reconciler.reportMonitorFailure(sourceIDs: sourceIDs, error: error)
             }
         }
+    }
+
+    private func sourceReconnectServiceRoots(
+        fallback: [UUID: URL],
+        reconciler: ReferencedSourceReconciler
+    ) -> [UUID: URL] {
+        let current = reconciler.sourceRoots
+        return current.isEmpty ? fallback : current
     }
 
     func flush() async throws {

@@ -21,6 +21,9 @@ nonisolated enum LibraryOpenError: Error, Equatable {
     case recoveryFailed
     case transactionInProgress
     case securityScopeDenied
+    case libraryNotRegistered
+    case reconnectIdentifierMismatch(expected: UUID, actual: UUID)
+    case reconnectModeMismatch(expected: MusicLibraryMode, actual: MusicLibraryMode)
 }
 
 @MainActor
@@ -87,6 +90,33 @@ final class LibraryOpenService {
         let inspection = try await inspect(selectedURL: selectedURL)
         guard activate else {
             return LibraryOpenResult(context: inspection.context, didRegister: false, didRefreshBookmark: false)
+        }
+        do { try gate.acquire() }
+        catch { throw LibraryOpenError.transactionInProgress }
+        defer { gate.release() }
+        return try await commitActivation(inspection, gateAlreadyHeld: true)
+    }
+
+    func reconnectRegisteredLibrary(
+        id: UUID,
+        selectedURL: URL
+    ) async throws -> LibraryOpenResult {
+        let registry = await registryStore.snapshot()
+        guard let registered = registry.library(id: id) else {
+            throw LibraryOpenError.libraryNotRegistered
+        }
+        let inspection = try await inspect(selectedURL: selectedURL)
+        guard inspection.context.id == id else {
+            throw LibraryOpenError.reconnectIdentifierMismatch(
+                expected: id,
+                actual: inspection.context.id
+            )
+        }
+        guard inspection.context.mode == registered.modeProjection else {
+            throw LibraryOpenError.reconnectModeMismatch(
+                expected: registered.modeProjection,
+                actual: inspection.context.mode
+            )
         }
         do { try gate.acquire() }
         catch { throw LibraryOpenError.transactionInProgress }

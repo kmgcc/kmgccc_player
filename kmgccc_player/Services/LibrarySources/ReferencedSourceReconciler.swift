@@ -2,6 +2,8 @@ import Foundation
 
 nonisolated enum ReferencedSourceReconcileError: Error, Equatable {
     case authorityCommitFailed([UUID])
+    case invalidReconnectIntent
+    case reconnectAuthorizationFailed(UUID)
 }
 
 nonisolated enum ReferencedSourceNotice: Sendable, Equatable {
@@ -93,6 +95,7 @@ final class ReferencedSourceReconciler {
         guard !isClosed else { return }
         for intent in try await intentStore.pending(libraryID: context.id, sourceID: sourceID) {
             try validate(intent)
+            try await restoreReconnectAuthorizationIfNeeded(intent)
             switch intent.state {
             case .prepared:
                 try await drivePrepared(intent)
@@ -153,6 +156,43 @@ final class ReferencedSourceReconciler {
             operation: .sourceRemoval
         )
         try await drivePrepared(intent)
+    }
+
+    func reconnectSource(
+        descriptor: ReferencedSourceDescriptor,
+        rootURL: URL,
+        lease: SecurityScopedResourceLease,
+        mutations: [ReferencedSourceLocatorMutation],
+        proposedManifest: ReferencedSourceScanManifest
+    ) async throws {
+        guard !isClosed,
+              descriptor.id == proposedManifest.sourceID,
+              proposedManifest.libraryID == context.id else {
+            lease.release()
+            throw ReferencedSourceReconcileError.invalidReconnectIntent
+        }
+        let diff = ReferencedSourceDiff(
+            libraryID: context.id,
+            libraryGeneration: context.generation,
+            sourceID: descriptor.id,
+            scanGeneration: proposedManifest.generation,
+            sourceStatus: .available
+        )
+        let intent: LibraryReconcileIntent
+        do {
+            intent = try await intentStore.prepare(
+                diff,
+                mutations: mutations,
+                proposedManifest: proposedManifest,
+                proposedSourceDescriptor: descriptor,
+                operation: .sourceReconnect
+            )
+        } catch {
+            lease.release()
+            throw error
+        }
+        sourceScope.add(sourceID: descriptor.id, url: rootURL, lease: lease)
+        try await drivePrepared(intent, rootURL: rootURL)
     }
 
     func reportMonitorFailure(sourceIDs: Set<UUID>, error: Error) async {
@@ -238,6 +278,13 @@ final class ReferencedSourceReconciler {
             if !intent.diff.failures.isEmpty {
                 await noticePublisher.publish(.fileFailures(sourceID: intent.sourceID, count: intent.diff.failures.count))
             }
+        case .sourceReconnect:
+            guard let manifest = intent.proposedManifest,
+                  let descriptor = intent.proposedSourceDescriptor else {
+                throw ReferencedSourceReconcileError.invalidReconnectIntent
+            }
+            try await manifestStore.save(manifest)
+            try await sourceStore.save(descriptor)
         case .sourceRemoval:
             try await manifestStore.remove(sourceID: intent.sourceID)
             sourceScope.remove(sourceID: intent.sourceID)
@@ -369,5 +416,36 @@ final class ReferencedSourceReconciler {
         guard intent.libraryID == context.id, intent.libraryGeneration == context.generation else {
             throw LibrarySessionFactoryError.manifestIdentityMismatch
         }
+    }
+
+    private func restoreReconnectAuthorizationIfNeeded(
+        _ intent: LibraryReconcileIntent
+    ) async throws {
+        guard intent.operation == .sourceReconnect else { return }
+        guard let descriptor = intent.proposedSourceDescriptor else {
+            throw ReferencedSourceReconcileError.invalidReconnectIntent
+        }
+        if sourceScope.authorizedRoots[descriptor.id]?.url.standardizedFileURL.path
+            == descriptor.lastKnownPath {
+            return
+        }
+        let resolved: (url: URL, isStale: Bool)
+        do {
+            resolved = try bookmarkResolver.resolve(descriptor.rootBookmarkData)
+        } catch {
+            throw ReferencedSourceReconcileError.reconnectAuthorizationFailed(descriptor.id)
+        }
+        let didStart = bookmarkResolver.startAccessing(resolved.url)
+        guard didStart
+                || (!requiresSecurityScope
+                    && FileManager.default.isReadableFile(atPath: resolved.url.path)) else {
+            throw ReferencedSourceReconcileError.reconnectAuthorizationFailed(descriptor.id)
+        }
+        let lease = didStart
+            ? SecurityScopedResourceLease { [bookmarkResolver] in
+                bookmarkResolver.stopAccessing(resolved.url)
+            }
+            : .none
+        sourceScope.add(sourceID: descriptor.id, url: resolved.url, lease: lease)
     }
 }

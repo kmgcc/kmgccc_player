@@ -8,6 +8,7 @@ nonisolated struct ReferencedSourceLocatorMutation: Codable, Sendable, Equatable
 
 nonisolated enum LibraryReconcileOperation: String, Codable, Sendable {
     case reconcile
+    case sourceReconnect
     case sourceRemoval
 }
 
@@ -39,6 +40,7 @@ nonisolated struct LibraryReconcileIntent: Codable, Sendable, Equatable, Identif
     var mutations: [ReferencedSourceLocatorMutation]
     var committedTrackIDs: [UUID]
     var proposedManifest: ReferencedSourceScanManifest?
+    var proposedSourceDescriptor: ReferencedSourceDescriptor?
     var operation: LibraryReconcileOperation
     var state: LibraryReconcileIntentState
     let createdAt: Date
@@ -58,6 +60,7 @@ actor LibraryReconcileIntentStore {
         _ diff: ReferencedSourceDiff,
         mutations: [ReferencedSourceLocatorMutation] = [],
         proposedManifest: ReferencedSourceScanManifest? = nil,
+        proposedSourceDescriptor: ReferencedSourceDescriptor? = nil,
         operation: LibraryReconcileOperation = .reconcile
     ) throws -> LibraryReconcileIntent {
         if let active = try pending(libraryID: diff.libraryID, sourceID: diff.sourceID).first {
@@ -79,6 +82,7 @@ actor LibraryReconcileIntentStore {
             mutations: mutations,
             committedTrackIDs: [],
             proposedManifest: proposedManifest,
+            proposedSourceDescriptor: proposedSourceDescriptor,
             operation: operation,
             state: .prepared,
             createdAt: now,

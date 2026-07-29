@@ -363,7 +363,7 @@ final class LibraryInitialImportIntegrationTests: XCTestCase {
 
         let resolver = TrackingRootBookmarkResolver(url: context.rootURL)
         let rebuilt = try await LibrarySessionFactory(
-            sourceBookmarkResolver: resolver,
+            libraryRootBookmarkResolver: resolver,
             requiresSecurityScope: true
         ).makeSession(for: context)
         XCTAssertEqual(resolver.starts, 1)

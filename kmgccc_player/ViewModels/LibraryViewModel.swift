@@ -468,9 +468,31 @@ final class LibraryViewModel {
     var onTracksDeleted: ((Set<UUID>) -> Void)?
     var prepareTracksForDeletion: (([Track]) async -> TrackAuthorityDeletionPreparationResult)?
     var onTrackDeletionPreparationFailures: (([TrackAuthorityDeletionFailure]) -> Void)?
+    var prepareTrackRelocationAction: ((UUID, URL) async throws -> TrackRelocationProposal)?
+    var relocateTrackAction: ((TrackRelocationProposal, Bool) async throws -> Void)?
     private var isApplyingSortPreference = false
     private var trackUpdateRevision = 0
     private var pendingRepositoryDeletionTrackIDs: Set<UUID> = []
+
+    func prepareTrackRelocation(
+        trackID: UUID,
+        selectedURL: URL
+    ) async throws -> TrackRelocationProposal {
+        guard let prepareTrackRelocationAction else {
+            throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        return try await prepareTrackRelocationAction(trackID, selectedURL)
+    }
+
+    func relocateTrack(
+        _ proposal: TrackRelocationProposal,
+        confirmedReplacement: Bool
+    ) async throws {
+        guard let relocateTrackAction else {
+            throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        try await relocateTrackAction(proposal, confirmedReplacement)
+    }
 
     // MARK: - Loading Task Management
 
@@ -678,6 +700,8 @@ final class LibraryViewModel {
         loadGeneration &+= 1
         cancelCurrentLoad()
         importService = nil
+        prepareTrackRelocationAction = nil
+        relocateTrackAction = nil
         repository.setChangeHandler(nil)
         removeLibraryLocationObserver()
     }

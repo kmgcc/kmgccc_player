@@ -328,6 +328,251 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         XCTAssertEqual(track.mediaLocator.referencedFile?.sourceMemberships.count, 1)
     }
 
+    func testSourceReconnectCommitsTrackAuthorityBeforeSourceDescriptorAndReplays() async throws {
+        let writer = PartialLocatorWriter()
+        let fixture = try await ReconcileFixture(locatorWriter: { track, _, _, _ in
+            writer.write(track)
+        })
+        defer { fixture.cleanup() }
+        let oldURL = fixture.sourceRoot.appendingPathComponent("old.wav")
+        try Data("old-audio".utf8).write(to: oldURL)
+        let track = fixture.makeTrack(title: "Keeps Metadata", path: oldURL.path)
+        let imported = await fixture.repository.commitImportedTracks([track])
+        XCTAssertEqual(imported.persistedTrackIDs, [track.id])
+
+        let newRoot = fixture.root.appendingPathComponent("Reconnected", isDirectory: true)
+        try FileManager.default.createDirectory(at: newRoot, withIntermediateDirectories: true)
+        let newURL = newRoot.appendingPathComponent("moved.wav")
+        try Data("old-audio".utf8).write(to: newURL)
+        let fingerprint = try ReferencedFileIdentityProvider().fingerprint(for: newURL)
+        var locator = try XCTUnwrap(track.mediaLocator.referencedFile)
+        locator.fileBookmarkData = Data(newURL.path.utf8)
+        locator.lastKnownPath = newURL.path
+        locator.fingerprint = fingerprint
+        locator.sourceMemberships = [
+            .init(sourceID: fixture.sourceID, relativePath: newURL.lastPathComponent)
+        ]
+        locator.primarySourceID = fixture.sourceID
+        let mutation = ReferencedSourceLocatorMutation(
+            trackID: track.id,
+            locator: locator,
+            availability: .available
+        )
+        let proposedDescriptor = ReferencedSourceDescriptor(
+            id: fixture.sourceID,
+            rootBookmarkData: Data(newRoot.path.utf8),
+            lastKnownPath: newRoot.path,
+            displayName: newRoot.lastPathComponent
+        )
+        let proposedManifest = ReferencedSourceScanManifest(
+            libraryID: fixture.context.id,
+            sourceID: fixture.sourceID,
+            generation: 1,
+            lastSuccessfulScan: Date(),
+            entries: [
+                .init(
+                    relativePath: newURL.lastPathComponent,
+                    identity: fingerprint.identity,
+                    fingerprint: fingerprint,
+                    trackID: track.id,
+                    availability: .available,
+                    lastSeenGeneration: 1
+                )
+            ]
+        )
+        writer.failOnceID = track.id
+
+        do {
+            try await fixture.reconciler.reconnectSource(
+                descriptor: proposedDescriptor,
+                rootURL: newRoot,
+                lease: .none,
+                mutations: [mutation],
+                proposedManifest: proposedManifest
+            )
+            XCTFail("Expected authority commit failure")
+        } catch {
+            XCTAssertEqual(
+                error as? ReferencedSourceReconcileError,
+                .authorityCommitFailed([track.id])
+            )
+        }
+        let descriptorBeforeReplay = try await fixture.store.load(id: fixture.sourceID)
+        XCTAssertEqual(descriptorBeforeReplay.lastKnownPath, fixture.sourceRoot.path)
+        XCTAssertEqual(track.mediaLocator.referencedFile?.lastKnownPath, oldURL.path)
+        let intentStore = LibraryReconcileIntentStore(paths: fixture.paths)
+        let pending = try await intentStore.pending(
+            libraryID: fixture.context.id,
+            sourceID: fixture.sourceID
+        )
+        XCTAssertEqual(pending.first?.operation, .sourceReconnect)
+        XCTAssertEqual(
+            pending.first?.proposedSourceDescriptor?.lastKnownPath,
+            proposedDescriptor.lastKnownPath
+        )
+        XCTAssertEqual(
+            pending.first?.proposedSourceDescriptor?.rootBookmarkData,
+            proposedDescriptor.rootBookmarkData
+        )
+
+        try await fixture.reconciler.replayPending(sourceID: fixture.sourceID)
+
+        let descriptorAfterReplay = try await fixture.store.load(id: fixture.sourceID)
+        XCTAssertEqual(descriptorAfterReplay.id, proposedDescriptor.id)
+        XCTAssertEqual(descriptorAfterReplay.lastKnownPath, proposedDescriptor.lastKnownPath)
+        XCTAssertEqual(descriptorAfterReplay.rootBookmarkData, proposedDescriptor.rootBookmarkData)
+        XCTAssertEqual(track.id, mutation.trackID)
+        XCTAssertEqual(track.title, "Keeps Metadata")
+        XCTAssertEqual(track.mediaLocator.referencedFile?.lastKnownPath, newURL.path)
+        let pendingAfterReplay = try await intentStore.pending(
+            libraryID: fixture.context.id,
+            sourceID: fixture.sourceID
+        )
+        XCTAssertTrue(pendingAfterReplay.isEmpty)
+    }
+
+    func testStandaloneTrackRelocationRequiresConfirmationAndPreservesAppMetadata() async throws {
+        let fixture = try await ReconcileFixture()
+        defer { fixture.cleanup() }
+        let oldURL = fixture.root.appendingPathComponent("missing.wav")
+        let oldLocator = kmgccc_player.ReferencedFileLocator(
+            fileBookmarkData: Data(oldURL.path.utf8),
+            lastKnownPath: oldURL.path,
+            fingerprint: .init(fileSize: 10, modifiedAt: 1)
+        )
+        let track = Track(
+            title: "Edited Title",
+            artist: "Edited Artist",
+            userDescription: "Keeps App Metadata",
+            fileBookmarkData: oldLocator.fileBookmarkData,
+            originalFilePath: oldURL.path,
+            mediaLocator: .referenced(oldLocator),
+            availability: .missing,
+            libraryRootSnapshot: fixture.paths.rootURL.path
+        )
+        let imported = await fixture.repository.commitImportedTracks([track])
+        XCTAssertEqual(imported.persistedTrackIDs, [track.id])
+        let selectedURL = fixture.root.appendingPathComponent("replacement.wav")
+        try Data("replacement-audio".utf8).write(to: selectedURL)
+        let service = SourceReconnectService(
+            context: fixture.context,
+            repository: fixture.repository,
+            sourceStore: fixture.store,
+            sourceScope: fixture.scope,
+            reconciler: fixture.reconciler,
+            bookmarkResolver: ReconcileBookmarkResolver()
+        )
+
+        let proposal = try await service.prepareTrackRelocation(
+            trackID: track.id,
+            selectedURL: selectedURL
+        )
+        XCTAssertTrue(proposal.requiresReplacementConfirmation)
+        do {
+            try await service.relocateTrack(proposal, confirmedReplacement: false)
+            XCTFail("Expected replacement confirmation")
+        } catch {
+            XCTAssertEqual(
+                error as? SourceReconnectServiceError,
+                .replacementConfirmationRequired
+            )
+        }
+        XCTAssertEqual(track.mediaLocator.referencedFile?.lastKnownPath, oldURL.path)
+
+        try await service.relocateTrack(proposal, confirmedReplacement: true)
+
+        XCTAssertEqual(track.id, proposal.trackID)
+        XCTAssertEqual(track.title, "Edited Title")
+        XCTAssertEqual(track.artist, "Edited Artist")
+        XCTAssertEqual(track.userDescription, "Keeps App Metadata")
+        XCTAssertEqual(track.availability, .available)
+        XCTAssertEqual(track.mediaLocator.referencedFile?.lastKnownPath, selectedURL.path)
+        XCTAssertEqual(track.mediaLocator.referencedFile?.sourceMemberships, [])
+        let sidecar = try decodeTrackSidecar(paths: fixture.paths, trackID: track.id)
+        XCTAssertEqual(sidecar.id, track.id)
+        XCTAssertEqual(sidecar.mediaLocator.referencedFile?.lastKnownPath, selectedURL.path)
+        do {
+            _ = try await service.prepareTrackRelocation(
+                trackID: track.id,
+                selectedURL: selectedURL
+            )
+            XCTFail("Expected an available track to reject standalone relocation")
+        } catch {
+            XCTAssertEqual(
+                error as? SourceReconnectServiceError,
+                .trackIsNotStandaloneMissing(track.id)
+            )
+        }
+    }
+
+    func testSourceReconnectRetainsMatchedTrackAndFullReconcileImportsNewFiles() async throws {
+        let fixture = try await ReconcileFixture()
+        defer { fixture.cleanup() }
+        let candidateRoot = fixture.root.appendingPathComponent("Reconnected", isDirectory: true)
+        let albumRoot = candidateRoot.appendingPathComponent("Album", isDirectory: true)
+        try FileManager.default.createDirectory(at: albumRoot, withIntermediateDirectories: true)
+        let matchedURL = albumRoot.appendingPathComponent("existing.mp3")
+        let newURL = candidateRoot.appendingPathComponent("fresh.mp3")
+        try Data("existing-audio".utf8).write(to: matchedURL)
+        try Data("fresh-audio".utf8).write(to: newURL)
+        let fingerprint = try ReferencedFileIdentityProvider().fingerprint(for: matchedURL)
+        let oldURL = fixture.sourceRoot.appendingPathComponent("Album/existing.mp3")
+        let locator = kmgccc_player.ReferencedFileLocator(
+            fileBookmarkData: Data(oldURL.path.utf8),
+            sourceMemberships: [.init(
+                sourceID: fixture.sourceID,
+                relativePath: "Album/existing.mp3"
+            )],
+            primarySourceID: fixture.sourceID,
+            lastKnownPath: oldURL.path,
+            fingerprint: fingerprint
+        )
+        let existingTrack = Track(
+            title: "Existing",
+            fileBookmarkData: locator.fileBookmarkData,
+            originalFilePath: oldURL.path,
+            mediaLocator: .referenced(locator),
+            availability: .missing,
+            libraryRootSnapshot: fixture.paths.rootURL.path
+        )
+        let imported = await fixture.repository.commitImportedTracks([existingTrack])
+        XCTAssertEqual(imported.persistedTrackIDs, [existingTrack.id])
+        let service = SourceReconnectService(
+            context: fixture.context,
+            repository: fixture.repository,
+            sourceStore: fixture.store,
+            sourceScope: fixture.scope,
+            reconciler: fixture.reconciler,
+            bookmarkResolver: ReconcileBookmarkResolver()
+        )
+
+        let preparation = try await service.prepareSourceReconnect(
+            sourceID: fixture.sourceID,
+            candidateRoots: [candidateRoot]
+        )
+        let plan = try XCTUnwrap(preparation.plans.first)
+        XCTAssertEqual(plan.matches.map(\.trackID), [existingTrack.id])
+
+        try await service.reconnectSource(
+            preparation: preparation,
+            planID: plan.id,
+            conflictSelections: [:]
+        )
+
+        let tracks = await fixture.repository.fetchTracks(in: nil)
+        XCTAssertEqual(Set(tracks.map(\.id)).contains(existingTrack.id), true)
+        XCTAssertEqual(tracks.first(where: { $0.id == existingTrack.id })?.availability, .available)
+        XCTAssertEqual(tracks.first(where: { $0.id == existingTrack.id })?
+            .mediaLocator.referencedFile?.lastKnownPath, matchedURL.path)
+        XCTAssertEqual(tracks.first(where: { $0.title == "fresh" })?
+            .mediaLocator.referencedFile?.primarySourceID, fixture.sourceID)
+        XCTAssertEqual(tracks.count, 2)
+        XCTAssertEqual(
+            fixture.scope.authorizedRoots[fixture.sourceID]?.url.standardizedFileURL,
+            candidateRoot.standardizedFileURL
+        )
+    }
+
     func testOverlappingSourcesMergeAndRemovingOnePreservesTrack() async throws {
         let fixture = try await ReconcileFixture()
         defer { fixture.cleanup() }
@@ -584,6 +829,7 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         try FileManager.default.moveItem(at: sourceRoot, to: parkedRoot)
         let resolver = StartupBookmarkResolver(url: sourceRoot, mode: .offline)
         let session = try await LibrarySessionFactory(
+            libraryRootBookmarkResolver: ReconcileBookmarkResolver(),
             sourceBookmarkResolver: resolver,
             requiresSecurityScope: true,
             fileEventSourceFactory: { TestFileEventSource() }
@@ -636,6 +882,7 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         ))
         let resolver = StartupBookmarkResolver(url: sourceRoot, mode: .permissionDenied)
         let session = try await LibrarySessionFactory(
+            libraryRootBookmarkResolver: ReconcileBookmarkResolver(),
             sourceBookmarkResolver: resolver,
             requiresSecurityScope: true,
             fileEventSourceFactory: { TestFileEventSource() }

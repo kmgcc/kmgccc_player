@@ -142,26 +142,63 @@ final class AppSessionHost: ObservableObject {
         await registryStore?.snapshot() ?? MusicLibraryRegistry()
     }
 
-    func openMusicLibrary(at url: URL) async throws {
+    func openMusicLibrary(at url: URL) async throws -> [UUID] {
         guard let libraryOpenService else { throw LibraryOpenError.libraryNotFound }
         _ = try await libraryOpenService.open(selectedURL: url)
+        return try await unavailableReferencedSourceIDs()
     }
 
-    func openInspectedMusicLibrary(_ context: LibraryContext) async throws {
+    func openInspectedMusicLibrary(_ context: LibraryContext) async throws -> [UUID] {
         let lease = try LibraryRootAccessLease(
             context: context,
             resolver: SystemBookmarkResolver(),
             requiresSecurityScope: false
         )
         defer { lease.release() }
-        try await openMusicLibrary(at: context.rootURL)
+        return try await openMusicLibrary(at: context.rootURL)
     }
 
-    func activateRegisteredLibrary(id: UUID) async throws {
+    func activateRegisteredLibrary(id: UUID) async throws -> [UUID] {
         guard let registryStore else { throw RegisteredLibraryActivationError.notRegistered }
         let context = try await LibraryStartupContextResolver(registryStore: registryStore)
             .resolveRegistered(libraryID: id, generation: activeLibraryBinding.generation &+ 1)
         try await sessionController.switchToLibrary(context)
+        return try await unavailableReferencedSourceIDs()
+    }
+
+    func reconnectRegisteredLibrary(id: UUID, at url: URL) async throws -> [UUID] {
+        guard let libraryOpenService else { throw LibraryOpenError.libraryNotFound }
+        _ = try await libraryOpenService.reconnectRegisteredLibrary(id: id, selectedURL: url)
+        return try await unavailableReferencedSourceIDs()
+    }
+
+    func prepareSourceReconnect(
+        sourceID: UUID,
+        candidateRoots: [URL]
+    ) async throws -> SourceReconnectPreparation {
+        guard let session = activeLibraryBinding.activeSession else {
+            throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        return try await session.prepareSourceReconnect(
+            sourceID: sourceID,
+            candidateRoots: candidateRoots
+        )
+    }
+
+    func reconnectSource(
+        preparation: SourceReconnectPreparation,
+        planID: String,
+        conflictSelections: [UUID: URL]
+    ) async throws {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.id == activeLibraryBinding.context?.id else {
+            throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        try await session.reconnectSource(
+            preparation: preparation,
+            planID: planID,
+            conflictSelections: conflictSelections
+        )
     }
 
     func createMusicLibrary(
@@ -232,6 +269,18 @@ final class AppSessionHost: ObservableObject {
 
     func removeReferencedSource(id: UUID) async throws {
         try await activeLibraryBinding.activeSession?.removeReferencedSource(id)
+    }
+
+    private func unavailableReferencedSourceIDs() async throws -> [UUID] {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.mode == .referenced,
+              let store = session.referencedSourceStore else {
+            return []
+        }
+        return try await store.loadAll()
+            .filter { $0.status != .available }
+            .map(\.id)
+            .sorted { $0.uuidString < $1.uuidString }
     }
 
     func libraryScopedSettings() async throws -> LibraryScopedSettings {

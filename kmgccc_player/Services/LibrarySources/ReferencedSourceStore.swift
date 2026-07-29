@@ -91,6 +91,20 @@ actor ReferencedSourceStore {
         return descriptor
     }
 
+    func reconnectDescriptor(
+        sourceID: UUID,
+        rootBookmarkData: Data,
+        rootURL: URL
+    ) throws -> ReferencedSourceDescriptor {
+        var descriptor = try load(id: sourceID)
+        descriptor.rootBookmarkData = rootBookmarkData
+        descriptor.lastKnownPath = rootURL.standardizedFileURL.path
+        descriptor.displayName = rootURL.lastPathComponent
+        descriptor.lastScan = Date()
+        descriptor.status = .available
+        return try validate(descriptor, expectedID: sourceID)
+    }
+
     func remove(id: UUID) throws {
         let directory = paths.sourceRootURL(for: id)
         guard fileManager.fileExists(atPath: directory.path) else { return }
