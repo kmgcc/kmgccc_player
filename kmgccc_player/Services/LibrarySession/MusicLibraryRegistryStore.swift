@@ -154,10 +154,15 @@ actor MusicLibraryRegistryStore {
 
     let fileURL: URL
     private var registry: MusicLibraryRegistry
+    private let beforeCommit: @Sendable () throws -> Void
 
-    init(fileURL: URL = MusicLibraryRegistryStore.defaultRegistryURL) throws {
+    init(
+        fileURL: URL = MusicLibraryRegistryStore.defaultRegistryURL,
+        beforeCommit: @escaping @Sendable () throws -> Void = {}
+    ) throws {
         self.fileURL = fileURL
         self.registry = try MusicLibraryRegistryFile.load(from: fileURL)
+        self.beforeCommit = beforeCommit
     }
 
     func snapshot() -> MusicLibraryRegistry {
@@ -168,6 +173,10 @@ actor MusicLibraryRegistryStore {
         let loaded = try MusicLibraryRegistryFile.load(from: fileURL)
         registry = loaded
         return loaded
+    }
+
+    func replaceSnapshot(_ snapshot: MusicLibraryRegistry) throws {
+        try commit(snapshot)
     }
 
     func register(_ descriptor: MusicLibraryBookmark) throws {
@@ -251,6 +260,7 @@ actor MusicLibraryRegistryStore {
     }
 
     private func commit(_ updated: MusicLibraryRegistry) throws {
+        try beforeCommit()
         try MusicLibraryRegistryFile.save(updated, to: fileURL)
         registry = updated
     }

@@ -40,6 +40,8 @@ final class LibrarySessionController {
     private(set) var state: State = .idle
     private(set) var activeSession: (any LibrarySessionLifecycle)?
 
+    var activeLibraryContext: LibraryContext? { activeSession?.context }
+
     var willReleaseActiveSession: (@MainActor () async -> Void)?
     var didActivateSession: (@MainActor (any LibrarySessionLifecycle) async -> Void)?
 

@@ -48,7 +48,41 @@ final class AppSessionHost: ObservableObject {
     private let placeholderPlaybackHistoryViewModel: PlaybackHistoryViewModel
     private let initialLibraryContext: LibraryContext?
     private let sessionController: LibrarySessionController
+    private let sessionValidator: LibrarySessionFactoryValidator
     private let registryStore: MusicLibraryRegistryStore?
+    private let libraryLifecycleGate = LibraryLifecycleTransactionGate()
+
+    private(set) lazy var libraryOpenService: LibraryOpenService? = registryStore.map {
+        LibraryOpenService(
+            registryStore: $0,
+            sessionController: sessionController,
+            gate: libraryLifecycleGate
+        )
+    }
+    private(set) lazy var libraryCreationService: LibraryCreationService? = {
+        guard let registryStore, let libraryOpenService else { return nil }
+        return LibraryCreationService(
+            registryStore: registryStore,
+            openService: libraryOpenService,
+            gate: libraryLifecycleGate
+        )
+    }()
+    private(set) lazy var libraryRelocationService: LibraryRelocationService? = registryStore.map {
+        LibraryRelocationService(
+            registryStore: $0,
+            sessionController: sessionController,
+            sessionValidator: sessionValidator,
+            gate: libraryLifecycleGate
+        )
+    }
+    private(set) lazy var libraryRemovalService: LibraryRemovalService? = registryStore.map {
+        LibraryRemovalService(
+            registryStore: $0,
+            sessionController: sessionController,
+            gate: libraryLifecycleGate
+        )
+    }
+
     private var hasSetupDependencies = false
     private var playbackModeObserver: NSObjectProtocol?
     private var playbackMemoryTimer: Timer?
@@ -72,6 +106,7 @@ final class AppSessionHost: ObservableObject {
         self.activeLibraryBinding = activeLibraryBinding
         self.initialLibraryContext = initialLibraryContext
         self.sessionController = LibrarySessionController(factory: sessionFactory)
+        self.sessionValidator = LibrarySessionFactoryValidator(factory: sessionFactory)
         self.registryStore = registryStore
         self.placeholderHomeViewModel = HomeViewModel()
         self.placeholderPlaybackHistoryStore = playbackHistoryStore ?? .inMemory()
@@ -109,19 +144,53 @@ final class AppSessionHost: ObservableObject {
         Log.debug("[Lifecycle] AppSessionHost initial setup", category: .ui)
         mainThreadStallMonitor.start()
         installProcessLifecycleHandlers()
-        if let initialLibraryContext {
+        var lifecycleRecoverySucceeded = true
+        var successorModeAfterRemoval: MusicLibraryMode?
+        if let libraryRelocationService {
+            do { _ = try await libraryRelocationService.replayPendingRepair() }
+            catch {
+                lifecycleRecoverySucceeded = false
+                Log.error("[LibraryLifecycle] pending relocation repair failed", category: .library)
+            }
+        }
+        if lifecycleRecoverySucceeded, let libraryRemovalService {
             do {
-                try await sessionController.switchToLibrary(initialLibraryContext)
+                let replay = try await libraryRemovalService.replayPendingRepair()
+                if case .removed(let mode, didRemoveActive: true) = replay {
+                    successorModeAfterRemoval = mode
+                }
+            } catch {
+                lifecycleRecoverySucceeded = false
+                Log.error("[LibraryLifecycle] pending removal repair failed", category: .library)
+            }
+        }
+        let startupResolution: LibraryStartupResolution
+        if lifecycleRecoverySucceeded, let registryStore {
+            startupResolution = await LibraryStartupContextResolver(registryStore: registryStore)
+                .resolve(allowSuccessorAfterRemoval: successorModeAfterRemoval)
+        } else if lifecycleRecoverySucceeded, let initialLibraryContext {
+            startupResolution = .context(initialLibraryContext)
+        } else if lifecycleRecoverySucceeded {
+            startupResolution = .noActive
+        } else {
+            startupResolution = .unavailable
+        }
+        switch startupResolution {
+        case .context(let startupContext):
+            do {
+                try await sessionController.switchToLibrary(startupContext)
                 await restorePlaybackMemoryIfNeeded()
             } catch {
                 Log.error(
-                    "[LibrarySession] initial load failed library=\(initialLibraryContext.id): \(error)",
+                    "[LibrarySession] initial load failed library=\(startupContext.id): \(error)",
                     category: .library
                 )
                 await releaseActiveSessionBindings()
             }
-        } else {
-            Log.info("[LibrarySession] no active library; waiting for setup", category: .library)
+        case .noActive:
+            Log.info("[LibrarySession] no active library; waiting for chooser", category: .library)
+        case .unavailable:
+            Log.info("[LibrarySession] active library unavailable; waiting for reconnect", category: .library)
         }
 
         LegacyCacheCleanupCoordinator.shared.captureBuild7UpgradeEligibilityBeforeLaunchRecord()
