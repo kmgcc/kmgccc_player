@@ -85,6 +85,8 @@ struct KmgcccPlayerApp: App {
     let sharedModelContainer: ModelContainer
 
     init() {
+        UpdatePreferences.migrateIfNeeded()
+
         // Register the bundled Inter family before any settings preview or
         // lyric surface asks CoreText/SwiftUI to resolve it.
         BundledFontRegistrar.register()
@@ -140,6 +142,12 @@ struct KmgcccPlayerApp: App {
         .commands {
             // 0. 移除默认设置菜单
             CommandGroup(replacing: .appSettings) {}
+
+            CommandGroup(after: .appInfo) {
+                Button("检查更新…") {
+                    UpdateCoordinator.shared.checkManually()
+                }
+            }
 
             // 1. 文件菜单
             CommandGroup(replacing: .newItem) {

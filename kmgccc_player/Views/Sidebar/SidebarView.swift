@@ -29,7 +29,7 @@ struct SidebarView: View {
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var currentColorScheme
-    @ObservedObject private var updateDownloadManager = UpdatePackageDownloadManager.shared
+    @ObservedObject private var updateCoordinator = UpdateCoordinator.shared
     @ObservedObject private var crashReportService = CrashReportService.shared
 
     @State private var showSettings = false
@@ -502,9 +502,86 @@ struct SidebarView: View {
         .padding(.horizontal, 14)
     }
 
+    private var updateSidebarProgress: SidebarTaskProgress? {
+        switch updateCoordinator.state {
+        case .checking(let manual):
+            return SidebarTaskProgress(
+                title: "正在检查更新",
+                detail: manual ? "正在获取最新版本信息" : "后台检查进行中",
+                fractionCompleted: nil,
+                state: .running
+            )
+        case .downloading(let progress):
+            return SidebarTaskProgress(
+                title: "正在下载更新",
+                detail: "下载完成后可重启安装",
+                fractionCompleted: progress,
+                state: .running
+            )
+        case .preparing(let progress):
+            return SidebarTaskProgress(
+                title: "正在准备更新",
+                detail: "正在验证并解压安装包",
+                fractionCompleted: progress,
+                state: .running
+            )
+        case .installReplyPending:
+            return SidebarTaskProgress(
+                title: "正在准备退出",
+                detail: "正在保存播放状态并关闭辅助进程",
+                fractionCompleted: nil,
+                state: .running
+            )
+        case .waitingForTermination(_, let retryInFlight):
+            return SidebarTaskProgress(
+                title: retryInFlight ? "正在再次退出" : "等待应用退出",
+                detail: retryInFlight ? "正在请求安装程序继续更新" : "点击重试以再次退出并完成更新",
+                fractionCompleted: nil,
+                state: .running
+            )
+        case .installing:
+            return SidebarTaskProgress(
+                title: "正在安装更新",
+                detail: "应用将退出并在完成后重新启动",
+                fractionCompleted: nil,
+                state: .running
+            )
+        case .failed(let failure):
+            return SidebarTaskProgress(
+                title: failure.title,
+                detail: failure.message,
+                fractionCompleted: nil,
+                state: .failed
+            )
+        case .idle, .ready, .suppressed:
+            return nil
+        }
+    }
+
+    private var updateProgressDismissAction: (() -> Void)? {
+        switch updateCoordinator.state {
+        case .checking, .downloading:
+            guard updateCoordinator.canCancelCurrentOperation else { return nil }
+            return { updateCoordinator.cancelCurrentOperation() }
+        case .failed:
+            return { updateCoordinator.dismissFailure() }
+        default:
+            return nil
+        }
+    }
+
+    private var updateProgressRetryAction: (() -> Void)? {
+        if case .waitingForTermination(_, let retryInFlight) = updateCoordinator.state {
+            return retryInFlight ? nil : { updateCoordinator.retryTerminatingApplication() }
+        }
+        guard case .failed = updateCoordinator.state else { return nil }
+        return { updateCoordinator.retryFailedUpdate() }
+    }
+
     private var hasSidebarTaskProgress: Bool {
         uiState.sidebarNotice != nil
-            || updateDownloadManager.sidebarProgress != nil
+            || updateSidebarProgress != nil
+            || updateCoordinator.readyUpdate != nil
             || importEnrichmentService.hasOutstandingWork
     }
 
@@ -515,25 +592,32 @@ struct SidebarView: View {
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
-            if let updateProgress = updateDownloadManager.sidebarProgress {
+            if let progress = updateSidebarProgress {
                 SidebarTaskProgressView(
-                    progress: updateProgress,
-                    onDismiss: updateProgressDismissAction(for: updateProgress)
+                    progress: progress,
+                    onDismiss: updateProgressDismissAction,
+                    onRetry: updateProgressRetryAction
                 )
-                .transition(.opacity)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            if let readyUpdate = updateCoordinator.readyUpdate {
+                SidebarUpdateReadyView(
+                    update: readyUpdate,
+                    onInstall: {
+                        updateCoordinator.restartAndInstall()
+                    },
+                    onDismiss: {
+                        updateCoordinator.dismissReadyUpdate()
+                    }
+                )
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
             if importEnrichmentService.hasOutstandingWork {
                 SidebarTaskProgressView(progress: importEnrichmentSidebarProgress)
                     .transition(.opacity)
             }
-        }
-    }
-
-    private func updateProgressDismissAction(for progress: SidebarTaskProgress) -> (() -> Void)? {
-        guard progress.state != .running else { return nil }
-        return {
-            updateDownloadManager.dismissSidebarProgress()
         }
     }
 
@@ -976,15 +1060,80 @@ private struct SidebarNoticeView: View {
     }
 }
 
-private struct SidebarTaskProgressView: View {
-    let progress: SidebarTaskProgress
-    let onDismiss: (() -> Void)?
+private struct SidebarUpdateReadyView: View {
+    let update: UpdateReadyMetadata
+    let onInstall: () -> Void
+    let onDismiss: () -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
 
-    init(progress: SidebarTaskProgress, onDismiss: (() -> Void)? = nil) {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.down.app.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(themeStore.accentColor)
+
+                Text("新版本 \(update.version) 已准备好")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 18, height: 18)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                .help("删除并忽略此版本")
+            }
+
+            Text("已在后台安全下载")
+                .font(.caption)
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+
+            Button("重启更新", action: onInstall)
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(themeStore.accentColor)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(themeStore.appForegroundPalette.primaryColor.opacity(0.055))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(
+                    themeStore.appForegroundPalette.secondaryColor.opacity(0.12),
+                    lineWidth: 0.5
+                )
+        )
+    }
+}
+
+private struct SidebarTaskProgressView: View {
+    let progress: SidebarTaskProgress
+    let onDismiss: (() -> Void)?
+    let onRetry: (() -> Void)?
+
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    init(
+        progress: SidebarTaskProgress,
+        onDismiss: (() -> Void)? = nil,
+        onRetry: (() -> Void)? = nil
+    ) {
         self.progress = progress
         self.onDismiss = onDismiss
+        self.onRetry = onRetry
     }
 
     var body: some View {
@@ -1003,6 +1152,18 @@ private struct SidebarTaskProgressView: View {
                     Text(percentageText)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                }
+
+                if let onRetry {
+                    Button(action: onRetry) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(width: 18, height: 18)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(themeStore.accentColor)
+                    .help("重新检查更新")
                 }
 
                 if let onDismiss {

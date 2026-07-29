@@ -11,7 +11,7 @@ import SwiftUI
 struct AboutSettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.settingsAppForegroundColors) private var appColors
-    @AppStorage(UpdateCheckPreferences.checkForUpdatesOnLaunchKey) private var checkForUpdatesOnLaunch: Bool = true
+    @AppStorage(UpdatePreferences.automaticUpdatesEnabledKey) private var automaticUpdatesEnabled = true
     @State private var aboutEasterEggTracker = AboutEasterEggTapTracker()
     @State private var showEasterEggImage: Bool = false
     @State private var page: AboutSettingsPage = .main
@@ -101,9 +101,7 @@ struct AboutSettingsView: View {
                 )
 
                 Button("查看更新") {
-                    Task {
-                        await UpdateWindowManager.shared.checkManuallyAndShowResult()
-                    }
+                    UpdateCoordinator.shared.checkManually()
                 }
                 .font(.subheadline.weight(.semibold))
                 .buttonStyle(.bordered)
@@ -130,10 +128,13 @@ struct AboutSettingsView: View {
     private var updateCheckPreferenceSection: some View {
         SettingsSection {
             SettingsSwitchRow(
-                title: "启动时检查更新",
-                isOn: $checkForUpdatesOnLaunch,
-                detail: "关闭后，App 启动时不会自动检查新版本，你仍可手动检查更新。"
+                title: "自动更新",
+                isOn: $automaticUpdatesEnabled,
+                detail: "开启后会自动检查并在后台下载；退出 App 或点击“重启更新”时安装。"
             )
+        }
+        .onChange(of: automaticUpdatesEnabled) { _, enabled in
+            UpdateCoordinator.shared.setAutomaticUpdatesEnabled(enabled)
         }
     }
 

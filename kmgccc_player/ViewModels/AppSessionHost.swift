@@ -41,6 +41,11 @@ final class AppSessionHost: ObservableObject {
     private var lyricsPlaybackPipeline: LyricsPlaybackPipeline?
     private var didAttemptPlaybackMemoryRestore = false
     private var didScheduleDeferredLaunchPrompts = false
+    private var didPrepareTerminationSynchronously = false
+    private var didFinishTerminationPreparation = false
+    private var terminationPreparationStarted = false
+    private var terminationPreparationGeneration = 0
+    private var terminationCompletions: [@MainActor @Sendable () -> Void] = []
 
     init(
         modelContainer: ModelContainer,
@@ -93,13 +98,7 @@ final class AppSessionHost: ObservableObject {
         WhatsNewWindowManager.shared.showIfNeeded()
         Log.debug("[Lifecycle] WhatsNew window check completed", category: .ui)
 
-        if UpdateCheckPreferences.checkForUpdatesOnLaunch {
-            Task {
-                await UpdateWindowManager.shared.checkAndShowIfNeeded()
-            }
-        } else {
-            Log.debug("[UpdateWindowManager] Skipping launch update check by user preference", category: .ui)
-        }
+        UpdateCoordinator.shared.startAutomaticUpdatesIfNeeded()
     }
 
     private func setupDependencies() {
@@ -242,20 +241,29 @@ final class AppSessionHost: ObservableObject {
             uiState: uiState
         )
         AppDelegate.shared?.configureDockPlayback(playbackCoordinator: playbackCoordinator)
+        UpdateCoordinator.shared.terminationPreparationHandler = { [weak self] completion in
+            guard let self else {
+                completion()
+                return
+            }
+            self.prepareForTermination(reason: "update-relaunch", completion: completion)
+        }
+        UpdateCoordinator.shared.installationDidAbortHandler = { [weak self] in
+            self?.resetTerminationPreparationAfterAbortedUpdate()
+        }
+        AppDelegate.shouldCancelTerminationForPendingUpdateHandler = {
+            UpdateCoordinator.shared.isInstallReplyPending
+        }
+        AppDelegate.applicationShouldTerminateHandler = { [weak self] completion in
+            guard let self else {
+                completion()
+                return
+            }
+            self.prepareForTermination(reason: "normal-quit", completion: completion)
+        }
         AppDelegate.applicationWillTerminateHandler = { [weak self] in
-            TelemetryService.shared.endSession(reason: .appTerminated)
-            self?.savePlaybackMemory()
-            if let libraryVM = self?.libraryVM {
-                PreferenceStatsService.shared.saveAllPendingNow(
-                    trackProvider: { trackID in
-                        libraryVM.allTracks.first { $0.id == trackID }
-                    },
-                    synchronously: true
-                )
-            }
-            Task {
-                await QQMusicHelperProcess.shared.terminate()
-            }
+            UpdateCoordinator.shared.handleApplicationWillTerminate()
+            self?.prepareForTermination(reason: "app-termination")
         }
 
 
@@ -322,7 +330,70 @@ final class AppSessionHost: ObservableObject {
             playbackMemoryTimer?.invalidate()
             firstUsePrewarmTask?.cancel()
             AppDelegate.applicationWillTerminateHandler = nil
+            AppDelegate.shouldCancelTerminationForPendingUpdateHandler = nil
+            UpdateCoordinator.shared.terminationPreparationHandler = nil
+            UpdateCoordinator.shared.installationDidAbortHandler = nil
         }
+    }
+
+    private func prepareForTermination(
+        reason: String,
+        completion: (@MainActor @Sendable () -> Void)? = nil
+    ) {
+        if let completion {
+            if didFinishTerminationPreparation {
+                completion()
+                return
+            }
+            terminationCompletions.append(completion)
+        }
+
+        if !didPrepareTerminationSynchronously {
+            didPrepareTerminationSynchronously = true
+            Log.info("[Lifecycle] Preparing for termination reason=\(reason)", category: .ui)
+            TelemetryService.shared.endSession(reason: .appTerminated)
+            savePlaybackMemory()
+            if let libraryVM {
+                PreferenceStatsService.shared.saveAllPendingNow(
+                    trackProvider: { trackID in
+                        libraryVM.allTracks.first { $0.id == trackID }
+                    },
+                    synchronously: true
+                )
+            }
+        }
+
+        guard !terminationPreparationStarted else { return }
+        terminationPreparationStarted = true
+        terminationPreparationGeneration += 1
+        let generation = terminationPreparationGeneration
+
+        Task { [weak self] in
+            await QQMusicHelperProcess.shared.terminate()
+            self?.finishTerminationPreparation(generation: generation)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.finishTerminationPreparation(generation: generation)
+        }
+    }
+
+    private func finishTerminationPreparation(generation: Int) {
+        guard generation == terminationPreparationGeneration,
+              !didFinishTerminationPreparation else { return }
+        didFinishTerminationPreparation = true
+        let completions = terminationCompletions
+        terminationCompletions.removeAll()
+        completions.forEach { $0() }
+    }
+
+    private func resetTerminationPreparationAfterAbortedUpdate() {
+        terminationPreparationGeneration += 1
+        didPrepareTerminationSynchronously = false
+        didFinishTerminationPreparation = false
+        terminationPreparationStarted = false
+        terminationCompletions.removeAll()
+        Log.info("[Lifecycle] Reset termination preparation after aborted update", category: .ui)
     }
 
     private func scheduleFirstUsePrewarm(
