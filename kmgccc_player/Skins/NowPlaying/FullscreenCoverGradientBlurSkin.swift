@@ -145,11 +145,19 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         bokehSourceSets[0]
     }
 
+    /// Host-specific viewport fitting belongs to `FullscreenPlayerView`.
+    /// Both fullscreen hosts must keep this target change so hiding lyrics
+    /// continues to drive the existing movement and Bokeh transition state.
+    private static func shouldCenterArtwork(for context: SkinContext) -> Bool {
+        context.usesFullscreenPlayerLayout
+            && !context.lyricsVisible
+    }
+
     init(context: SkinContext, config: CoverGradientBlurConfig) {
         self.context = context
         self.config = config
 
-        let startsCentered = context.usesFullscreenPlayerLayout && !context.lyricsVisible
+        let startsCentered = Self.shouldCenterArtwork(for: context)
         self._transitionPosition = State(initialValue: startsCentered ? 1 : 0)
         self._centeredLayerOpacity = State(initialValue: startsCentered ? 1 : 0)
         self._settledCenteredLayerOpacity = State(initialValue: startsCentered ? 1 : 0)
@@ -160,7 +168,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let targetCentered = context.usesFullscreenPlayerLayout && !context.lyricsVisible
+            let targetCentered = Self.shouldCenterArtwork(for: context)
 
             ZStack {
                 staticBackground(size: geometry.size, placement: .leading)
@@ -328,7 +336,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                 bokehSourceSets = [nil, nil]
                 bokehOpticalOpacities = [0, 0]
             }
-            let targetCentered = context.usesFullscreenPlayerLayout && !context.lyricsVisible
+            let targetCentered = Self.shouldCenterArtwork(for: context)
             let targetPosition: CGFloat = targetCentered ? 1 : 0
             if abs(transitionPosition - targetPosition) > 0.001 {
                 print("[CoverBlur] artwork changed: no transition, starting one pos=\(transitionPosition)->\(targetPosition)")
@@ -528,6 +536,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             artworkChecksum: context.track?.artworkChecksum ?? 0,
             dominantColor: themeStore.semanticPalette.coverGradientDominant,
             config: config(for: placement),
+            extendsIntoSafeArea: false,
             readabilityPlacement: readabilityPlacement,
             onReadabilitySnapshot: acceptReadability,
             onRenderedFrame: acceptRenderedFrame
@@ -544,6 +553,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             artworkChecksum: context.track?.artworkChecksum ?? 0,
             dominantColor: themeStore.semanticPalette.coverGradientDominant,
             config: config(for: .centeredSymmetric),
+            extendsIntoSafeArea: false,
             readabilityPlacement: .transition,
             onReadabilitySnapshot: { snapshot in
                 acceptTransitionReadability(snapshot, viewportSize: size)

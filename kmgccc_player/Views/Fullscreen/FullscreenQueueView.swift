@@ -53,7 +53,7 @@ struct FullscreenQueueView: View {
     private var panelHeight: CGFloat { min(visibleHeight * 0.92, 660 * scale) }
 
     /// Corner radius - macOS 26 standard window corner radius (28pt at base scale)
-    /// Reference: UpdateWindowManager.swift uses 28pt for macOS 26 windows
+    /// Matches the large-radius floating window treatment used by app dialogs.
     private var cornerRadius: CGFloat { 28 * scale }
 
     /// Content padding inside panel - increased for more breathing room

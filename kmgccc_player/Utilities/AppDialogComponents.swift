@@ -15,7 +15,7 @@ import SwiftUI
 enum AppDialogTokens {
 
     // MARK: Card chrome
-    /// Large corner radius for the floating glass card. Matches UpdateWindowManager.
+    /// Large corner radius for floating glass dialog cards.
     static let windowCornerRadius: CGFloat = 28
 
     // MARK: Panel layout helpers
@@ -75,7 +75,7 @@ enum AppDialogTokens {
 
 extension AppDialogTokens {
     /// Creates a standard floating NSPanel styled as a large-radius glass card, matching
-    /// the update window (`UpdateWindowManager`): popover material, clear background,
+    /// the app's floating dialog windows: popover material, clear background,
     /// hidden traffic-light buttons, and a rounded, clipped visual-effect content view.
     /// The caller must add its hosting view to the returned effectView.
     @MainActor
