@@ -46,11 +46,30 @@
 		C0300000000000000000000A /* LibraryLocationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0300000000000000000001A /* LibraryLocationStore.swift */; };
 		C0300000000000000000000B /* LibrarySessionControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0300000000000000000001B /* LibrarySessionControllerTests.swift */; };
 		C0300000000000000000000C /* LibrarySessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0300000000000000000001C /* LibrarySessionController.swift */; };
+		C04000000000000000000001 /* TrackMediaLocatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000011 /* TrackMediaLocatorTests.swift */; };
+		C04000000000000000000002 /* AudioLocatorResolutionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000012 /* AudioLocatorResolutionTests.swift */; };
+		C04000000000000000000003 /* ReferencedFileIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000013 /* ReferencedFileIdentity.swift */; };
+		C04000000000000000000004 /* TrackMediaLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000014 /* TrackMediaLocator.swift */; };
+		C04000000000000000000005 /* TrackAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000015 /* TrackAvailability.swift */; };
+		C04000000000000000000006 /* AudioLocatorResolution.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000016 /* AudioLocatorResolution.swift */; };
+		C04000000000000000000007 /* TrackPreferenceStats.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000017 /* TrackPreferenceStats.swift */; };
+		C04000000000000000000008 /* LibrarySidecars.swift in Sources */ = {isa = PBXBuildFile; fileRef = C04000000000000000000018 /* LibrarySidecars.swift */; };
+		C05000000000000000000001 /* LocatorPersistenceIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C05000000000000000000011 /* LocatorPersistenceIntegrationTests.swift */; };
 		F01000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000001 /* AppDelegate.swift */; };
 		F01000000000000000000002 /* DockController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000002 /* DockController.swift */; };
 		F01000000000000000000003 /* PlaybackCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000003 /* PlaybackCommands.swift */; };
 		F01000000000000000000006 /* kmgccc_playerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000006 /* kmgccc_playerApp.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		C05000000000000000000020 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 9351188A2F3231C500766A5F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 935118912F3231C500766A5F;
+			remoteInfo = kmgccc_player;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		935118922F3231C500766A5F /* kmgccc_player.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = kmgccc_player.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -94,6 +113,15 @@
 		C0300000000000000000001A /* LibraryLocationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LibraryLocationStore.swift; path = kmgccc_player/Utilities/LibraryLocationStore.swift; sourceTree = "<group>"; };
 		C0300000000000000000001B /* LibrarySessionControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/LibrarySessionControllerTests.swift; sourceTree = "<group>"; };
 		C0300000000000000000001C /* LibrarySessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LibrarySessionController.swift; path = kmgccc_player/Services/LibrarySession/LibrarySessionController.swift; sourceTree = "<group>"; };
+		C04000000000000000000011 /* TrackMediaLocatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/TrackMediaLocatorTests.swift; sourceTree = "<group>"; };
+		C04000000000000000000012 /* AudioLocatorResolutionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/AudioLocatorResolutionTests.swift; sourceTree = "<group>"; };
+		C04000000000000000000013 /* ReferencedFileIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_player/Models/ReferencedFileIdentity.swift; sourceTree = "<group>"; };
+		C04000000000000000000014 /* TrackMediaLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_player/Models/TrackMediaLocator.swift; sourceTree = "<group>"; };
+		C04000000000000000000015 /* TrackAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_player/Models/TrackAvailability.swift; sourceTree = "<group>"; };
+		C04000000000000000000016 /* AudioLocatorResolution.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_player/Services/Audio/AudioLocatorResolution.swift; sourceTree = "<group>"; };
+		C04000000000000000000017 /* TrackPreferenceStats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_player/Models/TrackPreferenceStats.swift; sourceTree = "<group>"; };
+		C04000000000000000000018 /* LibrarySidecars.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_player/Services/Library/LibrarySidecars.swift; sourceTree = "<group>"; };
+		C05000000000000000000011 /* LocatorPersistenceIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/LocatorPersistenceIntegrationTests.swift; sourceTree = "<group>"; };
 		E01000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = kmgccc_player/AppDelegate.swift; sourceTree = "<group>"; };
 		E01000000000000000000002 /* DockController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DockController.swift; path = kmgccc_player/DockController.swift; sourceTree = "<group>"; };
 		E01000000000000000000003 /* PlaybackCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlaybackCommands.swift; path = kmgccc_player/PlaybackCommands.swift; sourceTree = "<group>"; };
@@ -281,6 +309,15 @@
 				C0300000000000000000001A /* LibraryLocationStore.swift */,
 				C0300000000000000000001B /* LibrarySessionControllerTests.swift */,
 				C0300000000000000000001C /* LibrarySessionController.swift */,
+				C04000000000000000000011 /* TrackMediaLocatorTests.swift */,
+				C04000000000000000000012 /* AudioLocatorResolutionTests.swift */,
+				C04000000000000000000013 /* ReferencedFileIdentity.swift */,
+				C04000000000000000000014 /* TrackMediaLocator.swift */,
+				C04000000000000000000015 /* TrackAvailability.swift */,
+				C04000000000000000000016 /* AudioLocatorResolution.swift */,
+				C04000000000000000000017 /* TrackPreferenceStats.swift */,
+				C04000000000000000000018 /* LibrarySidecars.swift */,
+				C05000000000000000000011 /* LocatorPersistenceIntegrationTests.swift */,
 			);
 			name = Tests;
 			sourceTree = "<group>";
@@ -336,6 +373,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				C05000000000000000000030 /* PBXTargetDependency */,
 			);
 			name = kmgccc_playerTests;
 			packageProductDependencies = (
@@ -573,10 +611,27 @@
 				C0300000000000000000000A /* LibraryLocationStore.swift in Sources */,
 				C0300000000000000000000B /* LibrarySessionControllerTests.swift in Sources */,
 				C0300000000000000000000C /* LibrarySessionController.swift in Sources */,
+				C04000000000000000000001 /* TrackMediaLocatorTests.swift in Sources */,
+				C04000000000000000000002 /* AudioLocatorResolutionTests.swift in Sources */,
+				C04000000000000000000003 /* ReferencedFileIdentity.swift in Sources */,
+				C04000000000000000000004 /* TrackMediaLocator.swift in Sources */,
+				C04000000000000000000005 /* TrackAvailability.swift in Sources */,
+				C04000000000000000000006 /* AudioLocatorResolution.swift in Sources */,
+				C04000000000000000000007 /* TrackPreferenceStats.swift in Sources */,
+				C04000000000000000000008 /* LibrarySidecars.swift in Sources */,
+				C05000000000000000000001 /* LocatorPersistenceIntegrationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		C05000000000000000000030 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 935118912F3231C500766A5F /* kmgccc_player */;
+			targetProxy = C05000000000000000000020 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		9351189B2F3231C700766A5F /* Debug */ = {
@@ -817,6 +872,7 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ARCHS = arm64;
+				BUNDLE_LOADER = "$(TEST_HOST)";
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				ENABLE_TESTABILITY = YES;
@@ -826,6 +882,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/kmgccc_player.app/Contents/MacOS/kmgccc_player";
 			};
 			name = Debug;
 		};
@@ -834,6 +891,7 @@
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ARCHS = arm64;
+				BUNDLE_LOADER = "$(TEST_HOST)";
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -842,6 +900,7 @@
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/kmgccc_player.app/Contents/MacOS/kmgccc_player";
 			};
 			name = Release;
 		};

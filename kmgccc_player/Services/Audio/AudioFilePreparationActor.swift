@@ -14,15 +14,15 @@ import Foundation
 /// Sendable value snapshot captured cheaply on MainActor from a `Track`.
 ///
 /// `Track` is a SwiftData `@Model`; its stored properties are context /
-/// MainActor-bound and cannot be read off-main. This snapshot mirrors exactly
-/// the fields `Track.resolveFileURL()` reads, so resolution can move off-main
-/// with no semantic change. Only this value (never the `Track`) crosses into
+/// MainActor-bound and cannot be read off-main. This snapshot carries the
+/// unified locator inputs needed by `LocalAudioResourceResolver`. Only this
+/// value (never the `Track`) crosses into
 /// `AudioFilePreparationActor`.
 struct AudioPrepRequest: Sendable {
     let trackID: UUID
-    let libraryRelativePath: String
-    let libraryRootSnapshot: String
-    let fileBookmarkData: Data
+    let locator: TrackMediaLocator
+    let libraryPaths: LibraryPaths
+    let authorizedSourceRoots: [UUID: AuthorizedSourceRoot]
     let titleForLog: String
 }
 
@@ -47,8 +47,8 @@ struct PreparedAudioResource: @unchecked Sendable {
     let trackID: UUID
     let file: AVAudioFile
     let resolvedURL: URL
-    let didStartSecurityScopedAccess: Bool
-    let refreshedBookmarkData: Data?
+    let lease: SecurityScopedResourceLease
+    let refreshedLocator: TrackMediaLocator?
     let newAvailability: TrackAvailability
     let sampleRate: Double
     let frameLength: AVAudioFramePosition
@@ -63,12 +63,25 @@ struct PreparedAudioResource: @unchecked Sendable {
 /// Prepares audio files off the MainActor. Each `prepare(_:)` call is an
 /// independent unit of work; a failure throws and never blocks other prepares.
 actor AudioFilePreparationActor {
+    private let bookmarkResolver: any BookmarkResolving
+    private let requiresSecurityScope: Bool
+
+    init(
+        bookmarkResolver: any BookmarkResolving = SystemBookmarkResolver(),
+        requiresSecurityScope: Bool = false
+    ) {
+        self.bookmarkResolver = bookmarkResolver
+        self.requiresSecurityScope = requiresSecurityScope
+    }
 
     enum PrepError: Error {
         /// File does not exist / bookmark empty / security scope refused.
         case missingFile
         /// Bookmark data could not be resolved to a URL.
         case bookmarkUnresolved
+        case permissionDenied
+        case volumeUnavailable
+        case notDownloaded
         /// The file resolved but AVAudioFile could not open it.
         case openFailed(underlying: Error)
         /// The prepare was cancelled (superseded by a newer play request).
@@ -96,9 +109,7 @@ actor AudioFilePreparationActor {
         // If cancelled after starting security-scoped access but before opening
         // the file, release the access so it does not leak.
         if Task.isCancelled {
-            if resolution.didStartSecurityScopedAccess {
-                resolution.url.stopAccessingSecurityScopedResource()
-            }
+            resolution.lease.release()
             throw PrepError.cancelled
         }
 
@@ -112,9 +123,7 @@ actor AudioFilePreparationActor {
             file = try AVAudioFile(forReading: resolution.url)
         } catch {
             FirstUseHitchDiagnostics.end(openToken)
-            if resolution.didStartSecurityScopedAccess {
-                resolution.url.stopAccessingSecurityScopedResource()
-            }
+            resolution.lease.release()
             throw PrepError.openFailed(underlying: error)
         }
         FirstUseHitchDiagnostics.end(openToken)
@@ -132,8 +141,8 @@ actor AudioFilePreparationActor {
             trackID: request.trackID,
             file: file,
             resolvedURL: resolution.url,
-            didStartSecurityScopedAccess: resolution.didStartSecurityScopedAccess,
-            refreshedBookmarkData: resolution.refreshedBookmarkData,
+            lease: resolution.lease,
+            refreshedLocator: resolution.refreshedLocator,
             newAvailability: resolution.newAvailability,
             sampleRate: sampleRate,
             frameLength: frameLength,
@@ -146,8 +155,8 @@ actor AudioFilePreparationActor {
 
     private struct Resolution {
         let url: URL
-        let didStartSecurityScopedAccess: Bool
-        let refreshedBookmarkData: Data?
+        let lease: SecurityScopedResourceLease
+        let refreshedLocator: TrackMediaLocator?
         let newAvailability: TrackAvailability
     }
 
@@ -158,64 +167,30 @@ actor AudioFilePreparationActor {
         )
         defer { FirstUseHitchDiagnostics.end(resolveToken) }
 
-        // Library-relative path takes priority (no security scope needed).
-        if !request.libraryRelativePath.isEmpty {
-            guard !request.libraryRootSnapshot.isEmpty,
-                  let localURL = LibraryPaths(
-                    rootURL: URL(
-                        fileURLWithPath: request.libraryRootSnapshot,
-                        isDirectory: true
-                    )
-                  ).libraryURL(from: request.libraryRelativePath)
-            else {
-                throw PrepError.missingFile
-            }
-            if FileManager.default.fileExists(atPath: localURL.path) {
-                return Resolution(
-                    url: localURL,
-                    didStartSecurityScopedAccess: false,
-                    refreshedBookmarkData: nil,
-                    newAvailability: .available
-                )
-            }
-            throw PrepError.missingFile
-        }
-
-        guard !request.fileBookmarkData.isEmpty else {
-            throw PrepError.missingFile
-        }
-
-        var isStale = false
-        let url: URL
-        do {
-            url = try URL(
-                resolvingBookmarkData: request.fileBookmarkData,
-                options: .withSecurityScope,
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            )
-        } catch {
-            throw PrepError.bookmarkUnresolved
-        }
-
-        guard url.startAccessingSecurityScopedResource() else {
-            throw PrepError.missingFile
-        }
-
-        var refreshedData: Data? = nil
-        if isStale {
-            refreshedData = try? url.bookmarkData(
-                options: .withSecurityScope,
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
-            )
-        }
-
-        return Resolution(
-            url: url,
-            didStartSecurityScopedAccess: true,
-            refreshedBookmarkData: refreshedData,
-            newAvailability: isStale ? .stale : .available
+        let resolver = LocalAudioResourceResolver(
+            paths: request.libraryPaths,
+            authorizedSourceRoots: request.authorizedSourceRoots,
+            bookmarkResolver: bookmarkResolver,
+            requiresSecurityScope: requiresSecurityScope
         )
+        do {
+            let result = try resolver.resolve(request.locator)
+            return Resolution(
+                url: result.url,
+                lease: result.lease,
+                refreshedLocator: result.refreshedLocator,
+                newAvailability: result.availability
+            )
+        } catch LocalAudioResolutionError.bookmarkUnresolved {
+            throw PrepError.bookmarkUnresolved
+        } catch LocalAudioResolutionError.permissionDenied {
+            throw PrepError.permissionDenied
+        } catch LocalAudioResolutionError.volumeUnavailable {
+            throw PrepError.volumeUnavailable
+        } catch LocalAudioResolutionError.notDownloaded {
+            throw PrepError.notDownloaded
+        } catch {
+            throw PrepError.missingFile
+        }
     }
 }

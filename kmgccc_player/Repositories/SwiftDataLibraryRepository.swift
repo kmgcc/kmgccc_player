@@ -166,6 +166,27 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     // MARK: - Track Operations
 
+    func persistResolvedAudioLocator(
+        trackID: UUID,
+        locator: TrackMediaLocator,
+        availability: TrackAvailability
+    ) {
+        guard let track = allTracks.first(where: { $0.id == trackID }) else { return }
+        guard libraryService.writeMetaOnly(
+            for: track,
+            reason: "bookmarkRefresh",
+            locatorOverride: locator,
+            availabilityOverride: availability
+        ) else {
+            Log.error("Failed to persist refreshed locator for track id=\(trackID)", category: .library)
+            return
+        }
+        track.mediaLocator = locator
+        track.availability = availability
+        rebuildTrackIndexCache()
+        changeHandler?(.trackUpdated(trackID))
+    }
+
     func fetchTracks(in playlist: Playlist?) async -> [Track] {
         if let playlist { return playlist.tracks }
         return allTracks
@@ -809,8 +830,16 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     private func buildTrack(from meta: ScannedTrackMeta) -> Track {
-        let audioURL = paths.libraryURL(from: meta.libraryRelativePath)
-        let isAvailable = audioURL.map { fileManager.fileExists(atPath: $0.path) } ?? false
+        let availability: TrackAvailability
+        switch meta.mediaLocator {
+        case let .managed(relativePath):
+            let audioURL = paths.libraryURL(from: relativePath)
+            availability = audioURL.map { fileManager.fileExists(atPath: $0.path) } == true
+                ? meta.availability
+                : .missing
+        case .referenced:
+            availability = meta.availability
+        }
         let persistedStats = meta.preferenceStats
             ?? meta.playCount.map { TrackPreferenceStats.fromLegacy(playCount: max($0, 0)) }
             ?? TrackPreferenceStats()
@@ -836,10 +865,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             addedAt: meta.addedAt,
             importedAt: meta.importedAt,
             lyricsTimeOffsetMs: meta.lyricsTimeOffsetMs,
-            fileBookmarkData: Data(),
+            fileBookmarkData: meta.mediaLocator.referencedFile?.fileBookmarkData ?? Data(),
             originalFilePath: meta.originalFilePath,
             libraryRelativePath: meta.libraryRelativePath,
-            availability: isAvailable ? .available : .missing,
+            mediaLocator: meta.mediaLocator,
+            availability: availability,
             artworkData: nil,
             ttmlLyricText: nil,
             lyricsText: nil
@@ -1555,7 +1585,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         for track in allTracks {
             let entry = TrackIndexEntry(
                 id: track.id,
-                libraryRelativePath: track.libraryRelativePath,
+                libraryRelativePath: track.mediaLocator.managedLibraryRelativePath ?? "",
+                locatorKind: track.mediaLocator.storageKind,
                 normalizedTitle: LibraryNormalization.normalizeTitle(track.title),
                 normalizedArtist: LibraryNormalization.normalizeArtist(track.artist),
                 duration: track.duration,
@@ -1589,7 +1620,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
                 let entry = TrackIndexEntry(
                     id: track.id,
-                    libraryRelativePath: track.libraryRelativePath,
+                    libraryRelativePath: track.mediaLocator.managedLibraryRelativePath ?? "",
+                    locatorKind: track.mediaLocator.storageKind,
                     normalizedTitle: LibraryNormalization.normalizeTitle(track.title),
                     normalizedArtist: LibraryNormalization.normalizeArtist(track.artist),
                     duration: track.duration,

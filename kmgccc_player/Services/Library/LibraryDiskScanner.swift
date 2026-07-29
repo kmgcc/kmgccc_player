@@ -18,7 +18,7 @@ nonisolated struct LibraryDiskSnapshot: Sendable {
 nonisolated struct LibraryDiskScanner: Sendable {
     private let paths: LibraryPaths
     private static let manifestFileName = ".kmgccc-library-manifest.json"
-    private static let manifestSchemaVersion = 1
+    private static let manifestSchemaVersion = 2
 
     init(paths: LibraryPaths = LocalLibraryPaths.capturedPaths()) {
         self.paths = paths
@@ -524,6 +524,8 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
     let importedAt: Date
     let lyricsTimeOffsetMs: Double
     let originalFilePath: String
+    let mediaLocator: TrackMediaLocator
+    let availability: TrackAvailability
     let audioFileName: String
     let artworkFileName: String?
     let lyricsFileName: String?
@@ -553,6 +555,8 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         case importedAt
         case lyricsTimeOffsetMs
         case originalFilePath
+        case mediaLocator
+        case availability
         case audioFileName
         case artworkFileName
         case lyricsFileName
@@ -583,6 +587,8 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         importedAt = meta.importedAt
         lyricsTimeOffsetMs = meta.lyricsTimeOffsetMs
         originalFilePath = meta.originalFilePath
+        mediaLocator = meta.mediaLocator
+        availability = meta.availability
         audioFileName = meta.audioFileName
         artworkFileName = meta.artworkFileName
         lyricsFileName = meta.lyricsFileName
@@ -614,6 +620,8 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         importedAt = try c.decode(Date.self, forKey: .importedAt)
         lyricsTimeOffsetMs = try c.decode(Double.self, forKey: .lyricsTimeOffsetMs)
         originalFilePath = try c.decode(String.self, forKey: .originalFilePath)
+        mediaLocator = try c.decode(TrackMediaLocator.self, forKey: .mediaLocator)
+        availability = try c.decode(TrackAvailability.self, forKey: .availability)
         audioFileName = try c.decode(String.self, forKey: .audioFileName)
         artworkFileName = try c.decodeIfPresent(String.self, forKey: .artworkFileName)
         lyricsFileName = try c.decodeIfPresent(String.self, forKey: .lyricsFileName)
@@ -646,6 +654,8 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
             importedAt: importedAt,
             lyricsTimeOffsetMs: lyricsTimeOffsetMs,
             originalFilePath: originalFilePath,
+            mediaLocator: mediaLocator,
+            availability: availability,
             audioFileName: audioFileName,
             artworkFileName: artworkFileName,
             lyricsFileName: lyricsFileName,

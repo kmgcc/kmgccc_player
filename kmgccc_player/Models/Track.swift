@@ -10,13 +10,7 @@ import AppKit
 import Foundation
 import SwiftData
 
-/// Track availability status based on bookmark resolution.
-/// Using String raw values for SwiftData compatibility.
-enum TrackAvailability: String, Codable {
-    case available = "available"
-    case stale = "stale"  // Bookmark outdated but file still exists
-    case missing = "missing"  // File cannot be located
-}
+// TrackAvailability lives in its own value-type model for resolver reuse.
 
 @Model
 final class Track {
@@ -59,8 +53,37 @@ final class Track {
     /// Empty means the track still relies on a legacy bookmark.
     var libraryRelativePath: String = ""
 
-    /// Availability status (updated on bookmark resolution).
-    /// Stored as String for SwiftData compatibility.
+    /// Stable encoded locator snapshot. Legacy path/bookmark fields remain as compatibility projections.
+    var mediaLocatorData: Data = Data()
+
+    var mediaLocator: TrackMediaLocator {
+        get {
+            if let decoded = try? JSONDecoder().decode(TrackMediaLocator.self, from: mediaLocatorData) {
+                return decoded
+            }
+            if !libraryRelativePath.isEmpty {
+                return .managed(libraryRelativePath: libraryRelativePath)
+            }
+            return .referenced(ReferencedFileLocator(
+                fileBookmarkData: fileBookmarkData,
+                lastKnownPath: originalFilePath
+            ))
+        }
+        set {
+            mediaLocatorData = (try? JSONEncoder().encode(newValue)) ?? Data()
+            switch newValue {
+            case let .managed(path):
+                libraryRelativePath = path
+                fileBookmarkData = Data()
+            case let .referenced(locator):
+                libraryRelativePath = ""
+                fileBookmarkData = locator.fileBookmarkData
+                originalFilePath = locator.lastKnownPath
+            }
+        }
+    }
+
+    /// Availability status (updated on locator resolution).
     private var availabilityRaw: String
 
     var availability: TrackAvailability {
@@ -132,6 +155,7 @@ final class Track {
         fileBookmarkData: Data,
         originalFilePath: String = "",
         libraryRelativePath: String = "",
+        mediaLocator: TrackMediaLocator? = nil,
         availability: TrackAvailability = .available,
         artworkData: Data? = nil,
         ttmlLyricText: String? = nil,
@@ -165,7 +189,17 @@ final class Track {
         self.fileBookmarkData = fileBookmarkData
         self.originalFilePath = originalFilePath
         self.libraryRelativePath = libraryRelativePath
+        self.mediaLocatorData = Data()
         self.availabilityRaw = availability.rawValue
+        self.mediaLocator = mediaLocator ?? {
+            if !libraryRelativePath.isEmpty {
+                return .managed(libraryRelativePath: libraryRelativePath)
+            }
+            return .referenced(ReferencedFileLocator(
+                fileBookmarkData: fileBookmarkData,
+                lastKnownPath: originalFilePath
+            ))
+        }()
         self.artworkData = artworkData
         self.ttmlLyricText = ttmlLyricText
         self.lyricsText = lyricsText
@@ -182,86 +216,47 @@ final class Track {
     /// Resolve result with optional refreshed bookmark data.
     struct ResolveResult {
         let url: URL?
-        let refreshedBookmarkData: Data?
+        let refreshedLocator: TrackMediaLocator?
+        let lease: SecurityScopedResourceLease
         let newAvailability: TrackAvailability
+
+        var refreshedBookmarkData: Data? {
+            refreshedLocator?.referencedFile?.fileBookmarkData
+        }
     }
 
-    /// Resolve the security-scoped bookmark to get a usable file URL.
-    /// - Returns: ResolveResult containing URL (if accessible), refreshed bookmark (if stale), and new availability status.
+    /// Compatibility wrapper. LocalAudioResourceResolver is the only resolution implementation.
     func resolveFileURL() -> ResolveResult {
-        if !libraryRelativePath.isEmpty {
-            guard let paths = capturedLibraryPaths,
-                  let localURL = paths.libraryURL(from: libraryRelativePath)
-            else {
-                return ResolveResult(url: nil, refreshedBookmarkData: nil, newAvailability: .missing)
-            }
-            if FileManager.default.fileExists(atPath: localURL.path) {
-                return ResolveResult(
-                    url: localURL, refreshedBookmarkData: nil, newAvailability: .available)
-            }
-            return ResolveResult(url: nil, refreshedBookmarkData: nil, newAvailability: .missing)
+        guard let paths = capturedLibraryPaths else {
+            return ResolveResult(url: nil, refreshedLocator: nil, lease: .none, newAvailability: .missing)
         }
-
-        if fileBookmarkData.isEmpty {
-            return ResolveResult(url: nil, refreshedBookmarkData: nil, newAvailability: .missing)
-        }
-
-        var isStale = false
-
         do {
-            let url = try URL(
-                resolvingBookmarkData: fileBookmarkData,
-                options: .withSecurityScope,
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            )
-
-            // Start accessing the security-scoped resource
-            guard url.startAccessingSecurityScopedResource() else {
-                Log.error("Failed to access security-scoped resource: \(title)", category: .file)
-                return ResolveResult(
-                    url: nil, refreshedBookmarkData: nil, newAvailability: .missing)
-            }
-
-            // If stale, try to refresh the bookmark
-            var refreshedData: Data? = nil
-            if isStale {
-                Log.warning("Track bookmark is stale, refreshing: \(title)", category: .file)
-                do {
-                    refreshedData = try url.bookmarkData(
-                        options: .withSecurityScope,
-                        includingResourceValuesForKeys: nil,
-                        relativeTo: nil
-                    )
-                } catch {
-                    Log.warning("Failed to refresh bookmark: \(error)", category: .file)
-                    // File is accessible but bookmark couldn't be refreshed
-                }
-            }
-
+            let result = try LocalAudioResourceResolver(paths: paths).resolve(mediaLocator)
             return ResolveResult(
-                url: url,
-                refreshedBookmarkData: refreshedData,
-                newAvailability: isStale ? .stale : .available
+                url: result.url,
+                refreshedLocator: result.refreshedLocator,
+                lease: result.lease,
+                newAvailability: result.availability
             )
-
+        } catch let error as LocalAudioResolutionError {
+            let availability: TrackAvailability
+            switch error {
+            case .permissionDenied: availability = .permissionDenied
+            case .volumeUnavailable: availability = .volumeUnavailable
+            case .notDownloaded: availability = .notDownloaded
+            default: availability = .missing
+            }
+            return ResolveResult(url: nil, refreshedLocator: nil, lease: .none, newAvailability: availability)
         } catch {
-            Log.error("Failed to resolve bookmark for track \(title): \(error)", category: .file)
-            return ResolveResult(url: nil, refreshedBookmarkData: nil, newAvailability: .missing)
+            return ResolveResult(url: nil, refreshedLocator: nil, lease: .none, newAvailability: .missing)
         }
-    }
-
-    /// Stop accessing the security-scoped resource.
-    /// Call this when done using the file URL.
-    func stopAccessingFile(url: URL) {
-        url.stopAccessingSecurityScopedResource()
     }
 
     // MARK: - Computed Properties
 
     /// Whether the track is currently playable.
     var isPlayable: Bool {
-        availability != .missing
+        availability.isPlayable
     }
 
     /// Drop heavyweight in-memory payloads once a track is removed from the library.

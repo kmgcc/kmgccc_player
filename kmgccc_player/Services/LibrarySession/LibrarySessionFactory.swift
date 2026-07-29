@@ -83,6 +83,13 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             libraryService: libraryService
         )
         let playbackService = AVAudioPlaybackService(smartController: smartPlaybackController)
+        playbackService.onAudioLocatorResolved = { [weak repository] trackID, locator, availability in
+            repository?.persistResolvedAudioLocator(
+                trackID: trackID,
+                locator: locator,
+                availability: availability
+            )
+        }
         let ledMeterProvider = LEDMeterServiceProvider(
             config: LEDMeterConfig(
                 ledCount: AppSettings.shared.ledCount,

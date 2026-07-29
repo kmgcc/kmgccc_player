@@ -7,6 +7,223 @@
 
 import Foundation
 
+nonisolated struct TrackSidecar: Codable, Sendable {
+    static let currentSchemaVersion = 7
+
+    let schemaVersion: Int
+    let id: UUID
+    let title: String
+    let artist: String
+    let album: String
+    let albumArtist: String?
+    let description: String?
+    let genreTags: [String]
+    let language: String?
+    let labelOrCompany: String?
+    let releaseDate: Date?
+    let qqMusicSongMid: String?
+    let metadataSource: String?
+    let metadataFetchedAt: Date?
+    let metadataConfidence: Double?
+    let duration: Double
+    let addedAt: Date
+    let importedAt: Date?
+    let lyricsTimeOffsetMs: Double?
+    let originalFilePath: String?
+    let audioFileName: String?
+    let artworkFileName: String?
+    let lyricsFileName: String?
+    let lyricsType: String?
+    let ttmlLyricsFileName: String?
+    let ncmSourcePath: String?
+    let ncmSourceIdentity: ReferencedFileIdentity?
+    let playCount: Int?
+    let preferenceStats: TrackPreferenceStats?
+    let mediaLocator: TrackMediaLocator
+    let availability: TrackAvailability
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion, id, title, artist, album, albumArtist, description, genreTags
+        case language, labelOrCompany, releaseDate, qqMusicSongMid, metadataSource
+        case metadataFetchedAt, metadataConfidence, duration, addedAt, importedAt
+        case lyricsTimeOffsetMs, originalFilePath, audioFileName, artworkFileName
+        case lyricsFileName, lyricsType, ttmlLyricsFileName, ncmSourcePath
+        case ncmSourceIdentity, playCount, preferenceStats, mediaLocator, availability
+    }
+
+    init(
+        schemaVersion: Int = currentSchemaVersion,
+        id: UUID,
+        title: String,
+        artist: String,
+        album: String,
+        albumArtist: String? = nil,
+        description: String? = nil,
+        genreTags: [String] = [],
+        language: String? = nil,
+        labelOrCompany: String? = nil,
+        releaseDate: Date? = nil,
+        qqMusicSongMid: String? = nil,
+        metadataSource: String? = nil,
+        metadataFetchedAt: Date? = nil,
+        metadataConfidence: Double? = nil,
+        duration: Double,
+        addedAt: Date,
+        importedAt: Date?,
+        lyricsTimeOffsetMs: Double?,
+        originalFilePath: String?,
+        audioFileName: String?,
+        artworkFileName: String?,
+        lyricsFileName: String?,
+        lyricsType: String?,
+        ttmlLyricsFileName: String?,
+        ncmSourcePath: String?,
+        ncmSourceIdentity: ReferencedFileIdentity? = nil,
+        playCount: Int? = 0,
+        preferenceStats: TrackPreferenceStats? = nil,
+        mediaLocator: TrackMediaLocator? = nil,
+        availability: TrackAvailability = .available
+    ) {
+        self.schemaVersion = schemaVersion
+        self.id = id
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.albumArtist = albumArtist
+        self.description = description
+        self.genreTags = genreTags
+        self.language = language
+        self.labelOrCompany = labelOrCompany
+        self.releaseDate = releaseDate
+        self.qqMusicSongMid = qqMusicSongMid
+        self.metadataSource = metadataSource
+        self.metadataFetchedAt = metadataFetchedAt
+        self.metadataConfidence = metadataConfidence
+        self.duration = duration
+        self.addedAt = addedAt
+        self.importedAt = importedAt
+        self.lyricsTimeOffsetMs = lyricsTimeOffsetMs
+        self.originalFilePath = originalFilePath
+        self.audioFileName = audioFileName
+        self.artworkFileName = artworkFileName
+        self.lyricsFileName = lyricsFileName
+        self.lyricsType = lyricsType
+        self.ttmlLyricsFileName = ttmlLyricsFileName
+        self.ncmSourcePath = ncmSourcePath
+        self.ncmSourceIdentity = ncmSourceIdentity
+        self.playCount = playCount
+        self.preferenceStats = preferenceStats
+        self.mediaLocator = mediaLocator ?? .managed(
+            libraryRelativePath: "Tracks/\(id.uuidString)/\(audioFileName ?? "audio")"
+        )
+        self.availability = availability
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        guard (1...Self.currentSchemaVersion).contains(schemaVersion) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion,
+                in: c,
+                debugDescription: "Unsupported track sidecar schema \(schemaVersion)"
+            )
+        }
+        id = try c.decode(UUID.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        artist = try c.decode(String.self, forKey: .artist)
+        album = try c.decode(String.self, forKey: .album)
+        albumArtist = try c.decodeIfPresent(String.self, forKey: .albumArtist)
+        description = try c.decodeIfPresent(String.self, forKey: .description)
+        if let tags = try? c.decode([String].self, forKey: .genreTags) {
+            genreTags = tags
+        } else if let tags = try? c.decode(String.self, forKey: .genreTags) {
+            genreTags = tags.split(separator: ",").map {
+                String($0).trimmingCharacters(in: .whitespacesAndNewlines)
+            }.filter { !$0.isEmpty }
+        } else {
+            genreTags = []
+        }
+        language = try c.decodeIfPresent(String.self, forKey: .language)
+        labelOrCompany = try c.decodeIfPresent(String.self, forKey: .labelOrCompany)
+        releaseDate = try c.decodeIfPresent(Date.self, forKey: .releaseDate)
+        qqMusicSongMid = try c.decodeIfPresent(String.self, forKey: .qqMusicSongMid)
+        metadataSource = try c.decodeIfPresent(String.self, forKey: .metadataSource)
+        metadataFetchedAt = try c.decodeIfPresent(Date.self, forKey: .metadataFetchedAt)
+        metadataConfidence = try c.decodeIfPresent(Double.self, forKey: .metadataConfidence)
+        duration = try c.decode(Double.self, forKey: .duration)
+        addedAt = try c.decode(Date.self, forKey: .addedAt)
+        importedAt = try c.decodeIfPresent(Date.self, forKey: .importedAt)
+        lyricsTimeOffsetMs = try c.decodeIfPresent(Double.self, forKey: .lyricsTimeOffsetMs)
+        originalFilePath = try c.decodeIfPresent(String.self, forKey: .originalFilePath)
+        audioFileName = try c.decodeIfPresent(String.self, forKey: .audioFileName)
+        artworkFileName = try c.decodeIfPresent(String.self, forKey: .artworkFileName)
+        lyricsFileName = try c.decodeIfPresent(String.self, forKey: .lyricsFileName)
+        lyricsType = try c.decodeIfPresent(String.self, forKey: .lyricsType)
+        ttmlLyricsFileName = try c.decodeIfPresent(String.self, forKey: .ttmlLyricsFileName)
+        ncmSourcePath = try c.decodeIfPresent(String.self, forKey: .ncmSourcePath)
+        ncmSourceIdentity = try c.decodeIfPresent(ReferencedFileIdentity.self, forKey: .ncmSourceIdentity)
+        playCount = try c.decodeIfPresent(Int.self, forKey: .playCount) ?? 0
+        if let stats = try c.decodeIfPresent(TrackPreferenceStats.self, forKey: .preferenceStats) {
+            preferenceStats = stats
+        } else if schemaVersion < 3, let playCount, playCount > 0 {
+            preferenceStats = TrackPreferenceStats.fromLegacy(playCount: playCount)
+        } else {
+            preferenceStats = nil
+        }
+        if schemaVersion >= Self.currentSchemaVersion {
+            mediaLocator = try c.decode(TrackMediaLocator.self, forKey: .mediaLocator)
+            availability = try c.decodeIfPresent(TrackAvailability.self, forKey: .availability) ?? .available
+        } else {
+            guard let audioFileName, !audioFileName.isEmpty else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .audioFileName,
+                    in: c,
+                    debugDescription: "Legacy managed sidecar has no audio file name"
+                )
+            }
+            mediaLocator = .managed(
+                libraryRelativePath: "Tracks/\(id.uuidString)/\(audioFileName)"
+            )
+            availability = .available
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
+        try c.encode(id, forKey: .id)
+        try c.encode(title, forKey: .title)
+        try c.encode(artist, forKey: .artist)
+        try c.encode(album, forKey: .album)
+        try c.encodeIfPresent(albumArtist, forKey: .albumArtist)
+        try c.encodeIfPresent(description, forKey: .description)
+        if !genreTags.isEmpty { try c.encode(genreTags, forKey: .genreTags) }
+        try c.encodeIfPresent(language, forKey: .language)
+        try c.encodeIfPresent(labelOrCompany, forKey: .labelOrCompany)
+        try c.encodeIfPresent(releaseDate, forKey: .releaseDate)
+        try c.encodeIfPresent(qqMusicSongMid, forKey: .qqMusicSongMid)
+        try c.encodeIfPresent(metadataSource, forKey: .metadataSource)
+        try c.encodeIfPresent(metadataFetchedAt, forKey: .metadataFetchedAt)
+        try c.encodeIfPresent(metadataConfidence, forKey: .metadataConfidence)
+        try c.encode(duration, forKey: .duration)
+        try c.encode(addedAt, forKey: .addedAt)
+        try c.encodeIfPresent(importedAt, forKey: .importedAt)
+        try c.encodeIfPresent(lyricsTimeOffsetMs, forKey: .lyricsTimeOffsetMs)
+        try c.encodeIfPresent(originalFilePath, forKey: .originalFilePath)
+        try c.encodeIfPresent(audioFileName, forKey: .audioFileName)
+        try c.encodeIfPresent(artworkFileName, forKey: .artworkFileName)
+        try c.encodeIfPresent(lyricsFileName, forKey: .lyricsFileName)
+        try c.encodeIfPresent(lyricsType, forKey: .lyricsType)
+        try c.encodeIfPresent(ttmlLyricsFileName, forKey: .ttmlLyricsFileName)
+        try c.encodeIfPresent(ncmSourcePath, forKey: .ncmSourcePath)
+        try c.encodeIfPresent(ncmSourceIdentity, forKey: .ncmSourceIdentity)
+        try c.encodeIfPresent(preferenceStats, forKey: .preferenceStats)
+        try c.encode(mediaLocator, forKey: .mediaLocator)
+        try c.encode(availability, forKey: .availability)
+    }
+}
+
 nonisolated struct PlaylistSidecar: Codable, Sendable {
     let schemaVersion: Int
     let id: UUID

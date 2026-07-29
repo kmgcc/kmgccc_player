@@ -2,7 +2,7 @@
 //  MusicLibraryScanner.swift
 //  myPlayer2
 //
-//  Scan authoritative Music Library sidecars with tolerant parsing.
+//  Scan authoritative Music Library sidecars with the shared tolerant model.
 //
 
 import Foundation
@@ -28,18 +28,18 @@ nonisolated struct ScannedTrackMeta: Sendable {
     let importedAt: Date
     let lyricsTimeOffsetMs: Double
     let originalFilePath: String
+    let mediaLocator: TrackMediaLocator
+    let availability: TrackAvailability
     let audioFileName: String
     let artworkFileName: String?
     let lyricsFileName: String?
     let ttmlLyricsFileName: String?
-    /// DEPRECATED: Use preferenceStats instead. Kept for migration only.
     let playCount: Int?
-    /// Modern preference statistics (schemaVersion >= 3)
     let preferenceStats: TrackPreferenceStats?
     let folderURL: URL
 
     var libraryRelativePath: String {
-        "Tracks/\(id.uuidString)/\(audioFileName)"
+        mediaLocator.managedLibraryRelativePath ?? ""
     }
 }
 
@@ -51,29 +51,19 @@ nonisolated struct MusicLibraryScanner: Sendable {
     }
 
     func scanTracks() -> [ScannedTrackMeta] {
-        let fileManager = FileManager()
-        let dirs =
-            (try? fileManager.contentsOfDirectory(
-                at: paths.tracksRootURL,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            )) ?? []
-
-        var metas: [ScannedTrackMeta] = []
-        for dir in dirs where dir.hasDirectoryPath {
-            autoreleasepool {
-                guard let meta = parseTrackMeta(in: dir) else { return }
-                metas.append(meta)
-            }
+        let dirs = (try? FileManager.default.contentsOfDirectory(
+            at: paths.tracksRootURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return dirs.filter(\.hasDirectoryPath).compactMap { folder in
+            autoreleasepool { parseTrackMeta(in: folder) }
         }
-        return metas
     }
 
     func scanTracks(ids: [UUID]) -> [ScannedTrackMeta] {
         ids.compactMap { id in
-            autoreleasepool {
-                parseTrackMeta(in: paths.trackFolderURL(for: id))
-            }
+            autoreleasepool { parseTrackMeta(in: paths.trackFolderURL(for: id)) }
         }
     }
 
@@ -84,226 +74,69 @@ nonisolated struct MusicLibraryScanner: Sendable {
     private func parseTrackMeta(in folderURL: URL) -> ScannedTrackMeta? {
         let metaURL = folderURL.appendingPathComponent("meta.json")
         guard let data = try? Data(contentsOf: metaURL) else { return nil }
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let sidecar = try? decoder.decode(TrackSidecar.self, from: data) else { return nil }
+
+        let audioFileName: String
+        switch sidecar.mediaLocator {
+        case let .managed(relativePath):
+            audioFileName = sidecar.audioFileName?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? URL(fileURLWithPath: relativePath).lastPathComponent
+            guard !audioFileName.isEmpty else { return nil }
+        case .referenced:
+            audioFileName = sidecar.audioFileName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         }
-
-        let schemaVersion = (json["schemaVersion"] as? Int) ?? 1
-        guard let idString = json["id"] as? String, let id = UUID(uuidString: idString) else {
-            return nil
-        }
-
-        let title = LibraryNormalization.displayTitle(json["title"] as? String)
-        let artist = LibraryNormalization.displayArtist(json["artist"] as? String)
-        let album = LibraryNormalization.displayAlbum(json["album"] as? String)
-        let albumArtist = (json["albumArtist"] as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let description = ((json["description"] as? String) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let genreTags = parseStringArray(json["genreTags"])
-        let language = ((json["language"] as? String) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let labelOrCompany = ((json["labelOrCompany"] as? String) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let releaseDate = parseDate(json["releaseDate"])
-        let qqMusicSongMid = (json["qqMusicSongMid"] as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let metadataSource = (json["metadataSource"] as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let metadataFetchedAt = parseDate(json["metadataFetchedAt"])
-        let metadataConfidence = parseDouble(json["metadataConfidence"])
-        let duration = parseDouble(json["duration"]) ?? 0
-
-        let now = Date()
-        let addedAt = parseDate(json["addedAt"]) ?? parseDate(json["importedAt"]) ?? now
-        let importedAt = parseDate(json["importedAt"]) ?? addedAt
-        let lyricsTimeOffsetMs = parseDouble(json["lyricsTimeOffsetMs"]) ?? 0
-        let originalFilePath = (json["originalFilePath"] as? String) ?? ""
-
-        let audioFileName = (json["audioFileName"] as? String)?.trimmingCharacters(
-            in: .whitespacesAndNewlines)
-        let foundAudioFileName: String? = {
-            if let audioFileName, !audioFileName.isEmpty { return audioFileName }
-            return findAudioFileName(in: folderURL)
-        }()
-
-        guard let unwrappedAudioFileName = foundAudioFileName, !unwrappedAudioFileName.isEmpty
-        else {
-            return nil
-        }
-
-        let declaredArtworkFileName = (json["artworkFileName"] as? String)?.trimmingCharacters(
-            in: .whitespacesAndNewlines)
-        let artworkFileName = resolveArtworkFileName(
-            in: folderURL,
-            preferredFileName: declaredArtworkFileName
-        )
-        let lyricsFileName = (json["lyricsFileName"] as? String)?.trimmingCharacters(
-            in: .whitespacesAndNewlines)
-
-        let ttmlLyricsFileName = (json["ttmlLyricsFileName"] as? String)?.trimmingCharacters(
-            in: .whitespacesAndNewlines)
-
-        // Parse legacy playCount (schemaVersion < 3)
-        let playCount: Int? = {
-            guard let playCountValue = json["playCount"] else { return nil }
-            return parseInt(playCountValue) ?? 0
-        }()
-
-        // Parse preferenceStats (schemaVersion >= 3) with tolerant field handling.
-        let preferenceStats = parsePreferenceStats(json["preferenceStats"])
 
         return ScannedTrackMeta(
-            schemaVersion: schemaVersion,
-            id: id,
-            title: title,
-            artist: artist,
-            album: album,
-            albumArtist: albumArtist?.isEmpty == true ? nil : albumArtist,
-            description: description,
-            genreTags: genreTags,
-            language: language,
-            labelOrCompany: labelOrCompany,
-            releaseDate: releaseDate,
-            qqMusicSongMid: (qqMusicSongMid?.isEmpty ?? true) ? nil : qqMusicSongMid,
-            metadataSource: (metadataSource?.isEmpty ?? true) ? nil : metadataSource,
-            metadataFetchedAt: metadataFetchedAt,
-            metadataConfidence: metadataConfidence,
-            duration: duration,
-            addedAt: addedAt,
-            importedAt: importedAt,
-            lyricsTimeOffsetMs: lyricsTimeOffsetMs,
-            originalFilePath: originalFilePath,
-            audioFileName: unwrappedAudioFileName,
-            artworkFileName: (artworkFileName?.isEmpty ?? true) ? nil : artworkFileName,
-            lyricsFileName: (lyricsFileName?.isEmpty ?? true) ? nil : lyricsFileName,
-            ttmlLyricsFileName: (ttmlLyricsFileName?.isEmpty ?? true) ? nil : ttmlLyricsFileName,
-            playCount: playCount,  // DEPRECATED: For migration only
-            preferenceStats: preferenceStats,
+            schemaVersion: sidecar.schemaVersion,
+            id: sidecar.id,
+            title: LibraryNormalization.displayTitle(sidecar.title),
+            artist: LibraryNormalization.displayArtist(sidecar.artist),
+            album: LibraryNormalization.displayAlbum(sidecar.album),
+            albumArtist: normalizedOptional(sidecar.albumArtist),
+            description: sidecar.description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            genreTags: sidecar.genreTags.map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            }.filter { !$0.isEmpty },
+            language: sidecar.language?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            labelOrCompany: sidecar.labelOrCompany?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+            releaseDate: sidecar.releaseDate,
+            qqMusicSongMid: normalizedOptional(sidecar.qqMusicSongMid),
+            metadataSource: normalizedOptional(sidecar.metadataSource),
+            metadataFetchedAt: sidecar.metadataFetchedAt,
+            metadataConfidence: sidecar.metadataConfidence,
+            duration: sidecar.duration,
+            addedAt: sidecar.addedAt,
+            importedAt: sidecar.importedAt ?? sidecar.addedAt,
+            lyricsTimeOffsetMs: sidecar.lyricsTimeOffsetMs ?? 0,
+            originalFilePath: sidecar.originalFilePath ?? sidecar.mediaLocator.referencedFile?.lastKnownPath ?? "",
+            mediaLocator: sidecar.mediaLocator,
+            availability: sidecar.availability,
+            audioFileName: audioFileName,
+            artworkFileName: resolveArtworkFileName(
+                in: folderURL,
+                preferredFileName: sidecar.artworkFileName
+            ),
+            lyricsFileName: normalizedOptional(sidecar.lyricsFileName),
+            ttmlLyricsFileName: normalizedOptional(sidecar.ttmlLyricsFileName),
+            playCount: sidecar.playCount,
+            preferenceStats: sidecar.preferenceStats,
             folderURL: folderURL
         )
     }
 
-    private func parseDouble(_ raw: Any?) -> Double? {
-        switch raw {
-        case let value as Double:
-            return value.isFinite ? value : nil
-        case let value as Int:
-            return Double(value)
-        case let value as NSNumber:
-            let doubleValue = value.doubleValue
-            return doubleValue.isFinite ? doubleValue : nil
-        case let value as String:
-            guard let parsed = Double(value), parsed.isFinite else { return nil }
-            return parsed
-        default:
-            return nil
-        }
-    }
-
-    private func parseInt(_ raw: Any?) -> Int? {
-        switch raw {
-        case let value as Int:
-            return value
-        case let value as NSNumber:
-            return value.intValue
-        case let value as Double:
-            guard value.isFinite else { return nil }
-            return Int(value.rounded(.towardZero))
-        case let value as String:
-            if let parsed = Int(value) {
-                return parsed
-            }
-            guard let parsedDouble = Double(value), parsedDouble.isFinite else { return nil }
-            return Int(parsedDouble.rounded(.towardZero))
-        default:
-            return nil
-        }
-    }
-
-    private func parseDate(_ raw: Any?) -> Date? {
-        guard let value = raw as? String, !value.isEmpty else { return nil }
-        let iso8601WithFractional = ISO8601DateFormatter()
-        iso8601WithFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let iso8601 = ISO8601DateFormatter()
-        return iso8601WithFractional.date(from: value) ?? iso8601.date(from: value)
-    }
-
-    private func parseStringArray(_ raw: Any?) -> [String] {
-        if let values = raw as? [String] {
-            return values
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-        }
-        if let value = raw as? String {
-            return value
-                .split(separator: ",")
-                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-        }
-        return []
-    }
-
-    private func parsePreferenceStats(_ raw: Any?) -> TrackPreferenceStats? {
-        guard let statsDict = raw as? [String: Any] else { return nil }
-
-        var stats = TrackPreferenceStats()
-        stats.playCount = max(0, parseInt(statsDict["playCount"]) ?? 0)
-        stats.completePlayCount = max(0, parseInt(statsDict["completePlayCount"]) ?? 0)
-        stats.skipCount = max(0, parseInt(statsDict["skipCount"]) ?? 0)
-        stats.quickSkipCount = max(0, parseInt(statsDict["quickSkipCount"]) ?? 0)
-        stats.totalPlayedSeconds = max(0, parseDouble(statsDict["totalPlayedSeconds"]) ?? 0)
-        stats.lastPlayedAt = parseDate(statsDict["lastPlayedAt"])
-        stats.lastCompletedAt = parseDate(statsDict["lastCompletedAt"])
-        stats.lastSkippedAt = parseDate(statsDict["lastSkippedAt"])
-
-        if let manualStateRaw = statsDict["manualLikeState"] as? String,
-           let manualState = ManualLikeState(rawValue: manualStateRaw) {
-            stats.manualLikeState = manualState
-        }
-
-        let parsedPreferenceScore = parseDouble(statsDict["preferenceScoreCache"]) ?? 0
-        stats.preferenceScoreCache = parsedPreferenceScore.isFinite ? parsedPreferenceScore : 0
-
-        let parsedEffectiveWeight = parseDouble(statsDict["effectiveWeightCache"]) ?? 1.0
-        stats.effectiveWeightCache = parsedEffectiveWeight.isFinite ? parsedEffectiveWeight : 1.0
-
-        return stats
-    }
-
-    private func findAudioFileName(in folder: URL) -> String? {
-        let fileManager = FileManager()
-        let files =
-            (try? fileManager.contentsOfDirectory(
-                at: folder,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            )) ?? []
-
-        if let audio = files.first(where: { $0.lastPathComponent.lowercased().hasPrefix("audio.") })
-        {
-            return audio.lastPathComponent
-        }
-
-        let supported = Set(Constants.FileTypes.supportedAudioExtensions)
-        if let audio = files.first(where: { supported.contains($0.pathExtension.lowercased()) }) {
-            return audio.lastPathComponent
-        }
-        return nil
+    private func normalizedOptional(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed?.isEmpty ?? true) ? nil : trimmed
     }
 
     private func resolveArtworkFileName(in folder: URL, preferredFileName: String?) -> String? {
-        let fileManager = FileManager()
         for fileName in paths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
-            let artworkURL = folder.appendingPathComponent(fileName)
-            if fileManager.fileExists(atPath: artworkURL.path) {
+            if FileManager.default.fileExists(atPath: folder.appendingPathComponent(fileName).path) {
                 return fileName
             }
         }
-
-        if let preferredFileName, !preferredFileName.isEmpty {
-            return preferredFileName
-        }
-        return nil
+        return normalizedOptional(preferredFileName)
     }
 }

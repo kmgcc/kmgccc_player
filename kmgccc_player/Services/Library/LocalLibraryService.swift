@@ -12,219 +12,6 @@ import Dispatch
 import Foundation
 import ImageIO
 
-nonisolated struct TrackSidecar: Codable {
-    let schemaVersion: Int
-    let id: UUID
-    let title: String
-    let artist: String
-    let album: String
-    let albumArtist: String?
-    let description: String?
-    let genreTags: [String]
-    let language: String?
-    let labelOrCompany: String?
-    let releaseDate: Date?
-    let qqMusicSongMid: String?
-    let metadataSource: String?
-    let metadataFetchedAt: Date?
-    let metadataConfidence: Double?
-    let duration: Double
-    let addedAt: Date
-    let importedAt: Date?
-    let lyricsTimeOffsetMs: Double?
-    let originalFilePath: String?
-    let audioFileName: String?
-    let artworkFileName: String?
-    let lyricsFileName: String?
-    let lyricsType: String?
-    let ttmlLyricsFileName: String?
-    let ncmSourcePath: String?
-    let playCount: Int?
-    /// Extended preference statistics (schemaVersion >= 3)
-    let preferenceStats: TrackPreferenceStats?
-
-    enum CodingKeys: String, CodingKey {
-        case schemaVersion
-        case id
-        case title
-        case artist
-        case album
-        case albumArtist
-        case description
-        case genreTags
-        case language
-        case labelOrCompany
-        case releaseDate
-        case qqMusicSongMid
-        case metadataSource
-        case metadataFetchedAt
-        case metadataConfidence
-        case duration
-        case addedAt
-        case importedAt
-        case lyricsTimeOffsetMs
-        case originalFilePath
-        case audioFileName
-        case artworkFileName
-        case lyricsFileName
-        case lyricsType
-        case ttmlLyricsFileName
-        case ncmSourcePath
-        case playCount
-        case preferenceStats
-    }
-
-    init(
-        schemaVersion: Int = 6,
-        id: UUID,
-        title: String,
-        artist: String,
-        album: String,
-        albumArtist: String? = nil,
-        description: String? = nil,
-        genreTags: [String] = [],
-        language: String? = nil,
-        labelOrCompany: String? = nil,
-        releaseDate: Date? = nil,
-        qqMusicSongMid: String? = nil,
-        metadataSource: String? = nil,
-        metadataFetchedAt: Date? = nil,
-        metadataConfidence: Double? = nil,
-        duration: Double,
-        addedAt: Date,
-        importedAt: Date?,
-        lyricsTimeOffsetMs: Double?,
-        originalFilePath: String?,
-        audioFileName: String?,
-        artworkFileName: String?,
-        lyricsFileName: String?,
-        lyricsType: String?,
-        ttmlLyricsFileName: String?,
-        ncmSourcePath: String?,
-        playCount: Int? = 0,
-        preferenceStats: TrackPreferenceStats? = nil
-    ) {
-        self.schemaVersion = schemaVersion
-        self.id = id
-        self.title = title
-        self.artist = artist
-        self.album = album
-        self.albumArtist = albumArtist
-        self.description = description
-        self.genreTags = genreTags
-        self.language = language
-        self.labelOrCompany = labelOrCompany
-        self.releaseDate = releaseDate
-        self.qqMusicSongMid = qqMusicSongMid
-        self.metadataSource = metadataSource
-        self.metadataFetchedAt = metadataFetchedAt
-        self.metadataConfidence = metadataConfidence
-        self.duration = duration
-        self.addedAt = addedAt
-        self.importedAt = importedAt
-        self.lyricsTimeOffsetMs = lyricsTimeOffsetMs
-        self.originalFilePath = originalFilePath
-        self.audioFileName = audioFileName
-        self.artworkFileName = artworkFileName
-        self.lyricsFileName = lyricsFileName
-        self.lyricsType = lyricsType
-        self.ttmlLyricsFileName = ttmlLyricsFileName
-        self.ncmSourcePath = ncmSourcePath
-        self.playCount = playCount
-        self.preferenceStats = preferenceStats
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-
-        // schemaVersion defaults to 1 for backward compatibility
-        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
-
-        id = try container.decode(UUID.self, forKey: .id)
-        title = try container.decode(String.self, forKey: .title)
-        artist = try container.decode(String.self, forKey: .artist)
-        album = try container.decode(String.self, forKey: .album)
-        albumArtist = try container.decodeIfPresent(String.self, forKey: .albumArtist)
-        description = try container.decodeIfPresent(String.self, forKey: .description)
-        if let decodedTags = try? container.decode([String].self, forKey: .genreTags) {
-            genreTags = decodedTags
-        } else if let decodedTags = try? container.decode(String.self, forKey: .genreTags) {
-            genreTags = decodedTags
-                .split(separator: ",")
-                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-        } else {
-            genreTags = []
-        }
-        language = try container.decodeIfPresent(String.self, forKey: .language)
-        labelOrCompany = try container.decodeIfPresent(String.self, forKey: .labelOrCompany)
-        releaseDate = try container.decodeIfPresent(Date.self, forKey: .releaseDate)
-        qqMusicSongMid = try container.decodeIfPresent(String.self, forKey: .qqMusicSongMid)
-        metadataSource = try container.decodeIfPresent(String.self, forKey: .metadataSource)
-        metadataFetchedAt = try container.decodeIfPresent(Date.self, forKey: .metadataFetchedAt)
-        metadataConfidence = try container.decodeIfPresent(Double.self, forKey: .metadataConfidence)
-        duration = try container.decode(Double.self, forKey: .duration)
-        addedAt = try container.decode(Date.self, forKey: .addedAt)
-        importedAt = try container.decodeIfPresent(Date.self, forKey: .importedAt)
-        lyricsTimeOffsetMs = try container.decodeIfPresent(Double.self, forKey: .lyricsTimeOffsetMs)
-        originalFilePath = try container.decodeIfPresent(String.self, forKey: .originalFilePath)
-        audioFileName = try container.decodeIfPresent(String.self, forKey: .audioFileName)
-        artworkFileName = try container.decodeIfPresent(String.self, forKey: .artworkFileName)
-        lyricsFileName = try container.decodeIfPresent(String.self, forKey: .lyricsFileName)
-        lyricsType = try container.decodeIfPresent(String.self, forKey: .lyricsType)
-        ttmlLyricsFileName = try container.decodeIfPresent(String.self, forKey: .ttmlLyricsFileName)
-        ncmSourcePath = try container.decodeIfPresent(String.self, forKey: .ncmSourcePath)
-        // playCount defaults to 0 for backward compatibility (schemaVersion 1 doesn't have this field)
-        playCount = try container.decodeIfPresent(Int.self, forKey: .playCount) ?? 0
-
-        // preferenceStats: migrate from legacy playCount if not present
-        if let stats = try container.decodeIfPresent(TrackPreferenceStats.self, forKey: .preferenceStats) {
-            preferenceStats = stats
-        } else if schemaVersion < 3, let legacyPlayCount = playCount, legacyPlayCount > 0 {
-            // Migration: create preferenceStats from legacy playCount
-            preferenceStats = TrackPreferenceStats.fromLegacy(playCount: legacyPlayCount)
-        } else {
-            preferenceStats = nil
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(6, forKey: .schemaVersion)
-        try container.encode(id, forKey: .id)
-        try container.encode(title, forKey: .title)
-        try container.encode(artist, forKey: .artist)
-        try container.encode(album, forKey: .album)
-        try container.encodeIfPresent(albumArtist, forKey: .albumArtist)
-        try container.encodeIfPresent(description, forKey: .description)
-        if !genreTags.isEmpty {
-            try container.encode(genreTags, forKey: .genreTags)
-        }
-        try container.encodeIfPresent(language, forKey: .language)
-        try container.encodeIfPresent(labelOrCompany, forKey: .labelOrCompany)
-        try container.encodeIfPresent(releaseDate, forKey: .releaseDate)
-        try container.encodeIfPresent(qqMusicSongMid, forKey: .qqMusicSongMid)
-        try container.encodeIfPresent(metadataSource, forKey: .metadataSource)
-        try container.encodeIfPresent(metadataFetchedAt, forKey: .metadataFetchedAt)
-        try container.encodeIfPresent(metadataConfidence, forKey: .metadataConfidence)
-        try container.encode(duration, forKey: .duration)
-        try container.encode(addedAt, forKey: .addedAt)
-        try container.encodeIfPresent(importedAt, forKey: .importedAt)
-        try container.encodeIfPresent(lyricsTimeOffsetMs, forKey: .lyricsTimeOffsetMs)
-        try container.encodeIfPresent(originalFilePath, forKey: .originalFilePath)
-        try container.encodeIfPresent(audioFileName, forKey: .audioFileName)
-        try container.encodeIfPresent(artworkFileName, forKey: .artworkFileName)
-        try container.encodeIfPresent(lyricsFileName, forKey: .lyricsFileName)
-        try container.encodeIfPresent(lyricsType, forKey: .lyricsType)
-        try container.encodeIfPresent(ttmlLyricsFileName, forKey: .ttmlLyricsFileName)
-        try container.encodeIfPresent(ncmSourcePath, forKey: .ncmSourcePath)
-        // NOTE: playCount is deprecated - all stats now live in preferenceStats
-        // We intentionally do NOT write playCount to avoid double-counting
-        // The field is kept in CodingKeys only for backward compatibility during decoding
-        try container.encodeIfPresent(preferenceStats, forKey: .preferenceStats)
-    }
-}
-
 nonisolated struct TrackPersistenceReferences: Sendable {
     let artworkFileName: String?
     let lyricsFileName: String?
@@ -271,7 +58,8 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
     let importedAt: Date?
     let lyricsTimeOffsetMs: Double
     let originalFilePath: String
-    let libraryRelativePath: String
+    let mediaLocator: TrackMediaLocator
+    let availability: TrackAvailability
     let artworkData: Data?
     let ttmlLyricText: String?
     let lyricsText: String?
@@ -298,7 +86,8 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
         importedAt = track.importedAt
         lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
         originalFilePath = track.originalFilePath
-        libraryRelativePath = track.libraryRelativePath
+        mediaLocator = track.mediaLocator
+        availability = track.availability
         artworkData = track.artworkData
         ttmlLyricText = track.ttmlLyricText
         lyricsText = track.lyricsText
@@ -426,7 +215,7 @@ final class LocalLibraryService {
     /// Ordinary business updates must use `writeMetaOnly` / `writeTrackMetaAnd...`.
     @discardableResult
     func writeImportedTrackSidecar(for track: Track, reason: String = "importFullTrack") -> Bool {
-        guard !track.libraryRelativePath.isEmpty else { return false }
+        guard Self.isPersistable(track.mediaLocator) else { return false }
 
         do {
             let references = loadTrackPersistenceReferences(for: track.id)
@@ -462,13 +251,24 @@ final class LocalLibraryService {
     }
 
     @discardableResult
-    func writeMetaOnly(for track: Track, reason: String) -> Bool {
-        guard !track.libraryRelativePath.isEmpty else { return false }
+    func writeMetaOnly(
+        for track: Track,
+        reason: String,
+        locatorOverride: TrackMediaLocator? = nil,
+        availabilityOverride: TrackAvailability? = nil
+    ) -> Bool {
+        let locator = locatorOverride ?? track.mediaLocator
+        guard Self.isPersistable(locator) else { return false }
 
         do {
             let references = loadTrackPersistenceReferences(for: track.id)
             logTrackPersistence(track: track, reason: reason, action: "meta-only", artwork: "not-requested")
-            try writeTrackMeta(for: track, references: references)
+            try writeTrackMeta(
+                for: track,
+                references: references,
+                locator: locator,
+                availability: availabilityOverride ?? track.availability
+            )
             return true
         } catch {
             Log.error("Failed to write meta only for \(track.title): \(error)", category: .library)
@@ -477,7 +277,7 @@ final class LocalLibraryService {
     }
 
     func writeMetaOnlyInBackground(for track: Track, reason: String) {
-        guard !track.libraryRelativePath.isEmpty else { return }
+        guard Self.isPersistable(track.mediaLocator) else { return }
 
         let snapshot = TrackPersistenceSnapshot(
             track: track,
@@ -500,7 +300,7 @@ final class LocalLibraryService {
 
     @discardableResult
     func writeTrackMetaAndLyrics(for track: Track, reason: String) -> Bool {
-        guard !track.libraryRelativePath.isEmpty else { return false }
+        guard Self.isPersistable(track.mediaLocator) else { return false }
 
         do {
             let references = loadTrackPersistenceReferences(for: track.id)
@@ -517,7 +317,7 @@ final class LocalLibraryService {
 
     @discardableResult
     func writeTrackMetaAndArtwork(for track: Track, reason: String) -> Bool {
-        guard !track.libraryRelativePath.isEmpty else { return false }
+        guard Self.isPersistable(track.mediaLocator) else { return false }
 
         do {
             let references = loadTrackPersistenceReferences(for: track.id)
@@ -542,7 +342,7 @@ final class LocalLibraryService {
 
     @discardableResult
     func writeTrackMetaLyricsAndArtwork(for track: Track, reason: String) -> Bool {
-        guard !track.libraryRelativePath.isEmpty else { return false }
+        guard Self.isPersistable(track.mediaLocator) else { return false }
 
         do {
             let references = loadTrackPersistenceReferences(for: track.id)
@@ -573,7 +373,7 @@ final class LocalLibraryService {
         mode: TrackPersistenceAssetMode,
         reason: String
     ) -> TrackPersistenceWriteResult {
-        guard !snapshot.libraryRelativePath.isEmpty else {
+        guard isPersistable(snapshot.mediaLocator) else {
             return TrackPersistenceWriteResult(trackID: snapshot.id, references: nil, succeeded: false)
         }
 
@@ -665,6 +465,15 @@ final class LocalLibraryService {
         }
     }
 
+    private nonisolated static func isPersistable(_ locator: TrackMediaLocator) -> Bool {
+        switch locator {
+        case let .managed(path):
+            return TrackMediaLocator.isSafeRelativePath(path)
+        case let .referenced(locator):
+            return !locator.fileBookmarkData.isEmpty || !locator.sourceMemberships.isEmpty
+        }
+    }
+
     private func ensureTrackFolder(for trackID: UUID) throws -> URL {
         ensureLibraryFolders()
         let trackFolder = paths.trackFolderURL(for: trackID)
@@ -746,12 +555,20 @@ final class LocalLibraryService {
         )
     }
 
-    private func writeTrackMeta(for track: Track, references: TrackPersistenceReferences) throws {
+    private func writeTrackMeta(
+        for track: Track,
+        references: TrackPersistenceReferences,
+        locator: TrackMediaLocator? = nil,
+        availability: TrackAvailability? = nil
+    ) throws {
         _ = try ensureTrackFolder(for: track.id)
-        let audioFileName = URL(fileURLWithPath: track.libraryRelativePath).lastPathComponent
+        let effectiveLocator = locator ?? track.mediaLocator
+        let audioFileName = effectiveLocator.managedLibraryRelativePath.map {
+            URL(fileURLWithPath: $0).lastPathComponent
+        }
         let preferenceStats = preferenceStatsService.getStats(for: track.id)
         let sidecar = TrackSidecar(
-            schemaVersion: 6,
+            schemaVersion: TrackSidecar.currentSchemaVersion,
             id: track.id,
             title: track.title,
             artist: track.artist,
@@ -783,13 +600,16 @@ final class LocalLibraryService {
             importedAt: track.importedAt ?? track.addedAt,
             lyricsTimeOffsetMs: track.lyricsTimeOffsetMs,
             originalFilePath: track.originalFilePath.isEmpty ? nil : track.originalFilePath,
-            audioFileName: audioFileName.isEmpty ? nil : audioFileName,
+            audioFileName: audioFileName,
             artworkFileName: references.artworkFileName,
             lyricsFileName: references.lyricsFileName,
             lyricsType: references.lyricsType,
             ttmlLyricsFileName: references.ttmlLyricsFileName,
             ncmSourcePath: nil,
-            preferenceStats: preferenceStats
+            ncmSourceIdentity: effectiveLocator.referencedFile?.ncmSourceIdentity,
+            preferenceStats: preferenceStats,
+            mediaLocator: effectiveLocator,
+            availability: availability ?? track.availability
         )
 
         let data = try encoder.encode(sidecar)
@@ -803,9 +623,11 @@ final class LocalLibraryService {
         references: TrackPersistenceReferences
     ) throws {
         _ = try ensureTrackFolderOnBackground(for: snapshot.id, paths: paths)
-        let audioFileName = URL(fileURLWithPath: snapshot.libraryRelativePath).lastPathComponent
+        let audioFileName = snapshot.mediaLocator.managedLibraryRelativePath.map {
+            URL(fileURLWithPath: $0).lastPathComponent
+        }
         let sidecar = TrackSidecar(
-            schemaVersion: 6,
+            schemaVersion: TrackSidecar.currentSchemaVersion,
             id: snapshot.id,
             title: snapshot.title,
             artist: snapshot.artist,
@@ -837,13 +659,16 @@ final class LocalLibraryService {
             importedAt: snapshot.importedAt ?? snapshot.addedAt,
             lyricsTimeOffsetMs: snapshot.lyricsTimeOffsetMs,
             originalFilePath: snapshot.originalFilePath.isEmpty ? nil : snapshot.originalFilePath,
-            audioFileName: audioFileName.isEmpty ? nil : audioFileName,
+            audioFileName: audioFileName,
             artworkFileName: references.artworkFileName,
             lyricsFileName: references.lyricsFileName,
             lyricsType: references.lyricsType,
             ttmlLyricsFileName: references.ttmlLyricsFileName,
             ncmSourcePath: nil,
-            preferenceStats: snapshot.preferenceStats
+            ncmSourceIdentity: snapshot.mediaLocator.referencedFile?.ncmSourceIdentity,
+            preferenceStats: snapshot.preferenceStats,
+            mediaLocator: snapshot.mediaLocator,
+            availability: snapshot.availability
         )
 
         let data = try makeJSONEncoder().encode(sidecar)
@@ -1974,8 +1799,8 @@ final class LocalLibraryService {
         // 1. Refresh Tracks Availability
         let tracks = await repository.fetchTracks(in: nil)
         for track in tracks {
-            guard !track.libraryRelativePath.isEmpty else { continue }
-            guard let url = paths.libraryURL(from: track.libraryRelativePath) else { continue }
+            guard case let .managed(libraryRelativePath) = track.mediaLocator else { continue }
+            guard let url = paths.libraryURL(from: libraryRelativePath) else { continue }
             let exists = fileManager.fileExists(atPath: url.path)
 
             let newAvailability: TrackAvailability = exists ? .available : .missing
@@ -2088,18 +1913,23 @@ final class LocalLibraryService {
 
     func migrateLegacyTracksIfNeeded(repository: LibraryRepositoryProtocol) async {
         let tracks = await repository.fetchTracks(in: nil)
-        for track in tracks
-        where track.libraryRelativePath.isEmpty && !track.fileBookmarkData.isEmpty {
+        for track in tracks {
+            guard case let .referenced(locator) = track.mediaLocator,
+                  locator.sourceMemberships.isEmpty,
+                  !locator.fileBookmarkData.isEmpty
+            else { continue }
+
             let result = track.resolveFileURL()
             guard let sourceURL = result.url else {
-                track.availability = .missing
+                track.availability = result.newAvailability
                 await repository.persistTrackMetaOnly(track, reason: "legacyMigration")
                 continue
             }
+            defer { result.lease.release() }
 
             do {
                 let relativePath = try importAudioFile(from: sourceURL, trackId: track.id)
-                track.libraryRelativePath = relativePath
+                track.mediaLocator = .managed(libraryRelativePath: relativePath)
                 if track.originalFilePath.isEmpty {
                     track.originalFilePath = sourceURL.path
                 }
@@ -2108,8 +1938,6 @@ final class LocalLibraryService {
             } catch {
                 Log.error("Failed to migrate track \(track.title): \(error)", category: .library)
             }
-
-            track.stopAccessingFile(url: sourceURL)
         }
     }
 
