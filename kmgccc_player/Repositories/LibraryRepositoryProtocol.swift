@@ -98,6 +98,14 @@ protocol LibraryRepositoryProtocol: AnyObject {
     /// Merge authoritative source memberships into an existing referenced locator.
     func mergeReferencedLocator(_ locator: ReferencedFileLocator, into track: Track) async throws
 
+    /// Persist all reconcile authority sidecars without exposing runtime changes.
+    func commitReferencedSourceMutations(
+        _ mutations: [ReferencedSourceLocatorMutation]
+    ) async -> LibraryTrackPersistenceResult
+
+    /// Attach mutations whose authority sidecars have already committed.
+    func attachReferencedSourceMutations(_ mutations: [ReferencedSourceLocatorMutation]) async
+
     /// Check if a track with the same title and artist already exists.
     func trackExists(title: String, artist: String) async -> Bool
 

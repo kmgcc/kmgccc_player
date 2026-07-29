@@ -12,13 +12,18 @@ nonisolated enum LibrarySessionFactoryError: Error, Equatable {
 final class LibrarySessionFactory: LibrarySessionBuilding {
     private let sourceBookmarkResolver: any BookmarkResolving
     private let requiresSecurityScope: Bool
+    private let fileEventSourceFactory: @MainActor () -> any LibraryFileEventSource
 
     init(
         sourceBookmarkResolver: any BookmarkResolving = SystemBookmarkResolver(),
-        requiresSecurityScope: Bool = false
+        requiresSecurityScope: Bool = false,
+        fileEventSourceFactory: @escaping @MainActor () -> any LibraryFileEventSource = {
+            FSEventsLibraryFileEventSource()
+        }
     ) {
         self.sourceBookmarkResolver = sourceBookmarkResolver
         self.requiresSecurityScope = requiresSecurityScope
+        self.fileEventSourceFactory = fileEventSourceFactory
     }
 
     func makeSession(for context: LibraryContext) async throws -> any LibrarySessionLifecycle {
@@ -121,6 +126,31 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
             amllDBService: cacheServices.amllDBService
         )
+        let referencedSourceReconciler: ReferencedSourceReconciler?
+        let libraryChangeMonitor: LibraryChangeMonitor?
+        if let sourceStore, let sourceScope {
+            let ncmReservationFilter = NCMScanReservationFilter(
+                registry: NCMConversionRegistry(paths: context.paths)
+            )
+            let scanner = ReferencedSourceScanner(paths: context.paths, isReserved: { url, identity in
+                await ncmReservationFilter.isReserved(url: url, identity: identity)
+            })
+            referencedSourceReconciler = ReferencedSourceReconciler(
+                context: context,
+                repository: repository,
+                importer: fileImportService,
+                sourceStore: sourceStore,
+                sourceScope: sourceScope,
+                scanner: scanner,
+                bookmarkResolver: sourceBookmarkResolver,
+                requiresSecurityScope: requiresSecurityScope
+            )
+            libraryChangeMonitor = LibraryChangeMonitor(eventSource: fileEventSourceFactory())
+        } else {
+            referencedSourceReconciler = nil
+            libraryChangeMonitor = nil
+        }
+
         let libraryViewModel = LibraryViewModel(
             repository: repository,
             libraryService: libraryService,
@@ -231,6 +261,8 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             storageBackend: storageBackend,
             referencedSourceStore: sourceStore,
             referencedSourceScope: sourceScope,
+            referencedSourceReconciler: referencedSourceReconciler,
+            libraryChangeMonitor: libraryChangeMonitor,
             playbackService: playbackService,
             playerViewModel: playerViewModel,
             playbackCoordinator: playbackCoordinator,

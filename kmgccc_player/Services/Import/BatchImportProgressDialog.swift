@@ -187,9 +187,10 @@ final class BatchImportProgressDialogController: NSObject, NSWindowDelegate {
     private var isClosed = false
     private var allowsClose = false
 
-    init(onCancelRequested: @escaping () -> Void = {}) {
+    init(presentsWindow: Bool = true, onCancelRequested: @escaping () -> Void = {}) {
         self.onCancelRequested = onCancelRequested
         super.init()
+        guard presentsWindow else { return }
 
         let windowSize = NSSize(width: 600, height: 560)
         let panel = NSPanel(

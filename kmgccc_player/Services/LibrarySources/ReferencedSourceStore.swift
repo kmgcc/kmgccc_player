@@ -39,6 +39,10 @@ actor ReferencedSourceStore {
         }.sorted { $0.createdAt < $1.createdAt }
     }
 
+    func contains(id: UUID) -> Bool {
+        fileManager.fileExists(atPath: paths.sourceDescriptorURL(for: id).path)
+    }
+
     func load(id: UUID) throws -> ReferencedSourceDescriptor {
         let data = try Data(contentsOf: paths.sourceDescriptorURL(for: id))
         if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {

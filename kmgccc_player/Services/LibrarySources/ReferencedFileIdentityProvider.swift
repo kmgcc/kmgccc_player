@@ -62,8 +62,8 @@ nonisolated struct ReferencedPhysicalIdentityKey: Hashable, Sendable {
 
     init(_ fingerprint: ReferencedFileFingerprint) {
         if let identity = fingerprint.identity,
-           identity.volumeUUID != nil,
-           identity.resourceIdentifierArchive != nil {
+           identity.volumeUUID?.isEmpty == false,
+           identity.resourceIdentifierArchive?.isEmpty == false {
             storage = .stable(identity)
         } else {
             storage = .fingerprint(

@@ -48,7 +48,7 @@ final class RepositoryImportCommitTests: XCTestCase {
         let track = makeTrack(title: "Existing", root: fixture.paths.rootURL, locator: original)
         let repository = fixture.makeRepository(
             importWriter: { _, _ in true },
-            locatorWriter: { _, _, _ in false }
+            locatorWriter: { _, _, _, _ in false }
         )
         _ = await repository.commitImportedTracks([track])
         let playlist = await repository.createPlaylist(name: "Playlist")
@@ -103,7 +103,7 @@ private struct RepositoryFixture {
 
     func makeRepository(
         importWriter: @escaping (Track, String) -> Bool,
-        locatorWriter: @escaping (Track, TrackMediaLocator, String) -> Bool = { _, _, _ in true }
+        locatorWriter: @escaping (Track, TrackMediaLocator, TrackAvailability, String) -> Bool = { _, _, _, _ in true }
     ) -> SwiftDataLibraryRepository {
         SwiftDataLibraryRepository(
             libraryService: libraryService,

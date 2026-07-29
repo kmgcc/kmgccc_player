@@ -80,7 +80,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private let artworkDerivativeStore: ArtworkDerivativeCacheStore
     private let playlistArtworkPipeline: PlaylistArtworkPipeline
     private let importSidecarWriter: (Track, String) -> Bool
-    private let locatorSidecarWriter: (Track, TrackMediaLocator, String) -> Bool
+    private let locatorSidecarWriter: (Track, TrackMediaLocator, TrackAvailability, String) -> Bool
 
     init(
         modelContext: ModelContext? = nil,
@@ -90,7 +90,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         artworkDerivativeStore: ArtworkDerivativeCacheStore = .shared,
         playlistArtworkPipeline: PlaylistArtworkPipeline = .shared,
         importSidecarWriter: ((Track, String) -> Bool)? = nil,
-        locatorSidecarWriter: ((Track, TrackMediaLocator, String) -> Bool)? = nil
+        locatorSidecarWriter: ((Track, TrackMediaLocator, TrackAvailability, String) -> Bool)? = nil
     ) {
         self.indexContext = modelContext
         self.libraryService = libraryService
@@ -101,8 +101,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         self.importSidecarWriter = importSidecarWriter ?? { track, reason in
             libraryService.writeImportedTrackSidecar(for: track, reason: reason)
         }
-        self.locatorSidecarWriter = locatorSidecarWriter ?? { track, locator, reason in
-            libraryService.writeMetaOnly(for: track, reason: reason, locatorOverride: locator)
+        self.locatorSidecarWriter = locatorSidecarWriter ?? { track, locator, availability, reason in
+            libraryService.writeMetaOnly(
+                for: track,
+                reason: reason,
+                locatorOverride: locator,
+                availabilityOverride: availability
+            )
         }
         self.paths = libraryService.paths
     }
@@ -460,13 +465,57 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         merged.lastKnownPath = incoming.lastKnownPath
         merged.fingerprint = incoming.fingerprint
         let mergedLocator = TrackMediaLocator.referenced(merged)
-        guard locatorSidecarWriter(track, mergedLocator, "referencedMembershipMerge") else {
+        guard locatorSidecarWriter(track, mergedLocator, track.availability, "referencedMembershipMerge") else {
             throw CocoaError(.fileWriteUnknown)
         }
         track.mediaLocator = mergedLocator
         upsertTrackIndexEntries(for: [track])
         scheduleSearchIndexUpsert(for: [track], reason: "referencedMembershipMerge")
         changeHandler?(.trackUpdated(track.id))
+    }
+
+    func commitReferencedSourceMutations(
+        _ mutations: [ReferencedSourceLocatorMutation]
+    ) async -> LibraryTrackPersistenceResult {
+        let tracksByID = Dictionary(uniqueKeysWithValues: allTracks.map { ($0.id, $0) })
+        var persisted: [UUID] = []
+        var failed: [UUID] = []
+        for mutation in mutations {
+            guard let track = tracksByID[mutation.trackID],
+                  locatorSidecarWriter(
+                    track,
+                    .referenced(mutation.locator),
+                    mutation.availability,
+                    "referencedSourceReconcile"
+                  ) else {
+                failed.append(mutation.trackID)
+                continue
+            }
+            persisted.append(mutation.trackID)
+        }
+        return LibraryTrackPersistenceResult(
+            persistedTrackIDs: persisted,
+            failedTrackIDs: failed
+        )
+    }
+
+    func attachReferencedSourceMutations(_ mutations: [ReferencedSourceLocatorMutation]) async {
+        guard !mutations.isEmpty else { return }
+        let accepted = Dictionary(uniqueKeysWithValues: mutations.map { ($0.trackID, $0) })
+        var changed: [Track] = []
+        for track in allTracks {
+            guard let mutation = accepted[track.id] else { continue }
+            track.mediaLocator = .referenced(mutation.locator)
+            track.fileBookmarkData = mutation.locator.fileBookmarkData
+            track.originalFilePath = mutation.locator.lastKnownPath
+            track.availability = mutation.availability
+            changed.append(track)
+        }
+        guard !changed.isEmpty else { return }
+        upsertTrackIndexEntries(for: changed)
+        scheduleSearchIndexUpsert(for: changed, reason: "referencedSourceReconcile")
+        rebuildRuntimeDerivedState()
+        changeHandler?(.tracksUpdated(changed.map(\.id)))
     }
 
     func trackExists(title: String, artist: String) async -> Bool {

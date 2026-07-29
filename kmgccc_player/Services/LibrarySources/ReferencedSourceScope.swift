@@ -112,6 +112,11 @@ final class ReferencedSourceScope {
         rootsProvider.set(AuthorizedSourceRoot(url: url, scopeOwner: lease), for: sourceID)
     }
 
+    func remove(sourceID: UUID) {
+        rootsProvider.remove(sourceID: sourceID)
+        leases.removeValue(forKey: sourceID)?.release()
+    }
+
     func close() {
         rootsProvider.removeAll()
         let activeLeases = leases.values

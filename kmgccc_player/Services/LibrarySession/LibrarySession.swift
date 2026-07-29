@@ -20,6 +20,8 @@ final class LibrarySession: LibrarySessionLifecycle {
     let storageBackend: any LibraryStorageBackend
     let referencedSourceStore: ReferencedSourceStore?
     let referencedSourceScope: ReferencedSourceScope?
+    let referencedSourceReconciler: ReferencedSourceReconciler?
+    let libraryChangeMonitor: LibraryChangeMonitor?
     let playerViewModel: PlayerViewModel
     let playbackCoordinator: PlaybackCoordinator
     let lyricsViewModel: LyricsViewModel
@@ -47,6 +49,8 @@ final class LibrarySession: LibrarySessionLifecycle {
         storageBackend: any LibraryStorageBackend,
         referencedSourceStore: ReferencedSourceStore?,
         referencedSourceScope: ReferencedSourceScope?,
+        referencedSourceReconciler: ReferencedSourceReconciler?,
+        libraryChangeMonitor: LibraryChangeMonitor?,
         playbackService: AVAudioPlaybackService,
         playerViewModel: PlayerViewModel,
         playbackCoordinator: PlaybackCoordinator,
@@ -70,6 +74,8 @@ final class LibrarySession: LibrarySessionLifecycle {
         self.storageBackend = storageBackend
         self.referencedSourceStore = referencedSourceStore
         self.referencedSourceScope = referencedSourceScope
+        self.referencedSourceReconciler = referencedSourceReconciler
+        self.libraryChangeMonitor = libraryChangeMonitor
         self.playbackService = playbackService
         self.playerViewModel = playerViewModel
         self.playbackCoordinator = playbackCoordinator
@@ -83,8 +89,80 @@ final class LibrarySession: LibrarySessionLifecycle {
         try context.paths.createRequiredDirectories()
         await libraryViewModel.reloadLibrary()
         try Task.checkCancellation()
+        if let referencedSourceReconciler, let libraryChangeMonitor {
+            try await referencedSourceReconciler.replayPending()
+            let sourceIDs = try await referencedSourceReconciler.allSourceIDs()
+            try await referencedSourceReconciler.reconcile(sourceIDs: sourceIDs)
+            try await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: referencedSourceReconciler,
+                roots: referencedSourceReconciler.sourceRoots
+            )
+        }
         libraryService.startMonitoring(repository: repository)
         isLoaded = true
+    }
+
+    @discardableResult
+    func refreshReferencedSources() async throws -> [ReferencedSourceScopeIssue] {
+        guard !isClosed,
+              let referencedSourceReconciler,
+              let libraryChangeMonitor else { return [] }
+        await libraryChangeMonitor.stopAndWait()
+        do {
+            let issues = try await referencedSourceReconciler.refreshSources()
+            try await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: referencedSourceReconciler,
+                roots: referencedSourceReconciler.sourceRoots
+            )
+            return issues
+        } catch {
+            try? await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: referencedSourceReconciler,
+                roots: referencedSourceReconciler.sourceRoots
+            )
+            throw error
+        }
+    }
+
+    func removeReferencedSource(_ sourceID: UUID) async throws {
+        guard !isClosed,
+              let referencedSourceReconciler,
+              let libraryChangeMonitor else { return }
+        let originalRoots = referencedSourceReconciler.sourceRoots
+        await libraryChangeMonitor.stopAndWait()
+        do {
+            try await referencedSourceReconciler.removeSource(sourceID)
+            try await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: referencedSourceReconciler,
+                roots: referencedSourceReconciler.sourceRoots
+            )
+        } catch {
+            try? await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: referencedSourceReconciler,
+                roots: originalRoots
+            )
+            throw error
+        }
+    }
+
+    private func startReferencedSourceMonitor(
+        _ monitor: LibraryChangeMonitor,
+        reconciler: ReferencedSourceReconciler,
+        roots: [UUID: URL]
+    ) async throws {
+        try await monitor.start(sourceRoots: roots) { [weak reconciler] sourceIDs, _ in
+            guard let reconciler else { return }
+            do {
+                try await reconciler.reconcile(sourceIDs: sourceIDs)
+            } catch {
+                await reconciler.reportMonitorFailure(sourceIDs: sourceIDs, error: error)
+            }
+        }
     }
 
     func flush() async throws {
@@ -99,6 +177,7 @@ final class LibrarySession: LibrarySessionLifecycle {
 
     func quiesce() async {
         guard !isClosed else { return }
+        await libraryChangeMonitor?.stopAndWait()
         playerViewModel.stop()
         playerViewModel.stopLevelMeter()
         libraryViewModel.prepareForSessionClose()
@@ -109,6 +188,8 @@ final class LibrarySession: LibrarySessionLifecycle {
 
     func close() async {
         guard !isClosed else { return }
+        await libraryChangeMonitor?.stopAndWait()
+        referencedSourceReconciler?.close()
         isClosed = true
         libraryViewModel.prepareForSessionClose()
         libraryService.stopMonitoring()

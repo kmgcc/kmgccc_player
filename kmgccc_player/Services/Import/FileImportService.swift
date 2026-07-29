@@ -230,6 +230,7 @@ final class FileImportService: FileImportServiceProtocol {
     private let qqMusicCoverService: QQMusicCoverService
     private let lyricsSearchCoordinator: LyricsSearchCoordinator
     private let amllDBService: AMLLDBService
+    private let uiPresentationObserver: (() -> Void)?
     private var importInProgress = false
 
     init(
@@ -240,7 +241,8 @@ final class FileImportService: FileImportServiceProtocol {
         referencedNCMConversionService: ReferencedNCMConversionService? = nil,
         qqMusicCoverService: QQMusicCoverService = .shared,
         lyricsSearchCoordinator: LyricsSearchCoordinator = .shared,
-        amllDBService: AMLLDBService = .shared
+        amllDBService: AMLLDBService = .shared,
+        uiPresentationObserver: (() -> Void)? = nil
     ) {
         self.repository = repository
         self.libraryService = libraryService
@@ -251,6 +253,7 @@ final class FileImportService: FileImportServiceProtocol {
         self.qqMusicCoverService = qqMusicCoverService
         self.lyricsSearchCoordinator = lyricsSearchCoordinator
         self.amllDBService = amllDBService
+        self.uiPresentationObserver = uiPresentationObserver
         Log.debug("FileImportService initialized", category: .import)
     }
 
@@ -261,6 +264,7 @@ final class FileImportService: FileImportServiceProtocol {
     }
 
     func pickImportURLs(triggeredAt _: Date) async -> [URL]? {
+        uiPresentationObserver?()
         let panel = NSOpenPanel()
         panel.title = "选择要导入的音乐文件"
         panel.message = "可选择音乐文件，或包含音乐文件的文件夹。"
@@ -296,6 +300,31 @@ final class FileImportService: FileImportServiceProtocol {
         to playlist: Playlist,
         metadataOverride: ImportMetadataOverride? = nil
     ) async -> Int {
+        await importURLs(
+            selectedURLs,
+            to: playlist,
+            metadataOverride: metadataOverride,
+            presentation: .interactive
+        ).count
+    }
+
+    /// Production entry used by referenced-source reconciliation. It uses the same
+    /// metadata, sidecar, and visibility pipeline without presenting AppKit UI.
+    func importAutomatically(_ urls: [URL]) async -> [Track] {
+        await importURLs(urls, to: nil, metadataOverride: nil, presentation: .automatic)
+    }
+
+    private enum ImportPresentation {
+        case interactive
+        case automatic
+    }
+
+    private func importURLs(
+        _ selectedURLs: [URL],
+        to playlist: Playlist?,
+        metadataOverride: ImportMetadataOverride?,
+        presentation: ImportPresentation
+    ) async -> [Track] {
         var crashBreadcrumbResult = "not_completed"
         var crashBreadcrumbImportedCount = 0
         CrashBreadcrumbRecorder.shared.record(
@@ -312,17 +341,17 @@ final class FileImportService: FileImportServiceProtocol {
             )
         }
         Log.debug(
-            "importSelectedURLs called for playlist: '\(playlist.name)' (id=\(playlist.id)) count=\(selectedURLs.count) override=\(String(describing: metadataOverride))",
+            "import URLs destination=\(playlist?.id.uuidString ?? "library") count=\(selectedURLs.count) override=\(String(describing: metadataOverride))",
             category: .import
         )
 
         guard !importInProgress else {
             crashBreadcrumbResult = "rejected_concurrent"
             Log.warning(
-                "[Import] rejected concurrent import request playlist=\(playlist.id.uuidString)",
+                "[Import] rejected concurrent import request destination=\(playlist?.id.uuidString ?? "library")",
                 category: .import
             )
-            return 0
+            return []
         }
         importInProgress = true
         await LibraryImportCoordinator.shared.beginBatch(reason: "fileImport")
@@ -342,10 +371,12 @@ final class FileImportService: FileImportServiceProtocol {
                 "[Import] failed to create import session: \(error.localizedDescription)",
                 category: .import
             )
-            return 0
+            return []
         }
 
+        if presentation == .interactive { uiPresentationObserver?() }
         let progressController = BatchImportProgressDialogController(
+            presentsWindow: presentation == .interactive,
             onCancelRequested: {
                 Task {
                     await cancellationToken.requestCancel()
@@ -387,7 +418,7 @@ final class FileImportService: FileImportServiceProtocol {
                 Log.warning("[Import] identity reuse failed track=\(existingTrack.id.uuidString)", category: .import)
             }
         }
-        if !reusedTracks.isEmpty {
+        if !reusedTracks.isEmpty, let playlist {
             await repository.addTracks(reusedTracks, to: playlist)
         }
         let filesToImport = newFiles.filter { $0.url.pathExtension.lowercased() != "ncm" }
@@ -413,7 +444,7 @@ final class FileImportService: FileImportServiceProtocol {
         guard discoveredFileCount > 0 else {
             Log.info("No supported audio files found in selection", category: .import)
             importSession.cleanupStaging()
-            return reusedTracks.count
+            return reusedTracks
         }
 
         if await isImportCancellationRequested(progressController, cancellationToken) {
@@ -525,7 +556,7 @@ final class FileImportService: FileImportServiceProtocol {
                 } catch ReferencedNCMConversionError.committedConversion(let trackID) {
                     if let existing = await repository.fetchTracks(ids: [trackID]).first {
                         reusedTracks.append(existing)
-                        await repository.addTracks([existing], to: playlist)
+                        if let playlist { await repository.addTracks([existing], to: playlist) }
                         progressController.updateItem(
                             id: file.url.path,
                             title: existing.title,
@@ -555,7 +586,7 @@ final class FileImportService: FileImportServiceProtocol {
             )
         }
 
-        Log.debug("Found \(resolvedFiles.count) audio files to import to '\(playlist.name)'", category: .import)
+        Log.debug("Found \(resolvedFiles.count) audio files to import", category: .import)
 
         let libraryTracks = await repository.fetchTracks(in: nil)
         let existingByDedupKey = Dictionary(grouping: libraryTracks) {
@@ -596,7 +627,7 @@ final class FileImportService: FileImportServiceProtocol {
         }
 
         var selectedDuplicates: [ImportCandidate] = []
-        if !duplicateRows.isEmpty {
+        if !duplicateRows.isEmpty, presentation == .interactive {
             Log.debug("Found \(duplicateRows.count) duplicates, presenting dialog...", category: .import)
             progressController.update(
                 stage: .waitingForDuplicateChoice,
@@ -636,7 +667,7 @@ final class FileImportService: FileImportServiceProtocol {
                 }
             } else {
                 Log.debug("User cancelled import via duplicate dialog (result was nil)", category: .import)
-                return 0
+                return []
             }
         }
 
@@ -723,7 +754,7 @@ final class FileImportService: FileImportServiceProtocol {
             print("⚠️ No tracks to import")
             importSession.cleanupStaging()
             _ = await cleanupFailedImportResidue(reason: "importNoSuccessfulTracks")
-            return 0
+            return reusedTracks
         }
 
         let importedTracks = importedRecords.map(\.track)
@@ -840,7 +871,8 @@ final class FileImportService: FileImportServiceProtocol {
         progressController.update(
             stage: .completed,
             progress: 1.0,
-            detail: "已成功导入 \(importedRecords.count) 首歌曲到“\(playlist.name)”",
+            detail: playlist.map { "已成功导入 \(importedRecords.count) 首歌曲到“\($0.name)”" }
+                ?? "已成功导入 \(importedRecords.count) 首歌曲",
             completedCount: importedTracks.count,
             totalCount: finalCandidates.count
         )
@@ -849,7 +881,7 @@ final class FileImportService: FileImportServiceProtocol {
         print("✅ Import complete: \(importedRecords.count) imported")
         crashBreadcrumbResult = "completed"
         crashBreadcrumbImportedCount = importedRecords.count + reusedTracks.count
-        return importedRecords.count + reusedTracks.count
+        return importedTracks + reusedTracks
     }
 
     // MARK: - Private Methods
@@ -1037,7 +1069,7 @@ final class FileImportService: FileImportServiceProtocol {
 
     private func saveImportedTracks(
         _ importedTracks: [Track],
-        to playlist: Playlist,
+        to playlist: Playlist?,
         progressController: BatchImportProgressDialogController,
         session: ImportSession,
         cancellationToken: ImportCancellationToken
@@ -1111,7 +1143,7 @@ final class FileImportService: FileImportServiceProtocol {
             totalCount: 2
         )
 
-        if !persistedTracks.isEmpty {
+        if !persistedTracks.isEmpty, let playlist {
             print("🔗 Adding \(persistedTracks.count) tracks to playlist '\(playlist.name)'")
             await repository.addTracks(persistedTracks, to: playlist)
         }
@@ -1187,10 +1219,10 @@ final class FileImportService: FileImportServiceProtocol {
         session: ImportSession,
         importedRecords: [ImportedTrackRecord],
         createdTrackIDs: Set<UUID>,
-        to playlist: Playlist,
+        to playlist: Playlist?,
         progressController: BatchImportProgressDialogController,
         totalCount: Int
-    ) async -> Int {
+    ) async -> [Track] {
         let importedTracks = importedRecords.map(\.track)
         progressController.update(
             stage: .cancelling,
@@ -1229,7 +1261,7 @@ final class FileImportService: FileImportServiceProtocol {
             category: .import
         )
         try? await Task.sleep(nanoseconds: 700_000_000)
-        return retainedCount
+        return []
     }
 
     @discardableResult

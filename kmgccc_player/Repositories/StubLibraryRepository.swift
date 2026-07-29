@@ -176,6 +176,24 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         track.mediaLocator = .referenced(merged)
     }
 
+    func commitReferencedSourceMutations(
+        _ mutations: [ReferencedSourceLocatorMutation]
+    ) async -> LibraryTrackPersistenceResult {
+        LibraryTrackPersistenceResult(
+            persistedTrackIDs: mutations.map(\.trackID),
+            failedTrackIDs: []
+        )
+    }
+
+    func attachReferencedSourceMutations(_ mutations: [ReferencedSourceLocatorMutation]) async {
+        let byID = Dictionary(uniqueKeysWithValues: mutations.map { ($0.trackID, $0) })
+        for track in allTracks {
+            guard let mutation = byID[track.id] else { continue }
+            track.mediaLocator = .referenced(mutation.locator)
+            track.availability = mutation.availability
+        }
+    }
+
     func trackExists(title: String, artist: String) async -> Bool {
         allTracks.contains { $0.title == title && $0.artist == artist }
     }
