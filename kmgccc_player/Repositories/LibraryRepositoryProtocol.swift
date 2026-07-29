@@ -50,6 +50,12 @@ protocol LibraryRepositoryProtocol: AnyObject {
     /// Commit import sidecars first and expose only successfully persisted tracks.
     func commitImportedTracks(_ tracks: [Track]) async -> LibraryTrackPersistenceResult
 
+    /// Persist sidecars, then expose only IDs accepted by the durable visibility gate.
+    func commitImportedTracks(
+        _ tracks: [Track],
+        visibilityGate: @MainActor ([UUID]) async -> Set<UUID>
+    ) async -> LibraryTrackPersistenceResult
+
     /// Add a playlist (used for bootstrap from disk).
     func addPlaylist(_ playlist: Playlist) async
 

@@ -7,6 +7,14 @@
 
 import Foundation
 
+nonisolated struct NCMConversionAssociation: Codable, Sendable, Equatable {
+    let operationID: UUID
+    let sourceIdentity: ReferencedFileIdentity?
+    let sourcePath: String
+    let outputIdentity: ReferencedFileIdentity?
+    let outputPath: String
+}
+
 nonisolated struct TrackSidecar: Codable, Sendable {
     static let currentSchemaVersion = 7
 
@@ -37,6 +45,7 @@ nonisolated struct TrackSidecar: Codable, Sendable {
     let ttmlLyricsFileName: String?
     let ncmSourcePath: String?
     let ncmSourceIdentity: ReferencedFileIdentity?
+    let ncmConversionAssociation: NCMConversionAssociation?
     let playCount: Int?
     let preferenceStats: TrackPreferenceStats?
     let mediaLocator: TrackMediaLocator
@@ -48,7 +57,7 @@ nonisolated struct TrackSidecar: Codable, Sendable {
         case metadataFetchedAt, metadataConfidence, duration, addedAt, importedAt
         case lyricsTimeOffsetMs, originalFilePath, audioFileName, artworkFileName
         case lyricsFileName, lyricsType, ttmlLyricsFileName, ncmSourcePath
-        case ncmSourceIdentity, playCount, preferenceStats, mediaLocator, availability
+        case ncmSourceIdentity, ncmConversionAssociation, playCount, preferenceStats, mediaLocator, availability
     }
 
     init(
@@ -79,6 +88,7 @@ nonisolated struct TrackSidecar: Codable, Sendable {
         ttmlLyricsFileName: String?,
         ncmSourcePath: String?,
         ncmSourceIdentity: ReferencedFileIdentity? = nil,
+        ncmConversionAssociation: NCMConversionAssociation? = nil,
         playCount: Int? = 0,
         preferenceStats: TrackPreferenceStats? = nil,
         mediaLocator: TrackMediaLocator? = nil,
@@ -111,6 +121,7 @@ nonisolated struct TrackSidecar: Codable, Sendable {
         self.ttmlLyricsFileName = ttmlLyricsFileName
         self.ncmSourcePath = ncmSourcePath
         self.ncmSourceIdentity = ncmSourceIdentity
+        self.ncmConversionAssociation = ncmConversionAssociation
         self.playCount = playCount
         self.preferenceStats = preferenceStats
         self.mediaLocator = mediaLocator ?? .managed(
@@ -163,6 +174,7 @@ nonisolated struct TrackSidecar: Codable, Sendable {
         ttmlLyricsFileName = try c.decodeIfPresent(String.self, forKey: .ttmlLyricsFileName)
         ncmSourcePath = try c.decodeIfPresent(String.self, forKey: .ncmSourcePath)
         ncmSourceIdentity = try c.decodeIfPresent(ReferencedFileIdentity.self, forKey: .ncmSourceIdentity)
+        ncmConversionAssociation = try c.decodeIfPresent(NCMConversionAssociation.self, forKey: .ncmConversionAssociation)
         playCount = try c.decodeIfPresent(Int.self, forKey: .playCount) ?? 0
         if let stats = try c.decodeIfPresent(TrackPreferenceStats.self, forKey: .preferenceStats) {
             preferenceStats = stats
@@ -218,6 +230,7 @@ nonisolated struct TrackSidecar: Codable, Sendable {
         try c.encodeIfPresent(ttmlLyricsFileName, forKey: .ttmlLyricsFileName)
         try c.encodeIfPresent(ncmSourcePath, forKey: .ncmSourcePath)
         try c.encodeIfPresent(ncmSourceIdentity, forKey: .ncmSourceIdentity)
+        try c.encodeIfPresent(ncmConversionAssociation, forKey: .ncmConversionAssociation)
         try c.encodeIfPresent(preferenceStats, forKey: .preferenceStats)
         try c.encode(mediaLocator, forKey: .mediaLocator)
         try c.encode(availability, forKey: .availability)

@@ -255,13 +255,24 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func commitImportedTracks(_ tracks: [Track]) async -> LibraryTrackPersistenceResult {
-        let result = persistImportedTrackResources(tracks, reason: "initialImportCommit")
-        let persistedIDs = Set(result.persistedTrackIDs)
-        let persistedTracks = tracks.filter { persistedIDs.contains($0.id) }
-        if !persistedTracks.isEmpty {
-            await attachImportedTracks(persistedTracks)
+        await commitImportedTracks(tracks) { Set($0) }
+    }
+
+    func commitImportedTracks(
+        _ tracks: [Track],
+        visibilityGate: @MainActor ([UUID]) async -> Set<UUID>
+    ) async -> LibraryTrackPersistenceResult {
+        let persistence = persistImportedTrackResources(tracks, reason: "initialImportCommit")
+        let persistedIDs = Set(persistence.persistedTrackIDs)
+        let visibleIDs = await visibilityGate(persistence.persistedTrackIDs).intersection(persistedIDs)
+        let visibleTracks = tracks.filter { visibleIDs.contains($0.id) }
+        if !visibleTracks.isEmpty {
+            await attachImportedTracks(visibleTracks)
         }
-        return result
+        return LibraryTrackPersistenceResult(
+            persistedTrackIDs: visibleTracks.map(\.id),
+            failedTrackIDs: persistence.failedTrackIDs + Array(persistedIDs.subtracting(visibleIDs))
+        )
     }
 
     private func attachImportedTracks(_ tracks: [Track]) async {
@@ -945,7 +956,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             availability: availability,
             artworkData: nil,
             ttmlLyricText: nil,
-            lyricsText: nil
+            lyricsText: nil,
+            ncmConversionAssociation: meta.ncmConversionAssociation
         )
 
         track.libraryRootSnapshot = paths.rootURL.path

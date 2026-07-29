@@ -100,11 +100,23 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
             amllDBService: cacheServices.amllDBService
         )
+        let referencedNCMConversionService = sourceScope.map {
+            ReferencedNCMConversionService(
+                paths: context.paths,
+                sourceScope: $0,
+                parentAuthorizer: NCMParentDirectoryPanelAuthorizer(
+                    bookmarkResolver: sourceBookmarkResolver,
+                    requiresSecurityScope: requiresSecurityScope
+                ),
+                bookmarkResolver: sourceBookmarkResolver
+            )
+        }
         let fileImportService = FileImportService(
             repository: repository,
             libraryService: libraryService,
             importEnrichmentService: importEnrichmentService,
             storageBackend: storageBackend,
+            referencedNCMConversionService: referencedNCMConversionService,
             qqMusicCoverService: cacheServices.qqMusicCoverService,
             lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
             amllDBService: cacheServices.amllDBService

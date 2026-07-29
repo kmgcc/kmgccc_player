@@ -530,6 +530,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
     let artworkFileName: String?
     let lyricsFileName: String?
     let ttmlLyricsFileName: String?
+    let ncmConversionAssociation: NCMConversionAssociation?
     let playCount: Int?
     let preferenceStats: TrackPreferenceStats?
     let folderRelativePath: String
@@ -561,6 +562,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         case artworkFileName
         case lyricsFileName
         case ttmlLyricsFileName
+        case ncmConversionAssociation
         case playCount
         case preferenceStats
         case folderRelativePath
@@ -593,6 +595,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         artworkFileName = meta.artworkFileName
         lyricsFileName = meta.lyricsFileName
         ttmlLyricsFileName = meta.ttmlLyricsFileName
+        ncmConversionAssociation = meta.ncmConversionAssociation
         playCount = meta.playCount
         preferenceStats = meta.preferenceStats
         folderRelativePath = "Tracks/\(meta.id.uuidString)"
@@ -626,6 +629,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         artworkFileName = try c.decodeIfPresent(String.self, forKey: .artworkFileName)
         lyricsFileName = try c.decodeIfPresent(String.self, forKey: .lyricsFileName)
         ttmlLyricsFileName = try c.decodeIfPresent(String.self, forKey: .ttmlLyricsFileName)
+        ncmConversionAssociation = try c.decodeIfPresent(NCMConversionAssociation.self, forKey: .ncmConversionAssociation)
         playCount = try c.decodeIfPresent(Int.self, forKey: .playCount)
         preferenceStats = try c.decodeIfPresent(TrackPreferenceStats.self, forKey: .preferenceStats)
         folderRelativePath = try c.decode(String.self, forKey: .folderRelativePath)
@@ -660,6 +664,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
             artworkFileName: artworkFileName,
             lyricsFileName: lyricsFileName,
             ttmlLyricsFileName: ttmlLyricsFileName,
+            ncmConversionAssociation: ncmConversionAssociation,
             playCount: playCount,
             preferenceStats: preferenceStats,
             folderURL: rootURL.appendingPathComponent(folderRelativePath, isDirectory: true)

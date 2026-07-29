@@ -34,6 +34,7 @@ nonisolated struct ScannedTrackMeta: Sendable {
     let artworkFileName: String?
     let lyricsFileName: String?
     let ttmlLyricsFileName: String?
+    let ncmConversionAssociation: NCMConversionAssociation?
     let playCount: Int?
     let preferenceStats: TrackPreferenceStats?
     let folderURL: URL
@@ -120,6 +121,7 @@ nonisolated struct MusicLibraryScanner: Sendable {
             ),
             lyricsFileName: normalizedOptional(sidecar.lyricsFileName),
             ttmlLyricsFileName: normalizedOptional(sidecar.ttmlLyricsFileName),
+            ncmConversionAssociation: sidecar.ncmConversionAssociation,
             playCount: sidecar.playCount,
             preferenceStats: sidecar.preferenceStats,
             folderURL: folderURL

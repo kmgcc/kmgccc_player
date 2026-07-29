@@ -70,6 +70,10 @@ final class FileImportService: FileImportServiceProtocol {
         let discoveredFile: ImportDiscoveredFile
         let trackID: UUID?
         let placement: ImportPlacement?
+        let ncmOperationID: UUID?
+        let ncmAssociation: NCMConversionAssociation?
+        let ncmLocator: ReferencedFileLocator?
+        let recoveryTrackID: UUID?
 
         func prepared(trackID: UUID, placement: ImportPlacement) -> ImportCandidate {
             ImportCandidate(
@@ -79,7 +83,11 @@ final class FileImportService: FileImportServiceProtocol {
                 metadata: metadata,
                 discoveredFile: discoveredFile,
                 trackID: trackID,
-                placement: placement
+                placement: placement,
+                ncmOperationID: ncmOperationID,
+                ncmAssociation: ncmAssociation,
+                ncmLocator: ncmLocator,
+                recoveryTrackID: recoveryTrackID
             )
         }
     }
@@ -90,6 +98,7 @@ final class FileImportService: FileImportServiceProtocol {
         let fileURL: URL
         let ncmResult: NCMConversionResult?
         let discoveredFile: ImportDiscoveredFile
+        let referencedNCMOutput: ReferencedNCMConversionOutput?
     }
 
     private struct ImportedTrackRecord {
@@ -129,6 +138,7 @@ final class FileImportService: FileImportServiceProtocol {
         let artworkData: Data?
         let ttmlLyricText: String?
         let lyricsText: String?
+        let ncmConversionAssociation: NCMConversionAssociation?
     }
 
     private struct ExistingTrackMatchSnapshot: Sendable {
@@ -216,6 +226,7 @@ final class FileImportService: FileImportServiceProtocol {
     nonisolated let paths: LibraryPaths
     private let importEnrichmentService: ImportEnrichmentService
     private let storageBackend: any LibraryStorageBackend
+    private let referencedNCMConversionService: ReferencedNCMConversionService?
     private let qqMusicCoverService: QQMusicCoverService
     private let lyricsSearchCoordinator: LyricsSearchCoordinator
     private let amllDBService: AMLLDBService
@@ -226,6 +237,7 @@ final class FileImportService: FileImportServiceProtocol {
         libraryService: LocalLibraryService,
         importEnrichmentService: ImportEnrichmentService,
         storageBackend: any LibraryStorageBackend,
+        referencedNCMConversionService: ReferencedNCMConversionService? = nil,
         qqMusicCoverService: QQMusicCoverService = .shared,
         lyricsSearchCoordinator: LyricsSearchCoordinator = .shared,
         amllDBService: AMLLDBService = .shared
@@ -235,6 +247,7 @@ final class FileImportService: FileImportServiceProtocol {
         self.paths = libraryService.paths
         self.importEnrichmentService = importEnrichmentService
         self.storageBackend = storageBackend
+        self.referencedNCMConversionService = referencedNCMConversionService
         self.qqMusicCoverService = qqMusicCoverService
         self.lyricsSearchCoordinator = lyricsSearchCoordinator
         self.amllDBService = amllDBService
@@ -385,10 +398,9 @@ final class FileImportService: FileImportServiceProtocol {
                 category: .import
             )
         }
-        if storageBackend.mode == .referenced, !ncmFiles.isEmpty {
-            Log.warning("[Import] referenced NCM inputs deferred to the NCM transaction stage", category: .import)
-        }
-        let eligibleNCMFiles = storageBackend.mode == .managed ? ncmFiles : []
+        let eligibleNCMFiles = storageBackend.mode == .managed || referencedNCMConversionService != nil
+            ? ncmFiles
+            : []
         let discoveredFileCount = filesToImport.count + eligibleNCMFiles.count
         progressController.update(
             stage: .scanning,
@@ -443,12 +455,13 @@ final class FileImportService: FileImportServiceProtocol {
                 displayName: $0.url.lastPathComponent,
                 fileURL: $0.url,
                 ncmResult: nil,
-                discoveredFile: $0
+                discoveredFile: $0,
+                referencedNCMOutput: nil
             )
         }
 
-        if !eligibleNCMFiles.isEmpty {
-            Log.debug("Found \(eligibleNCMFiles.count) NCM files to convert", category: .import)
+        if !eligibleNCMFiles.isEmpty, storageBackend.mode == .managed {
+            Log.debug("Found \(eligibleNCMFiles.count) managed NCM files to convert", category: .import)
             let results = await convertNCMFiles(
                 eligibleNCMFiles.map(\.url),
                 progressController: progressController,
@@ -478,9 +491,59 @@ final class FileImportService: FileImportServiceProtocol {
                             memberships: [],
                             primarySourceID: nil,
                             fingerprint: try? ReferencedFileIdentityProvider().fingerprint(for: result.audioFileURL)
-                        )
+                        ),
+                        referencedNCMOutput: nil
                     )
                 )
+            }
+        } else if !eligibleNCMFiles.isEmpty, let referencedNCMConversionService {
+            for file in eligibleNCMFiles {
+                do {
+                    try await cancellationToken.checkCancellation()
+                    let output = try await referencedNCMConversionService.convert(file)
+                    resolvedFiles.append(ResolvedImportFile(
+                        progressID: file.url.path,
+                        displayName: file.url.lastPathComponent,
+                        fileURL: output.result.audioFileURL,
+                        ncmResult: output.result,
+                        discoveredFile: ImportDiscoveredFile(
+                            url: output.result.audioFileURL,
+                            memberships: output.locator.sourceMemberships,
+                            primarySourceID: output.locator.primarySourceID,
+                            fingerprint: output.locator.fingerprint
+                        ),
+                        referencedNCMOutput: output
+                    ))
+                    progressController.updateItem(
+                        id: file.url.path,
+                        title: output.result.metadata.title,
+                        artist: output.result.metadata.artistName,
+                        stage: .ncmConversion,
+                        status: .success,
+                        detail: "NCM 转换完成，等待导入"
+                    )
+                } catch ReferencedNCMConversionError.committedConversion(let trackID) {
+                    if let existing = await repository.fetchTracks(ids: [trackID]).first {
+                        reusedTracks.append(existing)
+                        await repository.addTracks([existing], to: playlist)
+                        progressController.updateItem(
+                            id: file.url.path,
+                            title: existing.title,
+                            artist: existing.artist,
+                            stage: .ncmConversion,
+                            status: .success,
+                            detail: "已复用此前转换的歌曲"
+                        )
+                    }
+                } catch {
+                    progressController.updateItem(
+                        id: file.url.path,
+                        stage: .ncmConversion,
+                        status: .failed,
+                        detail: "NCM 转换失败",
+                        issueMessage: error.localizedDescription
+                    )
+                }
             }
         } else {
             progressController.update(
@@ -587,14 +650,26 @@ final class FileImportService: FileImportServiceProtocol {
         let selectedCandidates = uniqueCandidates + selectedDuplicates
         var finalCandidates: [ImportCandidate] = []
         for candidate in selectedCandidates {
-            let trackID = UUID()
+            let trackID = candidate.recoveryTrackID ?? UUID()
             do {
-                let placement = try await storageBackend.makePlacement(
-                    for: candidate.discoveredFile,
-                    trackID: trackID,
-                    stagingDirectoryURL: importSession.stagingDirectoryURL
-                )
+                let placement: ImportPlacement
+                if let locator = candidate.ncmLocator {
+                    placement = .referenced(locator)
+                } else {
+                    placement = try await storageBackend.makePlacement(
+                        for: candidate.discoveredFile,
+                        trackID: trackID,
+                        stagingDirectoryURL: importSession.stagingDirectoryURL
+                    )
+                }
                 try storageBackend.validate(placement)
+                if let operationID = candidate.ncmOperationID,
+                   let referencedNCMConversionService {
+                    try await referencedNCMConversionService.associateTrack(
+                        operationID: operationID,
+                        trackID: trackID
+                    )
+                }
                 finalCandidates.append(candidate.prepared(trackID: trackID, placement: placement))
             } catch {
                 progressController.updateItem(
@@ -999,7 +1074,31 @@ final class FileImportService: FileImportServiceProtocol {
             return false
         }
 
-        let commitResult = await repository.commitImportedTracks(importedTracks)
+        let referencedNCMConversionService = self.referencedNCMConversionService
+        let tracksByID = Dictionary(uniqueKeysWithValues: importedTracks.map { ($0.id, $0) })
+        let commitResult = await repository.commitImportedTracks(importedTracks) { persistedIDs in
+            guard let referencedNCMConversionService else { return Set(persistedIDs) }
+            var visible = Set<UUID>()
+            for trackID in persistedIDs {
+                guard let operationID = tracksByID[trackID]?.ncmConversionAssociation?.operationID else {
+                    visible.insert(trackID)
+                    continue
+                }
+                do {
+                    try await referencedNCMConversionService.markCommitted(
+                        operationID: operationID,
+                        trackID: trackID
+                    )
+                    visible.insert(trackID)
+                } catch {
+                    Log.error(
+                        "[Import] NCM registry commit failed operation=\(operationID.uuidString)",
+                        category: .import
+                    )
+                }
+            }
+            return visible
+        }
         let persistedIDs = Set(commitResult.persistedTrackIDs)
         let persistedTracks = importedTracks.filter { persistedIDs.contains($0.id) }
         guard !persistedTracks.isEmpty else { return false }
@@ -1167,7 +1266,8 @@ final class FileImportService: FileImportServiceProtocol {
             artworkData: payload.artworkData,
             ttmlLyricText: payload.ttmlLyricText,
             lyricsText: payload.lyricsText,
-            libraryRootSnapshot: paths.rootURL.path
+            libraryRootSnapshot: paths.rootURL.path,
+            ncmConversionAssociation: payload.ncmConversionAssociation
         )
     }
     
@@ -1307,7 +1407,11 @@ final class FileImportService: FileImportServiceProtocol {
                     metadata: preview,
                     discoveredFile: file.discoveredFile,
                     trackID: nil,
-                    placement: nil
+                    placement: nil,
+                    ncmOperationID: file.referencedNCMOutput?.operationID,
+                    ncmAssociation: file.referencedNCMOutput?.association,
+                    ncmLocator: file.referencedNCMOutput?.locator,
+                    recoveryTrackID: file.referencedNCMOutput?.trackID
                 ),
                 duplicateRow: nil
             )
@@ -1350,7 +1454,11 @@ final class FileImportService: FileImportServiceProtocol {
                         metadata: preview,
                         discoveredFile: file.discoveredFile,
                         trackID: nil,
-                        placement: nil
+                        placement: nil,
+                        ncmOperationID: file.referencedNCMOutput?.operationID,
+                        ncmAssociation: file.referencedNCMOutput?.association,
+                        ncmLocator: file.referencedNCMOutput?.locator,
+                        recoveryTrackID: file.referencedNCMOutput?.trackID
                     ),
                     duplicateRow: nil
                 )
@@ -1374,7 +1482,11 @@ final class FileImportService: FileImportServiceProtocol {
             metadata: effectivePreview,
             discoveredFile: file.discoveredFile,
             trackID: nil,
-            placement: nil
+            placement: nil,
+            ncmOperationID: file.referencedNCMOutput?.operationID,
+            ncmAssociation: file.referencedNCMOutput?.association,
+            ncmLocator: file.referencedNCMOutput?.locator,
+            recoveryTrackID: file.referencedNCMOutput?.trackID
         )
         let dedupKey = LibraryNormalization.normalizedDedupKey(
             title: effectivePreview.title,
@@ -2608,7 +2720,8 @@ final class FileImportService: FileImportServiceProtocol {
                     }(),
                     artworkData: artworkData,
                     ttmlLyricText: ttmlLyricText,
-                    lyricsText: nil
+                    lyricsText: nil,
+                    ncmConversionAssociation: candidate.ncmAssociation
                 ),
                 needsLyricsEnrichment: ttmlLyricText == nil,
                 needsCoverEnrichment: artworkData == nil,

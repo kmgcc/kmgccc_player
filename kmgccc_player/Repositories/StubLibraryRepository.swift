@@ -54,10 +54,19 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func commitImportedTracks(_ tracks: [Track]) async -> LibraryTrackPersistenceResult {
-        allTracks.append(contentsOf: tracks)
+        await commitImportedTracks(tracks) { Set($0) }
+    }
+
+    func commitImportedTracks(
+        _ tracks: [Track],
+        visibilityGate: @MainActor ([UUID]) async -> Set<UUID>
+    ) async -> LibraryTrackPersistenceResult {
+        let visibleIDs = await visibilityGate(tracks.map(\.id))
+        let visibleTracks = tracks.filter { visibleIDs.contains($0.id) }
+        allTracks.append(contentsOf: visibleTracks)
         return LibraryTrackPersistenceResult(
-            persistedTrackIDs: tracks.map(\.id),
-            failedTrackIDs: []
+            persistedTrackIDs: visibleTracks.map(\.id),
+            failedTrackIDs: tracks.filter { !visibleIDs.contains($0.id) }.map(\.id)
         )
     }
 

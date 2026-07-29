@@ -63,6 +63,7 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
     let artworkData: Data?
     let ttmlLyricText: String?
     let lyricsText: String?
+    let ncmConversionAssociation: NCMConversionAssociation?
     let preferenceStats: TrackPreferenceStats
 
     @MainActor
@@ -91,6 +92,7 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
         artworkData = track.artworkData
         ttmlLyricText = track.ttmlLyricText
         lyricsText = track.lyricsText
+        ncmConversionAssociation = track.ncmConversionAssociation
         self.preferenceStats = preferenceStats
     }
 }
@@ -607,6 +609,7 @@ final class LocalLibraryService {
             ttmlLyricsFileName: references.ttmlLyricsFileName,
             ncmSourcePath: nil,
             ncmSourceIdentity: effectiveLocator.referencedFile?.ncmSourceIdentity,
+            ncmConversionAssociation: track.ncmConversionAssociation,
             preferenceStats: preferenceStats,
             mediaLocator: effectiveLocator,
             availability: availability ?? track.availability
@@ -666,6 +669,7 @@ final class LocalLibraryService {
             ttmlLyricsFileName: references.ttmlLyricsFileName,
             ncmSourcePath: nil,
             ncmSourceIdentity: snapshot.mediaLocator.referencedFile?.ncmSourceIdentity,
+            ncmConversionAssociation: snapshot.ncmConversionAssociation,
             preferenceStats: snapshot.preferenceStats,
             mediaLocator: snapshot.mediaLocator,
             availability: snapshot.availability

@@ -122,6 +122,18 @@ final class Track {
     /// TTML lyrics file name inside the track folder (e.g. "lyrics.ttml").
     var ttmlLyricsFileName: String?
 
+    /// Durable referenced-NCM transaction association, mirrored into schema 7 sidecars.
+    var ncmConversionAssociationData: Data?
+
+    var ncmConversionAssociation: NCMConversionAssociation? {
+        get {
+            guard let data = ncmConversionAssociationData else { return nil }
+            return try? JSONDecoder().decode(NCMConversionAssociation.self, from: data)
+        }
+        set {
+            ncmConversionAssociationData = try? newValue.map { try JSONEncoder().encode($0) }
+        }
+    }
 
     // MARK: - Lyrics
 
@@ -165,6 +177,7 @@ final class Track {
         artworkFileName: String? = nil,
         lyricsFileName: String? = nil,
         ttmlLyricsFileName: String? = nil,
+        ncmConversionAssociation: NCMConversionAssociation? = nil,
         playCount: Int? = nil  // DEPRECATED: Ignored, use PreferenceStatsService instead
     ) {
         self.id = id
@@ -208,6 +221,7 @@ final class Track {
         self.artworkFileName = artworkFileName
         self.lyricsFileName = lyricsFileName
         self.ttmlLyricsFileName = ttmlLyricsFileName
+        self.ncmConversionAssociationData = try? ncmConversionAssociation.map { try JSONEncoder().encode($0) }
         // NOTE: playCount parameter is deprecated. If provided, it's stored in preferenceStats via sidecar.
     }
 

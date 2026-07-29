@@ -46,7 +46,7 @@ nonisolated struct NCMConversionResult: Sendable {
     let coverData: Data?
 }
 
-nonisolated enum NCMFormat: String, Sendable {
+nonisolated enum NCMFormat: String, Codable, Sendable {
     case mp3 = "mp3"
     case flac = "flac"
 }
