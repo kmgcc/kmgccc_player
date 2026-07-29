@@ -21,9 +21,11 @@ nonisolated struct LegacyLibraryBootstrapResult: Sendable, Equatable {
 
 nonisolated struct LegacyLibraryBootstrap: Sendable {
     typealias BookmarkDataProvider = @Sendable (URL) throws -> Data
+    typealias BookmarkURLResolver = @Sendable (Data) throws -> (url: URL, isStale: Bool)
 
     let registryURL: URL
     let bookmarkDataProvider: BookmarkDataProvider
+    let bookmarkURLResolver: BookmarkURLResolver
 
     init(
         registryURL: URL = MusicLibraryRegistryFile.defaultURL(),
@@ -33,10 +35,21 @@ nonisolated struct LegacyLibraryBootstrap: Sendable {
                 includingResourceValuesForKeys: nil,
                 relativeTo: nil
             )
+        },
+        bookmarkURLResolver: @escaping BookmarkURLResolver = { data in
+            var isStale = false
+            let url = try URL(
+                resolvingBookmarkData: data,
+                options: [.withSecurityScope, .withoutUI],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+            return (url, isStale)
         }
     ) {
         self.registryURL = registryURL
         self.bookmarkDataProvider = bookmarkDataProvider
+        self.bookmarkURLResolver = bookmarkURLResolver
     }
 
     func run(
@@ -45,6 +58,35 @@ nonisolated struct LegacyLibraryBootstrap: Sendable {
         generation: UInt64 = 1,
         now: Date = Date()
     ) throws -> LegacyLibraryBootstrapResult {
+        // Once a registry exists it is the startup authority. Legacy discovery is
+        // retained only as a recovery fallback for an independently valid old root.
+        let legacyManifestURL = LibraryPaths(rootURL: legacyRootURL).manifestURL
+        if FileManager.default.fileExists(atPath: registryURL.path),
+           FileManager.default.fileExists(atPath: legacyManifestURL.path) {
+            var registry = try MusicLibraryRegistryFile.load(from: registryURL)
+            if let activeID = registry.activeLibraryID,
+               let descriptorIndex = registry.libraries.firstIndex(where: { $0.id == activeID }) {
+                do {
+                    let restored = try restoreRegisteredLibrary(
+                        registry.libraries[descriptorIndex],
+                        generation: generation
+                    )
+                    if let refreshedDescriptor = restored.refreshedDescriptor {
+                        registry.libraries[descriptorIndex] = refreshedDescriptor
+                        try MusicLibraryRegistryFile.save(registry, to: registryURL)
+                    }
+                    return restored.result
+                } catch {
+                    let fallbackPaths = LibraryPaths(rootURL: legacyRootURL)
+                    guard Self.containsLegacyLibrary(at: fallbackPaths.rootURL),
+                          FileManager.default.fileExists(atPath: fallbackPaths.manifestURL.path) else {
+                        throw error
+                    }
+                    // The verified legacy root remains a recoverable fallback.
+                }
+            }
+        }
+
         let paths = LibraryPaths(rootURL: legacyRootURL)
         let fileManager = FileManager.default
         let manifestExists = fileManager.fileExists(atPath: paths.manifestURL.path)
@@ -157,6 +199,57 @@ nonisolated struct LegacyLibraryBootstrap: Sendable {
             ),
             didCreateManifest: didCreateManifest,
             didRegisterLibrary: !wasRegistered
+        )
+    }
+
+    private func restoreRegisteredLibrary(
+        _ descriptor: MusicLibraryBookmark,
+        generation: UInt64
+    ) throws -> (result: LegacyLibraryBootstrapResult, refreshedDescriptor: MusicLibraryBookmark?) {
+        let resolution = try bookmarkURLResolver(descriptor.rootBookmarkData)
+        let bookmarkedURL = resolution.url
+        let isStale = resolution.isStale
+        let bookmarkRootExists = FileManager.default.fileExists(atPath: bookmarkedURL.path)
+        let rootURL = bookmarkRootExists
+            ? bookmarkedURL
+            : URL(fileURLWithPath: descriptor.lastKnownPath, isDirectory: true)
+        let manifest = try MusicLibraryManifest.read(
+            from: LibraryPaths(rootURL: rootURL).manifestURL
+        )
+        guard manifest.libraryID == descriptor.id,
+              manifest.mode == descriptor.modeProjection else {
+            throw LibraryUpgradeJournalError.manifestIdentityMismatch
+        }
+
+        let refreshedDescriptor: MusicLibraryBookmark?
+        let contextBookmarkData: Data
+        if isStale || !bookmarkRootExists {
+            let refreshedData = try bookmarkDataProvider(rootURL)
+            contextBookmarkData = refreshedData
+            refreshedDescriptor = MusicLibraryBookmark(
+                id: descriptor.id,
+                displayName: manifest.displayName,
+                rootBookmarkData: refreshedData,
+                lastKnownPath: rootURL.standardizedFileURL.path,
+                modeProjection: manifest.mode
+            )
+        } else {
+            contextBookmarkData = descriptor.rootBookmarkData
+            refreshedDescriptor = nil
+        }
+
+        return (
+            LegacyLibraryBootstrapResult(
+                context: LibraryContext(
+                    manifest: manifest,
+                    rootURL: rootURL,
+                    rootBookmarkData: contextBookmarkData,
+                    generation: generation
+                ),
+                didCreateManifest: false,
+                didRegisterLibrary: false
+            ),
+            refreshedDescriptor
         )
     }
 

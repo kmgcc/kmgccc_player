@@ -40,6 +40,7 @@ struct BatchTrackEditSheet: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LyricsViewModel.self) private var lyricsVM
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(CoverDownloadService.self) private var coverDownloadService
     @Environment(NetEaseCoverService.self) private var netEaseCoverService
     @Environment(UIStateViewModel.self) private var uiState
@@ -174,7 +175,8 @@ struct BatchTrackEditSheet: View {
             // Initialize cover coordinator with injected services
             coverCoordinator = CoverSearchCoordinator(
                 coverDownloadService: coverDownloadService,
-                netEaseCoverService: netEaseCoverService
+                netEaseCoverService: netEaseCoverService,
+                qqMusicCoverService: cacheServices.qqMusicCoverService
             )
             guard !tracks.isEmpty else { return }
             prepareTrack(at: 0, triggerAutoSearch: true)

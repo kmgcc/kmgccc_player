@@ -99,8 +99,8 @@ private final class MusicPreferenceResetDialogViewModel {
         playerVM.discardCurrentPlaybackSessionStatsOnce()
 
         Task {
-            let result = await PreferenceResetService.shared.resetLibraryTracks(
-                tracks,
+            let result = await libraryVM.resetMusicPreferences(
+                tracks: tracks,
                 options: selectedOptions
             ) { [weak self] progress in
                 self?.progress = progress

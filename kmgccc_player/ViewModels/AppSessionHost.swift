@@ -22,20 +22,35 @@ final class AppSessionHost: ObservableObject {
     @Published private(set) var skinManager: SkinManager?
 
     let uiState = UIStateViewModel()
-    /// Stable across HomeView lifetime so the random Hero pick survives navigation.
-    let homeVM = HomeViewModel()
-    let playbackHistoryStore: PlaybackHistoryStore
+    let activeLibraryBinding: ActiveLibraryBinding
+
+    var cacheServices: LibraryCacheServices? {
+        activeLibraryBinding.activeSession?.cacheServices
+    }
+
+    var homeVM: HomeViewModel {
+        activeLibraryBinding.activeSession?.homeViewModel ?? placeholderHomeViewModel
+    }
+
+    var playbackHistoryStore: PlaybackHistoryStore {
+        activeLibraryBinding.activeSession?.playbackHistoryStore ?? placeholderPlaybackHistoryStore
+    }
+
     /// Shared by the history page and AppKit's main-window toolbar so search,
     /// range, multiselect, and destructive actions have one source of truth.
-    let playbackHistoryViewModel: PlaybackHistoryViewModel
+    var playbackHistoryViewModel: PlaybackHistoryViewModel {
+        activeLibraryBinding.activeSession?.playbackHistoryViewModel
+            ?? placeholderPlaybackHistoryViewModel
+    }
 
-    private let modelContainer: ModelContainer
+    private let placeholderHomeViewModel: HomeViewModel
+    private let placeholderPlaybackHistoryStore: PlaybackHistoryStore
+    private let placeholderPlaybackHistoryViewModel: PlaybackHistoryViewModel
     private let initialLibraryContext: LibraryContext?
+    private let sessionController: LibrarySessionController
+    private let registryStore: MusicLibraryRegistryStore?
     private var hasSetupDependencies = false
     private var playbackModeObserver: NSObjectProtocol?
-    private var libraryLocationObserver: NSObjectProtocol?
-    private var libraryService: LocalLibraryService?
-    private var repository: LibraryRepositoryProtocol?
     private var playbackMemoryTimer: Timer?
     private let mainThreadStallMonitor = MainThreadStallMonitor()
     private var firstUsePrewarmTask: Task<Void, Never>?
@@ -46,19 +61,45 @@ final class AppSessionHost: ObservableObject {
     init(
         modelContainer: ModelContainer,
         initialLibraryContext: LibraryContext?,
+        registryStore: MusicLibraryRegistryStore? = try? MusicLibraryRegistryStore(),
+        sessionFactory: LibrarySessionFactory = LibrarySessionFactory(),
         playbackHistoryStore: PlaybackHistoryStore? = nil,
         playbackHistoryViewModel: PlaybackHistoryViewModel = PlaybackHistoryViewModel()
     ) {
-        self.modelContainer = modelContainer
+        let activeLibraryBinding = ActiveLibraryBinding(
+            placeholderModelContainer: modelContainer
+        )
+        self.activeLibraryBinding = activeLibraryBinding
         self.initialLibraryContext = initialLibraryContext
-        self.playbackHistoryStore = playbackHistoryStore
-            ?? initialLibraryContext.map(PlaybackHistoryStore.init(context:))
-            ?? PlaybackHistoryStore.inMemory()
-        self.playbackHistoryViewModel = playbackHistoryViewModel
+        self.sessionController = LibrarySessionController(factory: sessionFactory)
+        self.registryStore = registryStore
+        self.placeholderHomeViewModel = HomeViewModel()
+        self.placeholderPlaybackHistoryStore = playbackHistoryStore ?? .inMemory()
+        self.placeholderPlaybackHistoryViewModel = playbackHistoryViewModel
+        self.skinManager = SkinManager()
+
+        sessionController.willReleaseActiveSession = { [weak self] in
+            await self?.releaseActiveSessionBindings()
+        }
+        sessionController.didActivateSession = { [weak self] session in
+            guard let self, let session = session as? LibrarySession else { return }
+            self.publishActiveSession(session)
+            do {
+                try await self.registryStore?.setActiveLibrary(
+                    id: session.context.id,
+                    manifestMode: session.context.mode
+                )
+            } catch {
+                Log.error(
+                    "[LibrarySession] failed to update active registry pointer library=\(session.context.id): \(error)",
+                    category: .library
+                )
+            }
+        }
     }
 
     var sharedModelContainer: ModelContainer {
-        modelContainer
+        activeLibraryBinding.modelContainer
     }
 
     func setupIfNeeded() async {
@@ -67,9 +108,18 @@ final class AppSessionHost: ObservableObject {
 
         Log.debug("[Lifecycle] AppSessionHost initial setup", category: .ui)
         mainThreadStallMonitor.start()
-        if initialLibraryContext != nil {
-            setupDependencies()
-            await restorePlaybackMemoryIfNeeded()
+        installProcessLifecycleHandlers()
+        if let initialLibraryContext {
+            do {
+                try await sessionController.switchToLibrary(initialLibraryContext)
+                await restorePlaybackMemoryIfNeeded()
+            } catch {
+                Log.error(
+                    "[LibrarySession] initial load failed library=\(initialLibraryContext.id): \(error)",
+                    category: .library
+                )
+                await releaseActiveSessionBindings()
+            }
         } else {
             Log.info("[LibrarySession] no active library; waiting for setup", category: .library)
         }
@@ -111,65 +161,36 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
-    private func setupDependencies() {
-        let libraryService = LocalLibraryService.shared
-        libraryService.ensureLibraryFolders()
-        Task.detached(priority: .utility) {
-            await CacheManager.cleanupStaleImportStaging(reason: "startup")
-        }
+    func switchLibrary(to context: LibraryContext) async throws {
+        savePlaybackMemory()
+        try await sessionController.switchToLibrary(context)
+        didAttemptPlaybackMemoryRestore = false
+        await restorePlaybackMemoryIfNeeded()
+    }
 
-        let repository = SwiftDataLibraryRepository(
-            modelContext: modelContainer.mainContext,
-            libraryService: libraryService
-        )
+    private func publishActiveSession(_ session: LibrarySession) {
+        activeLibraryBinding.publish(session)
 
-        let playbackService = AVAudioPlaybackService()
+        let libraryVM = session.libraryViewModel
+        let playerVM = session.playerViewModel
+        let playbackCoordinator = session.playbackCoordinator
+        let lyricsVM = session.lyricsViewModel
+        let ledMeterProvider = session.ledMeterProvider
+        let importEnrichmentService = session.importEnrichmentService
 
-        let ledMeterProvider = LEDMeterServiceProvider(
-            config: LEDMeterConfig(
-                ledCount: AppSettings.shared.ledCount,
-                levels: AppSettings.shared.ledBrightnessLevels,
-                cutoffHz: Float(AppSettings.shared.ledCutoffHz),
-                sensitivity: AppSettings.shared.ledSensitivity,
-                speed: Float(AppSettings.shared.ledSpeed),
-                targetHz: AppSettings.shared.ledTargetHz
-            ),
-            mixerProvider: { [weak playbackService] in
-                playbackService?.analysisMixerNode ?? AVAudioEngine().mainMixerNode
-            }
-        )
+        self.libraryVM = libraryVM
+        self.playerVM = playerVM
+        self.playbackCoordinator = playbackCoordinator
+        self.lyricsVM = lyricsVM
+        self.ledMeterProvider = ledMeterProvider
+        self.importEnrichmentService = importEnrichmentService
 
-        let importEnrichmentService = ImportEnrichmentService(repository: repository)
-        let fileImportService = FileImportService(
-            repository: repository,
-            libraryService: libraryService,
-            importEnrichmentService: importEnrichmentService
-        )
-
-        let playerVM = PlayerViewModel(
-            playbackService: playbackService,
-            levelMeter: ledMeterProvider
-        )
-        let libraryVM = LibraryViewModel(
-            repository: repository,
-            libraryService: libraryService
-        )
-        PreferenceStatsLifecycleHandler.shared.configure { [weak libraryVM] trackID in
+        PreferenceStatsLifecycleHandler.shared.configure(
+            statsService: session.preferenceStatsService
+        ) { [weak libraryVM] trackID in
             libraryVM?.allTracks.first { $0.id == trackID }
         }
-        let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
-        let systemNowPlayingProvider = SystemNowPlayingProvider(libraryVM: libraryVM)
-        let playbackCoordinator = PlaybackCoordinator(
-            playerVM: playerVM,
-            appleMusicAdapter: appleMusicAdapter,
-            systemNowPlayingProvider: systemNowPlayingProvider,
-            meterProvider: ledMeterProvider
-        )
 
-        let lyricsVM = LyricsViewModel(settings: AppSettings.shared)
-        lyricsVM.setPlaybackSourceProvider { [weak playbackCoordinator] in
-            playbackCoordinator?.activeSource ?? .local
-        }
         let lyricsPlaybackPipeline = LyricsPlaybackPipeline(
             lyricsVM: lyricsVM,
             playbackCoordinator: playbackCoordinator
@@ -195,45 +216,12 @@ final class AppSessionHost: ObservableObject {
                 source: playbackCoordinator.activeSource
             ).rawValue
             context.isPlaying = playerVM.isPlaying
-            context.lastOperationCategory = "app_startup"
+            context.lastOperationCategory = "library_session_active"
         }
         CrashBreadcrumbRecorder.shared.record(.dependenciesReady)
         ledMeterProvider.playbackSource = playbackCoordinator.activeSource
         AudioVisualizationService.shared.setExternalMode(playbackCoordinator.activeSource.isExternal)
-        libraryVM.setImportService(fileImportService)
-        libraryVM.currentTrackIDProvider = { [weak playerVM] in
-            playerVM?.currentTrack?.id
-        }
-        libraryVM.onTracksDeleted = { [weak playerVM] deletedTrackIDs in
-            guard let playerVM, !deletedTrackIDs.isEmpty else { return }
 
-            if let currentTrackID = playerVM.currentTrack?.id, deletedTrackIDs.contains(currentTrackID) {
-                playerVM.stop()
-                return
-            }
-
-            let remainingQueue = playerVM.currentQueueTracks.filter { !deletedTrackIDs.contains($0.id) }
-            guard remainingQueue.count != playerVM.currentQueueTracks.count else { return }
-
-            if remainingQueue.isEmpty {
-                playerVM.stop()
-            } else {
-                playerVM.updateQueueTracks(remainingQueue)
-            }
-        }
-
-        let skinManager = SkinManager()
-        self.libraryVM = libraryVM
-        self.playerVM = playerVM
-        self.playbackCoordinator = playbackCoordinator
-        self.lyricsVM = lyricsVM
-        self.ledMeterProvider = ledMeterProvider
-        self.importEnrichmentService = importEnrichmentService
-        self.skinManager = skinManager
-        self.libraryService = libraryService
-        self.repository = repository
-
-        // Wire up stall monitor with playback state for enriched diagnostics.
         mainThreadStallMonitor.playbackStateProvider = { [weak playerVM] in
             let isPlaying = playerVM?.isPlaying ?? false
             let trackPrefix = FirstUseHitchDiagnostics.trackIDPrefix(playerVM?.currentTrack?.id)
@@ -241,47 +229,19 @@ final class AppSessionHost: ObservableObject {
             return (isPlaying, trackPrefix, surface)
         }
 
+        guard let skinManager else { return }
         FullscreenWindowManager.shared.configure(
             libraryVM: libraryVM,
             playerVM: playerVM,
             playbackCoordinator: playbackCoordinator,
             lyricsVM: lyricsVM,
             ledMeterProvider: ledMeterProvider,
+            cacheServices: session.cacheServices,
             skinManager: skinManager,
             uiState: uiState
         )
         AppDelegate.shared?.configureDockPlayback(playbackCoordinator: playbackCoordinator)
-        AppDelegate.applicationWillTerminateHandler = { [weak self] in
-            TelemetryService.shared.endSession(reason: .appTerminated)
-            self?.savePlaybackMemory()
-            if let libraryVM = self?.libraryVM {
-                PreferenceStatsService.shared.saveAllPendingNow(
-                    trackProvider: { trackID in
-                        libraryVM.allTracks.first { $0.id == trackID }
-                    },
-                    synchronously: true
-                )
-            }
-            Task {
-                await QQMusicHelperProcess.shared.terminate()
-            }
-        }
-
-
-        if playbackModeObserver == nil {
-            playbackModeObserver = NotificationCenter.default.addObserver(
-                forName: .playbackModeChanged,
-                object: nil,
-                queue: .main
-            ) { [weak playerVM] _ in
-                let playerViewModel = playerVM
-                Task { @MainActor in
-                    playerViewModel?.syncPlaybackOrderModeFromSettings()
-                }
-            }
-        }
-
-        libraryService.startMonitoring(repository: repository)
+        AppKitMainSplitWindowController.rebuildAfterLibrarySwitchIfNeeded(appSession: self)
         startPlaybackMemoryAutosave()
         scheduleFirstUsePrewarm(
             libraryVM: libraryVM,
@@ -289,30 +249,11 @@ final class AppSessionHost: ObservableObject {
             playbackCoordinator: playbackCoordinator
         )
 
-        if libraryLocationObserver == nil {
-            libraryLocationObserver = NotificationCenter.default.addObserver(
-                forName: .libraryLocationChanged,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                // NotificationCenter delivers this observer on .main; keep the restart synchronous.
-                MainActor.assumeIsolated {
-                    guard let self, let repository = self.repository else { return }
-                    self.playbackHistoryStore.reconfigureForCurrentLibrary()
-                    self.libraryService?.restartMonitoring(repository: repository)
-                    Log.info(
-                        "[AppSessionHost] Restarted library monitoring after location change",
-                        category: .library
-                    )
-                }
-            }
-        }
-
         if let scenario = DebugLaunchScenario.current {
             Task { @MainActor in
                 await runDebugLaunchScenarioIfNeeded(
                     scenario,
-                    repository: repository,
+                    repository: session.repository,
                     libraryVM: libraryVM,
                     playerVM: playerVM
                 )
@@ -320,13 +261,64 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
+    private func releaseActiveSessionBindings() async {
+        playbackMemoryTimer?.invalidate()
+        playbackMemoryTimer = nil
+        firstUsePrewarmTask?.cancel()
+        firstUsePrewarmTask = nil
+        lyricsPlaybackPipeline = nil
+        LyricsSurfaceManager.shared.setMainSurfaceSnapshotRefreshHandler(nil)
+        PreferenceStatsLifecycleHandler.shared.releaseLibrarySession()
+        await FullscreenWindowManager.shared.releaseLibrarySession()
+        AppKitMainSplitWindowController.releaseActiveLibraryReferences()
+        activeLibraryBinding.releaseActiveSession()
+
+        libraryVM = nil
+        playerVM = nil
+        playbackCoordinator = nil
+        lyricsVM = nil
+        ledMeterProvider = nil
+        importEnrichmentService = nil
+        mainThreadStallMonitor.playbackStateProvider = nil
+    }
+
+    private func installProcessLifecycleHandlers() {
+        if playbackModeObserver == nil {
+            playbackModeObserver = NotificationCenter.default.addObserver(
+                forName: .playbackModeChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.playerVM?.syncPlaybackOrderModeFromSettings()
+                }
+            }
+        }
+
+        AppDelegate.applicationWillTerminateHandler = { [weak self] in
+            guard let self else { return }
+            TelemetryService.shared.endSession(reason: .appTerminated)
+            self.savePlaybackMemory()
+            if let session = self.activeLibraryBinding.activeSession {
+                session.preferenceStatsService.saveAllPendingNow(
+                    trackProvider: { trackID in
+                        session.libraryViewModel.allTracks.first { $0.id == trackID }
+                    },
+                    synchronously: true
+                )
+                session.libraryService.stopMonitoring()
+            }
+            Task {
+                await QQMusicHelperProcess.shared.terminate()
+            }
+        }
+    }
+
+
     deinit {
         MainActor.assumeIsolated {
             if let playbackModeObserver {
                 NotificationCenter.default.removeObserver(playbackModeObserver)
-            }
-            if let libraryLocationObserver {
-                NotificationCenter.default.removeObserver(libraryLocationObserver)
             }
             playbackMemoryTimer?.invalidate()
             firstUsePrewarmTask?.cancel()
@@ -432,12 +424,13 @@ final class AppSessionHost: ObservableObject {
     }
 
     private func savePlaybackMemory() {
+        guard let libraryID = activeLibraryBinding.activeSession?.context.id else { return }
         guard playbackCoordinator?.activeSource == .local else {
-            PlaybackMemoryStore.clear()
+            PlaybackMemoryStore.clear(libraryID: libraryID)
             return
         }
         guard let playerVM, let currentTrack = playerVM.currentTrack else {
-            PlaybackMemoryStore.clear()
+            PlaybackMemoryStore.clear(libraryID: libraryID)
             return
         }
 
@@ -456,7 +449,8 @@ final class AppSessionHost: ObservableObject {
                 duration: duration,
                 queueTrackIDs: queueTrackIDs.isEmpty ? nil : queueTrackIDs,
                 playbackOrderMode: playbackOrderMode.rawValue
-            )
+            ),
+            libraryID: libraryID
         )
     }
 
@@ -477,8 +471,10 @@ final class AppSessionHost: ObservableObject {
         didAttemptPlaybackMemoryRestore = true
 
         guard DebugLaunchScenario.current == nil else { return }
-        guard let memory = PlaybackMemoryStore.loadValid() else { return }
-        guard let repository, let playerVM else { return }
+        guard let session = activeLibraryBinding.activeSession else { return }
+        guard let memory = PlaybackMemoryStore.loadValid(libraryID: session.context.id) else { return }
+        let repository = session.repository
+        guard let playerVM else { return }
 
         await repository.reloadFromLibrary()
 
@@ -505,7 +501,7 @@ final class AppSessionHost: ObservableObject {
 
         guard let startIndex = restoredQueue.firstIndex(where: { $0.id == memory.trackID }) else {
             // The saved track is gone (deleted/unavailable): drop stale memory.
-            PlaybackMemoryStore.clear()
+            PlaybackMemoryStore.clear(libraryID: session.context.id)
             return
         }
 
@@ -833,57 +829,6 @@ private final class MainThreadStallMonitor {
         }
 
         expectedFireTime = DispatchTime(uptimeNanoseconds: now.uptimeNanoseconds + intervalNanoseconds)
-    }
-}
-
-private struct PlaybackMemory: Codable {
-    let savedAt: Date
-    let trackID: UUID
-    let currentTime: Double
-    let duration: Double
-    /// Ordered IDs of the last playback queue. Optional for backward
-    /// compatibility with `v1` payloads that only stored the current track; the
-    /// restore path falls back to the full library when this is empty/missing.
-    var queueTrackIDs: [UUID]?
-    /// Persisted playback order mode (`AppSettings.PlaybackOrderMode.rawValue`).
-    var playbackOrderMode: String?
-}
-
-private enum PlaybackMemoryStore {
-    private static let key = "playback.memory.v1"
-    private static let expirationInterval: TimeInterval = 18 * 60 * 60
-
-    static func save(_ memory: PlaybackMemory) {
-        guard let data = try? JSONEncoder().encode(memory) else { return }
-        UserDefaults.standard.set(data, forKey: key)
-    }
-
-    static func loadValid(now: Date = Date()) -> PlaybackMemory? {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let memory = try? JSONDecoder().decode(PlaybackMemory.self, from: data) else {
-            clear()
-            return nil
-        }
-
-        guard now.timeIntervalSince(memory.savedAt) <= expirationInterval else {
-            clear()
-            return nil
-        }
-
-        return memory
-    }
-
-    static func clear() {
-        UserDefaults.standard.removeObject(forKey: key)
-    }
-
-    static func restorableTime(from memory: PlaybackMemory) -> Double {
-        guard memory.currentTime.isFinite else { return 0 }
-        let lowerBoundedTime = max(0, memory.currentTime)
-        guard memory.duration.isFinite, memory.duration > 1 else {
-            return lowerBoundedTime
-        }
-        return min(lowerBoundedTime, memory.duration - 1)
     }
 }
 

@@ -33,18 +33,29 @@ private struct TrackEditDeferredMediaResult: Sendable {
 
 private enum TrackEditDeferredMediaLoader {
     nonisolated static func load(from snapshot: TrackEditDeferredMediaSnapshot) -> TrackEditDeferredMediaResult {
-        let root = snapshot.libraryRootSnapshot.isEmpty
-            ? LocalLibraryPaths.libraryRootURL
-            : URL(fileURLWithPath: snapshot.libraryRootSnapshot)
-        let folder = root
-            .appendingPathComponent("Tracks", isDirectory: true)
-            .appendingPathComponent(snapshot.trackID.uuidString, isDirectory: true)
+        guard !snapshot.libraryRootSnapshot.isEmpty else {
+            return TrackEditDeferredMediaResult(artworkData: nil, lyricsTTML: nil)
+        }
+        let paths = LibraryPaths(
+            rootURL: URL(
+                fileURLWithPath: snapshot.libraryRootSnapshot,
+                isDirectory: true
+            )
+        )
 
-        let artworkURL = resolveArtworkURL(folder: folder, preferredFileName: snapshot.artworkFileName)
+        let artworkURL = resolveArtworkURL(
+            paths: paths,
+            trackID: snapshot.trackID,
+            preferredFileName: snapshot.artworkFileName
+        )
         let artworkData = artworkURL.flatMap { try? Data(contentsOf: $0) }
 
-        let ttmlURL = snapshot.ttmlLyricsFileName.map { folder.appendingPathComponent($0) }
-        let lyricsURL = snapshot.lyricsFileName.map { folder.appendingPathComponent($0) }
+        let ttmlURL = snapshot.ttmlLyricsFileName.flatMap {
+            paths.trackAssetURL(for: snapshot.trackID, fileName: $0)
+        }
+        let lyricsURL = snapshot.lyricsFileName.flatMap {
+            paths.trackAssetURL(for: snapshot.trackID, fileName: $0)
+        }
         let lyricsTTML: String?
         if let ttmlURL,
            let text = try? String(contentsOf: ttmlURL, encoding: .utf8),
@@ -65,17 +76,24 @@ private enum TrackEditDeferredMediaLoader {
         )
     }
 
-    private nonisolated static func resolveArtworkURL(folder: URL, preferredFileName: String?) -> URL? {
+    private nonisolated static func resolveArtworkURL(
+        paths: LibraryPaths,
+        trackID: UUID,
+        preferredFileName: String?
+    ) -> URL? {
         let fileManager = FileManager.default
-        for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
-            let candidate = folder.appendingPathComponent(fileName)
+        for fileName in paths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
+            guard let candidate = paths.trackArtworkURL(
+                for: trackID,
+                fileName: fileName
+            ) else { continue }
             if fileManager.fileExists(atPath: candidate.path) {
                 return candidate
             }
         }
 
         guard let preferredFileName, !preferredFileName.isEmpty else { return nil }
-        return folder.appendingPathComponent(preferredFileName)
+        return paths.trackArtworkURL(for: trackID, fileName: preferredFileName)
     }
 }
 

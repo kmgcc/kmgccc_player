@@ -44,6 +44,8 @@
 		C03000000000000000000008 /* LegacyLibraryBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000018 /* LegacyLibraryBootstrap.swift */; };
 		C03000000000000000000009 /* LibraryUpgradeJournal.swift in Sources */ = {isa = PBXBuildFile; fileRef = C03000000000000000000019 /* LibraryUpgradeJournal.swift */; };
 		C0300000000000000000000A /* LibraryLocationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0300000000000000000001A /* LibraryLocationStore.swift */; };
+		C0300000000000000000000B /* LibrarySessionControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0300000000000000000001B /* LibrarySessionControllerTests.swift */; };
+		C0300000000000000000000C /* LibrarySessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0300000000000000000001C /* LibrarySessionController.swift */; };
 		F01000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000001 /* AppDelegate.swift */; };
 		F01000000000000000000002 /* DockController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000002 /* DockController.swift */; };
 		F01000000000000000000003 /* PlaybackCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000003 /* PlaybackCommands.swift */; };
@@ -90,6 +92,8 @@
 		C03000000000000000000018 /* LegacyLibraryBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LegacyLibraryBootstrap.swift; path = kmgccc_player/Services/LibrarySession/LegacyLibraryBootstrap.swift; sourceTree = "<group>"; };
 		C03000000000000000000019 /* LibraryUpgradeJournal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LibraryUpgradeJournal.swift; path = kmgccc_player/Services/LibrarySession/LibraryUpgradeJournal.swift; sourceTree = "<group>"; };
 		C0300000000000000000001A /* LibraryLocationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LibraryLocationStore.swift; path = kmgccc_player/Utilities/LibraryLocationStore.swift; sourceTree = "<group>"; };
+		C0300000000000000000001B /* LibrarySessionControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/LibrarySessionControllerTests.swift; sourceTree = "<group>"; };
+		C0300000000000000000001C /* LibrarySessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LibrarySessionController.swift; path = kmgccc_player/Services/LibrarySession/LibrarySessionController.swift; sourceTree = "<group>"; };
 		E01000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = kmgccc_player/AppDelegate.swift; sourceTree = "<group>"; };
 		E01000000000000000000002 /* DockController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DockController.swift; path = kmgccc_player/DockController.swift; sourceTree = "<group>"; };
 		E01000000000000000000003 /* PlaybackCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlaybackCommands.swift; path = kmgccc_player/PlaybackCommands.swift; sourceTree = "<group>"; };
@@ -275,6 +279,8 @@
 				C03000000000000000000018 /* LegacyLibraryBootstrap.swift */,
 				C03000000000000000000019 /* LibraryUpgradeJournal.swift */,
 				C0300000000000000000001A /* LibraryLocationStore.swift */,
+				C0300000000000000000001B /* LibrarySessionControllerTests.swift */,
+				C0300000000000000000001C /* LibrarySessionController.swift */,
 			);
 			name = Tests;
 			sourceTree = "<group>";
@@ -565,6 +571,8 @@
 				C03000000000000000000008 /* LegacyLibraryBootstrap.swift in Sources */,
 				C03000000000000000000009 /* LibraryUpgradeJournal.swift in Sources */,
 				C0300000000000000000000A /* LibraryLocationStore.swift in Sources */,
+				C0300000000000000000000B /* LibrarySessionControllerTests.swift in Sources */,
+				C0300000000000000000000C /* LibrarySessionController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

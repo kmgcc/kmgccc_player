@@ -24,6 +24,7 @@ final class PreferenceStatsService {
 
     /// Set of track IDs with unsaved changes.
     private var dirtyTrackIDs: Set<UUID> = []
+    private weak var libraryService: LocalLibraryService?
 
     // MARK: - Browsing-burst Detection
 
@@ -45,7 +46,12 @@ final class PreferenceStatsService {
         return recentSkipTimestamps.count >= Self.browsingBurstThreshold
     }
 
-    private init() {}
+    init() {}
+
+    func bindPersistence(to libraryService: LocalLibraryService) {
+        precondition(self.libraryService == nil || self.libraryService === libraryService)
+        self.libraryService = libraryService
+    }
 
     // MARK: - Stats Access
 
@@ -253,9 +259,9 @@ final class PreferenceStatsService {
             for trackID in tracksToSave {
                 if let track = provider(trackID) {
                     if synchronously {
-                        LocalLibraryService.shared.writeMetaOnly(for: track, reason: "playbackStats")
+                        persistenceService.writeMetaOnly(for: track, reason: "playbackStats")
                     } else {
-                        LocalLibraryService.shared.writeMetaOnlyInBackground(for: track, reason: "playbackStats")
+                        persistenceService.writeMetaOnlyInBackground(for: track, reason: "playbackStats")
                     }
                     dirtyTrackIDs.remove(trackID)
                     savedCount += 1
@@ -283,7 +289,7 @@ final class PreferenceStatsService {
 
     /// Save stats for a specific track immediately.
     func saveStats(for track: Track) {
-        LocalLibraryService.shared.writeMetaOnlyInBackground(for: track, reason: "playbackStats")
+        persistenceService.writeMetaOnlyInBackground(for: track, reason: "playbackStats")
 
         dirtyTrackIDs.remove(track.id)
     }
@@ -314,6 +320,11 @@ final class PreferenceStatsService {
     func clearCache() {
         statsCache.removeAll()
         dirtyTrackIDs.removeAll()
+        recentSkipTimestamps.removeAll()
+    }
+
+    private var persistenceService: LocalLibraryService {
+        libraryService ?? .shared
     }
 
     /// Get statistics summary for debugging.

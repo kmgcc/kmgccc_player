@@ -611,10 +611,12 @@ struct LibraryDetailHeaderView: View {
                 switch config {
                 case .playlist(let playlist, _):
                     let playlistID = playlist.id
+                    let libraryPaths = libraryVM.libraryPaths
                     let didSave = await Task.detached(priority: .utility) {
                         LocalLibraryService.savePlaylistCustomArtworkDataOnDisk(
                             playlistID: playlistID,
-                            pngData: pngData
+                            pngData: pngData,
+                            paths: libraryPaths
                         )
                     }.value
                     if didSave {
@@ -794,10 +796,12 @@ struct LibraryDetailHeaderView: View {
                 let didSave: Bool
                 if let generatedPNGData {
                     let playlistID = playlist.id
+                    let libraryPaths = libraryVM.libraryPaths
                     didSave = await Task.detached(priority: .utility) {
                         LocalLibraryService.savePlaylistGeneratedArtworkDataOnDisk(
                             playlistID: playlistID,
-                            pngData: generatedPNGData
+                            pngData: generatedPNGData,
+                            paths: libraryPaths
                         )
                     }.value
                 } else {
@@ -1102,6 +1106,7 @@ struct ArtistInfoEditSheet: View {
 struct AlbumInfoEditSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(CoverDownloadService.self) private var coverDownloadService
     @Environment(NetEaseCoverService.self) private var netEaseCoverService
     @EnvironmentObject private var themeStore: ThemeStore
@@ -1180,7 +1185,8 @@ struct AlbumInfoEditSheet: View {
             load()
             coverCoordinator = CoverSearchCoordinator(
                 coverDownloadService: coverDownloadService,
-                netEaseCoverService: netEaseCoverService
+                netEaseCoverService: netEaseCoverService,
+                qqMusicCoverService: cacheServices.qqMusicCoverService
             )
         }
         .onDisappear {

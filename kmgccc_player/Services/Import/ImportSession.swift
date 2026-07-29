@@ -67,9 +67,13 @@ final class ImportSession {
     private(set) var finalizedTrackIDs: Set<UUID> = []
     private(set) var committedTrackIDs: Set<UUID> = []
 
-    init(id: UUID = UUID(), fileManager: FileManager = .default) throws {
+    init(
+        id: UUID = UUID(),
+        paths: LibraryPaths,
+        fileManager: FileManager = .default
+    ) throws {
         self.id = id
-        let root = StorageLocations.importStagingRootURL
+        let root = paths.importStagingRootURL
         self.stagingDirectoryURL = root
             .appendingPathComponent(id.uuidString, isDirectory: true)
         try fileManager.createDirectory(

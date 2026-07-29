@@ -32,15 +32,18 @@ actor QQMusicCoverService {
 
     private let helper: QQMusicHelperProcess
     private let session: URLSession
+    private let cacheRootURL: URL
     private let metadataTTL: TimeInterval = 7 * 24 * 60 * 60
     private var inFlightMetadata: [String: Task<[QQMusicArtworkCandidate], Error>] = [:]
 
     init(
         helper: QQMusicHelperProcess = .shared,
-        session: URLSession = QQMusicCoverService.makeDefaultSession()
+        session: URLSession = QQMusicCoverService.makeDefaultSession(),
+        cacheRootURL: URL = StorageLocations.qqMusicCoverCacheURL
     ) {
         self.helper = helper
         self.session = session
+        self.cacheRootURL = cacheRootURL
     }
 
     func searchCoverCandidates(
@@ -441,7 +444,7 @@ actor QQMusicCoverService {
     }
 
     private func cacheRoot() -> URL {
-        StorageLocations.qqMusicCoverCacheURL
+        cacheRootURL
     }
 
     private nonisolated static func score(

@@ -18,6 +18,7 @@ struct HomeView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -315,6 +316,8 @@ struct HomeView: View {
                 playlists: homeVM.playlists,
                 preferenceRanking: homeVM.preferenceRanking,
                 libraryVM: libraryVM,
+                playlistArtworkPipeline: cacheServices.playlistArtworkPipeline,
+                artworkDerivativeStore: cacheServices.artworkDerivativeStore,
                 mode: mode,
                 sectionOrder: settings.homeSectionOrder
             )

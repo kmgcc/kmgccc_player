@@ -206,7 +206,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     // MARK: - Smart Shuffle Integration
 
-    private let smartController = SmartPlaybackController()
+    private let smartController: SmartPlaybackController
 
     // MARK: - Timer
 
@@ -236,7 +236,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         analysisMixerNode
     }
 
-    init() {
+    init(smartController: SmartPlaybackController = SmartPlaybackController()) {
+        self.smartController = smartController
         self.volume = AppSettings.shared.volume
         // Engine is now lazily initialized on first access (see `engine` property)
         setupSmartController()
@@ -813,6 +814,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let request = AudioPrepRequest(
             trackID: track.id,
             libraryRelativePath: track.libraryRelativePath,
+            libraryRootSnapshot: track.libraryRootSnapshot,
             fileBookmarkData: track.fileBookmarkData,
             titleForLog: track.title
         )
@@ -1353,6 +1355,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         let request = AudioPrepRequest(
             trackID: nextTrack.id,
             libraryRelativePath: nextTrack.libraryRelativePath,
+            libraryRootSnapshot: nextTrack.libraryRootSnapshot,
             fileBookmarkData: nextTrack.fileBookmarkData,
             titleForLog: nextTrack.title
         )

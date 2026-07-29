@@ -197,17 +197,28 @@ final class FileImportService: FileImportServiceProtocol {
 
     private let repository: LibraryRepositoryProtocol
     private let libraryService: LocalLibraryService
+    nonisolated let paths: LibraryPaths
     private let importEnrichmentService: ImportEnrichmentService
+    private let qqMusicCoverService: QQMusicCoverService
+    private let lyricsSearchCoordinator: LyricsSearchCoordinator
+    private let amllDBService: AMLLDBService
     private var importInProgress = false
 
     init(
         repository: LibraryRepositoryProtocol,
-        libraryService: LocalLibraryService? = nil,
-        importEnrichmentService: ImportEnrichmentService
+        libraryService: LocalLibraryService,
+        importEnrichmentService: ImportEnrichmentService,
+        qqMusicCoverService: QQMusicCoverService = .shared,
+        lyricsSearchCoordinator: LyricsSearchCoordinator = .shared,
+        amllDBService: AMLLDBService = .shared
     ) {
         self.repository = repository
-        self.libraryService = libraryService ?? LocalLibraryService.shared
+        self.libraryService = libraryService
+        self.paths = libraryService.paths
         self.importEnrichmentService = importEnrichmentService
+        self.qqMusicCoverService = qqMusicCoverService
+        self.lyricsSearchCoordinator = lyricsSearchCoordinator
+        self.amllDBService = amllDBService
         Log.debug("FileImportService initialized", category: .import)
     }
 
@@ -293,7 +304,7 @@ final class FileImportService: FileImportServiceProtocol {
         let cancellationToken = ImportCancellationToken()
         let importSession: ImportSession
         do {
-            importSession = try ImportSession()
+            importSession = try ImportSession(paths: paths)
         } catch {
             Log.error(
                 "[Import] failed to create import session: \(error.localizedDescription)",
@@ -758,7 +769,7 @@ final class FileImportService: FileImportServiceProtocol {
         )
 
         let cancellationToken = ImportCancellationToken()
-        guard let importSession = try? ImportSession() else { return nil }
+        guard let importSession = try? ImportSession(paths: paths) else { return nil }
         defer { importSession.cleanupStaging() }
         let output = await Self.performImportTask(
             index: 0,
@@ -1043,24 +1054,18 @@ final class FileImportService: FileImportServiceProtocol {
             )
         }
 
+        let capturedPaths = paths
         try await Task.detached(priority: .userInitiated) { @Sendable in
             let fileManager = FileManager.default
-            try fileManager.createDirectory(
-                at: LocalLibraryPaths.libraryRootURL,
-                withIntermediateDirectories: true
-            )
-            try fileManager.createDirectory(
-                at: LocalLibraryPaths.tracksRootURL,
-                withIntermediateDirectories: true
-            )
-            try fileManager.createDirectory(
-                at: LocalLibraryPaths.playlistsRootURL,
-                withIntermediateDirectories: true
-            )
+            try capturedPaths.createRequiredDirectories(fileManager: fileManager)
 
             for file in stagedFiles {
                 try await cancellationToken.checkCancellation()
-                let destinationURL = LocalLibraryPaths.libraryURL(from: file.libraryRelativePath)
+                guard let destinationURL = capturedPaths.libraryURL(
+                    from: file.libraryRelativePath
+                ) else {
+                    throw CocoaError(.fileWriteInvalidFileName)
+                }
                 let destinationFolder = destinationURL.deletingLastPathComponent()
                 try fileManager.createDirectory(
                     at: destinationFolder,
@@ -1137,8 +1142,10 @@ final class FileImportService: FileImportServiceProtocol {
     private func cleanupFailedImportResidue(reason: String) async -> TrackDirectoryCleanupReport {
         let tracks = await repository.fetchTracks(in: nil)
         let referencedTrackIDs = Set(tracks.map(\.id))
+        let capturedPaths = paths
         let report = await Task.detached(priority: .utility) { @Sendable in
             LibraryMaintenanceService().cleanupFailedImportTrackDirectories(
+                tracksRootURL: capturedPaths.tracksRootURL,
                 referencedTrackIDs: referencedTrackIDs,
                 importActivity: LibraryImportActivitySnapshot(
                     isImporting: false,
@@ -1164,7 +1171,8 @@ final class FileImportService: FileImportServiceProtocol {
             libraryRelativePath: payload.libraryRelativePath,
             artworkData: payload.artworkData,
             ttmlLyricText: payload.ttmlLyricText,
-            lyricsText: payload.lyricsText
+            lyricsText: payload.lyricsText,
+            libraryRootSnapshot: paths.rootURL.path
         )
     }
     
@@ -1529,10 +1537,13 @@ final class FileImportService: FileImportServiceProtocol {
                         needsAlbumArtwork: snapshot.needsAlbumArtwork
                     )
                 )
-                group.addTask {
+                group.addTask { [qqMusicCoverService, lyricsSearchCoordinator, amllDBService] in
                     await Self.performImmediateEnrichmentTask(
                         snapshot: snapshot,
-                        cancellationToken: cancellationToken
+                        cancellationToken: cancellationToken,
+                        qqMusicCoverService: qqMusicCoverService,
+                        lyricsSearchCoordinator: lyricsSearchCoordinator,
+                        amllDBService: amllDBService
                     )
                 }
             }
@@ -1618,10 +1629,13 @@ final class FileImportService: FileImportServiceProtocol {
                             needsAlbumArtwork: snapshot.needsAlbumArtwork
                         )
                     )
-                    group.addTask {
+                    group.addTask { [qqMusicCoverService, lyricsSearchCoordinator, amllDBService] in
                         await Self.performImmediateEnrichmentTask(
                             snapshot: snapshot,
-                            cancellationToken: cancellationToken
+                            cancellationToken: cancellationToken,
+                            qqMusicCoverService: qqMusicCoverService,
+                            lyricsSearchCoordinator: lyricsSearchCoordinator,
+                            amllDBService: amllDBService
                         )
                     }
                 }
@@ -1805,7 +1819,10 @@ final class FileImportService: FileImportServiceProtocol {
 
     nonisolated private static func performImmediateEnrichmentTask(
         snapshot: ImportEnrichmentSnapshot,
-        cancellationToken: ImportCancellationToken
+        cancellationToken: ImportCancellationToken,
+        qqMusicCoverService: QQMusicCoverService,
+        lyricsSearchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService
     ) async -> ImportEnrichmentTaskOutput {
         if (try? await cancellationToken.checkCancellation()) == nil {
             return ImportEnrichmentTaskOutput(
@@ -1828,7 +1845,9 @@ final class FileImportService: FileImportServiceProtocol {
                 title: snapshot.title,
                 artist: snapshot.artist,
                 album: snapshot.album,
-                duration: snapshot.duration
+                duration: snapshot.duration,
+                lyricsSearchCoordinator: lyricsSearchCoordinator,
+                amllDBService: amllDBService
             )
             : nil
         async let coverOutcome: ImportCoverLookupOutcome? = snapshot.needsCover
@@ -1836,7 +1855,8 @@ final class FileImportService: FileImportServiceProtocol {
                 title: snapshot.title,
                 artist: snapshot.artist,
                 album: snapshot.album,
-                duration: snapshot.duration
+                duration: snapshot.duration,
+                qqMusicCoverService: qqMusicCoverService
             )
             : nil
 
@@ -2680,40 +2700,6 @@ final class FileImportService: FileImportServiceProtocol {
         }
     }
 
-    nonisolated private static func importAudioFileToLibrary(
-        from sourceURL: URL,
-        trackId: UUID
-    ) throws -> String {
-        let fileManager = FileManager.default
-
-        try fileManager.createDirectory(
-            at: LocalLibraryPaths.libraryRootURL,
-            withIntermediateDirectories: true
-        )
-        try fileManager.createDirectory(
-            at: LocalLibraryPaths.tracksRootURL,
-            withIntermediateDirectories: true
-        )
-        try fileManager.createDirectory(
-            at: LocalLibraryPaths.playlistsRootURL,
-            withIntermediateDirectories: true
-        )
-
-        let trackFolder = LocalLibraryPaths.trackFolderURL(for: trackId)
-        try fileManager.createDirectory(at: trackFolder, withIntermediateDirectories: true)
-
-        let ext = sourceURL.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
-        let safeExt = ext.isEmpty ? "audio" : ext
-        let audioFileName = "audio.\(safeExt)"
-        let destURL = trackFolder.appendingPathComponent(audioFileName)
-
-        if fileManager.fileExists(atPath: destURL.path) {
-            try fileManager.removeItem(at: destURL)
-        }
-        try fileManager.copyItem(at: sourceURL, to: destURL)
-
-        return "Tracks/\(trackId.uuidString)/\(audioFileName)"
-    }
 
     /// Final safety net before copying a file into the library: if we never
     /// determined a positive duration, confirm Core Audio can at least open the

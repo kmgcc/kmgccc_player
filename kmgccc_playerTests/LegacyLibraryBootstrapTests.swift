@@ -107,6 +107,63 @@ final class LegacyLibraryBootstrapTests: XCTestCase {
         XCTAssertEqual(journal.stage, .manifestWritten)
     }
 
+    func testStaleBookmarkRefreshesRegistryAfterValidatedLastKnownFallback() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.container) }
+        try FileManager.default.createDirectory(
+            at: fixture.root.appendingPathComponent("Tracks", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let initial = try makeBootstrap(registryURL: fixture.registry).run(
+            legacyRootURL: fixture.root
+        )
+        let libraryID = try XCTUnwrap(initial.context?.id)
+        let missingBookmarkRoot = fixture.container.appendingPathComponent("Missing", isDirectory: true)
+        let refreshedData = Data("refreshed-bookmark".utf8)
+        let bootstrap = LegacyLibraryBootstrap(
+            registryURL: fixture.registry,
+            bookmarkDataProvider: { _ in refreshedData },
+            bookmarkURLResolver: { _ in (missingBookmarkRoot, true) }
+        )
+
+        let restored = try bootstrap.run(legacyRootURL: fixture.root)
+        XCTAssertEqual(restored.context?.id, libraryID)
+        XCTAssertEqual(restored.context?.rootURL.standardizedFileURL, fixture.root.standardizedFileURL)
+        XCTAssertEqual(restored.context?.rootBookmarkData, refreshedData)
+        let registry = try MusicLibraryRegistryFile.load(from: fixture.registry)
+        XCTAssertEqual(registry.library(id: libraryID)?.rootBookmarkData, refreshedData)
+        XCTAssertEqual(registry.library(id: libraryID)?.lastKnownPath, fixture.root.standardizedFileURL.path)
+    }
+
+    func testLastKnownFallbackRejectsManifestIdentityMismatch() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.container) }
+        try FileManager.default.createDirectory(
+            at: fixture.root.appendingPathComponent("Tracks", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        _ = try makeBootstrap(registryURL: fixture.registry).run(legacyRootURL: fixture.root)
+        var manifest = try MusicLibraryManifest.read(
+            from: LibraryPaths(rootURL: fixture.root).manifestURL
+        )
+        manifest = MusicLibraryManifest(
+            libraryID: UUID(),
+            displayName: manifest.displayName,
+            mode: manifest.mode,
+            createdAt: manifest.createdAt,
+            updatedAt: manifest.updatedAt
+        )
+        try manifest.write(to: LibraryPaths(rootURL: fixture.root).manifestURL)
+        let missingBookmarkRoot = fixture.container.appendingPathComponent("Missing", isDirectory: true)
+        let bootstrap = LegacyLibraryBootstrap(
+            registryURL: fixture.registry,
+            bookmarkDataProvider: { _ in Data("unused".utf8) },
+            bookmarkURLResolver: { _ in (missingBookmarkRoot, true) }
+        )
+
+        XCTAssertThrowsError(try bootstrap.run(legacyRootURL: fixture.root))
+    }
+
     private func makeBootstrap(registryURL: URL) -> LegacyLibraryBootstrap {
         LegacyLibraryBootstrap(
             registryURL: registryURL,

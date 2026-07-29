@@ -16,8 +16,13 @@ nonisolated struct LibraryDiskSnapshot: Sendable {
 }
 
 nonisolated struct LibraryDiskScanner: Sendable {
+    private let paths: LibraryPaths
     private static let manifestFileName = ".kmgccc-library-manifest.json"
     private static let manifestSchemaVersion = 1
+
+    init(paths: LibraryPaths = LocalLibraryPaths.capturedPaths()) {
+        self.paths = paths
+    }
 
     func scanAll() -> LibraryDiskSnapshot {
         scanIncremental()
@@ -25,7 +30,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
 
     func scanIncremental() -> LibraryDiskSnapshot {
         let start = Date()
-        let rootURL = LocalLibraryPaths.libraryRootURL
+        let rootURL = paths.rootURL
         let manifestLoad = loadManifest(at: rootURL.appendingPathComponent(Self.manifestFileName))
         let previousManifest = manifestLoad.manifest
         let now = Date()
@@ -80,7 +85,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
     }
 
     func scanTracksOnly() -> [ScannedTrackMeta] {
-        scanTracks(using: loadManifestForActiveRoot(), rootURL: LocalLibraryPaths.libraryRootURL, now: Date()).values
+        scanTracks(using: loadManifestForActiveRoot(), rootURL: paths.rootURL, now: Date()).values
     }
 
     // MARK: - Tracks
@@ -91,8 +96,8 @@ nonisolated struct LibraryDiskScanner: Sendable {
         now: Date
     ) -> ScanResult<ScannedTrackMeta, ManifestTrackEntry> {
         let fileManager = FileManager()
-        let scanner = MusicLibraryScanner()
-        let folders = directDirectories(at: LocalLibraryPaths.tracksRootURL)
+        let scanner = MusicLibraryScanner(paths: paths)
+        let folders = directDirectories(at: paths.tracksRootURL)
         var values: [ScannedTrackMeta] = []
         var manifestEntries: [String: ManifestTrackEntry] = [:]
         var cached = 0
@@ -157,7 +162,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
     // MARK: - Playlist Sidecars
 
     func loadPlaylistSidecars() -> [PlaylistSidecar] {
-        scanPlaylists(using: loadManifestForActiveRoot(), rootURL: LocalLibraryPaths.libraryRootURL, now: Date()).values
+        scanPlaylists(using: loadManifestForActiveRoot(), rootURL: paths.rootURL, now: Date()).values
     }
 
     private func scanPlaylists(
@@ -166,7 +171,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
         now: Date
     ) -> ScanResult<PlaylistSidecar, ManifestSidecarEntry<PlaylistSidecar>> {
         let decoder = makeDecoder()
-        let files = directFiles(at: LocalLibraryPaths.playlistsRootURL)
+        let files = directFiles(at: paths.playlistsRootURL)
             .filter { $0.pathExtension.lowercased() == "json" }
 
         return scanJSONSidecars(
@@ -186,7 +191,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
     // MARK: - Artist Sidecars
 
     func loadArtistSidecars() -> [(sidecar: ArtistSidecar, folderURL: URL)] {
-        scanArtists(using: loadManifestForActiveRoot(), rootURL: LocalLibraryPaths.libraryRootURL, now: Date()).values
+        scanArtists(using: loadManifestForActiveRoot(), rootURL: paths.rootURL, now: Date()).values
     }
 
     private func scanArtists(
@@ -195,7 +200,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
         now: Date
     ) -> ScanResult<(sidecar: ArtistSidecar, folderURL: URL), ManifestSidecarEntry<ArtistSidecar>> {
         let decoder = makeDecoder()
-        let files = directDirectories(at: LocalLibraryPaths.artistsRootURL)
+        let files = directDirectories(at: paths.artistsRootURL)
             .map { $0.appendingPathComponent("meta.json") }
 
         return scanJSONSidecars(
@@ -215,7 +220,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
     // MARK: - Album Sidecars
 
     func loadAlbumSidecars() -> [(sidecar: AlbumSidecar, folderURL: URL)] {
-        scanAlbums(using: loadManifestForActiveRoot(), rootURL: LocalLibraryPaths.libraryRootURL, now: Date()).values
+        scanAlbums(using: loadManifestForActiveRoot(), rootURL: paths.rootURL, now: Date()).values
     }
 
     private func scanAlbums(
@@ -224,7 +229,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
         now: Date
     ) -> ScanResult<(sidecar: AlbumSidecar, folderURL: URL), ManifestSidecarEntry<AlbumSidecar>> {
         let decoder = makeDecoder()
-        let files = directDirectories(at: LocalLibraryPaths.albumsRootURL)
+        let files = directDirectories(at: paths.albumsRootURL)
             .map { $0.appendingPathComponent("meta.json") }
 
         return scanJSONSidecars(
@@ -304,7 +309,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
     // MARK: - Manifest
 
     private func loadManifestForActiveRoot() -> LibraryManifest? {
-        loadManifest(at: LocalLibraryPaths.libraryRootURL.appendingPathComponent(Self.manifestFileName)).manifest
+        loadManifest(at: paths.rootURL.appendingPathComponent(Self.manifestFileName)).manifest
     }
 
     private func loadManifest(at url: URL) -> ManifestLoad {

@@ -61,6 +61,9 @@ private struct TrackDeletionMemorySnapshot {
 @MainActor
 final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private let libraryService: LocalLibraryService
+    private let preferenceStatsService: PreferenceStatsService
+    private let searchIndex: LibrarySearchIndex
+    private let paths: LibraryPaths
     private let fileManager = FileManager.default
     private let indexContext: ModelContext?
     private var changeHandler: LibraryRepositoryChangeHandler?
@@ -74,10 +77,24 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private var artistEntries: [ArtistEntry] = []
     private var albumEntries: [AlbumEntry] = []
     private let metadataSync = LibraryMetadataSync()
+    private let artworkDerivativeStore: ArtworkDerivativeCacheStore
+    private let playlistArtworkPipeline: PlaylistArtworkPipeline
 
-    init(modelContext: ModelContext? = nil, libraryService: LocalLibraryService? = nil) {
+    init(
+        modelContext: ModelContext? = nil,
+        libraryService: LocalLibraryService = .shared,
+        preferenceStatsService: PreferenceStatsService = .shared,
+        searchIndex: LibrarySearchIndex = .shared,
+        artworkDerivativeStore: ArtworkDerivativeCacheStore = .shared,
+        playlistArtworkPipeline: PlaylistArtworkPipeline = .shared
+    ) {
         self.indexContext = modelContext
-        self.libraryService = libraryService ?? LocalLibraryService.shared
+        self.libraryService = libraryService
+        self.preferenceStatsService = preferenceStatsService
+        self.searchIndex = searchIndex
+        self.artworkDerivativeStore = artworkDerivativeStore
+        self.playlistArtworkPipeline = playlistArtworkPipeline
+        self.paths = libraryService.paths
     }
 
     func setChangeHandler(_ handler: LibraryRepositoryChangeHandler?) {
@@ -90,8 +107,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         libraryService.ensureLibraryFolders()
         playlistItemAddedAtMap.removeAll()
 
+        let capturedPaths = paths
         let snapshot = await Task.detached { @Sendable in
-            LibraryDiskScanner().scanAll()
+            LibraryDiskScanner(paths: capturedPaths).scanAll()
         }.value
 
         let trackMetas = uniqueTrackMetas(snapshot.trackMetas)
@@ -165,8 +183,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         scheduleSearchIndexUpsert(for: [track], reason: "initialImport")
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
+        let capturedPaths = paths
         let (artistSidecars, albumSidecars) = await Task.detached { @Sendable in
-            let scanner = LibraryDiskScanner()
+            let scanner = LibraryDiskScanner(paths: capturedPaths)
             return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
         }.value
         let (artists, albums) = metadataSync.sync(
@@ -187,8 +206,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         scheduleSearchIndexUpsert(for: tracks, reason: "initialImport")
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
+        let capturedPaths = paths
         let (artistSidecars, albumSidecars) = await Task.detached { @Sendable in
-            let scanner = LibraryDiskScanner()
+            let scanner = LibraryDiskScanner(paths: capturedPaths)
             return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
         }.value
         let (artists, albums) = metadataSync.sync(
@@ -291,8 +311,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             category: .library
         )
 
+        let capturedPaths = paths
         let metas = await Task.detached { @Sendable in
-            MusicLibraryScanner().scanTracks(ids: uniqueIDs)
+            MusicLibraryScanner(paths: capturedPaths).scanTracks(ids: uniqueIDs)
         }.value
         let refreshedTracks = metas.map(buildTrack)
         let refreshedByID = Dictionary(uniqueKeysWithValues: refreshedTracks.map { ($0.id, $0) })
@@ -313,7 +334,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         rebuildTrackIndexCache()
         scheduleSearchIndexRebuild(reason: "refreshTracks")
         let (artistSidecars, albumSidecars) = await Task.detached { @Sendable in
-            let scanner = LibraryDiskScanner()
+            let scanner = LibraryDiskScanner(paths: capturedPaths)
             return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
         }.value
         let (artists, albums) = metadataSync.sync(
@@ -687,11 +708,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     func clearIndexCacheAndRebuild() async {
         clearTrackIndexCache()
-        for url in TrackIndexStorePaths.relatedStoreFiles where fileManager.fileExists(atPath: url.path)
+        for url in TrackIndexStorePaths.relatedStoreFiles(in: paths) where fileManager.fileExists(atPath: url.path)
         {
             try? fileManager.removeItem(at: url)
         }
-        await LibrarySearchIndex.shared.removeStoreFiles()
+        await searchIndex.removeStoreFiles()
         allTracks.removeAll()
         playlists.removeAll()
         runtimeArtists.removeAll()
@@ -788,13 +809,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     private func buildTrack(from meta: ScannedTrackMeta) -> Track {
-        let audioURL = LocalLibraryPaths.libraryURL(from: meta.libraryRelativePath)
-        let isAvailable = fileManager.fileExists(atPath: audioURL.path)
+        let audioURL = paths.libraryURL(from: meta.libraryRelativePath)
+        let isAvailable = audioURL.map { fileManager.fileExists(atPath: $0.path) } ?? false
         let persistedStats = meta.preferenceStats
             ?? meta.playCount.map { TrackPreferenceStats.fromLegacy(playCount: max($0, 0)) }
             ?? TrackPreferenceStats()
 
-        PreferenceStatsService.shared.replaceStats(for: meta.id, with: persistedStats)
+        preferenceStatsService.replaceStats(for: meta.id, with: persistedStats)
 
         let track = Track(
             id: meta.id,
@@ -824,7 +845,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             lyricsText: nil
         )
 
-        track.libraryRootSnapshot = LocalLibraryPaths.libraryRootURL.path
+        track.libraryRootSnapshot = paths.rootURL.path
         track.audioFileName = meta.audioFileName
         track.artworkFileName = meta.artworkFileName
         track.lyricsFileName = meta.lyricsFileName
@@ -900,8 +921,10 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
 
         let referencedTrackIDs = Set(allTracks.map(\.id))
+        let capturedPaths = paths
         let cleanupReport = await Task.detached(priority: .utility) { @Sendable in
             LibraryMaintenanceService().cleanupFailedImportTrackDirectories(
+                tracksRootURL: capturedPaths.tracksRootURL,
                 referencedTrackIDs: referencedTrackIDs,
                 importActivity: importActivity,
                 reason: reason
@@ -1095,7 +1118,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             for track in uniqueTracks {
                 track.releaseTransientMediaResources()
             }
-            PreferenceStatsService.shared.removeStats(for: deletedTrackIDSet)
+            preferenceStatsService.removeStats(for: deletedTrackIDSet)
             deleteTrackIndexEntries(ids: deletedTrackIDs)
             scheduleSearchIndexDeletion(ids: deletedTrackIDs, reason: reason)
         }
@@ -1129,9 +1152,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         let failedFolderDeletes = await performBackgroundTrackDeletionCleanup(cleanupPlan)
 
         await ArtworkLoader.clearMemoryCache()
-        await ArtworkDerivativeCacheStore.shared.clearMemory()
+        await artworkDerivativeStore.clearMemory()
         await ArtworkAssetStore.shared.clearTrackDeletionResidue()
-        await PlaylistArtworkPipeline.shared.clearMemory()
+        await playlistArtworkPipeline.clearMemory()
 
         let memoryAfterCleanup = TrackDeletionMemorySnapshot.capture()
         let elapsed = startedAt.duration(to: ContinuousClock.now)
@@ -1339,7 +1362,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private func scheduleSearchIndexRebuild(reason: String) {
         let sources = makeSearchDocumentSources(for: allTracks)
         Task(priority: .utility) {
-            await LibrarySearchIndex.shared.scheduleFullRebuild(from: sources, reason: reason)
+            await searchIndex.scheduleFullRebuild(from: sources, reason: reason)
         }
     }
 
@@ -1347,19 +1370,19 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         let sources = makeSearchDocumentSources(for: tracks)
         guard !sources.isEmpty else { return }
         Task(priority: .utility) {
-            await LibrarySearchIndex.shared.upsertDocuments(sources, reason: reason)
+            await searchIndex.upsertDocuments(sources, reason: reason)
         }
     }
 
     private func scheduleSearchIndexDeletion(ids: [UUID], reason: String) {
         guard !ids.isEmpty else { return }
         Task(priority: .utility) {
-            await LibrarySearchIndex.shared.deleteTrackIDs(ids, reason: reason)
+            await searchIndex.deleteTrackIDs(ids, reason: reason)
         }
     }
 
     private func makeSearchDocumentSources(for tracks: [Track]) -> [SearchDocumentSource] {
-        let statsByTrackID = PreferenceStatsService.shared.getStats(for: tracks.map(\.id))
+        let statsByTrackID = preferenceStatsService.getStats(for: tracks.map(\.id))
         return tracks.map { track in
             let stats = statsByTrackID[track.id] ?? TrackPreferenceStats()
             let folderURL = track.resolvedTrackFolderURL()
@@ -1435,7 +1458,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         )
 
         let startedAt = ProcessInfo.processInfo.systemUptime
-        let statsByTrackID = PreferenceStatsService.shared.getStats(for: uniqueTracks.map(\.id))
+        let statsByTrackID = preferenceStatsService.getStats(for: uniqueTracks.map(\.id))
         let snapshots = uniqueTracks.map { track in
             TrackPersistenceSnapshot(
                 track: track,
@@ -1447,11 +1470,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             for: min(10.0, max(1.5, Double(uniqueTracks.count) * 0.15 + 1.5))
         )
 
+        let capturedPaths = paths
         let results = await Task.detached(priority: .utility) { @Sendable in
             snapshots.map { snapshot in
                 autoreleasepool {
                     LocalLibraryService.persistTrackSnapshotOnBackground(
                         snapshot,
+                        paths: capturedPaths,
                         mode: mode,
                         reason: reason
                     )

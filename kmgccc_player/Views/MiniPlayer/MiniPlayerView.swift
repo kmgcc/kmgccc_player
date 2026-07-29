@@ -19,6 +19,7 @@ struct MiniPlayerView: View {
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
@@ -140,6 +141,7 @@ struct MiniPlayerView: View {
         .sheet(isPresented: $isShowingExternalMatchEditor) {
             ExternalPlaybackInfoEditorView(
                 presentation: playbackCoordinator.presentation,
+                metadataStore: cacheServices.externalPlaybackMetadataStore,
                 onSaved: { onlyOffsetChanged in
                     playbackCoordinator.invalidateExternalPlaybackResolution(onlyOffsetChanged: onlyOffsetChanged)
                 }
@@ -447,7 +449,7 @@ struct MiniPlayerView: View {
         let presentation = playbackCoordinator.presentation
         if presentation.source == .local,
            let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
-            let image = await TrackArtworkCache.shared.thumbnail(for: source)
+            let image = await cacheServices.trackArtworkCache.thumbnail(for: source)
             guard !Task.isCancelled else { return }
             if let image {
                 artworkImage = image
@@ -1376,11 +1378,11 @@ struct AppleMusicPlaybackModeSlider: View {
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
     let libraryVM = LibraryViewModel(repository: StubLibraryRepository())
-    let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
+    let appleMusicAdapter = AppleMusicPlaybackAdapter(previewLibraryVM: libraryVM)
     let playbackCoordinator = PlaybackCoordinator(
         playerVM: playerVM,
         appleMusicAdapter: appleMusicAdapter,
-        systemNowPlayingProvider: SystemNowPlayingProvider(libraryVM: libraryVM)
+        systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryVM: libraryVM)
     )
     let uiState = UIStateViewModel()
 

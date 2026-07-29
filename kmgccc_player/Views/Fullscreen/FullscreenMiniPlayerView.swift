@@ -78,6 +78,7 @@ struct FullscreenMiniPlayerView: View {
 
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
@@ -417,7 +418,7 @@ struct FullscreenMiniPlayerView: View {
     private func loadArtworkThumbnail() async {
         let presentation = playbackCoordinator.presentation
         if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
-            let image = await TrackArtworkCache.shared.thumbnail(for: source)
+            let image = await cacheServices.trackArtworkCache.thumbnail(for: source)
             guard !Task.isCancelled else { return }
             if let image {
                 artworkImage = image
@@ -914,11 +915,11 @@ private nonisolated enum MiniPlayerFGDiagnostics {
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
     let libraryVM = LibraryViewModel(repository: StubLibraryRepository())
-    let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
+    let appleMusicAdapter = AppleMusicPlaybackAdapter(previewLibraryVM: libraryVM)
     let playbackCoordinator = PlaybackCoordinator(
         playerVM: playerVM,
         appleMusicAdapter: appleMusicAdapter,
-        systemNowPlayingProvider: SystemNowPlayingProvider(libraryVM: libraryVM)
+        systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryVM: libraryVM)
     )
 
     let track = Track(

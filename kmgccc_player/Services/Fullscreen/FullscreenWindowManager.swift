@@ -43,6 +43,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
     weak var playbackCoordinator: PlaybackCoordinator?
     weak var lyricsVM: LyricsViewModel?
     weak var ledMeterProvider: LEDMeterServiceProvider?
+    weak var cacheServices: LibraryCacheServices?
     weak var skinManager: SkinManager?
     weak var uiState: UIStateViewModel?
     weak var coverDownloadService: CoverDownloadService?
@@ -82,6 +83,7 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         playbackCoordinator: PlaybackCoordinator,
         lyricsVM: LyricsViewModel,
         ledMeterProvider: LEDMeterServiceProvider,
+        cacheServices: LibraryCacheServices,
         skinManager: SkinManager,
         uiState: UIStateViewModel
     ) {
@@ -90,8 +92,42 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         self.playbackCoordinator = playbackCoordinator
         self.lyricsVM = lyricsVM
         self.ledMeterProvider = ledMeterProvider
+        self.cacheServices = cacheServices
         self.skinManager = skinManager
         self.uiState = uiState
+    }
+
+    func releaseLibrarySession() async {
+        if presentationMode == .embeddedInWindow {
+            closeFullscreenPlayerInWindow()
+        }
+
+        // AppKit ignores close requests during native fullscreen animation.
+        // This policy is pure and covered independently from NSWindow timing.
+        var releaseState = FullscreenDeferredReleaseState()
+        releaseLoop: while true {
+            switch releaseState.nextAction(
+                isTransitioning: isTransitioning,
+                hasWindow: fullscreenWindow != nil
+            ) {
+            case .waitForTransition:
+                try? await Task.sleep(for: .milliseconds(25))
+            case .requestWindowClose:
+                closeFullscreenWindow()
+            case .complete:
+                break releaseLoop
+            }
+        }
+
+        fullscreenLyricsVM = nil
+        playerVM = nil
+        libraryVM = nil
+        playbackCoordinator = nil
+        lyricsVM = nil
+        ledMeterProvider = nil
+        cacheServices = nil
+        coverDownloadService = nil
+        netEaseCoverService = nil
     }
 
     func configureEditorServices(
@@ -200,19 +236,21 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
 
         let contentView: AnyView
         if let libraryVM,
+           let cacheServices,
            let coverDownloadService,
            let netEaseCoverService,
            let uiState {
             contentView = AnyView(
                 baseContentView
                     .environment(libraryVM)
+                    .environment(cacheServices)
                     .environment(uiState)
                     .environment(coverDownloadService)
                     .environment(netEaseCoverService)
             )
         } else {
             Log.error(
-                "Fullscreen editor dependencies missing: libraryVM=\(libraryVM != nil), coverDownloadService=\(coverDownloadService != nil), netEaseCoverService=\(netEaseCoverService != nil), uiState=\(uiState != nil)",
+                "Fullscreen editor dependencies missing: libraryVM=\(libraryVM != nil), cacheServices=\(cacheServices != nil), coverDownloadService=\(coverDownloadService != nil), netEaseCoverService=\(netEaseCoverService != nil), uiState=\(uiState != nil)",
                 category: .fullscreen
             )
             contentView = AnyView(baseContentView)

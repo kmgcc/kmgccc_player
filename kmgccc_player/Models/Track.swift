@@ -99,21 +99,6 @@ final class Track {
     /// TTML lyrics file name inside the track folder (e.g. "lyrics.ttml").
     var ttmlLyricsFileName: String?
 
-    // MARK: - Playback Stats (Migrated)
-    /// MIGRATED: All playback stats have been migrated to preferenceStats via PreferenceStatsService.
-    /// This property is kept deprecated to avoid breaking legacy references if any.
-    /// Use `PreferenceStatsService.shared.getStats(for: id).playCount` instead.
-    @available(*, deprecated, message: "Use PreferenceStatsService.shared.getStats(for: id).playCount")
-    @MainActor
-    var playCount: Int {
-        get {
-            PreferenceStatsService.shared.getStats(for: id).playCount
-        }
-        set {
-            // No-op: stats are managed through PreferenceStatsService
-            // This setter exists to prevent breaking old code during migration
-        }
-    }
 
     // MARK: - Lyrics
 
@@ -205,7 +190,11 @@ final class Track {
     /// - Returns: ResolveResult containing URL (if accessible), refreshed bookmark (if stale), and new availability status.
     func resolveFileURL() -> ResolveResult {
         if !libraryRelativePath.isEmpty {
-            let localURL = LocalLibraryPaths.libraryURL(from: libraryRelativePath)
+            guard let paths = capturedLibraryPaths,
+                  let localURL = paths.libraryURL(from: libraryRelativePath)
+            else {
+                return ResolveResult(url: nil, refreshedBookmarkData: nil, newAvailability: .missing)
+            }
             if FileManager.default.fileExists(atPath: localURL.path) {
                 return ResolveResult(
                     url: localURL, refreshedBookmarkData: nil, newAvailability: .available)
@@ -284,49 +273,47 @@ final class Track {
 
     // MARK: - Persistence URL Resolution (root-snapshot aware)
 
-    /// Resolve the track folder URL using the stored root snapshot.
-    /// Falls back to the current active library root if no snapshot is stored.
+    /// Resolve the track folder URL using the root captured by its session.
     func resolvedTrackFolderURL() -> URL? {
-        let root: URL
-        if !libraryRootSnapshot.isEmpty {
-            root = URL(fileURLWithPath: libraryRootSnapshot)
-        } else {
-            root = LocalLibraryPaths.libraryRootURL
-        }
-        return root.appendingPathComponent("Tracks", isDirectory: true)
-            .appendingPathComponent(id.uuidString, isDirectory: true)
+        capturedLibraryPaths?.trackFolderURL(for: id)
+    }
+
+    private var capturedLibraryPaths: LibraryPaths? {
+        guard !libraryRootSnapshot.isEmpty else { return nil }
+        return LibraryPaths(rootURL: URL(fileURLWithPath: libraryRootSnapshot, isDirectory: true))
     }
 
     func resolvedAudioURL() -> URL? {
+        guard let paths = capturedLibraryPaths else { return nil }
         guard !audioFileName.isEmpty else {
             guard !libraryRelativePath.isEmpty else { return nil }
-            return LocalLibraryPaths.libraryURL(from: libraryRelativePath)
+            return paths.libraryURL(from: libraryRelativePath)
         }
-        return resolvedTrackFolderURL()?.appendingPathComponent(audioFileName)
+        return paths.trackAssetURL(for: id, fileName: audioFileName)
     }
 
     func resolvedArtworkURL() -> URL? {
-        guard let folder = resolvedTrackFolderURL() else { return nil }
+        guard let paths = capturedLibraryPaths else { return nil }
         let fileManager = FileManager.default
-        for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: artworkFileName) {
-            let url = folder.appendingPathComponent(fileName)
+        for fileName in paths.trackArtworkCandidateFileNames(preferredFileName: artworkFileName) {
+            guard let url = paths.trackArtworkURL(for: id, fileName: fileName) else { continue }
             if fileManager.fileExists(atPath: url.path) {
                 return url
             }
         }
 
         guard let artworkFileName, !artworkFileName.isEmpty else { return nil }
-        return folder.appendingPathComponent(artworkFileName)
+        return paths.trackArtworkURL(for: id, fileName: artworkFileName)
     }
 
     func resolvedLyricsURL() -> URL? {
-        guard let lyricsFileName else { return nil }
-        return resolvedTrackFolderURL()?.appendingPathComponent(lyricsFileName)
+        guard let lyricsFileName, let paths = capturedLibraryPaths else { return nil }
+        return paths.trackAssetURL(for: id, fileName: lyricsFileName)
     }
 
     func resolvedTTMLURL() -> URL? {
-        guard let ttmlLyricsFileName else { return nil }
-        return resolvedTrackFolderURL()?.appendingPathComponent(ttmlLyricsFileName)
+        guard let ttmlLyricsFileName, let paths = capturedLibraryPaths else { return nil }
+        return paths.trackAssetURL(for: id, fileName: ttmlLyricsFileName)
     }
 
     // MARK: - Lazy Loading

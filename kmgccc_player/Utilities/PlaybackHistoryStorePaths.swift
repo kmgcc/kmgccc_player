@@ -10,7 +10,7 @@ import Foundation
 enum PlaybackHistoryStorePaths {
     static let directoryName = "PlaybackHistory"
     static let storeFileName = "PlaybackHistory.sqlite"
-    private static let legacyMigrationKeyPrefix = "playbackHistory.libraryStoreMigration.v2"
+    private static let legacyMigrationOwnerKey = "playbackHistory.legacyStoreMigration.owner.v3"
 
     /// Playback history is user-owned library data, not a regenerable cache.
     static func directoryURL(in paths: LibraryPaths) -> URL {
@@ -75,22 +75,28 @@ enum PlaybackHistoryStorePaths {
         fileManager: FileManager,
         defaults: UserDefaults
     ) {
-        let migrationKey = "\(legacyMigrationKeyPrefix).\(libraryID.uuidString)"
-        guard !defaults.bool(forKey: migrationKey) else { return }
+        let existingOwner = defaults.string(forKey: legacyMigrationOwnerKey).flatMap(UUID.init(uuidString:))
+        let ownership = LegacyLibraryMigrationOwnership(ownerLibraryID: existingOwner)
+        let destinationRoot = destination
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        guard ownership.canClaim(
+            libraryID: libraryID,
+            destinationRoot: destinationRoot,
+            upgradedLegacyRoot: LibraryLocationStore.activeLibraryRootURL
+        ) else { return }
 
         if fileManager.fileExists(atPath: destination.path) {
-            defaults.set(true, forKey: migrationKey)
+            defaults.set(libraryID.uuidString, forKey: legacyMigrationOwnerKey)
             return
         }
 
         let legacy = legacyStoreURL
         guard fileManager.fileExists(atPath: legacy.path) else {
-            defaults.set(true, forKey: migrationKey)
+            defaults.set(libraryID.uuidString, forKey: legacyMigrationOwnerKey)
             return
         }
 
-        // SQLite may have live WAL/SHM companions. Copy them as a group so a
-        // first launch after the feature upgrade does not lose committed events.
         var didFail = false
         for suffix in ["", "-wal", "-shm"] {
             let sourceURL = URL(fileURLWithPath: legacy.path + suffix)
@@ -114,7 +120,7 @@ enum PlaybackHistoryStorePaths {
             }
             return
         }
-        defaults.set(true, forKey: migrationKey)
+        defaults.set(libraryID.uuidString, forKey: legacyMigrationOwnerKey)
     }
 
     private static func stableLegacyLibraryID(for rootURL: URL) -> UUID {

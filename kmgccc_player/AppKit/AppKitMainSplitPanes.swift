@@ -20,6 +20,7 @@ struct AppKitMainSidebarPaneRoot: View {
            let lyricsVM = appSession.lyricsVM,
            let ledMeterProvider = appSession.ledMeterProvider,
            let importEnrichmentService = appSession.importEnrichmentService,
+           let cacheServices = appSession.cacheServices,
             let skinManager = appSession.skinManager {
             SidebarView()
                 .environment(AppSettings.shared)
@@ -30,6 +31,8 @@ struct AppKitMainSidebarPaneRoot: View {
                .environment(lyricsVM)
                .environment(ledMeterProvider)
                .environment(importEnrichmentService)
+
+               .environment(cacheServices)
                .environment(skinManager)
                .environmentObject(ThemeStore.shared)
                 .environment(\.libraryPresentedAccentColor, ThemeStore.shared.accentColor)
@@ -65,6 +68,7 @@ struct AppKitMainContentPaneRoot: View {
            let lyricsVM = appSession.lyricsVM,
            let ledMeterProvider = appSession.ledMeterProvider,
            let importEnrichmentService = appSession.importEnrichmentService,
+           let cacheServices = appSession.cacheServices,
            let skinManager = appSession.skinManager {
             contentView(
                 uiState: uiState,
@@ -74,6 +78,7 @@ struct AppKitMainContentPaneRoot: View {
                 lyricsVM: lyricsVM,
                 ledMeterProvider: ledMeterProvider,
                 importEnrichmentService: importEnrichmentService,
+                cacheServices: cacheServices,
                 skinManager: skinManager
             )
         } else {
@@ -98,6 +103,7 @@ struct AppKitMainContentPaneRoot: View {
         lyricsVM: LyricsViewModel,
         ledMeterProvider: LEDMeterServiceProvider,
         importEnrichmentService: ImportEnrichmentService,
+        cacheServices: LibraryCacheServices,
         skinManager: SkinManager
     ) -> some View {
         let homeMode = isHomeMode(uiState: uiState, libraryVM: libraryVM)
@@ -212,6 +218,8 @@ struct AppKitMainContentPaneRoot: View {
                 .environment(lyricsVM)
                 .environment(ledMeterProvider)
                 .environment(importEnrichmentService)
+
+                .environment(cacheServices)
                 .environment(skinManager)
                 .environment(coverDownloadService)
                 .environment(netEaseCoverService)
@@ -319,6 +327,8 @@ struct AppKitMainContentPaneRoot: View {
             .environment(lyricsVM)
             .environment(ledMeterProvider)
             .environment(importEnrichmentService)
+
+            .environment(cacheServices)
             .environment(skinManager)
             .environment(coverDownloadService)
             .environment(netEaseCoverService)
@@ -474,6 +484,7 @@ struct AppKitMainLyricsPaneRoot: View {
            let lyricsVM = appSession.lyricsVM,
            let ledMeterProvider = appSession.ledMeterProvider,
            let importEnrichmentService = appSession.importEnrichmentService,
+           let cacheServices = appSession.cacheServices,
            let skinManager = appSession.skinManager {
             LyricsPanelView(hostContainer: .appKitInspector)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -488,6 +499,8 @@ struct AppKitMainLyricsPaneRoot: View {
             .environment(lyricsVM)
             .environment(ledMeterProvider)
             .environment(importEnrichmentService)
+
+            .environment(cacheServices)
             .environment(skinManager)
             .environmentObject(ThemeStore.shared)
             .environment(\.libraryPresentedAccentColor, ThemeStore.shared.accentColor)

@@ -138,6 +138,8 @@ final class PlaylistPageController {
     private var libraryVM: LibraryViewModel?
     private var playerVM: PlayerViewModel?
     private var uiState: UIStateViewModel?
+    private var headerColorExtractor: HeaderColorExtractor?
+    private var playlistArtworkPipeline: PlaylistArtworkPipeline?
 
     private var rebuildTask: Task<Void, Never>?
     private var snapshotUpdateTask: Task<Void, Never>?
@@ -186,11 +188,14 @@ final class PlaylistPageController {
     func bind(
         libraryVM: LibraryViewModel,
         playerVM: PlayerViewModel,
-        uiState: UIStateViewModel
+        uiState: UIStateViewModel,
+        cacheServices: LibraryCacheServices
     ) {
         self.libraryVM = libraryVM
         self.playerVM = playerVM
         self.uiState = uiState
+        self.headerColorExtractor = cacheServices.headerColorExtractor
+        self.playlistArtworkPipeline = cacheServices.playlistArtworkPipeline
     }
 
     func bindCollectionList(libraryVM: LibraryViewModel, uiState: UIStateViewModel) {
@@ -344,6 +349,12 @@ final class PlaylistPageController {
     }
 
     func releaseSelectionStateForTeardown() {
+        cancelAllTasks(clearPage: true)
+        libraryVM = nil
+        playerVM = nil
+        uiState = nil
+        headerColorExtractor = nil
+        activeViewTokens.removeAll()
         isMultiselectMode = false
         selectedTrackIDs.removeAll()
         selectionAnchorTrackID = nil
@@ -819,17 +830,20 @@ final class PlaylistPageController {
             return libraryVM.playlistItemAddedAtMap[playlistID]
         }()
 
-        let sortableEntries = displayedTracks.map {
-            SortableTrackEntry(
-                id: $0.id,
-                title: $0.title,
-                artist: $0.artist,
-                duration: $0.duration,
-                playCount: Self.normalizedPlayCount(for: $0),
-                preferenceScore: Self.normalizedPreferenceScore(for: $0),
-                addedAt: $0.addedAt,
-                importedAt: $0.importedAt,
-                playlistItemAddedAt: playlistItemAddedAtMap?[$0.id]
+        let sortableEntries = displayedTracks.map { track in
+            let stats = libraryVM.preferenceStats(for: track.id)
+            return SortableTrackEntry(
+                id: track.id,
+                title: track.title,
+                artist: track.artist,
+                duration: track.duration,
+                playCount: max(stats.playCount, 0),
+                preferenceScore: stats.preferenceScoreCache.isFinite
+                    ? stats.preferenceScoreCache
+                    : 0,
+                addedAt: track.addedAt,
+                importedAt: track.importedAt,
+                playlistItemAddedAt: playlistItemAddedAtMap?[track.id]
             )
         }
         let searchHits = isSearching
@@ -1009,6 +1023,7 @@ final class PlaylistPageController {
         headerUpgradeTask?.cancel()
         headerHaloSeedTask?.cancel()
         let request = header.config.artworkRequest
+        guard let artworkResolver = libraryVM?.detailHeaderArtworkResolver else { return }
         let selectionIdentity = page.selectionIdentity
         let loadToken = UUID()
         let playbackActive = playerVM?.isPlaying == true
@@ -1017,7 +1032,7 @@ final class PlaylistPageController {
 
         headerResolveTask = Task(priority: playbackActive ? .utility : .userInitiated) { @MainActor in
             let immediateStart = ProcessInfo.processInfo.systemUptime
-            let immediate = DetailHeaderArtworkResolver.shared.resolveImmediately(for: request)
+            let immediate = artworkResolver.resolveImmediately(for: request)
             LyricsRuntimeProfile.increment("header.resolveImmediate.count")
             LyricsRuntimeProfile.addDuration(
                 "header.resolveImmediate",
@@ -1031,7 +1046,7 @@ final class PlaylistPageController {
             )
 
             let deferredStart = ProcessInfo.processInfo.systemUptime
-            let resolved = await DetailHeaderArtworkResolver.shared.resolveDeferredArtwork(for: request)
+            let resolved = await artworkResolver.resolveDeferredArtwork(for: request)
             LyricsRuntimeProfile.increment("header.resolveDeferred.count")
             LyricsRuntimeProfile.addDuration(
                 "header.resolveDeferred",
@@ -1112,10 +1127,11 @@ final class PlaylistPageController {
                     pixelSide: haloSeedPixelSide
                 )
                 : nil
-            async let upgradedHeader = PlaylistArtworkPipeline.shared.load(headerRequest)
+            guard let pipeline = self.playlistArtworkPipeline else { return }
+            async let upgradedHeader = pipeline.load(headerRequest)
             async let upgradedHaloSeed: NSImage? = {
                 guard let haloSeedRequest else { return nil }
-                return await PlaylistArtworkPipeline.shared.load(haloSeedRequest)
+                return await pipeline.load(haloSeedRequest)
             }()
 
             let headerImage = await upgradedHeader
@@ -1204,11 +1220,12 @@ final class PlaylistPageController {
         }
 
         headerColorTask?.cancel()
-        HeaderColorExtractor.shared.cancelPending()
+        guard let headerColorExtractor else { return }
+        headerColorExtractor.cancelPending()
         inFlightHeaderColorRequestKey = requestKey
 
         let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        if let cached = HeaderColorExtractor.shared.cachedResult(artworkIdentity: artworkIdentity, isDark: isDark) {
+        if let cached = headerColorExtractor.cachedResult(artworkIdentity: artworkIdentity, isDark: isDark) {
             commitHeaderColor(
                 accent: cached.accent,
                 palette: cached.palette,
@@ -1275,7 +1292,7 @@ final class PlaylistPageController {
 
             self.lastHeaderArtworkData = data
 
-            let result = await HeaderColorExtractor.shared.extract(
+            let result = await headerColorExtractor.extract(
                 from: data,
                 artworkIdentity: artworkIdentity,
                 isDark: currentScheme == .dark
@@ -1358,7 +1375,8 @@ final class PlaylistPageController {
         )
 
         headerHaloSeedTask = Task { @MainActor in
-            let seed = await PlaylistArtworkPipeline.shared.load(request)
+            guard let pipeline = self.playlistArtworkPipeline else { return }
+            let seed = await pipeline.load(request)
             guard !Task.isCancelled else { return }
             guard self.headerResolveToken == resolveToken else { return }
             guard self.page?.selectionIdentity == selectionIdentity else { return }
@@ -1379,7 +1397,8 @@ final class PlaylistPageController {
             artworkPrefetchTasks.removeValue(forKey: oldestKey)
         }
 
-        guard let task = PlaylistArtworkPipeline.shared.prefetch(requests, priority: priority) else { return }
+        guard let pipeline = playlistArtworkPipeline,
+              let task = pipeline.prefetch(requests, priority: priority) else { return }
         artworkPrefetchTasks[key] = task
 
         Task { @MainActor in
@@ -1435,7 +1454,7 @@ final class PlaylistPageController {
         headerHaloSeedTask?.cancel()
         headerLoadDispatchTask?.cancel()
         headerColorTask?.cancel()
-        HeaderColorExtractor.shared.cancelPending()
+        headerColorExtractor?.cancelPending()
         headerCurrentArtwork = nil
         headerIncomingArtwork = nil
         headerIncomingOpacity = 0
@@ -1444,7 +1463,7 @@ final class PlaylistPageController {
         haloSourceBlendOpacity = 1
         haloPresentationOpacity = 0
         if let identity,
-           let cached = HeaderColorExtractor.shared.cachedResult(artworkIdentity: identity)
+           let cached = headerColorExtractor?.cachedResult(artworkIdentity: identity)
         {
             headerAccentColor = cached.accent
             headerSemanticPalette = cached.palette
@@ -1471,7 +1490,7 @@ final class PlaylistPageController {
         guard scheme != lastHeaderColorScheme else { return }
 
         let isDark = (scheme == .dark)
-        if let cached = HeaderColorExtractor.shared.cachedResult(artworkIdentity: identity, isDark: isDark) {
+        if let cached = headerColorExtractor?.cachedResult(artworkIdentity: identity, isDark: isDark) {
             commitHeaderColor(
                 accent: cached.accent,
                 palette: cached.palette,
@@ -1486,8 +1505,9 @@ final class PlaylistPageController {
             isHeaderColorReady = false
 
             headerColorTask?.cancel()
+            guard let headerColorExtractor else { return }
             headerColorTask = Task(priority: .utility) { @MainActor in
-                let result = await HeaderColorExtractor.shared.extract(
+                let result = await headerColorExtractor.extract(
                     from: data,
                     artworkIdentity: identity,
                     isDark: isDark
@@ -1718,7 +1738,7 @@ final class PlaylistPageController {
                 entry: PlaylistHeaderData(
                     description: playlist.userDescription,
                     tracks: displayedTracks,
-                    artworkRevision: LocalLibraryService.shared.playlistArtworkRevision(playlistID: playlist.id)
+                    artworkRevision: libraryVM.playlistArtworkRevision(playlistID: playlist.id)
                 )
             )
         case .artist(let key):
@@ -2063,26 +2083,31 @@ final class PlaylistPageController {
     }
 
     private nonisolated static func resolvedArtworkURL(for track: PageTrackSource) -> URL? {
-        let root: URL
-        if track.libraryRootSnapshot.isEmpty {
-            root = LocalLibraryPaths.libraryRootURL
-        } else {
-            root = URL(fileURLWithPath: track.libraryRootSnapshot)
-        }
-        let folder = root
-            .appendingPathComponent("Tracks", isDirectory: true)
-            .appendingPathComponent(track.id.uuidString, isDirectory: true)
+        guard !track.libraryRootSnapshot.isEmpty else { return nil }
+        let paths = LibraryPaths(
+            rootURL: URL(
+                fileURLWithPath: track.libraryRootSnapshot,
+                isDirectory: true
+            )
+        )
 
         let fileManager = FileManager.default
-        for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: track.artworkFileName) {
-            let url = folder.appendingPathComponent(fileName)
+        for fileName in paths.trackArtworkCandidateFileNames(
+            preferredFileName: track.artworkFileName
+        ) {
+            guard let url = paths.trackArtworkURL(
+                for: track.id,
+                fileName: fileName
+            ) else { continue }
             if fileManager.fileExists(atPath: url.path) {
                 return url
             }
         }
 
-        guard let artworkFileName = track.artworkFileName, !artworkFileName.isEmpty else { return nil }
-        return folder.appendingPathComponent(artworkFileName)
+        guard let artworkFileName = track.artworkFileName,
+              !artworkFileName.isEmpty
+        else { return nil }
+        return paths.trackArtworkURL(for: track.id, fileName: artworkFileName)
     }
 
     private nonisolated static func compareSortableTracks(
@@ -2143,14 +2168,6 @@ final class PlaylistPageController {
         return lhs < rhs ? .orderedAscending : .orderedDescending
     }
 
-    private static func normalizedPlayCount(for track: Track) -> Int {
-        max(track.preferenceStats.playCount, 0)
-    }
-
-    private static func normalizedPreferenceScore(for track: Track) -> Double {
-        let score = track.preferenceScore
-        return score.isFinite ? score : 0
-    }
 
     private nonisolated static func formatDuration(_ duration: Double) -> String {
         guard duration.isFinite, duration > 0 else { return "0:00" }

@@ -19,11 +19,9 @@ struct LibraryAggregateStats {
     private var artistPlayCounts: [String: Metric] = [:]
     private var artistPreferenceScores: [String: Metric] = [:]
 
-    init(tracks: [Track]) {
-        let statsService = PreferenceStatsService.shared
-
+    init(tracks: [Track], preferenceStatsService: PreferenceStatsService) {
         for track in tracks {
-            let stats = statsService.getStats(for: track.id)
+            let stats = preferenceStatsService.getStats(for: track.id)
             let hasPreferenceData = stats.playCount > 0
                 || stats.preferenceScoreCache != 0
                 || stats.manualLikeState != .none

@@ -25,6 +25,7 @@ struct SidebarView: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LyricsViewModel.self) private var lyricsVM
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
@@ -375,13 +376,14 @@ struct SidebarView: View {
             }
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView()
+            SettingsView(hasActiveLibrarySession: true)
                 .environment(settings)
                 .environment(libraryVM)
                 .environment(playerVM)
                 .environment(playbackCoordinator)
                 .environment(lyricsVM)
                 .environment(ledMeterProvider)
+                .environment(cacheServices)
                 .environmentObject(themeStore)
         }
         .sheet(isPresented: $showingPlaylistSheet) {
@@ -847,6 +849,8 @@ private struct SidebarPlaylistThumbnail: View {
 
     @State private var image: NSImage?
     @State private var artworkChangeNonce = 0
+    @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(LibraryCacheServices.self) private var cacheServices
 
     private let side: CGFloat = 24
     private var pixelSide: CGFloat {
@@ -880,35 +884,45 @@ private struct SidebarPlaylistThumbnail: View {
     }
 
     private var taskIdentity: String {
-        let revision = Self.currentArtworkRevision(playlistID: playlistID) ?? "none"
+        let revision = libraryVM.playlistArtworkRevision(playlistID: playlistID) ?? "none"
         return "\(playlistID.uuidString)-\(refreshToken)-\(artworkChangeNonce)-\(revision)"
     }
 
     private func loadArtwork() async {
         guard let request = await Self.thumbnailRequest(
             playlistID: playlistID,
-            pixelSide: pixelSide
+            pixelSide: pixelSide,
+            paths: libraryVM.libraryPaths
         ) else {
             image = nil
             return
         }
-        image = await PlaylistArtworkPipeline.shared.load(request)
+        image = await cacheServices.playlistArtworkPipeline.load(request)
     }
 
     private static func thumbnailRequest(
         playlistID: UUID,
-        pixelSide: CGFloat
+        pixelSide: CGFloat,
+        paths: LibraryPaths
     ) async -> PlaylistArtworkRequest? {
         await Task.detached(priority: .utility) {
-            makeThumbnailRequest(playlistID: playlistID, pixelSide: pixelSide)
+            makeThumbnailRequest(
+                playlistID: playlistID,
+                pixelSide: pixelSide,
+                paths: paths
+            )
         }.value
     }
 
     private nonisolated static func makeThumbnailRequest(
         playlistID: UUID,
-        pixelSide: CGFloat
+        pixelSide: CGFloat,
+        paths: LibraryPaths
     ) -> PlaylistArtworkRequest? {
-        guard let sidecar = loadPlaylistSidecar(playlistID: playlistID) else {
+        guard let sidecar = loadPlaylistSidecar(
+            playlistID: playlistID,
+            paths: paths
+        ) else {
             return nil
         }
 
@@ -921,7 +935,7 @@ private struct SidebarPlaylistThumbnail: View {
         }
         guard let fileName, !fileName.isEmpty else { return nil }
 
-        let fileURL = LocalLibraryPaths.playlistsRootURL.appendingPathComponent(fileName)
+        guard let fileURL = paths.playlistAssetURL(fileName: fileName) else { return nil }
         let revision = sidecar.artworkRevision ?? fileName
         return PlaylistArtworkRequest(
             sourceIdentity: "sidebar-playlist-\(playlistID.uuidString)-\(revision)",
@@ -932,12 +946,11 @@ private struct SidebarPlaylistThumbnail: View {
         )
     }
 
-    private nonisolated static func currentArtworkRevision(playlistID: UUID) -> String? {
-        loadPlaylistSidecar(playlistID: playlistID)?.artworkRevision
-    }
-
-    private nonisolated static func loadPlaylistSidecar(playlistID: UUID) -> PlaylistSidecar? {
-        let url = LocalLibraryPaths.playlistURL(for: playlistID)
+    private nonisolated static func loadPlaylistSidecar(
+        playlistID: UUID,
+        paths: LibraryPaths
+    ) -> PlaylistSidecar? {
+        let url = paths.playlistURL(for: playlistID)
         guard let data = try? Data(contentsOf: url) else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601

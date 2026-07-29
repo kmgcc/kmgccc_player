@@ -251,6 +251,10 @@ nonisolated private struct PendingTrackEnrichmentPatch: Sendable {
 @Observable
 final class ImportEnrichmentService {
     private let repository: LibraryRepositoryProtocol
+    private let qqMusicCoverService: QQMusicCoverService
+    private let artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator
+    private let lyricsSearchCoordinator: LyricsSearchCoordinator
+    private let amllDBService: AMLLDBService
     private let maxConcurrent: Int
     private let maxAttemptsPerPart = 2
     private let flushBatchSize = 4
@@ -290,8 +294,19 @@ final class ImportEnrichmentService {
 
     var hasOutstandingWork: Bool { progress.hasOutstandingWork }
 
-    init(repository: LibraryRepositoryProtocol, maxConcurrent: Int = 2) {
+    init(
+        repository: LibraryRepositoryProtocol,
+        maxConcurrent: Int = 2,
+        qqMusicCoverService: QQMusicCoverService = .shared,
+        artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator = .shared,
+        lyricsSearchCoordinator: LyricsSearchCoordinator = .shared,
+        amllDBService: AMLLDBService = .shared
+    ) {
         self.repository = repository
+        self.qqMusicCoverService = qqMusicCoverService
+        self.artistArtworkProviderCoordinator = artistArtworkProviderCoordinator
+        self.lyricsSearchCoordinator = lyricsSearchCoordinator
+        self.amllDBService = amllDBService
         self.maxConcurrent = max(1, maxConcurrent)
         Log.info("[ImportEnrichment] service init", category: .import)
     }
@@ -923,7 +938,9 @@ final class ImportEnrichmentService {
                     title: title,
                     artist: artist,
                     album: album,
-                    duration: duration
+                    duration: duration,
+                    lyricsSearchCoordinator: self.lyricsSearchCoordinator,
+                    amllDBService: self.amllDBService
                 )
                 await self.completeLyrics(request: request, outcome: outcome)
             case .cover:
@@ -931,7 +948,8 @@ final class ImportEnrichmentService {
                     title: title,
                     artist: artist,
                     album: album,
-                    duration: duration
+                    duration: duration,
+                    qqMusicCoverService: self.qqMusicCoverService
                 )
                 await self.completeCover(request: request, outcome: outcome)
             case .trackMetadata:
@@ -949,7 +967,10 @@ final class ImportEnrichmentService {
                 let outcome = await MetadataEnrichmentWorker.fetchAlbumMetadata(album: album, artist: artist)
                 await self.completeAlbumMetadata(request: request, outcome: outcome)
             case .artistArtwork:
-                let outcome = await MetadataEnrichmentWorker.fetchArtistArtwork(artist: artist)
+                let outcome = await MetadataEnrichmentWorker.fetchArtistArtwork(
+                    artist: artist,
+                    artistArtworkProviderCoordinator: self.artistArtworkProviderCoordinator
+                )
                 await self.completeArtistArtwork(request: request, outcome: outcome)
             case .albumArtwork:
                 let outcome = await MetadataEnrichmentWorker.fetchAlbumArtwork(album: album, artist: artist)

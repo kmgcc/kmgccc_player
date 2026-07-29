@@ -104,56 +104,28 @@ struct KmgcccPlayerApp: App {
         #endif
 
         let bootstrap: LegacyLibraryBootstrapResult
-        let shouldUseLegacyFallback: Bool
         do {
             bootstrap = try LegacyLibraryBootstrap().run()
-            shouldUseLegacyFallback = false
         } catch {
             // A damaged registry must not be replaced by an empty one. Keep the
             // existing single-library startup path available until recovery UI loads.
             Log.error("[LibraryBootstrap] pre-container bootstrap failed: \(error)", category: .library)
             bootstrap = .noLibrary
-            shouldUseLegacyFallback = LegacyLibraryBootstrap.containsLegacyLibrary(
-                at: LibraryLocationStore.activeLibraryRootURL
-            )
         }
         let initialLibraryContext = bootstrap.context
 
+        // The app shell owns only an in-memory placeholder. A persistent
+        // TrackIndex container is created and released with each LibrarySession.
         let sharedModelContainer: ModelContainer = {
-            let schema = Schema([
-                TrackIndexEntry.self
-            ])
-            let modelConfiguration: ModelConfiguration
-            if let initialLibraryContext {
-                do {
-                    modelConfiguration = ModelConfiguration(
-                        schema: schema,
-                        url: try TrackIndexStorePaths.prepareStoreURL(in: initialLibraryContext.paths)
-                    )
-                } catch {
-                    fatalError("Could not prepare library index: \(error)")
-                }
-            } else if shouldUseLegacyFallback {
-                let fallbackPaths = LibraryPaths(rootURL: LibraryLocationStore.activeLibraryRootURL)
-                do {
-                    modelConfiguration = ModelConfiguration(
-                        schema: schema,
-                        url: try TrackIndexStorePaths.prepareStoreURL(in: fallbackPaths)
-                    )
-                } catch {
-                    fatalError("Could not prepare legacy library index: \(error)")
-                }
-            } else {
-                modelConfiguration = ModelConfiguration(
-                    schema: schema,
-                    isStoredInMemoryOnly: true
-                )
-            }
-
+            let schema = Schema([TrackIndexEntry.self])
+            let modelConfiguration = ModelConfiguration(
+                schema: schema,
+                isStoredInMemoryOnly: true
+            )
             do {
                 return try ModelContainer(for: schema, configurations: [modelConfiguration])
             } catch {
-                fatalError("Could not create ModelContainer: \(error)")
+                fatalError("Could not create placeholder ModelContainer: \(error)")
             }
         }()
 

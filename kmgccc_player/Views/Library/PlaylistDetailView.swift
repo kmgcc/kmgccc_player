@@ -24,6 +24,7 @@ struct PlaylistDetailView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(UIStateViewModel.self) private var uiState
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -125,7 +126,12 @@ struct PlaylistDetailView: View {
                     + "playbackCoord=\(ObjectIdentifier(playbackCoordinator).hashValue) "
                     + "uiState=\(ObjectIdentifier(uiState).hashValue)"
             )
-            pageController.bind(libraryVM: libraryVM, playerVM: playerVM, uiState: uiState)
+            pageController.bind(
+                libraryVM: libraryVM,
+                playerVM: playerVM,
+                uiState: uiState,
+                cacheServices: cacheServices
+            )
             pageController.appear(token: lifecycleToken)
             FirstUseHitchDiagnostics.end(token)
         }
@@ -900,8 +906,8 @@ private struct ScrollOffsetSensor: View {
         .environment(playerVM)
         .environment(PlaybackCoordinator(
             playerVM: playerVM,
-            appleMusicAdapter: AppleMusicPlaybackAdapter(libraryVM: libraryVM),
-            systemNowPlayingProvider: SystemNowPlayingProvider(libraryVM: libraryVM)
+            appleMusicAdapter: AppleMusicPlaybackAdapter(previewLibraryVM: libraryVM),
+            systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryVM: libraryVM)
         ))
         .environment(UIStateViewModel())
         .environmentObject(ThemeStore.shared)

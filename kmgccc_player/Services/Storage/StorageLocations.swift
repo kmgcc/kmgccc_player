@@ -28,6 +28,9 @@ nonisolated struct LibraryStorageLocations: Sendable, Equatable {
     var externalPlaybackArtworkURL: URL {
         artworkCacheRootURL.appendingPathComponent("ExternalPlayback", isDirectory: true)
     }
+    var externalPlaybackMetadataURL: URL {
+        libraryRootURL.appendingPathComponent("ExternalPlayback", isDirectory: true)
+    }
     var lyricsCacheRootURL: URL { paths.lyricsCacheRootURL }
     var amllDBCacheURL: URL {
         lyricsCacheRootURL.appendingPathComponent("AMLLDB", isDirectory: true)

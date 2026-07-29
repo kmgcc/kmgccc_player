@@ -224,6 +224,7 @@ struct FullscreenPlayerView: View {
 
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
@@ -742,6 +743,7 @@ struct FullscreenPlayerView: View {
     private func externalMatchEditorSheet() -> some View {
         ExternalPlaybackInfoEditorView(
             presentation: playbackCoordinator.presentation,
+            metadataStore: cacheServices.externalPlaybackMetadataStore,
             onSaved: { onlyOffsetChanged in
                 playbackCoordinator.invalidateExternalPlaybackResolution(onlyOffsetChanged: onlyOffsetChanged)
             }
@@ -4859,7 +4861,7 @@ struct FullscreenPlayerView: View {
         let snapshot: ArtworkAssetSnapshot?
         if display.source == .local,
            let source = playbackCoordinator.presentation.localTrack?.trackArtworkSource(fallbackData: display.artworkData) {
-            snapshot = await TrackArtworkCache.shared.snapshot(
+            snapshot = await cacheServices.trackArtworkCache.snapshot(
                 for: source,
                 fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
             )

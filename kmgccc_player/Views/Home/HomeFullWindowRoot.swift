@@ -35,6 +35,7 @@ struct HomeFullWindowRoot: View {
                    let lyricsVM = appSession.lyricsVM,
                    let ledMeterProvider = appSession.ledMeterProvider,
                    let importEnrichmentService = appSession.importEnrichmentService,
+                   let cacheServices = appSession.cacheServices,
                    let skinManager = appSession.skinManager {
                     HomeView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -49,6 +50,7 @@ struct HomeFullWindowRoot: View {
                         .environment(lyricsVM)
                         .environment(ledMeterProvider)
                         .environment(importEnrichmentService)
+                        .environment(cacheServices)
                         .environment(skinManager)
                         .environment(coverDownloadService)
                         .environment(netEaseCoverService)

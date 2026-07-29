@@ -327,8 +327,13 @@ struct PersistedPlaylistArtworkRecord {
 @MainActor
 final class LocalLibraryService {
 
-    static let shared = LocalLibraryService()
+    static let shared = LocalLibraryService(
+        paths: LocalLibraryPaths.capturedPaths(),
+        preferenceStatsService: .shared
+    )
 
+    nonisolated let paths: LibraryPaths
+    private let preferenceStatsService: PreferenceStatsService
     private let fileManager = FileManager.default
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -339,13 +344,16 @@ final class LocalLibraryService {
     private nonisolated let monitorSuppressionLock = NSLock()
     private nonisolated(unsafe) var monitorEventsSuppressedUntil: TimeInterval = 0
 
-    private init() {
+    init(paths: LibraryPaths, preferenceStatsService: PreferenceStatsService) {
+        self.paths = paths
+        self.preferenceStatsService = preferenceStatsService
         encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
 
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        preferenceStatsService.bindPersistence(to: self)
     }
 
     // MARK: - Library Setup
@@ -367,23 +375,23 @@ final class LocalLibraryService {
         let fileManager = FileManager.default
         do {
             try fileManager.createDirectory(
-                at: LocalLibraryPaths.libraryRootURL,
+                at: paths.rootURL,
                 withIntermediateDirectories: true
             )
             try fileManager.createDirectory(
-                at: LocalLibraryPaths.tracksRootURL,
+                at: paths.tracksRootURL,
                 withIntermediateDirectories: true
             )
             try fileManager.createDirectory(
-                at: LocalLibraryPaths.playlistsRootURL,
+                at: paths.playlistsRootURL,
                 withIntermediateDirectories: true
             )
             try fileManager.createDirectory(
-                at: LocalLibraryPaths.artistsRootURL,
+                at: paths.artistsRootURL,
                 withIntermediateDirectories: true
             )
             try fileManager.createDirectory(
-                at: LocalLibraryPaths.albumsRootURL,
+                at: paths.albumsRootURL,
                 withIntermediateDirectories: true
             )
         } catch {
@@ -396,7 +404,7 @@ final class LocalLibraryService {
     func importAudioFile(from sourceURL: URL, trackId: UUID) throws -> String {
         ensureLibraryFolders()
 
-        let trackFolder = LocalLibraryPaths.trackFolderURL(for: trackId)
+        let trackFolder = paths.trackFolderURL(for: trackId)
         try fileManager.createDirectory(at: trackFolder, withIntermediateDirectories: true)
 
         let ext = sourceURL.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -473,14 +481,16 @@ final class LocalLibraryService {
 
         let snapshot = TrackPersistenceSnapshot(
             track: track,
-            preferenceStats: PreferenceStatsService.shared.getStats(for: track.id)
+            preferenceStats: preferenceStatsService.getStats(for: track.id)
         )
         suppressMonitorEvents(for: 1.5)
+        let capturedPaths = paths
 
         Task.detached(priority: .utility) { @Sendable in
             _ = autoreleasepool {
                 LocalLibraryService.persistTrackSnapshotOnBackground(
                     snapshot,
+                    paths: capturedPaths,
                     mode: .metaOnly,
                     reason: reason
                 )
@@ -559,6 +569,7 @@ final class LocalLibraryService {
 
     nonisolated static func persistTrackSnapshotOnBackground(
         _ snapshot: TrackPersistenceSnapshot,
+        paths: LibraryPaths,
         mode: TrackPersistenceAssetMode,
         reason: String
     ) -> TrackPersistenceWriteResult {
@@ -567,7 +578,10 @@ final class LocalLibraryService {
         }
 
         do {
-            let existingReferences = loadTrackPersistenceReferencesOnBackground(for: snapshot.id)
+            let existingReferences = loadTrackPersistenceReferencesOnBackground(
+                for: snapshot.id,
+                paths: paths
+            )
             let finalReferences: TrackPersistenceReferences
 
             switch mode {
@@ -580,7 +594,10 @@ final class LocalLibraryService {
                     artwork: "not-requested"
                 )
             case .metaAndLyrics:
-                let trackFolder = try ensureTrackFolderOnBackground(for: snapshot.id)
+                let trackFolder = try ensureTrackFolderOnBackground(
+                    for: snapshot.id,
+                    paths: paths
+                )
                 finalReferences = try writeLyricsAssetsOnBackground(
                     snapshot: snapshot,
                     folder: trackFolder,
@@ -595,6 +612,7 @@ final class LocalLibraryService {
             case .metaAndArtwork:
                 let artworkFileName = try writeArtworkIfChangedOnBackground(
                     snapshot: snapshot,
+                    paths: paths,
                     reason: reason,
                     existingFileName: existingReferences.artworkFileName
                 )
@@ -605,9 +623,13 @@ final class LocalLibraryService {
                     ttmlLyricsFileName: existingReferences.ttmlLyricsFileName
                 )
             case .metaLyricsAndArtwork:
-                let trackFolder = try ensureTrackFolderOnBackground(for: snapshot.id)
+                let trackFolder = try ensureTrackFolderOnBackground(
+                    for: snapshot.id,
+                    paths: paths
+                )
                 let artworkFileName = try writeArtworkIfChangedOnBackground(
                     snapshot: snapshot,
+                    paths: paths,
                     reason: reason,
                     existingFileName: existingReferences.artworkFileName
                 )
@@ -624,7 +646,11 @@ final class LocalLibraryService {
                 )
             }
 
-            try writeTrackMetaOnBackground(snapshot: snapshot, references: finalReferences)
+            try writeTrackMetaOnBackground(
+                snapshot: snapshot,
+                paths: paths,
+                references: finalReferences
+            )
             return TrackPersistenceWriteResult(
                 trackID: snapshot.id,
                 references: finalReferences,
@@ -641,28 +667,31 @@ final class LocalLibraryService {
 
     private func ensureTrackFolder(for trackID: UUID) throws -> URL {
         ensureLibraryFolders()
-        let trackFolder = LocalLibraryPaths.trackFolderURL(for: trackID)
+        let trackFolder = paths.trackFolderURL(for: trackID)
         try fileManager.createDirectory(at: trackFolder, withIntermediateDirectories: true)
         return trackFolder
     }
 
-    private nonisolated static func ensureTrackFolderOnBackground(for trackID: UUID) throws -> URL {
+    private nonisolated static func ensureTrackFolderOnBackground(
+        for trackID: UUID,
+        paths: LibraryPaths
+    ) throws -> URL {
         let fileManager = FileManager.default
-        ensureLibraryFoldersOnBackground()
-        let trackFolder = LocalLibraryPaths.trackFolderURL(for: trackID)
+        ensureLibraryFoldersOnBackground(paths: paths)
+        let trackFolder = paths.trackFolderURL(for: trackID)
         try fileManager.createDirectory(at: trackFolder, withIntermediateDirectories: true)
         return trackFolder
     }
 
-    private nonisolated static func ensureLibraryFoldersOnBackground() {
+    private nonisolated static func ensureLibraryFoldersOnBackground(paths: LibraryPaths) {
         let fileManager = FileManager.default
         do {
             try fileManager.createDirectory(
-                at: LocalLibraryPaths.libraryRootURL,
+                at: paths.rootURL,
                 withIntermediateDirectories: true
             )
             try fileManager.createDirectory(
-                at: LocalLibraryPaths.tracksRootURL,
+                at: paths.tracksRootURL,
                 withIntermediateDirectories: true
             )
         } catch {
@@ -671,7 +700,7 @@ final class LocalLibraryService {
     }
 
     private func loadTrackPersistenceReferences(for trackID: UUID) -> TrackPersistenceReferences {
-        let metaURL = LocalLibraryPaths.trackMetaURL(for: trackID)
+        let metaURL = paths.trackMetaURL(for: trackID)
         guard let data = try? Data(contentsOf: metaURL),
               let sidecar = try? decoder.decode(TrackSidecar.self, from: data)
         else {
@@ -692,9 +721,10 @@ final class LocalLibraryService {
     }
 
     private nonisolated static func loadTrackPersistenceReferencesOnBackground(
-        for trackID: UUID
+        for trackID: UUID,
+        paths: LibraryPaths
     ) -> TrackPersistenceReferences {
-        let metaURL = LocalLibraryPaths.trackMetaURL(for: trackID)
+        let metaURL = paths.trackMetaURL(for: trackID)
         let decoder = makeJSONDecoder()
         guard let data = try? Data(contentsOf: metaURL),
               let sidecar = try? decoder.decode(TrackSidecar.self, from: data)
@@ -704,6 +734,7 @@ final class LocalLibraryService {
 
         let resolvedArtworkFileName = resolvedTrackArtworkFileNameOnBackground(
             for: trackID,
+            paths: paths,
             preferredFileName: sidecar.artworkFileName
         )
 
@@ -718,7 +749,7 @@ final class LocalLibraryService {
     private func writeTrackMeta(for track: Track, references: TrackPersistenceReferences) throws {
         _ = try ensureTrackFolder(for: track.id)
         let audioFileName = URL(fileURLWithPath: track.libraryRelativePath).lastPathComponent
-        let preferenceStats = PreferenceStatsService.shared.getStats(for: track.id)
+        let preferenceStats = preferenceStatsService.getStats(for: track.id)
         let sidecar = TrackSidecar(
             schemaVersion: 6,
             id: track.id,
@@ -762,15 +793,16 @@ final class LocalLibraryService {
         )
 
         let data = try encoder.encode(sidecar)
-        let metaURL = LocalLibraryPaths.trackMetaURL(for: track.id)
+        let metaURL = paths.trackMetaURL(for: track.id)
         try data.write(to: metaURL, options: .atomic)
     }
 
     private nonisolated static func writeTrackMetaOnBackground(
         snapshot: TrackPersistenceSnapshot,
+        paths: LibraryPaths,
         references: TrackPersistenceReferences
     ) throws {
-        _ = try ensureTrackFolderOnBackground(for: snapshot.id)
+        _ = try ensureTrackFolderOnBackground(for: snapshot.id, paths: paths)
         let audioFileName = URL(fileURLWithPath: snapshot.libraryRelativePath).lastPathComponent
         let sidecar = TrackSidecar(
             schemaVersion: 6,
@@ -815,7 +847,7 @@ final class LocalLibraryService {
         )
 
         let data = try makeJSONEncoder().encode(sidecar)
-        let metaURL = LocalLibraryPaths.trackMetaURL(for: snapshot.id)
+        let metaURL = paths.trackMetaURL(for: snapshot.id)
         try data.write(to: metaURL, options: .atomic)
     }
 
@@ -831,15 +863,17 @@ final class LocalLibraryService {
         )
         let existingArtworkURL = existingArtworkFileName.map { trackFolder.appendingPathComponent($0) }
         let existingArtworkData = existingArtworkURL.flatMap { try? Data(contentsOf: $0) }
-        let targetArtworkFileName = LocalLibraryPaths.preferredTrackArtworkFileName
-        let targetArtworkURL = LocalLibraryPaths.trackArtworkURL(
+        let targetArtworkFileName = LibraryPaths.preferredTrackArtworkFileName
+        guard let targetArtworkURL = paths.trackArtworkURL(
             for: track.id,
             fileName: targetArtworkFileName
-        )
+        ) else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
 
         let loadedData = track.loadArtworkDataIfNeeded()
         guard let data = loadedData, !data.isEmpty else {
-            let candidateFileNames = LocalLibraryPaths.trackArtworkCandidateFileNames(
+            let candidateFileNames = paths.trackArtworkCandidateFileNames(
                 preferredFileName: existingArtworkFileName
             )
             var removedAny = false
@@ -900,25 +934,32 @@ final class LocalLibraryService {
 
     private nonisolated static func writeArtworkIfChangedOnBackground(
         snapshot: TrackPersistenceSnapshot,
+        paths: LibraryPaths,
         reason: String,
         existingFileName: String? = nil
     ) throws -> String? {
         let fileManager = FileManager.default
-        let trackFolder = try ensureTrackFolderOnBackground(for: snapshot.id)
+        let trackFolder = try ensureTrackFolderOnBackground(
+            for: snapshot.id,
+            paths: paths
+        )
         let existingArtworkFileName = resolvedTrackArtworkFileNameOnBackground(
             for: snapshot.id,
+            paths: paths,
             preferredFileName: existingFileName
         )
         let existingArtworkURL = existingArtworkFileName.map { trackFolder.appendingPathComponent($0) }
         let existingArtworkData = existingArtworkURL.flatMap { try? Data(contentsOf: $0) }
-        let targetArtworkFileName = LocalLibraryPaths.preferredTrackArtworkFileName
-        let targetArtworkURL = LocalLibraryPaths.trackArtworkURL(
+        let targetArtworkFileName = LibraryPaths.preferredTrackArtworkFileName
+        guard let targetArtworkURL = paths.trackArtworkURL(
             for: snapshot.id,
             fileName: targetArtworkFileName
-        )
+        ) else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
 
         guard let data = snapshot.artworkData, !data.isEmpty else {
-            let candidateFileNames = LocalLibraryPaths.trackArtworkCandidateFileNames(
+            let candidateFileNames = paths.trackArtworkCandidateFileNames(
                 preferredFileName: existingArtworkFileName
             )
             var removedAny = false
@@ -1145,20 +1186,25 @@ final class LocalLibraryService {
     }
 
     private func resolvedTrackArtworkFileName(for trackID: UUID, preferredFileName: String?) -> String? {
-        let folder = LocalLibraryPaths.trackFolderURL(for: trackID)
+        let folder = paths.trackFolderURL(for: trackID)
         return resolvedTrackArtworkFileName(in: folder, preferredFileName: preferredFileName)
     }
 
     private nonisolated static func resolvedTrackArtworkFileNameOnBackground(
         for trackID: UUID,
+        paths: LibraryPaths,
         preferredFileName: String?
     ) -> String? {
-        let folder = LocalLibraryPaths.trackFolderURL(for: trackID)
-        return resolvedTrackArtworkFileNameOnBackground(in: folder, preferredFileName: preferredFileName)
+        let folder = paths.trackFolderURL(for: trackID)
+        return resolvedTrackArtworkFileNameOnBackground(
+            in: folder,
+            paths: paths,
+            preferredFileName: preferredFileName
+        )
     }
 
     private func resolvedTrackArtworkFileName(in folder: URL, preferredFileName: String?) -> String? {
-        for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
+        for fileName in paths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
             let candidateURL = folder.appendingPathComponent(fileName)
             if fileManager.fileExists(atPath: candidateURL.path) {
                 return fileName
@@ -1172,10 +1218,11 @@ final class LocalLibraryService {
 
     private nonisolated static func resolvedTrackArtworkFileNameOnBackground(
         in folder: URL,
+        paths: LibraryPaths,
         preferredFileName: String?
     ) -> String? {
         let fileManager = FileManager.default
-        for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
+        for fileName in paths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
             let candidateURL = folder.appendingPathComponent(fileName)
             if fileManager.fileExists(atPath: candidateURL.path) {
                 return fileName
@@ -1219,7 +1266,7 @@ final class LocalLibraryService {
     @discardableResult
     nonisolated func deleteTrackFolder(trackID: UUID) -> Bool {
         let fileManager = FileManager.default
-        let folder = LocalLibraryPaths.trackFolderURL(for: trackID)
+        let folder = paths.trackFolderURL(for: trackID)
         guard fileManager.fileExists(atPath: folder.path) else { return true }
 
         do {
@@ -1287,7 +1334,7 @@ final class LocalLibraryService {
 
         do {
             let data = try Self.makeJSONEncoder().encode(sidecar)
-            let url = LocalLibraryPaths.playlistURL(for: playlistID)
+            let url = paths.playlistURL(for: playlistID)
             try data.write(to: url, options: .atomic)
         } catch {
             Log.error("Failed to write playlist sidecar '\(name)': \(error)", category: .library)
@@ -1301,7 +1348,7 @@ final class LocalLibraryService {
     }
 
     func deletePlaylist(_ playlist: Playlist) {
-        let url = LocalLibraryPaths.playlistURL(for: playlist.id)
+        let url = paths.playlistURL(for: playlist.id)
         if fileManager.fileExists(atPath: url.path) {
             do {
                 try fileManager.removeItem(at: url)
@@ -1309,15 +1356,15 @@ final class LocalLibraryService {
                 Log.error("Failed to delete playlist sidecar '\(playlist.name)': \(error)", category: .library)
             }
         }
-        let artworkURL = LocalLibraryPaths.legacyPlaylistArtworkURL(for: playlist.id)
+        let artworkURL = paths.legacyPlaylistArtworkURL(for: playlist.id)
         if fileManager.fileExists(atPath: artworkURL.path) {
             try? fileManager.removeItem(at: artworkURL)
         }
-        let customArtworkURL = LocalLibraryPaths.playlistCustomArtworkURL(for: playlist.id)
+        let customArtworkURL = paths.playlistCustomArtworkURL(for: playlist.id)
         if fileManager.fileExists(atPath: customArtworkURL.path) {
             try? fileManager.removeItem(at: customArtworkURL)
         }
-        let generatedArtworkURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlist.id)
+        let generatedArtworkURL = paths.playlistGeneratedArtworkURL(for: playlist.id)
         if fileManager.fileExists(atPath: generatedArtworkURL.path) {
             try? fileManager.removeItem(at: generatedArtworkURL)
         }
@@ -1387,7 +1434,7 @@ final class LocalLibraryService {
         )
         do {
             let data = try Self.makeJSONEncoder().encode(updated)
-            let url = LocalLibraryPaths.playlistURL(for: playlistID)
+            let url = paths.playlistURL(for: playlistID)
             try data.write(to: url, options: .atomic)
             return true
         } catch {
@@ -1397,21 +1444,33 @@ final class LocalLibraryService {
     }
 
     func savePlaylistCustomArtwork(playlistID: UUID, image: NSImage) {
-        let fileURL = LocalLibraryPaths.playlistCustomArtworkURL(for: playlistID)
+        let fileURL = paths.playlistCustomArtworkURL(for: playlistID)
         guard writePNGArtwork(image, to: fileURL) else { return }
         savePlaylistCustomArtworkMetadata(playlistID: playlistID, fileURL: fileURL)
     }
 
     @discardableResult
     nonisolated func savePlaylistCustomArtworkData(playlistID: UUID, pngData: Data) -> Bool {
-        Self.savePlaylistCustomArtworkDataOnDisk(playlistID: playlistID, pngData: pngData)
+        Self.savePlaylistCustomArtworkDataOnDisk(
+            playlistID: playlistID,
+            pngData: pngData,
+            paths: paths
+        )
     }
 
     @discardableResult
-    nonisolated static func savePlaylistCustomArtworkDataOnDisk(playlistID: UUID, pngData: Data) -> Bool {
-        let fileURL = LocalLibraryPaths.playlistCustomArtworkURL(for: playlistID)
+    nonisolated static func savePlaylistCustomArtworkDataOnDisk(
+        playlistID: UUID,
+        pngData: Data,
+        paths: LibraryPaths
+    ) -> Bool {
+        let fileURL = paths.playlistCustomArtworkURL(for: playlistID)
         guard writeArtworkDataOnDisk(pngData, to: fileURL) else { return false }
-        return savePlaylistCustomArtworkMetadataOnDisk(playlistID: playlistID, fileURL: fileURL)
+        return savePlaylistCustomArtworkMetadataOnDisk(
+            playlistID: playlistID,
+            fileURL: fileURL,
+            paths: paths
+        )
     }
 
     @discardableResult
@@ -1420,7 +1479,7 @@ final class LocalLibraryService {
 
         // Delete old generated artwork file when switching to custom
         if let generatedFileName = existing?.generatedHeaderArtworkFileName {
-            let generatedURL = LocalLibraryPaths.playlistsRootURL
+            let generatedURL = paths.playlistsRootURL
                 .appendingPathComponent(generatedFileName)
             try? FileManager.default.removeItem(at: generatedURL)
         }
@@ -1436,17 +1495,22 @@ final class LocalLibraryService {
     }
 
     @discardableResult
-    private nonisolated static func savePlaylistCustomArtworkMetadataOnDisk(playlistID: UUID, fileURL: URL) -> Bool {
-        let existing = loadPlaylistSidecarFromDisk(playlistID: playlistID)
+    private nonisolated static func savePlaylistCustomArtworkMetadataOnDisk(
+        playlistID: UUID,
+        fileURL: URL,
+        paths: LibraryPaths
+    ) -> Bool {
+        let existing = loadPlaylistSidecarFromDisk(playlistID: playlistID, paths: paths)
 
         if let generatedFileName = existing?.generatedHeaderArtworkFileName {
-            let generatedURL = LocalLibraryPaths.playlistsRootURL
+            let generatedURL = paths.playlistsRootURL
                 .appendingPathComponent(generatedFileName)
             try? FileManager.default.removeItem(at: generatedURL)
         }
 
         return updatePlaylistArtworkMetadataOnDisk(
             playlistID: playlistID,
+            paths: paths,
             customFileName: fileURL.lastPathComponent,
             generatedFileName: nil,
             activeSource: .custom,
@@ -1460,7 +1524,7 @@ final class LocalLibraryService {
         image: NSImage,
         signature: String
     ) {
-        let fileURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlistID)
+        let fileURL = paths.playlistGeneratedArtworkURL(for: playlistID)
         guard writePNGArtwork(image, to: fileURL) else { return }
 
         let existing = loadPlaylistSidecar(playlistID: playlistID)
@@ -1484,27 +1548,33 @@ final class LocalLibraryService {
         playlistID: UUID,
         pngData: Data
     ) -> Bool {
-        Self.savePlaylistGeneratedArtworkDataOnDisk(playlistID: playlistID, pngData: pngData)
+        Self.savePlaylistGeneratedArtworkDataOnDisk(
+            playlistID: playlistID,
+            pngData: pngData,
+            paths: paths
+        )
     }
 
     @discardableResult
     nonisolated static func savePlaylistGeneratedArtworkDataOnDisk(
         playlistID: UUID,
-        pngData: Data
+        pngData: Data,
+        paths: LibraryPaths
     ) -> Bool {
-        let fileURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlistID)
+        let fileURL = paths.playlistGeneratedArtworkURL(for: playlistID)
         guard writeArtworkDataOnDisk(pngData, to: fileURL) else { return false }
 
-        let existing = loadPlaylistSidecarFromDisk(playlistID: playlistID)
+        let existing = loadPlaylistSidecarFromDisk(playlistID: playlistID, paths: paths)
 
         if let customFileName = existing?.customHeaderArtworkFileName {
-            let customURL = LocalLibraryPaths.playlistsRootURL
+            let customURL = paths.playlistsRootURL
                 .appendingPathComponent(customFileName)
             try? FileManager.default.removeItem(at: customURL)
         }
 
         return updatePlaylistArtworkMetadataOnDisk(
             playlistID: playlistID,
+            paths: paths,
             customFileName: nil,
             generatedFileName: fileURL.lastPathComponent,
             activeSource: .generated,
@@ -1520,7 +1590,7 @@ final class LocalLibraryService {
         tracks: [Track],
         image: NSImage
     ) -> Bool {
-        let fileURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlistID)
+        let fileURL = paths.playlistGeneratedArtworkURL(for: playlistID)
         guard writePNGArtwork(image, to: fileURL) else {
             debugArtworkPersistence(
                 "selectionIdentity=\(playlistID) source=generated filePath=\(fileURL.path) phase=regenerate save=failed reason=png-write-failed tracks=\(tracks.count)"
@@ -1532,7 +1602,7 @@ final class LocalLibraryService {
 
         // Delete old custom artwork file when switching to generated
         if let customFileName = existing?.customHeaderArtworkFileName {
-            let customURL = LocalLibraryPaths.playlistsRootURL
+            let customURL = paths.playlistsRootURL
                 .appendingPathComponent(customFileName)
             try? FileManager.default.removeItem(at: customURL)
         }
@@ -1555,11 +1625,14 @@ final class LocalLibraryService {
     }
 
     nonisolated func loadPlaylistSidecar(playlistID: UUID) -> PlaylistSidecar? {
-        Self.loadPlaylistSidecarFromDisk(playlistID: playlistID)
+        Self.loadPlaylistSidecarFromDisk(playlistID: playlistID, paths: paths)
     }
 
-    nonisolated static func loadPlaylistSidecarFromDisk(playlistID: UUID) -> PlaylistSidecar? {
-        let url = LocalLibraryPaths.playlistURL(for: playlistID)
+    nonisolated static func loadPlaylistSidecarFromDisk(
+        playlistID: UUID,
+        paths: LibraryPaths
+    ) -> PlaylistSidecar? {
+        let url = paths.playlistURL(for: playlistID)
         guard let data = try? Data(contentsOf: url),
               let sidecar = try? Self.makeJSONDecoder().decode(PlaylistSidecar.self, from: data)
         else { return nil }
@@ -1593,7 +1666,7 @@ final class LocalLibraryService {
         )
         do {
             let data = try Self.makeJSONEncoder().encode(updated)
-            let url = LocalLibraryPaths.playlistURL(for: playlistID)
+            let url = paths.playlistURL(for: playlistID)
             try data.write(to: url, options: .atomic)
             Self.postPlaylistArtworkDidChange(playlistID: playlistID)
             return true
@@ -1606,13 +1679,17 @@ final class LocalLibraryService {
     @discardableResult
     private nonisolated static func updatePlaylistArtworkMetadataOnDisk(
         playlistID: UUID,
+        paths: LibraryPaths,
         customFileName: String?,
         generatedFileName: String?,
         activeSource: PlaylistArtworkSource,
         generatedSignature: String?,
         artworkRevision: String?
     ) -> Bool {
-        guard let sidecar = loadPlaylistSidecarFromDisk(playlistID: playlistID) else { return false }
+        guard let sidecar = loadPlaylistSidecarFromDisk(
+            playlistID: playlistID,
+            paths: paths
+        ) else { return false }
         let updated = PlaylistSidecar(
             schemaVersion: sidecar.schemaVersion,
             id: sidecar.id,
@@ -1630,7 +1707,7 @@ final class LocalLibraryService {
         )
         do {
             let data = try Self.makeJSONEncoder().encode(updated)
-            let url = LocalLibraryPaths.playlistURL(for: playlistID)
+            let url = paths.playlistURL(for: playlistID)
             try data.write(to: url, options: .atomic)
             Self.postPlaylistArtworkDidChange(playlistID: playlistID)
             return true
@@ -1646,7 +1723,7 @@ final class LocalLibraryService {
     ) -> PlaylistSidecar? {
         guard let sidecar else { return nil }
 
-        let legacyURL = LocalLibraryPaths.legacyPlaylistArtworkURL(for: playlistID)
+        let legacyURL = paths.legacyPlaylistArtworkURL(for: playlistID)
         guard fileManager.fileExists(atPath: legacyURL.path) else { return sidecar }
         guard sidecar.customHeaderArtworkFileName == nil, sidecar.generatedHeaderArtworkFileName == nil else {
             return sidecar
@@ -1659,11 +1736,11 @@ final class LocalLibraryService {
 
         switch legacySource {
         case .generated:
-            destinationURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlistID)
+            destinationURL = paths.playlistGeneratedArtworkURL(for: playlistID)
             customFileName = nil
             generatedFileName = destinationURL.lastPathComponent
         case .custom, .none:
-            destinationURL = LocalLibraryPaths.playlistCustomArtworkURL(for: playlistID)
+            destinationURL = paths.playlistCustomArtworkURL(for: playlistID)
             customFileName = destinationURL.lastPathComponent
             generatedFileName = nil
         }
@@ -1696,7 +1773,7 @@ final class LocalLibraryService {
         source: PlaylistArtworkSource
     ) -> PersistedPlaylistArtwork? {
         guard let fileName else { return nil }
-        let fileURL = LocalLibraryPaths.playlistsRootURL.appendingPathComponent(fileName)
+        let fileURL = paths.playlistsRootURL.appendingPathComponent(fileName)
         guard
             fileManager.fileExists(atPath: fileURL.path),
             let image = downsampledArtworkImage(fileURL: fileURL, maxPixelSize: 680)
@@ -1781,7 +1858,7 @@ final class LocalLibraryService {
     // MARK: - Artist/Album Sidecars
 
     func loadArtistSidecarsFromDisk() -> [(sidecar: ArtistSidecar, folderURL: URL)] {
-        let root = LocalLibraryPaths.artistsRootURL
+        let root = paths.artistsRootURL
         guard let entries = try? fileManager.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey],
             options: .skipsHiddenFiles
@@ -1798,7 +1875,7 @@ final class LocalLibraryService {
     }
 
     func loadAlbumSidecarsFromDisk() -> [(sidecar: AlbumSidecar, folderURL: URL)] {
-        let root = LocalLibraryPaths.albumsRootURL
+        let root = paths.albumsRootURL
         guard let entries = try? fileManager.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey],
             options: .skipsHiddenFiles
@@ -1815,10 +1892,10 @@ final class LocalLibraryService {
     }
 
     func writeArtistSidecar(_ sidecar: ArtistSidecar, artworkData: Data?) {
-        let folder = LocalLibraryPaths.artistFolderURL(for: sidecar.id)
+        let folder = paths.artistFolderURL(for: sidecar.id)
         do {
             try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
-            let metaURL = LocalLibraryPaths.artistMetaURL(for: sidecar.id)
+            let metaURL = paths.artistMetaURL(for: sidecar.id)
             let data = try encoder.encode(sidecar)
             try data.write(to: metaURL, options: .atomic)
             if let artworkData, let fileName = sidecar.artworkFileName {
@@ -1831,14 +1908,14 @@ final class LocalLibraryService {
     }
 
     func writeAlbumSidecar(_ sidecar: AlbumSidecar, artworkData: Data?) {
-        let folder = LocalLibraryPaths.albumFolderURL(for: sidecar.id)
+        let folder = paths.albumFolderURL(for: sidecar.id)
         do {
             try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
             let previousArtworkFileName = loadAlbumSidecarsFromDisk()
                 .first(where: { $0.sidecar.id == sidecar.id })?
                 .sidecar
                 .artworkFileName
-            let metaURL = LocalLibraryPaths.albumMetaURL(for: sidecar.id)
+            let metaURL = paths.albumMetaURL(for: sidecar.id)
             let data = try encoder.encode(sidecar)
             try data.write(to: metaURL, options: .atomic)
             if let previousArtworkFileName, previousArtworkFileName != sidecar.artworkFileName {
@@ -1858,14 +1935,14 @@ final class LocalLibraryService {
 
     nonisolated func deleteArtistEntry(id: UUID) {
         let fileManager = FileManager.default
-        let folder = LocalLibraryPaths.artistFolderURL(for: id)
+        let folder = paths.artistFolderURL(for: id)
         guard fileManager.fileExists(atPath: folder.path) else { return }
         try? fileManager.removeItem(at: folder)
     }
 
     nonisolated func deleteAlbumEntry(id: UUID) {
         let fileManager = FileManager.default
-        let folder = LocalLibraryPaths.albumFolderURL(for: id)
+        let folder = paths.albumFolderURL(for: id)
         guard fileManager.fileExists(atPath: folder.path) else { return }
         try? fileManager.removeItem(at: folder)
     }
@@ -1898,7 +1975,7 @@ final class LocalLibraryService {
         let tracks = await repository.fetchTracks(in: nil)
         for track in tracks {
             guard !track.libraryRelativePath.isEmpty else { continue }
-            let url = LocalLibraryPaths.libraryURL(from: track.libraryRelativePath)
+            guard let url = paths.libraryURL(from: track.libraryRelativePath) else { continue }
             let exists = fileManager.fileExists(atPath: url.path)
 
             let newAvailability: TrackAvailability = exists ? .available : .missing
@@ -1992,7 +2069,7 @@ final class LocalLibraryService {
 
         let files =
             (try? fileManager.contentsOfDirectory(
-                at: LocalLibraryPaths.playlistsRootURL,
+                at: paths.playlistsRootURL,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             )) ?? []
@@ -2044,7 +2121,7 @@ final class LocalLibraryService {
 
         let trackDirs =
             (try? fileManager.contentsOfDirectory(
-                at: LocalLibraryPaths.tracksRootURL,
+                at: paths.tracksRootURL,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             )) ?? []
@@ -2068,7 +2145,7 @@ final class LocalLibraryService {
             let audioURL =
                 relativePath.isEmpty
                 ? nil
-                : LocalLibraryPaths.libraryURL(from: relativePath)
+                : paths.libraryURL(from: relativePath)
             let isAvailable = audioURL.map { fileManager.fileExists(atPath: $0.path) } ?? false
 
             let resolvedArtworkFileName = resolvedTrackArtworkFileName(
@@ -2104,7 +2181,7 @@ final class LocalLibraryService {
                 lyricsText: nil
             )
 
-            track.libraryRootSnapshot = LocalLibraryPaths.libraryRootURL.path
+            track.libraryRootSnapshot = paths.rootURL.path
             track.audioFileName = audioFileName ?? ""
             track.artworkFileName = resolvedArtworkFileName
             track.lyricsFileName = sidecar.lyricsFileName
@@ -2112,7 +2189,7 @@ final class LocalLibraryService {
 
             // Load preference stats into cache if available.
             // If preferenceStats exists in sidecar, use it; otherwise migration will happen on first write.
-            PreferenceStatsService.shared.loadStats(from: sidecar)
+            preferenceStatsService.loadStats(from: sidecar)
 
             tracks.append(track)
         }
@@ -2126,7 +2203,7 @@ final class LocalLibraryService {
 
         let files =
             (try? fileManager.contentsOfDirectory(
-                at: LocalLibraryPaths.playlistsRootURL,
+                at: paths.playlistsRootURL,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             )) ?? []
@@ -2179,8 +2256,8 @@ final class LocalLibraryService {
         ensureLibraryFolders()
 
         let pathsToMonitor = [
-            "tracks": LocalLibraryPaths.tracksRootURL.path,
-            "playlists": LocalLibraryPaths.playlistsRootURL.path,
+            "tracks": paths.tracksRootURL.path,
+            "playlists": paths.playlistsRootURL.path,
         ]
 
         for (name, path) in pathsToMonitor {

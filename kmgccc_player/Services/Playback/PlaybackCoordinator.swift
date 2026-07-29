@@ -19,6 +19,10 @@ final class PlaybackCoordinator {
     private let appleMusicAdapter: AppleMusicPlaybackAdapter
     private let systemNowPlayingProvider: SystemNowPlayingProvider
     private let settings: AppSettings
+    private let preferenceStatsService: PreferenceStatsService
+    private let artworkCache: TrackArtworkCache
+    private let lyricsSearchCoordinator: LyricsSearchCoordinator
+    private let amllDBService: AMLLDBService
     private let meterProvider: AudioLevelMeterProtocol?
     private var presentationTimer: Timer?
     private var currentPresentationInterval: TimeInterval = 0
@@ -53,15 +57,25 @@ final class PlaybackCoordinator {
         appleMusicAdapter: AppleMusicPlaybackAdapter,
         systemNowPlayingProvider: SystemNowPlayingProvider,
         settings: AppSettings? = nil,
+        preferenceStatsService: PreferenceStatsService = .shared,
+        artworkCache: TrackArtworkCache = .shared,
+        lyricsSearchCoordinator: LyricsSearchCoordinator = .shared,
+        amllDBService: AMLLDBService = .shared,
         meterProvider: AudioLevelMeterProtocol? = nil,
-        artworkWarmer: PlaybackArtworkWarmer = PlaybackArtworkWarmer()
+        artworkWarmer: PlaybackArtworkWarmer? = nil
     ) {
         self.playerVM = playerVM
         self.appleMusicAdapter = appleMusicAdapter
         self.systemNowPlayingProvider = systemNowPlayingProvider
         self.settings = settings ?? AppSettings.shared
+        self.preferenceStatsService = preferenceStatsService
+        self.artworkCache = artworkCache
+        self.lyricsSearchCoordinator = lyricsSearchCoordinator
+        self.amllDBService = amllDBService
         self.meterProvider = meterProvider
-        self.artworkWarmer = artworkWarmer
+        self.artworkWarmer = artworkWarmer ?? PlaybackArtworkWarmer(
+            artworkCache: artworkCache
+        )
         self.activeSource = PlaybackSource(
             rawValue: UserDefaults.standard.string(forKey: Keys.activeSource) ?? ""
         ) ?? .local
@@ -154,6 +168,20 @@ final class PlaybackCoordinator {
         }
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
+    }
+
+    func close() {
+        presentationTimer?.invalidate()
+        presentationTimer = nil
+        sidecarHydrationTask?.cancel()
+        sidecarHydrationTask = nil
+        activeLyricsRefetchTask?.cancel()
+        activeLyricsRefetchTask = nil
+        stopExternalProviders()
+        artworkWarmer.reset()
+        onActiveSourceChanged = nil
+        onTelemetryPlaybackStateChanged = nil
+        onPresentationChanged = nil
     }
 
     func stop() {
@@ -341,7 +369,9 @@ final class PlaybackCoordinator {
             title: title,
             artist: artist,
             album: album,
-            duration: duration
+            duration: duration,
+            searchCoordinator: lyricsSearchCoordinator,
+            amllDBService: amllDBService
         )
 
         guard !Task.isCancelled else { return }
@@ -444,7 +474,10 @@ final class PlaybackCoordinator {
     func playRandomTracks(_ tracks: [Track], libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil) {
         let queue = WeightedPlaybackSampler.playableUniqueTracks(from: tracks)
         guard !queue.isEmpty else { return }
-        let startTrack = WeightedPlaybackSampler.pick(from: queue) ?? queue[0]
+        let startTrack = WeightedPlaybackSampler.pick(
+            from: queue,
+            preferenceStatsService: preferenceStatsService
+        ) ?? queue[0]
         let startIndex = queue.firstIndex(where: { $0.id == startTrack.id }) ?? 0
         playTracks(
             queue,
@@ -570,16 +603,29 @@ final class PlaybackCoordinator {
     }
 
     @available(*, deprecated, message: "Use smartRandomPick for single picks or playRandomTracks for ShuffleSession-backed playback.")
-    static func smartRandomQueue(from tracks: [Track], startingWith startTrack: Track? = nil) -> [Track] {
+    static func smartRandomQueue(
+        from tracks: [Track],
+        startingWith startTrack: Track? = nil,
+        preferenceStatsService: PreferenceStatsService
+    ) -> [Track] {
         if let startTrack,
            let matched = WeightedPlaybackSampler.playableUniqueTracks(from: tracks).first(where: { $0.id == startTrack.id }) {
             return [matched]
         }
-        return WeightedPlaybackSampler.pick(from: tracks).map { [$0] } ?? []
+        return WeightedPlaybackSampler.pick(
+            from: tracks,
+            preferenceStatsService: preferenceStatsService
+        ).map { [$0] } ?? []
     }
 
-    static func smartRandomPick(from tracks: [Track]) -> Track? {
-        WeightedPlaybackSampler.pick(from: tracks)
+    static func smartRandomPick(
+        from tracks: [Track],
+        preferenceStatsService: PreferenceStatsService
+    ) -> Track? {
+        WeightedPlaybackSampler.pick(
+            from: tracks,
+            preferenceStatsService: preferenceStatsService
+        )
     }
 
     private func externalProvider(for source: PlaybackSource) -> (any ExternalPlaybackProvider)? {
@@ -662,7 +708,7 @@ final class PlaybackCoordinator {
         let artworkData = track.artworkData
         let artworkSource = track.trackArtworkSource(fallbackData: artworkData)
         let hasDiskArtworkCache = artworkSource.map {
-            TrackArtworkCache.shared.hasAnyDiskCache(for: $0)
+            artworkCache.hasAnyDiskCache(for: $0)
         } ?? false
         let lyricsText = preferredLyricsTextSnapshot(for: track)
         let isArtworkLoading = track.artworkData?.isEmpty != false
@@ -761,6 +807,7 @@ final class PlaybackCoordinator {
         let artworkURL = artworkSource?.artworkFileURL
         let ttmlURL = needsTTMLLyrics ? track.resolvedTTMLURL() : nil
         let ttmlFallbackURL = needsTTMLLyrics ? track.resolvedLyricsURL() : nil
+        let artworkCache = artworkCache
 
         sidecarHydrationTask?.cancel()
         sidecarHydratingTrackID = trackID
@@ -772,7 +819,10 @@ final class PlaybackCoordinator {
 
             async let artworkTask: Data? = {
                 guard let artworkSource else { return nil }
-                return await TrackArtworkCache.shared.sourceData(for: artworkSource, purpose: "hydration")
+                return await artworkCache.sourceData(
+                    for: artworkSource,
+                    purpose: "hydration"
+                )
             }()
 
             async let ttmlTask: String? = Task.detached(priority: .utility) { @Sendable in

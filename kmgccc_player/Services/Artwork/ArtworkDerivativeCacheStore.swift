@@ -25,11 +25,18 @@ actor ArtworkDerivativeCacheStore {
     private let maxDiskBytes: Int64 = 220 * 1024 * 1024
     private let decodeGate = ArtworkDecodeGate(maxConcurrent: 2)
     private var writeCounter = 0
-    private nonisolated var diskRootURL: URL {
-        StorageLocations.playlistArtworkDerivativesURL
+    private nonisolated let diskRootURL: URL
+
+    init(diskRootURL: URL) {
+        self.diskRootURL = diskRootURL
+        memoryCache.countLimit = 720
+        memoryCache.totalCostLimit = 96 * 1024 * 1024
+
+        try? fileManager.createDirectory(at: diskRootURL, withIntermediateDirectories: true)
     }
 
     private init() {
+        self.diskRootURL = StorageLocations.playlistArtworkDerivativesURL
         memoryCache.countLimit = 720
         memoryCache.totalCostLimit = 96 * 1024 * 1024
 

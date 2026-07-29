@@ -155,6 +155,8 @@ final class AppleMusicPlaybackAdapter {
     private let libraryVM: LibraryViewModel
     private let artworkResolver: AppleMusicArtworkResolver
     private let metadataStore: ExternalPlaybackMetadataStore
+    private let lyricsSearchCoordinator: LyricsSearchCoordinator
+    private let amllDBService: AMLLDBService
     private let pollQueue = DispatchQueue(label: "kmgccc_player.applemusic.poll", qos: .utility)
     private let temporaryUnavailableThreshold = 2
     private let disconnectedFailureThreshold = 8
@@ -201,12 +203,26 @@ final class AppleMusicPlaybackAdapter {
         bridge: AppleMusicBridge? = nil,
         libraryVM: LibraryViewModel,
         artworkResolver: AppleMusicArtworkResolver = AppleMusicArtworkResolver(),
-        metadataStore: ExternalPlaybackMetadataStore? = nil
+        metadataStore: ExternalPlaybackMetadataStore,
+        lyricsSearchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService
     ) {
         self.bridge = bridge ?? AppleMusicBridge()
         self.libraryVM = libraryVM
         self.artworkResolver = artworkResolver
-        self.metadataStore = metadataStore ?? .shared
+        self.metadataStore = metadataStore
+        self.lyricsSearchCoordinator = lyricsSearchCoordinator
+        self.amllDBService = amllDBService
+    }
+
+    convenience init(previewLibraryVM libraryVM: LibraryViewModel) {
+        let cacheServices = LibraryCacheServices.preview
+        self.init(
+            libraryVM: libraryVM,
+            metadataStore: cacheServices.externalPlaybackMetadataStore,
+            lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
+            amllDBService: cacheServices.amllDBService
+        )
     }
 
     func start() {
@@ -305,7 +321,7 @@ final class AppleMusicPlaybackAdapter {
         isRefetchingLyrics = true
         defer { isRefetchingLyrics = false }
 
-        ExternalPlaybackMetadataStore.shared.clearAutoLyricsCache(for: identity)
+        metadataStore.clearAutoLyricsCache(for: identity)
         reResolveCurrentTrack()
 
         await withTaskCancellationHandler {
@@ -1172,12 +1188,16 @@ final class AppleMusicPlaybackAdapter {
         Log.info("[AMAdapter] resolveLyrics: starting auto search for '\(effective.title)' identity=\(identity.prefix(16))", category: .lyrics)
 
         let metadataStore = self.metadataStore
+        let lyricsSearchCoordinator = self.lyricsSearchCoordinator
+        let amllDBService = self.amllDBService
         lyricsTask = Task { [weak self] in
             let result = await LyricsSearchHelper.searchAndFetchAutomaticallyMatchedLyrics(
                 title: effective.title,
                 artist: effective.artist,
                 album: effective.album,
-                duration: info.duration > 0 ? info.duration : nil
+                duration: info.duration > 0 ? info.duration : nil,
+                searchCoordinator: lyricsSearchCoordinator,
+                amllDBService: amllDBService
             )
             guard !Task.isCancelled else {
                 Log.debug("[AMAdapter] resolveLyrics: task cancelled", category: .lyrics)

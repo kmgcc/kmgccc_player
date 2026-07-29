@@ -78,6 +78,7 @@ final class LibraryPathsTests: XCTestCase {
         XCTAssertFalse(first.isCurrent(generation: 2))
     }
 
+
     func testRequiredDirectoriesCanBeCreated() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("kmgccc-path-tests-\(UUID().uuidString)", isDirectory: true)

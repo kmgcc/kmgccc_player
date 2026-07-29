@@ -163,8 +163,7 @@ struct TrackActionMenuContent: View {
         Button {
             let nextState: ManualLikeState = isManuallyLiked ? .none : .liked
             invokeAction(isManuallyLiked ? "unlike" : "like") {
-                track.setManualLikeState(nextState)
-                libraryVM.notifyTrackAuxiliaryDataChanged(trackIDs: [track.id])
+                libraryVM.setManualLikeState(nextState, for: track)
             }
         } label: {
             if isManuallyLiked {
@@ -298,7 +297,7 @@ struct TrackActionMenuContent: View {
 
     private var currentManualLikeState: ManualLikeState {
         let _ = libraryVM.refreshTrigger
-        return track.preferenceStats.manualLikeState
+        return libraryVM.preferenceStats(for: track.id).manualLikeState
     }
 
     private func invokeAction(_ actionName: String, _ action: () -> Void) {

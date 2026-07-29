@@ -13,13 +13,16 @@ import SQLite3
 private nonisolated let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
 actor LibrarySearchIndex {
-    static let shared = LibrarySearchIndex()
+    static let shared = LibrarySearchIndex(paths: LocalLibraryPaths.capturedPaths())
 
+    private let paths: LibraryPaths
     private var db: OpaquePointer?
     private var rebuildTask: Task<Void, Never>?
     private var schemaReady = false
 
-    private init() {}
+    init(paths: LibraryPaths) {
+        self.paths = paths
+    }
 
     func scheduleFullRebuild(from sources: [SearchDocumentSource], reason: String) {
         rebuildTask?.cancel()
@@ -112,9 +115,24 @@ actor LibrarySearchIndex {
             self.db = nil
             schemaReady = false
         }
-        for url in SearchIndexStorePaths.relatedStoreFiles where FileManager.default.fileExists(atPath: url.path) {
+        for url in SearchIndexStorePaths.relatedStoreFiles(in: paths)
+        where FileManager.default.fileExists(atPath: url.path) {
             try? FileManager.default.removeItem(at: url)
         }
+    }
+
+    func close() async {
+        let pendingRebuild = rebuildTask
+        rebuildTask?.cancel()
+        rebuildTask = nil
+        await pendingRebuild?.value
+
+        if let db {
+            sqlite3_wal_checkpoint_v2(db, nil, SQLITE_CHECKPOINT_TRUNCATE, nil, nil)
+            sqlite3_close_v2(db)
+            self.db = nil
+        }
+        schemaReady = false
     }
 
     func search(query rawQuery: String, scopedTo allowedTrackIDs: Set<UUID>? = nil, limit: Int = 200) async -> [LibrarySearchHit] {
@@ -250,7 +268,7 @@ actor LibrarySearchIndex {
     private func database() throws -> OpaquePointer {
         if let db { return db }
 
-        let url = SearchIndexStorePaths.storeURL
+        let url = SearchIndexStorePaths.storeURL(in: paths)
         var opened: OpaquePointer?
         let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
         guard sqlite3_open_v2(url.path, &opened, flags, nil) == SQLITE_OK, let opened else {

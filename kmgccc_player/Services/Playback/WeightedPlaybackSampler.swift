@@ -26,14 +26,15 @@ struct WeightedPlaybackSampler {
 
     static func pick(
         from tracks: [Track],
-        recentHistory: [UUID] = []
+        recentHistory: [UUID] = [],
+        preferenceStatsService: PreferenceStatsService
     ) -> Track? {
         let uniqueTracks = playableUniqueTracks(from: tracks)
         guard !uniqueTracks.isEmpty else { return nil }
 
         let trackByID = Dictionary(uniqueKeysWithValues: uniqueTracks.map { ($0.id, $0) })
         let weights = Dictionary(uniqueKeysWithValues: uniqueTracks.map { track in
-            let stats = PreferenceStatsService.shared.getStats(for: track.id)
+            let stats = preferenceStatsService.getStats(for: track.id)
             let score = PreferenceScorerV2.calculateScore(
                 stats: stats,
                 duration: track.duration,

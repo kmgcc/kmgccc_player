@@ -44,12 +44,17 @@ nonisolated struct ScannedTrackMeta: Sendable {
 }
 
 nonisolated struct MusicLibraryScanner: Sendable {
+    private let paths: LibraryPaths
+
+    init(paths: LibraryPaths = LocalLibraryPaths.capturedPaths()) {
+        self.paths = paths
+    }
 
     func scanTracks() -> [ScannedTrackMeta] {
         let fileManager = FileManager()
         let dirs =
             (try? fileManager.contentsOfDirectory(
-                at: LocalLibraryPaths.tracksRootURL,
+                at: paths.tracksRootURL,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             )) ?? []
@@ -67,7 +72,7 @@ nonisolated struct MusicLibraryScanner: Sendable {
     func scanTracks(ids: [UUID]) -> [ScannedTrackMeta] {
         ids.compactMap { id in
             autoreleasepool {
-                parseTrackMeta(in: LocalLibraryPaths.trackFolderURL(for: id))
+                parseTrackMeta(in: paths.trackFolderURL(for: id))
             }
         }
     }
@@ -289,7 +294,7 @@ nonisolated struct MusicLibraryScanner: Sendable {
 
     private func resolveArtworkFileName(in folder: URL, preferredFileName: String?) -> String? {
         let fileManager = FileManager()
-        for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
+        for fileName in paths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
             let artworkURL = folder.appendingPathComponent(fileName)
             if fileManager.fileExists(atPath: artworkURL.path) {
                 return fileName

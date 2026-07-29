@@ -9,6 +9,8 @@ import Foundation
 
 nonisolated struct LibraryPaths: Sendable, Equatable {
     static let rootDirectoryName = "kmgccc_player Library"
+    static let preferredTrackArtworkFileName = "artwork.jpg"
+    static let legacyTrackArtworkFileName = "artwork.png"
 
     let rootURL: URL
 
@@ -69,8 +71,26 @@ nonisolated struct LibraryPaths: Sendable, Equatable {
         trackFolderURL(for: id).appendingPathComponent("meta.json")
     }
 
-    func trackArtworkURL(for id: UUID, fileName: String) -> URL? {
+    func trackAssetURL(for id: UUID, fileName: String) -> URL? {
         safeFileURL(in: trackFolderURL(for: id), fileName: fileName)
+    }
+
+    func trackArtworkURL(for id: UUID, fileName: String) -> URL? {
+        trackAssetURL(for: id, fileName: fileName)
+    }
+
+    func trackArtworkCandidateFileNames(preferredFileName: String? = nil) -> [String] {
+        var names: [String] = []
+        if let preferredFileName, isSafeFileComponent(preferredFileName) {
+            names.append(preferredFileName)
+        }
+        if !names.contains(Self.preferredTrackArtworkFileName) {
+            names.append(Self.preferredTrackArtworkFileName)
+        }
+        if !names.contains(Self.legacyTrackArtworkFileName) {
+            names.append(Self.legacyTrackArtworkFileName)
+        }
+        return names
     }
 
     func trackLyricsURL(for id: UUID, ext: String) -> URL? {
@@ -78,8 +98,44 @@ nonisolated struct LibraryPaths: Sendable, Equatable {
         return safeFileURL(in: trackFolderURL(for: id), fileName: "lyrics.\(ext)")
     }
 
+    func trackTTMLLyricsURL(for id: UUID) -> URL {
+        trackFolderURL(for: id).appendingPathComponent("lyrics.ttml")
+    }
+
     func playlistURL(for id: UUID) -> URL {
         playlistsRootURL.appendingPathComponent("\(id.uuidString).json")
+    }
+
+    func legacyPlaylistArtworkURL(for id: UUID) -> URL {
+        playlistsRootURL.appendingPathComponent("\(id.uuidString)_artwork.png")
+    }
+
+    func playlistCustomArtworkURL(for id: UUID) -> URL {
+        playlistsRootURL.appendingPathComponent("\(id.uuidString)_custom.png")
+    }
+
+    func playlistGeneratedArtworkURL(for id: UUID) -> URL {
+        playlistsRootURL.appendingPathComponent("\(id.uuidString)_generated.png")
+    }
+
+    func playlistAssetURL(fileName: String) -> URL? {
+        safeFileURL(in: playlistsRootURL, fileName: fileName)
+    }
+
+    func artistFolderURL(for id: UUID) -> URL {
+        artistsRootURL.appendingPathComponent(id.uuidString, isDirectory: true)
+    }
+
+    func albumFolderURL(for id: UUID) -> URL {
+        albumsRootURL.appendingPathComponent(id.uuidString, isDirectory: true)
+    }
+
+    func artistMetaURL(for id: UUID) -> URL {
+        artistFolderURL(for: id).appendingPathComponent("meta.json")
+    }
+
+    func albumMetaURL(for id: UUID) -> URL {
+        albumFolderURL(for: id).appendingPathComponent("meta.json")
     }
 
     func sourceRootURL(for id: UUID) -> URL {

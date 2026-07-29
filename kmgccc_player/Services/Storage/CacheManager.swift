@@ -32,17 +32,27 @@ struct LegacyCacheCleanupResult: Sendable {
 nonisolated enum CacheManager {
     static let staleImportStagingAge: TimeInterval = 24 * 60 * 60
 
-    static func clearLibraryCaches() async {
+    static func clearLibraryCaches(
+        storageLocations: LibraryStorageLocations,
+        trackArtworkCache: TrackArtworkCache,
+        artworkDerivativeStore: ArtworkDerivativeCacheStore,
+        amllDBService: AMLLDBService,
+        externalPlaybackMetadataStore: ExternalPlaybackMetadataStore
+    ) async {
         await ArtworkAssetStore.shared.clearCache()
-        await TrackArtworkCache.shared.clearMemory()
-        await ArtworkDerivativeCacheStore.shared.clearAll()
+        await trackArtworkCache.clearMemory()
+        await artworkDerivativeStore.clearAll()
         await ThemeStore.shared.clearArtworkColorCache()
-        await ExternalPlaybackMetadataStore.shared.clearAutomaticCaches()
-        try? await AMLLDBRawIndexCache.shared.clearCache()
+        await externalPlaybackMetadataStore.clearAutomaticCaches()
+        try? await amllDBService.clearIndex()
 
-        await removeDirectories(libraryCacheDirectories)
+        await removeDirectories(libraryCacheDirectories(for: storageLocations))
         await removeDirectories(legacyCacheDirectories)
-        await cleanupStaleImportStaging(reason: "manualLibraryCacheClear", maxAge: 0)
+        await cleanupStaleImportStaging(
+            roots: [storageLocations.importStagingRootURL, StorageLocations.legacyImportStagingRootURL],
+            reason: "manualLibraryCacheClear",
+            maxAge: 0
+        )
     }
 
     static func hasBuild7LegacyCaches() async -> Bool {
@@ -156,15 +166,15 @@ nonisolated enum CacheManager {
         }.value
     }
 
-    private static var libraryCacheDirectories: [URL] {
+    private static func libraryCacheDirectories(for locations: LibraryStorageLocations) -> [URL] {
         [
-            StorageLocations.playlistArtworkDerivativesURL,
-            StorageLocations.trackArtworkOriginalsURL,
-            StorageLocations.trackArtworkDerivativesURL,
-            StorageLocations.qqMusicCoverCacheURL,
-            StorageLocations.lyricsCacheRootURL,
-            StorageLocations.colorsCacheURL,
-            StorageLocations.homeCacheURL
+            locations.playlistArtworkDerivativesURL,
+            locations.trackArtworkOriginalsURL,
+            locations.trackArtworkDerivativesURL,
+            locations.qqMusicCoverCacheURL,
+            locations.lyricsCacheRootURL,
+            locations.colorsCacheURL,
+            locations.homeCacheURL
         ]
     }
 

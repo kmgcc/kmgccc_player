@@ -25,10 +25,16 @@ final class LyricsSearchCoordinator {
 
     static let shared = LyricsSearchCoordinator()
 
-    private let lddcClient = LDDCClient.shared
-    private let amlldbService = AMLLDBService.shared
+    private let lddcClient: LDDCClient
+    private let amlldbService: AMLLDBService
 
-    private init() {}
+    init(
+        lddcClient: LDDCClient = .shared,
+        amlldbService: AMLLDBService = .shared
+    ) {
+        self.lddcClient = lddcClient
+        self.amlldbService = amlldbService
+    }
 
     func search(
         title: String,

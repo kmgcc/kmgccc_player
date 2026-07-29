@@ -309,6 +309,7 @@ private struct AlbumListRow: View {
     let onDelete: () -> Void
 
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(\.colorScheme) private var colorScheme
     @State private var image: NSImage?
     @State private var isHovering = false
@@ -459,7 +460,8 @@ private struct AlbumListRow: View {
         image = await ArtworkLoader.loadImage(
             artworkData: data,
             cacheKey: key,
-            targetPixelSize: CGSize(width: 132, height: 132)
+            targetPixelSize: CGSize(width: 132, height: 132),
+            derivativeStore: cacheServices.artworkDerivativeStore
         )
     }
 }

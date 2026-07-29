@@ -52,6 +52,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     }
 
     private static var sharedController: AppKitMainSplitWindowController?
+    private static var rebuildState = LibraryHostRebuildState()
 
     private let splitViewController: AppKitMainSplitViewController
     private let rootViewController: AppKitMainRootViewController
@@ -167,6 +168,20 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
     static func currentSidebarWidth() -> CGFloat {
         sharedController?.splitViewController.currentSidebarWidth ?? 0
+    }
+
+    static func releaseActiveLibraryReferences() {
+        guard let controller = sharedController else { return }
+        controller.splitViewController.playlistPageController.releaseSelectionStateForTeardown()
+        controller.window?.contentViewController = nil
+        controller.window?.orderOut(nil)
+        sharedController = nil
+        _ = rebuildState.recordRelease()
+    }
+
+    static func rebuildAfterLibrarySwitchIfNeeded(appSession: AppSessionHost) {
+        guard rebuildState.consumeRebuildAfterPublish() != nil else { return }
+        _ = show(appSession: appSession)
     }
 
     static func currentLyricsWidth() -> CGFloat {

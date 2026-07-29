@@ -21,6 +21,7 @@ import Foundation
 struct AudioPrepRequest: Sendable {
     let trackID: UUID
     let libraryRelativePath: String
+    let libraryRootSnapshot: String
     let fileBookmarkData: Data
     let titleForLog: String
 }
@@ -159,7 +160,16 @@ actor AudioFilePreparationActor {
 
         // Library-relative path takes priority (no security scope needed).
         if !request.libraryRelativePath.isEmpty {
-            let localURL = LocalLibraryPaths.libraryURL(from: request.libraryRelativePath)
+            guard !request.libraryRootSnapshot.isEmpty,
+                  let localURL = LibraryPaths(
+                    rootURL: URL(
+                        fileURLWithPath: request.libraryRootSnapshot,
+                        isDirectory: true
+                    )
+                  ).libraryURL(from: request.libraryRelativePath)
+            else {
+                throw PrepError.missingFile
+            }
             if FileManager.default.fileExists(atPath: localURL.path) {
                 return Resolution(
                     url: localURL,

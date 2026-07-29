@@ -17,6 +17,7 @@ final class ExternalPlaybackMetadataStore {
         static let records = "externalPlayback.cacheRecords.v1"
     }
 
+    private let storage: LibraryStorageLocations?
     private let defaults: UserDefaults
     private let fileManager: FileManager
     private let matchResolver = ExternalPlaybackMatchResolver()
@@ -27,7 +28,26 @@ final class ExternalPlaybackMetadataStore {
     private var records: [String: ExternalPlaybackCacheRecord] = [:]
     private var lastCacheLogAt: [String: Date] = [:]
 
+    init(storage: LibraryStorageLocations) {
+        self.storage = storage
+        self.defaults = .standard
+        self.fileManager = .default
+        encoder.dateEncodingStrategy = .iso8601
+        decoder.dateDecodingStrategy = .iso8601
+        overrides = Self.load(
+            [String: ExternalPlaybackMatchOverride].self,
+            from: storage.externalPlaybackMetadataURL.appendingPathComponent("overrides.json"),
+            decoder: decoder
+        ) ?? [:]
+        records = Self.load(
+            [String: ExternalPlaybackCacheRecord].self,
+            from: storage.externalPlaybackMetadataURL.appendingPathComponent("records.json"),
+            decoder: decoder
+        ) ?? [:]
+    }
+
     private init(defaults: UserDefaults = .standard, fileManager: FileManager = .default) {
+        self.storage = nil
         self.defaults = defaults
         self.fileManager = fileManager
         encoder.dateEncodingStrategy = .iso8601
@@ -160,6 +180,7 @@ final class ExternalPlaybackMetadataStore {
         if let data = try? Data(contentsOf: currentURL) {
             return data
         }
+        guard storage == nil else { return nil }
         let legacyURL = StorageLocations.legacyExternalPlaybackArtworkURL.appendingPathComponent(fileName)
         return try? Data(contentsOf: legacyURL)
     }
@@ -309,10 +330,9 @@ final class ExternalPlaybackMetadataStore {
             return preserved
         }
         persistRecords()
-        let directories = [
-            artworkCacheDirectory(),
-            StorageLocations.legacyExternalPlaybackArtworkURL
-        ]
+        let directories = storage == nil
+            ? [artworkCacheDirectory(), StorageLocations.legacyExternalPlaybackArtworkURL]
+            : [artworkCacheDirectory()]
         await Task.detached(priority: .utility) {
             for directory in directories {
                 Self.removeArtworkFiles(at: directory, preserving: manualArtworkFileNames)
@@ -367,16 +387,30 @@ final class ExternalPlaybackMetadataStore {
     }
 
     private func persistOverrides() {
-        persist(overrides, key: Keys.overrides)
+        if let storage {
+            persist(overrides, to: storage.externalPlaybackMetadataURL.appendingPathComponent("overrides.json"))
+        } else {
+            persist(overrides, key: Keys.overrides)
+        }
     }
 
     private func persistRecords() {
-        persist(records, key: Keys.records)
+        if let storage {
+            persist(records, to: storage.externalPlaybackMetadataURL.appendingPathComponent("records.json"))
+        } else {
+            persist(records, key: Keys.records)
+        }
     }
 
     private func persist<T: Encodable>(_ value: T, key: String) {
         guard let data = try? encoder.encode(value) else { return }
         defaults.set(data, forKey: key)
+    }
+
+    private func persist<T: Encodable>(_ value: T, to url: URL) {
+        guard let data = try? encoder.encode(value) else { return }
+        try? fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: url, options: .atomic)
     }
 
     private static func load<T: Decodable>(
@@ -386,6 +420,15 @@ final class ExternalPlaybackMetadataStore {
         decoder: JSONDecoder
     ) -> T? {
         guard let data = defaults.data(forKey: key) else { return nil }
+        return try? decoder.decode(type, from: data)
+    }
+
+    private static func load<T: Decodable>(
+        _ type: T.Type,
+        from url: URL,
+        decoder: JSONDecoder
+    ) -> T? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
         return try? decoder.decode(type, from: data)
     }
 
@@ -400,10 +443,11 @@ final class ExternalPlaybackMetadataStore {
     }
 
     private func artworkCacheDirectory() -> URL {
-        StorageLocations.externalPlaybackArtworkURL
+        storage?.externalPlaybackArtworkURL ?? StorageLocations.externalPlaybackArtworkURL
     }
 
     private func migrateLegacyManualOverrideArtworkToCurrentCache() {
+        guard storage == nil else { return }
         let fileNames = Set(records.values.compactMap { record in
             record.artworkSource == "manualOverride" ? record.networkArtworkFileName : nil
         })

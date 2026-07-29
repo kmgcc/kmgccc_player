@@ -13,6 +13,7 @@ struct DataManagementSettingsView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @AppStorage("telemetry.anonymousUsageEnabled") private var telemetryEnabled: Bool = true
     @AppStorage(CrashReportPreferences.automaticUploadKey) private var automaticCrashReportUploadEnabled = true
 
@@ -26,8 +27,8 @@ struct DataManagementSettingsView: View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsHeaderLabel("数据", systemImage: "arrow.counterclockwise.circle")
 
-            // Library location
-            LibraryLocationSettingsSection()
+            // Library relocation is intentionally unavailable until the session
+            // controller owns the complete move/reconnect transaction.
 
             // Import settings
             SettingsSection {
@@ -148,7 +149,13 @@ struct DataManagementSettingsView: View {
         guard !isClearingLibraryCaches else { return }
         isClearingLibraryCaches = true
         Task {
-            await CacheManager.clearLibraryCaches()
+            await CacheManager.clearLibraryCaches(
+                storageLocations: cacheServices.storageLocations,
+                trackArtworkCache: cacheServices.trackArtworkCache,
+                artworkDerivativeStore: cacheServices.artworkDerivativeStore,
+                amllDBService: cacheServices.amllDBService,
+                externalPlaybackMetadataStore: cacheServices.externalPlaybackMetadataStore
+            )
             playbackCoordinator.clearExternalPlaybackRuntimeCaches()
             isClearingLibraryCaches = false
         }

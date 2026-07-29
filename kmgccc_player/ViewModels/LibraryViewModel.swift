@@ -455,7 +455,14 @@ final class LibraryViewModel {
     // MARK: - Dependencies
 
     private let repository: LibraryRepositoryProtocol
+    private let libraryService: LocalLibraryService
+    private let preferenceStatsService: PreferenceStatsService
+    private let preferenceResetService: PreferenceResetService
+    private let searchIndex: LibrarySearchIndex
+    let detailHeaderArtworkResolver: DetailHeaderArtworkResolver
+    nonisolated let libraryPaths: LibraryPaths
     private let metadataDetailCoordinator: MetadataDetailCoordinator
+    private let artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator
     private var importService: FileImportServiceProtocol?
     var currentTrackIDProvider: (() -> UUID?)?
     var onTracksDeleted: ((Set<UUID>) -> Void)?
@@ -477,11 +484,23 @@ final class LibraryViewModel {
 
     init(
         repository: LibraryRepositoryProtocol,
-        libraryService _: LocalLibraryService? = nil,
-        metadataDetailCoordinator: MetadataDetailCoordinator = .shared
+        libraryService: LocalLibraryService = .shared,
+        preferenceStatsService: PreferenceStatsService = .shared,
+        preferenceResetService: PreferenceResetService = .shared,
+        searchIndex: LibrarySearchIndex = .shared,
+        detailHeaderArtworkResolver: DetailHeaderArtworkResolver = .shared,
+        metadataDetailCoordinator: MetadataDetailCoordinator = .shared,
+        artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator = .shared
     ) {
         self.repository = repository
+        self.libraryService = libraryService
+        self.preferenceStatsService = preferenceStatsService
+        self.preferenceResetService = preferenceResetService
+        self.searchIndex = searchIndex
+        self.detailHeaderArtworkResolver = detailHeaderArtworkResolver
+        self.libraryPaths = libraryService.paths
         self.metadataDetailCoordinator = metadataDetailCoordinator
+        self.artistArtworkProviderCoordinator = artistArtworkProviderCoordinator
         self.trackSortKey =
             TrackSortKey(
                 rawValue: UserDefaults.standard.string(
@@ -626,6 +645,41 @@ final class LibraryViewModel {
         Log.debug("Import service set", category: .library)
     }
 
+    func preferenceStats(for trackID: UUID) -> TrackPreferenceStats {
+        preferenceStatsService.getStats(for: trackID)
+    }
+
+    func resetMusicPreferences(
+        tracks: [Track],
+        options: ResetMusicPreferenceOptions,
+        progress: @escaping @MainActor (MusicPreferenceResetProgress) -> Void
+    ) async -> MusicPreferenceResetResult {
+        await preferenceResetService.resetLibraryTracks(
+            tracks,
+            options: options,
+            progress: progress
+        )
+    }
+
+    func setManualLikeState(_ state: ManualLikeState, for track: Track) {
+        guard preferenceStatsService.getStats(for: track.id).manualLikeState != state else { return }
+        preferenceStatsService.setManualLikeState(trackID: track.id, state: state)
+        libraryService.writeMetaOnlyInBackground(for: track, reason: "manualLike")
+        notifyTrackAuxiliaryDataChanged(trackIDs: [track.id])
+    }
+
+    func playlistArtworkRevision(playlistID: UUID) -> String? {
+        libraryService.playlistArtworkRevision(playlistID: playlistID)
+    }
+
+    func prepareForSessionClose() {
+        loadGeneration &+= 1
+        cancelCurrentLoad()
+        importService = nil
+        repository.setChangeHandler(nil)
+        removeLibraryLocationObserver()
+    }
+
     // MARK: - Computed Properties
 
     /// Get the currently selected playlist object.
@@ -709,7 +763,10 @@ final class LibraryViewModel {
             return sortByCustomCollectionOrder(artistsToSort, customOrderIDs: order)
         }
 
-        let aggregateStats = LibraryAggregateStats(tracks: allTracks)
+        let aggregateStats = LibraryAggregateStats(
+            tracks: allTracks,
+            preferenceStatsService: preferenceStatsService
+        )
         return artistsToSort.sorted {
             compareArtists($0, $1, aggregateStats: aggregateStats, customOrderIDs: order)
         }
@@ -726,7 +783,10 @@ final class LibraryViewModel {
             return sortByCustomCollectionOrder(albumsToSort, customOrderIDs: order)
         }
 
-        let aggregateStats = LibraryAggregateStats(tracks: allTracks)
+        let aggregateStats = LibraryAggregateStats(
+            tracks: allTracks,
+            preferenceStatsService: preferenceStatsService
+        )
         return albumsToSort.sorted {
             compareAlbums($0, $1, aggregateStats: aggregateStats, customOrderIDs: order)
         }
@@ -859,7 +919,7 @@ final class LibraryViewModel {
     func reloadLibrary() async {
         cancelCurrentLoad()
 
-        let capturedRoot = LocalLibraryPaths.libraryRootURL
+        let capturedRoot = libraryPaths.rootURL
         loadGeneration &+= 1
         let generation = loadGeneration
         let taskID = UUID()
@@ -897,7 +957,7 @@ final class LibraryViewModel {
             await repository.reloadFromLibrary()
 
             // Stale-root guard after repository reload
-            guard LocalLibraryPaths.libraryRootURL == capturedRoot else {
+            guard libraryPaths.rootURL == capturedRoot else {
                 Log.info(
                     "[LibraryVM] Stale root after repository reload; discarding (generation=\(generation))",
                     category: .library
@@ -932,7 +992,7 @@ final class LibraryViewModel {
             guard loadGeneration == generation else {
                 throw CancellationError()
             }
-            guard LocalLibraryPaths.libraryRootURL == capturedRoot else {
+            guard libraryPaths.rootURL == capturedRoot else {
                 Log.info(
                     "[LibraryVM] Stale root before marking loaded; discarding (generation=\(generation))",
                     category: .library
@@ -1284,7 +1344,7 @@ final class LibraryViewModel {
         guard let playlist = playlists.first(where: { $0.id == playlistID }) else { return }
         guard !playlist.tracks.isEmpty else { return }
 
-        let libraryService = LocalLibraryService.shared
+        let libraryService = libraryService
         let sidecar = libraryService.loadPlaylistSidecar(playlistID: playlistID)
         if sidecar?.headerArtworkSource == .custom || sidecar?.customHeaderArtworkFileName != nil {
             return
@@ -1481,7 +1541,7 @@ final class LibraryViewModel {
 
     func searchArtistArtworkCandidates(_ entry: ArtistEntry) async -> [CoverCandidate] {
         do {
-            return try await ArtistArtworkProviderCoordinator.shared.searchCandidates(
+            return try await artistArtworkProviderCoordinator.searchCandidates(
                 artist: entry.displayName,
                 limit: CoverLookupConfiguration.qqMusicCandidateLimit
             )
@@ -1513,7 +1573,7 @@ final class LibraryViewModel {
         }
 
         do {
-            let candidates = try await ArtistArtworkProviderCoordinator.shared.searchCandidates(
+            let candidates = try await artistArtworkProviderCoordinator.searchCandidates(
                 artist: entry.displayName,
                 limit: CoverLookupConfiguration.qqMusicCandidateLimit
             )
@@ -1967,7 +2027,7 @@ final class LibraryViewModel {
     ) async -> [UUID: LibrarySearchHit] {
         guard !trackIDs.isEmpty else { return [:] }
 
-        let hits = await LibrarySearchIndex.shared.search(
+        let hits = await searchIndex.search(
             query: query,
             scopedTo: trackIDs,
             limit: max(1, limit)
@@ -2131,7 +2191,7 @@ final class LibraryViewModel {
         case .home, .allPlaylists, .allAlbums, .allArtists:
             return
         case .playlist(let id):
-            if !LocalLibraryService.shared.updatePlaylistSortPreference(
+            if !libraryService.updatePlaylistSortPreference(
                 playlistID: id,
                 key: preference.key,
                 order: preference.order
@@ -2185,7 +2245,7 @@ final class LibraryViewModel {
     }
 
     private func validPlaylistSortPreference(playlistID: UUID) -> SortPreference? {
-        guard let persisted = LocalLibraryService.shared.playlistSortPreference(playlistID: playlistID) else {
+        guard let persisted = libraryService.playlistSortPreference(playlistID: playlistID) else {
             return nil
         }
         return validSortPreference(SortPreference(key: persisted.key, order: persisted.order))
@@ -2506,7 +2566,7 @@ final class LibraryViewModel {
     private func playlistPlayCountMetric(_ playlist: Playlist) -> LibraryAggregateStats.Metric {
         var metric = LibraryAggregateStats.Metric()
         for track in playlist.tracks {
-            let stats = PreferenceStatsService.shared.getStats(for: track.id)
+            let stats = preferenceStatsService.getStats(for: track.id)
             metric.value += Double(max(stats.playCount, 0))
             metric.hasData = metric.hasData || stats.playCount > 0
         }
@@ -2516,7 +2576,7 @@ final class LibraryViewModel {
     private func playlistPreferenceMetric(_ playlist: Playlist) -> LibraryAggregateStats.Metric {
         var metric = LibraryAggregateStats.Metric()
         for track in playlist.tracks {
-            let stats = PreferenceStatsService.shared.getStats(for: track.id)
+            let stats = preferenceStatsService.getStats(for: track.id)
             let hasPreferenceData = stats.playCount > 0
                 || stats.preferenceScoreCache != 0
                 || stats.manualLikeState != .none
@@ -2602,9 +2662,15 @@ final class LibraryViewModel {
         case .duration:
             result = compareDoubles(lhs.duration, rhs.duration)
         case .playCount:
-            result = compareInts(lhs.preferenceStats.playCount, rhs.preferenceStats.playCount)
+            result = compareInts(
+                preferenceStatsService.getStats(for: lhs.id).playCount,
+                preferenceStatsService.getStats(for: rhs.id).playCount
+            )
         case .preference:
-            result = compareDoubles(lhs.preferenceScore, rhs.preferenceScore)
+            result = compareDoubles(
+                preferenceStatsService.getPreferenceScore(for: lhs.id),
+                preferenceStatsService.getPreferenceScore(for: rhs.id)
+            )
         case .custom:
             return false
         }

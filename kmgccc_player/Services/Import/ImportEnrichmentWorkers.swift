@@ -42,11 +42,14 @@ nonisolated enum ImportEnrichmentWorker {
     ///   - album: Album name (optional, improves AMLLDB matching)
     ///   - duration: Duration in seconds (optional, improves AMLLDB matching)
     /// - Returns: ImportLyricsLookupOutcome with TTML lyrics or failure status
+    @MainActor
     static func fetchLyrics(
         title: String,
         artist: String,
         album: String? = nil,
-        duration: Double? = nil
+        duration: Double? = nil,
+        lyricsSearchCoordinator: LyricsSearchCoordinator = .shared,
+        amllDBService: AMLLDBService = .shared
     ) async -> ImportLyricsLookupOutcome {
         guard !Task.isCancelled else { return .failed("已取消") }
         // Use shared helper that matches manual "Find Lyrics" ranking logic
@@ -55,7 +58,9 @@ nonisolated enum ImportEnrichmentWorker {
             title: title,
             artist: artist.isEmpty ? nil : artist,
             album: album?.isEmpty == true ? nil : album,
-            duration: duration
+            duration: duration,
+            searchCoordinator: lyricsSearchCoordinator,
+            amllDBService: amllDBService
         )
 
         if let ttml {
@@ -70,7 +75,8 @@ nonisolated enum ImportEnrichmentWorker {
         title: String? = nil,
         artist: String,
         album: String,
-        duration: Double? = nil
+        duration: Double? = nil,
+        qqMusicCoverService: QQMusicCoverService = .shared
     ) async -> ImportCoverLookupOutcome {
         guard !Task.isCancelled else { return .failed("已取消") }
         let normalizedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -90,7 +96,8 @@ nonisolated enum ImportEnrichmentWorker {
                     title: normalizedTitle,
                     artist: normalizedArtist,
                     album: normalizedAlbum,
-                    duration: duration
+                    duration: duration,
+                    qqMusicCoverService: qqMusicCoverService
                 )
             }
             try Task.checkCancellation()
@@ -125,7 +132,8 @@ nonisolated enum ImportEnrichmentWorker {
         title: String?,
         artist: String,
         album: String,
-        duration: Double?
+        duration: Double?,
+        qqMusicCoverService: QQMusicCoverService
     ) async -> [CoverCandidate] {
         guard !Task.isCancelled else { return [] }
         var candidates: [CoverCandidate] = []
@@ -203,7 +211,7 @@ nonisolated enum ImportEnrichmentWorker {
                     return try await withCoverLookupTimeout(
                         CoverLookupConfiguration.qqMusicCandidatesTimeout
                     ) {
-                        try await QQMusicCoverService.shared.searchCoverCandidates(
+                        try await qqMusicCoverService.searchCoverCandidates(
                             title: title,
                             artist: artist,
                             album: album,
@@ -525,7 +533,8 @@ nonisolated enum MetadataEnrichmentWorker {
     // MARK: Artist Artwork
 
     static func fetchArtistArtwork(
-        artist: String
+        artist: String,
+        artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator = .shared
     ) async -> ImportArtistArtworkOutcome {
         guard !Task.isCancelled else { return .failed("已取消") }
         guard !artist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -534,7 +543,7 @@ nonisolated enum MetadataEnrichmentWorker {
         do {
             let candidates = try await withCoverLookupTimeout(metadataTimeout) {
                 try Task.checkCancellation()
-                return try await ArtistArtworkProviderCoordinator.shared.searchCandidates(artist: artist)
+                return try await artistArtworkProviderCoordinator.searchCandidates(artist: artist)
             }
             try Task.checkCancellation()
             guard let best = CoverCandidateSorter.bestAutomaticCandidate(from: candidates) else {
