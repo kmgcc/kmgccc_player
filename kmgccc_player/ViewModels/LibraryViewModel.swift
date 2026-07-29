@@ -2401,35 +2401,27 @@ final class LibraryViewModel {
         customOrderIDs: [UUID]?
     ) -> Bool {
         let result: ComparisonResult
-        let useNaturalDescending: Bool
         switch artistSortKey {
         case .name:
             result = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
-            useNaturalDescending = false
         case .trackCount:
             result = compareInts(lhs.trackCount, rhs.trackCount)
-            useNaturalDescending = false
         case .albumCount:
             result = compareInts(lhs.albumCount, rhs.albumCount)
-            useNaturalDescending = false
         case .playCountTotal:
             result = compareAggregateMetric(
                 aggregateStats.artistPlayCount(for: lhs),
                 aggregateStats.artistPlayCount(for: rhs)
             )
-            useNaturalDescending = true
         case .preferenceTotal:
             result = compareAggregateMetric(
                 aggregateStats.artistPreferenceScore(for: lhs),
                 aggregateStats.artistPreferenceScore(for: rhs)
             )
-            useNaturalDescending = true
         case .totalDuration:
             result = compareDoubles(lhs.totalDuration, rhs.totalDuration)
-            useNaturalDescending = false
         case .updatedAt:
             result = compareDates(lhs.updatedAt, rhs.updatedAt)
-            useNaturalDescending = false
         case .custom:
             return compareCustomCollectionItems(lhs, rhs, customOrderIDs: customOrderIDs)
         }
@@ -2439,9 +2431,6 @@ final class LibraryViewModel {
                 return nameResult == .orderedAscending
             }
             return lhs.id.uuidString < rhs.id.uuidString
-        }
-        if useNaturalDescending {
-            return result == .orderedDescending
         }
         return trackSortOrder == .ascending
             ? result == .orderedAscending

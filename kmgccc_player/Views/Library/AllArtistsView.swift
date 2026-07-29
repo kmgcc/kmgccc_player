@@ -353,7 +353,9 @@ private struct ArtistListRow: View {
                 }
             }
         }
-        .task { await loadArtwork() }
+        .task(id: artworkLoadIdentity) {
+            await loadArtwork()
+        }
     }
 
     private var artworkView: some View {
@@ -438,21 +440,30 @@ private struct ArtistListRow: View {
         return "\(m) 分"
     }
 
+    private var artworkLoadIdentity: String {
+        [
+            artist.id.uuidString,
+            String(artist.updatedAt.timeIntervalSince1970),
+            artist.artworkFileName ?? "",
+            String(artist.artworkData?.count ?? 0),
+        ].joined(separator: ":")
+    }
+
     private func loadArtwork() async {
-        if let data = artist.artworkData, !data.isEmpty {
-            let checksum = ArtworkLoader.checksum(for: data)
-            let key = ArtworkLoader.cacheKey(
-                trackID: artist.id,
-                checksum: checksum,
-                targetPixelSize: CGSize(width: 132, height: 132)
-            )
-            image = await ArtworkLoader.loadImage(
-                artworkData: data,
-                cacheKey: key,
-                targetPixelSize: CGSize(width: 132, height: 132)
-            )
+        let current = libraryVM.artistEntries.first(where: { $0.id == artist.id }) ?? artist
+        if await loadPersistedArtwork(from: current) {
             return
         }
+
+        let didAutofill = await libraryVM.autofillArtistArtworkIfMissing(current)
+        guard !Task.isCancelled else { return }
+        if didAutofill,
+           let refreshed = libraryVM.artistEntries.first(where: { $0.id == artist.id }),
+           await loadPersistedArtwork(from: refreshed)
+        {
+            return
+        }
+
         let canonical = artist.canonicalName
         let tracks = libraryVM.allTracks.filter {
             LibraryNormalization.containsArtist(canonical, in: $0.artist)
@@ -462,5 +473,21 @@ private struct ArtistListRow: View {
             artistName: artist.displayName,
             trackSources: trackSources
         )
+    }
+
+    private func loadPersistedArtwork(from entry: ArtistEntry) async -> Bool {
+        guard let data = entry.artworkData, !data.isEmpty else { return false }
+        let checksum = ArtworkLoader.checksum(for: data)
+        let key = ArtworkLoader.cacheKey(
+            trackID: entry.id,
+            checksum: checksum,
+            targetPixelSize: CGSize(width: 132, height: 132)
+        )
+        image = await ArtworkLoader.loadImage(
+            artworkData: data,
+            cacheKey: key,
+            targetPixelSize: CGSize(width: 132, height: 132)
+        )
+        return image != nil
     }
 }
