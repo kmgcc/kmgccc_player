@@ -258,6 +258,20 @@ final class LibraryInitialImportIntegrationTests: XCTestCase {
         let remaining = await session.repository.fetchTracks(in: nil)
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.wavURL.path))
         XCTAssertTrue(remaining.isEmpty)
+        let removedFingerprint = try XCTUnwrap(track.mediaLocator.referencedFile?.fingerprint)
+        let isIgnoredAfterDeletion = try await IgnoredReferencedItemsStore(paths: session.context.paths)
+            .contains(removedFingerprint)
+        XCTAssertTrue(isIgnoredAfterDeletion)
+
+        let reimported = await session.fileImportService.importInitialSelection(
+            LibraryInitialImportSelection(urls: [fixture.wavURL])
+        )
+        XCTAssertEqual(reimported.imported, 1)
+        let isIgnoredAfterReimport = try await IgnoredReferencedItemsStore(paths: session.context.paths)
+            .contains(removedFingerprint)
+        let tracksAfterReimport = await session.repository.fetchTracks(in: nil)
+        XCTAssertFalse(isIgnoredAfterReimport)
+        XCTAssertEqual(tracksAfterReimport.count, 1)
         await session.quiesce()
         await session.close()
     }
@@ -291,6 +305,10 @@ final class LibraryInitialImportIntegrationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.wavURL.path))
         XCTAssertNotNil(retained)
         XCTAssertTrue(FileManager.default.fileExists(atPath: session.context.paths.trackMetaURL(for: track.id).path))
+        let fingerprint = try XCTUnwrap(track.mediaLocator.referencedFile?.fingerprint)
+        let isIgnoredAfterFailure = try await IgnoredReferencedItemsStore(paths: session.context.paths)
+            .contains(fingerprint)
+        XCTAssertFalse(isIgnoredAfterFailure)
         await session.quiesce()
         await session.close()
     }

@@ -100,13 +100,7 @@ final class LibrarySession: LibrarySessionLifecycle {
             try await referencedSourceReconciler.replayPending()
             let sourceIDs = try await referencedSourceReconciler.allSourceIDs()
             try await referencedSourceReconciler.reconcile(sourceIDs: sourceIDs)
-            try await startReferencedSourceMonitor(
-                libraryChangeMonitor,
-                reconciler: referencedSourceReconciler,
-                roots: referencedSourceReconciler.sourceRoots
-            )
         }
-        libraryService.startMonitoring(repository: repository)
         let upgrade = LegacyLibraryUpgradeCoordinator(
             context: context,
             storageLocations: cacheServices.storageLocations
@@ -120,6 +114,15 @@ final class LibrarySession: LibrarySessionLifecycle {
             )
         }
         didCompleteLegacyUpgrade = await upgrade.runIfNeeded() == .completed
+        if let referencedSourceReconciler, let libraryChangeMonitor {
+            try await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: referencedSourceReconciler,
+                roots: referencedSourceReconciler.sourceRoots
+            )
+        } else if context.mode == .managed, let libraryChangeMonitor {
+            try await startManagedLibraryMonitor(libraryChangeMonitor)
+        }
         isLoaded = true
     }
 
@@ -272,14 +275,48 @@ final class LibrarySession: LibrarySessionLifecycle {
         reconciler: ReferencedSourceReconciler,
         roots: [UUID: URL]
     ) async throws {
-        try await monitor.start(sourceRoots: roots) { [weak reconciler] sourceIDs, _ in
-            guard let reconciler else { return }
+        let libraryID = context.id
+        let libraryFilter = ManagedLibraryFileEventFilter(paths: context.paths)
+        let libraryRootPath = context.rootURL.standardizedFileURL.path
+        var monitoredRoots = roots
+        monitoredRoots[libraryID] = context.rootURL
+
+        try await monitor.start(
+            sourceRoots: monitoredRoots,
+            eventFilter: { event in
+                let eventPath = URL(fileURLWithPath: event.path).standardizedFileURL.path
+                guard eventPath == libraryRootPath || eventPath.hasPrefix(libraryRootPath + "/") else {
+                    return true
+                }
+                return libraryFilter.shouldProcess(event)
+            },
+            initiallyDirty: false
+        ) { [weak reconciler, weak libraryViewModel] dirtyIDs, _ in
+            if dirtyIDs.contains(libraryID) {
+                await libraryViewModel?.reloadLibrary()
+            }
+
+            let sourceIDs = dirtyIDs.subtracting([libraryID])
+            guard !sourceIDs.isEmpty, let reconciler else { return }
             do {
                 try await reconciler.reconcile(sourceIDs: sourceIDs)
             } catch {
                 await monitor.markFailed(sourceIDs: sourceIDs)
                 await reconciler.reportMonitorFailure(sourceIDs: sourceIDs, error: error)
             }
+        }
+    }
+
+    private func startManagedLibraryMonitor(_ monitor: LibraryChangeMonitor) async throws {
+        let libraryID = context.id
+        let filter = ManagedLibraryFileEventFilter(paths: context.paths)
+        try await monitor.start(
+            sourceRoots: [libraryID: context.rootURL],
+            eventFilter: { filter.shouldProcess($0) },
+            initiallyDirty: false
+        ) { [weak libraryViewModel] libraryIDs, _ in
+            guard libraryIDs.contains(libraryID), let libraryViewModel else { return }
+            await libraryViewModel.reloadLibrary()
         }
     }
 
@@ -307,7 +344,6 @@ final class LibrarySession: LibrarySessionLifecycle {
         playerViewModel.stop()
         playerViewModel.stopLevelMeter()
         libraryViewModel.prepareForSessionClose()
-        libraryService.stopMonitoring()
         let trackIDs = Set(libraryViewModel.allTracks.map(\.id))
         await importEnrichmentService.cancelEnrichment(for: trackIDs)
     }
@@ -318,7 +354,6 @@ final class LibrarySession: LibrarySessionLifecycle {
         referencedSourceReconciler?.close()
         isClosed = true
         libraryViewModel.prepareForSessionClose()
-        libraryService.stopMonitoring()
         playbackCoordinator.close()
         await searchIndex.close()
         await storageBackend.close()

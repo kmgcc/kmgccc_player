@@ -86,6 +86,9 @@ final class AppSessionHost: ObservableObject {
 
     private var hasSetupDependencies = false
     private var playbackModeObserver: NSObjectProtocol?
+    private var workspaceLibraryObservers: [NSObjectProtocol] = []
+    private var appActiveLibraryObserver: NSObjectProtocol?
+    private var activeLibraryRescanTask: Task<Void, Never>?
     private var playbackMemoryTimer: Timer?
     private let mainThreadStallMonitor = MainThreadStallMonitor()
     private var firstUsePrewarmTask: Task<Void, Never>?
@@ -264,8 +267,13 @@ final class AppSessionHost: ObservableObject {
     }
 
     func referencedSourceScanStates() async -> [UUID: ReferencedSourceScanState] {
-        guard let monitor = activeLibraryBinding.activeSession?.libraryChangeMonitor else { return [:] }
-        return await monitor.sourceStateSnapshot()
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.mode == .referenced,
+              let monitor = session.libraryChangeMonitor
+        else { return [:] }
+        var states = await monitor.sourceStateSnapshot()
+        states.removeValue(forKey: session.context.id)
+        return states
     }
 
     func referencedSources() async throws -> [ReferencedSourceDescriptor] {
@@ -508,6 +516,8 @@ final class AppSessionHost: ObservableObject {
     }
 
     private func releaseActiveSessionBindings() async {
+        activeLibraryRescanTask?.cancel()
+        activeLibraryRescanTask = nil
         playbackMemoryTimer?.invalidate()
         playbackMemoryTimer = nil
         firstUsePrewarmTask?.cancel()
@@ -542,6 +552,32 @@ final class AppSessionHost: ObservableObject {
             }
         }
 
+        if workspaceLibraryObservers.isEmpty {
+            let center = NSWorkspace.shared.notificationCenter
+            workspaceLibraryObservers = [
+                NSWorkspace.didMountNotification,
+                NSWorkspace.didUnmountNotification,
+            ].map { name in
+                center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.scheduleActiveLibraryRescan()
+                    }
+                }
+            }
+        }
+
+        if appActiveLibraryObserver == nil {
+            appActiveLibraryObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.scheduleActiveLibraryRescan()
+                }
+            }
+        }
+
         AppDelegate.applicationWillTerminateHandler = { [weak self] in
             guard let self else { return }
             TelemetryService.shared.endSession(reason: .appTerminated)
@@ -553,10 +589,32 @@ final class AppSessionHost: ObservableObject {
                     },
                     synchronously: true
                 )
-                session.libraryService.stopMonitoring()
             }
             Task {
+                if let monitor = self.activeLibraryBinding.activeSession?.libraryChangeMonitor {
+                    await monitor.stopAndWait()
+                }
                 await QQMusicHelperProcess.shared.terminate()
+            }
+        }
+    }
+
+    private func scheduleActiveLibraryRescan() {
+        activeLibraryRescanTask?.cancel()
+        activeLibraryRescanTask = Task { @MainActor [weak self] in
+            guard let self, let session = activeLibraryBinding.activeSession else { return }
+            let libraryID = session.context.id
+            if session.context.mode == .referenced {
+                do {
+                    _ = try await session.refreshReferencedSources()
+                } catch {
+                    Log.warning(
+                        "[LibrarySession] lifecycle source refresh failed library=\(libraryID)",
+                        category: .library
+                    )
+                }
+            } else if let monitor = session.libraryChangeMonitor {
+                await monitor.markDirty(sourceIDs: [libraryID], fullScan: true)
             }
         }
     }
@@ -567,8 +625,16 @@ final class AppSessionHost: ObservableObject {
             if let playbackModeObserver {
                 NotificationCenter.default.removeObserver(playbackModeObserver)
             }
+            if let appActiveLibraryObserver {
+                NotificationCenter.default.removeObserver(appActiveLibraryObserver)
+            }
+            let workspaceCenter = NSWorkspace.shared.notificationCenter
+            for observer in workspaceLibraryObservers {
+                workspaceCenter.removeObserver(observer)
+            }
             playbackMemoryTimer?.invalidate()
             firstUsePrewarmTask?.cancel()
+            activeLibraryRescanTask?.cancel()
             AppDelegate.applicationWillTerminateHandler = nil
         }
     }

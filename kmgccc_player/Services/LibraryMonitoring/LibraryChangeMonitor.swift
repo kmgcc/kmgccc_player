@@ -12,6 +12,32 @@ nonisolated struct LibraryFileEvent: Sendable, Equatable {
     var requiresFullScan: Bool
 }
 
+nonisolated struct ManagedLibraryFileEventFilter: Sendable {
+    private let rootPath: String
+    private let authoritativeDirectoryNames = Set(["Tracks", "Playlists", "Artists", "Albums"])
+
+    init(paths: LibraryPaths) {
+        rootPath = paths.rootURL.standardizedFileURL.path
+    }
+
+    func shouldProcess(_ event: LibraryFileEvent) -> Bool {
+        let path = URL(fileURLWithPath: event.path).standardizedFileURL.path
+        guard path.hasPrefix(rootPath + "/") else { return false }
+
+        let relativePath = String(path.dropFirst(rootPath.count + 1))
+        guard let firstComponent = relativePath.split(separator: "/", omittingEmptySubsequences: true).first,
+              authoritativeDirectoryNames.contains(String(firstComponent))
+        else {
+            return false
+        }
+
+        let fileName = URL(fileURLWithPath: path).lastPathComponent.lowercased()
+        return !fileName.hasSuffix(".sqlite")
+            && !fileName.hasSuffix(".sqlite-wal")
+            && !fileName.hasSuffix(".sqlite-shm")
+    }
+}
+
 nonisolated protocol LibraryFileEventSource: AnyObject, Sendable {
     func start(paths: [String], handler: @escaping @Sendable ([LibraryFileEvent]) -> Void) throws
     func stop()
@@ -73,6 +99,7 @@ nonisolated private final class CallbackBox: @unchecked Sendable {
 
 actor LibraryChangeMonitor {
     typealias ScanHandler = @Sendable (Set<UUID>, Bool) async -> Void
+    typealias EventFilter = @Sendable (LibraryFileEvent) -> Bool
 
     private let eventSource: LibraryFileEventSource
     private let debounceNanoseconds: UInt64
@@ -82,6 +109,7 @@ actor LibraryChangeMonitor {
     private var debounceTask: Task<Void, Never>?
     private var scanTask: Task<Void, Never>?
     private var handler: ScanHandler?
+    private var eventFilter: EventFilter?
     private var stopped = true
     private var sourceStates: [UUID: ReferencedSourceScanState] = [:]
 
@@ -90,11 +118,17 @@ actor LibraryChangeMonitor {
         self.debounceNanoseconds = debounceNanoseconds
     }
 
-    func start(sourceRoots: [UUID: URL], handler: @escaping ScanHandler) async throws {
+    func start(
+        sourceRoots: [UUID: URL],
+        eventFilter: @escaping EventFilter = { _ in true },
+        initiallyDirty: Bool = true,
+        handler: @escaping ScanHandler
+    ) async throws {
         await stopAndWait()
         sourcePaths = sourceRoots.mapValues { $0.standardizedFileURL.path }
         sourceStates = sourceRoots.mapValues { _ in .idle }
         self.handler = handler
+        self.eventFilter = eventFilter
         stopped = false
         do {
             try eventSource.start(paths: Array(sourcePaths.values)) { [weak self] events in
@@ -104,8 +138,10 @@ actor LibraryChangeMonitor {
             stopImmediately()
             throw error
         }
-        dirtySourceIDs = Set(sourceRoots.keys)
-        scheduleDebounce()
+        if initiallyDirty {
+            dirtySourceIDs = Set(sourceRoots.keys)
+            scheduleDebounce()
+        }
     }
 
     func removeSource(_ sourceID: UUID) throws {
@@ -141,6 +177,7 @@ actor LibraryChangeMonitor {
         dirtySourceIDs.removeAll()
         sourceStates.removeAll()
         handler = nil
+        eventFilter = nil
     }
 
     private func stopImmediately() {
@@ -154,17 +191,25 @@ actor LibraryChangeMonitor {
         dirtySourceIDs.removeAll()
         sourceStates.removeAll()
         handler = nil
+        eventFilter = nil
     }
 
     private func receive(_ events: [LibraryFileEvent]) {
         guard !stopped else { return }
         for event in events {
+            if event.requiresFullScan {
+                dirtySourceIDs.formUnion(sourcePaths.keys)
+                forceFullScan = true
+                continue
+            }
+            guard eventFilter?(event) ?? true else { continue }
             for (sourceID, root) in sourcePaths where event.path == root || event.path.hasPrefix(root + "/") {
                 dirtySourceIDs.insert(sourceID)
             }
-            forceFullScan = forceFullScan || event.requiresFullScan
         }
-        scheduleDebounce()
+        if !dirtySourceIDs.isEmpty {
+            scheduleDebounce()
+        }
     }
 
     private func scheduleDebounce() {

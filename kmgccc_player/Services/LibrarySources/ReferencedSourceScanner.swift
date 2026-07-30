@@ -26,12 +26,14 @@ actor NCMScanReservationFilter {
 
 actor ReferencedSourceScanner {
     typealias ReservationCheck = @Sendable (URL, ReferencedFileIdentity?) async -> Bool
+    typealias IgnoreCheck = @Sendable (ReferencedFileFingerprint) async -> Bool
     typealias FingerprintProvider = @Sendable (URL) throws -> ReferencedFileFingerprint
 
     private let fingerprintProvider: FingerprintProvider
     private let fileManager: FileManager
     private let manifestStore: ReferencedSourceScanManifestStore
     private let isReserved: ReservationCheck
+    private let isIgnored: IgnoreCheck
     private let supportedExtensions: Set<String>
 
     init(
@@ -41,13 +43,15 @@ actor ReferencedSourceScanner {
         },
         fileManager: FileManager = .default,
         supportedExtensions: Set<String> = ["mp3", "m4a", "aac", "flac", "wav", "aiff", "aif", "ogg", "opus", "ncm"],
-        isReserved: @escaping ReservationCheck = { _, _ in false }
+        isReserved: @escaping ReservationCheck = { _, _ in false },
+        isIgnored: @escaping IgnoreCheck = { _ in false }
     ) {
         self.fingerprintProvider = fingerprintProvider
         self.fileManager = fileManager
         manifestStore = ReferencedSourceScanManifestStore(paths: paths)
         self.supportedExtensions = supportedExtensions
         self.isReserved = isReserved
+        self.isIgnored = isIgnored
     }
 
     func scan(context: LibraryContext, sourceID: UUID, rootURL: URL) async throws -> ReferencedSourceScanResult {
@@ -70,6 +74,7 @@ actor ReferencedSourceScanner {
             generation: generation,
             previous: previous?.entries ?? [],
             current: snapshot.entries,
+            ignored: snapshot.ignored,
             failures: snapshot.failures
         )
         return ReferencedSourceScanResult(
@@ -84,11 +89,16 @@ actor ReferencedSourceScanner {
         )
     }
 
-    private func enumerate(rootURL: URL, generation: UInt64) async throws -> (entries: [ReferencedSourceScanEntry], failures: [ReferencedSourceScanFailure]) {
+    private func enumerate(rootURL: URL, generation: UInt64) async throws -> (
+        entries: [ReferencedSourceScanEntry],
+        ignored: [ReferencedSourceIgnoredFile],
+        failures: [ReferencedSourceScanFailure]
+    ) {
         let root = rootURL.resolvingSymlinksInPath().standardizedFileURL
         var pending = [root]
         var visitedDirectories = Set<String>()
         var entries: [ReferencedSourceScanEntry] = []
+        var ignored: [ReferencedSourceIgnoredFile] = []
         var failures: [ReferencedSourceScanFailure] = []
         let keys: Set<URLResourceKey> = [.isDirectoryKey, .isRegularFileKey, .isPackageKey, .isHiddenKey, .isSymbolicLinkKey, .fileResourceIdentifierKey, .volumeUUIDStringKey, .fileSizeKey, .contentModificationDateKey]
 
@@ -120,6 +130,10 @@ actor ReferencedSourceScanner {
                     let fingerprint = try fingerprintProvider(resolved)
                     if await isReserved(resolved, fingerprint.identity) { continue }
                     guard let relative = relativePath(resolved, root: root) else { continue }
+                    if await isIgnored(fingerprint) {
+                        ignored.append(.init(relativePath: relative, fingerprint: fingerprint))
+                        continue
+                    }
                     entries.append(.init(relativePath: relative, identity: fingerprint.identity, fingerprint: fingerprint, trackID: nil, availability: .available, lastSeenGeneration: generation))
                 } catch {
                     failures.append(.init(relativePath: relativePath(child, root: root), summary: String(describing: error).prefixString(256)))
@@ -127,10 +141,19 @@ actor ReferencedSourceScanner {
             }
         }
         entries.sort { $0.relativePath < $1.relativePath }
-        return (entries, failures)
+        ignored.sort { $0.relativePath < $1.relativePath }
+        return (entries, ignored, failures)
     }
 
-    private func buildDiff(context: LibraryContext, sourceID: UUID, generation: UInt64, previous: [ReferencedSourceScanEntry], current: [ReferencedSourceScanEntry], failures: [ReferencedSourceScanFailure]) -> (ReferencedSourceDiff, [ReferencedSourceScanEntry]) {
+    private func buildDiff(
+        context: LibraryContext,
+        sourceID: UUID,
+        generation: UInt64,
+        previous: [ReferencedSourceScanEntry],
+        current: [ReferencedSourceScanEntry],
+        ignored: [ReferencedSourceIgnoredFile],
+        failures: [ReferencedSourceScanFailure]
+    ) -> (ReferencedSourceDiff, [ReferencedSourceScanEntry]) {
         let oldByPath = Dictionary(uniqueKeysWithValues: previous.map { ($0.relativePath, $0) })
         var oldByIdentity: [ReferencedFileIdentity: ReferencedSourceScanEntry] = [:]
         for entry in previous where entry.identity?.isStable == true { oldByIdentity[entry.identity!] = entry }
@@ -143,6 +166,8 @@ actor ReferencedSourceScanner {
         var consumedOldPaths = Set<String>()
         var next = current
         var diff = ReferencedSourceDiff(libraryID: context.id, libraryGeneration: context.generation, sourceID: sourceID, scanGeneration: generation, sourceStatus: .available, failures: failures)
+        diff.ignored = ignored
+        let ignoredKeys = Set(ignored.map { ReferencedPhysicalIdentityKey($0.fingerprint) })
 
         for index in next.indices {
             var entry = next[index]
@@ -176,6 +201,7 @@ actor ReferencedSourceScanner {
             next[index] = entry
         }
         for old in previous where !consumedOldPaths.contains(old.relativePath) {
+            if ignoredKeys.contains(ReferencedPhysicalIdentityKey(old.fingerprint)) { continue }
             let coveredByFailure = failures.contains { failure in
                 guard let failedPath = failure.relativePath else { return true }
                 return old.relativePath == failedPath || old.relativePath.hasPrefix(failedPath + "/")

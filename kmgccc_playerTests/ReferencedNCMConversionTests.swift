@@ -187,6 +187,39 @@ final class ReferencedNCMConversionTests: XCTestCase {
         XCTAssertEqual(committed?.state, .committed)
     }
 
+    func testRemovedConversionBlocksAutomaticReentryAndManualRetryRecoversOutput() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let input = try fixture.input()
+        let converted = try await fixture.service.convert(input)
+        try await fixture.service.associateTrack(operationID: converted.operationID, trackID: fixture.trackID)
+        try await fixture.service.markCommitted(operationID: converted.operationID, trackID: fixture.trackID)
+        _ = try await fixture.registry.markRemoved(operationID: converted.operationID)
+
+        let sourceIsReserved = try await fixture.service.isReserved(url: fixture.ncmURL)
+        let outputIsReserved = try await fixture.service.isReserved(url: converted.result.audioFileURL)
+        XCTAssertTrue(sourceIsReserved)
+        XCTAssertTrue(outputIsReserved)
+        do {
+            _ = try await fixture.service.convert(input)
+            XCTFail("Expected removed conversion to block automatic re-entry")
+        } catch {
+            XCTAssertEqual(error as? ReferencedNCMConversionError, .removedConversion)
+        }
+
+        let cleared = try await fixture.service.allowManualRetry(input)
+        XCTAssertEqual(
+            Set(cleared.map(ReferencedPhysicalIdentityKey.init)),
+            Set([
+                ReferencedPhysicalIdentityKey(try XCTUnwrap(input.fingerprint)),
+                ReferencedPhysicalIdentityKey(try ReferencedFileIdentityProvider().fingerprint(for: converted.result.audioFileURL))
+            ])
+        )
+        let recovered = try await fixture.service.convert(input)
+        XCTAssertEqual(recovered.operationID, converted.operationID)
+        XCTAssertEqual(recovered.result.audioFileURL, converted.result.audioFileURL)
+    }
+
     func testFingerprintStableAndFallbackDomainsNeverCrossMatch() {
         let timestamp = 123.0
         let bytes = Data([1, 2, 3])
@@ -254,6 +287,7 @@ private final class Fixture {
     let scope = ReferencedSourceScope()
     let authorizer = NCMTestParentAuthorizer()
     let resolver = NCMTestBookmarkResolver()
+    let registry: NCMConversionRegistry
     let service: ReferencedNCMConversionService
     let trackID = UUID()
 
@@ -268,8 +302,9 @@ private final class Fixture {
         try paths.createRequiredDirectories()
         try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
         try Data("ncm-source".utf8).write(to: ncmURL)
+        registry = NCMConversionRegistry(paths: paths)
         service = ReferencedNCMConversionService(
-            paths: paths, sourceScope: scope, parentAuthorizer: authorizer,
+            paths: paths, sourceScope: scope, registry: registry, parentAuthorizer: authorizer,
             bookmarkResolver: resolver,
             convert: convert ?? { source, directory in try Self.makeResult(source: source, directory: directory) },
             commitOverride: commitOverride,

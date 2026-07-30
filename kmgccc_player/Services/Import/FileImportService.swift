@@ -227,6 +227,7 @@ final class FileImportService: FileImportServiceProtocol {
     private let importEnrichmentService: ImportEnrichmentService
     private let storageBackend: any LibraryStorageBackend
     private let referencedNCMConversionService: ReferencedNCMConversionService?
+    private let ignoredItemsStore: IgnoredReferencedItemsStore?
     private let qqMusicCoverService: QQMusicCoverService
     private let artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator
     private let lyricsSearchCoordinator: LyricsSearchCoordinator
@@ -240,6 +241,7 @@ final class FileImportService: FileImportServiceProtocol {
         importEnrichmentService: ImportEnrichmentService,
         storageBackend: any LibraryStorageBackend,
         referencedNCMConversionService: ReferencedNCMConversionService? = nil,
+        ignoredItemsStore: IgnoredReferencedItemsStore? = nil,
         qqMusicCoverService: QQMusicCoverService,
         artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator,
         lyricsSearchCoordinator: LyricsSearchCoordinator,
@@ -252,6 +254,7 @@ final class FileImportService: FileImportServiceProtocol {
         self.importEnrichmentService = importEnrichmentService
         self.storageBackend = storageBackend
         self.referencedNCMConversionService = referencedNCMConversionService
+        self.ignoredItemsStore = ignoredItemsStore
         self.qqMusicCoverService = qqMusicCoverService
         self.artistArtworkProviderCoordinator = artistArtworkProviderCoordinator
         self.lyricsSearchCoordinator = lyricsSearchCoordinator
@@ -307,14 +310,21 @@ final class FileImportService: FileImportServiceProtocol {
             selectedURLs,
             to: playlist,
             metadataOverride: metadataOverride,
-            presentation: .interactive
+            presentation: .interactive,
+            isManualSelection: true
         ).count
     }
 
     /// Production entry used by referenced-source reconciliation. It uses the same
     /// metadata, sidecar, and visibility pipeline without presenting AppKit UI.
     func importAutomatically(_ urls: [URL]) async -> [Track] {
-        await importURLs(urls, to: nil, metadataOverride: nil, presentation: .automatic)
+        await importURLs(
+            urls,
+            to: nil,
+            metadataOverride: nil,
+            presentation: .automatic,
+            isManualSelection: false
+        )
     }
 
     /// Setup entry. The caller retains `selection` across this entire call so the
@@ -324,7 +334,8 @@ final class FileImportService: FileImportServiceProtocol {
             selection.urls,
             to: nil,
             metadataOverride: nil,
-            presentation: .automatic
+            presentation: .automatic,
+            isManualSelection: true
         )
         let plan = storageBackend.lastPreparedInputPlan
         var failures = plan?.failures ?? []
@@ -355,7 +366,8 @@ final class FileImportService: FileImportServiceProtocol {
         _ selectedURLs: [URL],
         to playlist: Playlist?,
         metadataOverride: ImportMetadataOverride?,
-        presentation: ImportPresentation
+        presentation: ImportPresentation,
+        isManualSelection: Bool
     ) async -> [Track] {
         var crashBreadcrumbResult = "not_completed"
         var crashBreadcrumbImportedCount = 0
@@ -427,6 +439,23 @@ final class FileImportService: FileImportServiceProtocol {
         // The backend captures panel/drag scopes before this suspension returns.
         let inputPlan = await storageBackend.prepareInputs(selectedURLs)
         defer { storageBackend.finishImportBatch() }
+        if isManualSelection, let ignoredItemsStore {
+            let fingerprints = inputPlan.files.compactMap(\.fingerprint)
+            do {
+                try await ignoredItemsStore.remove(matching: fingerprints)
+                if let referencedNCMConversionService {
+                    for file in inputPlan.files where file.url.pathExtension.lowercased() == "ncm" {
+                        let related = try await referencedNCMConversionService.allowManualRetry(file)
+                        try await ignoredItemsStore.remove(matching: related)
+                    }
+                }
+            } catch {
+                Log.error(
+                    "[Import] failed to clear ignored item before manual import: \(error.localizedDescription)",
+                    category: .import
+                )
+            }
+        }
         var newFiles: [ImportDiscoveredFile] = []
         var reusedTracks: [Track] = []
         for file in inputPlan.files {

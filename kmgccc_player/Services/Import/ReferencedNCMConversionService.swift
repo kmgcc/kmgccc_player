@@ -76,6 +76,7 @@ nonisolated enum ReferencedNCMConversionError: Error, LocalizedError, Equatable 
     case activeReservation(UUID)
     case recoveryOutputMissing(UUID)
     case committedConversion(trackID: UUID)
+    case removedConversion
     case invalidOutput
     case atomicPublishFailed
 
@@ -87,6 +88,7 @@ nonisolated enum ReferencedNCMConversionError: Error, LocalizedError, Equatable 
         case .activeReservation: return "该 NCM 文件正在转换或等待恢复。"
         case .recoveryOutputMissing: return "NCM 转换记录需要恢复，但预期输出不存在。"
         case .committedConversion: return "该 NCM 文件已经转换并导入。"
+        case .removedConversion: return "该 NCM 文件已从资料库移除。请手动重新导入以恢复。"
         case .invalidOutput: return "转换结果无法解码或时长无效。"
         case .atomicPublishFailed: return "无法安全提交 NCM 转换结果。"
         }
@@ -121,6 +123,7 @@ final class ReferencedNCMConversionService {
     init(
         paths: LibraryPaths,
         sourceScope: ReferencedSourceScope,
+        registry: NCMConversionRegistry? = nil,
         parentAuthorizer: (any NCMParentDirectoryAuthorizing)? = nil,
         bookmarkResolver: any BookmarkResolving = SystemBookmarkResolver(),
         identityProvider: ReferencedFileIdentityProvider = ReferencedFileIdentityProvider(),
@@ -129,7 +132,7 @@ final class ReferencedNCMConversionService {
         commitOverride: Commit? = nil,
         validate: Validate? = nil
     ) {
-        self.registry = NCMConversionRegistry(paths: paths)
+        self.registry = registry ?? NCMConversionRegistry(paths: paths)
         self.sourceScope = sourceScope
         self.bookmarkResolver = bookmarkResolver
         self.parentAuthorizer = parentAuthorizer ?? NCMParentDirectoryPanelAuthorizer(
@@ -155,6 +158,9 @@ final class ReferencedNCMConversionService {
             throw ReferencedNCMConversionError.sourceUnavailable
         }
         let sourceFingerprint = try identityProvider.fingerprint(for: sourceURL)
+        if try await registry.removedRecord(matching: sourceFingerprint) != nil {
+            throw ReferencedNCMConversionError.removedConversion
+        }
         if let committed = try await registry.committedRecord(matching: sourceFingerprint),
            let trackID = committed.trackID {
             throw ReferencedNCMConversionError.committedConversion(trackID: trackID)
@@ -356,6 +362,18 @@ final class ReferencedNCMConversionService {
 
     func isReserved(url: URL, identity: ReferencedFileIdentity? = nil) async throws -> Bool {
         try await registry.isReserved(url: url, identity: identity)
+    }
+
+    func allowManualRetry(
+        _ file: ImportDiscoveredFile
+    ) async throws -> [ReferencedFileFingerprint] {
+        let fingerprint: ReferencedFileFingerprint
+        if let existing = file.fingerprint {
+            fingerprint = existing
+        } else {
+            fingerprint = try identityProvider.fingerprint(for: file.url)
+        }
+        return try await registry.allowManualRetry(matching: fingerprint)
     }
 
     private func writeAuthorization(for file: ImportDiscoveredFile) async throws -> NCMParentDirectoryAuthorization {

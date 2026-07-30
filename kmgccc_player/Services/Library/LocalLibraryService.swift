@@ -7,8 +7,6 @@
 //
 
 import AppKit
-import Darwin
-import Dispatch
 import Foundation
 import ImageIO
 
@@ -122,12 +120,6 @@ final class LocalLibraryService {
     private let fileManager = FileManager.default
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
-
-    private var monitors: [String: DispatchSourceFileSystemObject] = [:]
-    private var monitorFDs: [String: Int32] = [:]
-    private var pendingSync: DispatchWorkItem?
-    private nonisolated let monitorSuppressionLock = NSLock()
-    private nonisolated(unsafe) var monitorEventsSuppressedUntil: TimeInterval = 0
 
     init(paths: LibraryPaths, preferenceStatsService: PreferenceStatsService) {
         self.paths = paths
@@ -279,7 +271,6 @@ final class LocalLibraryService {
             track: track,
             preferenceStats: preferenceStatsService.getStats(for: track.id)
         )
-        suppressMonitorEvents(for: 1.5)
         let capturedPaths = paths
 
         Task.detached(priority: .utility) { @Sendable in
@@ -2075,95 +2066,6 @@ final class LocalLibraryService {
         return nil
     }
 
-    // MARK: - Monitoring (missing/removed files)
-
-    func startMonitoring(repository: LibraryRepositoryProtocol) {
-        stopMonitoring()
-        ensureLibraryFolders()
-
-        let pathsToMonitor = [
-            "tracks": paths.tracksRootURL.path,
-            "playlists": paths.playlistsRootURL.path,
-        ]
-
-        for (name, path) in pathsToMonitor {
-            let fd = open(path, O_EVTONLY)
-            guard fd >= 0 else {
-                Log.warning("Failed to open \(name) path for monitoring: \(path)", category: .library)
-                continue
-            }
-
-            let source = DispatchSource.makeFileSystemObjectSource(
-                fileDescriptor: fd,
-                eventMask: [.write, .delete, .rename, .extend, .attrib],  // Added .extend/.attrib for better file change detection
-                queue: .main
-            )
-
-            source.setEventHandler { [weak self] in
-                guard let self else { return }
-                if self.shouldIgnoreMonitorEvent() {
-                    Log.debug("Ignored self-induced monitor event in \(name)", category: .library)
-                    return
-                }
-                Log.debug("Detected change in \(name) folder", category: .library)
-                self.scheduleAvailabilitySync(repository: repository)
-            }
-
-            source.setCancelHandler { [fd] in
-                close(fd)
-            }
-
-            source.resume()
-            monitors[name] = source
-            monitorFDs[name] = fd
-            Log.debug("Started monitoring \(name) at \(path)", category: .library)
-        }
-    }
-
-    func stopMonitoring() {
-        pendingSync?.cancel()
-        pendingSync = nil
-
-        for source in monitors.values {
-            source.cancel()
-        }
-        monitors.removeAll()
-
-        // FDs are closed in cancel handler, but we clear our tracking
-        monitorFDs.removeAll()
-    }
-
-    func restartMonitoring(repository: LibraryRepositoryProtocol) {
-        stopMonitoring()
-        startMonitoring(repository: repository)
-    }
-
-    private func scheduleAvailabilitySync(repository: LibraryRepositoryProtocol) {
-        pendingSync?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            Task { @MainActor in
-                await self?.refreshAvailability(repository: repository)
-            }
-        }
-        pendingSync = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
-    }
-
-    nonisolated func suppressMonitorEvents(for duration: TimeInterval = 1.5) {
-        monitorSuppressionLock.lock()
-        monitorEventsSuppressedUntil = max(
-            monitorEventsSuppressedUntil,
-            ProcessInfo.processInfo.systemUptime + duration
-        )
-        monitorSuppressionLock.unlock()
-    }
-
-    private func shouldIgnoreMonitorEvent() -> Bool {
-        monitorSuppressionLock.lock()
-        let ignored = ProcessInfo.processInfo.systemUptime < monitorEventsSuppressedUntil
-        monitorSuppressionLock.unlock()
-        return ignored
-    }
 }
 
 extension NSImage {

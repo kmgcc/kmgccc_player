@@ -17,7 +17,7 @@ nonisolated struct LibraryDiskSnapshot: Sendable {
 
 nonisolated struct LibraryDiskScanner: Sendable {
     private let paths: LibraryPaths
-    private static let manifestFileName = ".kmgccc-library-manifest.json"
+    private static let legacyManifestFileName = ".kmgccc-library-manifest.json"
     private static let manifestSchemaVersion = 2
 
     init(paths: LibraryPaths) {
@@ -31,7 +31,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
     func scanIncremental() -> LibraryDiskSnapshot {
         let start = Date()
         let rootURL = paths.rootURL
-        let manifestLoad = loadManifest(at: rootURL.appendingPathComponent(Self.manifestFileName))
+        let manifestLoad = loadPreferredManifest()
         let previousManifest = manifestLoad.manifest
         let now = Date()
 
@@ -55,7 +55,9 @@ nonisolated struct LibraryDiskScanner: Sendable {
             artists: artists.manifestEntries,
             albums: albums.manifestEntries
         )
-        writeManifest(newManifest, at: rootURL.appendingPathComponent(Self.manifestFileName), rootURL: rootURL)
+        if writeManifest(newManifest, at: paths.libraryScanManifestURL) {
+            try? FileManager.default.removeItem(at: legacyManifestURL)
+        }
 
         let elapsed = Date().timeIntervalSince(start)
         let totalRescanned = tracks.stats.rescanned + playlists.stats.rescanned + artists.stats.rescanned + albums.stats.rescanned
@@ -309,7 +311,20 @@ nonisolated struct LibraryDiskScanner: Sendable {
     // MARK: - Manifest
 
     private func loadManifestForActiveRoot() -> LibraryManifest? {
-        loadManifest(at: paths.rootURL.appendingPathComponent(Self.manifestFileName)).manifest
+        loadPreferredManifest().manifest
+    }
+
+    private var legacyManifestURL: URL {
+        paths.rootURL.appendingPathComponent(Self.legacyManifestFileName)
+    }
+
+    private func loadPreferredManifest() -> ManifestLoad {
+        let current = loadManifest(at: paths.libraryScanManifestURL)
+        guard current.status == "miss" else { return current }
+
+        let legacy = loadManifest(at: legacyManifestURL)
+        guard let manifest = legacy.manifest else { return current }
+        return ManifestLoad(manifest: manifest, status: "legacy-hit")
     }
 
     private func loadManifest(at url: URL) -> ManifestLoad {
@@ -332,19 +347,25 @@ nonisolated struct LibraryDiskScanner: Sendable {
         }
     }
 
-    private func writeManifest(_ manifest: LibraryManifest, at url: URL, rootURL: URL) {
+    @discardableResult
+    private func writeManifest(_ manifest: LibraryManifest, at url: URL) -> Bool {
         do {
-            try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(manifest)
             try data.write(to: url, options: .atomic)
+            return true
         } catch {
             Log.warning(
                 "[LibraryIncrementalScan] failed to write manifest: \(error.localizedDescription)",
                 category: .library
             )
+            return false
         }
     }
 

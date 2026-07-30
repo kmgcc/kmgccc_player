@@ -11,6 +11,7 @@ nonisolated enum NCMConversionState: String, Codable, Sendable {
     case pending
     case outputReady
     case committed
+    case removed
     case failed
 }
 
@@ -93,12 +94,14 @@ actor NCMConversionRegistry {
     func reserve(_ record: NCMConversionRecord) throws {
         var current = try load()
         if let existing = current.records.first(where: {
-            Self.sameSource($0, record) && $0.state != .failed
+            Self.sameSource($0, record)
+                && ($0.state == .pending || $0.state == .outputReady || $0.state == .committed)
         }) {
             throw NCMConversionRegistryError.sourceAlreadyReserved(existing.id)
         }
         if let existing = current.records.first(where: {
-            $0.expectedOutputPath == record.expectedOutputPath && $0.state != .failed
+            $0.expectedOutputPath == record.expectedOutputPath
+                && ($0.state == .pending || $0.state == .outputReady || $0.state == .committed)
         }) {
             throw NCMConversionRegistryError.outputAlreadyReserved(existing.id)
         }
@@ -205,7 +208,9 @@ actor NCMConversionRegistry {
 
     func markFailed(operationID: UUID, summary: String) throws {
         try update(operationID) { record in
-            guard record.state != .committed else { throw NCMConversionRegistryError.invalidTransition }
+            guard record.state != .committed && record.state != .removed else {
+                throw NCMConversionRegistryError.invalidTransition
+            }
             record.state = .failed
             record.errorSummary = String(summary.prefix(512))
             record.updatedAt = Date()
@@ -222,6 +227,65 @@ actor NCMConversionRegistry {
         }
     }
 
+    func removedRecord(matching fingerprint: ReferencedFileFingerprint) throws -> NCMConversionRecord? {
+        try load().records.first {
+            $0.state == .removed && Self.sameFingerprint($0.sourceFingerprint, fingerprint)
+        }
+    }
+
+    @discardableResult
+    func markRemoved(operationID: UUID) throws -> NCMConversionRecord {
+        var removed: NCMConversionRecord?
+        try update(operationID) { record in
+            guard record.state == .committed || record.state == .outputReady || record.state == .removed else {
+                throw NCMConversionRegistryError.invalidTransition
+            }
+            record.state = .removed
+            record.errorSummary = nil
+            record.updatedAt = Date()
+            removed = record
+        }
+        guard let removed else { throw NCMConversionRegistryError.recordNotFound(operationID) }
+        return removed
+    }
+
+    func allowManualRetry(
+        matching fingerprint: ReferencedFileFingerprint
+    ) throws -> [ReferencedFileFingerprint] {
+        var current = try load()
+        guard let index = current.records.firstIndex(where: {
+            $0.state == .removed && Self.sameFingerprint($0.sourceFingerprint, fingerprint)
+        }) else { return [] }
+        var clearedFingerprints = [current.records[index].sourceFingerprint]
+        if let outputFingerprint = current.records[index].outputFingerprint {
+            clearedFingerprints.append(outputFingerprint)
+        }
+        let outputExists = fileManager.fileExists(atPath: current.records[index].expectedOutputPath)
+        if outputExists,
+           current.records[index].outputFingerprint != nil,
+           current.records[index].outputFormat != nil,
+           current.records[index].outputMetadata != nil {
+            current.records[index].state = .outputReady
+            current.records[index].trackID = nil
+            current.records[index].errorSummary = nil
+        } else {
+            current.records[index].state = .failed
+            current.records[index].trackID = nil
+            current.records[index].errorSummary = "Manual retry requested"
+        }
+        current.records[index].updatedAt = Date()
+        try persist(current)
+        return clearedFingerprints
+    }
+
+    func restoreAfterFailedRemoval(operationID: UUID) throws {
+        try update(operationID) { record in
+            guard record.state == .removed else { return }
+            record.state = record.trackID == nil ? .outputReady : .committed
+            record.updatedAt = Date()
+        }
+    }
+
     func activeRecord(matching fingerprint: ReferencedFileFingerprint) throws -> NCMConversionRecord? {
         try load().records.first {
             ($0.state == .pending || $0.state == .outputReady)
@@ -232,9 +296,23 @@ actor NCMConversionRegistry {
     func isReserved(url candidate: URL, identity: ReferencedFileIdentity?) throws -> Bool {
         let path = candidate.standardizedFileURL.path
         return try load().records.contains { record in
-            guard record.state == .pending || record.state == .outputReady else { return false }
-            if let identity, identity == record.sourceIdentity || identity == record.outputIdentity { return true }
-            return record.sourcePath == path || record.expectedOutputPath == path
+            switch record.state {
+            case .pending, .outputReady:
+                if let identity, identity == record.sourceIdentity || identity == record.outputIdentity {
+                    return true
+                }
+                return record.sourcePath == path || record.expectedOutputPath == path
+            case .committed:
+                if let identity, identity == record.sourceIdentity { return true }
+                return record.sourcePath == path
+            case .removed:
+                if let identity, identity == record.sourceIdentity || identity == record.outputIdentity {
+                    return true
+                }
+                return record.sourcePath == path || record.expectedOutputPath == path
+            case .failed:
+                return false
+            }
         }
     }
 

@@ -1496,8 +1496,6 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         await withCheckedContinuation { continuation in
             let libraryService = self.libraryService
             DispatchQueue.global(qos: .utility).async {
-                libraryService.suppressMonitorEvents(for: 3.0)
-
                 for snapshot in cleanupPlan.playlistSnapshots {
                     autoreleasepool {
                         libraryService.writePlaylistSidecar(
@@ -1643,10 +1641,6 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 preferenceStats: statsByTrackID[track.id] ?? TrackPreferenceStats()
             )
         }
-
-        libraryService.suppressMonitorEvents(
-            for: min(10.0, max(1.5, Double(uniqueTracks.count) * 0.15 + 1.5))
-        )
 
         let capturedPaths = paths
         let results = await Task.detached(priority: .utility) { @Sendable in

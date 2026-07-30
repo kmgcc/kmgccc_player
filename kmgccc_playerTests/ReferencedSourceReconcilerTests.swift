@@ -262,12 +262,79 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         let externalBytes = try Data(contentsOf: renamed)
         try await fixture.reconciler.removeSource(fixture.sourceID)
         tracks = await fixture.repository.fetchTracks(in: nil)
-        XCTAssertEqual(tracks.map(\.id), [track.id])
-        XCTAssertEqual(tracks[0].availability, .missing)
-        XCTAssertEqual(tracks[0].mediaLocator.referencedFile?.sourceMemberships, [])
+        XCTAssertTrue(tracks.isEmpty)
         XCTAssertEqual(try Data(contentsOf: renamed), externalBytes)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.paths.sourceDescriptorURL(for: fixture.sourceID).path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.paths.sourceScanManifestURL(for: fixture.sourceID).path))
+    }
+
+    func testOnlyLibraryRemovalDoesNotResurrectAndNewPhysicalIdentityAtSamePathImports() async throws {
+        let fixture = try await ReconcileFixture()
+        defer { fixture.cleanup() }
+        let song = fixture.sourceRoot.appendingPathComponent("ignored.mp3")
+        try Data("original-audio".utf8).write(to: song)
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+        let initiallyImported = await fixture.repository.fetchTracks(in: nil)
+        let imported = try XCTUnwrap(initiallyImported.first)
+        let originalFingerprint = try XCTUnwrap(imported.mediaLocator.referencedFile?.fingerprint)
+        try await LibraryScopedSettingsStore(paths: fixture.paths).setReferencedTrackDeletePolicy(.onlyLibrary)
+        let deletion = ReferencedTrackDeletionService(
+            context: fixture.context,
+            sourceScope: fixture.scope,
+            ignoredItemsStore: fixture.ignoredItemsStore,
+            ncmRegistry: fixture.ncmRegistry,
+            bookmarkResolver: ReconcileBookmarkResolver()
+        )
+
+        let preparation = await deletion.prepareForAuthorityDeletion([imported])
+        XCTAssertEqual(preparation.approvedTrackIDs, Set([imported.id]))
+        XCTAssertTrue(preparation.failures.isEmpty)
+        await fixture.repository.deleteTracks([imported])
+        let isIgnoredAfterDeletion = try await fixture.ignoredItemsStore.contains(originalFingerprint)
+        XCTAssertTrue(isIgnoredAfterDeletion)
+
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+        let afterIgnoredScan = await fixture.repository.fetchTracks(in: nil)
+        XCTAssertTrue(afterIgnoredScan.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: song.path))
+
+        try FileManager.default.removeItem(at: song)
+        try Data("replacement-with-new-identity".utf8).write(to: song)
+        let replacementFingerprint = try ReferencedFileIdentityProvider().fingerprint(for: song)
+        XCTAssertNotEqual(
+            ReferencedPhysicalIdentityKey(originalFingerprint),
+            ReferencedPhysicalIdentityKey(replacementFingerprint)
+        )
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+        let afterReplacementScan = await fixture.repository.fetchTracks(in: nil)
+        let replacement = try XCTUnwrap(afterReplacementScan.first)
+        XCTAssertNotEqual(replacement.id, imported.id)
+        XCTAssertEqual(
+            ReferencedPhysicalIdentityKey(try XCTUnwrap(replacement.mediaLocator.referencedFile?.fingerprint)),
+            ReferencedPhysicalIdentityKey(replacementFingerprint)
+        )
+    }
+
+    func testLegacyReferencedSourceDiffWithoutIgnoredFieldDecodes() throws {
+        let libraryID = UUID()
+        let sourceID = UUID()
+        let data = try JSONSerialization.data(withJSONObject: [
+            "libraryID": libraryID.uuidString,
+            "libraryGeneration": 7,
+            "sourceID": sourceID.uuidString,
+            "scanGeneration": 8,
+            "sourceStatus": "available",
+            "added": [],
+            "moved": [],
+            "replacements": [],
+            "missing": [],
+            "failures": []
+        ])
+
+        let decoded = try JSONDecoder().decode(ReferencedSourceDiff.self, from: data)
+        XCTAssertEqual(decoded.libraryID, libraryID)
+        XCTAssertEqual(decoded.sourceID, sourceID)
+        XCTAssertTrue(decoded.ignored.isEmpty)
     }
 
     func testOfflineAvailabilityIsSidecarFirstAndRecoveryPreservesMembership() async throws {
@@ -1155,7 +1222,7 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         await cache.close()
     }
 
-    func testManagedFactoryDoesNotCreateSourceMonitor() async throws {
+    func testManagedFactoryCreatesLibraryMonitorWithoutReferencedServices() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let context = try makeLibraryContext(root: root, mode: .managed)
@@ -1164,8 +1231,36 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         ).makeSession(for: context)
         let concrete = try XCTUnwrap(session as? LibrarySession)
         XCTAssertNil(concrete.referencedSourceReconciler)
-        XCTAssertNil(concrete.libraryChangeMonitor)
+        XCTAssertNotNil(concrete.libraryChangeMonitor)
         await concrete.close()
+    }
+
+    func testManagedLibraryEventFilterOnlyAcceptsAuthorityChanges() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let paths = LibraryPaths(rootURL: root)
+        let filter = ManagedLibraryFileEventFilter(paths: paths)
+
+        for url in [
+            paths.trackMetaURL(for: UUID()),
+            paths.playlistURL(for: UUID()),
+            paths.artistMetaURL(for: UUID()),
+            paths.albumMetaURL(for: UUID()),
+        ] {
+            XCTAssertTrue(filter.shouldProcess(.init(path: url.path, requiresFullScan: false)))
+        }
+
+        for url in [
+            paths.cacheRootURL.appendingPathComponent("cache.json"),
+            paths.trackIndexStoreURL,
+            paths.searchIndexStoreURL.appendingPathExtension("wal"),
+            paths.playbackHistoryStoreURL,
+            paths.libraryScanManifestURL,
+            root.appendingPathComponent(".kmgccc-library-manifest.json"),
+            paths.settingsRootURL.appendingPathComponent("library-settings.json"),
+        ] {
+            XCTAssertFalse(filter.shouldProcess(.init(path: url.path, requiresFullScan: false)))
+        }
     }
 }
 
@@ -1179,6 +1274,8 @@ private final class ReconcileFixture {
     let sourceID: UUID
     let store: ReferencedSourceStore
     let scope: ReferencedSourceScope
+    let ignoredItemsStore: IgnoredReferencedItemsStore
+    let ncmRegistry: NCMConversionRegistry
     let repository: SwiftDataLibraryRepository
     let importer: ReconcileImporter
     let reconciler: ReferencedSourceReconciler
@@ -1200,6 +1297,8 @@ private final class ReconcileFixture {
         sourceID = UUID()
         store = ReferencedSourceStore(paths: paths)
         scope = ReferencedSourceScope()
+        ignoredItemsStore = IgnoredReferencedItemsStore(paths: paths)
+        ncmRegistry = NCMConversionRegistry(paths: paths)
         repository = SwiftDataLibraryRepository(
             libraryService: LocalLibraryService(paths: paths, preferenceStatsService: PreferenceStatsService()),
             locatorSidecarWriter: locatorWriter
@@ -1218,7 +1317,10 @@ private final class ReconcileFixture {
         )
         let scanner = scannerFactory?(paths) ?? ReferencedSourceScanner(
             paths: paths,
-            fingerprintProvider: fingerprintProvider
+            fingerprintProvider: fingerprintProvider,
+            isIgnored: { [ignoredItemsStore] fingerprint in
+                (try? await ignoredItemsStore.contains(fingerprint)) ?? true
+            }
         )
         reconciler = ReferencedSourceReconciler(
             context: context,
@@ -1227,6 +1329,8 @@ private final class ReconcileFixture {
             sourceStore: store,
             sourceScope: scope,
             scanner: scanner,
+            ignoredItemsStore: ignoredItemsStore,
+            ncmRegistry: ncmRegistry,
             bookmarkResolver: ReconcileBookmarkResolver()
         )
     }

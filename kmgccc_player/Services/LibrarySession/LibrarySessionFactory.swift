@@ -118,10 +118,17 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
             amllDBService: cacheServices.amllDBService
         )
+        let ignoredItemsStore = sourceScope.map { _ in
+            IgnoredReferencedItemsStore(paths: context.paths)
+        }
+        let ncmRegistry = sourceScope.map { _ in
+            NCMConversionRegistry(paths: context.paths)
+        }
         let referencedNCMConversionService = sourceScope.map {
             ReferencedNCMConversionService(
                 paths: context.paths,
                 sourceScope: $0,
+                registry: ncmRegistry,
                 parentAuthorizer: NCMParentDirectoryPanelAuthorizer(
                     bookmarkResolver: sourceBookmarkResolver,
                     requiresSecurityScope: requiresSecurityScope
@@ -135,6 +142,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             importEnrichmentService: importEnrichmentService,
             storageBackend: storageBackend,
             referencedNCMConversionService: referencedNCMConversionService,
+            ignoredItemsStore: ignoredItemsStore,
             qqMusicCoverService: cacheServices.qqMusicCoverService,
             artistArtworkProviderCoordinator: cacheServices.artistArtworkProviderCoordinator,
             lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
@@ -142,13 +150,21 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         )
         let referencedSourceReconciler: ReferencedSourceReconciler?
         let sourceReconnectService: SourceReconnectService?
-        let libraryChangeMonitor: LibraryChangeMonitor?
-        if let sourceStore, let sourceScope {
-            let ncmReservationFilter = NCMScanReservationFilter(
-                registry: NCMConversionRegistry(paths: context.paths)
-            )
+        let libraryChangeMonitor = LibraryChangeMonitor(eventSource: fileEventSourceFactory())
+        if let sourceStore, let sourceScope, let ignoredItemsStore, let ncmRegistry {
+            let ncmReservationFilter = NCMScanReservationFilter(registry: ncmRegistry)
             let scanner = ReferencedSourceScanner(paths: context.paths, isReserved: { url, identity in
                 await ncmReservationFilter.isReserved(url: url, identity: identity)
+            }, isIgnored: { fingerprint in
+                do {
+                    return try await ignoredItemsStore.contains(fingerprint)
+                } catch {
+                    Log.warning(
+                        "[ReferencedSource] ignore lookup failed; conservatively skipping item",
+                        category: .library
+                    )
+                    return true
+                }
             })
             let reconciler = ReferencedSourceReconciler(
                 context: context,
@@ -157,6 +173,8 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
                 sourceStore: sourceStore,
                 sourceScope: sourceScope,
                 scanner: scanner,
+                ignoredItemsStore: ignoredItemsStore,
+                ncmRegistry: ncmRegistry,
                 bookmarkResolver: sourceBookmarkResolver,
                 requiresSecurityScope: requiresSecurityScope
             )
@@ -170,11 +188,9 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
                 bookmarkResolver: sourceBookmarkResolver,
                 requiresSecurityScope: requiresSecurityScope
             )
-            libraryChangeMonitor = LibraryChangeMonitor(eventSource: fileEventSourceFactory())
         } else {
             referencedSourceReconciler = nil
             sourceReconnectService = nil
-            libraryChangeMonitor = nil
         }
 
         let libraryViewModel = LibraryViewModel(
@@ -187,10 +203,12 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             artistArtworkProviderCoordinator: cacheServices.artistArtworkProviderCoordinator
         )
         libraryViewModel.setImportService(fileImportService)
-        if let sourceScope {
+        if let sourceScope, let ignoredItemsStore, let ncmRegistry {
             let deletionService = ReferencedTrackDeletionService(
                 context: context,
                 sourceScope: sourceScope,
+                ignoredItemsStore: ignoredItemsStore,
+                ncmRegistry: ncmRegistry,
                 bookmarkResolver: sourceBookmarkResolver,
                 requiresSecurityScope: requiresSecurityScope
             )

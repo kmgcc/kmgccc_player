@@ -38,6 +38,8 @@ final class ReferencedSourceReconciler {
     private let sourceStore: ReferencedSourceStore
     private let sourceScope: ReferencedSourceScope
     private let scanner: ReferencedSourceScanner
+    private let ignoredItemsStore: IgnoredReferencedItemsStore
+    private let ncmRegistry: NCMConversionRegistry
     private let manifestStore: ReferencedSourceScanManifestStore
     private let intentStore: LibraryReconcileIntentStore
     private let bookmarkResolver: any BookmarkResolving
@@ -52,6 +54,8 @@ final class ReferencedSourceReconciler {
         sourceStore: ReferencedSourceStore,
         sourceScope: ReferencedSourceScope,
         scanner: ReferencedSourceScanner,
+        ignoredItemsStore: IgnoredReferencedItemsStore? = nil,
+        ncmRegistry: NCMConversionRegistry? = nil,
         bookmarkResolver: any BookmarkResolving = SystemBookmarkResolver(),
         requiresSecurityScope: Bool = false,
         noticePublisher: any ReferencedSourceNoticePublishing = LogReferencedSourceNoticePublisher()
@@ -63,6 +67,8 @@ final class ReferencedSourceReconciler {
         self.sourceStore = sourceStore
         self.sourceScope = sourceScope
         self.scanner = scanner
+        self.ignoredItemsStore = ignoredItemsStore ?? IgnoredReferencedItemsStore(paths: context.paths)
+        self.ncmRegistry = ncmRegistry ?? NCMConversionRegistry(paths: context.paths)
         manifestStore = ReferencedSourceScanManifestStore(paths: context.paths)
         intentStore = LibraryReconcileIntentStore(paths: context.paths)
         self.bookmarkResolver = bookmarkResolver
@@ -135,12 +141,16 @@ final class ReferencedSourceReconciler {
         guard !isClosed else { return }
         let tracks = await repository.fetchTracks(in: nil)
         var mutations: [ReferencedSourceLocatorMutation] = []
+        var orphanedTracks: [Track] = []
         for track in tracks {
             guard case var .referenced(locator) = track.mediaLocator,
                   locator.sourceMemberships.contains(where: { $0.sourceID == sourceID }) else { continue }
             locator.sourceMemberships.removeAll { $0.sourceID == sourceID }
             locator.primarySourceID = primarySourceID(locator.sourceMemberships)
             let availability: TrackAvailability = locator.sourceMemberships.isEmpty ? .missing : track.availability
+            if locator.sourceMemberships.isEmpty {
+                orphanedTracks.append(track)
+            }
             mutations.append(.init(trackID: track.id, locator: locator, availability: availability))
         }
         let diff = ReferencedSourceDiff(
@@ -286,6 +296,16 @@ final class ReferencedSourceReconciler {
             try await manifestStore.save(manifest)
             try await sourceStore.save(descriptor)
         case .sourceRemoval:
+            let orphanedTrackIDs = Set(intent.mutations.compactMap { mutation in
+                mutation.locator.sourceMemberships.isEmpty ? mutation.trackID : nil
+            })
+            let orphanedTracks = await repository.fetchTracks(in: nil).filter {
+                orphanedTrackIDs.contains($0.id)
+            }
+            try await prepareRemovedNCMRecords(for: orphanedTracks)
+            if !orphanedTracks.isEmpty {
+                await repository.deleteTracks(orphanedTracks)
+            }
             try await manifestStore.remove(sourceID: intent.sourceID)
             sourceScope.remove(sourceID: intent.sourceID)
             try await sourceStore.remove(id: intent.sourceID)
@@ -373,6 +393,45 @@ final class ReferencedSourceReconciler {
             if $0.relativePath.count != $1.relativePath.count { return $0.relativePath.count < $1.relativePath.count }
             return $0.sourceID.uuidString < $1.sourceID.uuidString
         }?.sourceID
+    }
+
+    private func prepareRemovedNCMRecords(for tracks: [Track]) async throws {
+        var recordsByID: [UUID: NCMConversionRecord] = [:]
+        for track in tracks {
+            guard let operationID = track.ncmConversionAssociation?.operationID,
+                  let record = try await ncmRegistry.record(operationID: operationID) else { continue }
+            recordsByID[operationID] = record
+        }
+        let records = recordsByID.values.sorted { $0.id.uuidString < $1.id.uuidString }
+        let items = records.flatMap { record in
+            var recordItems = [IgnoredReferencedItem(
+                fingerprint: record.sourceFingerprint,
+                lastKnownPath: record.sourcePath,
+                reason: .ncmSourceRemoval
+            )]
+            if let outputFingerprint = record.outputFingerprint {
+                recordItems.append(IgnoredReferencedItem(
+                    fingerprint: outputFingerprint,
+                    lastKnownPath: record.expectedOutputPath,
+                    reason: .ncmOutputRemoval
+                ))
+            }
+            return recordItems
+        }
+        let inserted = try await ignoredItemsStore.add(items)
+        var changedOperationIDs: [UUID] = []
+        do {
+            for record in records where record.state != .removed {
+                _ = try await ncmRegistry.markRemoved(operationID: record.id)
+                changedOperationIDs.append(record.id)
+            }
+        } catch {
+            for operationID in changedOperationIDs.reversed() {
+                try? await ncmRegistry.restoreAfterFailedRemoval(operationID: operationID)
+            }
+            try? await ignoredItemsStore.remove(matching: inserted)
+            throw error
+        }
     }
 
     private func relativePath(_ url: URL, root: URL) -> String? {
