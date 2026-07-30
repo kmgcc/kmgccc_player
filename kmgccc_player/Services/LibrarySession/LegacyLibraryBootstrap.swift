@@ -84,6 +84,8 @@ nonisolated struct LegacyLibraryBootstrap: Sendable {
                     }
                     // The verified legacy root remains a recoverable fallback.
                 }
+            } else {
+                return .noLibrary
             }
         }
 
