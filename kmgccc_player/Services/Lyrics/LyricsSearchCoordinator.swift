@@ -22,15 +22,12 @@ enum LyricsSearchUpdate: Sendable {
 /// from sources that already completed.
 @MainActor
 final class LyricsSearchCoordinator {
-
-    static let shared = LyricsSearchCoordinator()
-
     private let lddcClient: LDDCClient
     private let amlldbService: AMLLDBService
 
     init(
         lddcClient: LDDCClient = .shared,
-        amlldbService: AMLLDBService = .shared
+        amlldbService: AMLLDBService
     ) {
         self.lddcClient = lddcClient
         self.amlldbService = amlldbService

@@ -21,10 +21,6 @@ final class AMLLDBService: ObservableObject {
 
     private static let logger = Logger(subsystem: "com.kmgccc.player", category: "AMLLDB")
 
-    // MARK: - Singleton
-
-    static let shared = AMLLDBService()
-
     // MARK: - Published State
 
     /// Whether AMLLDB is ready for search
@@ -46,7 +42,7 @@ final class AMLLDBService: ObservableObject {
     private var indexReadyTask: Task<Bool, Never>?
     private var cacheObservationTask: Task<Void, Never>?
 
-    init(cache: AMLLDBRawIndexCache = .shared) {
+    init(cache: AMLLDBRawIndexCache) {
         self.cache = cache
         cacheObservationTask = Task { [weak self] in
             await self?.observeCacheState()

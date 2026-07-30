@@ -43,6 +43,11 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             throw LibrarySessionFactoryError.manifestModeMismatch
         }
 
+        let storageLocations = StorageLocations.scoped(to: context.paths)
+        _ = await LegacyLibraryUpgradeCoordinator.prepareStorageIfNeeded(
+            context: context,
+            storageLocations: storageLocations
+        )
         try context.paths.createRequiredDirectories()
         let cacheServices = LibraryCacheServices(paths: context.paths)
         let modelContainer = try makeModelContainer(paths: context.paths)
@@ -131,6 +136,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             storageBackend: storageBackend,
             referencedNCMConversionService: referencedNCMConversionService,
             qqMusicCoverService: cacheServices.qqMusicCoverService,
+            artistArtworkProviderCoordinator: cacheServices.artistArtworkProviderCoordinator,
             lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
             amllDBService: cacheServices.amllDBService
         )
@@ -214,6 +220,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         )
         let playbackService = AVAudioPlaybackService(
             smartController: smartPlaybackController,
+            libraryPaths: context.paths,
             authorizedSourceRootsProvider: sourceScope?.rootsProvider ?? AuthorizedSourceRootsProvider()
         )
         playbackService.onAudioLocatorResolved = { [weak repository] trackID, locator, availability in

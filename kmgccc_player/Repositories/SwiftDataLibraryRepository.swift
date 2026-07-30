@@ -84,20 +84,27 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     init(
         modelContext: ModelContext? = nil,
-        libraryService: LocalLibraryService = .shared,
+        libraryService: LocalLibraryService,
         preferenceStatsService: PreferenceStatsService = .shared,
-        searchIndex: LibrarySearchIndex = .shared,
-        artworkDerivativeStore: ArtworkDerivativeCacheStore = .shared,
-        playlistArtworkPipeline: PlaylistArtworkPipeline = .shared,
+        searchIndex: LibrarySearchIndex? = nil,
+        artworkDerivativeStore: ArtworkDerivativeCacheStore? = nil,
+        playlistArtworkPipeline: PlaylistArtworkPipeline? = nil,
         importSidecarWriter: ((Track, String) -> Bool)? = nil,
         locatorSidecarWriter: ((Track, TrackMediaLocator, TrackAvailability, String) -> Bool)? = nil
     ) {
+        let resolvedDerivativeStore = artworkDerivativeStore ?? ArtworkDerivativeCacheStore(
+            diskRootURL: StorageLocations.scoped(
+                to: libraryService.paths
+            ).playlistArtworkDerivativesURL
+        )
         self.indexContext = modelContext
         self.libraryService = libraryService
         self.preferenceStatsService = preferenceStatsService
-        self.searchIndex = searchIndex
-        self.artworkDerivativeStore = artworkDerivativeStore
-        self.playlistArtworkPipeline = playlistArtworkPipeline
+        self.searchIndex = searchIndex ?? LibrarySearchIndex(paths: libraryService.paths)
+        self.artworkDerivativeStore = resolvedDerivativeStore
+        self.playlistArtworkPipeline = playlistArtworkPipeline ?? PlaylistArtworkPipeline(
+            derivativeStore: resolvedDerivativeStore
+        )
         self.importSidecarWriter = importSidecarWriter ?? { track, reason in
             libraryService.writeImportedTrackSidecar(for: track, reason: reason)
         }
@@ -211,6 +218,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         let idSet = Set(ids)
         guard !idSet.isEmpty else { return [] }
         return allTracks.filter { idSet.contains($0.id) }
+    }
+
+    func persistedTrackIndexIDs() throws -> Set<UUID> {
+        guard let indexContext else {
+            throw LibraryUpgradeValidationError.trackIndexUnavailable
+        }
+        return Set(try indexContext.fetch(FetchDescriptor<TrackIndexEntry>()).map(\.id))
     }
 
     func addTrack(_ track: Track) async {

@@ -228,6 +228,7 @@ final class FileImportService: FileImportServiceProtocol {
     private let storageBackend: any LibraryStorageBackend
     private let referencedNCMConversionService: ReferencedNCMConversionService?
     private let qqMusicCoverService: QQMusicCoverService
+    private let artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator
     private let lyricsSearchCoordinator: LyricsSearchCoordinator
     private let amllDBService: AMLLDBService
     private let uiPresentationObserver: (() -> Void)?
@@ -239,9 +240,10 @@ final class FileImportService: FileImportServiceProtocol {
         importEnrichmentService: ImportEnrichmentService,
         storageBackend: any LibraryStorageBackend,
         referencedNCMConversionService: ReferencedNCMConversionService? = nil,
-        qqMusicCoverService: QQMusicCoverService = .shared,
-        lyricsSearchCoordinator: LyricsSearchCoordinator = .shared,
-        amllDBService: AMLLDBService = .shared,
+        qqMusicCoverService: QQMusicCoverService,
+        artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator,
+        lyricsSearchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService,
         uiPresentationObserver: (() -> Void)? = nil
     ) {
         self.repository = repository
@@ -251,6 +253,7 @@ final class FileImportService: FileImportServiceProtocol {
         self.storageBackend = storageBackend
         self.referencedNCMConversionService = referencedNCMConversionService
         self.qqMusicCoverService = qqMusicCoverService
+        self.artistArtworkProviderCoordinator = artistArtworkProviderCoordinator
         self.lyricsSearchCoordinator = lyricsSearchCoordinator
         self.amllDBService = amllDBService
         self.uiPresentationObserver = uiPresentationObserver
@@ -1716,11 +1719,13 @@ final class FileImportService: FileImportServiceProtocol {
                         needsAlbumArtwork: snapshot.needsAlbumArtwork
                     )
                 )
-                group.addTask { [qqMusicCoverService, lyricsSearchCoordinator, amllDBService] in
+                group.addTask {
+                    [qqMusicCoverService, artistArtworkProviderCoordinator, lyricsSearchCoordinator, amllDBService] in
                     await Self.performImmediateEnrichmentTask(
                         snapshot: snapshot,
                         cancellationToken: cancellationToken,
                         qqMusicCoverService: qqMusicCoverService,
+                        artistArtworkProviderCoordinator: artistArtworkProviderCoordinator,
                         lyricsSearchCoordinator: lyricsSearchCoordinator,
                         amllDBService: amllDBService
                     )
@@ -1808,11 +1813,13 @@ final class FileImportService: FileImportServiceProtocol {
                             needsAlbumArtwork: snapshot.needsAlbumArtwork
                         )
                     )
-                    group.addTask { [qqMusicCoverService, lyricsSearchCoordinator, amllDBService] in
+                    group.addTask {
+                        [qqMusicCoverService, artistArtworkProviderCoordinator, lyricsSearchCoordinator, amllDBService] in
                         await Self.performImmediateEnrichmentTask(
                             snapshot: snapshot,
                             cancellationToken: cancellationToken,
                             qqMusicCoverService: qqMusicCoverService,
+                            artistArtworkProviderCoordinator: artistArtworkProviderCoordinator,
                             lyricsSearchCoordinator: lyricsSearchCoordinator,
                             amllDBService: amllDBService
                         )
@@ -1987,7 +1994,8 @@ final class FileImportService: FileImportServiceProtocol {
 
                 let artworkOutcome = await MetadataEnrichmentWorker.fetchAlbumArtwork(
                     album: effectiveAlbum,
-                    artist: output.artist
+                    artist: output.artist,
+                    qqMusicCoverService: qqMusicCoverService
                 )
                 if case .completed(let data) = artworkOutcome {
                     _ = await applyAlbumArtworkData(data, album: effectiveAlbum, artist: output.artist)
@@ -2000,6 +2008,7 @@ final class FileImportService: FileImportServiceProtocol {
         snapshot: ImportEnrichmentSnapshot,
         cancellationToken: ImportCancellationToken,
         qqMusicCoverService: QQMusicCoverService,
+        artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator,
         lyricsSearchCoordinator: LyricsSearchCoordinator,
         amllDBService: AMLLDBService
     ) async -> ImportEnrichmentTaskOutput {
@@ -2057,12 +2066,16 @@ final class FileImportService: FileImportServiceProtocol {
             )
             : nil
         async let artistArtworkOutcome: ImportArtistArtworkOutcome? = snapshot.needsArtistArtwork
-            ? MetadataEnrichmentWorker.fetchArtistArtwork(artist: snapshot.artist)
+            ? MetadataEnrichmentWorker.fetchArtistArtwork(
+                artist: snapshot.artist,
+                artistArtworkProviderCoordinator: artistArtworkProviderCoordinator
+            )
             : nil
         async let albumArtworkOutcome: ImportAlbumArtworkOutcome? = snapshot.needsAlbumArtwork
             ? MetadataEnrichmentWorker.fetchAlbumArtwork(
                 album: snapshot.album,
-                artist: snapshot.artist
+                artist: snapshot.artist,
+                qqMusicCoverService: qqMusicCoverService
             )
             : nil
 

@@ -324,7 +324,10 @@ final class PreferenceStatsService {
     }
 
     private var persistenceService: LocalLibraryService {
-        libraryService ?? .shared
+        guard let libraryService else {
+            preconditionFailure("PreferenceStatsService must be bound to a library service before persistence")
+        }
+        return libraryService
     }
 
     /// Get statistics summary for debugging.

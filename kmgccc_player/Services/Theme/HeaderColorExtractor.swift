@@ -58,8 +58,6 @@ private struct CodableColor: Codable {
 /// Results are cached in memory keyed by artwork identity + data checksum.
 @MainActor
 final class HeaderColorExtractor {
-    static let shared = HeaderColorExtractor(cacheDirectory: StorageLocations.headerColorCacheURL)
-
     private let persistentCacheDirectory: URL
     private let cache = NSCache<NSString, HeaderColorCacheEntry>()
     private let latestByIdentityCache = NSCache<NSString, HeaderColorCacheEntry>()

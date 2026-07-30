@@ -17,7 +17,7 @@ final class HomeViewModel {
 
     init(
         preferenceStatsService: PreferenceStatsService = .shared,
-        paths: LibraryPaths = LocalLibraryPaths.capturedPaths()
+        paths: LibraryPaths
     ) {
         self.preferenceStatsService = preferenceStatsService
         self.startupSnapshotStore = HomeStartupSnapshotStore(paths: paths)

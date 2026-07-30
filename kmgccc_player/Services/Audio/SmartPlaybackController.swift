@@ -45,9 +45,9 @@ final class SmartPlaybackController {
     private var playNextInsertionAnchorID: UUID?
 
     init(
-        playbackHistoryStore: PlaybackHistoryStore = .shared,
+        playbackHistoryStore: PlaybackHistoryStore,
         preferenceStatsService: PreferenceStatsService = .shared,
-        libraryService: LocalLibraryService = .shared
+        libraryService: LocalLibraryService
     ) {
         self.playbackHistoryStore = playbackHistoryStore
         self.preferenceStatsService = preferenceStatsService

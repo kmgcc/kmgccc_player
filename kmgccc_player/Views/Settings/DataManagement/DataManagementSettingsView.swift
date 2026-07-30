@@ -64,7 +64,10 @@ private struct ApplicationDataSettingsView: View {
             SettingsSection {
                 VStack(alignment: .leading, spacing: 10) {
                     Button {
-                        LibraryCompletionDialogPresenter.present(libraryVM: libraryVM)
+                        LibraryCompletionDialogPresenter.present(
+                            libraryVM: libraryVM,
+                            cacheServices: cacheServices
+                        )
                     } label: {
                         Text("补全所有歌曲信息")
                     }

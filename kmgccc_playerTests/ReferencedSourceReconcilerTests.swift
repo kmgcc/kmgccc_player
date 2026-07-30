@@ -1126,6 +1126,7 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
             importEnrichmentService: enrichment,
             storageBackend: backend,
             qqMusicCoverService: cache.qqMusicCoverService,
+            artistArtworkProviderCoordinator: cache.artistArtworkProviderCoordinator,
             lyricsSearchCoordinator: cache.lyricsSearchCoordinator,
             amllDBService: cache.amllDBService,
             uiPresentationObserver: { uiWasPresented = true }

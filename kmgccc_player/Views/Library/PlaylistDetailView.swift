@@ -896,10 +896,11 @@ private struct ScrollOffsetSensor: View {
 
 #Preview("Playlist Detail") { @MainActor in
     let repository = StubLibraryRepository()
-    let libraryVM = LibraryViewModel(repository: repository)
+    let libraryVM = LibraryViewModel.preview(repository: repository)
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
+    let cacheServices = LibraryCacheServices.preview
 
     PlaylistDetailView(pageController: PlaylistPageController())
         .environment(libraryVM)
@@ -907,8 +908,12 @@ private struct ScrollOffsetSensor: View {
         .environment(PlaybackCoordinator(
             playerVM: playerVM,
             appleMusicAdapter: AppleMusicPlaybackAdapter(previewLibraryVM: libraryVM),
-            systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryVM: libraryVM)
+            systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryVM: libraryVM),
+            artworkCache: cacheServices.trackArtworkCache,
+            lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
+            amllDBService: cacheServices.amllDBService
         ))
+        .environment(cacheServices)
         .environment(UIStateViewModel())
         .environmentObject(ThemeStore.shared)
         .frame(width: 500, height: 400)

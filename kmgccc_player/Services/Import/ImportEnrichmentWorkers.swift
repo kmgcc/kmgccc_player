@@ -48,8 +48,8 @@ nonisolated enum ImportEnrichmentWorker {
         artist: String,
         album: String? = nil,
         duration: Double? = nil,
-        lyricsSearchCoordinator: LyricsSearchCoordinator = .shared,
-        amllDBService: AMLLDBService = .shared
+        lyricsSearchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService
     ) async -> ImportLyricsLookupOutcome {
         guard !Task.isCancelled else { return .failed("已取消") }
         // Use shared helper that matches manual "Find Lyrics" ranking logic
@@ -76,7 +76,7 @@ nonisolated enum ImportEnrichmentWorker {
         artist: String,
         album: String,
         duration: Double? = nil,
-        qqMusicCoverService: QQMusicCoverService = .shared
+        qqMusicCoverService: QQMusicCoverService
     ) async -> ImportCoverLookupOutcome {
         guard !Task.isCancelled else { return .failed("已取消") }
         let normalizedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -534,7 +534,7 @@ nonisolated enum MetadataEnrichmentWorker {
 
     static func fetchArtistArtwork(
         artist: String,
-        artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator = .shared
+        artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator
     ) async -> ImportArtistArtworkOutcome {
         guard !Task.isCancelled else { return .failed("已取消") }
         guard !artist.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -575,7 +575,8 @@ nonisolated enum MetadataEnrichmentWorker {
 
     static func fetchAlbumArtwork(
         album: String,
-        artist: String
+        artist: String,
+        qqMusicCoverService: QQMusicCoverService
     ) async -> ImportAlbumArtworkOutcome {
         guard !Task.isCancelled else { return .failed("已取消") }
         guard !album.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -585,7 +586,8 @@ nonisolated enum MetadataEnrichmentWorker {
             title: nil,
             artist: artist,
             album: album,
-            duration: nil
+            duration: nil,
+            qqMusicCoverService: qqMusicCoverService
         )
         switch outcome {
         case .completed(let data):
@@ -608,4 +610,3 @@ nonisolated enum MetadataEnrichmentWorker {
         }
     }
 }
-

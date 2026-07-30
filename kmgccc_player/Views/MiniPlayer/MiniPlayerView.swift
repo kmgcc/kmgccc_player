@@ -1377,12 +1377,16 @@ struct AppleMusicPlaybackModeSlider: View {
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
-    let libraryVM = LibraryViewModel(repository: StubLibraryRepository())
+    let libraryVM = LibraryViewModel.preview(repository: StubLibraryRepository())
+    let cacheServices = LibraryCacheServices.preview
     let appleMusicAdapter = AppleMusicPlaybackAdapter(previewLibraryVM: libraryVM)
     let playbackCoordinator = PlaybackCoordinator(
         playerVM: playerVM,
         appleMusicAdapter: appleMusicAdapter,
-        systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryVM: libraryVM)
+        systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryVM: libraryVM),
+        artworkCache: cacheServices.trackArtworkCache,
+        lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
+        amllDBService: cacheServices.amllDBService
     )
     let uiState = UIStateViewModel()
 
@@ -1396,6 +1400,7 @@ struct AppleMusicPlaybackModeSlider: View {
             .environment(playerVM)
             .environment(playbackCoordinator)
             .environment(libraryVM)
+            .environment(cacheServices)
             .environment(uiState)
             .environmentObject(ThemeStore.shared)
             .padding()

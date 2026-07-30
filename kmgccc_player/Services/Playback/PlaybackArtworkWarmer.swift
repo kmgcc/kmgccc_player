@@ -19,7 +19,7 @@ final class PlaybackArtworkWarmer {
     private var signature: String?
     private var presentationSignature: String?
 
-    init(artworkCache: TrackArtworkCache = .shared) {
+    init(artworkCache: TrackArtworkCache) {
         self.artworkCache = artworkCache
     }
 

@@ -13,8 +13,6 @@ import SQLite3
 private nonisolated let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
 actor LibrarySearchIndex {
-    static let shared = LibrarySearchIndex(paths: LocalLibraryPaths.capturedPaths())
-
     private let paths: LibraryPaths
     private var db: OpaquePointer?
     private var rebuildTask: Task<Void, Never>?
@@ -133,6 +131,33 @@ actor LibrarySearchIndex {
             self.db = nil
         }
         schemaReady = false
+    }
+
+    func waitForPendingRebuild() async {
+        await rebuildTask?.value
+    }
+
+    func validateIntegrity(expectedTrackIDs: Set<UUID>) throws {
+        try ensureSchema()
+        let check = try prepare("PRAGMA quick_check")
+        defer { sqlite3_finalize(check) }
+        guard sqlite3_step(check) == SQLITE_ROW,
+              columnText(check, 0)?.lowercased() == "ok" else {
+            throw LibraryUpgradeValidationError.sqliteIntegrityFailed("LibrarySearch.sqlite")
+        }
+
+        let statement = try prepare("SELECT track_id FROM documents")
+        defer { sqlite3_finalize(statement) }
+        var indexedTrackIDs = Set<UUID>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let raw = columnText(statement, 0), let id = UUID(uuidString: raw) else {
+                throw LibraryUpgradeValidationError.searchIndexMismatch
+            }
+            indexedTrackIDs.insert(id)
+        }
+        guard indexedTrackIDs == expectedTrackIDs else {
+            throw LibraryUpgradeValidationError.searchIndexMismatch
+        }
     }
 
     func search(query rawQuery: String, scopedTo allowedTrackIDs: Set<UUID>? = nil, limit: Int = 200) async -> [LibrarySearchHit] {

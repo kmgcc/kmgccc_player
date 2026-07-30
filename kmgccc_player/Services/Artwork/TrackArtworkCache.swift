@@ -85,10 +85,6 @@ extension Track {
 }
 
 actor TrackArtworkCache {
-    static let shared = TrackArtworkCache(
-        storage: StorageLocations.scoped(to: LocalLibraryPaths.capturedPaths())
-    )
-
     private nonisolated let originalsRootURL: URL
     private nonisolated let derivativesRootURL: URL
     private let imageCache = NSCache<NSString, CachedArtworkImage>()

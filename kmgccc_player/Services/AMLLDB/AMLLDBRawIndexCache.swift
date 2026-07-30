@@ -19,10 +19,6 @@ final class AMLLDBRawIndexCache: ObservableObject {
 
     private static let logger = Logger(subsystem: "com.kmgccc.player", category: "AMLLDB")
 
-    // MARK: - Singleton
-
-    static let shared = AMLLDBRawIndexCache()
-
     // MARK: - Published State
 
     /// Whether index is ready for search
@@ -74,7 +70,7 @@ final class AMLLDBRawIndexCache: ObservableObject {
     /// Background update task
     private var updateTask: Task<Void, Never>?
 
-    init(cacheDirectory: URL = StorageLocations.amllDBCacheURL) {
+    init(cacheDirectory: URL) {
         self.cacheDirectory = cacheDirectory
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60

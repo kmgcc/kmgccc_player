@@ -13,13 +13,19 @@ import SwiftUI
 enum LibraryCompletionDialogPresenter {
     private static var activeController: LibraryCompletionDialogController?
 
-    static func present(libraryVM: LibraryViewModel) {
+    static func present(
+        libraryVM: LibraryViewModel,
+        cacheServices: LibraryCacheServices
+    ) {
         if let activeController {
             activeController.bringToFront()
             return
         }
 
-        let controller = LibraryCompletionDialogController(libraryVM: libraryVM)
+        let controller = LibraryCompletionDialogController(
+            libraryVM: libraryVM,
+            cacheServices: cacheServices
+        )
         activeController = controller
         controller.onClose = {
             activeController = nil
@@ -46,8 +52,13 @@ private final class LibraryCompletionDialogViewModel {
     @ObservationIgnored private let service: LibraryCompletionService
     @ObservationIgnored private var task: Task<Void, Never>?
 
-    init(libraryVM: LibraryViewModel) {
-        service = LibraryCompletionService(libraryVM: libraryVM)
+    init(libraryVM: LibraryViewModel, cacheServices: LibraryCacheServices) {
+        service = LibraryCompletionService(
+            libraryVM: libraryVM,
+            qqMusicCoverService: cacheServices.qqMusicCoverService,
+            lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
+            amllDBService: cacheServices.amllDBService
+        )
     }
 
     var canStart: Bool {
@@ -112,8 +123,11 @@ private final class LibraryCompletionDialogController: NSObject, NSWindowDelegat
     private let viewModel: LibraryCompletionDialogViewModel
     var onClose: (() -> Void)?
 
-    init(libraryVM: LibraryViewModel) {
-        viewModel = LibraryCompletionDialogViewModel(libraryVM: libraryVM)
+    init(libraryVM: LibraryViewModel, cacheServices: LibraryCacheServices) {
+        viewModel = LibraryCompletionDialogViewModel(
+            libraryVM: libraryVM,
+            cacheServices: cacheServices
+        )
         super.init()
     }
 

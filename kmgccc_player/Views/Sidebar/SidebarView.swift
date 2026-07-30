@@ -1172,13 +1172,21 @@ private struct SidebarWidthPreferenceKey: PreferenceKey {
 
 #Preview("Sidebar") { @MainActor in
     let repository = StubLibraryRepository()
-    let libraryVM = LibraryViewModel(repository: repository)
+    let libraryVM = LibraryViewModel.preview(repository: repository)
     let uiState = UIStateViewModel()
+    let cacheServices = LibraryCacheServices.preview
 
     NavigationSplitView {
         SidebarView()
             .environment(libraryVM)
-            .environment(ImportEnrichmentService(repository: repository))
+            .environment(ImportEnrichmentService(
+                repository: repository,
+                qqMusicCoverService: cacheServices.qqMusicCoverService,
+                artistArtworkProviderCoordinator: cacheServices.artistArtworkProviderCoordinator,
+                lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
+                amllDBService: cacheServices.amllDBService
+            ))
+            .environment(cacheServices)
             .environment(uiState)
             .environmentObject(ThemeStore.shared)
     } detail: {

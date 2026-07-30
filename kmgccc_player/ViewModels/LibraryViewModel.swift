@@ -499,8 +499,6 @@ final class LibraryViewModel {
     private var loadTask: Task<Void, Never>?
     private var loadGeneration: UInt64 = 0
     private var currentTaskID: UUID?
-    private var libraryLocationObserver: NSObjectProtocol?
-
     private struct SortPreference: Codable {
         let key: String
         let order: String
@@ -508,13 +506,13 @@ final class LibraryViewModel {
 
     init(
         repository: LibraryRepositoryProtocol,
-        libraryService: LocalLibraryService = .shared,
-        preferenceStatsService: PreferenceStatsService = .shared,
-        preferenceResetService: PreferenceResetService = .shared,
-        searchIndex: LibrarySearchIndex = .shared,
-        detailHeaderArtworkResolver: DetailHeaderArtworkResolver = .shared,
+        libraryService: LocalLibraryService,
+        preferenceStatsService: PreferenceStatsService,
+        preferenceResetService: PreferenceResetService,
+        searchIndex: LibrarySearchIndex,
+        detailHeaderArtworkResolver: DetailHeaderArtworkResolver,
         metadataDetailCoordinator: MetadataDetailCoordinator = .shared,
-        artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator = .shared
+        artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator
     ) {
         self.repository = repository
         self.libraryService = libraryService
@@ -565,7 +563,6 @@ final class LibraryViewModel {
         self.repository.setChangeHandler { [weak self] change in
             self?.handleRepositoryChange(change)
         }
-        setupLibraryLocationObserver()
         Log.debug("LibraryViewModel initialized", category: .library)
     }
 
@@ -573,7 +570,6 @@ final class LibraryViewModel {
         // deinit runs nonisolated; schedule cleanup on MainActor.
         Task { @MainActor [weak self] in
             self?.cancelCurrentLoad()
-            self?.removeLibraryLocationObserver()
         }
         Log.debug("LibraryViewModel deinitialized", category: .library)
     }
@@ -703,7 +699,6 @@ final class LibraryViewModel {
         prepareTrackRelocationAction = nil
         relocateTrackAction = nil
         repository.setChangeHandler(nil)
-        removeLibraryLocationObserver()
     }
 
     // MARK: - Computed Properties
@@ -2101,39 +2096,6 @@ final class LibraryViewModel {
         importService != nil
     }
 
-    // MARK: - Library Location Change
-
-    private func setupLibraryLocationObserver() {
-        libraryLocationObserver = NotificationCenter.default.addObserver(
-            forName: .libraryLocationChanged,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handleLibraryLocationChanged()
-            }
-        }
-    }
-
-    private func removeLibraryLocationObserver() {
-        if let observer = libraryLocationObserver {
-            NotificationCenter.default.removeObserver(observer)
-            libraryLocationObserver = nil
-        }
-    }
-
-    private func handleLibraryLocationChanged() {
-        Log.info(
-            "[LibraryVM] Library location changed, cancelling current load and resetting",
-            category: .library
-        )
-        cancelCurrentLoad()
-        resetLibraryData()
-        Task { @MainActor [weak self] in
-            await self?.reloadLibrary()
-        }
-    }
-
     private func cancelCurrentLoad() {
         loadTask?.cancel()
         loadTask = nil
@@ -2893,3 +2855,43 @@ final class LibraryViewModel {
         return true
     }
 }
+
+#if DEBUG
+extension LibraryViewModel {
+    static func preview(repository: LibraryRepositoryProtocol) -> LibraryViewModel {
+        let paths = LibraryPaths(
+            rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(
+                "kmgccc-player-preview-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        )
+        let preferenceStatsService = PreferenceStatsService()
+        let libraryService = LocalLibraryService(
+            paths: paths,
+            preferenceStatsService: preferenceStatsService
+        )
+        let playbackHistoryStore = PlaybackHistoryStore.inMemory()
+        let preferenceResetService = PreferenceResetService(
+            preferenceStatsService: preferenceStatsService,
+            playbackHistoryStore: playbackHistoryStore,
+            paths: paths
+        )
+        let qqMusicCoverService = QQMusicCoverService(
+            cacheRootURL: StorageLocations.scoped(to: paths).qqMusicCoverCacheURL
+        )
+        return LibraryViewModel(
+            repository: repository,
+            libraryService: libraryService,
+            preferenceStatsService: preferenceStatsService,
+            preferenceResetService: preferenceResetService,
+            searchIndex: LibrarySearchIndex(paths: paths),
+            detailHeaderArtworkResolver: DetailHeaderArtworkResolver(
+                libraryService: libraryService
+            ),
+            artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator(
+                qqMusicCoverService: qqMusicCoverService
+            )
+        )
+    }
+}
+#endif

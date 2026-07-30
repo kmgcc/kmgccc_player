@@ -28,20 +28,12 @@ struct PlaylistArtworkRequest: Sendable {
 }
 
 actor PlaylistArtworkPipeline {
-    static let shared = PlaylistArtworkPipeline()
-
     private let memoryCache = NSCache<NSString, CachedArtworkImage>()
     private let decodeGate = ArtworkDecodeGate(maxConcurrent: 2)
     private let derivativeStore: ArtworkDerivativeCacheStore
 
     init(derivativeStore: ArtworkDerivativeCacheStore) {
         self.derivativeStore = derivativeStore
-        memoryCache.countLimit = 720
-        memoryCache.totalCostLimit = 96 * 1024 * 1024
-    }
-
-    private init() {
-        self.derivativeStore = .shared
         memoryCache.countLimit = 720
         memoryCache.totalCostLimit = 96 * 1024 * 1024
     }

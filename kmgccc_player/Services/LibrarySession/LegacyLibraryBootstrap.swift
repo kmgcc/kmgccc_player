@@ -11,11 +11,13 @@ nonisolated struct LegacyLibraryBootstrapResult: Sendable, Equatable {
     let context: LibraryContext?
     let didCreateManifest: Bool
     let didRegisterLibrary: Bool
+    let requiresPostRegistrationMigration: Bool
 
     static let noLibrary = LegacyLibraryBootstrapResult(
         context: nil,
         didCreateManifest: false,
-        didRegisterLibrary: false
+        didRegisterLibrary: false,
+        requiresPostRegistrationMigration: false
     )
 }
 
@@ -53,16 +55,14 @@ nonisolated struct LegacyLibraryBootstrap: Sendable {
     }
 
     func run(
-        legacyRootURL: URL = LibraryLocationStore.activeLibraryRootURL,
+        legacyRootURL: URL = LibraryLocationStore.legacyLibraryRootURL(),
         displayName: String? = nil,
         generation: UInt64 = 1,
         now: Date = Date()
     ) throws -> LegacyLibraryBootstrapResult {
         // Once a registry exists it is the startup authority. Legacy discovery is
         // retained only as a recovery fallback for an independently valid old root.
-        let legacyManifestURL = LibraryPaths(rootURL: legacyRootURL).manifestURL
-        if FileManager.default.fileExists(atPath: registryURL.path),
-           FileManager.default.fileExists(atPath: legacyManifestURL.path) {
+        if FileManager.default.fileExists(atPath: registryURL.path) {
             var registry = try MusicLibraryRegistryFile.load(from: registryURL)
             if let activeID = registry.activeLibraryID,
                let descriptorIndex = registry.libraries.firstIndex(where: { $0.id == activeID }) {
@@ -187,8 +187,6 @@ nonisolated struct LegacyLibraryBootstrap: Sendable {
             journal = journal?.advancing(to: .registryWritten, now: now)
         }
         try journal?.write(to: paths.upgradeJournalURL)
-        journal = journal?.advancing(to: .committed, now: now)
-        try journal?.write(to: paths.upgradeJournalURL)
 
         return LegacyLibraryBootstrapResult(
             context: LibraryContext(
@@ -198,7 +196,8 @@ nonisolated struct LegacyLibraryBootstrap: Sendable {
                 generation: generation
             ),
             didCreateManifest: didCreateManifest,
-            didRegisterLibrary: !wasRegistered
+            didRegisterLibrary: !wasRegistered,
+            requiresPostRegistrationMigration: journal.map { $0.stage != .committed } ?? false
         )
     }
 
@@ -238,6 +237,20 @@ nonisolated struct LegacyLibraryBootstrap: Sendable {
             refreshedDescriptor = nil
         }
 
+        let paths = LibraryPaths(rootURL: rootURL)
+        let requiresPostRegistrationMigration: Bool
+        do {
+            let journal = try LibraryUpgradeJournal.read(from: paths.upgradeJournalURL)
+            if let journal,
+               (journal.libraryID != manifest.libraryID
+                || journal.rootPath != paths.rootURL.standardizedFileURL.path) {
+                requiresPostRegistrationMigration = true
+            } else {
+                requiresPostRegistrationMigration = journal.map { $0.stage != .committed } ?? false
+            }
+        } catch {
+            requiresPostRegistrationMigration = true
+        }
         return (
             LegacyLibraryBootstrapResult(
                 context: LibraryContext(
@@ -247,7 +260,8 @@ nonisolated struct LegacyLibraryBootstrap: Sendable {
                     generation: generation
                 ),
                 didCreateManifest: false,
-                didRegisterLibrary: false
+                didRegisterLibrary: false,
+                requiresPostRegistrationMigration: requiresPostRegistrationMigration
             ),
             refreshedDescriptor
         )

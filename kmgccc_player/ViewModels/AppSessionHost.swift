@@ -109,7 +109,13 @@ final class AppSessionHost: ObservableObject {
         self.sessionController = LibrarySessionController(factory: sessionFactory)
         self.sessionValidator = LibrarySessionFactoryValidator(factory: sessionFactory)
         self.registryStore = registryStore
-        self.placeholderHomeViewModel = HomeViewModel()
+        let placeholderPaths = initialLibraryContext?.paths ?? LibraryPaths(
+            rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(
+                "kmgccc-player-placeholder-library",
+                isDirectory: true
+            )
+        )
+        self.placeholderHomeViewModel = HomeViewModel(paths: placeholderPaths)
         self.placeholderPlaybackHistoryStore = playbackHistoryStore ?? .inMemory()
         self.placeholderPlaybackHistoryViewModel = playbackHistoryViewModel
         self.skinManager = SkinManager()
@@ -395,6 +401,10 @@ final class AppSessionHost: ObservableObject {
 
     private func publishActiveSession(_ session: LibrarySession) {
         activeLibraryBinding.publish(session)
+        CrashReportService.shared.bindLibraryRoot(session.context.rootURL)
+        if session.didCompleteLegacyUpgrade {
+            uiState.showSidebarNotice("资料库已更新")
+        }
 
         let libraryVM = session.libraryViewModel
         let playerVM = session.playerViewModel
@@ -508,6 +518,7 @@ final class AppSessionHost: ObservableObject {
         await FullscreenWindowManager.shared.releaseLibrarySession()
         AppKitMainSplitWindowController.releaseActiveLibraryReferences()
         activeLibraryBinding.releaseActiveSession()
+        CrashReportService.shared.bindLibraryRoot(nil)
 
         libraryVM = nil
         playerVM = nil

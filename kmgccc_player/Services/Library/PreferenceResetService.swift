@@ -310,12 +310,6 @@ private actor PreferenceResetFileWorker {
 }
 
 final class PreferenceResetService {
-    static let shared = PreferenceResetService(
-        preferenceStatsService: .shared,
-        playbackHistoryStore: .shared,
-        paths: LocalLibraryPaths.capturedPaths()
-    )
-
     private let worker = PreferenceResetFileWorker()
     private let preferenceStatsService: PreferenceStatsService
     private let playbackHistoryStore: PlaybackHistoryStore

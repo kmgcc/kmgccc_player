@@ -347,7 +347,7 @@ nonisolated struct LegacyLibraryMigrationOwnership: Equatable, Sendable {
     let ownerLibraryID: UUID?
 
     func canClaim(libraryID: UUID, destinationRoot: URL, upgradedLegacyRoot: URL) -> Bool {
-        ownerLibraryID == nil
+        (ownerLibraryID == nil || ownerLibraryID == libraryID)
             && destinationRoot.standardizedFileURL == upgradedLegacyRoot.standardizedFileURL
     }
 }

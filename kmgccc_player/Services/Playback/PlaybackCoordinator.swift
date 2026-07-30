@@ -58,9 +58,9 @@ final class PlaybackCoordinator {
         systemNowPlayingProvider: SystemNowPlayingProvider,
         settings: AppSettings? = nil,
         preferenceStatsService: PreferenceStatsService = .shared,
-        artworkCache: TrackArtworkCache = .shared,
-        lyricsSearchCoordinator: LyricsSearchCoordinator = .shared,
-        amllDBService: AMLLDBService = .shared,
+        artworkCache: TrackArtworkCache,
+        lyricsSearchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService,
         meterProvider: AudioLevelMeterProtocol? = nil,
         artworkWarmer: PlaybackArtworkWarmer? = nil
     ) {

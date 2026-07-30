@@ -90,7 +90,7 @@ struct LyricsSearchHelper {
         translation: Bool = true,
         amlldbLimit: Int = 20,
         lddcLimitPerSource: Int = 5,
-        searchCoordinator: LyricsSearchCoordinator = .shared
+        searchCoordinator: LyricsSearchCoordinator
     ) async -> SearchResult {
         guard !Task.isCancelled else {
             return SearchResult(
@@ -237,7 +237,7 @@ struct LyricsSearchHelper {
         mode: LDDCMode = .verbatim,
         translation: Bool = true,
         stripMetadata: Bool = true,
-        amllDBService: AMLLDBService = .shared
+        amllDBService: AMLLDBService
     ) async -> FetchLyricsContentResult {
         guard !Task.isCancelled else { return .failed }
         Self.logger.info("[LyricsSearchHelper] Fetching lyrics for candidate: '\(candidate.title)' source=\(candidate.source)")
@@ -366,8 +366,8 @@ struct LyricsSearchHelper {
         artist: String?,
         album: String?,
         duration: Double?,
-        searchCoordinator: LyricsSearchCoordinator = .shared,
-        amllDBService: AMLLDBService = .shared
+        searchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService
     ) async -> String? {
         let result = await searchAndFetchLyrics(
             title: title,
@@ -388,8 +388,8 @@ struct LyricsSearchHelper {
         artist: String?,
         album: String?,
         duration: Double?,
-        searchCoordinator: LyricsSearchCoordinator = .shared,
-        amllDBService: AMLLDBService = .shared
+        searchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService
     ) async -> AutomaticFetchResult {
         await searchAndFetchLyrics(
             title: title,

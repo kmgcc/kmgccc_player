@@ -47,7 +47,7 @@ nonisolated struct ScannedTrackMeta: Sendable {
 nonisolated struct MusicLibraryScanner: Sendable {
     private let paths: LibraryPaths
 
-    init(paths: LibraryPaths = LocalLibraryPaths.capturedPaths()) {
+    init(paths: LibraryPaths) {
         self.paths = paths
     }
 

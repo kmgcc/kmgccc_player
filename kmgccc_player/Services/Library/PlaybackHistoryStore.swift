@@ -23,8 +23,6 @@ struct PlaybackHistoryItem: Identifiable, Equatable, Sendable {
 @Observable
 @MainActor
 final class PlaybackHistoryStore {
-    static let shared = PlaybackHistoryStore()
-
     /// A bounded event log keeps launch and day queries predictable even for
     /// libraries that have been played for years.
     static let maximumStoredRecords = 10_000
@@ -34,14 +32,6 @@ final class PlaybackHistoryStore {
     @ObservationIgnored private var activeStoreURL: URL
     @ObservationIgnored private var dailyCountsCache: [Date: Int]?
     private(set) var revision: Int = 0
-
-    init(modelContainer: ModelContainer? = nil) {
-        let storeURL = PlaybackHistoryStorePaths.storeURL
-        let container = modelContainer ?? Self.makeLegacyContainer(at: storeURL)
-        self.modelContainer = container
-        self.modelContext = ModelContext(container)
-        self.activeStoreURL = storeURL
-    }
 
     init(context: LibraryContext) {
         let container = Self.makeContainer(context: context)
@@ -116,20 +106,11 @@ final class PlaybackHistoryStore {
         fetchRecords(sortAscending: false, limit: limit).map(Self.makeItem)
     }
 
-    /// Rebind the event store after the user switches the active music library.
-    /// The history timeline belongs to the library root, so records from the
-    /// previous library must not leak into the newly selected library.
-    func reconfigureForCurrentLibrary() {
-        let newStoreURL = PlaybackHistoryStorePaths.storeURL
-        guard newStoreURL.standardizedFileURL != activeStoreURL.standardizedFileURL else { return }
-
-        let container = Self.makeLegacyContainer(at: newStoreURL)
-        modelContainer = container
-        modelContext = ModelContext(container)
-        activeStoreURL = newStoreURL
-        dailyCountsCache = nil
-        revision &+= 1
-        NotificationCenter.default.post(name: .playbackHistoryDidChange, object: nil)
+    func validateReadableStore(at expectedURL: URL) throws {
+        guard activeStoreURL.standardizedFileURL == expectedURL.standardizedFileURL else {
+            throw LibraryUpgradeValidationError.historyStoreMismatch
+        }
+        _ = try modelContext.fetchCount(FetchDescriptor<PlaybackHistoryRecord>())
     }
 
     func fetchItems(on date: Date) -> [PlaybackHistoryItem] {
@@ -318,21 +299,7 @@ final class PlaybackHistoryStore {
         let schema = Schema([PlaybackHistoryRecord.self])
         let configuration = ModelConfiguration(
             schema: schema,
-            url: PlaybackHistoryStorePaths.prepareStoreURL(
-                in: context.paths,
-                libraryID: context.id
-            )
-        )
-        return makeContainer(schema: schema, configuration: configuration)
-    }
-
-    private static func makeLegacyContainer(at storeURL: URL) -> ModelContainer {
-        let schema = Schema([PlaybackHistoryRecord.self])
-        let configuration = ModelConfiguration(
-            schema: schema,
-            url: PlaybackHistoryStorePaths.prepareStoreURL(
-                at: storeURL.deletingLastPathComponent().deletingLastPathComponent()
-            )
+            url: PlaybackHistoryStorePaths.prepareStoreURL(in: context.paths)
         )
         return makeContainer(schema: schema, configuration: configuration)
     }

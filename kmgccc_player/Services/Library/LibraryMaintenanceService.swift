@@ -45,7 +45,7 @@ nonisolated struct LibraryMaintenanceService {
 
     func classifyTrackDirectory(
         _ folderURL: URL,
-        tracksRootURL: URL = LocalLibraryPaths.tracksRootURL,
+        tracksRootURL: URL,
         referencedTrackIDs: Set<UUID>,
         importActivity: LibraryImportActivitySnapshot
     ) -> TrackDirectoryMaintenanceResult {

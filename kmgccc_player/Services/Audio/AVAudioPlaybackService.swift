@@ -121,6 +121,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// `AudioFilePreparationActor`.
     private let prepActor = AudioFilePreparationActor()
     private let authorizedSourceRootsProvider: AuthorizedSourceRootsProvider
+    private let libraryPaths: LibraryPaths
     /// Monotonic id for the current play request. Bumped ONLY by
     /// `invalidatePreparation()` (called from `stopPlayback`). A prepared
     /// resource is consumed only if its captured generation still matches —
@@ -237,10 +238,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     init(
-        smartController: SmartPlaybackController = SmartPlaybackController(),
+        smartController: SmartPlaybackController,
+        libraryPaths: LibraryPaths,
         authorizedSourceRootsProvider: AuthorizedSourceRootsProvider = AuthorizedSourceRootsProvider()
     ) {
         self.smartController = smartController
+        self.libraryPaths = libraryPaths
         self.authorizedSourceRootsProvider = authorizedSourceRootsProvider
         self.volume = AppSettings.shared.volume
         // Engine is now lazily initialized on first access (see `engine` property)
@@ -790,7 +793,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     func makePrepRequest(for track: Track) -> AudioPrepRequest {
         let root = track.libraryRootSnapshot.isEmpty
-            ? LocalLibraryPaths.capturedPaths().rootURL
+            ? libraryPaths.rootURL
             : URL(fileURLWithPath: track.libraryRootSnapshot, isDirectory: true)
         return AudioPrepRequest(
             trackID: track.id,

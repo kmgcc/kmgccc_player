@@ -29,15 +29,4 @@ nonisolated enum SearchIndexStorePaths {
         ]
     }
 
-    // Compatibility only; remove after search/session migration.
-    static var storeURL: URL {
-        let paths = LibraryPaths(rootURL: LibraryLocationStore.activeLibraryRootURL)
-        try? FileManager.default.createDirectory(at: paths.indexRootURL, withIntermediateDirectories: true)
-        return storeURL(in: paths)
-    }
-
-    // Compatibility only; remove after search/session migration.
-    static var relatedStoreFiles: [URL] {
-        relatedStoreFiles(in: LibraryPaths(rootURL: LibraryLocationStore.activeLibraryRootURL))
-    }
 }

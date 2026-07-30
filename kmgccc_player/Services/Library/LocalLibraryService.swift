@@ -117,12 +117,6 @@ struct PersistedPlaylistArtworkRecord {
 
 @MainActor
 final class LocalLibraryService {
-
-    static let shared = LocalLibraryService(
-        paths: LocalLibraryPaths.capturedPaths(),
-        preferenceStatsService: .shared
-    )
-
     nonisolated let paths: LibraryPaths
     private let preferenceStatsService: PreferenceStatsService
     private let fileManager = FileManager.default

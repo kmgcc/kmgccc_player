@@ -15,8 +15,6 @@ nonisolated enum QQMusicCoverError: Error {
 }
 
 actor QQMusicCoverService {
-    static let shared = QQMusicCoverService()
-
     private struct MetadataCacheEntry: Codable, Sendable {
         let fetchedAt: Date
         let candidates: [QQMusicArtworkCandidate]
@@ -39,7 +37,7 @@ actor QQMusicCoverService {
     init(
         helper: QQMusicHelperProcess = .shared,
         session: URLSession = QQMusicCoverService.makeDefaultSession(),
-        cacheRootURL: URL = StorageLocations.qqMusicCoverCacheURL
+        cacheRootURL: URL
     ) {
         self.helper = helper
         self.session = session
@@ -694,11 +692,9 @@ nonisolated enum CoverCandidateSorter {
 }
 
 actor ArtistArtworkProviderCoordinator {
-    static let shared = ArtistArtworkProviderCoordinator()
-
     private let qqMusicCoverService: QQMusicCoverService
 
-    init(qqMusicCoverService: QQMusicCoverService = .shared) {
+    init(qqMusicCoverService: QQMusicCoverService) {
         self.qqMusicCoverService = qqMusicCoverService
     }
 

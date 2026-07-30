@@ -21,7 +21,22 @@ final class DynamicAuthorizedSourceRootsTests: XCTestCase {
         let stopCounter = LeaseStopCounter()
         let lease = SecurityScopedResourceLease { stopCounter.increment() }
         let scope = ReferencedSourceScope()
-        let service = AVAudioPlaybackService(authorizedSourceRootsProvider: scope.rootsProvider)
+        let paths = LibraryPaths(rootURL: root)
+        let preferenceStatsService = PreferenceStatsService()
+        let libraryService = LocalLibraryService(
+            paths: paths,
+            preferenceStatsService: preferenceStatsService
+        )
+        let smartController = SmartPlaybackController(
+            playbackHistoryStore: .inMemory(),
+            preferenceStatsService: preferenceStatsService,
+            libraryService: libraryService
+        )
+        let service = AVAudioPlaybackService(
+            smartController: smartController,
+            libraryPaths: paths,
+            authorizedSourceRootsProvider: scope.rootsProvider
+        )
         let track = Track(
             title: "Track",
             fileBookmarkData: Data("bookmark".utf8),

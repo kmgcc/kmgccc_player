@@ -32,6 +32,7 @@ final class LibrarySession: LibrarySessionLifecycle {
     private let playbackService: AVAudioPlaybackService
     private var isLoaded = false
     private var isClosed = false
+    private(set) var didCompleteLegacyUpgrade = false
 
     init(
         context: LibraryContext,
@@ -106,6 +107,19 @@ final class LibrarySession: LibrarySessionLifecycle {
             )
         }
         libraryService.startMonitoring(repository: repository)
+        let upgrade = LegacyLibraryUpgradeCoordinator(
+            context: context,
+            storageLocations: cacheServices.storageLocations
+        ) { [context, libraryViewModel, repository, searchIndex, playbackHistoryStore] in
+            try await LibraryUpgradeSessionValidator.validate(
+                context: context,
+                libraryViewModel: libraryViewModel,
+                repository: repository,
+                searchIndex: searchIndex,
+                playbackHistoryStore: playbackHistoryStore
+            )
+        }
+        didCompleteLegacyUpgrade = await upgrade.runIfNeeded() == .completed
         isLoaded = true
     }
 

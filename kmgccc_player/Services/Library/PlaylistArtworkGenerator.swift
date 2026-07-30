@@ -338,9 +338,6 @@ actor PlaylistArtworkGenerator {
 
 @MainActor
 final class DetailHeaderArtworkResolver {
-
-    static let shared = DetailHeaderArtworkResolver(libraryService: .shared)
-
     private let libraryService: LocalLibraryService
     private let paths: LibraryPaths
     private let generator = PlaylistArtworkGenerator.shared

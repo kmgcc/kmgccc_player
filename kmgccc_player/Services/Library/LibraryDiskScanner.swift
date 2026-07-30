@@ -20,7 +20,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
     private static let manifestFileName = ".kmgccc-library-manifest.json"
     private static let manifestSchemaVersion = 2
 
-    init(paths: LibraryPaths = LocalLibraryPaths.capturedPaths()) {
+    init(paths: LibraryPaths) {
         self.paths = paths
     }
 

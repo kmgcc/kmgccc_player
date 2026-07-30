@@ -10,14 +10,12 @@ import Foundation
 @Observable
 @MainActor
 final class ExternalPlaybackMetadataStore {
-    static let shared = ExternalPlaybackMetadataStore()
-
     private enum Keys {
         static let overrides = "externalPlayback.matchOverrides.v1"
         static let records = "externalPlayback.cacheRecords.v1"
     }
 
-    private let storage: LibraryStorageLocations?
+    private let storage: LibraryStorageLocations
     private let defaults: UserDefaults
     private let fileManager: FileManager
     private let matchResolver = ExternalPlaybackMatchResolver()
@@ -28,15 +26,20 @@ final class ExternalPlaybackMetadataStore {
     private var records: [String: ExternalPlaybackCacheRecord] = [:]
     private var lastCacheLogAt: [String: Date] = [:]
 
-    init(storage: LibraryStorageLocations) {
+    init(
+        storage: LibraryStorageLocations,
+        defaults: UserDefaults = .standard,
+        fileManager: FileManager = .default
+    ) {
         self.storage = storage
-        self.defaults = .standard
-        self.fileManager = .default
+        self.defaults = defaults
+        self.fileManager = fileManager
         encoder.dateEncodingStrategy = .iso8601
         decoder.dateDecodingStrategy = .iso8601
         overrides = Self.load(
             [String: ExternalPlaybackMatchOverride].self,
-            from: storage.externalPlaybackMetadataURL.appendingPathComponent("overrides.json"),
+            from: Keys.overrides,
+            defaults: defaults,
             decoder: decoder
         ) ?? [:]
         records = Self.load(
@@ -46,14 +49,64 @@ final class ExternalPlaybackMetadataStore {
         ) ?? [:]
     }
 
-    private init(defaults: UserDefaults = .standard, fileManager: FileManager = .default) {
-        self.storage = nil
-        self.defaults = defaults
-        self.fileManager = fileManager
-        encoder.dateEncodingStrategy = .iso8601
+    static func migrateLegacyPersistenceIfNeeded(
+        to storage: LibraryStorageLocations,
+        stagingRootURL: URL,
+        defaults: UserDefaults
+    ) throws {
+        let fileManager = FileManager.default
+        let destination = storage.externalPlaybackMetadataURL
+            .appendingPathComponent("records.json")
+        let stagingDirectory = stagingRootURL.appendingPathComponent(
+            "LegacyExternalPlaybackMetadata",
+            isDirectory: true
+        )
+        let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        overrides = Self.load([String: ExternalPlaybackMatchOverride].self, from: Keys.overrides, defaults: defaults, decoder: decoder) ?? [:]
-        records = Self.load([String: ExternalPlaybackCacheRecord].self, from: Keys.records, defaults: defaults, decoder: decoder) ?? [:]
+        let legacyData = defaults.data(forKey: Keys.records)
+        if let legacyData {
+            _ = try decoder.decode(
+                [String: ExternalPlaybackCacheRecord].self,
+                from: legacyData
+            )
+        }
+
+        if fileManager.fileExists(atPath: destination.path) {
+            let destinationData = try Data(contentsOf: destination)
+            _ = try decoder.decode(
+                [String: ExternalPlaybackCacheRecord].self,
+                from: destinationData
+            )
+            return
+        }
+
+        guard let legacyData else { return }
+        try fileManager.createDirectory(
+            at: stagingDirectory,
+            withIntermediateDirectories: true
+        )
+        let stagedURL = stagingDirectory.appendingPathComponent("records.json")
+        try? fileManager.removeItem(at: stagedURL)
+        try legacyData.write(to: stagedURL, options: .atomic)
+        try fileManager.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        guard !fileManager.fileExists(atPath: destination.path) else {
+            try? fileManager.removeItem(at: stagedURL)
+            let destinationData = try Data(contentsOf: destination)
+            _ = try decoder.decode(
+                [String: ExternalPlaybackCacheRecord].self,
+                from: destinationData
+            )
+            return
+        }
+        try fileManager.moveItem(at: stagedURL, to: destination)
+        try? fileManager.removeItem(at: stagingDirectory)
+    }
+
+    static func removeLegacyPersistence(defaults: UserDefaults) {
+        defaults.removeObject(forKey: Keys.records)
     }
 
     func effectiveMetadata(for raw: ExternalPlaybackRawMetadata) -> ExternalPlaybackEffectiveMetadata {
@@ -180,9 +233,7 @@ final class ExternalPlaybackMetadataStore {
         if let data = try? Data(contentsOf: currentURL) {
             return data
         }
-        guard storage == nil else { return nil }
-        let legacyURL = StorageLocations.legacyExternalPlaybackArtworkURL.appendingPathComponent(fileName)
-        return try? Data(contentsOf: legacyURL)
+        return nil
     }
 
     func cachedArtwork(for stableKey: String, source: String) -> Data? {
@@ -302,7 +353,6 @@ final class ExternalPlaybackMetadataStore {
     }
 
     func clearAutomaticCaches() async {
-        migrateLegacyManualOverrideArtworkToCurrentCache()
         let manualArtworkFileNames = Set(records.values.compactMap { record in
             record.artworkSource == "manualOverride" ? record.networkArtworkFileName : nil
         })
@@ -330,13 +380,9 @@ final class ExternalPlaybackMetadataStore {
             return preserved
         }
         persistRecords()
-        let directories = storage == nil
-            ? [artworkCacheDirectory(), StorageLocations.legacyExternalPlaybackArtworkURL]
-            : [artworkCacheDirectory()]
+        let directory = artworkCacheDirectory()
         await Task.detached(priority: .utility) {
-            for directory in directories {
-                Self.removeArtworkFiles(at: directory, preserving: manualArtworkFileNames)
-            }
+            Self.removeArtworkFiles(at: directory, preserving: manualArtworkFileNames)
         }.value
     }
 
@@ -358,20 +404,6 @@ final class ExternalPlaybackMetadataStore {
         }
     }
 
-    func clearBuild7LegacyAutomaticCaches() async {
-        migrateLegacyManualOverrideArtworkToCurrentCache()
-        let manualArtworkFileNames = Set(records.values.compactMap { record in
-            record.artworkSource == "manualOverride" ? record.networkArtworkFileName : nil
-        })
-        await Task.detached(priority: .utility) {
-            Self.removeArtworkFiles(
-                at: StorageLocations.legacyExternalPlaybackArtworkURL,
-                preserving: manualArtworkFileNames
-            )
-            Self.removeDirectoryIfEmpty(StorageLocations.legacyExternalPlaybackArtworkURL)
-        }.value
-    }
-
     func clearAllCaches() async {
         overrides.removeAll()
         persistOverrides()
@@ -387,24 +419,15 @@ final class ExternalPlaybackMetadataStore {
     }
 
     private func persistOverrides() {
-        if let storage {
-            persist(overrides, to: storage.externalPlaybackMetadataURL.appendingPathComponent("overrides.json"))
-        } else {
-            persist(overrides, key: Keys.overrides)
-        }
+        guard let data = try? encoder.encode(overrides) else { return }
+        defaults.set(data, forKey: Keys.overrides)
     }
 
     private func persistRecords() {
-        if let storage {
-            persist(records, to: storage.externalPlaybackMetadataURL.appendingPathComponent("records.json"))
-        } else {
-            persist(records, key: Keys.records)
-        }
-    }
-
-    private func persist<T: Encodable>(_ value: T, key: String) {
-        guard let data = try? encoder.encode(value) else { return }
-        defaults.set(data, forKey: key)
+        persist(
+            records,
+            to: storage.externalPlaybackMetadataURL.appendingPathComponent("records.json")
+        )
     }
 
     private func persist<T: Encodable>(_ value: T, to url: URL) {
@@ -443,40 +466,7 @@ final class ExternalPlaybackMetadataStore {
     }
 
     private func artworkCacheDirectory() -> URL {
-        storage?.externalPlaybackArtworkURL ?? StorageLocations.externalPlaybackArtworkURL
-    }
-
-    private func migrateLegacyManualOverrideArtworkToCurrentCache() {
-        guard storage == nil else { return }
-        let fileNames = Set(records.values.compactMap { record in
-            record.artworkSource == "manualOverride" ? record.networkArtworkFileName : nil
-        })
-        guard !fileNames.isEmpty else { return }
-
-        let sourceDirectory = StorageLocations.legacyExternalPlaybackArtworkURL
-        let destinationDirectory = artworkCacheDirectory()
-        try? fileManager.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
-
-        for fileName in fileNames {
-            let sourceURL = sourceDirectory.appendingPathComponent(fileName)
-            let destinationURL = destinationDirectory.appendingPathComponent(fileName)
-            guard fileManager.fileExists(atPath: sourceURL.path),
-                  !fileManager.fileExists(atPath: destinationURL.path)
-            else { continue }
-            do {
-                try fileManager.moveItem(at: sourceURL, to: destinationURL)
-            } catch {
-                do {
-                    try fileManager.copyItem(at: sourceURL, to: destinationURL)
-                    try? fileManager.removeItem(at: sourceURL)
-                } catch {
-                    Log.warning(
-                        "[ExternalPlayback] failed to migrate manual override artwork from legacy cache: \(error.localizedDescription)",
-                        category: .playback
-                    )
-                }
-            }
-        }
+        storage.externalPlaybackArtworkURL
     }
 
     private nonisolated static func removeArtworkFiles(at directory: URL, preserving preservedFileNames: Set<String>) {
@@ -490,18 +480,6 @@ final class ExternalPlaybackMetadataStore {
         for url in files where !preservedFileNames.contains(url.lastPathComponent) {
             try? fileManager.removeItem(at: url)
         }
-    }
-
-    private nonisolated static func removeDirectoryIfEmpty(_ directory: URL) {
-        let fileManager = FileManager.default
-        guard let children = try? fileManager.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ), children.isEmpty else {
-            return
-        }
-        try? fileManager.removeItem(at: directory)
     }
 
     private func sanitize(_ value: String) -> String {

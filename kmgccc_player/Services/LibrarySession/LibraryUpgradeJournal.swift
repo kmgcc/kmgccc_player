@@ -8,12 +8,14 @@
 import Foundation
 
 nonisolated struct LibraryUpgradeJournal: Codable, Sendable, Equatable {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
 
     enum Stage: String, Codable, Sendable, Comparable {
         case discovered
         case manifestWritten
         case registryWritten
+        case cachesMigrated
+        case validated
         case committed
 
         static func < (lhs: Stage, rhs: Stage) -> Bool {
@@ -25,7 +27,9 @@ nonisolated struct LibraryUpgradeJournal: Codable, Sendable, Equatable {
             case .discovered: return 0
             case .manifestWritten: return 1
             case .registryWritten: return 2
-            case .committed: return 3
+            case .cachesMigrated: return 3
+            case .validated: return 4
+            case .committed: return 5
             }
         }
     }
@@ -36,6 +40,15 @@ nonisolated struct LibraryUpgradeJournal: Codable, Sendable, Equatable {
     var stage: Stage
     let startedAt: Date
     var updatedAt: Date
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case libraryID
+        case rootPath
+        case stage
+        case startedAt
+        case updatedAt
+    }
 
     init(
         libraryID: UUID,
@@ -52,14 +65,28 @@ nonisolated struct LibraryUpgradeJournal: Codable, Sendable, Equatable {
         self.updatedAt = updatedAt
     }
 
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let storedSchema = try values.decode(Int.self, forKey: .schemaVersion)
+        guard storedSchema == 1 || storedSchema == Self.schemaVersion else {
+            throw LibraryUpgradeJournalError.unsupportedSchema(storedSchema)
+        }
+        schemaVersion = Self.schemaVersion
+        libraryID = try values.decode(UUID.self, forKey: .libraryID)
+        rootPath = try values.decode(String.self, forKey: .rootPath)
+        let storedStage = try values.decode(Stage.self, forKey: .stage)
+        stage = storedSchema == 1 && storedStage == .committed
+            ? .registryWritten
+            : storedStage
+        startedAt = try values.decode(Date.self, forKey: .startedAt)
+        updatedAt = try values.decode(Date.self, forKey: .updatedAt)
+    }
+
     static func read(from url: URL) throws -> LibraryUpgradeJournal? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         let journal = try decoder.decode(Self.self, from: Data(contentsOf: url))
-        guard journal.schemaVersion == Self.schemaVersion else {
-            throw LibraryUpgradeJournalError.unsupportedSchema(journal.schemaVersion)
-        }
         return journal
     }
 

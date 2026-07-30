@@ -297,10 +297,10 @@ final class ImportEnrichmentService {
     init(
         repository: LibraryRepositoryProtocol,
         maxConcurrent: Int = 2,
-        qqMusicCoverService: QQMusicCoverService = .shared,
-        artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator = .shared,
-        lyricsSearchCoordinator: LyricsSearchCoordinator = .shared,
-        amllDBService: AMLLDBService = .shared
+        qqMusicCoverService: QQMusicCoverService,
+        artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator,
+        lyricsSearchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService
     ) {
         self.repository = repository
         self.qqMusicCoverService = qqMusicCoverService
@@ -973,7 +973,11 @@ final class ImportEnrichmentService {
                 )
                 await self.completeArtistArtwork(request: request, outcome: outcome)
             case .albumArtwork:
-                let outcome = await MetadataEnrichmentWorker.fetchAlbumArtwork(album: album, artist: artist)
+                let outcome = await MetadataEnrichmentWorker.fetchAlbumArtwork(
+                    album: album,
+                    artist: artist,
+                    qqMusicCoverService: self.qqMusicCoverService
+                )
                 await self.completeAlbumArtwork(request: request, outcome: outcome)
             }
 

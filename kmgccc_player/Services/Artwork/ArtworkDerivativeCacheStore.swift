@@ -18,8 +18,6 @@ private final class ArtworkDerivativeImageBox: NSObject {
 }
 
 actor ArtworkDerivativeCacheStore {
-    static let shared = ArtworkDerivativeCacheStore()
-
     private let memoryCache = NSCache<NSString, ArtworkDerivativeImageBox>()
     private let fileManager = FileManager.default
     private let maxDiskBytes: Int64 = 220 * 1024 * 1024
@@ -29,14 +27,6 @@ actor ArtworkDerivativeCacheStore {
 
     init(diskRootURL: URL) {
         self.diskRootURL = diskRootURL
-        memoryCache.countLimit = 720
-        memoryCache.totalCostLimit = 96 * 1024 * 1024
-
-        try? fileManager.createDirectory(at: diskRootURL, withIntermediateDirectories: true)
-    }
-
-    private init() {
-        self.diskRootURL = StorageLocations.playlistArtworkDerivativesURL
         memoryCache.countLimit = 720
         memoryCache.totalCostLimit = 96 * 1024 * 1024
 
@@ -115,7 +105,6 @@ actor ArtworkDerivativeCacheStore {
     func clearAll() {
         memoryCache.removeAllObjects()
         try? fileManager.removeItem(at: diskRootURL)
-        try? fileManager.removeItem(at: StorageLocations.legacyPlaylistArtworkDerivativesURL)
         try? fileManager.createDirectory(at: diskRootURL, withIntermediateDirectories: true)
     }
 
