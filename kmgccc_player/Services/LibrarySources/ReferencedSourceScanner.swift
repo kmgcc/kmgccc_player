@@ -57,7 +57,7 @@ actor ReferencedSourceScanner {
     func scan(context: LibraryContext, sourceID: UUID, rootURL: URL) async throws -> ReferencedSourceScanResult {
         guard context.mode == .referenced else { throw ReferencedSourceScanError.sourceOffline }
         var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: rootURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+        guard fileManager.fileExists(atPath: rootURL.path, isDirectory: &isDirectory) else {
             return unavailableDiff(context: context, sourceID: sourceID, status: .offline)
         }
         guard fileManager.isReadableFile(atPath: rootURL.path) else {
@@ -66,7 +66,12 @@ actor ReferencedSourceScanner {
 
         let previous = try await manifestStore.load(sourceID: sourceID, libraryID: context.id)
         let generation = (previous?.generation ?? 0) &+ 1
-        let snapshot = try await enumerate(rootURL: rootURL, generation: generation)
+        let snapshot: (entries: [ReferencedSourceScanEntry], ignored: [ReferencedSourceIgnoredFile], failures: [ReferencedSourceScanFailure])
+        if isDirectory.boolValue {
+            snapshot = try await enumerate(rootURL: rootURL, generation: generation)
+        } else {
+            snapshot = try await enumerateSingleFile(rootURL: rootURL, generation: generation)
+        }
         try Task.checkCancellation()
         let (diff, entries) = buildDiff(
             context: context,
@@ -87,6 +92,37 @@ actor ReferencedSourceScanner {
                 entries: entries
             )
         )
+    }
+
+    /// A file source roots at the audio file itself; the scan is a single
+    /// entry keyed by the file name.
+    private func enumerateSingleFile(rootURL: URL, generation: UInt64) async throws -> (
+        entries: [ReferencedSourceScanEntry],
+        ignored: [ReferencedSourceIgnoredFile],
+        failures: [ReferencedSourceScanFailure]
+    ) {
+        let root = rootURL.resolvingSymlinksInPath().standardizedFileURL
+        do {
+            let values = try root.resourceValues(forKeys: [.isRegularFileKey, .isPackageKey, .isHiddenKey])
+            guard values.isRegularFile == true,
+                  values.isPackage != true,
+                  values.isHidden != true,
+                  supportedExtensions.contains(root.pathExtension.lowercased()) else {
+                return ([], [], [])
+            }
+            let fingerprint = try fingerprintProvider(root)
+            if await isReserved(root, fingerprint.identity) { return ([], [], []) }
+            if await isIgnored(fingerprint) {
+                return ([], [.init(relativePath: root.lastPathComponent, fingerprint: fingerprint)], [])
+            }
+            return (
+                [.init(relativePath: root.lastPathComponent, identity: fingerprint.identity, fingerprint: fingerprint, trackID: nil, availability: .available, lastSeenGeneration: generation)],
+                [],
+                []
+            )
+        } catch {
+            return ([], [], [.init(relativePath: root.lastPathComponent, summary: String(describing: error).prefixString(256))])
+        }
     }
 
     private func enumerate(rootURL: URL, generation: UInt64) async throws -> (

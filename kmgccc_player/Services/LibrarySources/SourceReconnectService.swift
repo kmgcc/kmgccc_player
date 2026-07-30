@@ -412,9 +412,23 @@ final class SourceReconnectService {
             let root = rootURL.resolvingSymlinksInPath().standardizedFileURL
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDirectory),
-                  isDirectory.boolValue,
                   FileManager.default.isReadableFile(atPath: root.path) else {
                 throw SourceReconnectServiceError.invalidCandidateRoot(root.path)
+            }
+            // A file source reconnects by selecting the file itself.
+            guard isDirectory.boolValue else {
+                guard AudioFormatSupport.playableExtensions.contains(
+                    root.pathExtension.lowercased()
+                ) else {
+                    throw SourceReconnectServiceError.invalidCandidateRoot(root.path)
+                }
+                return [SourceReconnectCandidateFile(
+                    rootURL: root,
+                    url: root,
+                    relativePath: root.lastPathComponent,
+                    fingerprint: try Self.fingerprint(root),
+                    duration: await duration(of: root)
+                )]
             }
             var pending = [root]
             var visited = Set<String>()

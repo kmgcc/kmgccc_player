@@ -369,6 +369,46 @@ final class FileImportService: FileImportServiceProtocol {
         presentation: ImportPresentation,
         isManualSelection: Bool
     ) async -> [Track] {
+        let tracks = await performImport(
+            selectedURLs,
+            to: playlist,
+            metadataOverride: metadataOverride,
+            presentation: presentation,
+            isManualSelection: isManualSelection
+        )
+        if storageBackend.mode == .referenced {
+            // Single-file sources are created up front in prepareInputs;
+            // files that did not survive the import pipeline (for example
+            // corrupt audio) must not leave a source behind.
+            let importedURLs = Set(tracks.compactMap { track -> String? in
+                if case let .referenced(locator) = track.mediaLocator {
+                    return URL(fileURLWithPath: locator.lastKnownPath)
+                        .resolvingSymlinksInPath().standardizedFileURL.path
+                }
+                return nil
+            })
+            // NCM conversion outputs keep the `.ncm` input's source
+            // membership, so the file source must survive pruning even
+            // though the imported path is the converted product.
+            let importedSourceIDs = Set(tracks.flatMap { track -> [UUID] in
+                guard case let .referenced(locator) = track.mediaLocator else { return [] }
+                return locator.sourceMemberships.map(\.sourceID)
+            })
+            await storageBackend.pruneUnimportedFileSources(
+                importedURLs: importedURLs,
+                importedSourceIDs: importedSourceIDs
+            )
+        }
+        return tracks
+    }
+
+    private func performImport(
+        _ selectedURLs: [URL],
+        to playlist: Playlist?,
+        metadataOverride: ImportMetadataOverride?,
+        presentation: ImportPresentation,
+        isManualSelection: Bool
+    ) async -> [Track] {
         var crashBreadcrumbResult = "not_completed"
         var crashBreadcrumbImportedCount = 0
         CrashBreadcrumbRecorder.shared.record(

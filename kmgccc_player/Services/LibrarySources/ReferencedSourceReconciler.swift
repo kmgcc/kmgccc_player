@@ -97,6 +97,88 @@ final class ReferencedSourceReconciler {
         return issues
     }
 
+    /// Repairs tracks whose memberships reference a source descriptor that
+    /// no longer exists on disk (for example a batch file source pruned
+    /// after an NCM conversion, or a crash before descriptor persistence).
+    /// Only primary memberships can be mapped to a concrete file: when the
+    /// file still exists, a file-mode descriptor is recreated with the
+    /// original sourceID and the membership is normalized to the
+    /// file-source layout; when the file is gone, the orphaned membership
+    /// is stripped so the track settles as missing.
+    @discardableResult
+    func repairOrphanedFileSources() async throws -> Int {
+        guard !isClosed else { return 0 }
+        let knownIDs = Set(try await sourceStore.loadAll().map(\.id))
+        let tracks = await repository.fetchTracks(in: nil)
+        var mutations: [ReferencedSourceLocatorMutation] = []
+        var created = 0
+        for track in tracks {
+            guard case var .referenced(locator) = track.mediaLocator else { continue }
+            let orphans = locator.sourceMemberships.filter { !knownIDs.contains($0.sourceID) }
+            guard !orphans.isEmpty else { continue }
+            var locatorChanged = false
+            for orphan in orphans where locator.primarySourceID == orphan.sourceID {
+                let fileURL = URL(fileURLWithPath: locator.lastKnownPath)
+                guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                    // The source record is lost and the file is gone:
+                    // settle as missing.
+                    locator.sourceMemberships.removeAll { $0.sourceID == orphan.sourceID }
+                    locatorChanged = true
+                    continue
+                }
+                guard let bookmark = try? bookmarkResolver.refreshBookmark(for: fileURL) else {
+                    // The file exists but authorization is temporarily
+                    // unavailable — never destroy memberships on a
+                    // transient failure.
+                    Log.warning(
+                        "[ReferencedSource] orphan repair deferred (bookmark failed) track=\(track.id)",
+                        category: .library
+                    )
+                    continue
+                }
+                let descriptor = ReferencedSourceDescriptor(
+                    id: orphan.sourceID,
+                    mode: .file,
+                    rootBookmarkData: bookmark,
+                    lastKnownPath: fileURL.path,
+                    displayName: fileURL.lastPathComponent
+                )
+                try await sourceStore.save(descriptor)
+                created += 1
+                if let index = locator.sourceMemberships.firstIndex(where: { $0.sourceID == orphan.sourceID }) {
+                    locator.sourceMemberships[index].relativePath = fileURL.lastPathComponent
+                    locatorChanged = true
+                }
+            }
+            guard locatorChanged else { continue }
+            locator.primarySourceID = primarySourceID(locator.sourceMemberships)
+            mutations.append(.init(
+                trackID: track.id,
+                locator: locator,
+                availability: locator.sourceMemberships.isEmpty ? .missing : track.availability
+            ))
+        }
+        if !mutations.isEmpty {
+            _ = await repository.commitReferencedSourceMutations(mutations)
+            Log.warning(
+                "[ReferencedSource] repaired orphaned memberships tracks=\(mutations.count) recreatedSources=\(created)",
+                category: .library
+            )
+        }
+        if created > 0 {
+            // Re-arm the scope so the recreated roots become authorized and
+            // eligible for monitoring before the next reconcile.
+            let descriptors = try await sourceStore.loadAll()
+            _ = await sourceScope.start(
+                descriptors: descriptors,
+                store: sourceStore,
+                bookmarkResolver: bookmarkResolver,
+                requiresSecurityScope: requiresSecurityScope
+            )
+        }
+        return created
+    }
+
     func replayPending(sourceID: UUID? = nil) async throws {
         guard !isClosed else { return }
         for intent in try await intentStore.pending(libraryID: context.id, sourceID: sourceID) {
@@ -132,8 +214,28 @@ final class ReferencedSourceReconciler {
                 try await applyUnavailable(sourceID: sourceID, status: status)
                 continue
             }
-            let result = try await scanner.scan(context: context, sourceID: sourceID, rootURL: root)
-            try await apply(result, rootURL: root)
+            var effectiveRoot = root
+            var result = try await scanner.scan(context: context, sourceID: sourceID, rootURL: root)
+            if result.diff.sourceStatus != .available {
+                // The authorized URL is path-stale after a rename/move while
+                // the app was running; the bookmark still follows the inode.
+                // Re-resolve authorization for THIS source only (refresh,
+                // not start — start would drop every other source's root)
+                // before declaring the source unavailable.
+                let issues = await sourceScope.refresh(
+                    descriptors: [descriptor],
+                    store: sourceStore,
+                    bookmarkResolver: bookmarkResolver,
+                    requiresSecurityScope: requiresSecurityScope
+                )
+                if issues.isEmpty,
+                   let refreshedRoot = sourceScope.authorizedRoots[sourceID]?.url,
+                   refreshedRoot != root {
+                    effectiveRoot = refreshedRoot
+                    result = try await scanner.scan(context: context, sourceID: sourceID, rootURL: refreshedRoot)
+                }
+            }
+            try await apply(result, rootURL: effectiveRoot)
         }
     }
 
@@ -238,11 +340,26 @@ final class ReferencedSourceReconciler {
            intent.diff.sourceStatus == .available,
            intent.mutations.isEmpty || intent.proposedManifest?.entries.contains(where: { $0.trackID == nil }) == true {
             guard let rootURL = explicitRootURL ?? sourceScope.authorizedRoots[intent.sourceID]?.url else { return }
+            let isFileRoot = rootIsFile(rootURL)
             let imported = intent.diff.added.isEmpty
                 ? []
-                : await importer.importAutomatically(intent.diff.added.map { rootURL.appendingPathComponent($0.relativePath) })
+                : await importer.importAutomatically(intent.diff.added.map {
+                    url(forRelativePath: $0.relativePath, root: rootURL, rootIsFile: isFileRoot)
+                })
             guard !isClosed else { return }
-            let mutations = await makeMutations(diff: intent.diff, rootURL: rootURL, importedTracks: imported)
+            let firstScanPresentPaths: Set<String>? = (
+                intent.operation == .reconcile
+                    && intent.diff.scanGeneration == 1
+                    && intent.diff.failures.isEmpty
+            )
+                ? Set(intent.proposedManifest?.entries.map(\.relativePath) ?? [])
+                : nil
+            let mutations = await makeMutations(
+                diff: intent.diff,
+                rootURL: rootURL,
+                importedTracks: imported,
+                firstScanPresentPaths: firstScanPresentPaths
+            )
             intent = try await intentStore.updateMutations(intent, mutations: mutations)
             let tracks = await repository.fetchTracks(in: nil)
             let physicalTrackIDs = physicalTrackIDMap(tracks)
@@ -324,10 +441,12 @@ final class ReferencedSourceReconciler {
     private func makeMutations(
         diff: ReferencedSourceDiff,
         rootURL: URL,
-        importedTracks: [Track]
+        importedTracks: [Track],
+        firstScanPresentPaths: Set<String>? = nil
     ) async -> [ReferencedSourceLocatorMutation] {
         let allTracks = await repository.fetchTracks(in: nil)
         let tracksByID = Dictionary(uniqueKeysWithValues: allTracks.map { ($0.id, $0) })
+        let isFileRoot = rootIsFile(rootURL)
         var changes: [UUID: ReferencedSourceLocatorMutation] = [:]
 
         for track in allTracks {
@@ -345,15 +464,15 @@ final class ReferencedSourceReconciler {
         }
         for move in diff.moved {
             guard let track = tracksByID[move.trackID], case var .referenced(locator) = track.mediaLocator else { continue }
-            let url = rootURL.appendingPathComponent(move.newRelativePath)
-            refresh(locator: &locator, url: url, fingerprint: move.fingerprint)
+            let resolvedURL = url(forRelativePath: move.newRelativePath, root: rootURL, rootIsFile: isFileRoot)
+            refresh(locator: &locator, url: resolvedURL, fingerprint: move.fingerprint)
             setMembership(sourceID: diff.sourceID, relativePath: move.newRelativePath, locator: &locator)
             changes[track.id] = .init(trackID: track.id, locator: locator, availability: .available)
         }
         for replacement in diff.replacements {
             guard let track = tracksByID[replacement.trackID], case var .referenced(locator) = track.mediaLocator else { continue }
-            let url = rootURL.appendingPathComponent(replacement.relativePath)
-            refresh(locator: &locator, url: url, fingerprint: replacement.newFingerprint)
+            let resolvedURL = url(forRelativePath: replacement.relativePath, root: rootURL, rootIsFile: isFileRoot)
+            refresh(locator: &locator, url: resolvedURL, fingerprint: replacement.newFingerprint)
             setMembership(sourceID: diff.sourceID, relativePath: replacement.relativePath, locator: &locator)
             changes[track.id] = .init(trackID: track.id, locator: locator, availability: .available)
         }
@@ -368,6 +487,25 @@ final class ReferencedSourceReconciler {
                 locator: locator,
                 availability: locator.sourceMemberships.isEmpty ? .missing : track.availability
             )
+        }
+
+        // First successful scan is authoritative: with no previous manifest
+        // the diff cannot express deletions that happened before it (e.g. a
+        // converted product deleted right after the initial import), so
+        // memberships whose file is absent from the scan are settled here.
+        if let firstScanPresentPaths {
+            for track in allTracks {
+                guard case var .referenced(locator) = track.mediaLocator,
+                      let membership = locator.sourceMemberships.first(where: { $0.sourceID == diff.sourceID }),
+                      !firstScanPresentPaths.contains(membership.relativePath) else { continue }
+                locator.sourceMemberships.removeAll { $0.sourceID == diff.sourceID }
+                locator.primarySourceID = primarySourceID(locator.sourceMemberships)
+                changes[track.id] = .init(
+                    trackID: track.id,
+                    locator: locator,
+                    availability: locator.sourceMemberships.isEmpty ? .missing : track.availability
+                )
+            }
         }
         return changes.values.sorted { $0.trackID.uuidString < $1.trackID.uuidString }
     }
@@ -437,8 +575,21 @@ final class ReferencedSourceReconciler {
     private func relativePath(_ url: URL, root: URL) -> String? {
         let candidate = url.standardizedFileURL.path
         let base = root.standardizedFileURL.path
+        // A file source's root is the file itself; the membership path is the
+        // file name, matching the scanner's single-entry layout.
+        if candidate == base { return root.lastPathComponent }
         guard candidate.hasPrefix(base + "/") else { return nil }
         return String(candidate.dropFirst(base.count + 1))
+    }
+
+    private func url(forRelativePath relativePath: String, root rootURL: URL, rootIsFile: Bool) -> URL {
+        rootIsFile ? rootURL : rootURL.appendingPathComponent(relativePath)
+    }
+
+    private func rootIsFile(_ rootURL: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: rootURL.path, isDirectory: &isDirectory)
+            && !isDirectory.boolValue
     }
 
     private func applyUnavailable(

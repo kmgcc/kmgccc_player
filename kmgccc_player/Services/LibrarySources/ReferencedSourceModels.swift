@@ -9,6 +9,8 @@ import Foundation
 
 nonisolated enum ReferencedSourceMode: String, Codable, Sendable {
     case directory
+    /// A single audio file added as its own source (not a folder).
+    case file
 }
 
 nonisolated enum ReferencedSourceStatus: String, Codable, Sendable {

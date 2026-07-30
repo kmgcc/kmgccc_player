@@ -173,6 +173,11 @@ final class ReferencedNCMConversionService {
         defer {
             if authorization.releasesLease { authorization.lease.release() }
         }
+        // Converted products live in a dedicated subfolder of the NCM's
+        // parent directory instead of beside the source file, keeping the
+        // user's original folder layout clean.
+        let outputDirectory = authorization.directoryURL
+            .appendingPathComponent(Self.outputDirectoryName, isDirectory: true)
         let operationID = UUID()
         let temporaryDirectory = authorization.directoryURL
             .appendingPathComponent(".kmgccc-ncm-\(operationID.uuidString)", isDirectory: true)
@@ -211,8 +216,10 @@ final class ReferencedNCMConversionService {
             try fileManager.createDirectory(at: temporaryDirectory, withIntermediateDirectories: false)
             let preliminary = try await convert(sourceURL, temporaryDirectory)
             try Task.checkCancellation()
+            // Created lazily so a failed conversion leaves no empty folder.
+            try createOutputDirectoryIfNeeded(outputDirectory)
             let finalName = Self.outputFileName(sourceURL: sourceURL, result: preliminary)
-            let finalURL = authorization.directoryURL.appendingPathComponent(finalName)
+            let finalURL = outputDirectory.appendingPathComponent(finalName)
             guard !fileManager.fileExists(atPath: finalURL.path) else {
                 throw ReferencedNCMConversionError.outputConflict(finalName)
             }
@@ -237,6 +244,7 @@ final class ReferencedNCMConversionService {
             let outputBookmark = try bookmarkResolver.refreshBookmark(for: finalURL)
             let outputMemberships = Self.outputMemberships(
                 sourceMemberships: file.memberships,
+                outputDirectoryName: Self.outputDirectoryName,
                 outputName: finalName
             )
             let locator = ReferencedFileLocator(
@@ -302,8 +310,12 @@ final class ReferencedNCMConversionService {
         guard let format = record.outputFormat, let metadata = record.outputMetadata else {
             throw ReferencedNCMConversionError.invalidOutput
         }
+        // Only reached for legacy records without a persisted outputLocator;
+        // those predate the output subfolder convention, so keep the
+        // sibling-directory membership layout here.
         let outputMemberships = Self.outputMemberships(
             sourceMemberships: record.sourceMemberships,
+            outputDirectoryName: nil,
             outputName: outputURL.lastPathComponent
         )
         let locator: ReferencedFileLocator
@@ -389,6 +401,26 @@ final class ReferencedNCMConversionService {
         return try await parentAuthorizer.authorizeParentDirectory(of: file.url)
     }
 
+    /// Dedicated subfolder (inside the NCM's parent directory) that holds
+    /// all converted audio products for that folder.
+    nonisolated static let outputDirectoryName = "NCM 转换"
+
+    /// Creates the product subfolder when absent. An existing directory is
+    /// reused; a same-named regular file blocks creation and surfaces as a
+    /// conflict rather than being replaced.
+    private func createOutputDirectoryIfNeeded(_ url: URL) throws {
+        var isDirectory: ObjCBool = false
+        if fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) {
+            if isDirectory.boolValue { return }
+            throw ReferencedNCMConversionError.outputConflict(Self.outputDirectoryName)
+        }
+        do {
+            try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+        } catch {
+            throw ReferencedNCMConversionError.atomicPublishFailed
+        }
+    }
+
     nonisolated private static func outputFileName(
         sourceURL: URL,
         result: NCMConversionResult
@@ -409,11 +441,20 @@ final class ReferencedNCMConversionService {
 
     nonisolated private static func outputMemberships(
         sourceMemberships: [ReferencedSourceMembership],
+        outputDirectoryName: String?,
         outputName: String
     ) -> [ReferencedSourceMembership] {
         sourceMemberships.map { membership in
             let parent = (membership.relativePath as NSString).deletingLastPathComponent
-            let relative = parent.isEmpty ? outputName : (parent as NSString).appendingPathComponent(outputName)
+            var directory = parent
+            if let outputDirectoryName {
+                directory = directory.isEmpty
+                    ? outputDirectoryName
+                    : (directory as NSString).appendingPathComponent(outputDirectoryName)
+            }
+            let relative = directory.isEmpty
+                ? outputName
+                : (directory as NSString).appendingPathComponent(outputName)
             return ReferencedSourceMembership(sourceID: membership.sourceID, relativePath: relative)
         }
     }
