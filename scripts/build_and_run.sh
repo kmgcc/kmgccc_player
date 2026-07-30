@@ -3,7 +3,9 @@ set -euo pipefail
 
 # Default configuration is Debug
 CONFIGURATION="${CONFIGURATION:-Debug}"
+MODE="${1:-run}"
 APP_NAME="kmgccc_player"
+BUNDLE_ID="kmgccc.player"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -41,9 +43,43 @@ if [ ! -x "$APP_BINARY" ]; then
     exit 1
 fi
 
+open_app() {
+    /usr/bin/open -n "$APP_BUNDLE"
+}
+
 echo "========================================"
-echo "Launching $APP_NAME with KMGCCC_LOG_LEVEL=$KMGCCC_LOG_LEVEL..."
+echo "Launching $APP_BUNDLE..."
 echo "========================================"
 
-# Run the app binary directly to stream logs in the terminal
-"$APP_BINARY"
+case "$MODE" in
+    run)
+        open_app
+        ;;
+    --debug|debug)
+        lldb -- "$APP_BINARY"
+        ;;
+    --logs|logs)
+        open_app
+        /usr/bin/log stream --info --style compact --predicate "process == \"$APP_NAME\""
+        ;;
+    --telemetry|telemetry)
+        open_app
+        /usr/bin/log stream --info --style compact --predicate "subsystem == \"$BUNDLE_ID\""
+        ;;
+    --verify|verify)
+        open_app
+        for _ in {1..20}; do
+            if pgrep -x "$APP_NAME" >/dev/null; then
+                echo "Verified running process: $APP_NAME"
+                exit 0
+            fi
+            sleep 0.25
+        done
+        echo "error: $APP_NAME did not remain running after launch" >&2
+        exit 1
+        ;;
+    *)
+        echo "usage: $0 [run|--debug|--logs|--telemetry|--verify]" >&2
+        exit 2
+        ;;
+esac
