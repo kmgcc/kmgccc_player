@@ -213,7 +213,11 @@ nonisolated enum ImportInputScanner {
         for root in roots {
             let canonicalRoot = root.resolvingSymlinksInPath().standardizedFileURL
             guard contains(canonicalFile, root: canonicalRoot), let sourceID = sourceIDs[root] else { continue }
-            let relative = String(canonicalFile.path.dropFirst(canonicalRoot.path.count + 1))
+            // A file source's root is the file itself; its membership path is
+            // just the file name, matching the scanner's single-entry layout.
+            let relative = canonicalFile.path == canonicalRoot.path
+                ? canonicalFile.lastPathComponent
+                : String(canonicalFile.path.dropFirst(canonicalRoot.path.count + 1))
             values.append(.init(sourceID: sourceID, relativePath: relative))
         }
         return (values, values.first?.sourceID)

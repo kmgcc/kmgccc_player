@@ -163,7 +163,21 @@ actor LibraryReconcileIntentStore {
             do {
                 intent = try decoder.decode(LibraryReconcileIntent.self, from: Data(contentsOf: url))
             } catch {
-                throw LibraryReconcileIntentStoreError.corruptIntent(url.path)
+                // A truncated/half-written intent (crash mid-write, foreign
+                // process contention) must not wedge replay forever:
+                // quarantine it aside and keep replaying the rest.
+                let quarantineURL = url.appendingPathExtension("corrupt")
+                try? fileManager.removeItem(at: quarantineURL)
+                do {
+                    try fileManager.moveItem(at: url, to: quarantineURL)
+                    Log.warning(
+                        "[ReconcileIntent] quarantined corrupt intent \(url.lastPathComponent)",
+                        category: .library
+                    )
+                } catch {
+                    throw LibraryReconcileIntentStoreError.corruptIntent(url.path)
+                }
+                continue
             }
             guard intent.schemaVersion == LibraryReconcileIntent.currentSchemaVersion else {
                 throw LibraryReconcileIntentStoreError.unsupportedSchema(intent.schemaVersion)

@@ -148,6 +148,9 @@ nonisolated struct LocalAudioResourceResolver: Sendable {
             guard Self.contains(canonicalCandidate, root: canonicalRoot) else {
                 throw LocalAudioResolutionError.permissionDenied
             }
+            // A previously poisoned authorized root may point into the
+            // Trash (bookmark inode-follow); never play from there.
+            guard !Self.isInTrash(canonicalCandidate) else { continue }
             if FileManager.default.fileExists(atPath: canonicalCandidate.path) {
                 try validateReadableFile(canonicalCandidate)
                 return AudioLocatorResolution(
@@ -167,6 +170,12 @@ nonisolated struct LocalAudioResourceResolver: Sendable {
             resolved = try bookmarkResolver.resolve(locator.fileBookmarkData)
         } catch {
             throw LocalAudioResolutionError.bookmarkUnresolved
+        }
+        // Bookmarks follow the inode: a file moved to the Trash still
+        // resolves and would keep playing from there. Treat trashed files
+        // as missing instead — relocation tracking to real folders stays.
+        guard !Self.isInTrash(resolved.url) else {
+            throw LocalAudioResolutionError.missing
         }
 
         let didStart = bookmarkResolver.startAccessing(resolved.url)
@@ -202,6 +211,11 @@ nonisolated struct LocalAudioResourceResolver: Sendable {
 
     private static func contains(_ candidate: URL, root: URL) -> Bool {
         candidate.path == root.path || candidate.path.hasPrefix(root.path + "/")
+    }
+
+    private static func isInTrash(_ url: URL) -> Bool {
+        let components = url.pathComponents
+        return components.contains(".Trash") || components.contains(".Trashes")
     }
 
     private func validateReadableFile(_ url: URL) throws {

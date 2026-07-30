@@ -97,9 +97,22 @@ final class LibrarySession: LibrarySessionLifecycle {
         await libraryViewModel.reloadLibrary()
         try Task.checkCancellation()
         if let referencedSourceReconciler, let libraryChangeMonitor {
-            try await referencedSourceReconciler.replayPending()
-            let sourceIDs = try await referencedSourceReconciler.allSourceIDs()
-            try await referencedSourceReconciler.reconcile(sourceIDs: sourceIDs)
+            // Reconcile touches the same SQLite stores as the rest of the
+            // session and can fail on transient contention (another
+            // instance mid-write, WAL checkpoint). A reconcile failure
+            // must not make the whole library unreadable — degrade to a
+            // loaded session and let the change monitor retry later.
+            do {
+                try await referencedSourceReconciler.replayPending()
+                try await referencedSourceReconciler.repairOrphanedFileSources()
+                let sourceIDs = try await referencedSourceReconciler.allSourceIDs()
+                try await referencedSourceReconciler.reconcile(sourceIDs: sourceIDs)
+            } catch {
+                Log.warning(
+                    "[LibrarySession] referenced reconcile deferred after load failure: \(error)",
+                    category: .library
+                )
+            }
         }
         let upgrade = LegacyLibraryUpgradeCoordinator(
             context: context,
@@ -352,6 +365,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         guard !isClosed else { return }
         await libraryChangeMonitor?.stopAndWait()
         referencedSourceReconciler?.close()
+        await importEnrichmentService.close()
         isClosed = true
         libraryViewModel.prepareForSessionClose()
         playbackCoordinator.close()

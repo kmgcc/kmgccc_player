@@ -117,7 +117,12 @@ final class ReferencedTrackDeletionService {
             if let operationID {
                 _ = try await ncmRegistry.markRemoved(operationID: operationID)
             }
-            if recycleSource {
+            // Unplayable tracks (missing file, offline volume, denied
+            // permission) have no resolvable source; skip the recycle step
+            // (it would throw and refuse deletion) while still writing
+            // ignore tombstones above so a leftover file can never be
+            // re-scanned back.
+            if recycleSource, track.availability.isPlayable {
                 let resolution = try LocalAudioResourceResolver(
                     paths: context.paths,
                     authorizedSourceRoots: sourceScope.authorizedRoots,

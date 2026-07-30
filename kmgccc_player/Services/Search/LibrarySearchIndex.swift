@@ -300,6 +300,10 @@ actor LibrarySearchIndex {
             let message = opened.map { String(cString: sqlite3_errmsg($0)) } ?? "unknown"
             throw SearchIndexError.sqlite(message)
         }
+        // Tolerate transient writer contention (WAL checkpoints, a second
+        // app instance finishing a write) instead of failing immediately
+        // with "database is locked".
+        sqlite3_busy_timeout(opened, 5_000)
         db = opened
         return opened
     }

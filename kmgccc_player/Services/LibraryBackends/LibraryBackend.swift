@@ -36,8 +36,20 @@ protocol LibraryStorageBackend: AnyObject {
         stagingDirectoryURL: URL
     ) async throws -> ImportPlacement
     func validate(_ placement: ImportPlacement) throws
+    /// Removes single-file sources created during the last `prepareInputs`
+    /// batch whose file did not produce an imported or reused track (for
+    /// example corrupt audio). Sources referenced by an imported track's
+    /// memberships are kept — NCM conversion outputs carry the source
+    /// membership of their `.ncm` input even though the imported file is
+    /// the converted product. Referenced backends override; the default is
+    /// a no-op.
+    func pruneUnimportedFileSources(importedURLs: Set<String>, importedSourceIDs: Set<UUID>) async
     func finishImportBatch()
     func close() async
+}
+
+extension LibraryStorageBackend {
+    func pruneUnimportedFileSources(importedURLs _: Set<String>, importedSourceIDs _: Set<UUID>) async {}
 }
 
 @MainActor

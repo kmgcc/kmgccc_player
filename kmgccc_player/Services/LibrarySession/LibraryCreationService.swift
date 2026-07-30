@@ -30,6 +30,10 @@ nonisolated protocol LibraryLifecycleFileOperating: Sendable {
     func directoryIsEmpty(at url: URL) async throws -> Bool
     func createStagedLibrary(at url: URL, manifest: MusicLibraryManifest) async throws
     func validateLibrary(at url: URL, expectedID: UUID, expectedMode: MusicLibraryMode) async throws
+    /// Recreates missing library scaffolding (required directories and the
+    /// default scoped-settings file) without touching user data. Used to make
+    /// libraries migrated from the pre-manifest layout openable again.
+    func repairLibraryScaffolding(at url: URL) async throws
     func publishStaging(at stagingURL: URL, to destinationURL: URL) async throws
     func removeItemIfPresent(at url: URL) async
     func relocate(from sourceURL: URL, toStaging stagingURL: URL) async throws -> LibraryRelocationTransfer
@@ -89,6 +93,10 @@ actor ProductionLibraryLifecycleFileOperator: LibraryLifecycleFileOperating {
         guard fileManager.fileExists(atPath: paths.librarySettingsURL.path) else {
             throw LibraryCreationError.validationFailed
         }
+    }
+
+    func repairLibraryScaffolding(at url: URL) throws {
+        try LibraryScaffoldingRepair.repairIfNeeded(at: url, fileManager: fileManager)
     }
 
     func publishStaging(at stagingURL: URL, to destinationURL: URL) throws {
@@ -213,7 +221,8 @@ final class LibraryCreationService {
         mode: MusicLibraryMode,
         parentURL: URL,
         displayName: String,
-        initialImport: LibraryInitialImportPayload = .init()
+        initialImport: LibraryInitialImportPayload = .init(),
+        allowAlternateDestinationWhenOccupied: Bool = false
     ) async throws -> LibraryCreationResult {
         do { try gate.acquire() }
         catch { throw LibraryCreationError.stagingFailed }
@@ -221,23 +230,36 @@ final class LibraryCreationService {
 
         let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { throw LibraryCreationError.invalidDisplayName }
-        let destination = parentURL.appendingPathComponent(LibraryPaths.rootDirectoryName, isDirectory: true).standardizedFileURL
-        if await fileOperator.itemExists(at: destination) {
+
+        // Resolve the destination directory. The preferred name is the
+        // shared rootDirectoryName; when it already holds a valid library
+        // the caller either gets `.existingLibrary` (default) or — with
+        // allowAlternateDestinationWhenOccupied — a numbered sibling
+        // ("kmgccc_player Library 2", "3", …) so one parent folder can
+        // host several independent libraries.
+        var destination = parentURL
+            .appendingPathComponent(LibraryPaths.rootDirectoryName, isDirectory: true)
+            .standardizedFileURL
+        var suffix = 1
+        while await fileOperator.itemExists(at: destination) {
             do {
                 let inspected = try await openService.inspect(selectedURL: destination)
-                return inspected.context.mode == mode
-                    ? .existingLibrary(inspected.context)
-                    : .existingLibraryModeMismatch(inspected.context, requestedMode: mode)
-            } catch is MusicLibraryManifestError {
-                guard (try? await fileOperator.directoryIsEmpty(at: destination)) == true else {
-                    throw LibraryCreationError.destinationContainsUnknownItems
+                guard allowAlternateDestinationWhenOccupied else {
+                    return inspected.context.mode == mode
+                        ? .existingLibrary(inspected.context)
+                        : .existingLibraryModeMismatch(inspected.context, requestedMode: mode)
                 }
-                await fileOperator.removeItemIfPresent(at: destination)
+                suffix += 1
+                destination = parentURL
+                    .appendingPathComponent("\(LibraryPaths.rootDirectoryName) \(suffix)", isDirectory: true)
+                    .standardizedFileURL
             } catch {
+                // Not a valid library: reuse the slot only when empty.
                 guard (try? await fileOperator.directoryIsEmpty(at: destination)) == true else {
                     throw LibraryCreationError.destinationContainsUnknownItems
                 }
                 await fileOperator.removeItemIfPresent(at: destination)
+                break
             }
         }
 

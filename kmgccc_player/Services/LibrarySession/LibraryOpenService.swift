@@ -63,7 +63,15 @@ final class LibraryOpenService {
         let manifest: MusicLibraryManifest
         do {
             manifest = try MusicLibraryManifest.read(from: LibraryPaths(rootURL: root).manifestURL)
-            try await fileOperator.validateLibrary(at: root, expectedID: manifest.libraryID, expectedMode: manifest.mode)
+            do {
+                try await fileOperator.validateLibrary(at: root, expectedID: manifest.libraryID, expectedMode: manifest.mode)
+            } catch {
+                // Libraries migrated from the pre-manifest layout can miss
+                // scaffolding (directories, scoped settings). Repair once and
+                // revalidate; genuinely invalid libraries still fail.
+                try await fileOperator.repairLibraryScaffolding(at: root)
+                try await fileOperator.validateLibrary(at: root, expectedID: manifest.libraryID, expectedMode: manifest.mode)
+            }
         } catch {
             throw LibraryOpenError.invalidManifest
         }

@@ -26,6 +26,24 @@ nonisolated enum LibraryScopedSettingsFile {
     }
 }
 
+/// Recreates missing library scaffolding (required directories and the
+/// default scoped-settings file) without touching user data. Libraries
+/// migrated in place from the pre-manifest layout can miss these; validation
+/// requires them.
+nonisolated enum LibraryScaffoldingRepair {
+    static func repairIfNeeded(at rootURL: URL, fileManager: FileManager = .default) throws {
+        let paths = LibraryPaths(rootURL: rootURL)
+        try paths.createRequiredDirectories(fileManager: fileManager)
+        if !fileManager.fileExists(atPath: paths.librarySettingsURL.path) {
+            try LibraryScopedSettingsFile.save(
+                LibraryScopedSettings(),
+                to: paths.librarySettingsURL,
+                fileManager: fileManager
+            )
+        }
+    }
+}
+
 actor LibraryScopedSettingsStore {
     private let fileURL: URL
     private let fileManager: FileManager

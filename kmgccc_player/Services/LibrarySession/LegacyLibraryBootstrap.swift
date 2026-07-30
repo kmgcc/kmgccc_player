@@ -84,9 +84,11 @@ nonisolated struct LegacyLibraryBootstrap: Sendable {
                     }
                     // The verified legacy root remains a recoverable fallback.
                 }
-            } else {
-                return .noLibrary
             }
+            // No active library is registered (for example after settings were
+            // cleared): fall through to legacy discovery so the factory-default
+            // root (`~/Music/kmgccc_player Library`) is adopted when it still
+            // holds a valid library on disk.
         }
 
         let paths = LibraryPaths(rootURL: legacyRootURL)
