@@ -11,6 +11,13 @@ import AVFoundation
 import Combine
 import SwiftData
 
+/// Raised when a user-initiated library switch is rejected because background
+/// metadata enrichment is still running for the active library. Switching
+/// sessions would tear down the in-flight enrichment work.
+nonisolated enum LibrarySwitchBlockedError: Error, Equatable {
+    case enrichmentInProgress
+}
+
 @MainActor
 final class AppSessionHost: ObservableObject {
     @Published private(set) var libraryVM: LibraryViewModel?
@@ -20,6 +27,16 @@ final class AppSessionHost: ObservableObject {
     @Published private(set) var ledMeterProvider: LEDMeterServiceProvider?
     @Published private(set) var importEnrichmentService: ImportEnrichmentService?
     @Published private(set) var skinManager: SkinManager?
+    /// True once the first `setupIfNeeded()` pass finished. Lets the window
+    /// distinguish "still loading the initial library" from "no library
+    /// configured" instead of showing an indefinite spinner.
+    @Published private(set) var hasCompletedInitialSetup = false
+    private var didAutoPresentLibrarySetup = false
+    /// Set when this launch auto-created the factory-default library because
+    /// the machine had no library at all (true fresh install / full reset).
+    /// Drives the first-run setup wizard after What's New is dismissed.
+    private var shouldPresentFirstRunLibrarySetup = false
+    private var whatsNewDismissalCancellable: AnyCancellable?
 
     let uiState = UIStateViewModel()
     let librarySetupFlow = LibrarySetupViewModel()
@@ -147,17 +164,35 @@ final class AppSessionHost: ObservableObject {
         activeLibraryBinding.modelContainer
     }
 
+    /// True while the active library still has background enrichment work.
+    /// User-initiated library switches are rejected in this state so the
+    /// in-flight completion of song metadata is not interrupted.
+    var isLibrarySwitchBlocked: Bool {
+        importEnrichmentService?.hasOutstandingWork == true
+    }
+
+    private func guardLibrarySwitchAllowed() throws {
+        guard isLibrarySwitchBlocked else { return }
+        uiState.showSidebarNotice(
+            "正在后台补全歌曲信息，完成后才能切换资料库",
+            style: .warning
+        )
+        throw LibrarySwitchBlockedError.enrichmentInProgress
+    }
+
     func musicLibraryRegistrySnapshot() async -> MusicLibraryRegistry {
         await registryStore?.snapshot() ?? MusicLibraryRegistry()
     }
 
     func openMusicLibrary(at url: URL) async throws -> [UUID] {
+        try guardLibrarySwitchAllowed()
         guard let libraryOpenService else { throw LibraryOpenError.libraryNotFound }
         _ = try await libraryOpenService.open(selectedURL: url)
         return try await unavailableReferencedSourceIDs()
     }
 
     func openInspectedMusicLibrary(_ context: LibraryContext) async throws -> [UUID] {
+        try guardLibrarySwitchAllowed()
         let lease = try LibraryRootAccessLease(
             context: context,
             resolver: SystemBookmarkResolver(),
@@ -168,6 +203,7 @@ final class AppSessionHost: ObservableObject {
     }
 
     func activateRegisteredLibrary(id: UUID) async throws -> [UUID] {
+        try guardLibrarySwitchAllowed()
         guard let registryStore else { throw RegisteredLibraryActivationError.notRegistered }
         let context = try await LibraryStartupContextResolver(registryStore: registryStore)
             .resolveRegistered(libraryID: id, generation: activeLibraryBinding.generation &+ 1)
@@ -176,6 +212,7 @@ final class AppSessionHost: ObservableObject {
     }
 
     func reconnectRegisteredLibrary(id: UUID, at url: URL) async throws -> [UUID] {
+        try guardLibrarySwitchAllowed()
         guard let libraryOpenService else { throw LibraryOpenError.libraryNotFound }
         _ = try await libraryOpenService.reconnectRegisteredLibrary(id: id, selectedURL: url)
         return try await unavailableReferencedSourceIDs()
@@ -214,15 +251,19 @@ final class AppSessionHost: ObservableObject {
         mode: MusicLibraryMode,
         parentURL: URL,
         displayName: String,
-        initialImportSelection: LibraryInitialImportSelection?
+        initialImportSelection: LibraryInitialImportSelection?,
+        allowAlternateDestinationWhenOccupied: Bool = false
     ) async throws -> CreateMusicLibraryResult {
         let selectedMusicURLs = initialImportSelection?.urls ?? []
         guard let libraryCreationService else { throw LibraryCreationError.stagingFailed }
+        // Creating a library activates it, so it is also a library switch.
+        try guardLibrarySwitchAllowed()
         let result = try await libraryCreationService.create(
             mode: mode,
             parentURL: parentURL,
             displayName: displayName,
-            initialImport: LibraryInitialImportPayload(selectedURLs: selectedMusicURLs)
+            initialImport: LibraryInitialImportPayload(selectedURLs: selectedMusicURLs),
+            allowAlternateDestinationWhenOccupied: allowAlternateDestinationWhenOccupied
         )
         switch result {
         case .created(let context, _):
@@ -358,7 +399,13 @@ final class AppSessionHost: ObservableObject {
                 await releaseActiveSessionBindings()
             }
         case .noActive:
-            Log.info("[LibrarySession] no active library; waiting for chooser", category: .library)
+            if let createdContext = await createFactoryDefaultLibraryIfFreshInstall() {
+                // LibraryCreationService.create already activated the session.
+                await restorePlaybackMemoryIfNeeded()
+                _ = createdContext
+            } else {
+                Log.info("[LibrarySession] no active library; waiting for chooser", category: .library)
+            }
         case .unavailable:
             Log.info("[LibrarySession] active library unavailable; waiting for reconnect", category: .library)
         }
@@ -380,6 +427,80 @@ final class AppSessionHost: ObservableObject {
         } else {
             scheduleDeferredLaunchPromptsIfNeeded()
         }
+        hasCompletedInitialSetup = true
+        // Covers the path where deferred prompts ran before
+        // `hasCompletedInitialSetup` flipped (no crash-report prompt
+        // queued); when prompts are crash-gated the drained handler calls
+        // this again after What's New appears.
+        autoPresentLibrarySetupIfNeeded()
+    }
+
+    /// True fresh install / full reset: nothing is registered and the
+    /// bootstrap found no legacy library. Recreate the factory-default
+    /// managed library at `~/Music/kmgccc_player Library` (the pre-multi-
+    /// library behaviour) so the main window loads normally with the
+    /// standard "no music" empty state instead of a placeholder pane.
+    /// Returns the opened context, or nil when this is not a fresh install
+    /// or creation failed (the caller then falls back to the chooser pane).
+    private func createFactoryDefaultLibraryIfFreshInstall() async -> LibraryContext? {
+        guard initialLibraryContext == nil,
+              let registryStore, let libraryCreationService else { return nil }
+        let registry = await registryStore.snapshot()
+        guard registry.libraries.isEmpty else { return nil }
+        let parentURL = LibraryLocationStore.defaultLibraryRootURL.deletingLastPathComponent()
+        do {
+            let result = try await libraryCreationService.create(
+                mode: .managed,
+                parentURL: parentURL,
+                displayName: "音乐资料库"
+            )
+            shouldPresentFirstRunLibrarySetup = true
+            switch result {
+            case .created(let context, _), .existingLibrary(let context):
+                return context
+            case .existingLibraryModeMismatch(let context, _):
+                return context
+            }
+        } catch {
+            Log.error(
+                "[LibrarySession] factory-default library creation failed: \(error)",
+                category: .library
+            )
+            return nil
+        }
+    }
+
+    /// First-launch onboarding: after a fresh install the factory-default
+    /// library is already open, so present the setup wizard once the
+    /// What's New window has been dismissed. The panel floats above the
+    /// main window and never blocks its loading or rendering.
+    func autoPresentLibrarySetupIfNeeded() {
+        guard hasCompletedInitialSetup, !didAutoPresentLibrarySetup else { return }
+        didAutoPresentLibrarySetup = true
+        guard shouldPresentFirstRunLibrarySetup,
+              librarySetupFlow.presentation == .none else { return }
+        let whatsNew = WhatsNewWindowManager.shared
+        if whatsNew.isPresented {
+            whatsNewDismissalCancellable = whatsNew.$isPresented
+                .filter { !$0 }
+                .first()
+                .sink { [weak self] _ in
+                    self?.presentFirstRunLibrarySetupPanel()
+                }
+        } else {
+            presentFirstRunLibrarySetupPanel()
+        }
+    }
+
+    private func presentFirstRunLibrarySetupPanel() {
+        Task { @MainActor in
+            // Let the main window finish its first render before floating
+            // the panel above it.
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard librarySetupFlow.presentation == .none else { return }
+            librarySetupFlow.present(.setup(.managed))
+            LibrarySetupPanelPresenter.present(appSession: self)
+        }
     }
 
     private func scheduleDeferredLaunchPromptsIfNeeded() {
@@ -398,6 +519,10 @@ final class AppSessionHost: ObservableObject {
         } else {
             Log.debug("[UpdateWindowManager] Skipping launch update check by user preference", category: .ui)
         }
+
+        // Deferred prompts are settled (What's New is already visible when
+        // applicable); the first-run wizard can queue behind them now.
+        autoPresentLibrarySetupIfNeeded()
     }
 
     func switchLibrary(to context: LibraryContext) async throws {

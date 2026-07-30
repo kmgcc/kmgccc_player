@@ -692,11 +692,33 @@ struct PlaylistDetailView: View {
                                 await libraryVM.removeTracksFromPlaylist([track], playlist: currentPlaylist)
                             }
                         }
+                    },
+                    onRelinkLocation: { track in
+                        relinkTrackLocation(track)
                     }
                 ))
             }
         } else {
             return AnyView(Text("library.track_unavailable"))
+        }
+    }
+
+    @MainActor
+    private func relinkTrackLocation(_ track: Track) {
+        let panel = NSOpenPanel()
+        panel.title = "选择新的歌曲文件"
+        panel.message = "只替换音频文件，歌曲信息与资料库内容保持不变"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = FileImportService.supportedUTTypes
+        panel.prompt = "连接"
+        panel.begin { result in
+            guard result == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                await libraryVM.relinkTrack(track, to: url)
+                uiState.showSidebarNotice("已重新连接歌曲文件")
+            }
         }
     }
 

@@ -29,6 +29,9 @@ final class LibrarySetupViewModel {
     var step: Step = .storage
     var mode: MusicLibraryMode
     var displayName = "音乐资料库"
+    /// Explicitly chosen storage parent. Nil means "use the default directory"
+    /// derived from the selected music sources (see `defaultStorageParentURL`).
+    var storageParentURL: URL?
     private(set) var existingLibraryContext: LibraryContext?
     private(set) var existingRequestedMode: MusicLibraryMode?
     private(set) var createdLibraryAwaitingImport: LibraryContext?
@@ -41,6 +44,47 @@ final class LibrarySetupViewModel {
         }
     }
     private(set) var initialImportSelection: LibraryInitialImportSelection?
+
+    /// Default storage parent derived from the selected music sources:
+    /// the first selected folder, or the parent directory of the first
+    /// selected song file when no folder was selected, or the standard music
+    /// directory when nothing was selected at all.
+    var defaultStorageParentURL: URL {
+        if let firstDirectory = selectedMusicURLs.first(where: { Self.urlIsDirectory($0) }) {
+            return firstDirectory.standardizedFileURL
+        }
+        if let firstFile = selectedMusicURLs.first {
+            return firstFile.deletingLastPathComponent().standardizedFileURL
+        }
+        let base = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first
+        return (base ?? URL(fileURLWithPath: NSHomeDirectory())).standardizedFileURL
+    }
+
+    /// The storage parent that creation will use.
+    var effectiveStorageParentURL: URL {
+        (storageParentURL ?? defaultStorageParentURL).standardizedFileURL
+    }
+
+    private static func urlIsDirectory(_ url: URL) -> Bool {
+        if url.hasDirectoryPath { return true }
+        return (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+    }
+
+    func addMusicURLs(_ urls: [URL]) {
+        var existing = Set(selectedMusicURLs.map { $0.standardizedFileURL.path })
+        var appended = selectedMusicURLs
+        for url in urls {
+            let key = url.standardizedFileURL.path
+            guard existing.insert(key).inserted else { continue }
+            appended.append(url)
+        }
+        selectedMusicURLs = appended
+    }
+
+    func removeMusicURL(_ url: URL) {
+        let key = url.standardizedFileURL.path
+        selectedMusicURLs = selectedMusicURLs.filter { $0.standardizedFileURL.path != key }
+    }
 
     init(mode: MusicLibraryMode = .managed) {
         self.mode = mode
@@ -57,6 +101,7 @@ final class LibrarySetupViewModel {
             existingRequestedMode = nil
             createdLibraryAwaitingImport = nil
             selectedMusicURLs = []
+            storageParentURL = nil
         }
     }
 
@@ -65,6 +110,7 @@ final class LibrarySetupViewModel {
         presentation = .none
         operation = .idle
         selectedMusicURLs = []
+        storageParentURL = nil
     }
 
     func routeModeSelection(
@@ -111,6 +157,7 @@ final class LibrarySetupViewModel {
         operation = .idle
         presentation = .none
         createdLibraryAwaitingImport = nil
+        storageParentURL = nil
         initialImportSelection?.release()
         initialImportSelection = nil
     }

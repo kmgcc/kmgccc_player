@@ -32,6 +32,17 @@ enum LibrarySetupPanelPresenter {
     static func close() {
         controller?.close()
     }
+
+    /// Panel used to attach file/folder pickers as sheets, so closing the
+    /// picker returns focus to the wizard instead of the main window.
+    static var sheetAnchorPanel: NSPanel? { controller?.sheetAnchorPanel }
+
+    /// Re-assert app + panel focus after an app-modal session (file picker)
+    /// completes, so the wizard — not the main window — becomes key again.
+    static func bringToFront() {
+        NSApp.activate(ignoringOtherApps: true)
+        controller?.bringToFront()
+    }
 }
 
 @MainActor
@@ -61,7 +72,8 @@ private final class LibrarySetupPanelController: NSObject, NSWindowDelegate {
                 if self?.appSession.librarySetupFlow.presentation == LibrarySetupViewModel.Presentation.none {
                     self?.close()
                 }
-            }
+            },
+            onRequestClose: { [weak self] in self?.close() }
         )
         .environmentObject(appSession)
         .environmentObject(ThemeStore.shared)
@@ -76,6 +88,8 @@ private final class LibrarySetupPanelController: NSObject, NSWindowDelegate {
         self.panel = panel
         AppDialogTokens.presentWithFade(panel)
     }
+
+    var sheetAnchorPanel: NSPanel? { panel }
 
     func bringToFront() { panel?.makeKeyAndOrderFront(nil) }
     func close() { panel?.close() }

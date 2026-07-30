@@ -76,6 +76,17 @@ private struct PlaybackOrderMenuContent: View {
 @main
 struct KmgcccPlayerApp: App {
 
+    /// True when the process runs as an XCTest host. Under XCTest the app
+    /// must never boot the user's real session: security-scoped bookmarks
+    /// cannot be authorized in that context (tccd is unavailable), so the
+    /// source scope would mark every real source offline and persist that
+    /// into the user's actual library. Parallel test clones made this
+    /// visibly flap source/track availability.
+    static var isRunningTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
     // MARK: - AppDelegate
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appSession: AppSessionHost
@@ -104,15 +115,28 @@ struct KmgcccPlayerApp: App {
         #endif
 
         let bootstrap: LegacyLibraryBootstrapResult
-        do {
-            bootstrap = try LegacyLibraryBootstrap().run()
-        } catch {
-            // A damaged registry must not be replaced by an empty one. Keep the
-            // existing single-library startup path available until recovery UI loads.
-            Log.error("[LibraryBootstrap] pre-container bootstrap failed: \(error)", category: .library)
+        if Self.isRunningTests {
             bootstrap = .noLibrary
+        } else {
+            do {
+                bootstrap = try LegacyLibraryBootstrap().run()
+            } catch {
+                // A damaged registry must not be replaced by an empty one. Keep the
+                // existing single-library startup path available until recovery UI loads.
+                Log.error("[LibraryBootstrap] pre-container bootstrap failed: \(error)", category: .library)
+                bootstrap = .noLibrary
+            }
         }
         let initialLibraryContext = bootstrap.context
+        if let initialLibraryContext {
+            // Libraries upgraded in place from the pre-manifest layout may be
+            // missing scaffolding that open-time validation requires.
+            do {
+                try LibraryScaffoldingRepair.repairIfNeeded(at: initialLibraryContext.rootURL)
+            } catch {
+                Log.warning("[LibraryBootstrap] scaffolding repair failed: \(error)", category: .library)
+            }
+        }
 
         // The app shell owns only an in-memory placeholder. A persistent
         // TrackIndex container is created and released with each LibrarySession.
@@ -137,6 +161,7 @@ struct KmgcccPlayerApp: App {
         )
         _appSession = StateObject(wrappedValue: appSessionHost)
         AppDelegate.launchMainWindowHandler = { @MainActor in
+            guard !KmgcccPlayerApp.isRunningTests else { return }
             Log.debug("[AppLaunch] mainWindowHandler.begin", category: .ui)
             Task { @MainActor in
                 await appSessionHost.setupIfNeeded()

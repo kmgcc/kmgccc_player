@@ -862,7 +862,10 @@ final class PlaylistPageController {
                 artworkData: $0.artworkData,
                 libraryRootSnapshot: $0.libraryRootSnapshot,
                 artworkFileName: $0.artworkFileName,
-                isMissing: $0.availability == .missing
+                // Grey out every non-playable state (missing file, offline
+                // volume, denied permission), not just .missing, so the row
+                // always reflects what playback can actually do.
+                isMissing: !$0.availability.isPlayable
             )
         }
 
@@ -1894,23 +1897,22 @@ final class PlaylistPageController {
         switch selection {
         case .allPlaylists, .allAlbums, .allArtists:
             return []
+            // Missing (source file deleted) tracks stay visible as greyed,
+            // non-playable rows so the user can delete them manually; only
+            // playback/history/recommendation flows filter them out.
         case .home:
-            return libraryVM.allTracks.filter { $0.availability != .missing }
+            return libraryVM.allTracks
         case .allSongs:
-            return libraryVM.allTracks.filter { $0.availability != .missing }
+            return libraryVM.allTracks
         case .playlist(let id):
-            return libraryVM.playlists.first(where: { $0.id == id })?.tracks.filter {
-                $0.availability != .missing
-            } ?? []
+            return libraryVM.playlists.first(where: { $0.id == id })?.tracks ?? []
         case .artist(let key):
             return libraryVM.allTracks.filter {
                 LibraryNormalization.containsArtist(key, in: $0.artist)
-                    && $0.availability != .missing
             }
         case .album(let key):
             return libraryVM.allTracks.filter {
                 $0.albumGroupKey == key
-                    && $0.availability != .missing
             }
         }
     }

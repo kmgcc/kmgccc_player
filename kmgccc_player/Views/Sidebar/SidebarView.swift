@@ -39,6 +39,7 @@ struct SidebarView: View {
     @State private var crashReportTipTask: Task<Void, Never>?
     @State private var showingPlaylistSheet = false
     @State private var deletionRequest: SidebarDeletionRequest?
+    @State private var failedEnrichmentEditRequest: FailedEnrichmentEditRequest?
     @State private var editingArtistEntry: ArtistEntry?
     @State private var editingAlbumEntry: AlbumEntry?
     @State private var isHoveringPlaylists = false
@@ -425,6 +426,11 @@ struct SidebarView: View {
         }
         .animation(.snappy(duration: 0.2), value: importEnrichmentService.hasOutstandingWork)
         .animation(.snappy(duration: 0.2), value: uiState.sidebarNotice?.id)
+        .sheet(item: $failedEnrichmentEditRequest) { request in
+            // Reuses the exact multi-track metadata editor from the library
+            // list so failed enrichment items can be fixed by hand.
+            BatchTrackEditSheet(tracks: request.tracks)
+        }
     }
 
     private var legacyAppHeader: some View {
@@ -510,6 +516,7 @@ struct SidebarView: View {
         uiState.sidebarNotice != nil
             || updateDownloadManager.sidebarProgress != nil
             || importEnrichmentService.hasOutstandingWork
+            || importEnrichmentService.completionSummary != nil
     }
 
     private var sidebarTaskProgressStack: some View {
@@ -530,8 +537,21 @@ struct SidebarView: View {
             }
 
             if importEnrichmentService.hasOutstandingWork {
-                SidebarTaskProgressView(progress: importEnrichmentSidebarProgress)
-                    .transition(.opacity)
+                Button {
+                    EnrichmentStatusDialogPresenter.present(service: importEnrichmentService)
+                } label: {
+                    SidebarTaskProgressView(progress: importEnrichmentSidebarProgress)
+                }
+                .buttonStyle(.plain)
+                .help("点击查看每首歌曲的补全状态")
+                .transition(.opacity)
+            } else if let summary = importEnrichmentService.completionSummary {
+                SidebarEnrichmentCompletionNotice(
+                    summary: summary,
+                    onShowFailures: { showFailedEnrichmentEditor(failedTrackIDs: summary.failedTrackIDs) },
+                    onDismiss: { importEnrichmentService.dismissCompletionSummary() }
+                )
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
     }
@@ -818,6 +838,13 @@ struct SidebarView: View {
         )
     }
 
+    private func showFailedEnrichmentEditor(failedTrackIDs: [UUID]) {
+        let failedSet = Set(failedTrackIDs)
+        let tracks = libraryVM.allTracks.filter { failedSet.contains($0.id) }
+        guard !tracks.isEmpty else { return }
+        failedEnrichmentEditRequest = FailedEnrichmentEditRequest(tracks: tracks)
+    }
+
     private func confirmDeletion(_ request: SidebarDeletionRequest) {
         deletionRequest = nil
         Task {
@@ -834,6 +861,77 @@ struct SidebarView: View {
 }
 
 // MARK: - Sidebar Selection
+
+private struct FailedEnrichmentEditRequest: Identifiable {
+    let id = UUID()
+    let tracks: [Track]
+}
+
+/// Persistent green notice shown after all background enrichment finishes.
+/// Stays until the user dismisses it; taps open the multi-track metadata
+/// editor prefilled with the failed songs when any part failed.
+private struct SidebarEnrichmentCompletionNotice: View {
+    let summary: ImportEnrichmentCompletionSummary
+    let onShowFailures: () -> Void
+    let onDismiss: () -> Void
+
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        // Title row and action row stack vertically — the sidebar is too
+        // narrow to fit icon + title + action + close on one line.
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.green)
+
+                Text("歌曲信息补全完毕")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 0)
+
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 18, height: 18)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                .help("关闭")
+            }
+
+            if summary.failedCount > 0 {
+                Button("查看 \(summary.failedCount) 首失败") {
+                    onShowFailures()
+                }
+                .buttonStyle(.plain)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(themeStore.accentColor)
+                .padding(.leading, 22)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.green.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.green.opacity(0.25), lineWidth: 0.5)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if summary.failedCount > 0 {
+                onShowFailures()
+            }
+        }
+    }
+}
 
 private enum SidebarSelection: Hashable {
     case home
@@ -977,7 +1075,7 @@ private struct SidebarNoticeView: View {
             Text(notice.message)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                .lineLimit(1)
+                .fixedSize(horizontal: false, vertical: true)
 
             Spacer(minLength: 0)
 

@@ -14,6 +14,16 @@ struct MusicSettingsView: View {
     @State private var pendingLibraryRemoval: MusicLibraryBookmark?
     @State private var pendingSourceRemoval: ReferencedSourceDescriptor?
     @State private var isAddingMusic = false
+    @State private var isSourceListExpanded = false
+    @State private var isMissingListExpanded = false
+    @State private var isMissingCleanupConfirmPresented = false
+
+    /// Long source lists collapse to this many rows until expanded.
+    private static let collapsedSourceCount = 6
+
+    private var visibleSources: [ReferencedSourceDescriptor] {
+        isSourceListExpanded ? sources : Array(sources.prefix(Self.collapsedSourceCount))
+    }
 
     private var flow: LibrarySetupViewModel { appSession.librarySetupFlow }
     private var activeContext: LibraryContext? { appSession.activeLibraryBinding.context }
@@ -43,6 +53,7 @@ struct MusicSettingsView: View {
             if activeMode == .referenced {
                 sourceSection
                 deletePolicySection
+                missingTracksSection
             }
         }
         .task(id: appSession.activeLibraryBinding.generation) {
@@ -75,6 +86,15 @@ struct MusicSettingsView: View {
             Button("取消", role: .cancel) { pendingSourceRemoval = nil }
         } message: {
             Text("其中的歌曲将从资料库移除，原文件不会删除。")
+        }
+        .confirmationDialog(
+            "清空失效歌曲？",
+            isPresented: $isMissingCleanupConfirmPresented
+        ) {
+            Button("删除 \(unavailableTracks.count) 首失效歌曲", role: .destructive) { cleanupMissingTracks() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将从资料库删除这些歌曲的元数据；磁盘上的文件不受影响。若来源只是暂时离线，重连后可恢复的歌曲也会被一并删除。")
         }
         .alert("操作失败", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("确定", role: .cancel) { errorMessage = nil }
@@ -192,11 +212,16 @@ struct MusicSettingsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(12)
                 }
-                ForEach(Array(sources.enumerated()), id: \.element.id) { index, source in
+                ForEach(Array(visibleSources.enumerated()), id: \.element.id) { index, source in
                     HStack(spacing: 10) {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
                                 Text(source.displayName).lineLimit(1).truncationMode(.middle)
+                                if source.mode == .file {
+                                    Text("单文件")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
                                 Text(sourceRowStatus(source))
                                     .font(.caption2)
                                     .foregroundStyle(
@@ -237,7 +262,32 @@ struct MusicSettingsView: View {
                     .id(source.id)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    if index < sources.count - 1 { Divider().padding(.leading, 12) }
+                    if index < visibleSources.count - 1 { Divider().padding(.leading, 12) }
+                }
+
+                if sources.count > Self.collapsedSourceCount {
+                    Divider().padding(.leading, 12)
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            isSourceListExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .rotationEffect(.degrees(isSourceListExpanded ? 90 : 0))
+                            Text(isSourceListExpanded ? "收起" : "显示全部 \(sources.count) 个来源")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -259,6 +309,116 @@ struct MusicSettingsView: View {
                 Text("将原文件移到废纸篓").tag(ReferencedTrackDeletePolicy.recycleSource)
             }
             .pickerStyle(.radioGroup)
+        }
+    }
+
+    /// Tracks playback cannot reach: source file deleted (.missing), the
+    /// whole source offline (.volumeUnavailable) or unreadable
+    /// (.permissionDenied). Matches the greyed-row state in track lists.
+    private var unavailableTracks: [Track] {
+        libraryVM.allTracks.filter {
+            $0.availability == .missing
+                || $0.availability == .volumeUnavailable
+                || $0.availability == .permissionDenied
+        }
+    }
+
+    private var missingTracksSection: some View {
+        SettingsSection("失效歌曲") {
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(unavailableTracks.isEmpty
+                             ? "没有失效歌曲"
+                             : "\(unavailableTracks.count) 首歌曲暂时不可用")
+                            .font(.callout)
+                        Text("失效歌曲在列表中显示为灰色。清空只删元数据，不动磁盘文件；临时离线请先重连来源。")
+                            .settingsDescriptionStyle()
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Button("一键清空失效歌曲…") { isMissingCleanupConfirmPresented = true }
+                        .disabled(unavailableTracks.isEmpty || isWorking)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+
+                if !unavailableTracks.isEmpty {
+                    Divider()
+
+                    ForEach(Array(visibleUnavailableTracks.enumerated()), id: \.element.id) { index, track in
+                        HStack(spacing: 10) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .accessibilityLabel("失效")
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 6) {
+                                    Text(track.title).lineLimit(1).truncationMode(.middle)
+                                    Text(unavailableReasonLabel(track.availability))
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                }
+                                Text(track.artist.isEmpty ? "未知艺术家" : track.artist)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .id(track.id)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        if index < visibleUnavailableTracks.count - 1 { Divider().padding(.leading, 12) }
+                    }
+
+                    if unavailableTracks.count > Self.collapsedSourceCount {
+                        Divider().padding(.leading, 12)
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                isMissingListExpanded.toggle()
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .rotationEffect(.degrees(isMissingListExpanded ? 90 : 0))
+                                Text(isMissingListExpanded ? "收起" : "显示全部 \(unavailableTracks.count) 首")
+                                    .font(.callout)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                    }
+                }
+            }
+        }
+    }
+
+    private var visibleUnavailableTracks: [Track] {
+        isMissingListExpanded ? unavailableTracks : Array(unavailableTracks.prefix(Self.collapsedSourceCount))
+    }
+
+    private func unavailableReasonLabel(_ availability: TrackAvailability) -> String {
+        switch availability {
+        case .missing: return "文件丢失"
+        case .volumeUnavailable: return "来源离线"
+        case .permissionDenied: return "无权限"
+        default: return "不可用"
+        }
+    }
+
+    private func cleanupMissingTracks() {
+        let staleTracks = unavailableTracks
+        guard !staleTracks.isEmpty else { return }
+        Task {
+            await libraryVM.deleteTracks(staleTracks)
         }
     }
 
@@ -295,6 +455,8 @@ struct MusicSettingsView: View {
                 await reload()
             } catch RegisteredLibraryActivationError.reconnectRequired {
                 flow.present(.reconnectRequired(libraryID: library.id, mode: library.modeProjection))
+            } catch LibrarySwitchBlockedError.enrichmentInProgress {
+                flow.finishOperation()
             } catch {
                 flow.fail("无法打开资料库。")
                 errorMessage = "无法打开资料库。"
@@ -317,6 +479,7 @@ struct MusicSettingsView: View {
                     }
                     await reload()
                 }
+                catch LibrarySwitchBlockedError.enrichmentInProgress { flow.finishOperation() }
                 catch { flow.fail("无法打开资料库。"); errorMessage = "所选位置不是可用资料库。" }
             }
         }

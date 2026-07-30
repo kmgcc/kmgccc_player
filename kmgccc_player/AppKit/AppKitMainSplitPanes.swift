@@ -12,6 +12,11 @@ import SwiftUI
 
 struct AppKitMainSidebarPaneRoot: View {
     @ObservedObject var appSession: AppSessionHost
+    // Dedicated instances for views presented from the sidebar (e.g. the
+    // batch track editor opened from the enrichment completion notice);
+    // the content pane keeps its own, mirroring HomeFullWindowRoot.
+    @State private var coverDownloadService = CoverDownloadService()
+    @State private var netEaseCoverService = NetEaseCoverService()
 
     var body: some View {
         if let libraryVM = appSession.libraryVM,
@@ -34,12 +39,18 @@ struct AppKitMainSidebarPaneRoot: View {
 
                .environment(cacheServices)
                .environment(skinManager)
+               .environment(coverDownloadService)
+               .environment(netEaseCoverService)
                .environmentObject(appSession)
                .environmentObject(ThemeStore.shared)
                 .environment(\.libraryPresentedAccentColor, ThemeStore.shared.accentColor)
                 .modelContainer(appSession.sharedModelContainer)
                 .tint(ThemeStore.shared.accentColor)
                 .accentColor(ThemeStore.shared.accentColor)
+        } else if appSession.hasCompletedInitialSetup {
+            // Setup finished without an active library: show a calm empty
+            // sidebar instead of spinning forever.
+            ThemedBaseBackgroundColorView()
         } else {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -47,28 +58,64 @@ struct AppKitMainSidebarPaneRoot: View {
     }
 }
 
-private struct NoLibrarySetupPlaceholder: View {
+/// Empty state shown in the content pane when no library is active (fresh
+/// install, or after every library was removed). The setup wizard itself is
+/// presented as a floating panel (same one as Settings) instead of being
+/// embedded into the window.
+private struct NoLibraryContentPane: View {
     @ObservedObject var appSession: AppSessionHost
-    @State private var registry = MusicLibraryRegistry()
 
     var body: some View {
-        ScrollView {
-            LibrarySetupFlow(
-                flow: appSession.librarySetupFlow,
-                registry: registry,
-                onChange: {}
-            )
-            .environmentObject(appSession)
-            .environmentObject(ThemeStore.shared)
-            .frame(maxWidth: 500)
-            .padding(32)
+        ZStack {
+            ThemedBaseBackgroundColorView()
+            if appSession.hasCompletedInitialSetup {
+                emptyState
+            } else {
+                ProgressView()
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(ThemedBaseBackgroundColorView())
-        .task {
-            registry = await appSession.musicLibraryRegistrySnapshot()
-            if appSession.librarySetupFlow.presentation == .none {
-                appSession.librarySetupFlow.present(.setup(.managed))
+        .task { appSession.autoPresentLibrarySetupIfNeeded() }
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("没有音乐资料库", systemImage: "music.note.list")
+        } description: {
+            Text("新建一个资料库，或打开已有的资料库。")
+        } actions: {
+            HStack(spacing: 12) {
+                Button("新建资料库…") {
+                    appSession.librarySetupFlow.present(.setup(.managed))
+                    LibrarySetupPanelPresenter.present(appSession: appSession)
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button("打开资料库…") { openLibraryPanel() }
+                    .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private func openLibraryPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "打开"
+        panel.begin { result in
+            guard result == .OK, let url = panel.url else { return }
+            let access = LibraryInitialImportSelection(urls: [url])
+            Task { @MainActor in
+                defer { access.release() }
+                do {
+                    _ = try await appSession.openMusicLibrary(at: url)
+                } catch LibrarySwitchBlockedError.enrichmentInProgress {
+                    // Notice already shown by AppSessionHost.
+                } catch {
+                    appSession.uiState.showSidebarNotice("所选位置不是可用资料库", style: .warning)
+                }
             }
         }
     }
@@ -110,7 +157,7 @@ struct AppKitMainContentPaneRoot: View {
                 skinManager: skinManager
             )
         } else {
-            NoLibrarySetupPlaceholder(appSession: appSession)
+            NoLibraryContentPane(appSession: appSession)
         }
     }
 

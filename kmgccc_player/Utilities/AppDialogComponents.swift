@@ -95,6 +95,9 @@ extension AppDialogTokens {
         panel.isReleasedWhenClosed = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
+        // Dialogs must stay on the desktop when the user clicks into
+        // another app; disappearing on deactivation reads as a bug.
+        panel.hidesOnDeactivate = false
 
         panel.standardWindowButton(.closeButton)?.isHidden = true
         panel.standardWindowButton(.miniaturizeButton)?.isHidden = true

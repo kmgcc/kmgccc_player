@@ -1899,6 +1899,23 @@ final class LibraryViewModel {
         await refresh()
     }
 
+    /// Re-links a missing track to a user-picked audio file. Only the audio
+    /// location (path/bookmark/availability) is replaced — all metadata,
+    /// playlist memberships and library presentation stay untouched.
+    func relinkTrack(_ track: Track, to fileURL: URL) async {
+        guard let current = allTracks.first(where: { $0.id == track.id }) else { return }
+        guard case var .referenced(locator) = current.mediaLocator else { return }
+        locator.lastKnownPath = fileURL.path
+        current.mediaLocator = .referenced(locator)
+        current.originalFilePath = fileURL.path
+        current.availability = .available
+        if let bookmark = try? SystemBookmarkResolver().refreshBookmark(for: fileURL) {
+            current.fileBookmarkData = bookmark
+        }
+        await repository.persistTrackMetaOnly(current, reason: "relinkLocation")
+        await refresh()
+    }
+
     func saveTrackEdits(_ track: Track, mode: TrackEditPersistenceMode, reason: String) async {
         switch mode {
         case .metaOnly:

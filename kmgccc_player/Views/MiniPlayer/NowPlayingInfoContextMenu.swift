@@ -69,6 +69,7 @@ struct TrackActionMenuContent: View {
     let onEditTrack: (Track) -> Void
     let onDeleteFromLibraryRequest: (Track) -> Void
     var onRemoveFromCurrentPlaylist: ((Track) -> Void)?
+    var onRelinkLocation: ((Track) -> Void)?
     var showsPlay: Bool = true
     var showsNavigation: Bool = true
     var showsDeleteFromLibrary: Bool = true
@@ -87,6 +88,7 @@ struct TrackActionMenuContent: View {
         onEditTrack: @escaping (Track) -> Void,
         onDeleteFromLibraryRequest: @escaping (Track) -> Void,
         onRemoveFromCurrentPlaylist: ((Track) -> Void)? = nil,
+        onRelinkLocation: ((Track) -> Void)? = nil,
         showsPlay: Bool = true,
         showsNavigation: Bool = true,
         showsDeleteFromLibrary: Bool = true,
@@ -107,6 +109,7 @@ struct TrackActionMenuContent: View {
         self.onEditTrack = onEditTrack
         self.onDeleteFromLibraryRequest = onDeleteFromLibraryRequest
         self.onRemoveFromCurrentPlaylist = onRemoveFromCurrentPlaylist
+        self.onRelinkLocation = onRelinkLocation
         self.showsPlay = showsPlay
         self.showsNavigation = showsNavigation
         self.showsDeleteFromLibrary = showsDeleteFromLibrary
@@ -124,6 +127,18 @@ struct TrackActionMenuContent: View {
 
     @ViewBuilder
     private var menuBody: some View {
+        if !track.availability.isPlayable, let onRelinkLocation {
+            Button {
+                invokeAction("relinkLocation") {
+                    onRelinkLocation(track)
+                }
+            } label: {
+                Label("连接的位置…", systemImage: "link")
+            }
+
+            Divider()
+        }
+
         if canSelectMultiple, let onSelectMultiple {
             Button {
                 invokeAction("selectMultiple") {
