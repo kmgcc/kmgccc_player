@@ -94,6 +94,68 @@ final class LibraryBackendImportTests: XCTestCase {
         XCTAssertEqual(try await store.loadAll().count, 2)
     }
 
+    func testSingleFileSelectionCreatesPrunableFileSource() async throws {
+        let fixture = try BackendFixture()
+        defer { fixture.cleanup() }
+        let file = fixture.external.appendingPathComponent("song.mp3")
+        try Data("audio".utf8).write(to: file)
+        let store = ReferencedSourceStore(paths: fixture.paths)
+        let backend = ReferencedLocalBackend(
+            paths: fixture.paths, sourceStore: store, sourceScope: ReferencedSourceScope(),
+            bookmarkResolver: BackendBookmarkResolver()
+        )
+
+        let plan = await backend.prepareInputs([file])
+        XCTAssertEqual(plan.directorySources.count, 1)
+        XCTAssertEqual(plan.directorySources.first?.source.mode, .file)
+        XCTAssertEqual(try await store.loadAll().count, 1)
+
+        // File sources whose file never produced a track are pruned …
+        await backend.pruneUnimportedFileSources(importedURLs: [], importedSourceIDs: [])
+        XCTAssertEqual(try await store.loadAll().count, 0)
+        XCTAssertEqual(backend.lastPreparedInputPlan?.directorySources.count, 0)
+
+        // … while successfully imported ones survive (by path …
+        let second = await backend.prepareInputs([file])
+        XCTAssertEqual(second.directorySources.first?.source.mode, .file)
+        let canonical = file.resolvingSymlinksInPath().standardizedFileURL.path
+        await backend.pruneUnimportedFileSources(importedURLs: [canonical], importedSourceIDs: [])
+        let surviving = try await store.loadAll()
+        XCTAssertEqual(surviving.count, 1)
+        XCTAssertEqual(surviving.first?.mode, .file)
+
+        // … or by membership sourceID, the NCM-conversion shape where the
+        // imported path is the converted product, not the source file).
+        let third = await backend.prepareInputs([file])
+        let thirdID = try XCTUnwrap(third.directorySources.first?.source.id)
+        await backend.pruneUnimportedFileSources(importedURLs: [], importedSourceIDs: [thirdID])
+        XCTAssertEqual(try await store.loadAll().count, 1)
+        backend.finishImportBatch()
+    }
+
+    func testFileCoveredByDirectorySourceDoesNotCreateFileSource() async throws {
+        let fixture = try BackendFixture()
+        defer { fixture.cleanup() }
+        let root = fixture.external.appendingPathComponent("Source", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("song.mp3")
+        try Data("audio".utf8).write(to: file)
+        let store = ReferencedSourceStore(paths: fixture.paths)
+        let backend = ReferencedLocalBackend(
+            paths: fixture.paths, sourceStore: store, sourceScope: ReferencedSourceScope(),
+            bookmarkResolver: BackendBookmarkResolver()
+        )
+
+        _ = await backend.prepareInputs([root])
+        backend.finishImportBatch()
+        let plan = await backend.prepareInputs([file])
+        XCTAssertTrue(plan.directorySources.isEmpty)
+        let descriptors = try await store.loadAll()
+        XCTAssertEqual(descriptors.count, 1)
+        XCTAssertEqual(descriptors.first?.mode, .directory)
+        backend.finishImportBatch()
+    }
+
     func testInsideDirectoryAndFileSymlinksAreFollowedAndOutsideIsRejected() async throws {
         let fixture = try BackendFixture()
         defer { fixture.cleanup() }

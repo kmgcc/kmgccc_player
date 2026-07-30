@@ -1056,17 +1056,12 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         try FileManager.default.createDirectory(at: reconcileDirectory, withIntermediateDirectories: true)
         let corruptURL = reconcileDirectory.appendingPathComponent("corrupt.json")
         try Data("{".utf8).write(to: corruptURL)
-        do {
-            _ = try await intentStore.pending(libraryID: fixture.context.id)
-            XCTFail("Expected corrupt intent failure")
-        } catch let error as LibraryReconcileIntentStoreError {
-            guard case let .corruptIntent(path) = error else {
-                return XCTFail("Unexpected error: \(error)")
-            }
-            XCTAssertEqual(URL(fileURLWithPath: path).lastPathComponent, "corrupt.json")
-        }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: corruptURL.path))
-        try FileManager.default.removeItem(at: corruptURL)
+        // Corrupt intents are quarantined aside instead of wedging replay.
+        let pending = try await intentStore.pending(libraryID: fixture.context.id)
+        XCTAssertTrue(pending.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: corruptURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: corruptURL.appendingPathExtension("corrupt").path))
+        try FileManager.default.removeItem(at: corruptURL.appendingPathExtension("corrupt"))
 
         let diff = ReferencedSourceDiff(
             libraryID: fixture.context.id,
@@ -1238,7 +1233,7 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
     func testManagedLibraryEventFilterOnlyAcceptsAuthorityChanges() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
-        let paths = LibraryPaths(rootURL: root)
+        let paths = kmgccc_player.LibraryPaths(rootURL: root)
         let filter = ManagedLibraryFileEventFilter(paths: paths)
 
         for url in [

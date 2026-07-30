@@ -47,7 +47,7 @@ private actor ConversionCounter {
 
 @MainActor
 final class ReferencedNCMConversionTests: XCTestCase {
-    func testFolderSourceWritesBesideNCMAndPersistsReservationAssociation() async throws {
+    func testFolderSourceWritesIntoOutputSubfolderAndPersistsReservationAssociation() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         let sourceID = UUID()
@@ -58,10 +58,11 @@ final class ReferencedNCMConversionTests: XCTestCase {
 
         let output = try await fixture.service.convert(input)
 
-        XCTAssertEqual(output.result.audioFileURL.deletingLastPathComponent(), fixture.sourceRoot)
+        let outputDirectory = fixture.sourceRoot.appendingPathComponent("NCM 转换", isDirectory: true)
+        XCTAssertEqual(output.result.audioFileURL.deletingLastPathComponent().path, outputDirectory.path)
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.ncmURL.path))
         XCTAssertEqual(output.locator.primarySourceID, sourceID)
-        XCTAssertEqual(output.locator.sourceMemberships.first?.relativePath, "Converted.mp3")
+        XCTAssertEqual(output.locator.sourceMemberships.first?.relativePath, "NCM 转换/Converted.mp3")
         XCTAssertEqual(output.locator.ncmSourceIdentity, input.fingerprint?.identity)
         let reservedBeforeCommit = try await fixture.service.isReserved(url: output.result.audioFileURL)
         XCTAssertTrue(reservedBeforeCommit)
@@ -96,7 +97,9 @@ final class ReferencedNCMConversionTests: XCTestCase {
     func testConflictDoesNotOverwriteOrCreateNumberedCopy() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
-        let existing = fixture.sourceRoot.appendingPathComponent("Converted.mp3")
+        let outputDirectory = fixture.sourceRoot.appendingPathComponent("NCM 转换", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: false)
+        let existing = outputDirectory.appendingPathComponent("Converted.mp3")
         let original = Data("existing".utf8)
         try original.write(to: existing)
 
@@ -107,7 +110,7 @@ final class ReferencedNCMConversionTests: XCTestCase {
             XCTAssertEqual(error as? ReferencedNCMConversionError, .outputConflict("Converted.mp3"))
         }
         XCTAssertEqual(try Data(contentsOf: existing), original)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.sourceRoot.appendingPathComponent("Converted (1).mp3").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outputDirectory.appendingPathComponent("Converted (1).mp3").path))
         XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: fixture.sourceRoot.path).contains { $0.hasPrefix(".kmgccc-ncm-") })
     }
 
@@ -144,7 +147,8 @@ final class ReferencedNCMConversionTests: XCTestCase {
         } catch ReferencedNCMConversionError.recoveryOutputMissing {
         }
         let output = try await first
-        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.sourceRoot.path).filter { $0 == "Converted.mp3" }.count, 1)
+        let productDirectory = fixture.sourceRoot.appendingPathComponent("NCM 转换", isDirectory: true)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: productDirectory.path).filter { $0 == "Converted.mp3" }.count, 1)
         let isReserved = try await fixture.service.isReserved(url: output.result.audioFileURL)
         XCTAssertTrue(isReserved)
     }

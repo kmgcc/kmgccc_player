@@ -425,6 +425,24 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
     }
 
+    func testOpenRepairsMissingScaffoldingFromInPlaceMigration() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("library")
+        let manifest = try fixture.makeLibrary(at: root, mode: .managed)
+        // Simulate a library migrated in place from the pre-manifest layout:
+        // the scoped settings file and some cache directories never existed.
+        let paths = LibraryPaths(rootURL: root)
+        try FileManager.default.removeItem(at: paths.librarySettingsURL)
+        try FileManager.default.removeItem(at: paths.lyricsCacheRootURL)
+
+        let opened = try await fixture.openService.open(selectedURL: root)
+
+        XCTAssertEqual(opened.context.id, manifest.libraryID)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.librarySettingsURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.lyricsCacheRootURL.path))
+    }
+
     func testRemovalIntentWriteFailureOccursBeforeRecycle() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }

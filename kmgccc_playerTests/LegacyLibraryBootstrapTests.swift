@@ -38,6 +38,29 @@ final class LegacyLibraryBootstrapTests: XCTestCase {
         XCTAssertTrue(result.requiresPostRegistrationMigration)
     }
 
+    func testRegistryWithoutActiveLibraryFallsBackToLegacyDiscovery() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.container) }
+        try FileManager.default.createDirectory(
+            at: fixture.root.appendingPathComponent("Tracks", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let bootstrap = makeBootstrap(registryURL: fixture.registry)
+        let first = try bootstrap.run(legacyRootURL: fixture.root)
+        let libraryID = try XCTUnwrap(first.context?.id)
+
+        // Simulate cleared settings: the registry survives but nothing is
+        // active. Legacy discovery must adopt the default root again.
+        var registry = try MusicLibraryRegistryFile.load(from: fixture.registry)
+        registry.activeLibraryID = nil
+        try MusicLibraryRegistryFile.save(registry, to: fixture.registry)
+
+        let second = try bootstrap.run(legacyRootURL: fixture.root)
+        XCTAssertEqual(second.context?.id, libraryID)
+        XCTAssertFalse(second.didCreateManifest)
+        XCTAssertEqual(try MusicLibraryRegistryFile.load(from: fixture.registry).activeLibraryID, libraryID)
+    }
+
     func testBootstrapIsIdempotent() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.container) }
