@@ -48,6 +48,7 @@ Tools/ColorGoldenMaster/
 .sisyphus/
 .codegraph/
 .codex/
+.playwright-mcp/
 
 # macOS
 .DS_Store
