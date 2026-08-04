@@ -28,7 +28,21 @@ enum ExternalPlaybackPermissionState: Equatable, Sendable {
 }
 
 enum ExternalPlaybackPermissions {
-    static func appleMusicAutomationStatus(prompt: Bool = false) -> ExternalPlaybackPermissionState {
+    static var isAppleMusicRunning: Bool {
+        NSRunningApplication.runningApplications(
+            withBundleIdentifier: "com.apple.Music"
+        ).contains { !$0.isTerminated }
+    }
+
+    @MainActor
+    static func launchAppleMusic() {
+        guard let url = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: "com.apple.Music"
+        ) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    nonisolated static func appleMusicAutomationStatus(prompt: Bool = false) -> ExternalPlaybackPermissionState {
         let descriptor = NSAppleEventDescriptor(bundleIdentifier: "com.apple.Music")
         guard let aeDesc = descriptor.aeDesc else { return .unknown }
         let status = aeDesc.withMemoryRebound(to: AEAddressDesc.self, capacity: 1) { target in

@@ -615,11 +615,18 @@ final class AppleMusicPlaybackAdapter {
         let libraryTracks = libraryVM.allTracks
         resolutionTask = Task { [weak self] in
             let resolution = await metadataStore.resolve(raw: raw, libraryTracks: libraryTracks)
+            let localLyricsText = await resolution.matchedTrack?.loadTTMLLyricsOffMainIfNeeded()
+            guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard let self else { return }
                 self.resolutionTask = nil
                 guard self.latestIdentity == identity, self.latestRawMetadata == raw else { return }
-                self.applyResolution(resolution, info: info, identity: identity)
+                self.applyResolution(
+                    resolution,
+                    info: info,
+                    identity: identity,
+                    localLyricsText: localLyricsText
+                )
             }
         }
     }
@@ -627,7 +634,8 @@ final class AppleMusicPlaybackAdapter {
     private func applyResolution(
         _ resolution: ExternalPlaybackResolution,
         info: AppleMusicBridge.NowPlayingInfo,
-        identity: String
+        identity: String,
+        localLyricsText: String?
     ) {
         let didResolveDifferentRaw = resolvedRawMetadata != resolution.raw
         latestEffectiveMetadata = resolution.effective
@@ -635,7 +643,10 @@ final class AppleMusicPlaybackAdapter {
         latestMatchedTrack = resolution.matchedTrack
 
         let manualLyrics = metadataStore.manualLyrics(for: identity)
-        let localLyrics = preferredLocalLyrics(for: resolution.matchedTrack)
+        let localLyrics = (
+            text: LyricsFormatSupport.normalizedTTMLText(localLyricsText),
+            source: localLyricsText == nil ? nil : "ttmlLyricsFile"
+        )
         let hasManualDecision = metadataStore.hasManualLyricsDecision(for: identity)
         let autoLyrics = (!hasManualDecision && localLyrics.text == nil)
             ? metadataStore.cachedAutoLyrics(for: identity)
@@ -875,7 +886,6 @@ final class AppleMusicPlaybackAdapter {
         let resolver = self.artworkResolver
         let metadataStore = self.metadataStore
         let matchedTrackID = matchedTrack?.id
-        let localArtwork = matchedTrack?.loadArtworkDataIfNeeded()
         let localMatchedTrackID = matchedTrack?.id
 
         if displayedArtwork.identity == identity,
@@ -897,7 +907,9 @@ final class AppleMusicPlaybackAdapter {
         artworkTask = Task { [weak self] in
             guard let self else { return }
 
-            let directSnapshot = bridge.fetchCurrentArtworkSnapshot()
+            let directSnapshot = await Task.detached(priority: .utility) {
+                bridge.fetchCurrentArtworkSnapshot()
+            }.value
             guard !Task.isCancelled else { return }
             var directArtworkCommitted = false
             
@@ -932,6 +944,8 @@ final class AppleMusicPlaybackAdapter {
                 category: .playback
             )
 
+            let localArtwork = await matchedTrack?.loadArtworkDataOffMainIfNeeded()
+            guard !Task.isCancelled else { return }
             if let localArtwork, !localArtwork.isEmpty {
                 let displayTrackID = matchedTrackID ?? NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
                 let didCommit = await self.prepareAndCommitArtwork(
@@ -1259,32 +1273,34 @@ final class AppleMusicPlaybackAdapter {
         }
     }
 
-    private static func performControl(_ action: ControlAction, bridge: AppleMusicBridge) async -> Bool {
-        await withControlTimeout(seconds: 4.0) {
-            switch action {
-            case .playPause:
-                return await performPlayPauseStateMachine(bridge: bridge)
-            case .play:
-                return await performDefaultPlayStateMachine(bridge: bridge)
-            case .pause:
-                return bridge.pause()
-            case .next:
-                return bridge.nextTrack()
-            case .previous:
-                return bridge.previousTrack()
-            case .seek(let seconds):
-                return bridge.seek(to: seconds)
-            case .volume(let volume):
-                return bridge.setVolume(volume)
-            case .playbackMode(let mode):
-                let shuffleOK = bridge.setShuffleEnabled(mode.shuffleEnabled)
-                let repeatOK = bridge.setRepeatMode(mode.repeatMode)
-                return shuffleOK || repeatOK
-            }
+    private nonisolated static func performControl(
+        _ action: ControlAction,
+        bridge: AppleMusicBridge
+    ) async -> Bool {
+        switch action {
+        case .playPause:
+            return await performPlayPauseStateMachine(bridge: bridge)
+        case .play:
+            return await performDefaultPlayStateMachine(bridge: bridge)
+        case .pause:
+            return bridge.pause()
+        case .next:
+            return bridge.nextTrack()
+        case .previous:
+            return bridge.previousTrack()
+        case .seek(let seconds):
+            return bridge.seek(to: seconds)
+        case .volume(let volume):
+            return bridge.setVolume(volume)
+        case .playbackMode(let mode):
+            return bridge.setPlaybackMode(
+                shuffleEnabled: mode.shuffleEnabled,
+                repeatMode: mode.repeatMode
+            )
         }
     }
 
-    private static func performPlayPauseStateMachine(bridge: AppleMusicBridge) async -> Bool {
+    private nonisolated static func performPlayPauseStateMachine(bridge: AppleMusicBridge) async -> Bool {
         guard bridge.isMusicAppRunning() else {
             return await performDefaultPlayStateMachine(bridge: bridge)
         }
@@ -1300,7 +1316,7 @@ final class AppleMusicPlaybackAdapter {
         }
     }
 
-    private static func performDefaultPlayStateMachine(bridge: AppleMusicBridge) async -> Bool {
+    private nonisolated static func performDefaultPlayStateMachine(bridge: AppleMusicBridge) async -> Bool {
         if !bridge.isMusicAppRunning() {
             let launched = await MainActor.run {
                 bridge.launchMusicApp()
@@ -1320,37 +1336,19 @@ final class AppleMusicPlaybackAdapter {
         }
     }
 
-    private static func waitForMusicAppRunning(
+    private nonisolated static func waitForMusicAppRunning(
         bridge: AppleMusicBridge,
         timeout: TimeInterval
     ) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            guard !Task.isCancelled else { return false }
             if bridge.isMusicAppRunning() {
                 return true
             }
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
         return bridge.isMusicAppRunning()
-    }
-
-    private static func withControlTimeout(
-        seconds: TimeInterval,
-        operation: @escaping @Sendable () async -> Bool
-    ) async -> Bool {
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask {
-                await operation()
-            }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                return false
-            }
-
-            let result = await group.next() ?? false
-            group.cancelAll()
-            return result
-        }
     }
 
     private func logControlFailureIfNeeded(_ action: ControlAction) {
@@ -1375,18 +1373,6 @@ final class AppleMusicPlaybackAdapter {
 
     // MARK: - Track Metadata
 
-    private func preferredLyricsText(for track: Track?) -> String? {
-        preferredLocalLyrics(for: track).text
-    }
-
-    private func preferredLocalLyrics(for track: Track?) -> (text: String?, source: String?) {
-        guard let track else { return (nil, nil) }
-        if let ttml = LyricsFormatSupport.normalizedTTMLText(track.loadTTMLLyricsIfNeeded()) {
-            return (ttml, "ttmlLyricsFile")
-        }
-        return (nil, nil)
-    }
-
     private func nonEmpty(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1408,7 +1394,8 @@ final class AppleMusicPlaybackAdapter {
             return
         }
 
-        let hasArtwork = track.loadArtworkDataIfNeeded()?.isEmpty == false
+        let hasArtwork = track.artworkData?.isEmpty == false
+            || track.artworkFileName?.isEmpty == false
         let resourceSummary = [
             "metadata",
             hasArtwork ? "artwork" : nil,

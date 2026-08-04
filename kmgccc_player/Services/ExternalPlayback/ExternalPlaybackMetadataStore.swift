@@ -391,12 +391,19 @@ final class ExternalPlaybackMetadataStore {
 
     private static func libraryFingerprint(for tracks: [Track]) -> String {
         let count = tracks.count
-        let checksum = tracks.prefix(64).reduce(UInt64(count)) { partial, track in
-            partial ^ UInt64(bitPattern: Int64(track.id.uuidString.hashValue))
-                ^ UInt64(ArtworkAssetStore.checksum(for: track.loadArtworkDataIfNeeded()))
-                ^ UInt64((track.loadLyricsIfNeeded()?.count ?? 0) + (track.loadTTMLLyricsIfNeeded()?.count ?? 0))
+        var hasher = Hasher()
+        hasher.combine(count)
+        for track in tracks.prefix(64) {
+            hasher.combine(track.id)
+            hasher.combine(track.title)
+            hasher.combine(track.artist)
+            hasher.combine(track.album)
+            hasher.combine(track.duration.bitPattern)
+            hasher.combine(track.artworkFileName)
+            hasher.combine(track.lyricsFileName)
+            hasher.combine(track.ttmlLyricsFileName)
         }
-        return "\(count)-\(checksum)"
+        return "\(count)-\(hasher.finalize())"
     }
 
     private func artworkCacheDirectory() -> URL {

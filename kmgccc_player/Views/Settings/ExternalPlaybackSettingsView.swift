@@ -77,7 +77,9 @@ struct ExternalPlaybackSettingsView: View {
                     state: appleMusicPermission,
                     buttonTitle: permissionButtonTitle(for: appleMusicPermission)
                 ) {
-                    requestAppleMusicPermission()
+                    Task {
+                        await requestAppleMusicPermission()
+                    }
                 }
             }
 
@@ -127,7 +129,9 @@ struct ExternalPlaybackSettingsView: View {
             showPlaybackSourceSwitcher = settings.showPlaybackSourceSwitcher
             enableSystemNowPlaying = settings.enableSystemNowPlayingMode
             syncSourceSections()
-            refreshPermissionStates()
+        }
+        .task {
+            await refreshPermissionStates()
         }
         .onChange(of: showPlaybackSourceSwitcher) { _, newValue in
             settings.showPlaybackSourceSwitcher = newValue
@@ -501,14 +505,35 @@ struct ExternalPlaybackSettingsView: View {
         )
     }
 
-    private func refreshPermissionStates() {
-        appleMusicPermission = ExternalPlaybackPermissions.appleMusicAutomationStatus(prompt: false)
+    private func refreshPermissionStates() async {
         refreshSystemNowPlayingPermission()
+        guard ExternalPlaybackPermissions.isAppleMusicRunning else {
+            appleMusicPermission = .unknown
+            return
+        }
+
+        appleMusicPermission = .checking
+        let state = await Task.detached(priority: .userInitiated) {
+            ExternalPlaybackPermissions.appleMusicAutomationStatus(prompt: false)
+        }.value
+        guard !Task.isCancelled else { return }
+        appleMusicPermission = state
     }
 
-    private func requestAppleMusicPermission() {
-        appleMusicPermission = ExternalPlaybackPermissions.appleMusicAutomationStatus(prompt: true)
-        if appleMusicPermission != .allowed {
+    private func requestAppleMusicPermission() async {
+        guard ExternalPlaybackPermissions.isAppleMusicRunning else {
+            ExternalPlaybackPermissions.launchAppleMusic()
+            appleMusicPermission = .unknown
+            return
+        }
+
+        appleMusicPermission = .checking
+        let state = await Task.detached(priority: .userInitiated) {
+            ExternalPlaybackPermissions.appleMusicAutomationStatus(prompt: true)
+        }.value
+        guard !Task.isCancelled else { return }
+        appleMusicPermission = state
+        if state != .allowed {
             ExternalPlaybackPermissions.openAutomationSettings()
         }
     }

@@ -62,6 +62,9 @@ final class AppleMusicBridge: @unchecked Sendable {
     nonisolated(unsafe) private var fetchPositionScript: NSAppleScript?
     nonisolated(unsafe) private var fetchFullScript: NSAppleScript?
     nonisolated(unsafe) private var controlScripts: [ControlScript: NSAppleScript] = [:]
+    private let pollingScriptLock = NSLock()
+    private let controlScriptLock = NSLock()
+    private let artworkScriptLock = NSLock()
 
     init() {
         compileScripts()
@@ -87,7 +90,8 @@ final class AppleMusicBridge: @unchecked Sendable {
         guard isMusicAppRunning() else {
             return NowPlayingInfo(state: .stopped)
         }
-        guard let descriptor = execute(fetchPositionScript), descriptor.numberOfItems >= 2 else {
+        guard let descriptor = execute(fetchPositionScript, lock: pollingScriptLock),
+              descriptor.numberOfItems >= 2 else {
             return NowPlayingInfo(state: .unknown)
         }
 
@@ -117,7 +121,7 @@ final class AppleMusicBridge: @unchecked Sendable {
             return .failure(.appNotRunning)
         }
 
-        let execution = executeDetailed(fetchFullScript)
+        let execution = executeDetailed(fetchFullScript, lock: pollingScriptLock)
         if let errorNumber = execution.errorNumber,
            let issue = classifyExecutionError(number: errorNumber, message: execution.errorMessage) {
             return .failure(issue)
@@ -258,7 +262,7 @@ final class AppleMusicBridge: @unchecked Sendable {
         end timeout
         """
 
-        guard let descriptor = runSource(source),
+        guard let descriptor = runSource(source, lock: artworkScriptLock),
               descriptor.numberOfItems >= 14,
               descriptor.atIndex(1)?.stringValue == "ok",
               let data = try? Data(contentsOf: tempURL),
@@ -271,27 +275,27 @@ final class AppleMusicBridge: @unchecked Sendable {
 
     @discardableResult
     nonisolated func playPause() -> Bool {
-        execute(controlScripts[.playPause]) != nil
+        execute(controlScripts[.playPause], lock: controlScriptLock) != nil
     }
 
     @discardableResult
     nonisolated func play() -> Bool {
-        execute(controlScripts[.play]) != nil
+        execute(controlScripts[.play], lock: controlScriptLock) != nil
     }
 
     @discardableResult
     nonisolated func pause() -> Bool {
-        execute(controlScripts[.pause]) != nil
+        execute(controlScripts[.pause], lock: controlScriptLock) != nil
     }
 
     @discardableResult
     nonisolated func nextTrack() -> Bool {
-        execute(controlScripts[.nextTrack]) != nil
+        execute(controlScripts[.nextTrack], lock: controlScriptLock) != nil
     }
 
     @discardableResult
     nonisolated func previousTrack() -> Bool {
-        execute(controlScripts[.previousTrack]) != nil
+        execute(controlScripts[.previousTrack], lock: controlScriptLock) != nil
     }
 
     @discardableResult
@@ -299,90 +303,121 @@ final class AppleMusicBridge: @unchecked Sendable {
         guard seconds.isFinite else { return false }
         let clamped = max(0, seconds)
         let value = String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), clamped)
-        return runSource("tell application \"Music\" to set player position to \(value)") != nil
+        return runMusicCommand("set player position to \(value)")
     }
 
     @discardableResult
     nonisolated func setVolume(_ volume: Double) -> Bool {
         let clamped = Int(max(0, min(1, volume)) * 100)
-        return runSource("tell application \"Music\" to set sound volume to \(clamped)") != nil
+        return runMusicCommand("set sound volume to \(clamped)")
     }
 
     @discardableResult
     nonisolated func setShuffleEnabled(_ enabled: Bool) -> Bool {
-        runSource("tell application \"Music\" to set shuffle enabled to \(enabled ? "true" : "false")") != nil
+        runMusicCommand("set shuffle enabled to \(enabled ? "true" : "false")")
     }
 
     @discardableResult
     nonisolated func setRepeatMode(_ mode: RepeatMode) -> Bool {
         switch mode {
         case .off:
-            return runSource("tell application \"Music\" to set song repeat to off") != nil
+            return runMusicCommand("set song repeat to off")
         case .one:
-            return runSource("tell application \"Music\" to set song repeat to one") != nil
+            return runMusicCommand("set song repeat to one")
         case .all:
-            return runSource("tell application \"Music\" to set song repeat to all") != nil
+            return runMusicCommand("set song repeat to all")
         case .unknown:
             return false
         }
     }
 
+    @discardableResult
+    nonisolated func setPlaybackMode(shuffleEnabled: Bool, repeatMode: RepeatMode) -> Bool {
+        guard repeatMode != .unknown else { return false }
+        return runMusicCommand(
+            """
+            set shuffle enabled to \(shuffleEnabled ? "true" : "false")
+            set song repeat to \(repeatMode.rawValue)
+            """
+        )
+    }
+
     private nonisolated func compileScripts() {
         fetchPositionScript = compile(
             """
-            tell application "Music"
-                try
-                    return {player position, player state as string}
-                on error
-                    return {0, "stopped"}
-                end try
-            end tell
+            with timeout of 3 seconds
+                tell application "Music"
+                    try
+                        return {player position, player state as string}
+                    on error
+                        return {0, "stopped"}
+                    end try
+                end tell
+            end timeout
             """
         )
 
         fetchFullScript = compile(
             """
-            tell application "Music"
-                try
-                    set currentPlayerState to player state as string
+            with timeout of 4 seconds
+                tell application "Music"
                     try
-                        set currentPosition to player position
-                    on error
-                        set currentPosition to 0
-                    end try
-                    try
-                        set currentSoundVolume to sound volume
-                    on error
-                        set currentSoundVolume to 100
-                    end try
-                    try
-                        set currentShuffle to shuffle enabled
-                    on error
-                        set currentShuffle to false
-                    end try
-                    try
-                        set currentRepeat to song repeat as string
-                    on error
-                        set currentRepeat to "unknown"
-                    end try
-                    try
-                        set trk to current track
-                        return {"ok", name of trk, artist of trk, album of trk, album artist of trk, duration of trk, currentPosition, currentPlayerState, currentSoundVolume, persistent ID of trk, track number of trk, year of trk, currentShuffle, currentRepeat}
+                        set currentPlayerState to player state as string
+                        try
+                            set currentPosition to player position
+                        on error
+                            set currentPosition to 0
+                        end try
+                        try
+                            set currentSoundVolume to sound volume
+                        on error
+                            set currentSoundVolume to 100
+                        end try
+                        try
+                            set currentShuffle to shuffle enabled
+                        on error
+                            set currentShuffle to false
+                        end try
+                        try
+                            set currentRepeat to song repeat as string
+                        on error
+                            set currentRepeat to "unknown"
+                        end try
+                        try
+                            set trk to current track
+                            return {"ok", name of trk, artist of trk, album of trk, album artist of trk, duration of trk, currentPosition, currentPlayerState, currentSoundVolume, persistent ID of trk, track number of trk, year of trk, currentShuffle, currentRepeat}
+                        on error errMsg number errNum
+                            return {"trackError", errNum as string, errMsg, currentPlayerState, currentSoundVolume, currentShuffle, currentRepeat, currentPosition}
+                        end try
                     on error errMsg number errNum
-                        return {"trackError", errNum as string, errMsg, currentPlayerState, currentSoundVolume, currentShuffle, currentRepeat, currentPosition}
+                        return {"error", errNum as string, errMsg}
                     end try
-                on error errMsg number errNum
-                    return {"error", errNum as string, errMsg}
-                end try
-            end tell
+                end tell
+            end timeout
             """
         )
 
-        controlScripts[.playPause] = compile("tell application \"Music\" to playpause")
-        controlScripts[.play] = compile("tell application \"Music\" to play")
-        controlScripts[.pause] = compile("tell application \"Music\" to pause")
-        controlScripts[.nextTrack] = compile("tell application \"Music\" to next track")
-        controlScripts[.previousTrack] = compile("tell application \"Music\" to previous track")
+        controlScripts[.playPause] = compileMusicCommand("playpause")
+        controlScripts[.play] = compileMusicCommand("play")
+        controlScripts[.pause] = compileMusicCommand("pause")
+        controlScripts[.nextTrack] = compileMusicCommand("next track")
+        controlScripts[.previousTrack] = compileMusicCommand("previous track")
+    }
+
+    private nonisolated func compileMusicCommand(_ command: String) -> NSAppleScript? {
+        compile(
+            """
+            with timeout of 4 seconds
+                tell application "Music"
+                    \(command)
+                end tell
+            end timeout
+            """
+        )
+    }
+
+    private nonisolated func runMusicCommand(_ command: String) -> Bool {
+        execute(compileMusicCommand(command), lock: controlScriptLock) != nil
     }
 
     private nonisolated func compile(_ source: String) -> NSAppleScript? {
@@ -393,14 +428,20 @@ final class AppleMusicBridge: @unchecked Sendable {
     }
 
     @discardableResult
-    private nonisolated func execute(_ script: NSAppleScript?) -> NSAppleEventDescriptor? {
+    private nonisolated func execute(
+        _ script: NSAppleScript?,
+        lock: NSLock
+    ) -> NSAppleEventDescriptor? {
         guard let script else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
         var error: NSDictionary?
         return script.executeAndReturnError(&error)
     }
 
     private nonisolated func executeDetailed(
-        _ script: NSAppleScript?
+        _ script: NSAppleScript?,
+        lock: NSLock
     ) -> (descriptor: NSAppleEventDescriptor?, errorNumber: Int?, errorMessage: String?) {
         guard let script else {
             return (
@@ -409,6 +450,8 @@ final class AppleMusicBridge: @unchecked Sendable {
                 errorMessage: "missing compiled AppleScript"
             )
         }
+        lock.lock()
+        defer { lock.unlock() }
         var error: NSDictionary?
         let descriptor = script.executeAndReturnError(&error)
         return (
@@ -419,8 +462,11 @@ final class AppleMusicBridge: @unchecked Sendable {
     }
 
     @discardableResult
-    private nonisolated func runSource(_ source: String) -> NSAppleEventDescriptor? {
-        execute(compile(source))
+    private nonisolated func runSource(
+        _ source: String,
+        lock: NSLock
+    ) -> NSAppleEventDescriptor? {
+        execute(compile(source), lock: lock)
     }
 
     private nonisolated func nonEmptyString(_ value: String?) -> String? {
