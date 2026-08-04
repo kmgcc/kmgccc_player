@@ -343,9 +343,21 @@ final class Track {
     /// Read the artwork file off the main actor, then preserve the existing lazy in-memory cache behavior.
     func loadArtworkDataOffMainIfNeeded() async -> Data? {
         if let data = artworkData, !data.isEmpty { return data }
-        guard let url = resolvedArtworkURL() else { return nil }
-        let data = await Task.detached(priority: .utility) { @Sendable in
-            try? Data(contentsOf: url)
+        guard let folder = resolvedTrackFolderURL() else { return nil }
+        let preferredFileName = artworkFileName
+        let candidateFileNames = LocalLibraryPaths.trackArtworkCandidateFileNames(
+            preferredFileName: preferredFileName
+        )
+        let data = await Task.detached(priority: .utility) { @Sendable () -> Data? in
+            let fileManager = FileManager.default
+            for fileName in candidateFileNames {
+                let url = folder.appendingPathComponent(fileName)
+                guard fileManager.fileExists(atPath: url.path) else { continue }
+                if let data = try? Data(contentsOf: url), !data.isEmpty {
+                    return data
+                }
+            }
+            return nil
         }.value
         artworkData = data
         return data
@@ -377,6 +389,33 @@ final class Track {
             return text
         }
         return nil
+    }
+
+    /// Read TTML lyrics without performing file I/O on the caller's actor.
+    func loadTTMLLyricsOffMainIfNeeded() async -> String? {
+        if let text = ttmlLyricText, !text.isEmpty { return text }
+        let folder = resolvedTrackFolderURL()
+        let ttmlFileName = ttmlLyricsFileName
+        let fallbackLyricsFileName = lyricsFileName
+        let text = await Task.detached(priority: .utility) { @Sendable () -> String? in
+            guard let folder else { return nil }
+            if let ttmlFileName, !ttmlFileName.isEmpty {
+                let url = folder.appendingPathComponent(ttmlFileName)
+                if let text = try? String(contentsOf: url, encoding: .utf8), !text.isEmpty {
+                    return text
+                }
+            }
+            if let fallbackLyricsFileName,
+               fallbackLyricsFileName.lowercased().hasSuffix(".ttml") {
+                let url = folder.appendingPathComponent(fallbackLyricsFileName)
+                if let text = try? String(contentsOf: url, encoding: .utf8), !text.isEmpty {
+                    return text
+                }
+            }
+            return nil
+        }.value
+        ttmlLyricText = text
+        return text
     }
 }
 

@@ -10,6 +10,11 @@ import CommonCrypto
 import Foundation
 
 final class NCMConverter: @unchecked Sendable {
+
+    private static let maximumKeyLength = 1 * 1024 * 1024
+    private static let maximumMetadataLength = 4 * 1024 * 1024
+    private static let maximumCoverFrameLength = 32 * 1024 * 1024
+    private static let maximumCoverDataLength = 16 * 1024 * 1024
     
     private let coreKey: [UInt8] = [
         0x68, 0x7A, 0x48, 0x52, 0x41, 0x6D, 0x73, 0x6F,
@@ -117,16 +122,8 @@ final class NCMConverter: @unchecked Sendable {
             throw NCMConverterError.fileReadError
         }
         
-        guard let headerData = try fileHandle.read(upToCount: 8) else {
-            throw NCMConverterError.fileReadError
-        }
-        
-        guard headerData.count == 8 else {
-            throw NCMConverterError.invalidFile
-        }
-        
-        let magic1 = headerData.subdata(in: 0..<4).withUnsafeBytes { $0.load(as: UInt32.self) }
-        let magic2 = headerData.subdata(in: 4..<8).withUnsafeBytes { $0.load(as: UInt32.self) }
+        let magic1 = try readUInt32LittleEndian(from: fileHandle)
+        let magic2 = try readUInt32LittleEndian(from: fileHandle)
         
         guard magic1 == 0x4E455443 && magic2 == 0x4D414446 else {
             throw NCMConverterError.invalidMagic
@@ -138,14 +135,11 @@ final class NCMConverter: @unchecked Sendable {
             throw NCMConverterError.fileReadError
         }
         
-        guard let keyLenData = try fileHandle.read(upToCount: 4) else {
-            throw NCMConverterError.fileReadError
+        let keyLen = try readUInt32LittleEndian(from: fileHandle)
+        guard keyLen > 0, keyLen <= Self.maximumKeyLength else {
+            throw NCMConverterError.invalidFile
         }
-        let keyLen = keyLenData.withUnsafeBytes { $0.load(as: UInt32.self) }
-        
-        guard let keyData = try fileHandle.read(upToCount: Int(keyLen)) else {
-            throw NCMConverterError.fileReadError
-        }
+        let keyData = try readExactly(Int(keyLen), from: fileHandle)
         
         let xorKeyData = keyData.map { $0 ^ 0x64 }
         let decryptedKey = aesECBDecrypt(data: Data(xorKeyData), key: Data(coreKey))
@@ -171,19 +165,17 @@ final class NCMConverter: @unchecked Sendable {
             throw NCMConverterError.fileReadError
         }
         
-        guard let metaLenData = try fileHandle.read(upToCount: 4) else {
-            throw NCMConverterError.fileReadError
-        }
-        let metaLen = metaLenData.withUnsafeBytes { $0.load(as: UInt32.self) }
+        let metaLen = try readUInt32LittleEndian(from: fileHandle)
         
         if metaLen == 0 {
             self.metadata = nil
             return
         }
         
-        guard let metaData = try fileHandle.read(upToCount: Int(metaLen)) else {
-            throw NCMConverterError.fileReadError
+        guard metaLen <= Self.maximumMetadataLength else {
+            throw NCMConverterError.invalidFile
         }
+        let metaData = try readExactly(Int(metaLen), from: fileHandle)
         
         let xorMetaData = metaData.map { $0 ^ 0x63 }
         
@@ -230,20 +222,16 @@ final class NCMConverter: @unchecked Sendable {
         let gapOffset = fileHandle.offsetInFile
         try fileHandle.seek(toOffset: gapOffset + 5)
         
-        guard let coverFrameLenData = try fileHandle.read(upToCount: 4) else {
-            throw NCMConverterError.fileReadError
+        let coverFrameLen = try readUInt32LittleEndian(from: fileHandle)
+        let coverDataLen = try readUInt32LittleEndian(from: fileHandle)
+        guard coverFrameLen <= Self.maximumCoverFrameLength,
+              coverDataLen <= Self.maximumCoverDataLength,
+              coverDataLen <= coverFrameLen else {
+            throw NCMConverterError.invalidFile
         }
-        let coverFrameLen = coverFrameLenData.withUnsafeBytes { $0.load(as: UInt32.self) }
         
-        guard let coverDataLenData = try fileHandle.read(upToCount: 4) else {
-            throw NCMConverterError.fileReadError
-        }
-        let coverDataLen = coverDataLenData.withUnsafeBytes { $0.load(as: UInt32.self) }
-        
-        if coverDataLen > 0 && coverDataLen < 10 * 1024 * 1024 {
-            guard let coverData = try fileHandle.read(upToCount: Int(coverDataLen)) else {
-                throw NCMConverterError.fileReadError
-            }
+        if coverDataLen > 0 {
+            let coverData = try readExactly(Int(coverDataLen), from: fileHandle)
             self.imageData = ArtworkDataNormalizer.normalizedJPEGData(
                 from: coverData,
                 maxPixelSize: ArtworkDataNormalizer.importMaxPixelSize
@@ -252,8 +240,7 @@ final class NCMConverter: @unchecked Sendable {
         
         let remainingSkip = Int(coverFrameLen) - Int(coverDataLen)
         if remainingSkip > 0 {
-            let currentOffset = fileHandle.offsetInFile
-            try fileHandle.seek(toOffset: currentOffset + UInt64(remainingSkip))
+            try skipExactly(remainingSkip, from: fileHandle)
         }
     }
     
@@ -330,6 +317,43 @@ final class NCMConverter: @unchecked Sendable {
             let idx1 = Int(keyBox[j])
             let idx2 = (idx1 + j) & 0xFF
             chunk[i] ^= keyBox[(idx1 + Int(keyBox[idx2])) & 0xFF]
+        }
+    }
+
+    private func readExactly(_ count: Int, from fileHandle: FileHandle) throws -> Data {
+        guard count >= 0 else { throw NCMConverterError.invalidFile }
+        if count == 0 { return Data() }
+
+        var result = Data()
+        result.reserveCapacity(count)
+        while result.count < count {
+            let remaining = count - result.count
+            guard let chunk = try fileHandle.read(upToCount: remaining), !chunk.isEmpty else {
+                throw NCMConverterError.fileReadError
+            }
+            result.append(chunk)
+        }
+        return result
+    }
+
+    private func skipExactly(_ count: Int, from fileHandle: FileHandle) throws {
+        guard count >= 0 else { throw NCMConverterError.invalidFile }
+        var remaining = count
+        let chunkSize = 64 * 1024
+        while remaining > 0 {
+            let requested = min(remaining, chunkSize)
+            guard let chunk = try fileHandle.read(upToCount: requested),
+                  chunk.count == requested else {
+                throw NCMConverterError.fileReadError
+            }
+            remaining -= chunk.count
+        }
+    }
+
+    private func readUInt32LittleEndian(from fileHandle: FileHandle) throws -> UInt32 {
+        let data = try readExactly(MemoryLayout<UInt32>.size, from: fileHandle)
+        return data.withUnsafeBytes { rawBuffer in
+            rawBuffer.loadUnaligned(as: UInt32.self).littleEndian
         }
     }
     
