@@ -104,21 +104,7 @@ struct KmgcccPlayerApp: App {
         ColorSystemSelfCheck.runIfRequested()
         #endif
 
-        let sharedModelContainer: ModelContainer = {
-            let schema = Schema([
-                TrackIndexEntry.self
-            ])
-            let modelConfiguration = ModelConfiguration(
-                schema: schema,
-                url: TrackIndexStorePaths.storeURL
-            )
-
-            do {
-                return try ModelContainer(for: schema, configurations: [modelConfiguration])
-            } catch {
-                fatalError("Could not create ModelContainer: \(error)")
-            }
-        }()
+        let sharedModelContainer = Self.makeSharedModelContainer()
 
         self.sharedModelContainer = sharedModelContainer
         let appSessionHost = AppSessionHost(
@@ -133,6 +119,99 @@ struct KmgcccPlayerApp: App {
                 _ = AppKitMainSplitWindowController.show(appSession: appSessionHost)
             }
         }
+    }
+
+    private static func makeSharedModelContainer() -> ModelContainer {
+        let schema = Schema([TrackIndexEntry.self])
+        let storeURL = TrackIndexStorePaths.storeURL
+
+        let initialAttempt = makePersistentModelContainer(schema: schema, storeURL: storeURL)
+        if let container = initialAttempt.container {
+            return container
+        }
+
+        if let error = initialAttempt.error,
+           isConfirmedStoreCorruption(error),
+           isolateDamagedStore(at: storeURL, label: "TrackIndex"),
+           let container = makePersistentModelContainer(schema: schema, storeURL: storeURL).container {
+            Log.warning("[TrackIndex] recovered by rebuilding a damaged cache store", category: .library)
+            return container
+        }
+
+        Log.error("[TrackIndex] using an in-memory cache for this launch", category: .library)
+        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        return try! ModelContainer(for: schema, configurations: [configuration])
+    }
+
+    private static func makePersistentModelContainer(
+        schema: Schema,
+        storeURL: URL
+    ) -> (container: ModelContainer?, error: Error?) {
+        let configuration = ModelConfiguration(schema: schema, url: storeURL)
+        do {
+            return (try ModelContainer(for: schema, configurations: [configuration]), nil)
+        } catch {
+            Log.error("[TrackIndex] persistent store unavailable: \(error)", category: .library)
+            return (nil, error)
+        }
+    }
+
+    private static func isConfirmedStoreCorruption(_ error: Error) -> Bool {
+        var pending = [error as NSError]
+        var inspected = 0
+        while let current = pending.popLast(), inspected < 16 {
+            inspected += 1
+            if current.domain == "NSSQLiteErrorDomain",
+               [11, 24, 26].contains(current.code) {
+                return true
+            }
+
+            let description = [
+                current.localizedDescription,
+                current.localizedFailureReason ?? ""
+            ].joined(separator: " ").lowercased()
+            if description.contains("database disk image is malformed")
+                || description.contains("file is not a database")
+                || description.contains("database corruption") {
+                return true
+            }
+
+            if let underlying = current.userInfo[NSUnderlyingErrorKey] as? NSError {
+                pending.append(underlying)
+            }
+            if let detailed = current.userInfo["NSDetailedErrors"] as? [NSError] {
+                pending.append(contentsOf: detailed)
+            }
+        }
+        return false
+    }
+
+    @discardableResult
+    private static func isolateDamagedStore(at storeURL: URL, label: String) -> Bool {
+        let fileManager = FileManager.default
+        let recoveryID = UUID().uuidString.lowercased()
+        var movedStore = false
+        var movedFiles: [(source: URL, isolated: URL)] = []
+
+        for suffix in ["", "-wal", "-shm"] {
+            let sourceURL = URL(fileURLWithPath: storeURL.path + suffix)
+            guard fileManager.fileExists(atPath: sourceURL.path) else { continue }
+
+            let isolatedURL = URL(fileURLWithPath: storeURL.path + ".corrupt-\(recoveryID)\(suffix)")
+            do {
+                try fileManager.moveItem(at: sourceURL, to: isolatedURL)
+                movedStore = true
+                movedFiles.append((sourceURL, isolatedURL))
+            } catch {
+                for movedFile in movedFiles.reversed() {
+                    try? fileManager.moveItem(at: movedFile.isolated, to: movedFile.source)
+                }
+                Log.error("[\(label)] could not isolate \(sourceURL.lastPathComponent): \(error)", category: .library)
+                return false
+            }
+        }
+
+        return movedStore
     }
 
     var body: some Scene {
