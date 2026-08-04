@@ -352,15 +352,9 @@ final class AppSessionHost: ObservableObject {
             didPrepareTerminationSynchronously = true
             Log.info("[Lifecycle] Preparing for termination reason=\(reason)", category: .ui)
             TelemetryService.shared.endSession(reason: .appTerminated)
+            playerVM?.prepareForTermination()
+            PreferenceStatsService.shared.checkpointPendingStats()
             savePlaybackMemory()
-            if let libraryVM {
-                PreferenceStatsService.shared.saveAllPendingNow(
-                    trackProvider: { trackID in
-                        libraryVM.allTracks.first { $0.id == trackID }
-                    },
-                    synchronously: true
-                )
-            }
         }
 
         guard !terminationPreparationStarted else { return }
@@ -368,8 +362,18 @@ final class AppSessionHost: ObservableObject {
         terminationPreparationGeneration += 1
         let generation = terminationPreparationGeneration
 
-        Task { [weak self] in
-            await QQMusicHelperProcess.shared.terminate()
+        let libraryVM = self.libraryVM
+        Task { @MainActor [weak self, weak libraryVM] in
+            async let helperTermination: Void = QQMusicHelperProcess.shared.terminate()
+            if let libraryVM {
+                let tracksByID = Dictionary(
+                    uniqueKeysWithValues: libraryVM.allTracks.map { ($0.id, $0) }
+                )
+                await PreferenceStatsService.shared.saveAllPending { trackID in
+                    tracksByID[trackID]
+                }
+            }
+            await helperTermination
             self?.finishTerminationPreparation(generation: generation)
         }
 

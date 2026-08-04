@@ -25,6 +25,12 @@ final class PreferenceStatsService {
     /// Set of track IDs with unsaved changes.
     private var dirtyTrackIDs: Set<UUID> = []
 
+    /// Small crash-safe journal used when the app's three-second termination
+    /// deadline expires before sidecar writes finish.
+    private static let pendingJournalKey = "preferenceStats.pendingSidecarWrites.v1"
+    private var pendingRecoveryStats: [UUID: TrackPreferenceStats]
+    private var backgroundSaveTask: Task<Void, Never>?
+
     // MARK: - Browsing-burst Detection
 
     /// Timestamps of recent skip settlements, used to detect rapid "browsing /
@@ -45,7 +51,9 @@ final class PreferenceStatsService {
         return recentSkipTimestamps.count >= Self.browsingBurstThreshold
     }
 
-    private init() {}
+    private init() {
+        pendingRecoveryStats = Self.loadPendingJournal()
+    }
 
     // MARK: - Stats Access
 
@@ -210,6 +218,11 @@ final class PreferenceStatsService {
 
     /// Load stats from a track sidecar.
     func loadStats(from sidecar: TrackSidecar) {
+        if let recovered = pendingRecoveryStats[sidecar.id] {
+            statsCache[sidecar.id] = recovered
+            dirtyTrackIDs.insert(sidecar.id)
+            return
+        }
         if let stats = sidecar.preferenceStats {
             statsCache[sidecar.id] = stats
         } else if let legacyPlayCount = sidecar.playCount, legacyPlayCount > 0 {
@@ -233,64 +246,135 @@ final class PreferenceStatsService {
         for trackID in trackIDs {
             statsCache.removeValue(forKey: trackID)
             dirtyTrackIDs.remove(trackID)
+            pendingRecoveryStats.removeValue(forKey: trackID)
         }
+        persistPendingJournal()
     }
 
-    /// Save all dirty stats to their respective sidecars.
-    /// Defaults to background writes; app-termination paths can request synchronous writes.
+    /// Save all dirty stats to their respective sidecars without blocking the main actor.
     /// - Parameter trackProvider: Optional closure to get Track objects for writing sidecars.
-    func saveAllPendingNow(
-        trackProvider: ((UUID) -> Track?)? = nil,
-        synchronously: Bool = false
-    ) {
+    func saveAllPendingNow(trackProvider: ((UUID) -> Track?)? = nil) {
         let tracksToSave = Array(dirtyTrackIDs)
 
         guard !tracksToSave.isEmpty else { return }
 
-        // If track provider provided, use it to get tracks and write sidecars.
-        var savedCount = 0
-        if let provider = trackProvider {
-            for trackID in tracksToSave {
-                if let track = provider(trackID) {
-                    if synchronously {
-                        LocalLibraryService.shared.writeMetaOnly(for: track, reason: "playbackStats")
-                    } else {
-                        LocalLibraryService.shared.writeMetaOnlyInBackground(for: track, reason: "playbackStats")
-                    }
-                    dirtyTrackIDs.remove(trackID)
-                    savedCount += 1
-                }
+        if let trackProvider {
+            guard backgroundSaveTask == nil else { return }
+            backgroundSaveTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.performSaveAllPending(trackProvider: trackProvider)
+                self.backgroundSaveTask = nil
             }
-        } else {
-            // Fallback: use the cached stats directly via a notification.
-            // The AVAudioPlaybackService will handle this with proper track references.
-            NotificationCenter.default.post(
-                name: .preferenceStatsShouldSave,
-                object: nil,
-                userInfo: ["trackIDs": tracksToSave]
-            )
-            dirtyTrackIDs.removeAll()
-            savedCount = tracksToSave.count
+            return
         }
 
-        print("💾 Saved preference stats for \(savedCount) tracks")
+        for trackID in tracksToSave {
+            pendingRecoveryStats[trackID] = getStats(for: trackID)
+        }
+        persistPendingJournal()
+
+        // A provider-less caller cannot verify sidecar completion. Keep entries
+        // dirty and journaled so the next provider-backed save can retry them.
+        NotificationCenter.default.post(
+            name: .preferenceStatsShouldSave,
+            object: nil,
+            userInfo: ["trackIDs": tracksToSave]
+        )
     }
 
     /// Async wrapper for callers already using task-based lifecycle hooks.
     func saveAllPending(trackProvider: ((UUID) -> Track?)? = nil) async {
-        saveAllPendingNow(trackProvider: trackProvider)
+        if let backgroundSaveTask {
+            await backgroundSaveTask.value
+        }
+        await performSaveAllPending(trackProvider: trackProvider)
+    }
+
+    private func performSaveAllPending(trackProvider: ((UUID) -> Track?)?) async {
+        let tracksToSave = Array(dirtyTrackIDs)
+        guard !tracksToSave.isEmpty else { return }
+
+        guard let trackProvider else {
+            saveAllPendingNow()
+            return
+        }
+
+        var snapshots: [TrackPersistenceSnapshot] = []
+        snapshots.reserveCapacity(tracksToSave.count)
+        for trackID in tracksToSave {
+            guard let track = trackProvider(trackID) else { continue }
+            snapshots.append(
+                TrackPersistenceSnapshot(
+                    track: track,
+                    preferenceStats: getStats(for: trackID)
+                )
+            )
+        }
+        guard !snapshots.isEmpty else { return }
+
+        for snapshot in snapshots {
+            pendingRecoveryStats[snapshot.id] = snapshot.preferenceStats
+        }
+        persistPendingJournal()
+
+        LocalLibraryService.shared.suppressMonitorEvents(for: 1.5)
+        let snapshotsToPersist = snapshots
+        let successfulTrackIDs = await Task.detached(priority: .utility) { @Sendable in
+            var successful: Set<UUID> = []
+            for snapshot in snapshotsToPersist {
+                let result = autoreleasepool {
+                    LocalLibraryService.persistTrackSnapshotOnBackground(
+                        snapshot,
+                        mode: .metaOnly,
+                        reason: "playbackStats"
+                    )
+                }
+                if result.succeeded {
+                    successful.insert(result.trackID)
+                }
+            }
+            return successful
+        }.value
+
+        for snapshot in snapshotsToPersist {
+            if successfulTrackIDs.contains(snapshot.id),
+               statsCache[snapshot.id] == snapshot.preferenceStats {
+                dirtyTrackIDs.remove(snapshot.id)
+                pendingRecoveryStats.removeValue(forKey: snapshot.id)
+            } else if let currentStats = statsCache[snapshot.id] {
+                dirtyTrackIDs.insert(snapshot.id)
+                pendingRecoveryStats[snapshot.id] = currentStats
+            }
+        }
+        persistPendingJournal()
+        let failedCount = snapshotsToPersist.count - successfulTrackIDs.count
+        Log.info(
+            "[PreferenceStats] background save completed saved=\(successfulTrackIDs.count) failed=\(failedCount)",
+            category: .library
+        )
     }
 
     /// Save stats for a specific track immediately.
     func saveStats(for track: Track) {
-        LocalLibraryService.shared.writeMetaOnlyInBackground(for: track, reason: "playbackStats")
-
-        dirtyTrackIDs.remove(track.id)
+        Task { @MainActor in
+            await saveAllPending { trackID in
+                trackID == track.id ? track : nil
+            }
+        }
     }
 
     /// Mark a track as needing save (called when session ends).
     func markDirty(_ trackID: UUID) {
         dirtyTrackIDs.insert(trackID)
+    }
+
+    /// Capture pending in-memory values before the app starts its bounded
+    /// termination work. Sidecar writes can then finish asynchronously.
+    func checkpointPendingStats() {
+        for trackID in dirtyTrackIDs {
+            pendingRecoveryStats[trackID] = getStats(for: trackID)
+        }
+        persistPendingJournal()
     }
 
     // MARK: - Bulk Operations
@@ -303,7 +387,12 @@ final class PreferenceStatsService {
             // Stats will be loaded when sidecar is read.
             // For now, just ensure cache entry exists.
             if statsCache[track.id] == nil {
-                statsCache[track.id] = TrackPreferenceStats()
+                if let recovered = pendingRecoveryStats[track.id] {
+                    statsCache[track.id] = recovered
+                    dirtyTrackIDs.insert(track.id)
+                } else {
+                    statsCache[track.id] = TrackPreferenceStats()
+                }
             }
         }
 
@@ -321,6 +410,27 @@ final class PreferenceStatsService {
         let cached = statsCache.count
         let dirty = dirtyTrackIDs.count
         return (cached, dirty)
+    }
+
+    private static func loadPendingJournal() -> [UUID: TrackPreferenceStats] {
+        guard let data = UserDefaults.standard.data(forKey: pendingJournalKey),
+              let stored = try? JSONDecoder().decode([String: TrackPreferenceStats].self, from: data)
+        else { return [:] }
+        return Dictionary(uniqueKeysWithValues: stored.compactMap { key, value in
+            UUID(uuidString: key).map { ($0, value) }
+        })
+    }
+
+    private func persistPendingJournal() {
+        guard !pendingRecoveryStats.isEmpty else {
+            UserDefaults.standard.removeObject(forKey: Self.pendingJournalKey)
+            return
+        }
+        let stored = Dictionary(uniqueKeysWithValues: pendingRecoveryStats.map {
+            ($0.key.uuidString, $0.value)
+        })
+        guard let data = try? JSONEncoder().encode(stored) else { return }
+        UserDefaults.standard.set(data, forKey: Self.pendingJournalKey)
     }
 }
 

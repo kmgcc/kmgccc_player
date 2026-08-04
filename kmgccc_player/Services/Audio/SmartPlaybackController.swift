@@ -574,15 +574,11 @@ final class SmartPlaybackController {
     // MARK: - Notifications
 
     @objc private func handleAppWillTerminate(_ notification: Notification) {
-        // Finalize current session and save all pending stats.
+        prepareForTermination()
+    }
+
+    func prepareForTermination() {
         finalizeCurrentPlaybackSession(reason: .appTermination)
-        let tracksByID = Dictionary(uniqueKeysWithValues: sourceTracks.map { ($0.id, $0) })
-        PreferenceStatsService.shared.saveAllPendingNow(
-            trackProvider: { trackID in
-                tracksByID[trackID]
-            },
-            synchronously: true
-        )
     }
 
     @objc private func handleSaveRequest(_ notification: Notification) {

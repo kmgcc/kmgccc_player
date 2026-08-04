@@ -299,16 +299,99 @@ final class PlaybackHistoryStore {
 
     private static func makeContainer(at storeURL: URL) -> ModelContainer {
         let schema = Schema([PlaybackHistoryRecord.self])
-        let configuration = ModelConfiguration(
-            schema: schema,
-            url: PlaybackHistoryStorePaths.prepareStoreURL(at: storeURL.deletingLastPathComponent().deletingLastPathComponent())
-        )
+        let libraryRootURL = storeURL.deletingLastPathComponent().deletingLastPathComponent()
+        let persistentStoreURL = PlaybackHistoryStorePaths.prepareStoreURL(at: libraryRootURL)
 
-        do {
-            return try ModelContainer(for: schema, configurations: [configuration])
-        } catch {
-            fatalError("Could not create PlaybackHistory ModelContainer: \(error)")
+        let initialAttempt = makePersistentContainer(schema: schema, storeURL: persistentStoreURL)
+        if let container = initialAttempt.container {
+            return container
         }
+
+        if let error = initialAttempt.error,
+           isConfirmedStoreCorruption(error),
+           isolateDamagedStore(at: persistentStoreURL),
+           let container = makePersistentContainer(schema: schema, storeURL: persistentStoreURL).container {
+            Log.warning("[PlaybackHistory] recovered by rebuilding a damaged history store", category: .library)
+            return container
+        }
+
+        Log.error("[PlaybackHistory] using an in-memory history store for this launch", category: .library)
+        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        return try! ModelContainer(for: schema, configurations: [configuration])
+    }
+
+    private static func makePersistentContainer(
+        schema: Schema,
+        storeURL: URL
+    ) -> (container: ModelContainer?, error: Error?) {
+        let configuration = ModelConfiguration(schema: schema, url: storeURL)
+        do {
+            return (try ModelContainer(for: schema, configurations: [configuration]), nil)
+        } catch {
+            Log.error("[PlaybackHistory] persistent store unavailable: \(error)", category: .library)
+            return (nil, error)
+        }
+    }
+
+    private static func isConfirmedStoreCorruption(_ error: Error) -> Bool {
+        var pending = [error as NSError]
+        var inspected = 0
+        while let current = pending.popLast(), inspected < 16 {
+            inspected += 1
+            if current.domain == "NSSQLiteErrorDomain",
+               [11, 24, 26].contains(current.code) {
+                return true
+            }
+
+            let description = [
+                current.localizedDescription,
+                current.localizedFailureReason ?? ""
+            ].joined(separator: " ").lowercased()
+            if description.contains("database disk image is malformed")
+                || description.contains("file is not a database")
+                || description.contains("database corruption") {
+                return true
+            }
+
+            if let underlying = current.userInfo[NSUnderlyingErrorKey] as? NSError {
+                pending.append(underlying)
+            }
+            if let detailed = current.userInfo["NSDetailedErrors"] as? [NSError] {
+                pending.append(contentsOf: detailed)
+            }
+        }
+        return false
+    }
+
+    @discardableResult
+    private static func isolateDamagedStore(at storeURL: URL) -> Bool {
+        let fileManager = FileManager.default
+        let recoveryID = UUID().uuidString.lowercased()
+        var movedStore = false
+        var movedFiles: [(source: URL, isolated: URL)] = []
+
+        for suffix in ["", "-wal", "-shm"] {
+            let sourceURL = URL(fileURLWithPath: storeURL.path + suffix)
+            guard fileManager.fileExists(atPath: sourceURL.path) else { continue }
+
+            let isolatedURL = URL(fileURLWithPath: storeURL.path + ".corrupt-\(recoveryID)\(suffix)")
+            do {
+                try fileManager.moveItem(at: sourceURL, to: isolatedURL)
+                movedStore = true
+                movedFiles.append((sourceURL, isolatedURL))
+            } catch {
+                for movedFile in movedFiles.reversed() {
+                    try? fileManager.moveItem(at: movedFile.isolated, to: movedFile.source)
+                }
+                Log.error(
+                    "[PlaybackHistory] could not isolate \(sourceURL.lastPathComponent): \(error)",
+                    category: .library
+                )
+                return false
+            }
+        }
+
+        return movedStore
     }
 }
 

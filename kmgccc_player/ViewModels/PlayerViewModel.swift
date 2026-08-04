@@ -233,6 +233,10 @@ final class PlayerViewModel {
         playbackService.discardCurrentPlaybackSessionStatsOnce()
     }
 
+    func prepareForTermination() {
+        playbackService.prepareForTermination()
+    }
+
     // MARK: - Cleanup
 
     func stopLevelMeter() {

@@ -141,6 +141,8 @@ final class StubAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     func discardCurrentPlaybackSessionStatsOnce() {}
 
+    func prepareForTermination() {}
+
     func pause() {
         isPlaying = false
         stopTimer()

@@ -75,6 +75,9 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
     /// Only affects the session that is already in progress when this is called.
     func discardCurrentPlaybackSessionStatsOnce()
 
+    /// Finalize the active session before asynchronous termination persistence begins.
+    func prepareForTermination()
+
     /// Pause playback.
     func pause()
 

@@ -1862,4 +1862,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         smartController.discardCurrentSessionStatsOnFinalizeOnce()
     }
 
+    func prepareForTermination() {
+        smartController.prepareForTermination()
+    }
+
 }
