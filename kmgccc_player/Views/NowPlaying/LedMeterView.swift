@@ -441,6 +441,10 @@ private final class LiveLedMeterLayerHostView: NSView {
     private var currentStatusLevel = 0
     private var breathTimer: Timer?
     private weak var observedWindow: NSWindow?
+    private var renderedStatusFill: [CGColor] = []
+    private var renderedStatusStroke: [CGColor] = []
+    private var renderedLEDFill: [[CGColor]] = []
+    private var renderedLEDStroke: [[CGColor]] = []
 
     private let breathHoldTime: Double = 0.32
     private let peakHoldTime: Double = 0.60
@@ -529,6 +533,8 @@ private final class LiveLedMeterLayerHostView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         installWindowVisibilityObserversIfNeeded()
+        configureVisualizationDynamicRange()
+        applyColors()
         reconcileVisibility()
     }
 
@@ -642,6 +648,10 @@ private final class LiveLedMeterLayerHostView: NSView {
     }
 
     @objc private func handleWindowVisibilityChanged(_ notification: Notification) {
+        if notification.name == NSWindow.didChangeScreenNotification {
+            configureVisualizationDynamicRange()
+            applyColors()
+        }
         reconcileVisibility()
     }
 
@@ -669,6 +679,12 @@ private final class LiveLedMeterLayerHostView: NSView {
             name: NSWindow.didDeminiaturizeNotification,
             object: window
         )
+        center.addObserver(
+            self,
+            selector: #selector(handleWindowVisibilityChanged(_:)),
+            name: NSWindow.didChangeScreenNotification,
+            object: window
+        )
     }
 
     private func uninstallWindowVisibilityObservers() {
@@ -677,6 +693,7 @@ private final class LiveLedMeterLayerHostView: NSView {
         center.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: observedWindow)
         center.removeObserver(self, name: NSWindow.didMiniaturizeNotification, object: observedWindow)
         center.removeObserver(self, name: NSWindow.didDeminiaturizeNotification, object: observedWindow)
+        center.removeObserver(self, name: NSWindow.didChangeScreenNotification, object: observedWindow)
         self.observedWindow = nil
     }
 
@@ -793,6 +810,24 @@ private final class LiveLedMeterLayerHostView: NSView {
 
     private func applyColors() {
         guard let configuration else { return }
+        configureVisualizationDynamicRange()
+        let headroom = ColorRenderingAdapter.visualizationHeadroom(for: window?.screen)
+        renderedStatusFill = configuration.colors.statusFill.map {
+            ColorRenderingAdapter.makeExtendedDynamicRangeCGColor($0, headroom: headroom)
+        }
+        renderedStatusStroke = configuration.colors.statusStroke.map {
+            ColorRenderingAdapter.makeExtendedDynamicRangeCGColor($0, headroom: headroom)
+        }
+        renderedLEDFill = configuration.colors.ledFill.map { levels in
+            levels.map {
+                ColorRenderingAdapter.makeExtendedDynamicRangeCGColor($0, headroom: headroom)
+            }
+        }
+        renderedLEDStroke = configuration.colors.ledStroke.map { levels in
+            levels.map {
+                ColorRenderingAdapter.makeExtendedDynamicRangeCGColor($0, headroom: headroom)
+            }
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         statusBaseLayer?.fillColor = configuration.colors.baseFill
@@ -808,6 +843,18 @@ private final class LiveLedMeterLayerHostView: NSView {
         applyLEDLevels(currentBrightnessStates)
     }
 
+    private func configureVisualizationDynamicRange() {
+        let screen = window?.screen
+        ColorRenderingAdapter.configureVisualizationLayer(layer, screen: screen)
+        ColorRenderingAdapter.configureVisualizationLayer(rootLayer, screen: screen)
+        for circleLayer in [statusFillLayer, statusStrokeLayer].compactMap({ $0 }) {
+            ColorRenderingAdapter.configureVisualizationLayer(circleLayer, screen: screen)
+        }
+        for circleLayer in ledFillLayers + ledStrokeLayers {
+            ColorRenderingAdapter.configureVisualizationLayer(circleLayer, screen: screen)
+        }
+    }
+
     private func applyStatusLevel(_ level: Int) {
         guard let configuration else { return }
         let safeLevel = min(max(0, level), configuration.brightnessLevels - 1)
@@ -815,8 +862,12 @@ private final class LiveLedMeterLayerHostView: NSView {
         currentStatusLevel = safeLevel
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        statusFillLayer?.fillColor = configuration.colors.statusFill[safeLevel]
-        statusStrokeLayer?.strokeColor = configuration.colors.statusStroke[safeLevel]
+        if safeLevel < renderedStatusFill.count {
+            statusFillLayer?.fillColor = renderedStatusFill[safeLevel]
+        }
+        if safeLevel < renderedStatusStroke.count {
+            statusStrokeLayer?.strokeColor = renderedStatusStroke[safeLevel]
+        }
         CATransaction.commit()
     }
 
@@ -826,8 +877,12 @@ private final class LiveLedMeterLayerHostView: NSView {
         CATransaction.setDisableActions(true)
         for index in 0..<min(states.count, ledFillLayers.count) {
             let level = min(max(0, states[index]), configuration.brightnessLevels - 1)
-            ledFillLayers[index].fillColor = configuration.colors.ledFill[index][level]
-            ledStrokeLayers[index].strokeColor = configuration.colors.ledStroke[index][level]
+            if index < renderedLEDFill.count, level < renderedLEDFill[index].count {
+                ledFillLayers[index].fillColor = renderedLEDFill[index][level]
+            }
+            if index < renderedLEDStroke.count, level < renderedLEDStroke[index].count {
+                ledStrokeLayers[index].strokeColor = renderedLEDStroke[index][level]
+            }
         }
         CATransaction.commit()
     }

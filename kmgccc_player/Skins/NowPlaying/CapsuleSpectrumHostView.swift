@@ -645,6 +645,8 @@ final class CapsuleSpectrumHostView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         installWindowVisibilityObserversIfNeeded()
+        configureVisualizationDynamicRange()
+        applyColors()
         reconcileVisibleConsumer()
         if window != nil {
             // The display link binds to the view's screen; (re)create it here.
@@ -665,6 +667,10 @@ final class CapsuleSpectrumHostView: NSView {
     }
 
     @objc private func handleWindowVisibilityChanged(_ notification: Notification) {
+        if notification.name == NSWindow.didChangeScreenNotification {
+            configureVisualizationDynamicRange()
+            applyColors()
+        }
         reconcileVisibleConsumer()
     }
 
@@ -692,6 +698,12 @@ final class CapsuleSpectrumHostView: NSView {
             name: NSWindow.didDeminiaturizeNotification,
             object: window
         )
+        center.addObserver(
+            self,
+            selector: #selector(handleWindowVisibilityChanged(_:)),
+            name: NSWindow.didChangeScreenNotification,
+            object: window
+        )
     }
 
     private func uninstallWindowVisibilityObservers() {
@@ -700,6 +712,7 @@ final class CapsuleSpectrumHostView: NSView {
         center.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: observedWindow)
         center.removeObserver(self, name: NSWindow.didMiniaturizeNotification, object: observedWindow)
         center.removeObserver(self, name: NSWindow.didDeminiaturizeNotification, object: observedWindow)
+        center.removeObserver(self, name: NSWindow.didChangeScreenNotification, object: observedWindow)
         self.observedWindow = nil
     }
 
@@ -759,19 +772,40 @@ final class CapsuleSpectrumHostView: NSView {
 
     private func applyColors() {
         guard !capsuleLayers.isEmpty else { return }
+        configureVisualizationDynamicRange()
+        let screen = window?.screen
+        let headroom = ColorRenderingAdapter.visualizationHeadroom(for: screen)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (index, layer) in capsuleLayers.enumerated() {
             if index < fillColors.count {
-                layer.backgroundColor = fillColors[index]
+                layer.backgroundColor = ColorRenderingAdapter.makeExtendedDynamicRangeCGColor(
+                    fillColors[index],
+                    headroom: headroom
+                )
             }
             if let strokeColors, index < strokeColors.count {
-                layer.borderColor = strokeColors[index]
+                layer.borderColor = ColorRenderingAdapter.makeExtendedDynamicRangeCGColor(
+                    strokeColors[index],
+                    headroom: headroom
+                )
             } else if index < fillColors.count {
-                layer.borderColor = fillColors[index]
+                layer.borderColor = ColorRenderingAdapter.makeExtendedDynamicRangeCGColor(
+                    fillColors[index],
+                    headroom: headroom
+                )
             }
         }
         CATransaction.commit()
+    }
+
+    private func configureVisualizationDynamicRange() {
+        let screen = window?.screen
+        ColorRenderingAdapter.configureVisualizationLayer(layer, screen: screen)
+        ColorRenderingAdapter.configureVisualizationLayer(rootLayer, screen: screen)
+        for capsuleLayer in capsuleLayers {
+            ColorRenderingAdapter.configureVisualizationLayer(capsuleLayer, screen: screen)
+        }
     }
 
     /// Write the per-bar *static* properties (center, width, cornerRadius) once.
