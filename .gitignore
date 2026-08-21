@@ -87,9 +87,11 @@ dist/
 
 # Local build outputs
 .derivedDataLocalBuild/
+archive/
 *.flac
 *.bak
 *.profraw
 .claude/worktrees/
 .worktrees/
 superteam/
+
