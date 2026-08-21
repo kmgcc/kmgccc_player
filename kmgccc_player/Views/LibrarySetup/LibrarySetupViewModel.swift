@@ -40,7 +40,6 @@ final class LibrarySetupViewModel {
             rebuildInitialImportSelection()
         }
     }
-    var wantsPlaylistCreation = false
     private(set) var playlistSourceEntries: [LibraryImportSourceEntry] = []
     private(set) var initialImportSelection: LibraryInitialImportSelection?
 
@@ -77,27 +76,23 @@ final class LibrarySetupViewModel {
             guard existing.insert(key).inserted else { continue }
             appended.append(url)
         }
-        wantsPlaylistCreation = false
         playlistSourceEntries = []
         selectedMusicURLs = appended
     }
 
     func removeMusicURL(_ url: URL) {
         let key = url.standardizedFileURL.path
-        wantsPlaylistCreation = false
         playlistSourceEntries = []
         selectedMusicURLs = selectedMusicURLs.filter { $0.standardizedFileURL.path != key }
     }
 
     func setPlaylistSourceEntries(_ entries: [LibraryImportSourceEntry]) {
         playlistSourceEntries = entries
-        wantsPlaylistCreation = !entries.isEmpty
         rebuildInitialImportSelection()
     }
 
     func clearPlaylistSourceEntries() {
         playlistSourceEntries = []
-        wantsPlaylistCreation = false
         rebuildInitialImportSelection()
     }
 
@@ -115,7 +110,6 @@ final class LibrarySetupViewModel {
             existingLibraryContext = nil
             existingRequestedMode = nil
             createdLibraryAwaitingImport = nil
-            wantsPlaylistCreation = false
             playlistSourceEntries = []
             selectedMusicURLs = []
             storageParentURL = nil
@@ -127,7 +121,6 @@ final class LibrarySetupViewModel {
         presentation = .none
         operation = .idle
         selectedMusicURLs = []
-        wantsPlaylistCreation = false
         playlistSourceEntries = []
         storageParentURL = nil
     }
@@ -177,7 +170,6 @@ final class LibrarySetupViewModel {
         presentation = .none
         createdLibraryAwaitingImport = nil
         storageParentURL = nil
-        wantsPlaylistCreation = false
         playlistSourceEntries = []
         initialImportSelection?.release()
         initialImportSelection = nil
