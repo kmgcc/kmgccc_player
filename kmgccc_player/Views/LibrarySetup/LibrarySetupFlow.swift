@@ -12,29 +12,51 @@ struct LibrarySetupFlow: View {
 
     @EnvironmentObject private var appSession: AppSessionHost
     @EnvironmentObject private var themeStore: ThemeStore
+    @State private var isPlaylistSourceSelectionPresented = false
 
     @ViewBuilder
     var body: some View {
-        switch flow.presentation {
-        case let .reconnectRequired(libraryID, mode):
-            LibraryReconnectView(
-                flow: flow,
-                target: .libraryRoot(libraryID: libraryID, mode: mode),
-                onChange: onChange
-            )
-            .id("library-\(libraryID.uuidString)")
-        case let .sourceReconnect(libraryID, sourceIDs):
-            LibraryReconnectView(
-                flow: flow,
-                target: .sources(libraryID: libraryID, sourceIDs: sourceIDs),
-                onChange: onChange
-            )
-            .id("sources-\(libraryID.uuidString)-\(sourceIDs.map(\.uuidString).joined())")
-        case .none:
-            EmptyView()
-        default:
-            setupDialog
+        Group {
+            switch flow.presentation {
+            case let .reconnectRequired(libraryID, mode):
+                LibraryReconnectView(
+                    flow: flow,
+                    target: .libraryRoot(libraryID: libraryID, mode: mode),
+                    onChange: onChange
+                )
+                .id("library-\(libraryID.uuidString)")
+            case let .sourceReconnect(libraryID, sourceIDs):
+                LibraryReconnectView(
+                    flow: flow,
+                    target: .sources(libraryID: libraryID, sourceIDs: sourceIDs),
+                    onChange: onChange
+                )
+                .id("sources-\(libraryID.uuidString)-\(sourceIDs.map(\.uuidString).joined())")
+            case .none:
+                EmptyView()
+            default:
+                setupDialog
+            }
         }
+        .sheet(isPresented: $isPlaylistSourceSelectionPresented) {
+            LibraryImportSourceSelectionSheet(
+                entries: LibraryImportSourceEntry.makeEntries(from: flow.selectedMusicURLs),
+                initiallyEnabled: flow.wantsPlaylistCreation,
+                initiallySelectedIDs: Set(flow.playlistSourceEntries.map(\.id))
+            ) { entries in
+                flow.setPlaylistSourceEntries(entries)
+                flow.step = .location
+            }
+        }
+    }
+
+    private func presentPlaylistSourceSelectionIfNeeded() {
+        guard flow.wantsPlaylistCreation, !flow.selectedMusicURLs.isEmpty else {
+            flow.clearPlaylistSourceEntries()
+            flow.step = .location
+            return
+        }
+        isPlaylistSourceSelectionPresented = true
     }
 
     private var setupDialog: some View {
@@ -218,6 +240,22 @@ struct LibrarySetupFlow: View {
                     }
                 }
                 .frame(maxHeight: 180)
+
+                Toggle(
+                    "基于这些来源新建播放列表",
+                    isOn: Binding(
+                        get: { flow.wantsPlaylistCreation },
+                        set: { enabled in
+                            if enabled {
+                                flow.wantsPlaylistCreation = true
+                            } else {
+                                flow.clearPlaylistSourceEntries()
+                            }
+                        }
+                    )
+                )
+                .toggleStyle(.checkbox)
+                .padding(.top, 2)
             }
         }
     }
@@ -270,8 +308,12 @@ struct LibrarySetupFlow: View {
                 SettingsTaskDialogButton("取消", kind: .secondary) { dismissFlow() }
                 SettingsTaskDialogButton("下一步", kind: .primary) { flow.step = .music }
             case .music:
-                SettingsTaskDialogButton("稍后添加", kind: .secondary) { flow.selectedMusicURLs = []; flow.step = .location }
-                SettingsTaskDialogButton("下一步", kind: .primary) { flow.step = .location }
+                SettingsTaskDialogButton("稍后添加", kind: .secondary) {
+                    flow.clearPlaylistSourceEntries()
+                    flow.selectedMusicURLs = []
+                    flow.step = .location
+                }
+                SettingsTaskDialogButton("下一步", kind: .primary) { presentPlaylistSourceSelectionIfNeeded() }
             case .location:
                 if flow.createdLibraryAwaitingImport != nil {
                     SettingsTaskDialogButton(
@@ -486,6 +528,108 @@ struct LibrarySetupFlow: View {
                 flow.fail("正在后台补全歌曲信息，完成后才能切换资料库。")
             } catch {
                 flow.fail("无法打开资料库。")
+            }
+        }
+    }
+}
+
+/// Compact confirmation step shared by library creation and Settings source
+/// import. It keeps all individual files as one selectable row and lets folder
+/// rows opt into the persisted source-to-playlist binding.
+struct LibraryImportSourceSelectionSheet: View {
+    let entries: [LibraryImportSourceEntry]
+    let onConfirm: ([LibraryImportSourceEntry]) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var createPlaylists: Bool
+    @State private var selectedEntryIDs: Set<String>
+
+    init(
+        entries: [LibraryImportSourceEntry],
+        initiallyEnabled: Bool = false,
+        initiallySelectedIDs: Set<String> = [],
+        onConfirm: @escaping ([LibraryImportSourceEntry]) -> Void
+    ) {
+        self.entries = entries
+        self.onConfirm = onConfirm
+        _createPlaylists = State(initialValue: initiallyEnabled)
+        _selectedEntryIDs = State(
+            initialValue: initiallySelectedIDs.isEmpty && initiallyEnabled
+                ? Set(entries.map(\.id))
+                : initiallySelectedIDs
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("导入来源")
+                .font(.headline)
+
+            Toggle("基于这些来源新建播放列表", isOn: $createPlaylists)
+                .toggleStyle(.checkbox)
+
+            if createPlaylists {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(entries) { entry in
+                        Toggle(
+                            isOn: Binding(
+                                get: { selectedEntryIDs.contains(entry.id) },
+                                set: { selected in
+                                    if selected {
+                                        selectedEntryIDs.insert(entry.id)
+                                    } else {
+                                        selectedEntryIDs.remove(entry.id)
+                                    }
+                                }
+                            )
+                        ) {
+                            HStack(spacing: 8) {
+                                Image(systemName: entry.kind == .directory ? "folder.fill" : "music.note.list")
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 16)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(entry.displayName)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Text(entry.detail)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                            }
+                        }
+                        .toggleStyle(.checkbox)
+                        .padding(.vertical, 5)
+                    }
+                }
+                .padding(.leading, 4)
+
+                Text("文件夹播放列表会随来源中的歌曲增减自动同步；单独歌曲分组只在本次导入时生成。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("继续") {
+                    let selected = createPlaylists
+                        ? entries.filter { selectedEntryIDs.contains($0.id) }
+                        : []
+                    onConfirm(selected)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+        .onChange(of: createPlaylists) { _, enabled in
+            if enabled, selectedEntryIDs.isEmpty {
+                selectedEntryIDs = Set(entries.map(\.id))
             }
         }
     }

@@ -84,6 +84,16 @@ final class ReferencedSourceReconciler {
         Set(try await sourceStore.loadAll().map(\.id))
     }
 
+    /// Creates and binds one playlist per selected directory source. The
+    /// binding is persisted on the source descriptor so later reconciles keep
+    /// the playlist synchronized with the source rather than treating it as a
+    /// one-time import snapshot.
+    func createPlaylistsForSources(_ sourceIDs: [UUID]) async throws {
+        for sourceID in Set(sourceIDs).sorted(by: { $0.uuidString < $1.uuidString }) {
+            try await syncBoundPlaylist(sourceID: sourceID, createIfMissing: true)
+        }
+    }
+
     @discardableResult
     func refreshSources() async throws -> [ReferencedSourceScopeIssue] {
         let descriptors = try await sourceStore.loadAll()
@@ -399,6 +409,7 @@ final class ReferencedSourceReconciler {
             descriptor.status = intent.diff.sourceStatus
             if intent.diff.sourceStatus == .available { descriptor.lastScan = Date() }
             try await sourceStore.save(descriptor)
+            try await syncBoundPlaylist(sourceID: intent.sourceID, createIfMissing: false)
             if intent.diff.sourceStatus != .available {
                 await noticePublisher.publish(.unavailable(sourceID: intent.sourceID, status: intent.diff.sourceStatus))
             }
@@ -412,6 +423,7 @@ final class ReferencedSourceReconciler {
             }
             try await manifestStore.save(manifest)
             try await sourceStore.save(descriptor)
+            try await syncBoundPlaylist(sourceID: intent.sourceID, createIfMissing: false)
         case .sourceRemoval:
             let orphanedTrackIDs = Set(intent.mutations.compactMap { mutation in
                 mutation.locator.sourceMemberships.isEmpty ? mutation.trackID : nil
@@ -428,6 +440,45 @@ final class ReferencedSourceReconciler {
             try await sourceStore.remove(id: intent.sourceID)
         }
         try await intentStore.remove(intent)
+    }
+
+    private func syncBoundPlaylist(sourceID: UUID, createIfMissing: Bool) async throws {
+        var descriptor = try await sourceStore.load(id: sourceID)
+        guard descriptor.mode == .directory else { return }
+        guard createIfMissing || descriptor.playlistID != nil else { return }
+
+        let playlists = await repository.fetchPlaylists()
+        let playlist: Playlist
+        if let playlistID = descriptor.playlistID,
+           let existing = playlists.first(where: { $0.id == playlistID }) {
+            playlist = existing
+        } else {
+            guard createIfMissing || descriptor.playlistID != nil else { return }
+            playlist = await repository.createPlaylist(name: descriptor.displayName)
+            descriptor.playlistID = playlist.id
+            descriptor.playlistManagedTrackIDs = []
+        }
+
+        let sourceTracks = await repository.fetchTracks(in: nil).filter { track in
+            guard case let .referenced(locator) = track.mediaLocator else { return false }
+            return locator.sourceMemberships.contains { $0.sourceID == sourceID }
+        }
+        let sourceTrackIDs = Set(sourceTracks.map(\.id))
+        let previouslyManagedIDs = Set(descriptor.playlistManagedTrackIDs ?? [])
+        let staleIDs = previouslyManagedIDs.subtracting(sourceTrackIDs)
+        let staleTracks = playlist.tracks.filter { staleIDs.contains($0.id) }
+        if !staleTracks.isEmpty {
+            await repository.removeTracks(staleTracks, from: playlist)
+        }
+
+        let currentPlaylistIDs = Set(playlist.tracks.map(\.id))
+        let missingTracks = sourceTracks.filter { !currentPlaylistIDs.contains($0.id) }
+        if !missingTracks.isEmpty {
+            await repository.addTracks(missingTracks, to: playlist)
+        }
+
+        descriptor.playlistManagedTrackIDs = sourceTrackIDs.sorted { $0.uuidString < $1.uuidString }
+        try await sourceStore.save(descriptor)
     }
 
     private func physicalTrackIDMap(_ tracks: [Track]) -> [ReferencedPhysicalIdentityKey: UUID] {

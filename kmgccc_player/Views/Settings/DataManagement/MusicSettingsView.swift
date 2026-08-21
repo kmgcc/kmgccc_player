@@ -14,6 +14,8 @@ struct MusicSettingsView: View {
     @State private var pendingLibraryRemoval: MusicLibraryBookmark?
     @State private var pendingSourceRemoval: ReferencedSourceDescriptor?
     @State private var isAddingMusic = false
+    @State private var pendingImportURLs: [URL] = []
+    @State private var isImportSourceSelectionPresented = false
     @State private var isSourceListExpanded = false
     @State private var isMissingListExpanded = false
     @State private var isMissingCleanupConfirmPresented = false
@@ -67,6 +69,14 @@ struct MusicSettingsView: View {
             guard presentation != .none else { return }
             LibrarySetupPanelPresenter.present(appSession: appSession) { await reload() }
         }
+        .sheet(isPresented: $isImportSourceSelectionPresented) {
+            let urls = pendingImportURLs
+            LibraryImportSourceSelectionSheet(
+                entries: LibraryImportSourceEntry.makeEntries(from: urls)
+            ) { entries in
+                startImport(urls: urls, playlistSourceEntries: entries)
+            }
+        }
         .confirmationDialog(
             "移到废纸篓？",
             isPresented: Binding(get: { pendingLibraryRemoval != nil }, set: { if !$0 { pendingLibraryRemoval = nil } })
@@ -74,9 +84,12 @@ struct MusicSettingsView: View {
             Button("移到废纸篓", role: .destructive) { removePendingLibrary() }
             Button("取消", role: .cancel) { pendingLibraryRemoval = nil }
         } message: {
-            Text(pendingLibraryRemoval?.modeProjection == .managed
-                 ? "资料库中的音乐和数据将移到废纸篓。"
-                 : "资料库数据将移到废纸篓，原位置的音乐不会删除。")
+            if let library = pendingLibraryRemoval {
+                let dataMessage = library.modeProjection == .managed
+                    ? "资料库中的音乐和数据将移到废纸篓。"
+                    : "资料库数据将移到废纸篓，原位置的音乐不会删除。"
+                Text("资料库：\(library.displayName)\n位置：\(library.lastKnownPath)\n\(dataMessage)")
+            }
         }
         .confirmationDialog(
             "移除来源？",
@@ -524,29 +537,42 @@ struct MusicSettingsView: View {
         panel.prompt = "添加"
         panel.begin { result in
             guard result == .OK, !panel.urls.isEmpty else { return }
-            let selection = LibraryInitialImportSelection(urls: panel.urls)
-            isAddingMusic = true
-            Task {
-                defer {
-                    selection.release()
-                    isAddingMusic = false
+            pendingImportURLs = panel.urls
+            isImportSourceSelectionPresented = true
+        }
+    }
+
+    private func startImport(
+        urls: [URL],
+        playlistSourceEntries: [LibraryImportSourceEntry]
+    ) {
+        guard !urls.isEmpty else { return }
+        let selection = LibraryInitialImportSelection(
+            urls: urls,
+            playlistSourceEntries: playlistSourceEntries
+        )
+        pendingImportURLs = []
+        isAddingMusic = true
+        Task {
+            defer {
+                selection.release()
+                isAddingMusic = false
+            }
+            do {
+                let result = try await appSession.importMusicSelection(selection)
+                if result.isPartial {
+                    appSession.uiState.showSidebarNotice(
+                        "部分音乐未导入",
+                        style: .warning,
+                        actionTitle: "打开设置"
+                    )
+                } else if result.imported > 0 {
+                    appSession.uiState.showSidebarNotice("新增 \(result.imported) 首歌曲")
                 }
-                do {
-                    let result = try await appSession.importMusicSelection(selection)
-                    if result.isPartial {
-                        appSession.uiState.showSidebarNotice(
-                            "部分音乐未导入",
-                            style: .warning,
-                            actionTitle: "打开设置"
-                        )
-                    } else if result.imported > 0 {
-                        appSession.uiState.showSidebarNotice("新增 \(result.imported) 首歌曲")
-                    }
-                    await reload()
-                } catch {
-                    errorMessage = "未能添加所选音乐。"
-                    await reload()
-                }
+                await reload()
+            } catch {
+                errorMessage = "未能添加所选音乐。"
+                await reload()
             }
         }
     }
@@ -556,8 +582,23 @@ struct MusicSettingsView: View {
         pendingLibraryRemoval = nil
         flow.beginOperation()
         Task {
-            do { try await appSession.removeMusicLibrary(id: library.id); flow.completeAndDismiss(); await reload() }
-            catch { flow.fail("无法移到废纸篓。"); errorMessage = "资料库没有删除。" }
+            let latestRegistry = await appSession.musicLibraryRegistrySnapshot()
+            guard let latest = latestRegistry.library(id: library.id),
+                  latest.lastKnownPath == library.lastKnownPath,
+                  latest.modeProjection == library.modeProjection else {
+                flow.fail("资料库列表已变化，请重新加载后再操作。")
+                errorMessage = "资料库列表已变化，未执行删除。"
+                await reload()
+                return
+            }
+            do {
+                try await appSession.removeMusicLibrary(id: library.id)
+                flow.completeAndDismiss()
+                await reload()
+            } catch {
+                flow.fail("无法移到废纸篓。")
+                errorMessage = "资料库没有删除。"
+            }
         }
     }
 

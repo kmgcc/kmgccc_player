@@ -32,6 +32,10 @@ nonisolated struct ReferencedSourceDescriptor: Codable, Sendable, Equatable, Ide
     let createdAt: Date
     var lastScan: Date?
     var status: ReferencedSourceStatus
+    /// Optional playlist bound to this directory source. The managed IDs let
+    /// source synchronization remove only tracks it added automatically.
+    var playlistID: UUID?
+    var playlistManagedTrackIDs: [UUID]?
 
     init(
         schemaVersion: Int = Self.currentSchemaVersion,
@@ -42,7 +46,9 @@ nonisolated struct ReferencedSourceDescriptor: Codable, Sendable, Equatable, Ide
         displayName: String,
         createdAt: Date = Date(),
         lastScan: Date? = nil,
-        status: ReferencedSourceStatus = .available
+        status: ReferencedSourceStatus = .available,
+        playlistID: UUID? = nil,
+        playlistManagedTrackIDs: [UUID]? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -53,6 +59,8 @@ nonisolated struct ReferencedSourceDescriptor: Codable, Sendable, Equatable, Ide
         self.createdAt = createdAt
         self.lastScan = lastScan
         self.status = status
+        self.playlistID = playlistID
+        self.playlistManagedTrackIDs = playlistManagedTrackIDs
     }
 }
 

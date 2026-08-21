@@ -348,12 +348,29 @@ final class FileImportService: FileImportServiceProtocol {
                 ImportInputFailure(url: $0, message: "No supported audio found")
             })
         }
+        let sources = plan?.directorySources.map { prepared in
+            LibraryInitialImportSource(
+                id: prepared.source.id,
+                mode: prepared.source.mode,
+                path: LibraryImportSourceEntry.canonicalPath(prepared.rootURL),
+                displayName: prepared.source.displayName
+            )
+        } ?? []
+        var importedTrackIDsByPath: [String: UUID] = [:]
+        for track in imported {
+            guard !track.originalFilePath.isEmpty else { continue }
+            importedTrackIDsByPath[LibraryImportSourceEntry.canonicalPath(
+                URL(fileURLWithPath: track.originalFilePath)
+            )] = track.id
+        }
         return LibraryInitialImportResult(
             requested: selection.urls.count,
             planned: plan?.files.count ?? 0,
             imported: imported.count,
             failures: failures,
-            sourceIDs: plan?.directorySources.map(\.source.id) ?? []
+            sourceIDs: sources.map(\.id),
+            sources: sources,
+            importedTrackIDsByPath: importedTrackIDsByPath
         )
     }
 

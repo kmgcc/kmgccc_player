@@ -154,10 +154,95 @@ final class LibrarySession: LibrarySessionLifecycle {
         if context.mode == .referenced, !result.sourceIDs.isEmpty {
             _ = try await refreshReferencedSources()
         }
+        if !selection.playlistSourceEntries.isEmpty {
+            try await createAutomaticPlaylists(
+                for: selection.playlistSourceEntries,
+                result: result
+            )
+            await libraryViewModel.reloadLibrary()
+        } else if context.mode == .referenced,
+                  selection.createPlaylistsForDirectories,
+                  !result.sourceIDs.isEmpty {
+            // Compatibility path for older callers that only supplied the
+            // original boolean option. New UI always supplies explicit entries.
+            try await referencedSourceReconciler?.createPlaylistsForSources(result.sourceIDs)
+            await libraryViewModel.reloadLibrary()
+        }
         guard selection.urls.isEmpty || result.didSucceed else {
             throw LibraryInitialImportError.initialImportFailed(result)
         }
         return result
+    }
+
+    private func createAutomaticPlaylists(
+        for entries: [LibraryImportSourceEntry],
+        result: LibraryInitialImportResult
+    ) async throws {
+        var boundDirectorySourceIDs: [UUID] = []
+
+        for entry in entries {
+            switch entry.kind {
+            case .directory:
+                guard let rootURL = entry.urls.first else { continue }
+                if context.mode == .referenced {
+                    let canonicalRoot = LibraryImportSourceEntry.canonicalPath(rootURL)
+                    if let source = result.sources.first(where: {
+                        $0.mode == .directory
+                            && LibraryImportSourceEntry.canonicalPath(URL(fileURLWithPath: $0.path)) == canonicalRoot
+                    }) {
+                        boundDirectorySourceIDs.append(source.id)
+                    }
+                } else {
+                    let tracks = await importedTracks(for: entry, result: result)
+                    if !tracks.isEmpty {
+                        let playlist = await repository.createPlaylist(name: entry.displayName)
+                        await repository.addTracks(tracks, to: playlist)
+                    }
+                }
+
+            case .individualFiles:
+                let tracks = await importedTracks(for: entry, result: result)
+                guard !tracks.isEmpty else { continue }
+                let playlist = await repository.createPlaylist(
+                    name: automaticPlaylistName(for: entry, tracks: tracks)
+                )
+                await repository.addTracks(tracks, to: playlist)
+            }
+        }
+
+        if context.mode == .referenced, !boundDirectorySourceIDs.isEmpty {
+            try await referencedSourceReconciler?.createPlaylistsForSources(boundDirectorySourceIDs)
+        }
+    }
+
+    private func importedTracks(
+        for entry: LibraryImportSourceEntry,
+        result: LibraryInitialImportResult
+    ) async -> [Track] {
+        let selectedPaths = Set(entry.urls.map(LibraryImportSourceEntry.canonicalPath))
+        let importedIDs = result.importedTrackIDsByPath.compactMap { path, trackID in
+            switch entry.kind {
+            case .directory:
+                let root = entry.urls.first.map(LibraryImportSourceEntry.canonicalPath) ?? ""
+                return path == root || path.hasPrefix(root + "/") ? trackID : nil
+            case .individualFiles:
+                return selectedPaths.contains(path) ? trackID : nil
+            }
+        }
+        guard !importedIDs.isEmpty else { return [] }
+        let tracks = await repository.fetchTracks(ids: Array(Set(importedIDs)))
+        var order: [UUID: Int] = [:]
+        for (index, trackID) in importedIDs.enumerated() {
+            order[trackID] = min(order[trackID] ?? index, index)
+        }
+        return tracks.sorted { (order[$0.id] ?? .max) < (order[$1.id] ?? .max) }
+    }
+
+    private func automaticPlaylistName(for entry: LibraryImportSourceEntry, tracks: [Track]) -> String {
+        guard entry.kind == .individualFiles else { return entry.displayName }
+        let title = tracks.first?.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let firstTitle = title?.isEmpty == false ? title! : entry.displayName
+        return entry.urls.count > 1 ? "\(firstTitle) 等歌曲" : firstTitle
     }
 
     @discardableResult
@@ -313,6 +398,7 @@ final class LibrarySession: LibrarySessionLifecycle {
             guard !sourceIDs.isEmpty, let reconciler else { return }
             do {
                 try await reconciler.reconcile(sourceIDs: sourceIDs)
+                await libraryViewModel?.reloadLibrary()
             } catch {
                 await monitor.markFailed(sourceIDs: sourceIDs)
                 await reconciler.reportMonitorFailure(sourceIDs: sourceIDs, error: error)

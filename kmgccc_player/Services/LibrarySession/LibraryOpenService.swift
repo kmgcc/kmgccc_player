@@ -4,6 +4,9 @@ nonisolated struct LibraryOpenInspection: Sendable, Equatable {
     let context: LibraryContext
     let descriptor: MusicLibraryBookmark
     let previousDescriptor: MusicLibraryBookmark?
+    /// A stale registry row that still claims the selected path. Opening may
+    /// replace this row in the index, but never removes the physical root.
+    let stalePathConflictLibraryID: UUID?
 }
 
 nonisolated struct LibraryOpenResult: Sendable, Equatable {
@@ -54,7 +57,10 @@ final class LibraryOpenService {
         self.generation = initialGeneration
     }
 
-    func inspect(selectedURL: URL) async throws -> LibraryOpenInspection {
+    func inspect(
+        selectedURL: URL,
+        allowStalePathConflictRepair: Bool = false
+    ) async throws -> LibraryOpenInspection {
         let root = try await resolveLibraryRoot(selectedURL)
         let didStart = bookmarkResolver.startAccessing(root)
         guard didStart || !requiresSecurityScope else { throw LibraryOpenError.securityScopeDenied }
@@ -77,10 +83,18 @@ final class LibraryOpenService {
         }
         let registry = await registryStore.snapshot()
         let normalizedRoot = root.standardizedFileURL
-        if registry.libraries.contains(where: {
+        let pathConflict = registry.libraries.first(where: {
             $0.id != manifest.libraryID
                 && URL(fileURLWithPath: $0.lastKnownPath).standardizedFileURL == normalizedRoot
-        }) { throw LibraryOpenError.pathConflict }
+        })
+        let stalePathConflictLibraryID = allowStalePathConflictRepair
+            ? pathConflict.flatMap { conflict in
+                isStalePathConflict(conflict, at: normalizedRoot) ? conflict.id : nil
+            }
+            : nil
+        if pathConflict != nil, stalePathConflictLibraryID == nil {
+            throw LibraryOpenError.pathConflict
+        }
 
         let bookmark: Data
         do { bookmark = try bookmarkResolver.refreshBookmark(for: root) }
@@ -90,12 +104,20 @@ final class LibraryOpenService {
         return LibraryOpenInspection(
             context: LibraryContext(manifest: manifest, rootURL: root, rootBookmarkData: bookmark, generation: generation),
             descriptor: descriptor,
-            previousDescriptor: registry.library(id: manifest.libraryID)
+            previousDescriptor: registry.library(id: manifest.libraryID),
+            stalePathConflictLibraryID: stalePathConflictLibraryID
         )
     }
 
-    func open(selectedURL: URL, activate: Bool = true) async throws -> LibraryOpenResult {
-        let inspection = try await inspect(selectedURL: selectedURL)
+    func open(
+        selectedURL: URL,
+        activate: Bool = true,
+        allowStalePathConflictRepair: Bool = false
+    ) async throws -> LibraryOpenResult {
+        let inspection = try await inspect(
+            selectedURL: selectedURL,
+            allowStalePathConflictRepair: allowStalePathConflictRepair
+        )
         guard activate else {
             return LibraryOpenResult(context: inspection.context, didRegister: false, didRefreshBookmark: false)
         }
@@ -151,6 +173,16 @@ final class LibraryOpenService {
         let beforeRegistry = await registryStore.snapshot()
         let previousSession = sessionController.activeLibraryContext
         do {
+            if let staleID = inspection.stalePathConflictLibraryID {
+                guard let staleDescriptor = beforeRegistry.library(id: staleID),
+                      URL(fileURLWithPath: staleDescriptor.lastKnownPath).standardizedFileURL
+                        == inspection.context.rootURL.standardizedFileURL else {
+                    throw LibraryOpenError.pathConflict
+                }
+                // Repair only the registry row. The root remains in place and
+                // is registered under the manifest identity below.
+                try await registryStore.remove(libraryID: staleID)
+            }
             try await registryStore.register(inspection.descriptor)
             try await sessionController.switchToLibrary(inspection.context)
             try await registryStore.setActiveLibrary(id: inspection.context.id, manifestMode: inspection.context.mode)
@@ -169,6 +201,30 @@ final class LibraryOpenService {
             didRefreshBookmark: inspection.previousDescriptor?.rootBookmarkData != inspection.descriptor.rootBookmarkData
                 || inspection.previousDescriptor?.lastKnownPath != inspection.descriptor.lastKnownPath
         )
+    }
+
+    private func isStalePathConflict(
+        _ descriptor: MusicLibraryBookmark,
+        at normalizedRoot: URL
+    ) -> Bool {
+        do {
+            // The registry row may point to a root that has already been
+            // removed or replaced. For this explicit recovery path, the
+            // durable evidence is the row's recorded path plus the current
+            // root's valid manifest; do not require the old bookmark to
+            // resolve before repairing its stale index entry.
+            guard URL(fileURLWithPath: descriptor.lastKnownPath).standardizedFileURL == normalizedRoot else {
+                return false
+            }
+            let manifest = try MusicLibraryManifest.read(
+                from: LibraryPaths(rootURL: normalizedRoot).manifestURL
+            )
+            return manifest.libraryID != descriptor.id || manifest.mode != descriptor.modeProjection
+        } catch {
+            // An unreadable conflict is not safe to take over; retain the
+            // original reconnect/path-conflict behaviour.
+            return false
+        }
     }
 
     private func resolveLibraryRoot(_ selectedURL: URL) async throws -> URL {

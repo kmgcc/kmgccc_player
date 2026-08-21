@@ -222,7 +222,8 @@ final class LibraryCreationService {
         parentURL: URL,
         displayName: String,
         initialImport: LibraryInitialImportPayload = .init(),
-        allowAlternateDestinationWhenOccupied: Bool = false
+        allowAlternateDestinationWhenOccupied: Bool = false,
+        allowStalePathConflictRepair: Bool = false
     ) async throws -> LibraryCreationResult {
         do { try gate.acquire() }
         catch { throw LibraryCreationError.stagingFailed }
@@ -243,7 +244,10 @@ final class LibraryCreationService {
         var suffix = 1
         while await fileOperator.itemExists(at: destination) {
             do {
-                let inspected = try await openService.inspect(selectedURL: destination)
+                let inspected = try await openService.inspect(
+                    selectedURL: destination,
+                    allowStalePathConflictRepair: allowStalePathConflictRepair
+                )
                 guard allowAlternateDestinationWhenOccupied else {
                     return inspected.context.mode == mode
                         ? .existingLibrary(inspected.context)
@@ -275,7 +279,10 @@ final class LibraryCreationService {
         }
 
         do {
-            let inspection = try await openService.inspect(selectedURL: destination)
+            let inspection = try await openService.inspect(
+                selectedURL: destination,
+                allowStalePathConflictRepair: allowStalePathConflictRepair
+            )
             let opened = try await openService.commitActivation(inspection, gateAlreadyHeld: true)
             return .created(opened.context, initialImport: initialImport)
         } catch LibraryOpenError.recoveryFailed {

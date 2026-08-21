@@ -187,7 +187,15 @@ final class AppSessionHost: ObservableObject {
     func openMusicLibrary(at url: URL) async throws -> [UUID] {
         try guardLibrarySwitchAllowed()
         guard let libraryOpenService else { throw LibraryOpenError.libraryNotFound }
-        _ = try await libraryOpenService.open(selectedURL: url)
+        let selectedURL = url.standardizedFileURL
+        let defaultRoot = LibraryLocationStore.defaultLibraryRootURL.standardizedFileURL
+        let isDefaultLibrarySelection = selectedURL == defaultRoot
+            || selectedURL.appendingPathComponent(LibraryPaths.rootDirectoryName, isDirectory: true)
+                .standardizedFileURL == defaultRoot
+        _ = try await libraryOpenService.open(
+            selectedURL: selectedURL,
+            allowStalePathConflictRepair: isDefaultLibrarySelection
+        )
         return try await unavailableReferencedSourceIDs()
     }
 
@@ -399,15 +407,24 @@ final class AppSessionHost: ObservableObject {
                 await releaseActiveSessionBindings()
             }
         case .noActive:
-            if let createdContext = await createFactoryDefaultLibraryIfFreshInstall() {
-                // LibraryCreationService.create already activated the session.
+            if let defaultContext = await ensureFactoryDefaultLibraryIfNeeded() {
+                // The default-library path is either opened or created by the
+                // lifecycle service. Both paths activate the session before
+                // returning, so the normal empty-library UI can render.
                 await restorePlaybackMemoryIfNeeded()
-                _ = createdContext
+                _ = defaultContext
             } else {
                 Log.info("[LibrarySession] no active library; waiting for chooser", category: .library)
             }
         case .unavailable:
-            Log.info("[LibrarySession] active library unavailable; waiting for reconnect", category: .library)
+            if let defaultContext = await ensureFactoryDefaultLibraryIfNeeded(
+                allowUnreachableActiveLibrary: true
+            ) {
+                await restorePlaybackMemoryIfNeeded()
+                _ = defaultContext
+            } else {
+                Log.info("[LibrarySession] active library unavailable; waiting for reconnect", category: .library)
+            }
         }
 
         LegacyCacheCleanupCoordinator.shared.captureBuild7UpgradeEligibilityBeforeLaunchRecord()
@@ -435,35 +452,76 @@ final class AppSessionHost: ObservableObject {
         autoPresentLibrarySetupIfNeeded()
     }
 
-    /// True fresh install / full reset: nothing is registered and the
-    /// bootstrap found no legacy library. Recreate the factory-default
-    /// managed library at `~/Music/kmgccc_player Library` (the pre-multi-
-    /// library behaviour) so the main window loads normally with the
-    /// standard "no music" empty state instead of a placeholder pane.
-    /// Returns the opened context, or nil when this is not a fresh install
-    /// or creation failed (the caller then falls back to the chooser pane).
-    private func createFactoryDefaultLibraryIfFreshInstall() async -> LibraryContext? {
-        guard initialLibraryContext == nil,
-              let registryStore, let libraryCreationService else { return nil }
+    /// Restores the pre-multi-library startup invariant: when there is no
+    /// active, reachable library, the default managed library is opened or
+    /// created at `~/Music/kmgccc_player Library` before the main window is
+    /// shown. This keeps the normal empty-library shell available while the
+    /// setup wizard floats above it.
+    private func ensureFactoryDefaultLibraryIfNeeded(
+        allowUnreachableActiveLibrary: Bool = false
+    ) async -> LibraryContext? {
+        guard let registryStore,
+              let libraryOpenService,
+              let libraryCreationService else { return nil }
         let registry = await registryStore.snapshot()
-        guard registry.libraries.isEmpty else { return nil }
-        let parentURL = LibraryLocationStore.defaultLibraryRootURL.deletingLastPathComponent()
+
+        // A nil active pointer can also be left behind by an interrupted
+        // removal or by an older registry reset. Do not create a second
+        // default library when another registered library is still usable.
+        guard allowUnreachableActiveLibrary || registry.activeLibraryID == nil else { return nil }
+        if !registry.libraries.isEmpty {
+            let resolver = LibraryStartupContextResolver(registryStore: registryStore)
+            for descriptor in registry.libraries {
+                if (try? await resolver.resolveRegistered(libraryID: descriptor.id)) != nil {
+                    return nil
+                }
+            }
+        }
+
+        let defaultRoot = LibraryLocationStore.defaultLibraryRootURL
+        if FileManager.default.fileExists(atPath: defaultRoot.path) {
+            do {
+                // This also repairs a stale registry row that still claims
+                // the default path for a different library identifier. The
+                // physical library is never removed by this recovery path.
+                return try await libraryOpenService.open(
+                    selectedURL: defaultRoot,
+                    allowStalePathConflictRepair: true
+                ).context
+            } catch {
+                Log.debug(
+                    "[LibrarySession] default library is not openable; trying creation: \(error)",
+                    category: .library
+                )
+            }
+        }
+
+        let parentURL = defaultRoot.deletingLastPathComponent()
         do {
             let result = try await libraryCreationService.create(
                 mode: .managed,
                 parentURL: parentURL,
-                displayName: "音乐资料库"
+                displayName: "音乐资料库",
+                allowStalePathConflictRepair: true
             )
-            shouldPresentFirstRunLibrarySetup = true
             switch result {
-            case .created(let context, _), .existingLibrary(let context):
+            case .created(let context, _):
+                shouldPresentFirstRunLibrarySetup = true
                 return context
-            case .existingLibraryModeMismatch(let context, _):
-                return context
+            case .existingLibrary(let context):
+                // `create` deliberately leaves an already existing library
+                // unactivated for the setup flow. Startup must explicitly
+                // activate it before returning a context to the window.
+                return try await libraryOpenService.open(
+                    selectedURL: context.rootURL,
+                    allowStalePathConflictRepair: true
+                ).context
+            case .existingLibraryModeMismatch:
+                return nil
             }
         } catch {
             Log.error(
-                "[LibrarySession] factory-default library creation failed: \(error)",
+                "[LibrarySession] factory-default library ensure failed: \(error)",
                 category: .library
             )
             return nil
