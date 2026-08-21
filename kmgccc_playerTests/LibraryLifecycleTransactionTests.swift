@@ -94,6 +94,26 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         ) { XCTAssertEqual($0 as? LibraryOpenError, .pathConflict) }
     }
 
+    func testOpenExplicitRecoveryReplacesStalePathDescriptorWithoutRemovingRoot() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("recovered")
+        let actual = try fixture.makeLibrary(at: root, mode: .managed, displayName: "Recovered")
+        let stale = kmgccc_player.MusicLibraryManifest(displayName: "Stale", mode: .managed)
+        try await fixture.registerWithoutActivation(root: root, manifest: stale)
+
+        let opened = try await fixture.openService.open(
+            selectedURL: root,
+            allowStalePathConflictRepair: true
+        )
+
+        XCTAssertEqual(opened.context.id, actual.libraryID)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.path))
+        let registry = await fixture.registry.snapshot()
+        XCTAssertNil(registry.library(id: stale.libraryID))
+        XCTAssertEqual(registry.activeLibraryID, actual.libraryID)
+    }
+
     func testReconnectRegisteredLibraryRejectsWrongIdentityAndModeWithoutMutation() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }

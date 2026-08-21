@@ -77,6 +77,58 @@ final class LibraryInitialImportIntegrationTests: XCTestCase {
         await restartedSession.close()
     }
 
+    func testSelectedSourcesCreatePlaylistsAndFolderPlaylistStaysSynchronized() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let individualURL = fixture.root.appendingPathComponent("Single.wav")
+        try writeWAV(to: individualURL)
+
+        let entries = LibraryImportSourceEntry.makeEntries(from: [fixture.sourceRoot, individualURL])
+        XCTAssertEqual(entries.count, 2)
+        XCTAssertEqual(entries.filter { $0.kind == .directory }.count, 1)
+        XCTAssertEqual(entries.first { $0.kind == .individualFiles }?.urls, [individualURL])
+
+        let host = try makeHost(registryURL: fixture.registryURL)
+        let selection = LibraryInitialImportSelection(
+            urls: [fixture.sourceRoot, individualURL],
+            playlistSourceEntries: entries
+        )
+        _ = try await host.createMusicLibrary(
+            mode: .referenced,
+            parentURL: fixture.libraryParent,
+            displayName: "Playlists",
+            initialImportSelection: selection
+        )
+
+        let session = try XCTUnwrap(host.activeLibraryBinding.activeSession)
+        var playlists = await session.repository.fetchPlaylists()
+        XCTAssertEqual(playlists.count, 2)
+        let folderPlaylist = try XCTUnwrap(playlists.first { $0.name == fixture.sourceRoot.lastPathComponent })
+        let individualPlaylist = try XCTUnwrap(playlists.first { $0.id != folderPlaylist.id })
+        XCTAssertEqual(folderPlaylist.tracks.count, 1)
+        XCTAssertEqual(individualPlaylist.tracks.count, 1)
+
+        let descriptors = try await XCTUnwrap(session.referencedSourceStore).loadAll()
+        let folderDescriptor = try XCTUnwrap(descriptors.first { $0.mode == .directory })
+        XCTAssertEqual(folderDescriptor.playlistID, folderPlaylist.id)
+        XCTAssertEqual(folderDescriptor.playlistManagedTrackIDs?.count, 1)
+
+        let addedURL = fixture.sourceRoot.appendingPathComponent("Added.wav")
+        try writeWAV(to: addedURL)
+        _ = try await session.refreshReferencedSources()
+        playlists = await session.repository.fetchPlaylists()
+        XCTAssertEqual(playlists.first { $0.id == folderPlaylist.id }?.tracks.count, 2)
+
+        try FileManager.default.removeItem(at: fixture.wavURL)
+        _ = try await session.refreshReferencedSources()
+        playlists = await session.repository.fetchPlaylists()
+        XCTAssertEqual(playlists.first { $0.id == folderPlaylist.id }?.tracks.count, 1)
+        XCTAssertEqual(playlists.first { $0.id == individualPlaylist.id }?.tracks.count, 1)
+
+        await session.quiesce()
+        await session.close()
+    }
+
     func testEmptyAndUnsupportedFoldersRegisterSourceAndReturnWarningResult() async throws {
         for unsupportedOnly in [false, true] {
             let fixture = try makeFixture()
