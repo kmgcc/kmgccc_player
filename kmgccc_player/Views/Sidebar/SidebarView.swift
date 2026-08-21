@@ -96,6 +96,18 @@ struct SidebarView: View {
                         .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                         .listRowBackground(Color.clear)
                         .contextMenu {
+                            Button {
+                                Task { @MainActor in
+                                    let count = await libraryVM.importToPlaylist(playlist)
+                                    guard count > 0 else { return }
+                                    uiState.showSidebarNotice("已导入 \(count) 首歌曲")
+                                }
+                            } label: {
+                                Label("导入到当前播放列表", systemImage: "square.and.arrow.down")
+                            }
+
+                            Divider()
+
                             Button(role: .destructive) {
                                 deletionRequest = .playlist(playlist: playlist)
                             } label: {

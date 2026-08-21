@@ -1132,15 +1132,16 @@ final class LibraryViewModel {
     }
 
     /// Import to a specific playlist.
-    func importToPlaylist(_ playlist: Playlist) async {
+    @discardableResult
+    func importToPlaylist(_ playlist: Playlist) async -> Int {
         let clickTimestamp = Date()
         guard let service = importService else {
             Log.warning("Import service not available", category: .import)
-            return
+            return 0
         }
 
         guard let selectedURLs = await service.pickImportURLs(triggeredAt: clickTimestamp) else {
-            return
+            return 0
         }
 
         let previousTrackCount = playlist.trackCount
@@ -1153,6 +1154,7 @@ final class LibraryViewModel {
                 previousTrackCount: previousTrackCount
             )
         }
+        return count
     }
 
     // MARK: - Playlist Operations

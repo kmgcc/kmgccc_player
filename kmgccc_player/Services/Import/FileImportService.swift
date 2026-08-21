@@ -47,6 +47,13 @@ nonisolated struct TrackPreview: Sendable {
     let artworkData: Data?
 }
 
+nonisolated struct ExistingTrackSnapshot: Sendable {
+    let id: UUID
+    let originalFilePath: String
+    let duration: Double
+    let preview: TrackPreview
+}
+
 nonisolated struct DuplicatePairRow: Identifiable, Sendable {
     let id: String
     let fileURL: URL
@@ -115,15 +122,30 @@ final class FileImportService: FileImportServiceProtocol {
         let lyricsText: String?
     }
 
-    private struct ExistingTrackMatchSnapshot: Sendable {
-        let preview: TrackPreview?
-        let count: Int
+    nonisolated private struct ExistingTrackMatchSnapshot: Sendable {
+        let matches: [ExistingTrackSnapshot]
+
+        var preview: TrackPreview? { matches.first?.preview }
+        var count: Int { matches.count }
     }
 
-    private struct CandidatePreparationResult: Sendable {
+    nonisolated private struct CandidatePreparationResult: Sendable {
         let index: Int
         let candidate: ImportCandidate
         let duplicateRow: DuplicatePairRow?
+        let reusedTrackID: UUID?
+
+        init(
+            index: Int,
+            candidate: ImportCandidate,
+            duplicateRow: DuplicatePairRow?,
+            reusedTrackID: UUID? = nil
+        ) {
+            self.index = index
+            self.candidate = candidate
+            self.duplicateRow = duplicateRow
+            self.reusedTrackID = reusedTrackID
+        }
     }
 
     private struct NCMConversionTaskOutput: Sendable {
@@ -474,14 +496,18 @@ final class FileImportService: FileImportServiceProtocol {
         }
         let existingSnapshots = existingByDedupKey.mapValues { matches in
             ExistingTrackMatchSnapshot(
-                preview: matches.first.map {
-                    TrackPreview(
-                        title: $0.title,
-                        artist: $0.artist,
-                        artworkData: $0.artworkData
+                matches: matches.map {
+                    ExistingTrackSnapshot(
+                        id: $0.id,
+                        originalFilePath: $0.originalFilePath,
+                        duration: $0.duration,
+                        preview: TrackPreview(
+                            title: $0.title,
+                            artist: $0.artist,
+                            artworkData: $0.artworkData
+                        )
                     )
-                },
-                count: matches.count
+                }
             )
         }
 
@@ -494,6 +520,11 @@ final class FileImportService: FileImportServiceProtocol {
         )
         let uniqueCandidates = preparedCandidates.unique
         let duplicateRows = preparedCandidates.duplicates
+        let reusedTrackIDs = Set(preparedCandidates.reusedTrackIDs)
+        let existingPlaylistTrackIDs = Set(playlist.tracks.map(\.id))
+        let reusedTracksToAdd = libraryTracks.filter {
+            reusedTrackIDs.contains($0.id) && !existingPlaylistTrackIDs.contains($0.id)
+        }
 
         if await isImportCancellationRequested(progressController, cancellationToken) {
             return await finishCancelledImport(
@@ -553,6 +584,10 @@ final class FileImportService: FileImportServiceProtocol {
             }
         }
 
+        if !reusedTracksToAdd.isEmpty {
+            await repository.addTracks(reusedTracksToAdd, to: playlist)
+        }
+
         // Logic Verification Logs
         Log.debug("--------------------------------------------------", category: .import)
         Log.debug("Import Logic Verification:", category: .import)
@@ -573,6 +608,22 @@ final class FileImportService: FileImportServiceProtocol {
             completedCount: 0,
             totalCount: finalCandidates.count
         )
+
+        if finalCandidates.isEmpty {
+            importSession.cleanupStaging()
+            progressController.update(
+                stage: .completed,
+                progress: 1.0,
+                detail: reusedTracksToAdd.isEmpty
+                    ? "没有需要导入的新歌曲"
+                    : "已将 \(reusedTracksToAdd.count) 首歌曲加入“\(playlist.name)”",
+                completedCount: reusedTracksToAdd.count,
+                totalCount: max(reusedTracksToAdd.count, 1)
+            )
+            crashBreadcrumbResult = "completed"
+            crashBreadcrumbImportedCount = reusedTracksToAdd.count
+            return reusedTracksToAdd.count
+        }
 
         let enrichmentMode: ImportEnrichmentMode =
             AppSettings.shared.deferImportEnrichment ? .deferred : .immediate
@@ -718,16 +769,16 @@ final class FileImportService: FileImportServiceProtocol {
         progressController.update(
             stage: .completed,
             progress: 1.0,
-            detail: "已成功导入 \(importedRecords.count) 首歌曲到“\(playlist.name)”",
+            detail: "已成功导入 \(importedRecords.count + reusedTracksToAdd.count) 首歌曲到“\(playlist.name)”",
             completedCount: importedTracks.count,
-            totalCount: finalCandidates.count
+            totalCount: finalCandidates.count + reusedTracksToAdd.count
         )
         try? await Task.sleep(nanoseconds: 500_000_000)
 
-        print("✅ Import complete: \(importedRecords.count) imported")
+        print("✅ Import complete: \(importedRecords.count + reusedTracksToAdd.count) imported")
         crashBreadcrumbResult = "completed"
-        crashBreadcrumbImportedCount = importedRecords.count
-        return importedRecords.count
+        crashBreadcrumbImportedCount = importedRecords.count + reusedTracksToAdd.count
+        return importedRecords.count + reusedTracksToAdd.count
     }
 
     // MARK: - Private Methods
@@ -1174,8 +1225,8 @@ final class FileImportService: FileImportServiceProtocol {
         metadataOverride: ImportMetadataOverride?,
         progressController: BatchImportProgressDialogController,
         cancellationToken: ImportCancellationToken
-    ) async -> (unique: [ImportCandidate], duplicates: [DuplicatePairRow]) {
-        guard !files.isEmpty else { return ([], []) }
+    ) async -> (unique: [ImportCandidate], duplicates: [DuplicatePairRow], reusedTrackIDs: [UUID]) {
+        guard !files.isEmpty else { return ([], [], []) }
 
         progressController.update(
             stage: .readingMetadata,
@@ -1264,16 +1315,19 @@ final class FileImportService: FileImportServiceProtocol {
 
         var uniqueCandidates: [ImportCandidate] = []
         var duplicateRows: [DuplicatePairRow] = []
+        var reusedTrackIDs: [UUID] = []
 
         for output in orderedResults.compactMap({ $0 }) {
-            if let duplicateRow = output.duplicateRow {
+            if let reusedTrackID = output.reusedTrackID {
+                reusedTrackIDs.append(reusedTrackID)
+            } else if let duplicateRow = output.duplicateRow {
                 duplicateRows.append(duplicateRow)
             } else {
                 uniqueCandidates.append(output.candidate)
             }
         }
 
-        return (uniqueCandidates, duplicateRows)
+        return (uniqueCandidates, duplicateRows, reusedTrackIDs)
     }
 
     nonisolated private static func buildCandidatePreparationResult(
@@ -1371,12 +1425,30 @@ final class FileImportService: FileImportServiceProtocol {
             return CandidatePreparationResult(index: index, candidate: candidate, duplicateRow: nil)
         }
 
+        let durationMatches = existingMatch.matches.filter {
+            Self.matchesDuplicateDuration($0.duration, effectivePreview.duration)
+        }
+        guard !durationMatches.isEmpty else {
+            return CandidatePreparationResult(index: index, candidate: candidate, duplicateRow: nil)
+        }
+
+        if let sameSourceTrack = durationMatches.first(where: {
+            Self.matchesOriginalFile($0.originalFilePath, incomingURL: file.fileURL)
+        }) {
+            return CandidatePreparationResult(
+                index: index,
+                candidate: candidate,
+                duplicateRow: nil,
+                reusedTrackID: sameSourceTrack.id
+            )
+        }
+
         let duplicateRow = DuplicatePairRow(
             id: file.progressID,
             fileURL: file.fileURL,
             incoming: effectivePreview,
-            existing: existingMatch.preview,
-            existingCount: existingMatch.count,
+            existing: durationMatches.first?.preview,
+            existingCount: durationMatches.count,
             dedupKey: dedupKey
         )
         return CandidatePreparationResult(
@@ -1384,6 +1456,22 @@ final class FileImportService: FileImportServiceProtocol {
             candidate: candidate,
             duplicateRow: duplicateRow
         )
+    }
+
+    nonisolated private static func matchesDuplicateDuration(_ lhs: Double, _ rhs: Double) -> Bool {
+        guard lhs > 0, rhs > 0, lhs.isFinite, rhs.isFinite else { return false }
+        return abs(lhs - rhs) <= 1.0
+    }
+
+    nonisolated private static func matchesOriginalFile(_ storedPath: String, incomingURL: URL) -> Bool {
+        guard !storedPath.isEmpty else { return false }
+        let storedURL = URL(fileURLWithPath: storedPath)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        let incomingPath = incomingURL
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        return storedURL.path == incomingPath.path
     }
 
     nonisolated private static func applyingMetadataOverride(
