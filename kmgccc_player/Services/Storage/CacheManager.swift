@@ -32,6 +32,28 @@ struct LegacyCacheCleanupResult: Sendable {
 nonisolated enum CacheManager {
     static let staleImportStagingAge: TimeInterval = 24 * 60 * 60
 
+    @MainActor
+    static func purgeRebuildableMemoryCaches(reason: String) async {
+        HomeArtworkMemoryStore.shared.clearMemory()
+        HomePlaylistCardCoverStore.shared.clearMemory()
+        HomePlaylistPreviewArtworkStore.shared.clearMemory()
+        BKThemeAssets.shared.purgeTransientCaches()
+
+        await ArtworkAssetStore.shared.purgeHydratedImages()
+        await TrackArtworkCache.shared.clearMemory()
+        await ArtworkDerivativeCacheStore.shared.clearMemory()
+        await PlaylistArtworkPipeline.shared.clearMemory()
+        await ArtworkLoader.clearMemoryCache()
+        await PlaylistPageModelCacheService.shared.removeAll()
+        await CassetteArtworkCache.shared.removeAll()
+        ThemeStore.shared.clearArtworkColorCache()
+
+        Log.info(
+            "[CacheManager] Purged rebuildable memory caches reason=\(reason)",
+            category: .perf
+        )
+    }
+
     static func clearLibraryCaches() async {
         await ArtworkAssetStore.shared.clearCache()
         await TrackArtworkCache.shared.clearMemory()

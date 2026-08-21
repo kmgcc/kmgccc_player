@@ -9,6 +9,7 @@
 import AppKit
 import AVFoundation
 import Combine
+import Dispatch
 import SwiftData
 
 @MainActor
@@ -36,6 +37,7 @@ final class AppSessionHost: ObservableObject {
     private var libraryService: LocalLibraryService?
     private var repository: LibraryRepositoryProtocol?
     private var playbackMemoryTimer: Timer?
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
     private let mainThreadStallMonitor = MainThreadStallMonitor()
     private var firstUsePrewarmTask: Task<Void, Never>?
     private var lyricsPlaybackPipeline: LyricsPlaybackPipeline?
@@ -67,6 +69,7 @@ final class AppSessionHost: ObservableObject {
 
         Log.debug("[Lifecycle] AppSessionHost initial setup", category: .ui)
         mainThreadStallMonitor.start()
+        startMemoryPressureMonitoring()
         setupDependencies()
         await restorePlaybackMemoryIfNeeded()
 
@@ -328,12 +331,32 @@ final class AppSessionHost: ObservableObject {
                 NotificationCenter.default.removeObserver(libraryLocationObserver)
             }
             playbackMemoryTimer?.invalidate()
+            memoryPressureSource?.cancel()
             firstUsePrewarmTask?.cancel()
             AppDelegate.applicationWillTerminateHandler = nil
             AppDelegate.shouldCancelTerminationForPendingUpdateHandler = nil
             UpdateCoordinator.shared.terminationPreparationHandler = nil
             UpdateCoordinator.shared.installationDidAbortHandler = nil
         }
+    }
+
+    private func startMemoryPressureMonitoring() {
+        guard memoryPressureSource == nil else { return }
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical],
+            queue: .main
+        )
+        source.setEventHandler { [weak self, weak source] in
+            guard self != nil, let event = source?.data else { return }
+            let reason = event.contains(.critical) ? "critical" : "warning"
+            Task { @MainActor in
+                await CacheManager.purgeRebuildableMemoryCaches(
+                    reason: "system-memory-pressure-\(reason)"
+                )
+            }
+        }
+        source.resume()
+        memoryPressureSource = source
     }
 
     private func prepareForTermination(

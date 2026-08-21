@@ -12,25 +12,21 @@ import Foundation
 final class HomeArtworkMemoryStore {
     static let shared = HomeArtworkMemoryStore()
 
-    private var images: [String: NSImage] = [:]
-    private var insertionOrder: [String] = []
-    private let capacity = 640
+    private var cache = CostBoundedCache<String, NSImage>(
+        countLimit: 256,
+        totalCostLimit: 64 * 1024 * 1024
+    )
 
     func cachedImage(for key: String) -> NSImage? {
-        images[key]
+        cache.value(forKey: key)
     }
 
     func store(_ image: NSImage, for key: String) {
-        if images[key] == nil {
-            insertionOrder.append(key)
-        }
-        images[key] = image
-        if insertionOrder.count > capacity {
-            let oldest = insertionOrder.removeFirst()
-            if oldest != key {
-                images.removeValue(forKey: oldest)
-            }
-        }
+        cache.insert(image, forKey: key, cost: Self.estimatedCost(for: image))
+    }
+
+    func clearMemory() {
+        cache.removeAll()
     }
 
     static func heroCoverKey(for track: Track) -> String {
@@ -63,6 +59,15 @@ final class HomeArtworkMemoryStore {
 
     private static func trackKey(prefix: String, track: Track, pixelSide: Int) -> String {
         "\(prefix)|\(track.id.uuidString)|\(track.artworkFileName ?? "embedded")|\(ArtworkDataFingerprint.sampledString(for: track.artworkData))|\(pixelSide)"
+    }
+
+    private static func estimatedCost(for image: NSImage) -> Int {
+        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            return max(1, cgImage.bytesPerRow * cgImage.height)
+        }
+        let width = max(1, Int(ceil(image.size.width)))
+        let height = max(1, Int(ceil(image.size.height)))
+        return width * height * 4
     }
 }
 

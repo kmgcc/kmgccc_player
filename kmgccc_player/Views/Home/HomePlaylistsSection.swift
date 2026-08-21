@@ -881,25 +881,30 @@ private struct HomePlaylistCard: View {
 final class HomePlaylistCardCoverStore {
     static let shared = HomePlaylistCardCoverStore()
 
-    private var images: [String: NSImage] = [:]
-    private var insertionOrder: [String] = []
-    private let capacity = 128
+    private var cache = CostBoundedCache<String, NSImage>(
+        countLimit: 32,
+        totalCostLimit: 48 * 1024 * 1024
+    )
 
     func cachedImage(for identity: String) -> NSImage? {
-        images[identity]
+        cache.value(forKey: identity)
     }
 
     func store(_ image: NSImage, for identity: String) {
-        if images[identity] == nil {
-            insertionOrder.append(identity)
+        cache.insert(image, forKey: identity, cost: Self.estimatedCost(for: image))
+    }
+
+    func clearMemory() {
+        cache.removeAll()
+    }
+
+    private static func estimatedCost(for image: NSImage) -> Int {
+        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            return max(1, cgImage.bytesPerRow * cgImage.height)
         }
-        images[identity] = image
-        if insertionOrder.count > capacity {
-            let oldest = insertionOrder.removeFirst()
-            if oldest != identity {
-                images.removeValue(forKey: oldest)
-            }
-        }
+        let width = max(1, Int(ceil(image.size.width)))
+        let height = max(1, Int(ceil(image.size.height)))
+        return width * height * 4
     }
 }
 
@@ -1080,7 +1085,7 @@ private struct HomeFeaturedPlaylistTrackArtwork: View {
 /// 4–8 covers can survive LazyVStack rematerialization without flashing
 /// the placeholder while the actor cache is hopped to.
 @MainActor
-private final class HomePlaylistPreviewArtworkStore {
+final class HomePlaylistPreviewArtworkStore {
     static let shared = HomePlaylistPreviewArtworkStore()
 
     /// Single bucketed thumbnail pixel size used across all Home layout
@@ -1088,25 +1093,30 @@ private final class HomePlaylistPreviewArtworkStore {
     /// derivative key per track.
     static let previewPixelSide: CGFloat = 96
 
-    private var images: [UUID: NSImage] = [:]
-    private var insertionOrder: [UUID] = []
-    private let capacity = 256
+    private var cache = CostBoundedCache<UUID, NSImage>(
+        countLimit: 256,
+        totalCostLimit: 16 * 1024 * 1024
+    )
 
     func cachedImage(forTrackID trackID: UUID) -> NSImage? {
-        images[trackID]
+        cache.value(forKey: trackID)
     }
 
     func store(_ image: NSImage, forTrackID trackID: UUID) {
-        if images[trackID] == nil {
-            insertionOrder.append(trackID)
+        cache.insert(image, forKey: trackID, cost: Self.estimatedCost(for: image))
+    }
+
+    func clearMemory() {
+        cache.removeAll()
+    }
+
+    private static func estimatedCost(for image: NSImage) -> Int {
+        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            return max(1, cgImage.bytesPerRow * cgImage.height)
         }
-        images[trackID] = image
-        if insertionOrder.count > capacity {
-            let oldest = insertionOrder.removeFirst()
-            if oldest != trackID {
-                images.removeValue(forKey: oldest)
-            }
-        }
+        let width = max(1, Int(ceil(image.size.width)))
+        let height = max(1, Int(ceil(image.size.height)))
+        return width * height * 4
     }
 }
 
