@@ -34,6 +34,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         label: "AudioAnalysisHub.processing",
         qos: .utility
     )
+    private let processingQueueKey = DispatchSpecificKey<Void>()
 
     private let fftSize: Int = 2048
     // Tap delivery granularity. Smaller than the FFT window so fresh samples
@@ -117,6 +118,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         self.fftImag = [Float](repeating: 0, count: fftSize / 2)
         self.fftMagnitudes = [Float](repeating: 0, count: fftSize / 2)
 
+        processingQueue.setSpecific(key: processingQueueKey, value: ())
         rebuildFFT()
     }
 
@@ -409,14 +411,30 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         consumers.removeAll()
         consumerLock.unlock()
 
-        resetBuffer()
-        fftInput = [Float](repeating: 0, count: fftSize)
-        fftReal = [Float](repeating: 0, count: fftSize / 2)
-        fftImag = [Float](repeating: 0, count: fftSize / 2)
-        fftMagnitudes = [Float](repeating: 0, count: fftSize / 2)
-        sampleRate = 44_100
+        // `stop()` can be called from the main actor (LEDMeterService) or from
+        // another visualization queue. Cancelling the timer does not wait for a
+        // `process()` invocation that is already running, so replacing FFT
+        // storage here would race that invocation and can crash in libswiftCore.
+        syncOnProcessingQueue {
+            resetBuffer()
+            fftInput = [Float](repeating: 0, count: fftSize)
+            fftReal = [Float](repeating: 0, count: fftSize / 2)
+            fftImag = [Float](repeating: 0, count: fftSize / 2)
+            fftMagnitudes = [Float](repeating: 0, count: fftSize / 2)
+            sampleRate = 44_100
+        }
         if preservingMixerAttachment == false {
+            stateLock.lock()
             mixerNode = nil
+            stateLock.unlock()
+        }
+    }
+
+    private func syncOnProcessingQueue(_ work: () -> Void) {
+        if DispatchQueue.getSpecific(key: processingQueueKey) != nil {
+            work()
+        } else {
+            processingQueue.sync(execute: work)
         }
     }
 
