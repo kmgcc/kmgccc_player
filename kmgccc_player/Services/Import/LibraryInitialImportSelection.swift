@@ -115,7 +115,11 @@ nonisolated struct LibraryInitialImportResult: Sendable, Equatable {
     }
 
     var didSucceed: Bool { imported > 0 || !sourceIDs.isEmpty }
-    var isPartial: Bool { didSucceed && (!failures.isEmpty || imported < planned) }
+    /// `planned` counts physical files discovered on disk. A directory may
+    /// legitimately contain both an NCM source and the MP3 generated from it;
+    /// both can resolve to one library track, so a count mismatch is not a
+    /// factual import failure.
+    var isPartial: Bool { didSucceed && !failures.isEmpty }
 }
 
 nonisolated enum LibraryInitialImportError: Error, Equatable {

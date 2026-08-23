@@ -56,9 +56,23 @@ final class Track {
     /// Stable encoded locator snapshot. Legacy path/bookmark fields remain as compatibility projections.
     var mediaLocatorData: Data = Data()
 
+    /// Decode cache for `mediaLocator`. Reconcile/reload paths read the
+    /// locator several times per track per pass; decoding JSON on every access
+    /// was a measurable main-thread cost on large referenced libraries.
+    /// Transient: never persisted; a faulted-in model simply re-decodes once.
+    @Transient private var mediaLocatorDecodedFrom: Data?
+    @Transient private var mediaLocatorDecodedValue: TrackMediaLocator?
+
     var mediaLocator: TrackMediaLocator {
         get {
+            if let cachedFrom = mediaLocatorDecodedFrom,
+               cachedFrom == mediaLocatorData,
+               let cachedValue = mediaLocatorDecodedValue {
+                return cachedValue
+            }
             if let decoded = try? JSONDecoder().decode(TrackMediaLocator.self, from: mediaLocatorData) {
+                mediaLocatorDecodedFrom = mediaLocatorData
+                mediaLocatorDecodedValue = decoded
                 return decoded
             }
             if !libraryRelativePath.isEmpty {
@@ -70,7 +84,11 @@ final class Track {
             ))
         }
         set {
-            mediaLocatorData = (try? JSONEncoder().encode(newValue)) ?? Data()
+            let encoded = (try? JSONEncoder().encode(newValue)) ?? Data()
+            mediaLocatorData = encoded
+            // Keep the decode cache coherent with the freshly written value.
+            mediaLocatorDecodedFrom = encoded
+            mediaLocatorDecodedValue = newValue
             switch newValue {
             case let .managed(path):
                 libraryRelativePath = path

@@ -50,18 +50,20 @@ final class LibraryMetadataSync {
 
         // Compute album counts per artist canonical key
         var albumCountByArtist: [String: Set<String>] = [:]
+        var totalDurationByArtist: [String: Double] = [:]
         for track in allTracks {
             for artistKey in LibraryNormalization.artistCanonicalNames(track.artist) {
                 albumCountByArtist[artistKey, default: []].insert(track.albumGroupKey)
+                totalDurationByArtist[artistKey, default: 0] += track.duration
             }
         }
 
         var result: [ArtistEntry] = []
 
         for section in derived {
-            let totalDuration = allTracks
-                .filter { LibraryNormalization.containsArtist(section.key, in: $0.artist) }
-                .reduce(0) { $0 + $1.duration }
+            // Single-pass aggregate computed above; the previous per-artist
+            // `allTracks.filter { containsArtist(...) }` was O(artists × tracks).
+            let totalDuration = totalDurationByArtist[section.key] ?? 0
             let albumCount = albumCountByArtist[section.key]?.count ?? 0
 
             if let (sidecar, folderURL) = existing[section.key] {
@@ -176,10 +178,17 @@ final class LibraryMetadataSync {
         )
         let now = Date()
 
+        // Single-pass index by album group key; the previous per-album
+        // `allTracks.filter { ... }` was O(albums × tracks).
+        var tracksByAlbumKey: [String: [Track]] = [:]
+        for track in allTracks {
+            tracksByAlbumKey[track.albumGroupKey, default: []].append(track)
+        }
+
         var result: [AlbumEntry] = []
 
         for section in derived {
-            let matchingTracks = allTracks.filter { $0.albumGroupKey == section.key }
+            let matchingTracks = tracksByAlbumKey[section.key] ?? []
             let totalDuration = matchingTracks.reduce(0) { $0 + $1.duration }
             let firstArtwork =
                 matchingTracks.first(where: { $0.artworkData != nil })?.artworkData

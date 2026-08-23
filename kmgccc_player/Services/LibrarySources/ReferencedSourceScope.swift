@@ -33,6 +33,22 @@ final class ReferencedSourceScope {
 
     var authorizedRoots: [UUID: AuthorizedSourceRoot] { rootsProvider.snapshot() }
 
+    /// Returns an authorized root only when `url` is a descendant of that
+    /// root. Equality is intentionally excluded so a single-file source does
+    /// not grant write access to its parent directory.
+    func authorizedDirectorySourceID(containing url: URL) -> UUID? {
+        let candidatePath = url.resolvingSymlinksInPath().standardizedFileURL.path
+        return authorizedRoots
+            .filter { _, root in
+                let rootPath = root.url.resolvingSymlinksInPath().standardizedFileURL.path
+                return candidatePath.hasPrefix(rootPath + "/")
+            }
+            .max { lhs, rhs in
+                lhs.value.url.path.count < rhs.value.url.path.count
+            }?
+            .key
+    }
+
     func start(
         descriptors: [ReferencedSourceDescriptor],
         store: ReferencedSourceStore,

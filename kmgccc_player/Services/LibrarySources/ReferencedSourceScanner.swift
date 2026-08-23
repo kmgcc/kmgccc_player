@@ -165,6 +165,13 @@ actor ReferencedSourceScanner {
                           supportedExtensions.contains(resolved.pathExtension.lowercased()) else { continue }
                     let fingerprint = try fingerprintProvider(resolved)
                     if await isReserved(resolved, fingerprint.identity) { continue }
+                    if NCMGeneratedOutputMarkerStore.isGeneratedOutput(
+                        resolved,
+                        fingerprint: fingerprint,
+                        fileManager: fileManager
+                    ) {
+                        continue
+                    }
                     guard let relative = relativePath(resolved, root: root) else { continue }
                     if await isIgnored(fingerprint) {
                         ignored.append(.init(relativePath: relative, fingerprint: fingerprint))
@@ -210,13 +217,22 @@ actor ReferencedSourceScanner {
             if let old = oldByPath[entry.relativePath] {
                 consumedOldPaths.insert(old.relativePath)
                 entry.trackID = old.trackID
-                if old.identity != entry.identity || (old.identity == nil && old.fingerprint != entry.fingerprint), let trackID = old.trackID {
+                if old.trackID == nil {
+                    // A prior scan saw the file but its import failed. Keep
+                    // the manifest entry for auditability, while presenting
+                    // it as an addition again so the next scan retries it.
+                    diff.added.append(.init(relativePath: entry.relativePath, fingerprint: entry.fingerprint))
+                } else if old.fingerprint != entry.fingerprint, let trackID = old.trackID {
                     diff.replacements.append(.init(trackID: trackID, relativePath: entry.relativePath, oldFingerprint: old.fingerprint, newFingerprint: entry.fingerprint))
                 }
             } else if let identity = entry.identity, identity.isStable, let old = oldByIdentity[identity] {
                 consumedOldPaths.insert(old.relativePath)
                 entry.trackID = old.trackID
-                if let trackID = old.trackID { diff.moved.append(.init(trackID: trackID, oldRelativePath: old.relativePath, newRelativePath: entry.relativePath, fingerprint: entry.fingerprint)) }
+                if let trackID = old.trackID {
+                    diff.moved.append(.init(trackID: trackID, oldRelativePath: old.relativePath, newRelativePath: entry.relativePath, fingerprint: entry.fingerprint))
+                } else {
+                    diff.added.append(.init(relativePath: entry.relativePath, fingerprint: entry.fingerprint))
+                }
             } else if entry.identity?.isStable != true {
                 let key = ReferencedPhysicalIdentityKey(entry.fingerprint)
                 let oldMatches = oldFallbackGroups[key] ?? []
@@ -227,6 +243,8 @@ actor ReferencedSourceScanner {
                     entry.trackID = old.trackID
                     if let trackID = old.trackID {
                         diff.moved.append(.init(trackID: trackID, oldRelativePath: old.relativePath, newRelativePath: entry.relativePath, fingerprint: entry.fingerprint))
+                    } else {
+                        diff.added.append(.init(relativePath: entry.relativePath, fingerprint: entry.fingerprint))
                     }
                 } else {
                     diff.added.append(.init(relativePath: entry.relativePath, fingerprint: entry.fingerprint))

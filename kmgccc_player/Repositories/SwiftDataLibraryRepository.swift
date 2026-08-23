@@ -135,7 +135,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }.value
 
         let trackMetas = uniqueTrackMetas(snapshot.trackMetas)
-        let tracks = trackMetas.map { buildTrack(from: $0) }
+        // Resolve managed audio existence off the main actor: large managed
+        // libraries otherwise pay one stat call per track during the map below.
+        let existingManagedAudioPaths = await Self.existingManagedAudioPaths(
+            metas: trackMetas,
+            paths: paths
+        )
+        let tracks = trackMetas.map { buildTrack(from: $0, existingManagedAudioPaths: existingManagedAudioPaths) }
         let tracksById = trackDictionaryByID(tracks)
 
         let loadedPlaylists: [Playlist] = snapshot.playlistSidecars.map { sidecar in
@@ -408,7 +414,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         let metas = await Task.detached { @Sendable in
             MusicLibraryScanner(paths: capturedPaths).scanTracks(ids: uniqueIDs)
         }.value
-        let refreshedTracks = metas.map(buildTrack)
+        let existingManagedAudioPaths = await Self.existingManagedAudioPaths(
+            metas: metas,
+            paths: paths
+        )
+        let refreshedTracks = metas.map { buildTrack(from: $0, existingManagedAudioPaths: existingManagedAudioPaths) }
         let refreshedByID = Dictionary(uniqueKeysWithValues: refreshedTracks.map { ($0.id, $0) })
 
         guard !refreshedByID.isEmpty else {
@@ -976,12 +986,35 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         return unique
     }
 
-    private func buildTrack(from meta: ScannedTrackMeta) -> Track {
+    /// Off-main existence check for managed audio files. Returns the set of
+    /// managed relative paths whose audio file currently exists.
+    nonisolated private static func existingManagedAudioPaths(
+        metas: [ScannedTrackMeta],
+        paths: LibraryPaths
+    ) async -> Set<String> {
+        let managedRelativePaths = metas.compactMap { meta -> String? in
+            guard case let .managed(relativePath) = meta.mediaLocator else { return nil }
+            return relativePath
+        }
+        guard !managedRelativePaths.isEmpty else { return [] }
+        return await Task.detached(priority: .userInitiated) { @Sendable in
+            let fileManager = FileManager.default
+            var existing = Set<String>(minimumCapacity: managedRelativePaths.count)
+            for relativePath in managedRelativePaths {
+                guard let audioURL = paths.libraryURL(from: relativePath) else { continue }
+                if fileManager.fileExists(atPath: audioURL.path) {
+                    existing.insert(relativePath)
+                }
+            }
+            return existing
+        }.value
+    }
+
+    private func buildTrack(from meta: ScannedTrackMeta, existingManagedAudioPaths: Set<String>) -> Track {
         let availability: TrackAvailability
         switch meta.mediaLocator {
         case let .managed(relativePath):
-            let audioURL = paths.libraryURL(from: relativePath)
-            availability = audioURL.map { fileManager.fileExists(atPath: $0.path) } == true
+            availability = existingManagedAudioPaths.contains(relativePath)
                 ? meta.availability
                 : .missing
         case .referenced:
@@ -1728,26 +1761,60 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     private func rebuildTrackIndexCache() {
         guard let indexContext else { return }
-        clearTrackIndexCache()
-
-        for track in allTracks {
-            let entry = TrackIndexEntry(
-                id: track.id,
-                libraryRelativePath: track.mediaLocator.managedLibraryRelativePath ?? "",
-                locatorKind: track.mediaLocator.storageKind,
-                normalizedTitle: LibraryNormalization.normalizeTitle(track.title),
-                normalizedArtist: LibraryNormalization.normalizeArtist(track.artist),
-                duration: track.duration,
-                indexedAt: Date()
-            )
-            indexContext.insert(entry)
-        }
 
         do {
+            // Diff-based update: an unchanged library must not pay a
+            // delete-all + insert-all transaction on every reload.
+            let existingEntries = try indexContext.fetch(FetchDescriptor<TrackIndexEntry>())
+            var unmatchedExisting: [UUID: TrackIndexEntry] = [:]
+            for entry in existingEntries {
+                unmatchedExisting[entry.id] = entry
+            }
+
+            var toInsert: [TrackIndexEntry] = []
+            toInsert.reserveCapacity(allTracks.count)
+            for track in allTracks {
+                let desired = makeTrackIndexEntry(for: track)
+                if let existing = unmatchedExisting[desired.id] {
+                    unmatchedExisting.removeValue(forKey: desired.id)
+                    if trackIndexEntry(existing, isUpToDateWith: desired) { continue }
+                }
+                toInsert.append(desired)
+            }
+            let toDelete = Array(unmatchedExisting.values)
+
+            guard !toInsert.isEmpty || !toDelete.isEmpty else { return }
+            for entry in toDelete {
+                indexContext.delete(entry)
+            }
+            for entry in toInsert {
+                indexContext.insert(entry)
+            }
             try indexContext.save()
         } catch {
             Log.warning("重建索引缓存失败: \(error)", category: .library)
         }
+    }
+
+    private func makeTrackIndexEntry(for track: Track) -> TrackIndexEntry {
+        TrackIndexEntry(
+            id: track.id,
+            libraryRelativePath: track.mediaLocator.managedLibraryRelativePath ?? "",
+            locatorKind: track.mediaLocator.storageKind,
+            normalizedTitle: LibraryNormalization.normalizeTitle(track.title),
+            normalizedArtist: LibraryNormalization.normalizeArtist(track.artist),
+            duration: track.duration,
+            indexedAt: Date()
+        )
+    }
+
+    /// Content equality excluding `indexedAt`, which changes on every build.
+    private func trackIndexEntry(_ existing: TrackIndexEntry, isUpToDateWith desired: TrackIndexEntry) -> Bool {
+        existing.libraryRelativePath == desired.libraryRelativePath
+            && existing.locatorKindRaw == desired.locatorKindRaw
+            && existing.normalizedTitle == desired.normalizedTitle
+            && existing.normalizedArtist == desired.normalizedArtist
+            && existing.duration == desired.duration
     }
 
     private func upsertTrackIndexEntries(for tracks: [Track]) {

@@ -40,10 +40,12 @@ struct LibrarySetupFlow: View {
             }
         }
         .sheet(isPresented: $isPlaylistSourceSelectionPresented) {
+            let entries = LibraryImportSourceEntry.makeEntries(from: flow.selectedMusicURLs)
             LibraryImportSourceSelectionSheet(
-                entries: LibraryImportSourceEntry.makeEntries(from: flow.selectedMusicURLs),
-                initiallyEnabled: flow.wantsPlaylistCreation,
-                initiallySelectedIDs: Set(flow.playlistSourceEntries.map(\.id))
+                entries: entries,
+                initiallySelectedIDs: flow.playlistSourceEntries.isEmpty
+                    ? Set(entries.map(\.id))
+                    : Set(flow.playlistSourceEntries.map(\.id))
             ) { entries in
                 flow.setPlaylistSourceEntries(entries)
                 flow.step = .location

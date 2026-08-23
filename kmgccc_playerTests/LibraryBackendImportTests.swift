@@ -153,6 +153,8 @@ final class LibraryBackendImportTests: XCTestCase {
         let descriptors = try await store.loadAll()
         XCTAssertEqual(descriptors.count, 1)
         XCTAssertEqual(descriptors.first?.mode, .directory)
+        let discovered = try XCTUnwrap(plan.files.first)
+        XCTAssertEqual(discovered.memberships.map(\.sourceID), [try XCTUnwrap(descriptors.first?.id)])
         backend.finishImportBatch()
     }
 

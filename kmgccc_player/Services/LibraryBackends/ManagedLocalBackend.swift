@@ -65,7 +65,7 @@ nonisolated enum ImportInputScanner {
     ) async -> ImportInputPlan {
         await Task.detached(priority: .userInitiated) {
             var failures: [ImportInputFailure] = []
-            var candidates: [(URL, [ReferencedSourceMembership], UUID?, ReferencedFileFingerprint?)] = []
+            var candidates: [(URL, [ReferencedSourceMembership], UUID?, ReferencedFileFingerprint?, fromDirectory: Bool)] = []
             let roots = directorySources.keys.sorted { $0.path.count > $1.path.count }
 
             for selected in selectedURLs {
@@ -82,16 +82,23 @@ nonisolated enum ImportInputScanner {
                     do {
                         let fingerprint = try identityProvider.fingerprint(for: selected)
                         let memberships = memberships(for: selected, roots: roots, sourceIDs: directorySources)
-                        candidates.append((selected, memberships.values, memberships.primary, fingerprint))
+                        candidates.append((selected, memberships.values, memberships.primary, fingerprint, false))
                     } catch {
                         failures.append(.init(url: selected, message: error.localizedDescription))
                     }
                 }
             }
 
+            let filteredCandidates = candidates.filter { candidate in
+                guard candidate.fromDirectory, let fingerprint = candidate.3 else { return true }
+                return !NCMGeneratedOutputMarkerStore.isGeneratedOutput(
+                    candidate.0,
+                    fingerprint: fingerprint
+                )
+            }
             var byIdentity: [ReferencedPhysicalIdentityKey: Int] = [:]
             var output: [ImportDiscoveredFile] = []
-            for candidate in candidates {
+            for candidate in filteredCandidates {
                 guard let fingerprint = candidate.3 else { continue }
                 let key = ReferencedPhysicalIdentityKey(fingerprint)
                 if let index = byIdentity[key] {
@@ -122,7 +129,7 @@ nonisolated enum ImportInputScanner {
         authorizedRoot: URL,
         directorySources: [URL: UUID],
         identityProvider: ReferencedFileIdentityProvider,
-        candidates: inout [(URL, [ReferencedSourceMembership], UUID?, ReferencedFileFingerprint?)],
+        candidates: inout [(URL, [ReferencedSourceMembership], UUID?, ReferencedFileFingerprint?, fromDirectory: Bool)],
         failures: inout [ImportInputFailure]
     ) {
         let fm = FileManager.default
@@ -195,7 +202,7 @@ nonisolated enum ImportInputScanner {
                 do {
                     let fingerprint = try identityProvider.fingerprint(for: target)
                     let memberships = memberships(for: target, roots: roots, sourceIDs: directorySources)
-                    candidates.append((target, memberships.values, memberships.primary, fingerprint))
+                    candidates.append((target, memberships.values, memberships.primary, fingerprint, true))
                 } catch {
                     failures.append(.init(url: item, message: error.localizedDescription))
                 }

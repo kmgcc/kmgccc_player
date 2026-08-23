@@ -29,8 +29,8 @@ final class LibrarySetupViewModel {
     var step: Step = .storage
     var mode: MusicLibraryMode
     var displayName = "音乐资料库"
-    /// Explicitly chosen storage parent. Nil means "use the default directory"
-    /// derived from the selected music sources (see `defaultStorageParentURL`).
+    /// Explicitly chosen storage parent. Nil means "use the standard default
+    /// directory" (see `defaultStorageParentURL`).
     var storageParentURL: URL?
     private(set) var existingLibraryContext: LibraryContext?
     private(set) var existingRequestedMode: MusicLibraryMode?
@@ -43,29 +43,20 @@ final class LibrarySetupViewModel {
     private(set) var playlistSourceEntries: [LibraryImportSourceEntry] = []
     private(set) var initialImportSelection: LibraryInitialImportSelection?
 
-    /// Default storage parent derived from the selected music sources:
-    /// the first selected folder, or the parent directory of the first
-    /// selected song file when no folder was selected, or the standard music
-    /// directory when nothing was selected at all.
+    /// Default storage parent for a newly created library.
+    ///
+    /// The storage location is independent from the selected source folders.
+    /// Falling back to the first source would put the library inside a user's
+    /// music folder and, worse, make the result depend on selection order.
     var defaultStorageParentURL: URL {
-        if let firstDirectory = selectedMusicURLs.first(where: { Self.urlIsDirectory($0) }) {
-            return firstDirectory.standardizedFileURL
-        }
-        if let firstFile = selectedMusicURLs.first {
-            return firstFile.deletingLastPathComponent().standardizedFileURL
-        }
-        let base = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first
-        return (base ?? URL(fileURLWithPath: NSHomeDirectory())).standardizedFileURL
+        LibraryLocationStore.defaultLibraryRootURL
+            .deletingLastPathComponent()
+            .standardizedFileURL
     }
 
     /// The storage parent that creation will use.
     var effectiveStorageParentURL: URL {
         (storageParentURL ?? defaultStorageParentURL).standardizedFileURL
-    }
-
-    private static func urlIsDirectory(_ url: URL) -> Bool {
-        if url.hasDirectoryPath { return true }
-        return (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 
     func addMusicURLs(_ urls: [URL]) {

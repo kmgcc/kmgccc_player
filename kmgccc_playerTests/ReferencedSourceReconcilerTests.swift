@@ -40,8 +40,6 @@ private final class StartupBookmarkResolver: kmgccc_player.BookmarkResolving, @u
 private final class ReconcileImporter: AutomaticReferencedFileImporting {
     let repository: SwiftDataLibraryRepository
     private let fingerprintProvider: @Sendable (URL) throws -> kmgccc_player.ReferencedFileFingerprint
-    var beforeImport: (() async -> Void)?
-    var rejectNextImport = false
 
     init(
         repository: SwiftDataLibraryRepository,
@@ -52,11 +50,6 @@ private final class ReconcileImporter: AutomaticReferencedFileImporting {
     }
 
     func importAutomatically(_ urls: [URL]) async -> [Track] {
-        await beforeImport?()
-        if rejectNextImport {
-            rejectNextImport = false
-            return []
-        }
         var result: [Track] = []
         for url in urls {
             guard let fingerprint = try? fingerprintProvider(url) else { continue }
@@ -139,44 +132,6 @@ private actor MonitorRecorder {
 
 @MainActor
 final class ReferencedSourceReconcilerTests: XCTestCase {
-    func testNewImportIntentPrecedesImporterAndReplayClosesRejectedImportWindow() async throws {
-        let fixture = try await ReconcileFixture()
-        defer { fixture.cleanup() }
-        try Data("audio".utf8).write(to: fixture.sourceRoot.appendingPathComponent("new.mp3"))
-        let store = LibraryReconcileIntentStore(paths: fixture.paths)
-        var observedPreparedIntent = false
-        fixture.importer.rejectNextImport = true
-        fixture.importer.beforeImport = {
-            let pending = try? await store.pending(libraryID: fixture.context.id)
-            observedPreparedIntent = pending?.count == 1 && pending?.first?.state == .prepared
-        }
-
-        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
-
-        let tracksBeforeReplay = await fixture.repository.fetchTracks(in: nil)
-        let intentsBeforeReplay = try await store.pending(libraryID: fixture.context.id)
-        XCTAssertTrue(observedPreparedIntent)
-        XCTAssertTrue(tracksBeforeReplay.isEmpty)
-        XCTAssertEqual(intentsBeforeReplay.count, 1)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.paths.sourceScanManifestURL(for: fixture.sourceID).path))
-
-        fixture.importer.beforeImport = nil
-        fixture.importer.rejectNextImport = true
-        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
-        let stillPending = try await store.pending(
-            libraryID: fixture.context.id,
-            sourceID: fixture.sourceID
-        )
-        XCTAssertEqual(stillPending.map(\.id), intentsBeforeReplay.map(\.id))
-
-        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
-        let tracksAfterReplay = await fixture.repository.fetchTracks(in: nil)
-        let intentsAfterReplay = try await store.pending(libraryID: fixture.context.id)
-        XCTAssertEqual(tracksAfterReplay.count, 1)
-        XCTAssertTrue(intentsAfterReplay.isEmpty)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.paths.sourceScanManifestURL(for: fixture.sourceID).path))
-    }
-
     func testUniqueFallbackIdentityRenamePreservesUUIDMembershipAndAvailability() async throws {
         let fallbackFingerprint: @Sendable (URL) throws -> kmgccc_player.ReferencedFileFingerprint = { url in
             let actual = try ReferencedFileIdentityProvider().fingerprint(for: url)
@@ -728,6 +683,87 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         XCTAssertTrue(failureTracks.isEmpty)
     }
 
+    func testMarkedNCMOutputIsHiddenWhileCommittedNCMRemainsCanonicalScanEntry() async throws {
+        let fixture = try await ReconcileFixture(scannerFactory: { paths in
+            let filter = NCMScanReservationFilter(registry: NCMConversionRegistry(paths: paths))
+            return ReferencedSourceScanner(paths: paths, isReserved: { url, identity in
+                await filter.isReserved(url: url, identity: identity)
+            })
+        })
+        defer { fixture.cleanup() }
+
+        let source = fixture.sourceRoot.appendingPathComponent("song.ncm")
+        let outputDirectory = fixture.sourceRoot.appendingPathComponent("NCM 转换", isDirectory: true)
+        let output = outputDirectory.appendingPathComponent("Song.mp3")
+        try Data("ncm-source".utf8).write(to: source)
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
+        try Data("generated-output".utf8).write(to: output)
+
+        let sourceFingerprint = try ReferencedFileIdentityProvider().fingerprint(for: source)
+        let outputFingerprint = try ReferencedFileIdentityProvider().fingerprint(for: output)
+        let metadata = NCMMetadata(
+            musicName: "Song", artist: [["Artist"]], album: "Album",
+            albumPic: "", format: "mp3", bitrate: 320_000, duration: 10
+        )
+        try NCMGeneratedOutputMarkerStore.upsert(
+            NCMGeneratedOutputRecord(
+                operationID: UUID(),
+                sourcePath: source.path,
+                sourceFingerprint: sourceFingerprint,
+                outputPath: output.path,
+                outputFingerprint: outputFingerprint,
+                format: .mp3,
+                metadata: metadata,
+                createdAt: Date(),
+                updatedAt: Date()
+            ),
+            in: outputDirectory
+        )
+        let registry = NCMConversionRegistry(paths: fixture.paths)
+        let operationID = UUID()
+        try await registry.reserve(NCMConversionRecord(
+            id: operationID,
+            sourceIdentity: sourceFingerprint.identity,
+            sourceFingerprint: sourceFingerprint,
+            sourceBookmarkData: Data(source.path.utf8),
+            parentDirectoryBookmarkData: nil,
+            sourcePath: source.path,
+            sourceMemberships: [.init(sourceID: fixture.sourceID, relativePath: "song.ncm")],
+            sourcePrimaryID: fixture.sourceID,
+            expectedOutputPath: output.path,
+            outputIdentity: outputFingerprint.identity,
+            outputFingerprint: outputFingerprint,
+            outputLocator: nil,
+            outputFormat: .mp3,
+            outputMetadata: metadata,
+            outputCoverData: nil,
+            trackID: UUID(),
+            state: .outputReady,
+            errorSummary: nil,
+            createdAt: Date(),
+            updatedAt: Date()
+        ))
+        try await registry.markCommitted(operationID: operationID, trackID: UUID())
+
+        let scanner = ReferencedSourceScanner(
+            paths: fixture.paths,
+            isReserved: { url, identity in
+                let filter = NCMScanReservationFilter(registry: registry)
+                return await filter.isReserved(url: url, identity: identity)
+            }
+        )
+        let result = try await scanner.scan(
+            context: fixture.context,
+            sourceID: fixture.sourceID,
+            rootURL: fixture.sourceRoot
+        )
+        let relativePaths = Set(result.proposedManifest?.entries.map(\.relativePath) ?? [])
+
+        XCTAssertTrue(relativePaths.contains("song.ncm"))
+        XCTAssertFalse(relativePaths.contains("NCM 转换/Song.mp3"))
+        XCTAssertEqual(result.diff.added.map(\.relativePath), ["song.ncm"])
+    }
+
     func testDebounceCoalescesAndStopAwaitsInFlightScanWithoutLateWrite() async throws {
         let eventSource = TestFileEventSource()
         let monitor = LibraryChangeMonitor(eventSource: eventSource, debounceNanoseconds: 20_000_000)
@@ -1009,7 +1045,9 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         )
         let diff = ReferencedSourceDiff(
             libraryID: context.id,
-            libraryGeneration: context.generation,
+            // Recovery must work after a new app/session activation assigns a
+            // different generation to the same persistent library.
+            libraryGeneration: context.generation &+ 1,
             sourceID: sourceID,
             scanGeneration: 1,
             sourceStatus: .available

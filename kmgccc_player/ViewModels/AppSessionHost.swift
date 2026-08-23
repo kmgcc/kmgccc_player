@@ -38,7 +38,7 @@ final class AppSessionHost: ObservableObject {
     private var shouldPresentFirstRunLibrarySetup = false
     private var whatsNewDismissalCancellable: AnyCancellable?
 
-    let uiState = UIStateViewModel()
+    let uiState: UIStateViewModel
     let librarySetupFlow = LibrarySetupViewModel()
     let activeLibraryBinding: ActiveLibraryBinding
 
@@ -121,6 +121,13 @@ final class AppSessionHost: ObservableObject {
         playbackHistoryStore: PlaybackHistoryStore? = nil,
         playbackHistoryViewModel: PlaybackHistoryViewModel = PlaybackHistoryViewModel()
     ) {
+        let uiState = UIStateViewModel()
+        self.uiState = uiState
+        sessionFactory.referencedSourceNoticePublisher = SidebarReferencedSourceNoticePublisher { [weak uiState] notice in
+            guard let uiState else { return }
+            AppSessionHost.presentReferencedSourceNotice(notice, in: uiState)
+        }
+
         let activeLibraryBinding = ActiveLibraryBinding(
             placeholderModelContainer: modelContainer
         )
@@ -157,6 +164,43 @@ final class AppSessionHost: ObservableObject {
                     category: .library
                 )
             }
+        }
+    }
+
+    private static func presentReferencedSourceNotice(
+        _ notice: ReferencedSourceNotice,
+        in uiState: UIStateViewModel
+    ) {
+        switch notice {
+        case .filesImported(_, let count):
+            uiState.showSidebarNotice(
+                "来源文件夹新增 \(count) 首歌曲，正在补全信息",
+                duration: 4
+            )
+        case .unavailable(_, _):
+            uiState.showSidebarNotice(
+                "来源文件夹暂时不可用",
+                style: .warning,
+                actionTitle: "打开设置"
+            )
+        case .fileFailures(_, let count):
+            uiState.showSidebarNotice(
+                "来源文件夹中有 \(count) 个文件未能导入",
+                style: .warning,
+                actionTitle: "打开设置"
+            )
+        case .reconcileFailures(_, let trackIDs):
+            uiState.showSidebarNotice(
+                "有 \(trackIDs.count) 首歌曲未能更新",
+                style: .warning,
+                actionTitle: "打开设置"
+            )
+        case .monitorFailure:
+            uiState.showSidebarNotice(
+                "来源文件夹扫描失败，请检查来源设置",
+                style: .warning,
+                actionTitle: "打开设置"
+            )
         }
     }
 
@@ -972,7 +1016,10 @@ final class AppSessionHost: ObservableObject {
         let repository = session.repository
         guard let playerVM else { return }
 
-        await repository.reloadFromLibrary()
+        // No `repository.reloadFromLibrary()` here: every call site invokes
+        // this right after the session controller finished `load()`, which
+        // already performed the full disk scan and rebuild. Reloading again
+        // doubled startup/switch cost for large libraries.
 
         let availableTracks = await repository.fetchTracks(in: nil)
             .filter { $0.availability != .missing }

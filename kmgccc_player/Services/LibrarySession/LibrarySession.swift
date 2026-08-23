@@ -96,17 +96,29 @@ final class LibrarySession: LibrarySessionLifecycle {
         try context.paths.createRequiredDirectories()
         await libraryViewModel.reloadLibrary()
         try Task.checkCancellation()
-        if let referencedSourceReconciler, let libraryChangeMonitor {
+        if let referencedSourceReconciler {
             // Reconcile touches the same SQLite stores as the rest of the
             // session and can fail on transient contention (another
             // instance mid-write, WAL checkpoint). A reconcile failure
             // must not make the whole library unreadable — degrade to a
             // loaded session and let the change monitor retry later.
             do {
-                try await referencedSourceReconciler.replayPending()
                 try await referencedSourceReconciler.repairOrphanedFileSources()
+            } catch {
+                Log.warning(
+                    "[LibrarySession] referenced orphan repair deferred after load failure: \(error)",
+                    category: .library
+                )
+            }
+            do {
                 let sourceIDs = try await referencedSourceReconciler.allSourceIDs()
-                try await referencedSourceReconciler.reconcile(sourceIDs: sourceIDs)
+                // Replay and scan each source independently. One stale pending
+                // intent (for example a failed conversion in one folder) must
+                // not prevent the other sources from loading or make the
+                // library appear empty on the next launch.
+                _ = await referencedSourceReconciler.reconcileBestEffort(
+                    sourceIDs: sourceIDs
+                )
             } catch {
                 Log.warning(
                     "[LibrarySession] referenced reconcile deferred after load failure: \(error)",
@@ -151,10 +163,11 @@ final class LibrarySession: LibrarySessionLifecycle {
             throw LibraryInitialImportError.initialImportFailed(result)
         }
         let result = await fileImportService.importInitialSelection(selection)
-        if context.mode == .referenced, !result.sourceIDs.isEmpty {
-            _ = try await refreshReferencedSources()
-        }
         if !selection.playlistSourceEntries.isEmpty {
+            // Bind playlists as soon as source descriptors exist. A source
+            // scan may have item-level failures (for example an old NCM
+            // conversion), but that must not discard the user's playlist
+            // choice or block the remaining sources.
             try await createAutomaticPlaylists(
                 for: selection.playlistSourceEntries,
                 result: result
@@ -166,6 +179,21 @@ final class LibrarySession: LibrarySessionLifecycle {
             // Compatibility path for older callers that only supplied the
             // original boolean option. New UI always supplies explicit entries.
             try await referencedSourceReconciler?.createPlaylistsForSources(result.sourceIDs)
+            await libraryViewModel.reloadLibrary()
+        }
+        if context.mode == .referenced, !result.sourceIDs.isEmpty {
+            do {
+                _ = try await refreshReferencedSources()
+            } catch {
+                // Keep the sources and any playlists already created. The
+                // monitor can retry the scan, and the UI notice contains the
+                // actionable failure instead of turning the whole import into
+                // a library-creation failure.
+                Log.warning(
+                    "[LibrarySession] initial referenced refresh deferred: \(error)",
+                    category: .library
+                )
+            }
             await libraryViewModel.reloadLibrary()
         }
         guard selection.urls.isEmpty || result.didSucceed else {
@@ -396,12 +424,17 @@ final class LibrarySession: LibrarySessionLifecycle {
 
             let sourceIDs = dirtyIDs.subtracting([libraryID])
             guard !sourceIDs.isEmpty, let reconciler else { return }
-            do {
-                try await reconciler.reconcile(sourceIDs: sourceIDs)
+            let outcome = await reconciler.reconcileBestEffort(sourceIDs: sourceIDs)
+            if !outcome.failedSourceIDs.isEmpty {
+                await monitor.markFailed(sourceIDs: outcome.failedSourceIDs)
+            }
+            // Only pull a fresh snapshot into the UI when the reconcile
+            // actually changed repository/runtime state. Empty-diff rescans
+            // (the common case for FS-event debounces) used to trigger a full
+            // `reloadLibrary()` every time, which stalled the UI on large
+            // referenced libraries.
+            if !outcome.changes.isEmpty {
                 await libraryViewModel?.reloadLibrary()
-            } catch {
-                await monitor.markFailed(sourceIDs: sourceIDs)
-                await reconciler.reportMonitorFailure(sourceIDs: sourceIDs, error: error)
             }
         }
     }

@@ -178,6 +178,26 @@ final class ReferencedNCMConversionService {
         // user's original folder layout clean.
         let outputDirectory = authorization.directoryURL
             .appendingPathComponent(Self.outputDirectoryName, isDirectory: true)
+
+        // Adopt a product that travelled with the source folder before doing
+        // any audio decryption. New products are identified by the hidden
+        // marker; legacy products are located from the NCM metadata only and
+        // are marked as soon as they are adopted.
+        if let existing = reusableOutput(
+            sourceURL: sourceURL,
+            sourceFingerprint: sourceFingerprint,
+            outputDirectory: outputDirectory
+        ) {
+            return try await adoptExistingOutput(
+                existing,
+                sourceURL: sourceURL,
+                sourceFingerprint: sourceFingerprint,
+                file: file,
+                authorization: authorization,
+                outputDirectory: outputDirectory
+            )
+        }
+
         let operationID = UUID()
         let temporaryDirectory = authorization.directoryURL
             .appendingPathComponent(".kmgccc-ncm-\(operationID.uuidString)", isDirectory: true)
@@ -218,11 +238,14 @@ final class ReferencedNCMConversionService {
             try Task.checkCancellation()
             // Created lazily so a failed conversion leaves no empty folder.
             try createOutputDirectoryIfNeeded(outputDirectory)
-            let finalName = Self.outputFileName(sourceURL: sourceURL, result: preliminary)
-            let finalURL = outputDirectory.appendingPathComponent(finalName)
-            guard !fileManager.fileExists(atPath: finalURL.path) else {
-                throw ReferencedNCMConversionError.outputConflict(finalName)
-            }
+            let requestedName = Self.outputFileName(sourceURL: sourceURL, result: preliminary)
+            let requestedURL = outputDirectory.appendingPathComponent(requestedName)
+            let outputChoice = try outputURL(
+                for: requestedURL,
+                sourceFingerprint: sourceFingerprint
+            )
+            let finalURL = outputChoice.url
+            let finalName = finalURL.lastPathComponent
             try await registry.updateExpectedOutput(operationID: operationID, path: finalURL.path)
             try await registry.prepareOutputPayload(
                 operationID: operationID,
@@ -232,12 +255,20 @@ final class ReferencedNCMConversionService {
             )
 
             try validate(preliminary.audioFileURL)
-            try Self.synchronizeFile(at: preliminary.audioFileURL)
-            guard renamex_np(preliminary.audioFileURL.path, finalURL.path, UInt32(RENAME_EXCL)) == 0 else {
-                if errno == EEXIST {
-                    throw ReferencedNCMConversionError.outputConflict(finalName)
+            if outputChoice.reusesExisting {
+                // A previous conversion may have already published the same
+                // title into this source folder while its library transaction
+                // failed. Reuse a valid existing product; never overwrite it
+                // and never ask Finder to authorize the same parent again.
+                try validate(finalURL)
+            } else {
+                try Self.synchronizeFile(at: preliminary.audioFileURL)
+                guard renamex_np(preliminary.audioFileURL.path, finalURL.path, UInt32(RENAME_EXCL)) == 0 else {
+                    if errno == EEXIST {
+                        throw ReferencedNCMConversionError.outputConflict(finalName)
+                    }
+                    throw ReferencedNCMConversionError.atomicPublishFailed
                 }
-                throw ReferencedNCMConversionError.atomicPublishFailed
             }
             publishedURL = finalURL
             let outputFingerprint = try identityProvider.fingerprint(for: finalURL)
@@ -254,6 +285,21 @@ final class ReferencedNCMConversionService {
                 lastKnownPath: finalURL.path,
                 fingerprint: outputFingerprint,
                 ncmSourceIdentity: sourceFingerprint.identity
+            )
+            try NCMGeneratedOutputMarkerStore.upsert(
+                NCMGeneratedOutputRecord(
+                    operationID: operationID,
+                    sourcePath: sourceURL.path,
+                    sourceFingerprint: sourceFingerprint,
+                    outputPath: finalURL.path,
+                    outputFingerprint: outputFingerprint,
+                    format: preliminary.format,
+                    metadata: preliminary.metadata,
+                    createdAt: record.createdAt,
+                    updatedAt: Date()
+                ),
+                in: outputDirectory,
+                fileManager: fileManager
             )
             try await registry.markOutputReady(
                 operationID: operationID,
@@ -289,6 +335,154 @@ final class ReferencedNCMConversionService {
             }
             throw error
         }
+    }
+
+    private struct ExistingOutput: Sendable {
+        let url: URL
+        let format: NCMFormat
+        let metadata: NCMMetadata
+    }
+
+    private func reusableOutput(
+        sourceURL: URL,
+        sourceFingerprint: ReferencedFileFingerprint,
+        outputDirectory: URL
+    ) -> ExistingOutput? {
+        if let marked = NCMGeneratedOutputMarkerStore.reusableRecord(
+            for: sourceURL,
+            sourceFingerprint: sourceFingerprint,
+            in: outputDirectory,
+            fileManager: fileManager,
+            identityProvider: identityProvider
+        ) {
+            guard (try? validate(marked.outputURL)) != nil else { return nil }
+            return ExistingOutput(
+                url: marked.outputURL,
+                format: marked.record.format,
+                metadata: marked.record.metadata
+            )
+        }
+
+        // Compatibility for conversions made before the marker existed. The
+        // NCM header contains its title/format, so this lookup never decrypts
+        // or writes audio. If the expected product is absent, the normal
+        // conversion path below remains responsible for creating it.
+        guard fileManager.fileExists(atPath: outputDirectory.path) else { return nil }
+        guard let inspection = try? NCMConverter().inspectMetadata(from: sourceURL) else { return nil }
+        let names = [
+            Self.outputFileName(sourceURL: sourceURL, metadata: inspection.metadata, format: inspection.format),
+            Self.outputFileName(
+                sourceURL: sourceURL,
+                metadata: inspection.metadata,
+                format: inspection.format == .mp3 ? .flac : .mp3
+            ),
+        ]
+        for name in names {
+            let candidate = outputDirectory.appendingPathComponent(name)
+            guard fileManager.fileExists(atPath: candidate.path) else { continue }
+            if let generated = NCMGeneratedOutputMarkerStore.record(
+                forOutputPath: candidate,
+                fileManager: fileManager
+            ), !NCMGeneratedOutputMarkerStore.sameExactFingerprint(
+                generated.sourceFingerprint,
+                sourceFingerprint
+            ) {
+                continue
+            }
+            guard (try? validate(candidate)) != nil else { continue }
+            return ExistingOutput(
+                url: candidate,
+                format: candidate.pathExtension.lowercased() == NCMFormat.flac.rawValue ? .flac : .mp3,
+                metadata: inspection.metadata
+            )
+        }
+        return nil
+    }
+
+    private func adoptExistingOutput(
+        _ existing: ExistingOutput,
+        sourceURL: URL,
+        sourceFingerprint: ReferencedFileFingerprint,
+        file: ImportDiscoveredFile,
+        authorization: NCMParentDirectoryAuthorization,
+        outputDirectory: URL
+    ) async throws -> ReferencedNCMConversionOutput {
+        try validate(existing.url)
+        let operationID = UUID()
+        let outputFingerprint = try identityProvider.fingerprint(for: existing.url)
+        let outputBookmark = try bookmarkResolver.refreshBookmark(for: existing.url)
+        let outputMemberships = Self.outputMemberships(
+            sourceMemberships: file.memberships,
+            outputDirectoryName: Self.outputDirectoryName,
+            outputName: existing.url.lastPathComponent
+        )
+        let locator = ReferencedFileLocator(
+            fileBookmarkData: outputBookmark,
+            sourceMemberships: outputMemberships,
+            primarySourceID: file.primarySourceID,
+            lastKnownPath: existing.url.path,
+            fingerprint: outputFingerprint,
+            ncmSourceIdentity: sourceFingerprint.identity
+        )
+        let now = Date()
+        let record = NCMConversionRecord(
+            id: operationID,
+            sourceIdentity: sourceFingerprint.identity,
+            sourceFingerprint: sourceFingerprint,
+            sourceBookmarkData: try bookmarkResolver.refreshBookmark(for: sourceURL),
+            parentDirectoryBookmarkData: authorization.bookmarkData.isEmpty ? nil : authorization.bookmarkData,
+            sourcePath: sourceURL.path,
+            sourceMemberships: file.memberships,
+            sourcePrimaryID: file.primarySourceID,
+            expectedOutputPath: existing.url.path,
+            outputIdentity: outputFingerprint.identity,
+            outputFingerprint: outputFingerprint,
+            outputLocator: locator,
+            outputFormat: existing.format,
+            outputMetadata: existing.metadata,
+            outputCoverData: nil,
+            trackID: nil,
+            state: .outputReady,
+            errorSummary: nil,
+            createdAt: now,
+            updatedAt: now
+        )
+        try await registry.reserve(record)
+        try NCMGeneratedOutputMarkerStore.upsert(
+            NCMGeneratedOutputRecord(
+                operationID: operationID,
+                sourcePath: sourceURL.path,
+                sourceFingerprint: sourceFingerprint,
+                outputPath: existing.url.path,
+                outputFingerprint: outputFingerprint,
+                format: existing.format,
+                metadata: existing.metadata,
+                createdAt: now,
+                updatedAt: now
+            ),
+            in: outputDirectory,
+            fileManager: fileManager
+        )
+        let association = NCMConversionAssociation(
+            operationID: operationID,
+            sourceIdentity: sourceFingerprint.identity,
+            sourcePath: sourceURL.path,
+            outputIdentity: outputFingerprint.identity,
+            outputPath: existing.url.path
+        )
+        return ReferencedNCMConversionOutput(
+            operationID: operationID,
+            sourceURL: sourceURL,
+            result: NCMConversionResult(
+                audioFileURL: existing.url,
+                format: existing.format,
+                metadata: existing.metadata,
+                coverData: nil
+            ),
+            locator: locator,
+            association: association,
+            trackID: nil
+        )
     }
 
     private func recover(
@@ -339,6 +533,21 @@ final class ReferencedNCMConversionService {
                 coverData: record.outputCoverData
             )
         }
+        try? NCMGeneratedOutputMarkerStore.upsert(
+            NCMGeneratedOutputRecord(
+                operationID: record.id,
+                sourcePath: sourceURL.path,
+                sourceFingerprint: sourceFingerprint,
+                outputPath: outputURL.path,
+                outputFingerprint: actualFingerprint,
+                format: format,
+                metadata: metadata,
+                createdAt: record.createdAt,
+                updatedAt: Date()
+            ),
+            in: outputURL.deletingLastPathComponent(),
+            fileManager: fileManager
+        )
         let association = NCMConversionAssociation(
             operationID: record.id,
             sourceIdentity: record.sourceIdentity,
@@ -389,8 +598,7 @@ final class ReferencedNCMConversionService {
     }
 
     private func writeAuthorization(for file: ImportDiscoveredFile) async throws -> NCMParentDirectoryAuthorization {
-        if let sourceID = file.primarySourceID,
-           sourceScope.authorizedRoots[sourceID] != nil {
+        if sourceScope.authorizedDirectorySourceID(containing: file.url) != nil {
             return NCMParentDirectoryAuthorization(
                 directoryURL: file.url.deletingLastPathComponent(),
                 bookmarkData: Data(),
@@ -421,11 +629,60 @@ final class ReferencedNCMConversionService {
         }
     }
 
+    private func outputURL(
+        for requestedURL: URL,
+        sourceFingerprint: ReferencedFileFingerprint
+    ) throws -> (url: URL, reusesExisting: Bool) {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: requestedURL.path, isDirectory: &isDirectory) else {
+            return (requestedURL, false)
+        }
+        guard !isDirectory.boolValue else {
+            throw ReferencedNCMConversionError.outputConflict(requestedURL.lastPathComponent)
+        }
+        let canReuseMarkedOutput: Bool
+        if let generated = NCMGeneratedOutputMarkerStore.record(
+            forOutputPath: requestedURL,
+            fileManager: fileManager
+        ) {
+            canReuseMarkedOutput = NCMGeneratedOutputMarkerStore.sameExactFingerprint(
+                generated.sourceFingerprint,
+                sourceFingerprint
+            )
+        } else {
+            canReuseMarkedOutput = true
+        }
+        if canReuseMarkedOutput, (try? validate(requestedURL)) != nil {
+            return (requestedURL, true)
+        }
+
+        let stem = requestedURL.deletingPathExtension().lastPathComponent
+        let extensionName = requestedURL.pathExtension
+        for suffix in 2...1000 {
+            let name = extensionName.isEmpty
+                ? "\(stem) (\(suffix))"
+                : "\(stem) (\(suffix)).\(extensionName)"
+            let candidate = requestedURL.deletingLastPathComponent().appendingPathComponent(name)
+            if !fileManager.fileExists(atPath: candidate.path) {
+                return (candidate, false)
+            }
+        }
+        throw ReferencedNCMConversionError.outputConflict(requestedURL.lastPathComponent)
+    }
+
     nonisolated private static func outputFileName(
         sourceURL: URL,
         result: NCMConversionResult
     ) -> String {
-        let metadataName = result.metadata.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        outputFileName(sourceURL: sourceURL, metadata: result.metadata, format: result.format)
+    }
+
+    nonisolated private static func outputFileName(
+        sourceURL: URL,
+        metadata: NCMMetadata,
+        format: NCMFormat
+    ) -> String {
+        let metadataName = metadata.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let fallback = sourceURL.deletingPathExtension().lastPathComponent
         let base = (metadataName.isEmpty ? fallback : metadataName)
             .unicodeScalars
@@ -436,7 +693,7 @@ final class ReferencedNCMConversionService {
                 return Character(String(scalar))
             }
         let safe = String(base).trimmingCharacters(in: .whitespacesAndNewlines)
-        return "\(String(safe.prefix(180))).\(result.format.rawValue)"
+        return "\(String(safe.prefix(180))).\(format.rawValue)"
     }
 
     nonisolated private static func outputMemberships(

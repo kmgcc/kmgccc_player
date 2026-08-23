@@ -52,16 +52,22 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         }
         var existingByCanonicalPath: [String: ReferencedSourceDescriptor] = [:]
         var directoryRootPaths: [String] = []
+        var directorySourceRoots: [String: (url: URL, id: UUID)] = [:]
         for descriptor in existingDescriptors {
             if descriptor.mode == .directory {
                 // Coverage of files by directory sources must not depend on
                 // bookmark resolution alone: a stale or unresolvable bookmark
                 // would otherwise spawn a duplicate file source.
-                directoryRootPaths.append(canonicalPath(URL(fileURLWithPath: descriptor.lastKnownPath)))
+                let lastKnownURL = URL(fileURLWithPath: descriptor.lastKnownPath, isDirectory: true)
+                let lastKnownCanonical = canonicalPath(lastKnownURL)
+                directoryRootPaths.append(lastKnownCanonical)
+                existingByCanonicalPath[lastKnownCanonical] = descriptor
+                directorySourceRoots[lastKnownCanonical] = (lastKnownURL, descriptor.id)
                 if let resolved = try? bookmarkResolver.resolve(descriptor.rootBookmarkData) {
                     let canonical = canonicalPath(resolved.url)
                     existingByCanonicalPath[canonical] = descriptor
-                    if canonical != directoryRootPaths.last {
+                    directorySourceRoots[canonical] = (resolved.url, descriptor.id)
+                    if canonical != lastKnownCanonical {
                         directoryRootPaths.append(canonical)
                     }
                 }
@@ -70,6 +76,7 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
             }
         }
         var seenSelectionPaths = Set<String>()
+        var readableSelectionPaths = Set<String>()
         // Directories first so a file inside a same-batch directory selection
         // is recognized as covered by that directory source.
         let uniqueSelections = selectedURLs.filter { selected in
@@ -79,6 +86,24 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         }
 
         for selected in uniqueSelections {
+            let canonical = canonicalPath(selected)
+            let isDirectory = selected.hasDirectoryPath
+
+            // A file chosen from an already-authorized directory must inherit
+            // that directory source. Starting access on the child file can
+            // fail even while the folder is readable, and it also loses the
+            // source membership needed by automatic/NCM imports.
+            if !isDirectory,
+               let covered = directorySourceRoots
+                   .filter({ path, _ in canonical == path || canonical.hasPrefix(path + "/") })
+                   .max(by: { lhs, rhs in lhs.key.count < rhs.key.count }),
+               sourceScope.authorizedRoots[covered.value.id] != nil {
+                let rootURL = sourceScope.authorizedRoots[covered.value.id]?.url ?? covered.value.url
+                sourceIDs[rootURL] = covered.value.id
+                readableSelectionPaths.insert(canonical)
+                continue
+            }
+
             let didStart = bookmarkResolver.startAccessing(selected)
             guard didStart || (!requiresSecurityScope && FileManager.default.isReadableFile(atPath: selected.path)) else {
                 failures.append(.init(url: selected, message: "Permission denied"))
@@ -88,11 +113,10 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
                 ? SecurityScopedResourceLease { [bookmarkResolver] in bookmarkResolver.stopAccessing(selected) }
                 : .none
 
-            let isDirectory = selected.hasDirectoryPath
             // Single audio files become first-class file sources so they show
             // up in the source list and can be monitored and removed.
             guard isDirectory || AudioFormatSupport.importableExtensions.contains(selected.pathExtension.lowercased()) else { continue }
-            let canonical = canonicalPath(selected)
+            readableSelectionPaths.insert(canonical)
             if !isDirectory,
                directoryRootPaths.contains(where: { canonical == $0 || canonical.hasPrefix($0 + "/") }) {
                 // Already managed by a directory source; no separate file
@@ -121,6 +145,7 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
                 existingByCanonicalPath[canonical] = descriptor
                 if isDirectory {
                     directoryRootPaths.append(canonical)
+                    directorySourceRoots[canonical] = (selected, id)
                 } else {
                     batchCreatedFileSources.append((id: id, path: canonical))
                 }
@@ -135,7 +160,7 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         }
 
         let readableSelections = uniqueSelections.filter { selected in
-            selectionLeases[selected] != nil || sourceIDs[selected] != nil
+            readableSelectionPaths.contains(canonicalPath(selected))
         }
         let scanned = await ImportInputScanner.scan(
             selectedURLs: readableSelections,

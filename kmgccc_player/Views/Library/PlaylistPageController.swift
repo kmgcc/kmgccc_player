@@ -348,13 +348,16 @@ final class PlaylistPageController {
         isCollectionListFiltering = false
     }
 
+    /// Clears page-local interaction state only.
+    ///
+    /// Safe to call during an in-place selection transition (e.g. switching
+    /// from one playlist to another while the detail view stays mounted): the
+    /// environment bindings (`libraryVM` / `playerVM` / `uiState`) and
+    /// `activeViewTokens` must stay intact, otherwise the follow-up rebuild in
+    /// `performRebuild` bails out on its `guard let libraryVM` and the page
+    /// never renders again. Use `releaseForSessionTeardown()` when the hosting
+    /// window or library session is going away for real.
     func releaseSelectionStateForTeardown() {
-        cancelAllTasks(clearPage: true)
-        libraryVM = nil
-        playerVM = nil
-        uiState = nil
-        headerColorExtractor = nil
-        activeViewTokens.removeAll()
         isMultiselectMode = false
         selectedTrackIDs.removeAll()
         selectionAnchorTrackID = nil
@@ -365,6 +368,20 @@ final class PlaylistPageController {
         listScrollPositionID = nil
         lastPrefetchBucket = nil
         isManualTrackReorderActive = false
+    }
+
+    /// Full teardown for the end of a view/session lifetime (library switch,
+    /// window release). Cancels in-flight work and drops all environment
+    /// references so the controller does not pin the outgoing session's
+    /// view models and caches.
+    func releaseForSessionTeardown() {
+        cancelAllTasks(clearPage: true)
+        releaseSelectionStateForTeardown()
+        libraryVM = nil
+        playerVM = nil
+        uiState = nil
+        headerColorExtractor = nil
+        activeViewTokens.removeAll()
     }
 
     @discardableResult

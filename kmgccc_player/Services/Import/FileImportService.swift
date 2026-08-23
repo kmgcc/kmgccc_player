@@ -70,6 +70,7 @@ final class FileImportService: FileImportServiceProtocol {
         let discoveredFile: ImportDiscoveredFile
         let trackID: UUID?
         let placement: ImportPlacement?
+        let existingDuplicateTrackID: UUID?
         let ncmOperationID: UUID?
         let ncmAssociation: NCMConversionAssociation?
         let ncmLocator: ReferencedFileLocator?
@@ -84,6 +85,7 @@ final class FileImportService: FileImportServiceProtocol {
                 discoveredFile: discoveredFile,
                 trackID: trackID,
                 placement: placement,
+                existingDuplicateTrackID: existingDuplicateTrackID,
                 ncmOperationID: ncmOperationID,
                 ncmAssociation: ncmAssociation,
                 ncmLocator: ncmLocator,
@@ -141,9 +143,14 @@ final class FileImportService: FileImportServiceProtocol {
         let ncmConversionAssociation: NCMConversionAssociation?
     }
 
+    private struct ExistingTrackMatch: Sendable {
+        let id: UUID
+        let duration: Double
+        let preview: TrackPreview
+    }
+
     private struct ExistingTrackMatchSnapshot: Sendable {
-        let preview: TrackPreview?
-        let count: Int
+        let matches: [ExistingTrackMatch]
     }
 
     private struct CandidatePreparationResult: Sendable {
@@ -179,6 +186,7 @@ final class FileImportService: FileImportServiceProtocol {
     private struct ImportBatchResult {
         let records: [ImportedTrackRecord]
         let createdTrackIDs: Set<UUID>
+        let failures: [ImportInputFailure]
         let cancelled: Bool
     }
 
@@ -234,6 +242,7 @@ final class FileImportService: FileImportServiceProtocol {
     private let amllDBService: AMLLDBService
     private let uiPresentationObserver: (() -> Void)?
     private var importInProgress = false
+    private var lastImportFailures: [ImportInputFailure] = []
 
     init(
         repository: LibraryRepositoryProtocol,
@@ -339,14 +348,15 @@ final class FileImportService: FileImportServiceProtocol {
         )
         let plan = storageBackend.lastPreparedInputPlan
         var failures = plan?.failures ?? []
-        if let plan, imported.count < plan.files.count {
-            failures.append(contentsOf: plan.files.dropFirst(imported.count).map {
-                ImportInputFailure(url: $0.url, message: "Import failed")
-            })
-        } else if let plan, plan.files.isEmpty, !selection.urls.isEmpty {
+        failures.append(contentsOf: lastImportFailures)
+        if let plan, plan.files.isEmpty, !selection.urls.isEmpty, plan.failures.isEmpty {
             failures.append(contentsOf: selection.urls.map {
                 ImportInputFailure(url: $0, message: "No supported audio found")
             })
+        }
+        var seenFailurePaths = Set<String>()
+        failures = failures.filter {
+            seenFailurePaths.insert(LibraryImportSourceEntry.canonicalPath($0.url)).inserted
         }
         let sources = plan?.directorySources.map { prepared in
             LibraryInitialImportSource(
@@ -426,6 +436,7 @@ final class FileImportService: FileImportServiceProtocol {
         presentation: ImportPresentation,
         isManualSelection: Bool
     ) async -> [Track] {
+        lastImportFailures = []
         var crashBreadcrumbResult = "not_completed"
         var crashBreadcrumbImportedCount = 0
         CrashBreadcrumbRecorder.shared.record(
@@ -515,25 +526,45 @@ final class FileImportService: FileImportServiceProtocol {
         }
         var newFiles: [ImportDiscoveredFile] = []
         var reusedTracks: [Track] = []
+        var reusedTrackIDs = Set<UUID>()
+        let libraryTracks = await repository.fetchTracks(in: nil)
         for file in inputPlan.files {
-            guard storageBackend.mode == .referenced, let fingerprint = file.fingerprint,
-                  let existingTrack = await repository.track(matching: fingerprint) else {
-                newFiles.append(file)
-                continue
-            }
-            do {
-                let placement = try await storageBackend.makePlacement(
-                    for: file,
-                    trackID: existingTrack.id,
-                    stagingDirectoryURL: importSession.stagingDirectoryURL
-                )
-                guard case let .referenced(locator) = placement else {
-                    throw LibraryBackendError.modeMismatch(expected: .referenced, actual: placement.storageKind)
+            if storageBackend.mode == .referenced {
+                guard let fingerprint = file.fingerprint,
+                      let existingTrack = await repository.track(matching: fingerprint) else {
+                    newFiles.append(file)
+                    continue
                 }
-                try await repository.mergeReferencedLocator(locator, into: existingTrack)
-                reusedTracks.append(existingTrack)
-            } catch {
-                Log.warning("[Import] identity reuse failed track=\(existingTrack.id.uuidString)", category: .import)
+                do {
+                    let placement = try await storageBackend.makePlacement(
+                        for: file,
+                        trackID: existingTrack.id,
+                        stagingDirectoryURL: importSession.stagingDirectoryURL
+                    )
+                    guard case let .referenced(locator) = placement else {
+                        throw LibraryBackendError.modeMismatch(expected: .referenced, actual: placement.storageKind)
+                    }
+                    try await repository.mergeReferencedLocator(locator, into: existingTrack)
+                    if reusedTrackIDs.insert(existingTrack.id).inserted {
+                        reusedTracks.append(existingTrack)
+                    }
+                } catch {
+                    Log.warning("[Import] identity reuse failed track=\(existingTrack.id.uuidString)", category: .import)
+                    newFiles.append(file)
+                }
+            } else {
+                let inputPath = file.url.resolvingSymlinksInPath().standardizedFileURL.path
+                guard let existingTrack = libraryTracks.first(where: {
+                    guard !$0.originalFilePath.isEmpty else { return false }
+                    return URL(fileURLWithPath: $0.originalFilePath)
+                        .resolvingSymlinksInPath().standardizedFileURL.path == inputPath
+                }) else {
+                    newFiles.append(file)
+                    continue
+                }
+                if reusedTrackIDs.insert(existingTrack.id).inserted {
+                    reusedTracks.append(existingTrack)
+                }
             }
         }
         if !reusedTracks.isEmpty, let playlist {
@@ -673,7 +704,9 @@ final class FileImportService: FileImportServiceProtocol {
                     )
                 } catch ReferencedNCMConversionError.committedConversion(let trackID) {
                     if let existing = await repository.fetchTracks(ids: [trackID]).first {
-                        reusedTracks.append(existing)
+                        if reusedTrackIDs.insert(existing.id).inserted {
+                            reusedTracks.append(existing)
+                        }
                         if let playlist { await repository.addTracks([existing], to: playlist) }
                         progressController.updateItem(
                             id: file.url.path,
@@ -685,6 +718,10 @@ final class FileImportService: FileImportServiceProtocol {
                         )
                     }
                 } catch {
+                    lastImportFailures.append(.init(
+                        url: file.url,
+                        message: error.localizedDescription
+                    ))
                     progressController.updateItem(
                         id: file.url.path,
                         stage: .ncmConversion,
@@ -704,22 +741,30 @@ final class FileImportService: FileImportServiceProtocol {
             )
         }
 
+        // A legacy source folder may contain both the original MP3 product and
+        // its NCM input. Once the NCM path is resolved, both entries can point
+        // at the same physical output. Collapse that pair before metadata
+        // deduplication so differing tags cannot create two Track records.
+        resolvedFiles = coalescedResolvedFiles(resolvedFiles)
+
         Log.debug("Found \(resolvedFiles.count) audio files to import", category: .import)
 
-        let libraryTracks = await repository.fetchTracks(in: nil)
         let existingByDedupKey = Dictionary(grouping: libraryTracks) {
             LibraryNormalization.normalizedDedupKey(title: $0.title, artist: $0.artist)
         }
         let existingSnapshots = existingByDedupKey.mapValues { matches in
             ExistingTrackMatchSnapshot(
-                preview: matches.first.map {
-                    TrackPreview(
-                        title: $0.title,
-                        artist: $0.artist,
-                        artworkData: $0.artworkData
+                matches: matches.map {
+                    ExistingTrackMatch(
+                        id: $0.id,
+                        duration: $0.duration,
+                        preview: TrackPreview(
+                            title: $0.title,
+                            artist: $0.artist,
+                            artworkData: $0.artworkData
+                        )
                     )
-                },
-                count: matches.count
+                }
             )
         }
 
@@ -789,6 +834,88 @@ final class FileImportService: FileImportServiceProtocol {
             }
         }
 
+        if presentation == .automatic {
+            // Automatic source scans must not create a second library track
+            // merely because the same recording arrived through another
+            // source. Reuse the existing track silently, merge the new
+            // referenced membership, and complete any NCM transaction so a
+            // failed earlier scan cannot leave an output stuck in recovery.
+            for candidate in preparedCandidates.duplicateCandidates {
+                guard let existingID = candidate.existingDuplicateTrackID,
+                      let existing = libraryTracks.first(where: { $0.id == existingID }) else {
+                    continue
+                }
+                do {
+                    if storageBackend.mode == .referenced {
+                        let placement: ImportPlacement
+                        if let locator = candidate.ncmLocator {
+                            placement = .referenced(locator)
+                        } else {
+                            placement = try await storageBackend.makePlacement(
+                                for: candidate.discoveredFile,
+                                trackID: existing.id,
+                                stagingDirectoryURL: importSession.stagingDirectoryURL
+                            )
+                        }
+                        try storageBackend.validate(placement)
+                        guard case let .referenced(locator) = placement else {
+                            throw LibraryBackendError.modeMismatch(
+                                expected: .referenced,
+                                actual: placement.storageKind
+                            )
+                        }
+                        try await repository.mergeReferencedLocator(locator, into: existing)
+                        if let association = candidate.ncmAssociation {
+                            existing.ncmConversionAssociation = association
+                            await repository.persistTrackMetaAndArtwork(
+                                existing,
+                                reason: "ncmDuplicateReuse"
+                            )
+                        }
+                    }
+                    if let operationID = candidate.ncmOperationID,
+                       let referencedNCMConversionService {
+                        try await referencedNCMConversionService.associateTrack(
+                            operationID: operationID,
+                            trackID: existing.id
+                        )
+                        try await referencedNCMConversionService.markCommitted(
+                            operationID: operationID,
+                            trackID: existing.id
+                        )
+                    }
+                    if reusedTrackIDs.insert(existing.id).inserted {
+                        reusedTracks.append(existing)
+                    }
+                    if let playlist {
+                        await repository.addTracks([existing], to: playlist)
+                    }
+                    progressController.updateItem(
+                        id: candidate.progressID,
+                        title: candidate.metadata.title,
+                        artist: candidate.metadata.artist,
+                        stage: .duplicateCheck,
+                        status: .skipped,
+                        detail: "已复用资料库中的重复歌曲"
+                    )
+                } catch {
+                    lastImportFailures.append(.init(
+                        url: candidate.fileURL,
+                        message: error.localizedDescription
+                    ))
+                    progressController.updateItem(
+                        id: candidate.progressID,
+                        title: candidate.metadata.title,
+                        artist: candidate.metadata.artist,
+                        stage: .importing,
+                        status: .failed,
+                        detail: "重复歌曲复用失败",
+                        issueMessage: error.localizedDescription
+                    )
+                }
+            }
+        }
+
         // Logic Verification Logs
         Log.debug("--------------------------------------------------", category: .import)
         Log.debug("Import Logic Verification:", category: .import)
@@ -821,6 +948,10 @@ final class FileImportService: FileImportServiceProtocol {
                 }
                 finalCandidates.append(candidate.prepared(trackID: trackID, placement: placement))
             } catch {
+                lastImportFailures.append(.init(
+                    url: candidate.fileURL,
+                    message: error.localizedDescription
+                ))
                 progressController.updateItem(
                     id: candidate.progressID,
                     title: candidate.metadata.title,
@@ -854,6 +985,7 @@ final class FileImportService: FileImportServiceProtocol {
             session: importSession,
             cancellationToken: cancellationToken
         )
+        lastImportFailures.append(contentsOf: importBatch.failures)
         let importedRecords = importBatch.records
 
         let importCancellationRequested = await isImportCancellationRequested(progressController, cancellationToken)
@@ -1004,6 +1136,59 @@ final class FileImportService: FileImportServiceProtocol {
 
     // MARK: - Private Methods
 
+    private func coalescedResolvedFiles(_ files: [ResolvedImportFile]) -> [ResolvedImportFile] {
+        guard storageBackend.mode == .referenced else { return files }
+
+        var result: [ResolvedImportFile] = []
+        var indexByIdentity: [ReferencedPhysicalIdentityKey: Int] = [:]
+        for file in files {
+            guard let fingerprint = file.discoveredFile.fingerprint else {
+                result.append(file)
+                continue
+            }
+            let key = ReferencedPhysicalIdentityKey(fingerprint)
+            guard let existingIndex = indexByIdentity[key] else {
+                indexByIdentity[key] = result.count
+                result.append(file)
+                continue
+            }
+
+            let existing = result[existingIndex]
+            let preferred: ResolvedImportFile
+            if existing.referencedNCMOutput == nil, file.referencedNCMOutput != nil {
+                preferred = file
+            } else {
+                preferred = existing
+            }
+            let mergedMemberships = Array(Set(
+                existing.discoveredFile.memberships
+                    + file.discoveredFile.memberships
+            )).sorted {
+                if $0.relativePath.count != $1.relativePath.count {
+                    return $0.relativePath.count < $1.relativePath.count
+                }
+                return $0.sourceID.uuidString < $1.sourceID.uuidString
+            }
+            let mergedDiscoveredFile = ImportDiscoveredFile(
+                url: preferred.discoveredFile.url,
+                memberships: mergedMemberships,
+                primarySourceID: preferred.discoveredFile.primarySourceID
+                    ?? existing.discoveredFile.primarySourceID
+                    ?? file.discoveredFile.primarySourceID,
+                fingerprint: preferred.discoveredFile.fingerprint ?? fingerprint
+            )
+            result[existingIndex] = ResolvedImportFile(
+                progressID: preferred.progressID,
+                displayName: preferred.displayName,
+                fileURL: preferred.fileURL,
+                ncmResult: preferred.ncmResult,
+                discoveredFile: mergedDiscoveredFile,
+                referencedNCMOutput: preferred.referencedNCMOutput
+            )
+        }
+        return result
+    }
+
     private func importCandidatesWithProgress(
         _ candidates: [ImportCandidate],
         progressController: BatchImportProgressDialogController,
@@ -1012,7 +1197,7 @@ final class FileImportService: FileImportServiceProtocol {
         cancellationToken: ImportCancellationToken
     ) async -> ImportBatchResult {
         guard !candidates.isEmpty else {
-            return ImportBatchResult(records: [], createdTrackIDs: [], cancelled: false)
+            return ImportBatchResult(records: [], createdTrackIDs: [], failures: [], cancelled: false)
         }
 
         var orderedRecords = Array<ImportedTrackRecord?>(repeating: nil, count: candidates.count)
@@ -1022,6 +1207,7 @@ final class FileImportService: FileImportServiceProtocol {
         var importedCount = 0
         var failedCount = 0
         var createdTrackIDs: Set<UUID> = []
+        var failures: [ImportInputFailure] = []
         var cancelled = false
         let stagingDirectoryURL = session.stagingDirectoryURL
 
@@ -1103,6 +1289,10 @@ final class FileImportService: FileImportServiceProtocol {
                     )
                 } else {
                     failedCount += 1
+                    failures.append(.init(
+                        url: candidates[output.index].fileURL,
+                        message: output.errorDescription ?? "文件复制或解析阶段失败"
+                    ))
                     progressController.updateItem(
                         id: output.progressID,
                         title: output.metadata.title,
@@ -1170,6 +1360,7 @@ final class FileImportService: FileImportServiceProtocol {
         return ImportBatchResult(
             records: orderedRecords.compactMap { $0 },
             createdTrackIDs: createdTrackIDs,
+            failures: failures,
             cancelled: cancelled
         )
     }
@@ -1558,6 +1749,7 @@ final class FileImportService: FileImportServiceProtocol {
                     discoveredFile: file.discoveredFile,
                     trackID: nil,
                     placement: nil,
+                    existingDuplicateTrackID: nil,
                     ncmOperationID: file.referencedNCMOutput?.operationID,
                     ncmAssociation: file.referencedNCMOutput?.association,
                     ncmLocator: file.referencedNCMOutput?.locator,
@@ -1605,6 +1797,7 @@ final class FileImportService: FileImportServiceProtocol {
                         discoveredFile: file.discoveredFile,
                         trackID: nil,
                         placement: nil,
+                        existingDuplicateTrackID: nil,
                         ncmOperationID: file.referencedNCMOutput?.operationID,
                         ncmAssociation: file.referencedNCMOutput?.association,
                         ncmLocator: file.referencedNCMOutput?.locator,
@@ -1633,6 +1826,7 @@ final class FileImportService: FileImportServiceProtocol {
             discoveredFile: file.discoveredFile,
             trackID: nil,
             placement: nil,
+            existingDuplicateTrackID: nil,
             ncmOperationID: file.referencedNCMOutput?.operationID,
             ncmAssociation: file.referencedNCMOutput?.association,
             ncmLocator: file.referencedNCMOutput?.locator,
@@ -1643,23 +1837,54 @@ final class FileImportService: FileImportServiceProtocol {
             artist: effectivePreview.artist
         )
 
-        guard let existingMatch = existingMatches[dedupKey], existingMatch.count > 0 else {
+        guard let existingMatch = existingMatches[dedupKey] else {
             return CandidatePreparationResult(index: index, candidate: candidate, duplicateRow: nil)
         }
+        let matchingTracks = existingMatch.matches.filter {
+            Self.duplicateDurationsMatch(effectivePreview.duration, $0.duration)
+        }
+        guard !matchingTracks.isEmpty else {
+            return CandidatePreparationResult(index: index, candidate: candidate, duplicateRow: nil)
+        }
+
+        let duplicateCandidate = ImportCandidate(
+            progressID: candidate.progressID,
+            displayName: candidate.displayName,
+            fileURL: candidate.fileURL,
+            metadata: candidate.metadata,
+            discoveredFile: candidate.discoveredFile,
+            trackID: candidate.trackID,
+            placement: candidate.placement,
+            existingDuplicateTrackID: matchingTracks[0].id,
+            ncmOperationID: candidate.ncmOperationID,
+            ncmAssociation: candidate.ncmAssociation,
+            ncmLocator: candidate.ncmLocator,
+            recoveryTrackID: candidate.recoveryTrackID
+        )
 
         let duplicateRow = DuplicatePairRow(
             id: file.progressID,
             fileURL: file.fileURL,
             incoming: effectivePreview,
-            existing: existingMatch.preview,
-            existingCount: existingMatch.count,
+            existing: matchingTracks.first?.preview,
+            existingCount: matchingTracks.count,
             dedupKey: dedupKey
         )
         return CandidatePreparationResult(
             index: index,
-            candidate: candidate,
+            candidate: duplicateCandidate,
             duplicateRow: duplicateRow
         )
+    }
+
+    /// Duplicate matching intentionally stays small and predictable: title and
+    /// artist select the candidate group, while duration confirms that it is
+    /// the same recording. A half-second tolerance absorbs container metadata
+    /// rounding without treating two different songs with the same tags as a
+    /// duplicate. Unknown durations never match.
+    nonisolated private static func duplicateDurationsMatch(_ lhs: Double, _ rhs: Double) -> Bool {
+        guard lhs.isFinite, rhs.isFinite, lhs > 0, rhs > 0 else { return false }
+        return abs(lhs - rhs) <= 0.5
     }
 
     nonisolated private static func applyingMetadataOverride(

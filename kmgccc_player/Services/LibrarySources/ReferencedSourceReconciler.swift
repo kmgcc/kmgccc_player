@@ -6,7 +6,42 @@ nonisolated enum ReferencedSourceReconcileError: Error, Equatable {
     case reconnectAuthorizationFailed(UUID)
 }
 
+/// What a reconcile actually changed in runtime/repository state.
+///
+/// File-monitor callbacks use this to decide whether the UI needs to pull a
+/// fresh library snapshot: an empty-diff rescan (the common case for periodic
+/// and FS-event-triggered scans) previously triggered a full
+/// `reloadLibrary()` on every debounce, which dominated interaction latency
+/// on large referenced libraries.
+nonisolated struct ReferencedReconcileChanges: Sendable, Equatable {
+    var importedFiles = 0
+    var committedTrackMutations = 0
+    var appliedRuntimeMutations = 0
+    var playlistMembershipChanges = 0
+
+    var isEmpty: Bool {
+        importedFiles == 0
+            && committedTrackMutations == 0
+            && appliedRuntimeMutations == 0
+            && playlistMembershipChanges == 0
+    }
+
+    static func += (lhs: inout ReferencedReconcileChanges, rhs: ReferencedReconcileChanges) {
+        lhs.importedFiles += rhs.importedFiles
+        lhs.committedTrackMutations += rhs.committedTrackMutations
+        lhs.appliedRuntimeMutations += rhs.appliedRuntimeMutations
+        lhs.playlistMembershipChanges += rhs.playlistMembershipChanges
+    }
+}
+
+/// Outcome of a best-effort multi-source reconcile pass.
+nonisolated struct ReferencedSourceReconcileOutcome: Sendable, Equatable {
+    var failedSourceIDs: Set<UUID>
+    var changes: ReferencedReconcileChanges
+}
+
 nonisolated enum ReferencedSourceNotice: Sendable, Equatable {
+    case filesImported(sourceID: UUID, count: Int)
     case unavailable(sourceID: UUID, status: ReferencedSourceStatus)
     case fileFailures(sourceID: UUID, count: Int)
     case reconcileFailures(sourceID: UUID, trackIDs: [UUID])
@@ -20,6 +55,21 @@ nonisolated protocol ReferencedSourceNoticePublishing: Sendable {
 actor LogReferencedSourceNoticePublisher: ReferencedSourceNoticePublishing {
     func publish(_ notice: ReferencedSourceNotice) {
         Log.warning("[ReferencedSource] notice=\(String(describing: notice))", category: .library)
+    }
+}
+
+/// Bridges source-monitor notices into the main-actor UI without making the
+/// reconciler depend on a view model. The actor keeps the publisher Sendable;
+/// the closure hops to the main actor only when a notice is delivered.
+actor SidebarReferencedSourceNoticePublisher: ReferencedSourceNoticePublishing {
+    private let handler: @MainActor @Sendable (ReferencedSourceNotice) -> Void
+
+    init(handler: @escaping @MainActor @Sendable (ReferencedSourceNotice) -> Void) {
+        self.handler = handler
+    }
+
+    func publish(_ notice: ReferencedSourceNotice) async {
+        await handler(notice)
     }
 }
 
@@ -103,7 +153,7 @@ final class ReferencedSourceReconciler {
             bookmarkResolver: bookmarkResolver,
             requiresSecurityScope: requiresSecurityScope
         )
-        try await reconcile(sourceIDs: Set(descriptors.map(\.id)))
+        _ = await reconcileBestEffort(sourceIDs: Set(descriptors.map(\.id)))
         return issues
     }
 
@@ -189,29 +239,35 @@ final class ReferencedSourceReconciler {
         return created
     }
 
-    func replayPending(sourceID: UUID? = nil) async throws {
-        guard !isClosed else { return }
+    @discardableResult
+    func replayPending(sourceID: UUID? = nil) async throws -> ReferencedReconcileChanges {
+        var changes = ReferencedReconcileChanges()
+        guard !isClosed else { return changes }
         for intent in try await intentStore.pending(libraryID: context.id, sourceID: sourceID) {
             try validate(intent)
             try await restoreReconnectAuthorizationIfNeeded(intent)
             switch intent.state {
             case .prepared:
-                try await drivePrepared(intent)
+                changes += try await drivePrepared(intent)
             case .sidecarsCommitted:
+                changes.appliedRuntimeMutations += intent.mutations.count
                 await repository.attachReferencedSourceMutations(intent.mutations)
                 let applied = try await intentStore.advance(intent, to: .runtimeApplied)
-                try await finalize(applied)
+                changes.playlistMembershipChanges += try await finalize(applied)
             case .runtimeApplied:
-                try await finalize(intent)
+                changes.playlistMembershipChanges += try await finalize(intent)
             }
         }
+        return changes
     }
 
-    func reconcile(sourceIDs: Set<UUID>) async throws {
-        guard !isClosed else { return }
+    @discardableResult
+    func reconcile(sourceIDs: Set<UUID>) async throws -> ReferencedReconcileChanges {
+        var changes = ReferencedReconcileChanges()
+        guard !isClosed else { return changes }
         for sourceID in sourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
-            guard !isClosed else { return }
-            try await replayPending(sourceID: sourceID)
+            guard !isClosed else { return changes }
+            changes += try await replayPending(sourceID: sourceID)
             guard try await intentStore.pending(libraryID: context.id, sourceID: sourceID).isEmpty else {
                 continue
             }
@@ -221,7 +277,7 @@ final class ReferencedSourceReconciler {
                 let status: ReferencedSourceStatus = descriptor.status == .permissionDenied
                     ? .permissionDenied
                     : .offline
-                try await applyUnavailable(sourceID: sourceID, status: status)
+                changes += try await applyUnavailable(sourceID: sourceID, status: status)
                 continue
             }
             var effectiveRoot = root
@@ -245,8 +301,32 @@ final class ReferencedSourceReconciler {
                     result = try await scanner.scan(context: context, sourceID: sourceID, rootURL: refreshedRoot)
                 }
             }
-            try await apply(result, rootURL: effectiveRoot)
+            changes += try await apply(result, rootURL: effectiveRoot)
         }
+        return changes
+    }
+
+    /// Reconcile each source independently. One broken or temporarily
+    /// unavailable folder must not prevent the remaining folders from being
+    /// imported or their playlists from being synchronized.
+    @discardableResult
+    func reconcileBestEffort(sourceIDs: Set<UUID>) async -> ReferencedSourceReconcileOutcome {
+        var failed = Set<UUID>()
+        var changes = ReferencedReconcileChanges()
+        for sourceID in sourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+            do {
+                changes += try await reconcile(sourceIDs: [sourceID])
+            } catch is CancellationError {
+                // A refresh, session switch, or shutdown can intentionally
+                // cancel the in-flight scan. It is not a source failure and
+                // must not turn into a sidebar error notice or failed state.
+                break
+            } catch {
+                failed.insert(sourceID)
+                await reportMonitorFailure(sourceIDs: [sourceID], error: error)
+            }
+        }
+        return ReferencedSourceReconcileOutcome(failedSourceIDs: failed, changes: changes)
     }
 
     func removeSource(_ sourceID: UUID) async throws {
@@ -328,35 +408,38 @@ final class ReferencedSourceReconciler {
 
     func close() { isClosed = true }
 
-    private func apply(_ result: ReferencedSourceScanResult, rootURL: URL) async throws {
+    @discardableResult
+    private func apply(_ result: ReferencedSourceScanResult, rootURL: URL) async throws -> ReferencedReconcileChanges {
         let diff = result.diff
         guard diff.sourceStatus == .available else {
-            try await applyUnavailable(sourceID: diff.sourceID, status: diff.sourceStatus)
-            return
+            return try await applyUnavailable(sourceID: diff.sourceID, status: diff.sourceStatus)
         }
         let intent = try await intentStore.prepare(
             diff,
             proposedManifest: result.proposedManifest
         )
-        try await drivePrepared(intent, rootURL: rootURL)
+        return try await drivePrepared(intent, rootURL: rootURL)
     }
 
+    @discardableResult
     private func drivePrepared(
         _ original: LibraryReconcileIntent,
         rootURL explicitRootURL: URL? = nil
-    ) async throws {
+    ) async throws -> ReferencedReconcileChanges {
+        var changes = ReferencedReconcileChanges()
         var intent = original
         if intent.operation == .reconcile,
            intent.diff.sourceStatus == .available,
            intent.mutations.isEmpty || intent.proposedManifest?.entries.contains(where: { $0.trackID == nil }) == true {
-            guard let rootURL = explicitRootURL ?? sourceScope.authorizedRoots[intent.sourceID]?.url else { return }
+            guard let rootURL = explicitRootURL ?? sourceScope.authorizedRoots[intent.sourceID]?.url else { return changes }
             let isFileRoot = rootIsFile(rootURL)
             let imported = intent.diff.added.isEmpty
                 ? []
                 : await importer.importAutomatically(intent.diff.added.map {
                     url(forRelativePath: $0.relativePath, root: rootURL, rootIsFile: isFileRoot)
                 })
-            guard !isClosed else { return }
+            changes.importedFiles += imported.count
+            guard !isClosed else { return changes }
             let firstScanPresentPaths: Set<String>? = (
                 intent.operation == .reconcile
                     && intent.diff.scanGeneration == 1
@@ -373,12 +456,25 @@ final class ReferencedSourceReconciler {
             intent = try await intentStore.updateMutations(intent, mutations: mutations)
             let tracks = await repository.fetchTracks(in: nil)
             let physicalTrackIDs = physicalTrackIDMap(tracks)
-            guard intent.diff.added.allSatisfy({ physicalTrackIDs[ReferencedPhysicalIdentityKey($0.fingerprint)] != nil }) else {
-                return
+            let ncmSourceTrackIDs = ncmSourceTrackIDMap(tracks)
+            let resolvedAddedCount = intent.diff.added.reduce(into: 0) { count, added in
+                if physicalTrackIDs[ReferencedPhysicalIdentityKey(added.fingerprint)] != nil
+                    || added.fingerprint.identity.flatMap({ ncmSourceTrackIDs[$0] }) != nil {
+                    count += 1
+                }
+            }
+            if resolvedAddedCount < intent.diff.added.count {
+                await noticePublisher.publish(.fileFailures(
+                    sourceID: intent.sourceID,
+                    count: intent.diff.added.count - resolvedAddedCount
+                ))
             }
             if var manifest = intent.proposedManifest {
                 for index in manifest.entries.indices {
-                    manifest.entries[index].trackID = physicalTrackIDs[ReferencedPhysicalIdentityKey(manifest.entries[index].fingerprint)]
+                    let entry = manifest.entries[index]
+                    manifest.entries[index].trackID = physicalTrackIDs[ReferencedPhysicalIdentityKey(entry.fingerprint)]
+                        ?? entry.fingerprint.identity.flatMap { ncmSourceTrackIDs[$0] }
+                        ?? entry.trackID
                 }
                 intent = try await intentStore.updateManifest(intent, manifest: manifest)
             }
@@ -388,20 +484,28 @@ final class ReferencedSourceReconciler {
         let pending = intent.mutations.filter { !alreadyCommitted.contains($0.trackID) }
         if !pending.isEmpty {
             let result = await repository.commitReferencedSourceMutations(pending)
+            changes.committedTrackMutations += result.persistedTrackIDs.count
             intent = try await intentStore.recordAuthorityCommits(intent, trackIDs: result.persistedTrackIDs)
             if !result.failedTrackIDs.isEmpty {
                 await noticePublisher.publish(.reconcileFailures(sourceID: intent.sourceID, trackIDs: result.failedTrackIDs))
                 throw ReferencedSourceReconcileError.authorityCommitFailed(result.failedTrackIDs)
             }
         }
-        guard Set(intent.committedTrackIDs) == Set(intent.mutations.map(\.trackID)) else { return }
+        guard Set(intent.committedTrackIDs) == Set(intent.mutations.map(\.trackID)) else { return changes }
         intent = try await intentStore.advance(intent, to: .sidecarsCommitted)
+        // `attachReferencedSourceMutations(_:)` no-ops on an empty array; only
+        // count it as a change when there is something to apply.
+        changes.appliedRuntimeMutations += intent.mutations.count
         await repository.attachReferencedSourceMutations(intent.mutations)
         intent = try await intentStore.advance(intent, to: .runtimeApplied)
-        try await finalize(intent)
+        changes.playlistMembershipChanges += try await finalize(intent)
+        return changes
     }
 
-    private func finalize(_ intent: LibraryReconcileIntent) async throws {
+    /// Returns the number of bound-playlist membership changes made while
+    /// finalizing, so callers can tell real state changes from no-op scans.
+    private func finalize(_ intent: LibraryReconcileIntent) async throws -> Int {
+        var playlistMembershipChanges = 0
         switch intent.operation {
         case .reconcile:
             if let manifest = intent.proposedManifest { try await manifestStore.save(manifest) }
@@ -409,7 +513,18 @@ final class ReferencedSourceReconciler {
             descriptor.status = intent.diff.sourceStatus
             if intent.diff.sourceStatus == .available { descriptor.lastScan = Date() }
             try await sourceStore.save(descriptor)
-            try await syncBoundPlaylist(sourceID: intent.sourceID, createIfMissing: false)
+            playlistMembershipChanges += try await syncBoundPlaylist(sourceID: intent.sourceID, createIfMissing: false)
+            let addedTrackIDs = Set(intent.diff.added.compactMap { added in
+                intent.proposedManifest?.entries.first {
+                    $0.relativePath == added.relativePath
+                }?.trackID
+            })
+            if intent.diff.scanGeneration > 1, !addedTrackIDs.isEmpty {
+                await noticePublisher.publish(.filesImported(
+                    sourceID: intent.sourceID,
+                    count: addedTrackIDs.count
+                ))
+            }
             if intent.diff.sourceStatus != .available {
                 await noticePublisher.publish(.unavailable(sourceID: intent.sourceID, status: intent.diff.sourceStatus))
             }
@@ -423,7 +538,7 @@ final class ReferencedSourceReconciler {
             }
             try await manifestStore.save(manifest)
             try await sourceStore.save(descriptor)
-            try await syncBoundPlaylist(sourceID: intent.sourceID, createIfMissing: false)
+            playlistMembershipChanges += try await syncBoundPlaylist(sourceID: intent.sourceID, createIfMissing: false)
         case .sourceRemoval:
             let orphanedTrackIDs = Set(intent.mutations.compactMap { mutation in
                 mutation.locator.sourceMemberships.isEmpty ? mutation.trackID : nil
@@ -440,20 +555,22 @@ final class ReferencedSourceReconciler {
             try await sourceStore.remove(id: intent.sourceID)
         }
         try await intentStore.remove(intent)
+        return playlistMembershipChanges
     }
 
-    private func syncBoundPlaylist(sourceID: UUID, createIfMissing: Bool) async throws {
+    @discardableResult
+    private func syncBoundPlaylist(sourceID: UUID, createIfMissing: Bool) async throws -> Int {
+        var membershipChanges = 0
         var descriptor = try await sourceStore.load(id: sourceID)
-        guard descriptor.mode == .directory else { return }
-        guard createIfMissing || descriptor.playlistID != nil else { return }
-
+        guard descriptor.mode == .directory else { return 0 }
+        guard createIfMissing || descriptor.playlistID != nil else { return 0 }
         let playlists = await repository.fetchPlaylists()
         let playlist: Playlist
         if let playlistID = descriptor.playlistID,
            let existing = playlists.first(where: { $0.id == playlistID }) {
             playlist = existing
         } else {
-            guard createIfMissing || descriptor.playlistID != nil else { return }
+            guard createIfMissing || descriptor.playlistID != nil else { return 0 }
             playlist = await repository.createPlaylist(name: descriptor.displayName)
             descriptor.playlistID = playlist.id
             descriptor.playlistManagedTrackIDs = []
@@ -468,17 +585,20 @@ final class ReferencedSourceReconciler {
         let staleIDs = previouslyManagedIDs.subtracting(sourceTrackIDs)
         let staleTracks = playlist.tracks.filter { staleIDs.contains($0.id) }
         if !staleTracks.isEmpty {
+            membershipChanges += staleTracks.count
             await repository.removeTracks(staleTracks, from: playlist)
         }
 
         let currentPlaylistIDs = Set(playlist.tracks.map(\.id))
         let missingTracks = sourceTracks.filter { !currentPlaylistIDs.contains($0.id) }
         if !missingTracks.isEmpty {
+            membershipChanges += missingTracks.count
             await repository.addTracks(missingTracks, to: playlist)
         }
 
         descriptor.playlistManagedTrackIDs = sourceTrackIDs.sorted { $0.uuidString < $1.uuidString }
         try await sourceStore.save(descriptor)
+        return membershipChanges
     }
 
     private func physicalTrackIDMap(_ tracks: [Track]) -> [ReferencedPhysicalIdentityKey: UUID] {
@@ -486,6 +606,14 @@ final class ReferencedSourceReconciler {
             guard case let .referenced(locator) = track.mediaLocator,
                   let fingerprint = locator.fingerprint else { return }
             result[ReferencedPhysicalIdentityKey(fingerprint)] = track.id
+        }
+    }
+
+    private func ncmSourceTrackIDMap(_ tracks: [Track]) -> [ReferencedFileIdentity: UUID] {
+        tracks.reduce(into: [:]) { result, track in
+            guard case let .referenced(locator) = track.mediaLocator,
+                  let sourceIdentity = locator.ncmSourceIdentity else { return }
+            result[sourceIdentity] = track.id
         }
     }
 
@@ -643,10 +771,11 @@ final class ReferencedSourceReconciler {
             && !isDirectory.boolValue
     }
 
+    @discardableResult
     private func applyUnavailable(
         sourceID: UUID,
         status: ReferencedSourceStatus
-    ) async throws {
+    ) async throws -> ReferencedReconcileChanges {
         let unavailable: TrackAvailability = status == .permissionDenied
             ? .permissionDenied
             : .volumeUnavailable
@@ -670,11 +799,16 @@ final class ReferencedSourceReconciler {
             sourceStatus: status
         )
         let intent = try await intentStore.prepare(diff, mutations: mutations)
-        try await drivePrepared(intent)
+        return try await drivePrepared(intent)
     }
 
     private func validate(_ intent: LibraryReconcileIntent) throws {
-        guard intent.libraryID == context.id, intent.libraryGeneration == context.generation else {
+        // `libraryGeneration` identifies the session/activation that created
+        // the intent, not the persistent library itself. A prepared intent is
+        // precisely the recovery record that must survive a crash or app
+        // restart, both of which allocate a new session generation. The
+        // persistent library UUID is the durable identity boundary here.
+        guard intent.libraryID == context.id else {
             throw LibrarySessionFactoryError.manifestIdentityMismatch
         }
     }

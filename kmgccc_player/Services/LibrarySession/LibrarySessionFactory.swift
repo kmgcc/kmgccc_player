@@ -14,6 +14,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
     private let sourceBookmarkResolver: any BookmarkResolving
     private let requiresSecurityScope: Bool
     private let fileEventSourceFactory: @MainActor () -> any LibraryFileEventSource
+    var referencedSourceNoticePublisher: any ReferencedSourceNoticePublishing
 
     init(
         libraryRootBookmarkResolver: any BookmarkResolving = SystemBookmarkResolver(),
@@ -21,12 +22,14 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         requiresSecurityScope: Bool = false,
         fileEventSourceFactory: @escaping @MainActor () -> any LibraryFileEventSource = {
             FSEventsLibraryFileEventSource()
-        }
+        },
+        referencedSourceNoticePublisher: any ReferencedSourceNoticePublishing = LogReferencedSourceNoticePublisher()
     ) {
         self.libraryRootBookmarkResolver = libraryRootBookmarkResolver
         self.sourceBookmarkResolver = sourceBookmarkResolver
         self.requiresSecurityScope = requiresSecurityScope
         self.fileEventSourceFactory = fileEventSourceFactory
+        self.referencedSourceNoticePublisher = referencedSourceNoticePublisher
     }
 
     func makeSession(for context: LibraryContext) async throws -> any LibrarySessionLifecycle {
@@ -176,7 +179,8 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
                 ignoredItemsStore: ignoredItemsStore,
                 ncmRegistry: ncmRegistry,
                 bookmarkResolver: sourceBookmarkResolver,
-                requiresSecurityScope: requiresSecurityScope
+                requiresSecurityScope: requiresSecurityScope,
+                noticePublisher: referencedSourceNoticePublisher
             )
             referencedSourceReconciler = reconciler
             sourceReconnectService = SourceReconnectService(

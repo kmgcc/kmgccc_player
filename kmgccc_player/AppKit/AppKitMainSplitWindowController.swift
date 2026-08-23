@@ -172,7 +172,7 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
     static func releaseActiveLibraryReferences() {
         guard let controller = sharedController else { return }
-        controller.splitViewController.playlistPageController.releaseSelectionStateForTeardown()
+        controller.splitViewController.playlistPageController.releaseForSessionTeardown()
         controller.window?.contentViewController = nil
         controller.window?.orderOut(nil)
         sharedController = nil
