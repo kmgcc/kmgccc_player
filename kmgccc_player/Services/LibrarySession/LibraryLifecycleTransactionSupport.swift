@@ -132,27 +132,30 @@ struct LibraryStartupContextResolver {
         generation: UInt64 = 1
     ) async -> LibraryStartupResolution {
         let registry = await registryStore.snapshot()
+        var seen = Set<UUID>()
         if let activeID = registry.activeLibraryID {
-            guard let descriptor = registry.library(id: activeID),
-                  let context = await resolve(descriptor, generation: generation) else {
-                return .unavailable
+            seen.insert(activeID)
+            if let descriptor = registry.library(id: activeID),
+               let context = await resolve(descriptor, generation: generation) {
+                return .context(context)
             }
-            return .context(context)
         }
-        guard let removedMode else { return .noActive }
 
         var ids: [UUID] = []
-        if let recent = registry.recentLibraryID(for: removedMode) { ids.append(recent) }
-        ids.append(contentsOf: registry.libraries.filter { $0.modeProjection == removedMode }.map(\.id))
+        if let removedMode {
+            if let recent = registry.recentLibraryID(for: removedMode) { ids.append(recent) }
+            ids.append(contentsOf: registry.libraries.filter { $0.modeProjection == removedMode }.map(\.id))
+        } else {
+            ids.append(contentsOf: [registry.recentManagedLibraryID, registry.recentReferencedLibraryID].compactMap { $0 })
+        }
         ids.append(contentsOf: registry.libraries.map(\.id))
-        var seen = Set<UUID>()
         for id in ids {
             guard seen.insert(id).inserted,
                   let descriptor = registry.library(id: id),
                   let context = await resolve(descriptor, generation: generation) else { continue }
             return .context(context)
         }
-        return .noActive
+        return registry.activeLibraryID == nil ? .noActive : .unavailable
     }
 
     func resolveRegistered(libraryID: UUID, generation: UInt64 = 1) async throws -> LibraryContext {

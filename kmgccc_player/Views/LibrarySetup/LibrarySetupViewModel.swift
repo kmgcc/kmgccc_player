@@ -32,6 +32,7 @@ final class LibrarySetupViewModel {
     /// Explicitly chosen storage parent. Nil means "use the standard default
     /// directory" (see `defaultStorageParentURL`).
     var storageParentURL: URL?
+    var isStorageLocationExplicitlyChosen: Bool { storageParentURL != nil }
     private(set) var existingLibraryContext: LibraryContext?
     private(set) var existingRequestedMode: MusicLibraryMode?
     private(set) var createdLibraryAwaitingImport: LibraryContext?

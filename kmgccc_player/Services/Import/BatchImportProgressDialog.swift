@@ -372,48 +372,34 @@ private struct BatchImportProgressDialogView: View {
     let onCancel: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            headerView
-
-            Divider()
-                .opacity(0.45)
-
-            contentView
-
-            Divider()
-                .opacity(0.35)
-
-            footerView
-        }
-    }
-
-    private var headerView: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(viewModel.stage.title)
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-
-                Spacer()
-
-                if viewModel.totalCount > 0 {
-                    Text("\(viewModel.completedCount)/\(viewModel.totalCount)")
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.secondary)
+        AppDialogFrame(
+            header: {
+                AppDialogProgressHeader(
+                    title: viewModel.stage.title,
+                    counterText: viewModel.totalCount > 0
+                        ? "\(viewModel.completedCount)/\(viewModel.totalCount)"
+                        : "",
+                    progress: viewModel.progress,
+                    detail: viewModel.detail
+                )
+            },
+            content: {
+                contentView
+            },
+            footer: {
+                AppDialogFooter {
+                    HStack {
+                        Spacer()
+                        Button("取消") {
+                            onCancel()
+                        }
+                        .keyboardShortcut(.cancelAction)
+                        .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
+                        .disabled(!viewModel.canCancel)
+                    }
                 }
             }
-
-            ProgressView(value: viewModel.progress)
-                .progressViewStyle(.linear)
-
-            Text(viewModel.detail)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 18)
-        .background(.thinMaterial)
+        )
     }
 
     private var contentView: some View {
@@ -442,27 +428,10 @@ private struct BatchImportProgressDialogView: View {
             }
         }
     }
-
-    private var footerView: some View {
-        HStack {
-            Spacer()
-            Button("取消") {
-                onCancel()
-            }
-            .keyboardShortcut(.cancelAction)
-            .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
-            .disabled(!viewModel.canCancel)
-        }
-        .padding(.horizontal, AppDialogTokens.footerHorizontalPadding)
-        .padding(.top, AppDialogTokens.footerVerticalPadding)
-        .padding(.bottom, AppDialogTokens.footerBottomPadding)
-        .background(.thinMaterial)
-    }
 }
 
 private struct BatchImportProgressRowView: View {
     @Bindable var item: BatchImportProgressItemModel
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         HStack(spacing: 12) {
@@ -509,10 +478,7 @@ private struct BatchImportProgressRowView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(colorScheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.03))
-        )
+        .appDialogRowBackground()
     }
 
     private var statusColor: Color {

@@ -104,7 +104,7 @@ final class UpdateWindowManager: NSObject, NSWindowDelegate, ObservableObject {
         visualEffect.frame = NSRect(origin: .zero, size: windowSize)
         visualEffect.autoresizingMask = [.width, .height]
         visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = 28
+        visualEffect.layer?.cornerRadius = AppDialogTokens.windowCornerRadius
         panel.contentView = visualEffect
         
         let alertView = UpdateAlertView(

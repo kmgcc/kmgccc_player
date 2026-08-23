@@ -114,6 +114,27 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         XCTAssertEqual(registry.activeLibraryID, actual.libraryID)
     }
 
+    func testStartupResolverUsesReachableLibraryWhenActivePointerIsMissing() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let root = fixture.root.appendingPathComponent("reachable")
+        let manifest = try fixture.makeLibrary(at: root, mode: .managed)
+        try await fixture.registerWithoutActivation(root: root, manifest: manifest)
+
+        var registry = await fixture.registry.snapshot()
+        registry.activeLibraryID = nil
+        try await fixture.registry.replaceSnapshot(registry)
+
+        let resolution = await LibraryStartupContextResolver(
+            registryStore: fixture.registry,
+            bookmarkResolver: fixture.bookmarks
+        ).resolve()
+        guard case .context(let context) = resolution else {
+            return XCTFail("Expected the reachable registered library to be selected")
+        }
+        XCTAssertEqual(context.id, manifest.libraryID)
+    }
+
     func testReconnectRegisteredLibraryRejectsWrongIdentityAndModeWithoutMutation() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
@@ -278,6 +299,32 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: external.path))
         let registry = await fixture.registry.snapshot()
         XCTAssertNil(registry.library(id: referenced.libraryID))
+    }
+
+    func testActiveRemovalSkipsInvalidSuccessorAndActivatesNextReachableLibrary() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let activeRoot = fixture.root.appendingPathComponent("active")
+        let active = try fixture.makeLibrary(at: activeRoot, mode: .managed)
+        _ = try await fixture.openService.open(selectedURL: activeRoot)
+
+        let reachableRoot = fixture.root.appendingPathComponent("reachable")
+        let reachable = try fixture.makeLibrary(at: reachableRoot, mode: .managed)
+        try await fixture.registerWithoutActivation(root: reachableRoot, manifest: reachable)
+
+        let brokenRoot = fixture.root.appendingPathComponent("broken")
+        let broken = try fixture.makeLibrary(at: brokenRoot, mode: .managed)
+        try await fixture.registerWithoutActivation(root: brokenRoot, manifest: broken)
+        try FileManager.default.removeItem(at: LibraryPaths(rootURL: brokenRoot).manifestURL)
+
+        let result = try await fixture.removalService().moveToTrash(libraryID: active.libraryID)
+        guard case .activated(let context) = result else {
+            return XCTFail("Expected the next reachable library to be activated")
+        }
+        XCTAssertEqual(context.id, reachable.libraryID)
+        XCTAssertEqual(fixture.controller.activeLibraryContext?.id, reachable.libraryID)
+        let registry = await fixture.registry.snapshot()
+        XCTAssertEqual(registry.activeLibraryID, reachable.libraryID)
     }
 
     func testInspectAndExistingCreationDoNotMutateRegistry() async throws {
@@ -874,7 +921,7 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         XCTAssertNotEqual(context.id, old.libraryID)
     }
 
-    func testStartupActiveBookmarkFailureDoesNotFallbackToHealthyLibrary() async throws {
+    func testStartupActiveBookmarkFailureFallsBackToHealthyLibrary() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         let activeRoot = fixture.root.appendingPathComponent("active")
@@ -893,11 +940,14 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
             registryStore: fixture.registry,
             bookmarkResolver: fixture.bookmarks
         ).resolve()
-        XCTAssertEqual(resolution, .unavailable)
-        XCTAssertEqual(fixture.bookmarks.startCount, startsBefore)
+        guard case .context(let context) = resolution else {
+            return XCTFail("Expected the healthy registered library to be selected")
+        }
+        XCTAssertEqual(context.id, healthy.libraryID)
+        XCTAssertEqual(fixture.bookmarks.startCount, startsBefore + 1)
     }
 
-    func testStartupActiveManifestMismatchDoesNotFallbackToHealthyLibrary() async throws {
+    func testStartupActiveManifestMismatchFallsBackToHealthyLibrary() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         let activeRoot = fixture.root.appendingPathComponent("active")
@@ -914,11 +964,14 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
             registryStore: fixture.registry,
             bookmarkResolver: fixture.bookmarks
         ).resolve()
-        XCTAssertEqual(resolution, .unavailable)
-        XCTAssertEqual(fixture.bookmarks.startCount, startsBefore + 1)
+        guard case .context(let context) = resolution else {
+            return XCTFail("Expected the healthy registered library to be selected")
+        }
+        XCTAssertEqual(context.id, healthy.libraryID)
+        XCTAssertEqual(fixture.bookmarks.startCount, startsBefore + 2)
     }
 
-    func testStartupWithNilActiveDoesNotAutomaticallyOpenRecentLibrary() async throws {
+    func testStartupWithNilActiveAutomaticallyOpensRecentLibrary() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         let root = fixture.root.appendingPathComponent("recent")
@@ -934,8 +987,11 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
             registryStore: fixture.registry,
             bookmarkResolver: fixture.bookmarks
         ).resolve()
-        XCTAssertEqual(resolution, .noActive)
-        XCTAssertEqual(fixture.bookmarks.startCount, startsBefore)
+        guard case .context(let context) = resolution else {
+            return XCTFail("Expected the recent registered library to be selected")
+        }
+        XCTAssertEqual(context.id, manifest.libraryID)
+        XCTAssertEqual(fixture.bookmarks.startCount, startsBefore + 1)
     }
 
     func testStartupRemovalRepairMaySelectSuccessorOnlyAfterRemovingActive() async throws {

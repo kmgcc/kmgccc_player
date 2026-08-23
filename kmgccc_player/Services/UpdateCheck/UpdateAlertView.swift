@@ -42,7 +42,7 @@ struct UpdateAlertView: View {
             footerView
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
-                .padding(.bottom, 28)
+                .padding(.bottom, AppDialogTokens.footerBottomPadding)
         }
         .frame(width: 440, height: 500)
         .overlay(alignment: .topTrailing) {
@@ -168,22 +168,10 @@ struct UpdateAlertView: View {
             if kind == .updateAvailable {
                 Button(action: onDownload) {
                     Text("下载")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 7)
                 }
-                .buttonStyle(.plain)
-                .glassEffect(.clear, in: Capsule())
-                .background(
-                    Capsule()
-                        .fill(themeStore.accentColor.opacity(colorScheme == .dark ? 0.96 : 0.88))
+                .buttonStyle(
+                    AppDialogGlassButtonStyle(kind: .primary, tint: themeStore.accentColor)
                 )
-                .overlay(
-                    Capsule()
-                        .strokeBorder(GlassStyleTokens.glassBorderColor, lineWidth: 0.5)
-                )
-                .subtleFloatingShadow()
             }
         }
     }

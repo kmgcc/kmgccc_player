@@ -23,14 +23,16 @@ struct LibrarySetupFlow: View {
                 LibraryReconnectView(
                     flow: flow,
                     target: .libraryRoot(libraryID: libraryID, mode: mode),
-                    onChange: onChange
+                    onChange: onChange,
+                    onRequestClose: onRequestClose
                 )
                 .id("library-\(libraryID.uuidString)")
             case let .sourceReconnect(libraryID, sourceIDs):
                 LibraryReconnectView(
                     flow: flow,
                     target: .sources(libraryID: libraryID, sourceIDs: sourceIDs),
-                    onChange: onChange
+                    onChange: onChange,
+                    onRequestClose: onRequestClose
                 )
                 .id("sources-\(libraryID.uuidString)-\(sourceIDs.map(\.uuidString).joined())")
             case .none:
@@ -156,11 +158,12 @@ struct LibrarySetupFlow: View {
     private var setupContent: some View {
         switch flow.step {
         case .storage:
-            Picker("音乐存储方式", selection: $flow.mode) {
-                Text("复制到资料库").tag(MusicLibraryMode.managed)
-                Text("保留原位置").tag(MusicLibraryMode.referenced)
+            AppDialogCapsuleSlider(
+                segments: MusicLibraryMode.allCases,
+                selection: $flow.mode
+            ) { mode in
+                mode.dialogDisplayTitle
             }
-            .pickerStyle(.segmented)
         case .music:
             musicStepContent
         case .location:
@@ -182,9 +185,14 @@ struct LibrarySetupFlow: View {
                     }
                 } else if let existing = flow.existingLibraryContext {
                     Label(
-                        "此位置已有\(existing.mode == .managed ? "复制到资料库" : "保留原位置")资料库",
+                        "所选位置已有\(existing.mode == .managed ? "复制到资料库" : "保留原位置")资料库",
                         systemImage: "externaldrive.fill"
                     )
+                    Text(existing.rootURL.path)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                     Text("可以直接打开它；或忽略它，在同一位置新建另一个资料库（会自动使用新的子目录）。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
@@ -424,7 +432,13 @@ struct LibrarySetupFlow: View {
                     parentURL: parent,
                     displayName: flow.displayName,
                     initialImportSelection: flow.initialImportSelection,
-                    allowAlternateDestinationWhenOccupied: ignoreExistingAtLocation
+                    // The default location is an app-owned convenience, not a
+                    // user-selected destination. If it is occupied, keep the
+                    // wizard moving by choosing the next available sibling;
+                    // only an explicit picker choice should ask whether to
+                    // open the existing library.
+                    allowAlternateDestinationWhenOccupied:
+                        ignoreExistingAtLocation || !flow.isStorageLocationExplicitlyChosen
                 )
                 switch result {
                 case .created(_, let initialImport):
@@ -543,6 +557,7 @@ struct LibraryImportSourceSelectionSheet: View {
     let onConfirm: ([LibraryImportSourceEntry]) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var themeStore: ThemeStore
     @State private var selectedEntryIDs: Set<String>
 
     init(
@@ -556,64 +571,84 @@ struct LibraryImportSourceSelectionSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("选择播放列表来源")
-                .font(.headline)
-
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(entries) { entry in
-                    Toggle(
-                        isOn: Binding(
-                            get: { selectedEntryIDs.contains(entry.id) },
-                            set: { selected in
-                                if selected {
-                                    selectedEntryIDs.insert(entry.id)
-                                } else {
-                                    selectedEntryIDs.remove(entry.id)
+        AppDialogFrame(
+            header: {
+                AppDialogHeader(
+                    title: "选择播放列表来源",
+                    subtitle: "勾选需要随音乐导入的来源",
+                    systemImage: "music.note.list",
+                    iconColor: themeStore.accentColor
+                )
+                .padding(.horizontal, AppDialogTokens.headerHorizontalPadding)
+                .padding(.top, 12)
+                .padding(.bottom, 12)
+            },
+            content: {
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(entries) { entry in
+                            Toggle(
+                                isOn: Binding(
+                                    get: { selectedEntryIDs.contains(entry.id) },
+                                    set: { selected in
+                                        if selected {
+                                            selectedEntryIDs.insert(entry.id)
+                                        } else {
+                                            selectedEntryIDs.remove(entry.id)
+                                        }
+                                    }
+                                )
+                            ) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: entry.kind == .directory ? "folder.fill" : "music.note.list")
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 16)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(entry.displayName)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                        Text(entry.detail)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
                                 }
                             }
-                        )
-                    ) {
-                        HStack(spacing: 8) {
-                            Image(systemName: entry.kind == .directory ? "folder.fill" : "music.note.list")
-                                .foregroundStyle(.secondary)
-                                .frame(width: 16)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(entry.displayName)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Text(entry.detail)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
+                            .toggleStyle(.checkbox)
+                            .padding(.vertical, 5)
                         }
                     }
-                    .toggleStyle(.checkbox)
-                    .padding(.vertical, 5)
+                    .padding(.leading, 4)
+
+                    Text("文件夹播放列表会随来源中的歌曲增减自动同步；单独歌曲分组只在本次导入时生成。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            },
+            footer: {
+                AppDialogFooter {
+                    HStack {
+                        Spacer()
+                        Button("取消") { dismiss() }
+                            .keyboardShortcut(.cancelAction)
+                            .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
+                        Button("继续") {
+                            let selected = entries.filter { selectedEntryIDs.contains($0.id) }
+                            onConfirm(selected)
+                            dismiss()
+                        }
+                        .keyboardShortcut(.defaultAction)
+                        .buttonStyle(
+                            AppDialogGlassButtonStyle(kind: .primary, tint: themeStore.accentColor)
+                        )
+                    }
                 }
             }
-            .padding(.leading, 4)
-
-            Text("文件夹播放列表会随来源中的歌曲增减自动同步；单独歌曲分组只在本次导入时生成。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack {
-                Spacer()
-                Button("取消") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("继续") {
-                    let selected = entries.filter { selectedEntryIDs.contains($0.id) }
-                    onConfirm(selected)
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
+        )
         .frame(width: 460)
     }
 }

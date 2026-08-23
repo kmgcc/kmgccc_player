@@ -63,7 +63,7 @@ final class ReferencedNCMConversionTests: XCTestCase {
         XCTAssertEqual(output.result.audioFileURL.deletingLastPathComponent().path, outputDirectory.path)
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.ncmURL.path))
         XCTAssertEqual(output.locator.primarySourceID, sourceID)
-        XCTAssertEqual(output.locator.sourceMemberships.first?.relativePath, "NCM 转换/Converted.mp3")
+        XCTAssertEqual(output.locator.sourceMemberships.first?.relativePath, "song.ncm")
         XCTAssertEqual(output.locator.ncmSourceIdentity, input.fingerprint?.identity)
         XCTAssertEqual(fixture.authorizer.calls, 0)
         let reservedBeforeCommit = try await fixture.service.isReserved(url: output.result.audioFileURL)
@@ -77,6 +77,33 @@ final class ReferencedNCMConversionTests: XCTestCase {
         let record = try await reloaded.committedRecord(matching: try XCTUnwrap(input.fingerprint))
         XCTAssertEqual(record?.trackID, fixture.trackID)
         XCTAssertEqual(record?.expectedOutputPath, output.result.audioFileURL.path)
+    }
+
+    func testCommittedOutputLocatorRepairsLegacyGeneratedPathMembership() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let sourceID = UUID()
+        let input = try fixture.input(memberships: [
+            .init(sourceID: sourceID, relativePath: "song.ncm")
+        ], primarySourceID: sourceID)
+        let output = try await fixture.service.convert(input)
+        try await fixture.service.markCommitted(operationID: output.operationID, trackID: fixture.trackID)
+
+        var legacyLocator = output.locator
+        legacyLocator.sourceMemberships = [
+            .init(sourceID: sourceID, relativePath: "NCM 转换/Converted.mp3")
+        ]
+        try await fixture.registry.updateOutputLocator(
+            operationID: output.operationID,
+            locator: legacyLocator
+        )
+
+        let repaired = try await fixture.service.restoreCommittedOutputLocator(for: input)
+
+        XCTAssertEqual(repaired.sourceMemberships, [
+            .init(sourceID: sourceID, relativePath: "song.ncm")
+        ])
+        XCTAssertEqual(repaired.lastKnownPath, output.result.audioFileURL.path)
     }
 
     func testSingleFileRequiresParentAuthorizationAndFailureIsItemScoped() async throws {

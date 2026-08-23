@@ -99,7 +99,7 @@ private final class LegacyCacheCleanupDialogController: NSObject, NSWindowDelega
         visualEffect.frame = NSRect(origin: .zero, size: windowSize)
         visualEffect.autoresizingMask = [.width, .height]
         visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = 28
+        visualEffect.layer?.cornerRadius = AppDialogTokens.windowCornerRadius
         panel.contentView = visualEffect
 
         let rootView = LegacyCacheCleanupDialogView(

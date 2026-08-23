@@ -56,6 +56,15 @@ final class MusicSettingsStateTests: XCTestCase {
         XCTAssertEqual(viewModel.presentation, .reconnectRequired(libraryID: id, mode: .referenced))
     }
 
+    func testStorageLocationIsImplicitUntilPickerSelection() {
+        let viewModel = LibrarySetupViewModel(mode: .managed)
+        XCTAssertFalse(viewModel.isStorageLocationExplicitlyChosen)
+
+        viewModel.storageParentURL = temporaryLibraryRoot()
+
+        XCTAssertTrue(viewModel.isStorageLocationExplicitlyChosen)
+    }
+
     func testDeletePolicyIsStoredInsideEachLibrary() async throws {
         let first = temporaryLibraryRoot()
         let second = temporaryLibraryRoot()

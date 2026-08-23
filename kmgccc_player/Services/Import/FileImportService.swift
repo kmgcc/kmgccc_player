@@ -704,6 +704,16 @@ final class FileImportService: FileImportServiceProtocol {
                     )
                 } catch ReferencedNCMConversionError.committedConversion(let trackID) {
                     if let existing = await repository.fetchTracks(ids: [trackID]).first {
+                        if let locator = try? await referencedNCMConversionService.restoreCommittedOutputLocator(for: file) {
+                            existing.mediaLocator = .referenced(locator)
+                            existing.fileBookmarkData = locator.fileBookmarkData
+                            existing.originalFilePath = locator.lastKnownPath
+                            existing.availability = .available
+                            await repository.persistTrackMetaOnly(
+                                existing,
+                                reason: "ncmCommittedReuse"
+                            )
+                        }
                         if reusedTrackIDs.insert(existing.id).inserted {
                             reusedTracks.append(existing)
                         }

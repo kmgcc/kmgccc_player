@@ -356,7 +356,13 @@ final class AppSessionHost: ObservableObject {
 
     func removeMusicLibrary(id: UUID) async throws {
         guard let libraryRemovalService else { throw LibraryRemovalError.libraryNotRegistered }
-        _ = try await libraryRemovalService.moveToTrash(libraryID: id)
+        let nextAction = try await libraryRemovalService.moveToTrash(libraryID: id)
+        if case .chooseLibrary = nextAction {
+            // The removal service has already released its transaction gate by
+            // the time this returns. Re-run the normal successor/default
+            // policy so deletion can never leave the app with an empty shell.
+            _ = await ensureFactoryDefaultLibraryIfNeeded(allowUnreachableActiveLibrary: true)
+        }
     }
 
     func referencedSourceScanStates() async -> [UUID: ReferencedSourceScanState] {
@@ -510,15 +516,23 @@ final class AppSessionHost: ObservableObject {
         let registry = await registryStore.snapshot()
 
         // A nil active pointer can also be left behind by an interrupted
-        // removal or by an older registry reset. Do not create a second
-        // default library when another registered library is still usable.
+        // removal or by an older registry reset. Prefer activating any
+        // reachable registered library before falling back to the default.
         guard allowUnreachableActiveLibrary || registry.activeLibraryID == nil else { return nil }
-        if !registry.libraries.isEmpty {
-            let resolver = LibraryStartupContextResolver(registryStore: registryStore)
-            for descriptor in registry.libraries {
-                if (try? await resolver.resolveRegistered(libraryID: descriptor.id)) != nil {
-                    return nil
-                }
+        let resolver = LibraryStartupContextResolver(registryStore: registryStore)
+        var candidateIDs: [UUID] = []
+        if let activeID = registry.activeLibraryID { candidateIDs.append(activeID) }
+        candidateIDs.append(contentsOf: [registry.recentManagedLibraryID, registry.recentReferencedLibraryID].compactMap { $0 })
+        candidateIDs.append(contentsOf: registry.libraries.map(\.id))
+        var seen = Set<UUID>()
+        for candidateID in candidateIDs where seen.insert(candidateID).inserted {
+            guard let context = try? await resolver.resolveRegistered(libraryID: candidateID) else { continue }
+            do {
+                try await sessionController.switchToLibrary(context)
+                try await registryStore.setActiveLibrary(id: context.id, manifestMode: context.mode)
+                return context
+            } catch {
+                continue
             }
         }
 

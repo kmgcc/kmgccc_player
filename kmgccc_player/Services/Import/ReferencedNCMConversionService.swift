@@ -273,14 +273,14 @@ final class ReferencedNCMConversionService {
             publishedURL = finalURL
             let outputFingerprint = try identityProvider.fingerprint(for: finalURL)
             let outputBookmark = try bookmarkResolver.refreshBookmark(for: finalURL)
-            let outputMemberships = Self.outputMemberships(
-                sourceMemberships: file.memberships,
-                outputDirectoryName: Self.outputDirectoryName,
-                outputName: finalName
-            )
             let locator = ReferencedFileLocator(
                 fileBookmarkData: outputBookmark,
-                sourceMemberships: outputMemberships,
+                // The generated file is the playback target, but the NCM
+                // source remains the authoritative source membership. The
+                // scanner hides generated output after the marker is written;
+                // using the output path here would make the first scan remove
+                // the track's only membership and mark it missing.
+                sourceMemberships: file.memberships,
                 primarySourceID: file.primarySourceID,
                 lastKnownPath: finalURL.path,
                 fingerprint: outputFingerprint,
@@ -411,14 +411,9 @@ final class ReferencedNCMConversionService {
         let operationID = UUID()
         let outputFingerprint = try identityProvider.fingerprint(for: existing.url)
         let outputBookmark = try bookmarkResolver.refreshBookmark(for: existing.url)
-        let outputMemberships = Self.outputMemberships(
-            sourceMemberships: file.memberships,
-            outputDirectoryName: Self.outputDirectoryName,
-            outputName: existing.url.lastPathComponent
-        )
         let locator = ReferencedFileLocator(
             fileBookmarkData: outputBookmark,
-            sourceMemberships: outputMemberships,
+            sourceMemberships: file.memberships,
             primarySourceID: file.primarySourceID,
             lastKnownPath: existing.url.path,
             fingerprint: outputFingerprint,
@@ -504,22 +499,31 @@ final class ReferencedNCMConversionService {
         guard let format = record.outputFormat, let metadata = record.outputMetadata else {
             throw ReferencedNCMConversionError.invalidOutput
         }
-        // Only reached for legacy records without a persisted outputLocator;
-        // those predate the output subfolder convention, so keep the
-        // sibling-directory membership layout here.
-        let outputMemberships = Self.outputMemberships(
-            sourceMemberships: record.sourceMemberships,
-            outputDirectoryName: nil,
-            outputName: outputURL.lastPathComponent
-        )
         let locator: ReferencedFileLocator
         if let persisted = record.outputLocator {
-            locator = persisted
+            var repaired = persisted
+            if !record.sourceMemberships.isEmpty {
+                repaired.sourceMemberships = record.sourceMemberships
+                repaired.primarySourceID = record.sourcePrimaryID
+                    ?? Self.primarySourceID(record.sourceMemberships)
+            }
+            repaired.lastKnownPath = outputURL.path
+            repaired.fingerprint = actualFingerprint
+            repaired.fileBookmarkData = (try? bookmarkResolver.refreshBookmark(for: outputURL))
+                ?? repaired.fileBookmarkData
+            locator = repaired
+            if locator != persisted {
+                try? await registry.updateOutputLocator(
+                    operationID: record.id,
+                    locator: locator
+                )
+            }
         } else {
             locator = ReferencedFileLocator(
                 fileBookmarkData: try bookmarkResolver.refreshBookmark(for: outputURL),
-                sourceMemberships: outputMemberships,
-                primarySourceID: record.sourcePrimaryID,
+                sourceMemberships: record.sourceMemberships,
+                primarySourceID: record.sourcePrimaryID
+                    ?? Self.primarySourceID(record.sourceMemberships),
                 lastKnownPath: outputURL.path,
                 fingerprint: actualFingerprint,
                 ncmSourceIdentity: sourceFingerprint.identity
@@ -579,6 +583,50 @@ final class ReferencedNCMConversionService {
             try await commitOverride(operationID, trackID)
         }
         try await registry.markCommitted(operationID: operationID, trackID: trackID)
+    }
+
+    /// Returns a committed NCM output locator and repairs records written by
+    /// the old implementation, which incorrectly stored the generated output
+    /// path as the source membership.
+    func restoreCommittedOutputLocator(
+        for file: ImportDiscoveredFile
+    ) async throws -> ReferencedFileLocator {
+        let fingerprint: ReferencedFileFingerprint
+        if let existing = file.fingerprint {
+            fingerprint = existing
+        } else {
+            fingerprint = try identityProvider.fingerprint(for: file.url)
+        }
+        guard let record = try await registry.committedRecord(matching: fingerprint),
+              var locator = record.outputLocator else {
+            throw ReferencedNCMConversionError.invalidOutput
+        }
+        let outputURL = URL(fileURLWithPath: locator.lastKnownPath).standardizedFileURL
+        guard fileManager.fileExists(atPath: outputURL.path) else {
+            throw ReferencedNCMConversionError.invalidOutput
+        }
+        try validate(outputURL)
+        let actualFingerprint = try identityProvider.fingerprint(for: outputURL)
+        if let expected = record.outputFingerprint,
+           !NCMConversionRegistry.sameFingerprint(expected, actualFingerprint) {
+            throw ReferencedNCMConversionError.invalidOutput
+        }
+        if !record.sourceMemberships.isEmpty {
+            locator.sourceMemberships = record.sourceMemberships
+            locator.primarySourceID = record.sourcePrimaryID
+                ?? Self.primarySourceID(record.sourceMemberships)
+        }
+        locator.fileBookmarkData = (try? bookmarkResolver.refreshBookmark(for: outputURL))
+            ?? locator.fileBookmarkData
+        locator.lastKnownPath = outputURL.path
+        locator.fingerprint = actualFingerprint
+        if locator != record.outputLocator {
+            try await registry.updateOutputLocator(
+                operationID: record.id,
+                locator: locator
+            )
+        }
+        return locator
     }
 
     func isReserved(url: URL, identity: ReferencedFileIdentity? = nil) async throws -> Bool {
@@ -696,24 +744,15 @@ final class ReferencedNCMConversionService {
         return "\(String(safe.prefix(180))).\(format.rawValue)"
     }
 
-    nonisolated private static func outputMemberships(
-        sourceMemberships: [ReferencedSourceMembership],
-        outputDirectoryName: String?,
-        outputName: String
-    ) -> [ReferencedSourceMembership] {
-        sourceMemberships.map { membership in
-            let parent = (membership.relativePath as NSString).deletingLastPathComponent
-            var directory = parent
-            if let outputDirectoryName {
-                directory = directory.isEmpty
-                    ? outputDirectoryName
-                    : (directory as NSString).appendingPathComponent(outputDirectoryName)
+    nonisolated private static func primarySourceID(
+        _ memberships: [ReferencedSourceMembership]
+    ) -> UUID? {
+        memberships.min {
+            if $0.relativePath.count != $1.relativePath.count {
+                return $0.relativePath.count < $1.relativePath.count
             }
-            let relative = directory.isEmpty
-                ? outputName
-                : (directory as NSString).appendingPathComponent(outputName)
-            return ReferencedSourceMembership(sourceID: membership.sourceID, relativePath: relative)
-        }
+            return $0.sourceID.uuidString < $1.sourceID.uuidString
+        }?.sourceID
     }
 
     nonisolated private static func validateOutput(_ url: URL) throws {

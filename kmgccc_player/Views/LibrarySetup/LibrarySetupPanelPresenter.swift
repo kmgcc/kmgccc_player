@@ -51,6 +51,7 @@ private final class LibrarySetupPanelController: NSObject, NSWindowDelegate {
     private let registry: MusicLibraryRegistry
     private let onChange: @MainActor () async -> Void
     private var panel: NSPanel?
+    private var didFinishClosing = false
     var onClose: (() -> Void)?
 
     init(appSession: AppSessionHost, registry: MusicLibraryRegistry, onChange: @escaping @MainActor () async -> Void) {
@@ -60,6 +61,7 @@ private final class LibrarySetupPanelController: NSObject, NSWindowDelegate {
     }
 
     func show() {
+        didFinishClosing = false
         let size = NSSize(width: 500, height: 430)
         let result = AppDialogTokens.makePanel(width: size.width, height: size.height)
         let panel = result.panel
@@ -92,15 +94,36 @@ private final class LibrarySetupPanelController: NSObject, NSWindowDelegate {
     var sheetAnchorPanel: NSPanel? { panel }
 
     func bringToFront() { panel?.makeKeyAndOrderFront(nil) }
-    func close() { panel?.close() }
+    func close() {
+        guard appSession.librarySetupFlow.operation != .working else { return }
+        finishClosing()
+    }
+
+    private func finishClosing() {
+        guard !didFinishClosing else { return }
+        didFinishClosing = true
+        appSession.librarySetupFlow.dismiss()
+
+        // `NSPanel.close()` can be visually outlived by the hosting view when
+        // the SwiftUI presentation changes in the same run-loop turn. Remove
+        // the delegate first, explicitly order the panel out, then close it;
+        // this makes the imperative window lifecycle independent of view diffing.
+        let panel = self.panel
+        panel?.delegate = nil
+        panel?.orderOut(nil)
+        panel?.close()
+        self.panel = nil
+
+        let callback = onClose
+        onClose = nil
+        callback?()
+    }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         appSession.librarySetupFlow.operation != .working
     }
 
     func windowWillClose(_ notification: Notification) {
-        appSession.librarySetupFlow.dismiss()
-        panel = nil
-        onClose?()
+        finishClosing()
     }
 }

@@ -409,6 +409,21 @@ actor NCMConversionRegistry {
         try load().records.first { $0.id == operationID }
     }
 
+    func updateOutputLocator(
+        operationID: UUID,
+        locator: ReferencedFileLocator
+    ) throws {
+        try update(operationID) { record in
+            guard record.state == .outputReady || record.state == .committed else {
+                throw NCMConversionRegistryError.invalidTransition
+            }
+            record.outputLocator = locator
+            record.outputIdentity = locator.fingerprint?.identity
+            record.outputFingerprint = locator.fingerprint
+            record.updatedAt = Date()
+        }
+    }
+
     func committedRecord(matching fingerprint: ReferencedFileFingerprint) throws -> NCMConversionRecord? {
         try load().records.first {
             $0.state == .committed && Self.sameFingerprint($0.sourceFingerprint, fingerprint)

@@ -140,17 +140,63 @@ struct DuplicateImportDialogView: View {
     // Left: 306 (~43%) | Spacing: 12 | Right: 394 (~55%)
     private let leftColumnWidth: CGFloat = 306
     private let rightColumnWidth: CGFloat = 394
-    private let horizontalPadding: CGFloat = AppDialogTokens.headerHorizontalPadding
 
     var body: some View {
-        VStack(spacing: 0) {
-            headerView
-            listContent
-            footerView
-        }
-        .task {
-            print("🎬 Duplicate Dialog Appeared. Total rows: \(viewModel.rows.count)")
-        }
+        AppDialogFrame(
+            header: {
+                VStack(alignment: .leading, spacing: 10) {
+                    AppDialogHeader(
+                        title: "发现重复歌曲",
+                        subtitle: "点击右侧条目选择是否重复导入",
+                        systemImage: "doc.on.doc",
+                        iconColor: themeStore.accentColor
+                    )
+
+                    HStack(spacing: 12) {
+                        Text("资料库中已存在")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: leftColumnWidth, alignment: .leading)
+
+                        Divider()
+                            .frame(height: 12)
+                            .overlay(Color.secondary.opacity(0.3))
+
+                        Text("本次待导入")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: rightColumnWidth, alignment: .leading)
+                    }
+                }
+                .padding(.horizontal, AppDialogTokens.headerHorizontalPadding)
+                .padding(.top, 16)
+                .padding(.bottom, 12)
+            },
+            content: {
+                listContent
+            },
+            footer: {
+                AppDialogFooter {
+                    HStack {
+                        Button("取消") {
+                            onFinish(false)
+                        }
+                        .keyboardShortcut(.cancelAction)
+                        .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
+
+                        Spacer()
+
+                        Button(viewModel.buttonTitle) {
+                            onFinish(true)
+                        }
+                        .keyboardShortcut(.defaultAction)
+                        .buttonStyle(
+                            AppDialogGlassButtonStyle(kind: .primary, tint: themeStore.accentColor)
+                        )
+                    }
+                }
+            }
+        )
     }
     
     private var listContent: some View {
@@ -173,7 +219,7 @@ struct DuplicateImportDialogView: View {
         }
         
         let paddedView = rowsView
-            .padding(.horizontal, horizontalPadding)
+            .padding(.horizontal, AppDialogTokens.headerHorizontalPadding)
             .padding(.vertical, 16)
         
         if viewModel.rows.count > maxItemsWithoutScroll {
@@ -188,71 +234,6 @@ struct DuplicateImportDialogView: View {
                 paddedView
                     .frame(maxWidth: .infinity)
             )
-        }
-    }
-    
-    private var headerView: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("发现重复歌曲")
-                    .font(.title3.bold())
-                    .foregroundStyle(.primary)
-                Text("点击右侧条目选择是否重复导入")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            
-            HStack(spacing: 12) {
-                Text("资料库中已存在")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: leftColumnWidth, alignment: .leading)
-                
-                Divider()
-                    .frame(height: 12)
-                    .overlay(Color.secondary.opacity(0.3))
-                
-                Text("本次待导入")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: rightColumnWidth, alignment: .leading)
-            }
-        }
-        .padding(.horizontal, horizontalPadding)
-        .padding(.top, 20)
-        .padding(.bottom, 12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.thinMaterial)
-        .overlay(alignment: .bottom) {
-            AppDialogDivider()
-        }
-        .zIndex(1)
-    }
-
-    private var footerView: some View {
-        HStack {
-            Button("取消") {
-                onFinish(false)
-            }
-            .keyboardShortcut(.cancelAction)
-            .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
-
-            Spacer()
-
-            Button(viewModel.buttonTitle) {
-                onFinish(true)
-            }
-            .keyboardShortcut(.defaultAction)
-            .buttonStyle(
-                AppDialogGlassButtonStyle(kind: .primary, tint: themeStore.accentColor)
-            )
-        }
-        .padding(.top, AppDialogTokens.footerVerticalPadding)
-        .padding(.bottom, AppDialogTokens.footerBottomPadding)
-        .padding(.horizontal, horizontalPadding)
-        .background(.thinMaterial)
-        .overlay(alignment: .top) {
-            AppDialogDivider()
         }
     }
 }
@@ -377,12 +358,16 @@ struct DuplicateRowView: View {
                     RoundedRectangle(cornerRadius: AppDialogTokens.rowCornerRadius, style: .continuous)
                         .fill(themeAccent.opacity(colorScheme == .dark ? 0.22 : 0.12))
                 } else {
-                    // Subtle background for incoming candidates
+                    // Standard dialog row fill for incoming candidates
                     RoundedRectangle(cornerRadius: AppDialogTokens.rowCornerRadius, style: .continuous)
-                        .fill(Color.primary.opacity(0.03))
+                        .fill(
+                            colorScheme == .dark
+                                ? Color.white.opacity(AppDialogTokens.rowFillDark)
+                                : Color.black.opacity(AppDialogTokens.rowFillLight)
+                        )
                 }
             } else {
-                // Simple transparent for existing, or very subtle
+                // Simple transparent for existing
                 RoundedRectangle(cornerRadius: AppDialogTokens.rowCornerRadius, style: .continuous)
                     .fill(Color.primary.opacity(0.01))
             }

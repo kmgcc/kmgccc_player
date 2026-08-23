@@ -10,6 +10,7 @@ struct LibraryReconnectView: View {
     @Bindable var flow: LibrarySetupViewModel
     let target: Target
     let onChange: @MainActor () async -> Void
+    let onRequestClose: () -> Void
 
     @EnvironmentObject private var appSession: AppSessionHost
     @EnvironmentObject private var themeStore: ThemeStore
@@ -89,12 +90,16 @@ struct LibraryReconnectView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     if preparation.plans.count > 1 {
-                        Picker("候选位置", selection: $selectedPlanID) {
-                            ForEach(preparation.plans) { plan in
-                                Text(plan.rootURL.path)
-                                    .lineLimit(1)
-                                    .tag(plan.id)
-                            }
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("候选位置")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            AppDialogOptionMenu(
+                                selection: $selectedPlanID,
+                                options: preparation.plans.map { plan in
+                                    AppDialogOption(value: plan.id, label: plan.rootURL.path)
+                                }
+                            )
                         }
                     } else {
                         LabeledContent("候选位置") {
@@ -124,15 +129,21 @@ struct LibraryReconnectView: View {
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
-                            Picker(
-                                "匹配文件",
-                                selection: conflictSelectionBinding(for: conflict.expected.trackID)
-                            ) {
-                                Text("保持未连接").tag("")
-                                ForEach(conflict.candidates) { candidate in
-                                    Text("\(candidate.url.lastPathComponent) — \(candidate.relativePath)")
-                                        .tag(candidate.id)
-                                }
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("匹配文件")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                AppDialogOptionMenu(
+                                    selection: conflictSelectionBinding(for: conflict.expected.trackID),
+                                    options: [
+                                        AppDialogOption(value: "", label: "保持未连接")
+                                    ] + conflict.candidates.map { candidate in
+                                        AppDialogOption(
+                                            value: candidate.id,
+                                            label: "\(candidate.url.lastPathComponent) — \(candidate.relativePath)"
+                                        )
+                                    }
+                                )
                             }
                         }
                         .padding(.vertical, 4)
@@ -333,5 +344,6 @@ struct LibraryReconnectView: View {
         retainedSelection?.release()
         retainedSelection = nil
         flow.dismiss()
+        onRequestClose()
     }
 }

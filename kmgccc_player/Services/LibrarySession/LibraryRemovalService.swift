@@ -189,6 +189,12 @@ final class LibraryRemovalService {
         do { try LibraryRemovalRepairIntentFile.remove(at: intentURL) }
         catch { throw LibraryRemovalError.pendingRepair }
 
+        // Removing a non-active library must not unexpectedly move playback to
+        // another library. Only the active-library removal needs successor
+        // selection; the current session is already the correct destination.
+        if !wasActive, let activeContext = sessionController.activeLibraryContext {
+            return .activated(activeContext)
+        }
         return await activateNextLibrary(afterRemovingMode: manifest.mode)
     }
 
@@ -239,22 +245,58 @@ final class LibraryRemovalService {
 
     private func activateNextLibrary(afterRemovingMode mode: MusicLibraryMode) async -> LibraryRemovalNextAction {
         let updated = await registryStore.snapshot()
-        let preferredID = updated.recentLibraryID(for: mode)
-        let candidate = preferredID.flatMap { updated.library(id: $0) }
-            ?? updated.libraries.first(where: { $0.modeProjection == mode })
-            ?? updated.libraries.first
-        guard let candidate else { return .chooseLibrary }
-        do {
-            let lease = try LibraryRootAccessLease(descriptor: candidate, resolver: bookmarkResolver, requiresSecurityScope: requiresSecurityScope)
-            let manifest = try MusicLibraryManifest.read(from: LibraryPaths(rootURL: lease.rootURL).manifestURL)
-            guard manifest.libraryID == candidate.id, manifest.mode == candidate.modeProjection else { return .chooseLibrary }
-            let bookmark = try bookmarkResolver.refreshBookmark(for: lease.rootURL)
-            generation &+= 1
-            let context = LibraryContext(manifest: manifest, rootURL: lease.rootURL, rootBookmarkData: bookmark, generation: generation)
-            try await sessionController.switchToLibrary(context)
-            try await registryStore.updateBookmark(libraryID: candidate.id, bookmarkData: bookmark, lastKnownPath: lease.rootURL.path, modeProjection: manifest.mode)
-            try await registryStore.setActiveLibrary(id: context.id, manifestMode: context.mode)
-            return .activated(context)
-        } catch { return .chooseLibrary }
+        var candidateIDs: [UUID] = []
+        if let preferredID = updated.recentLibraryID(for: mode) {
+            candidateIDs.append(preferredID)
+        }
+        candidateIDs.append(contentsOf: updated.libraries
+            .filter { $0.modeProjection == mode }
+            .map(\.id))
+        candidateIDs.append(contentsOf: updated.libraries.map(\.id))
+
+        var seen = Set<UUID>()
+        for candidateID in candidateIDs where seen.insert(candidateID).inserted {
+            guard let candidate = updated.library(id: candidateID) else { continue }
+            do {
+                let lease = try LibraryRootAccessLease(
+                    descriptor: candidate,
+                    resolver: bookmarkResolver,
+                    requiresSecurityScope: requiresSecurityScope
+                )
+                let manifest = try MusicLibraryManifest.read(from: LibraryPaths(rootURL: lease.rootURL).manifestURL)
+                guard manifest.libraryID == candidate.id, manifest.mode == candidate.modeProjection else { continue }
+                let bookmark = try bookmarkResolver.refreshBookmark(for: lease.rootURL)
+                generation &+= 1
+                let context = LibraryContext(
+                    manifest: manifest,
+                    rootURL: lease.rootURL,
+                    rootBookmarkData: bookmark,
+                    generation: generation
+                )
+
+                // Commit the successor pointer before opening the session. If
+                // session construction fails, the registry still describes a
+                // recoverable successor for the next startup pass.
+                try await registryStore.updateBookmark(
+                    libraryID: candidate.id,
+                    bookmarkData: bookmark,
+                    lastKnownPath: lease.rootURL.path,
+                    modeProjection: manifest.mode
+                )
+                try await registryStore.setActiveLibrary(id: context.id, manifestMode: context.mode)
+                do {
+                    try await sessionController.switchToLibrary(context)
+                } catch {
+                    // Keep the post-removal registry honest if opening this
+                    // particular candidate fails after the pointer commit.
+                    try? await registryStore.replaceSnapshot(updated)
+                    throw error
+                }
+                return .activated(context)
+            } catch {
+                continue
+            }
+        }
+        return .chooseLibrary
     }
 }
