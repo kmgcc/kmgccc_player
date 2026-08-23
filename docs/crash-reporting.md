@@ -249,6 +249,83 @@ jq -r '
 
 符号化结果应保留 thread index、frame index、image UUID、relative address、symbol name，以及可用的源文件 basename 和行号。上传小型结果前再次确认 UUID 和地址都来自原报告；dSYM、源码绝对路径和完整本地归档不应随结果上传。
 
+## 真实报告驱动的修复交接流程
+
+本节是按生产后台、用户补充说明、公开 Issue 或其他网上收集到的报错信息推进修复时的固定流程，目标是让下一轮维护者能够复核证据，而不是只接手一个“看起来像根因”的结论。网上材料先当作线索，不能绕过报告身份、符号 UUID 和本地复现验证。
+
+### 1. 先固定范围和证据目录
+
+开始一轮分析前记录 App 仓库和服务端仓库的 `HEAD`、工作树状态、报告查询条件、导出时间和是否允许写回后台。默认只读服务器，不发布 App、不上传 dSYM、不回传符号化结果。完整 bundle、manifest、脚本输出和临时符号化结果放在私有目录，不复制进 Agent 对话。
+
+批量导出先拉摘要，再拉明确的一页。不要让工具无条件自动翻完全部分页，也不要把 40 份完整 JSON 一次性读入上下文：
+
+```text
+1. include_payload=false：确认 total、total_pages、build、source 和时间范围。
+2. 选择固定窗口：page_size=40、start_page=N、max_reports=40。
+3. 保存 manifest.json 和原始 bundle；后续只读取摘要、崩溃线程和有限上下文。
+4. 每轮结束记录实际导出数量，避免“想看 40 条”却因为自动分页下载了全部记录。
+```
+
+网上报告还要额外记录来源 URL 或来源人、收集日期、原文中的 App version/build/architecture/OS，以及是否经过截断或改写。日志、截图和复制的命令行都先检查 token、路径、邮箱和用户内容；来源不明的符号文件不直接加入符号归档。
+
+### 2. 先按身份归一化，再按现象聚类
+
+每份报告最少提取以下字段：`reportID`、`source`、`occurredAt`、`app.version`、`app.build`、`app.architecture`、`app.executableUUID`、`exception.signal`、`top_frame`、fingerprint、`uploadMode`、`userDescription`、session ID 和 `appContext`。聚类优先使用 source + signal + crashed thread 的前几个 App frame + executable UUID；版本号和用户描述只用于影响范围与复现前提，不能单独决定根因。
+
+必须把以下三类分开：
+
+- PLCrashReporter 是进程即时现场；MetricKit 是系统稍后汇总的诊断，不能把两者的 frame 位置直接当成同一种报告。
+- 受控 `main-segv`、`main-abort`、`background-abort` 或明显的测试文字是捕获链路证据，不计入真实用户回归率。
+- 同一个 build number 可能对应多个 Mach-O UUID；UUID 不同就先当成不同构建，不能用“同版本”强行套 dSYM 或合并为一个确定根因。
+
+### 3. 用小切片读取长报告
+
+每份报告只提取：异常摘要、`isCrashed=true` 的线程前 8–15 个 frame、其中所有 App frame、最后 10–20 条 Breadcrumb、`appContext`、session 的崩溃前后摘要和用户补充。系统 frame 只作为触发位置；真正的判断优先看崩溃线程中最靠前的可解析 App frame。若没有匹配 dSYM，保留裸地址和 UUID，标为 `unresolved`，不要猜函数名。
+
+用户补充是复现条件，不是调用栈的替代品。把“切换音频设备”“切换显示器”“关闭全屏”“导入资料库”等说明和最后操作记录对齐；没有说明时也要保留“无补充”，不能从最后一条 Breadcrumb 编造用户行为。会话事件必须标记在崩溃前/崩溃时还是崩溃后，避免把恢复启动误判成触发动作。
+
+### 4. 严格匹配符号并维护未决清单
+
+符号查找顺序是：本地私有归档、正式 GitHub Release 资产、最后才是请维护者补齐对应归档。每次必须核对 architecture、version/build 和去掉连字符后转大写的 executable UUID；同源码重编也可能生成新 UUID。符号覆盖不足时仍保存 bundle 和 `partial` 结果，并在交接记录中列出缺少的 UUID、受影响报告 ID 和下一步获取来源。
+
+不要用系统库地址反推 App 函数，也不要用相同 build 的另一份 dSYM“试试看”。符号化结果只写入本地 `local_symbolication` 或受控的小型结果；不把 dSYM、源码绝对路径、完整 session 事件或用户说明回传到公开 Issue。
+
+### 5. 从候选根因到最小修复
+
+证据分三级记录：
+
+1. **已确认**：同一 UUID/代码版本下有重复簇，崩溃线程能解析到同一 App 调用路径，且操作记录与生命周期前提一致。
+2. **高概率候选**：重复簇稳定，但缺少对应 dSYM、只有系统 frame，或还没有最小复现；可以作为下一步，不得写成已修复。
+3. **未决/测试**：符号和上下文不足，或报告由受控测试产生；只做归档和链路修复，不改业务代码。
+
+确认候选后沿真实调用链检查 owner、队列/actor、对象生命周期、回调取消和 teardown 等边界，再做最小修改。尤其要警惕 `libswiftCore`、`malloc`、`dispatch` 或 `SIGABRT` 只是并发访问、悬空回调或已损坏容器在稍后暴露出来的地点；同一簇出现不同 signal 不代表一定是不同问题。
+
+### 6. 验证、交接和下一轮
+
+每次修复至少留下四种证据：
+
+- 静态证据：改动文件、调用链、为什么这个 owner/同步边界能阻断报告中的路径。
+- 构建/测试证据：与改动匹配的 Debug build、目标单测或工具测试；使用独立 DerivedData，不把 build 成功当作真实复现。
+- 运行证据：无 debugger 的受控崩溃链路，必要时按报告中的设备、全屏、显示器、音频设备和导入操作做真实复现。
+- 报告证据：修复前的报告簇、符号覆盖、修复 commit、未覆盖的旧构建和剩余 unresolved ID。
+
+交接记录使用下面的最小模板：
+
+```text
+轮次/窗口：<page N / max M，导出时间>
+范围：<版本、build、source、总数；测试报告是否剔除>
+主要簇：<fingerprint 或 top frame> / <数量> / <报告 ID 前缀>
+操作线索：<用户补充 + 最后 Breadcrumb + appContext>
+符号：<匹配 UUID、归档来源；缺失 UUID>
+判断：<已确认 / 高概率候选 / 未决>
+修复：<文件、关键不变量、commit>
+验证：<命令和结果；真实设备/无 debugger 是否完成>
+未覆盖：<旧 build、MetricKit、缺 dSYM、无法复现项>
+下一轮：<优先拉取或复现的簇，以及停止条件>
+```
+
+当前轮结束后，下一轮优先重新拉取修复版本的新报告，检查已确认簇是否消失；然后补齐高频 unresolved UUID 的符号，最后才扩大到低频 AppKit、SwiftData 或渲染候选。若报告身份、符号或操作前提无法闭合，应停在“未决”并请求更多证据，不用大范围重构换取表面上的清零。
+
 ## Debug 受控验证
 
 普通 Debug 配置使用 `DEBUG_INFORMATION_FORMAT=dwarf`。若要同时验证捕获与独立 dSYM，可建立一个临时的 `dwarf-with-dsym` 构建：
