@@ -224,7 +224,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
     let source: PlaybackSource = .systemNowPlaying
 
-    private let libraryVM: LibraryViewModel
+    private let libraryTracksProvider: @MainActor () -> [Track]
     private let artworkResolver: AppleMusicArtworkResolver
     private let metadataStore: ExternalPlaybackMetadataStore
     private let lyricsSearchCoordinator: LyricsSearchCoordinator
@@ -330,14 +330,14 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     var capabilities: ExternalPlaybackCapabilities { currentCapabilities }
 
     init(
-        libraryVM: LibraryViewModel,
+        libraryTracksProvider: @escaping @MainActor () -> [Track],
         artworkResolver: AppleMusicArtworkResolver = AppleMusicArtworkResolver(),
         metadataStore: ExternalPlaybackMetadataStore,
         lyricsSearchCoordinator: LyricsSearchCoordinator,
         amllDBService: AMLLDBService,
         sourceStore: ExternalPlaybackSourceStore = .shared
     ) {
-        self.libraryVM = libraryVM
+        self.libraryTracksProvider = libraryTracksProvider
         self.artworkResolver = artworkResolver
         self.metadataStore = metadataStore
         self.lyricsSearchCoordinator = lyricsSearchCoordinator
@@ -357,10 +357,10 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         sourcePreferenceTask?.cancel()
     }
 
-    convenience init(previewLibraryVM libraryVM: LibraryViewModel) {
+    convenience init(previewLibraryTracksProvider provider: @escaping @MainActor () -> [Track]) {
         let cacheServices = LibraryCacheServices.preview
         self.init(
-            libraryVM: libraryVM,
+            libraryTracksProvider: provider,
             metadataStore: cacheServices.externalPlaybackMetadataStore,
             lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
             amllDBService: cacheServices.amllDBService
@@ -1838,7 +1838,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         guard resolutionTask == nil else { return }
 
         let metadataStore = self.metadataStore
-        let libraryTracks = libraryVM.allTracks
+        let libraryTracks = libraryTracksProvider()
         resolutionTask = Task { [weak self] in
             let resolution = await metadataStore.resolve(raw: raw, libraryTracks: libraryTracks)
             await MainActor.run {

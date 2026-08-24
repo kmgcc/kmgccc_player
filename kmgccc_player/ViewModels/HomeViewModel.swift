@@ -460,8 +460,8 @@ final class HomeViewModel {
             result = lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle)
             useNaturalDescending = false
         case .artist:
-            result = lhs.primaryArtistDisplayName
-                .localizedCaseInsensitiveCompare(rhs.primaryArtistDisplayName)
+            result = lhs.presentationArtistDisplayName
+                .localizedCaseInsensitiveCompare(rhs.presentationArtistDisplayName)
             useNaturalDescending = false
         case .trackCount:
             result = compareInt(lhs.trackCount, rhs.trackCount)
@@ -775,10 +775,11 @@ nonisolated struct HomeStartupSnapshot: Codable, Equatable, Sendable {
         let artist: String
         let trackCount: Int
 
+        @MainActor
         init(album: AlbumEntry) {
             id = album.id
             title = album.displayTitle
-            artist = album.primaryArtistDisplayName
+            artist = album.presentationArtistDisplayName
             trackCount = album.trackCount
         }
     }

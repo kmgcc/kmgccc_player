@@ -282,7 +282,7 @@ struct LyricsPanelView: View {
         guard oldId != newId else { return }
         LyricsRuntimeProfile.increment("LyricsPanelView.trackIDChange")
         switch libraryVM.currentSelection {
-        case .home, .allPlaylists, .allAlbums, .allArtists:
+        case .home, .folders, .allPlaylists, .allAlbums, .allArtists:
             LyricsRuntimeProfile.setMetadata("lyrics.selectionKind", value: "home")
         case .allSongs:
             LyricsRuntimeProfile.setMetadata("lyrics.selectionKind", value: "allSongs")
@@ -711,11 +711,11 @@ private struct WindowPlaybackQueueRow: View {
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
     let libraryVM = LibraryViewModel.preview(repository: StubLibraryRepository())
     let cacheServices = LibraryCacheServices.preview
-    let appleMusicAdapter = AppleMusicPlaybackAdapter(previewLibraryVM: libraryVM)
+    let appleMusicAdapter = AppleMusicPlaybackAdapter(previewLibraryTracksProvider: { [weak libraryVM] in libraryVM?.allTracks ?? [] })
     let playbackCoordinator = PlaybackCoordinator(
-        playerVM: playerVM,
+        localPlayback: playerVM,
         appleMusicAdapter: appleMusicAdapter,
-        systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryVM: libraryVM),
+        systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryTracksProvider: { [weak libraryVM] in libraryVM?.allTracks ?? [] }),
         artworkCache: cacheServices.trackArtworkCache,
         lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
         amllDBService: cacheServices.amllDBService

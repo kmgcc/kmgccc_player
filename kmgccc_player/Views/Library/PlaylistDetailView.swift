@@ -230,7 +230,7 @@ struct PlaylistDetailView: View {
 
     private var playableSourceTrackCount: Int {
         switch libraryVM.currentSelection {
-        case .home, .allSongs:
+        case .home, .allSongs, .folders:
             return libraryVM.allTracks.filter { $0.availability != .missing }.count
         case .playlist(let id):
             return libraryVM.playlists.first(where: { $0.id == id })?.tracks.filter {
@@ -238,7 +238,7 @@ struct PlaylistDetailView: View {
             }.count ?? 0
         case .artist(let key):
             return libraryVM.allTracks.filter {
-                LibraryNormalization.containsArtist(key, in: $0.artist)
+                LibraryNormalization.containsArtist(key, in: $0)
                     && $0.availability != .missing
             }.count
         case .album(let key):
@@ -928,9 +928,9 @@ private struct ScrollOffsetSensor: View {
         .environment(libraryVM)
         .environment(playerVM)
         .environment(PlaybackCoordinator(
-            playerVM: playerVM,
-            appleMusicAdapter: AppleMusicPlaybackAdapter(previewLibraryVM: libraryVM),
-            systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryVM: libraryVM),
+            localPlayback: playerVM,
+            appleMusicAdapter: AppleMusicPlaybackAdapter(previewLibraryTracksProvider: { [weak libraryVM] in libraryVM?.allTracks ?? [] }),
+            systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryTracksProvider: { [weak libraryVM] in libraryVM?.allTracks ?? [] }),
             artworkCache: cacheServices.trackArtworkCache,
             lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
             amllDBService: cacheServices.amllDBService

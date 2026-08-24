@@ -1905,7 +1905,6 @@ nonisolated private struct SpectrumDiagnostics {
         guard now - lastEmitTime >= SpectrumProcessor.Constants.diagnosticsInterval else { return }
 
         let n = Float(frameCount)
-        let bands = Float(SpectrumProcessor.Constants.bandCount)
 
         let avgRms = sumRmsDbFS / n
         let avgPeak = sumPeakDbFS / n

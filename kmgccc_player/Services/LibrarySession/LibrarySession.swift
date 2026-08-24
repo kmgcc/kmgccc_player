@@ -30,9 +30,11 @@ final class LibrarySession: LibrarySessionLifecycle {
     let ledMeterProvider: LEDMeterServiceProvider
 
     private let playbackService: AVAudioPlaybackService
+    private let operationCoordinator: LibraryOperationCoordinator
     private var isLoaded = false
     private var isClosed = false
     private(set) var didCompleteLegacyUpgrade = false
+    private(set) var initialReconcileOutcome: InitialReconcileOutcome?
 
     init(
         context: LibraryContext,
@@ -50,6 +52,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         libraryViewModel: LibraryViewModel,
         importEnrichmentService: ImportEnrichmentService,
         fileImportService: FileImportService,
+        operationCoordinator: LibraryOperationCoordinator,
         storageBackend: any LibraryStorageBackend,
         referencedSourceStore: ReferencedSourceStore?,
         referencedSourceScope: ReferencedSourceScope?,
@@ -77,6 +80,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         self.libraryViewModel = libraryViewModel
         self.importEnrichmentService = importEnrichmentService
         self.fileImportService = fileImportService
+        self.operationCoordinator = operationCoordinator
         self.storageBackend = storageBackend
         self.referencedSourceStore = referencedSourceStore
         self.referencedSourceScope = referencedSourceScope
@@ -97,34 +101,10 @@ final class LibrarySession: LibrarySessionLifecycle {
         await libraryViewModel.reloadLibrary()
         try Task.checkCancellation()
         if let referencedSourceReconciler {
-            // Reconcile touches the same SQLite stores as the rest of the
-            // session and can fail on transient contention (another
-            // instance mid-write, WAL checkpoint). A reconcile failure
-            // must not make the whole library unreadable — degrade to a
-            // loaded session and let the change monitor retry later.
-            do {
-                try await referencedSourceReconciler.repairOrphanedFileSources()
-            } catch {
-                Log.warning(
-                    "[LibrarySession] referenced orphan repair deferred after load failure: \(error)",
-                    category: .library
-                )
-            }
-            do {
-                let sourceIDs = try await referencedSourceReconciler.allSourceIDs()
-                // Replay and scan each source independently. One stale pending
-                // intent (for example a failed conversion in one folder) must
-                // not prevent the other sources from loading or make the
-                // library appear empty on the next launch.
-                _ = await referencedSourceReconciler.reconcileBestEffort(
-                    sourceIDs: sourceIDs
-                )
-            } catch {
-                Log.warning(
-                    "[LibrarySession] referenced reconcile deferred after load failure: \(error)",
-                    category: .library
-                )
-            }
+            initialReconcileOutcome = try await Self.runInitialReconcile(
+                reconciler: referencedSourceReconciler,
+                operationCoordinator: operationCoordinator
+            )
         }
         let upgrade = LegacyLibraryUpgradeCoordinator(
             context: context,
@@ -151,6 +131,70 @@ final class LibrarySession: LibrarySessionLifecycle {
         isLoaded = true
     }
 
+    /// Switch-time first reconcile contract: every known source is attempted
+    /// exactly once before activation completes; one failing source never
+    /// skips the rest and never blocks activation. A genuinely cancelled
+    /// switch aborts without reporting source failures.
+    static func runInitialReconcile(
+        reconciler: ReferencedSourceReconciler,
+        operationCoordinator: LibraryOperationCoordinator
+    ) async throws -> InitialReconcileOutcome {
+        let startedAt = Date()
+
+        // Reconcile touches the same SQLite stores as the rest of the session
+        // and can fail on transient contention (another instance mid-write,
+        // WAL checkpoint). Degrade to activation and let the change monitor
+        // retry later — only cancellation aborts the switch.
+        do {
+            _ = try await operationCoordinator.run {
+                try await reconciler.repairOrphanedFileSources()
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            Log.warning(
+                "[LibrarySession] referenced orphan repair deferred after load failure: \(error)",
+                category: .library
+            )
+        }
+
+        struct AttemptLedger: Sendable {
+            var attempted: Set<UUID> = []
+            var failures: [InitialReconcileOutcome.SourceFailure] = []
+        }
+
+        let ledger = try await operationCoordinator.run(as: .sourceScan) { () -> AttemptLedger in
+            var ledger = AttemptLedger()
+            let sourceIDs = try await reconciler.allSourceIDs()
+            for sourceID in sourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                operationCoordinator.recordCheckpoint("来源扫描 \(sourceID.uuidString.prefix(8))")
+                do {
+                    _ = try await reconciler.reconcile(sourceIDs: [sourceID])
+                    ledger.attempted.insert(sourceID)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    let reason = String(String(describing: error).prefix(512))
+                    ledger.attempted.insert(sourceID)
+                    ledger.failures.append(.init(sourceID: sourceID, reason: reason))
+                    await reconciler.reportMonitorFailure(sourceIDs: [sourceID], error: error)
+                    Log.warning(
+                        "[LibrarySession] initial reconcile failed source=\(sourceID): \(reason)",
+                        category: .library
+                    )
+                }
+            }
+            return ledger
+        }
+
+        return InitialReconcileOutcome(
+            attemptedSourceIDs: ledger.attempted,
+            failedSources: ledger.failures,
+            startedAt: startedAt,
+            finishedAt: Date()
+        )
+    }
+
     func importInitialSelection(_ selection: LibraryInitialImportSelection) async throws -> LibraryInitialImportResult {
         guard !isClosed else {
             let result = LibraryInitialImportResult(
@@ -162,6 +206,27 @@ final class LibrarySession: LibrarySessionLifecycle {
             )
             throw LibraryInitialImportError.initialImportFailed(result)
         }
+        return try await runLibraryOperation { [weak self] in
+            guard let self else {
+                throw LibraryInitialImportError.initialImportFailed(
+                    LibraryInitialImportResult(
+                        requested: selection.urls.count,
+                        planned: 0,
+                        imported: 0,
+                        failures: selection.urls.map {
+                            ImportInputFailure(url: $0, message: "Session released")
+                        },
+                        sourceIDs: []
+                    )
+                )
+            }
+            return try await self.performInitialImport(selection)
+        }
+    }
+
+    private func performInitialImport(
+        _ selection: LibraryInitialImportSelection
+    ) async throws -> LibraryInitialImportResult {
         let result = await fileImportService.importInitialSelection(selection)
         if !selection.playlistSourceEntries.isEmpty {
             // Bind playlists as soon as source descriptors exist. A source
@@ -202,6 +267,74 @@ final class LibrarySession: LibrarySessionLifecycle {
         return result
     }
 
+    /// Executes a library mutation or scan while retaining it in the session's
+    /// lifetime registry. Callers must use this wrapper for user-initiated
+    /// asynchronous work instead of creating an unowned Task around the
+    /// session.
+    func runLibraryOperation<Value: Sendable>(
+        _ work: @escaping @MainActor () async throws -> Value
+    ) async throws -> Value {
+        try await operationCoordinator.run(work)
+    }
+
+    /// Installs a push-based observer for the coordinator's task-state
+    /// changes (plan §14). Hosts copy `taskDescriptors` inside the callback
+    /// instead of polling task state.
+    func bindLibraryTaskStateObserver(_ onChange: (@MainActor () -> Void)?) {
+        operationCoordinator.onTasksDidChange = onChange
+    }
+
+    /// Current live task descriptors for hosts that surface session-wide
+    /// task state.
+    func libraryTaskDescriptorsSnapshot() -> [LibraryOperationTaskDescriptor] {
+        operationCoordinator.taskDescriptors
+    }
+
+    /// Installs the session lifetime gate used by UI-owned imports. Keeping the
+    /// closure on the view model avoids a second coordinator in the UI while
+    /// preserving one owner for session quiescence.
+    func bindLibraryViewModelOperationOwnership() {
+        libraryViewModel.runOwnedImportOperation = { [weak self] work in
+            guard let self else { return nil }
+            do {
+                return try await self.runLibraryOperation {
+                    await work()
+                }
+            } catch {
+                Log.warning(
+                    "[LibrarySession] import rejected by operation coordinator: \(error)",
+                    category: .library
+                )
+                return nil
+            }
+        }
+        libraryViewModel.runOwnedLibraryMutation = { [weak self] work in
+            guard let self else { return false }
+            do {
+                let _: Void = try await self.runLibraryOperation {
+                    await work()
+                }
+                return true
+            } catch {
+                Log.warning(
+                    "[LibrarySession] library mutation rejected by operation coordinator: \(error)",
+                    category: .library
+                )
+                return false
+            }
+        }
+    }
+
+    /// Starts non-blocking session work, such as initial import after the
+    /// setup panel closes. The returned flag lets callers release any retained
+    /// security scope when a session is already quiescing.
+    @discardableResult
+    func startBackgroundLibraryOperation(
+        _ work: @escaping @MainActor () async -> Void
+    ) -> Bool {
+        operationCoordinator.start(work)
+    }
+
     private func createAutomaticPlaylists(
         for entries: [LibraryImportSourceEntry],
         result: LibraryInitialImportResult
@@ -235,6 +368,16 @@ final class LibrarySession: LibrarySessionLifecycle {
                     name: automaticPlaylistName(for: entry, tracks: tracks)
                 )
                 await repository.addTracks(tracks, to: playlist)
+                if context.mode == .referenced {
+                    let sourceIDs = Set(tracks.flatMap { track -> [UUID] in
+                        guard case let .referenced(locator) = track.mediaLocator else { return [] }
+                        return locator.allSourceMemberships.map(\.sourceID)
+                    })
+                    try await referencedSourceReconciler?.bindSourcesToPlaylist(
+                        sourceIDs,
+                        playlistID: playlist.id
+                    )
+                }
             }
         }
 
@@ -292,6 +435,63 @@ final class LibrarySession: LibrarySessionLifecycle {
                 libraryChangeMonitor,
                 reconciler: referencedSourceReconciler,
                 roots: referencedSourceReconciler.sourceRoots
+            )
+            throw error
+        }
+    }
+
+    func refreshReferencedSource(_ sourceID: UUID) async throws -> [ReferencedSourceScopeIssue] {
+        guard !isClosed,
+              let referencedSourceReconciler,
+              let libraryChangeMonitor else { return [] }
+        let originalRoots = referencedSourceReconciler.sourceRoots
+        await libraryChangeMonitor.stopAndWait()
+        do {
+            let issues = try await referencedSourceReconciler.refreshSource(sourceID)
+            try await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: referencedSourceReconciler,
+                roots: referencedSourceReconciler.sourceRoots
+            )
+            await libraryViewModel.reloadLibrary()
+            return issues
+        } catch {
+            try? await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: referencedSourceReconciler,
+                roots: originalRoots
+            )
+            throw error
+        }
+    }
+
+    func setReferencedSourceExcludedPath(
+        sourceID: UUID,
+        relativePath: String,
+        excluded: Bool
+    ) async throws {
+        guard !isClosed,
+              let referencedSourceReconciler,
+              let libraryChangeMonitor else { return }
+        let originalRoots = referencedSourceReconciler.sourceRoots
+        await libraryChangeMonitor.stopAndWait()
+        do {
+            try await referencedSourceReconciler.setExcludedRelativePath(
+                sourceID: sourceID,
+                relativePath: relativePath,
+                excluded: excluded
+            )
+            try await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: referencedSourceReconciler,
+                roots: referencedSourceReconciler.sourceRoots
+            )
+            await libraryViewModel.reloadLibrary()
+        } catch {
+            try? await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: referencedSourceReconciler,
+                roots: originalRoots
             )
             throw error
         }
@@ -424,6 +624,12 @@ final class LibrarySession: LibrarySessionLifecycle {
 
             let sourceIDs = dirtyIDs.subtracting([libraryID])
             guard !sourceIDs.isEmpty, let reconciler else { return }
+            // The monitor is itself a session-owned lifecycle boundary:
+            // `stopAndWait()` cancels and awaits this callback before a source
+            // reconnect, library switch, or shutdown proceeds. Keeping the
+            // callback out of the serial mutation coordinator also avoids a
+            // stop/reconcile deadlock when a scan is already queued behind a
+            // user-initiated source operation.
             let outcome = await reconciler.reconcileBestEffort(sourceIDs: sourceIDs)
             if !outcome.failedSourceIDs.isEmpty {
                 await monitor.markFailed(sourceIDs: outcome.failedSourceIDs)
@@ -473,16 +679,19 @@ final class LibrarySession: LibrarySessionLifecycle {
     func quiesce() async {
         guard !isClosed else { return }
         await libraryChangeMonitor?.stopAndWait()
+        await operationCoordinator.quiesceAndWait()
+        await fileImportService.quiesce()
         playerViewModel.stop()
         playerViewModel.stopLevelMeter()
         libraryViewModel.prepareForSessionClose()
-        let trackIDs = Set(libraryViewModel.allTracks.map(\.id))
-        await importEnrichmentService.cancelEnrichment(for: trackIDs)
+        await importEnrichmentService.quiesce()
     }
 
     func close() async {
         guard !isClosed else { return }
         await libraryChangeMonitor?.stopAndWait()
+        await operationCoordinator.quiesceAndWait()
+        await fileImportService.quiesce()
         referencedSourceReconciler?.close()
         await importEnrichmentService.close()
         isClosed = true
@@ -494,5 +703,28 @@ final class LibrarySession: LibrarySessionLifecycle {
         preferenceStatsService.clearCache()
         rootAccessLease.release()
         isLoaded = false
+    }
+}
+
+extension LibrarySession {
+    /// Result of the switch-time first reconcile over every known source.
+    struct InitialReconcileOutcome: Sendable, Equatable {
+        struct SourceFailure: Sendable, Equatable {
+            let sourceID: UUID
+            let reason: String
+        }
+
+        let attemptedSourceIDs: Set<UUID>
+        let failedSources: [SourceFailure]
+        let startedAt: Date
+        let finishedAt: Date
+
+        var failedSourceIDs: Set<UUID> {
+            Set(failedSources.map(\.sourceID))
+        }
+
+        var hasFailures: Bool {
+            !failedSources.isEmpty
+        }
     }
 }
