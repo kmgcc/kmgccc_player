@@ -34,6 +34,10 @@ nonisolated struct NCMConversionRecord: Codable, Sendable, Identifiable {
     var trackID: UUID?
     var state: NCMConversionState
     var errorSummary: String?
+    /// Process-unique tag of the run that created this reservation. Absent on
+    /// journals written before this field existed; treated as a foreign
+    /// process so legacy crash debris still recovers.
+    var creatorProcessEpoch: String?
     let createdAt: Date
     var updatedAt: Date
 }
@@ -176,18 +180,7 @@ nonisolated enum NCMGeneratedOutputMarkerStore {
         _ lhs: ReferencedFileFingerprint,
         _ rhs: ReferencedFileFingerprint
     ) -> Bool {
-        let leftStable = lhs.identity.flatMap(stableIdentity)
-        let rightStable = rhs.identity.flatMap(stableIdentity)
-        switch (leftStable, rightStable) {
-        case let (.some(left), .some(right)):
-            return left == right
-                && lhs.fileSize == rhs.fileSize
-                && lhs.modifiedAt == rhs.modifiedAt
-        case (.some, .none), (.none, .some):
-            return false
-        case (.none, .none):
-            return lhs.fileSize == rhs.fileSize && lhs.modifiedAt == rhs.modifiedAt
-        }
+        TrackIdentityResolver.sameExactFingerprint(lhs, rhs)
     }
 
     private static func markerURL(in outputDirectory: URL) -> URL {
@@ -217,12 +210,6 @@ nonisolated enum NCMGeneratedOutputMarkerStore {
 
     private static func canonicalPath(_ path: String) -> String {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
-    }
-
-    private static func stableIdentity(_ identity: ReferencedFileIdentity) -> ReferencedFileIdentity? {
-        guard identity.volumeUUID?.isEmpty == false,
-              identity.resourceIdentifierArchive?.isEmpty == false else { return nil }
-        return identity
     }
 }
 
@@ -254,6 +241,7 @@ actor NCMConversionRegistry {
     private let url: URL
     private let fileManager = FileManager.default
     private var journal: NCMConversionJournal?
+    private var stalePendingRecoveryIDs: [UUID] = []
 
     init(paths: LibraryPaths) {
         self.url = paths.ncmConversionsURL
@@ -264,19 +252,90 @@ actor NCMConversionRegistry {
         guard fileManager.fileExists(atPath: url.path) else {
             let empty = NCMConversionJournal()
             journal = empty
+            stalePendingRecoveryIDs = []
             return empty
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let decoded = try decoder.decode(
+        var decoded = try decoder.decode(
             NCMConversionJournal.self,
             from: Data(contentsOf: url)
         )
         guard decoded.schemaVersion == NCMConversionJournal.currentSchemaVersion else {
             throw NCMConversionRegistryError.unsupportedSchema(decoded.schemaVersion)
         }
-        journal = decoded
+        // Opening the journal only retires reservations from OTHER processes:
+        // conversions never outlive the session that started them, but sibling
+        // registry instances in THIS process legitimately share live `.pending`
+        // records (scanner filter + conversion service). Records are stamped
+        // with a per-process epoch at reserve() time; anything carrying a
+        // different or missing epoch is crash debris. Without this gate, a
+        // crash between reserve() and markOutputReady would block the source
+        // forever.
+        let recovered = Self.retireStalePendingRecords(&decoded, fileManager: fileManager)
+        stalePendingRecoveryIDs = recovered
+        if recovered.isEmpty {
+            journal = decoded
+        } else {
+            // Best effort: an unwritable journal must not brick every
+            // registry operation. The healed in-memory copy reaches disk on
+            // the next successful persist, and recovery itself is idempotent.
+            try? persist(decoded)
+        }
         return decoded
+    }
+
+    /// Retires reservations left `.pending` by a previous process and returns
+    /// their operation IDs. A no-op once this instance has loaded the journal.
+    @discardableResult
+    func recoverStalePendingReservations() throws -> [UUID] {
+        _ = try load()
+        return stalePendingRecoveryIDs
+    }
+
+    /// Conversions are strictly in-process, so a `.pending` record stamped by
+    /// another process (or written before stamping existed) that survived
+    /// until the journal was reopened is crash debris. It is retired to
+    /// `.failed` — the same recoverable state used when output-ready
+    /// recovery finds its product missing — which blocks nothing: not
+    /// `reserve`, not `activeRecord`, not `isReserved`.
+    nonisolated private static func retireStalePendingRecords(
+        _ journal: inout NCMConversionJournal,
+        fileManager: FileManager
+    ) -> [UUID] {
+        var retired: [UUID] = []
+        for index in journal.records.indices
+        where journal.records[index].state == .pending
+            && journal.records[index].creatorProcessEpoch != creatorProcessEpoch {
+            removeCrashDebris(for: journal.records[index], fileManager: fileManager)
+            journal.records[index].state = .failed
+            journal.records[index].errorSummary =
+                "App exited before the conversion finished; reservation recovered"
+            journal.records[index].updatedAt = Date()
+            retired.append(journal.records[index].id)
+        }
+        return retired
+    }
+
+    /// Removes the scratch artifacts a killed conversion leaves beside its
+    /// NCM source: the temporary decode directory and the reservation
+    /// placeholder, both named with the dead operation's UUID. A finalized
+    /// output path (inside the managed "NCM 转换" folder) is deliberately left
+    /// alone — it is either absent or a fully published product that the
+    /// normal reuse path adopts on the next conversion.
+    nonisolated private static func removeCrashDebris(
+        for record: NCMConversionRecord,
+        fileManager: FileManager
+    ) {
+        let sourceParent = URL(fileURLWithPath: record.sourcePath).deletingLastPathComponent()
+        let temporaryDirectory = sourceParent
+            .appendingPathComponent(".kmgccc-ncm-\(record.id.uuidString)", isDirectory: true)
+        try? fileManager.removeItem(at: temporaryDirectory)
+        let placeholder = sourceParent
+            .appendingPathComponent(".kmgccc-ncm-\(record.id.uuidString).pending", isDirectory: false)
+        let expectedOutput = URL(fileURLWithPath: record.expectedOutputPath).standardizedFileURL.path
+        guard expectedOutput == placeholder.standardizedFileURL.path else { return }
+        try? fileManager.removeItem(at: placeholder)
     }
 
     func reserve(_ record: NCMConversionRecord) throws {
@@ -293,9 +352,20 @@ actor NCMConversionRegistry {
         }) {
             throw NCMConversionRegistryError.outputAlreadyReserved(existing.id)
         }
-        current.records.append(record)
+        var stamped = record
+        if stamped.creatorProcessEpoch == nil {
+            stamped.creatorProcessEpoch = Self.creatorProcessEpoch
+        }
+        current.records.append(stamped)
         try persist(current)
     }
+
+    /// Process-unique tag written into every reservation this run creates.
+    /// Load-time recovery only retires `.pending` records carrying a
+    /// different (or missing) epoch, so sibling registry instances within one
+    /// process — scanner reservation filter and conversion service — never
+    /// invalidate each other's live reservations.
+    nonisolated static let creatorProcessEpoch = UUID().uuidString
 
     func updateExpectedOutput(operationID: UUID, path: String) throws {
         var current = try load()
@@ -329,6 +399,7 @@ actor NCMConversionRegistry {
             trackID: current.records[index].trackID,
             state: current.records[index].state,
             errorSummary: current.records[index].errorSummary,
+            creatorProcessEpoch: current.records[index].creatorProcessEpoch,
             createdAt: current.records[index].createdAt,
             updatedAt: Date()
         )
@@ -456,8 +527,12 @@ actor NCMConversionRegistry {
         matching fingerprint: ReferencedFileFingerprint
     ) throws -> [ReferencedFileFingerprint] {
         var current = try load()
+        // Stale `.pending` reservations are normally retired when the journal
+        // loads; matching them here too lets a manual re-import force-clear
+        // even a reservation this process is currently stuck on.
         guard let index = current.records.firstIndex(where: {
-            $0.state == .removed && Self.sameFingerprint($0.sourceFingerprint, fingerprint)
+            ($0.state == .removed || $0.state == .pending)
+                && Self.sameFingerprint($0.sourceFingerprint, fingerprint)
         }) else { return [] }
         var clearedFingerprints = [current.records[index].sourceFingerprint]
         if let outputFingerprint = current.records[index].outputFingerprint {
@@ -559,25 +634,6 @@ actor NCMConversionRegistry {
         _ lhs: ReferencedFileFingerprint,
         _ rhs: ReferencedFileFingerprint
     ) -> Bool {
-        let leftStable = lhs.identity.flatMap(Self.stableIdentity)
-        let rightStable = rhs.identity.flatMap(Self.stableIdentity)
-        switch (leftStable, rightStable) {
-        case let (.some(left), .some(right)):
-            return left == right
-                && lhs.fileSize == rhs.fileSize
-                && lhs.modifiedAt == rhs.modifiedAt
-        case (.some, .none), (.none, .some):
-            return false
-        case (.none, .none):
-            return lhs.fileSize == rhs.fileSize && lhs.modifiedAt == rhs.modifiedAt
-        }
-    }
-
-    private nonisolated static func stableIdentity(
-        _ identity: ReferencedFileIdentity
-    ) -> ReferencedFileIdentity? {
-        guard identity.volumeUUID?.isEmpty == false,
-              identity.resourceIdentifierArchive?.isEmpty == false else { return nil }
-        return identity
+        TrackIdentityResolver.sameExactFingerprint(lhs, rhs)
     }
 }

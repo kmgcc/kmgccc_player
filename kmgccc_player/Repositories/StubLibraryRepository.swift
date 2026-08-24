@@ -155,9 +155,11 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
     func track(matching fingerprint: ReferencedFileFingerprint) async -> Track? {
         let key = ReferencedPhysicalIdentityKey(fingerprint)
         return allTracks.first { track in
-            guard case let .referenced(locator) = track.mediaLocator,
-                  let existing = locator.fingerprint else { return false }
-            return ReferencedPhysicalIdentityKey(existing) == key
+            guard case let .referenced(locator) = track.mediaLocator else { return false }
+            return locator.locations.contains { location in
+                guard let existing = location.fingerprint else { return false }
+                return ReferencedPhysicalIdentityKey(existing) == key
+            }
         }
     }
 
@@ -165,14 +167,16 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         guard case let .referenced(existing) = track.mediaLocator else {
             throw LibraryBackendError.modeMismatch(expected: .referenced, actual: .managed)
         }
-        var merged = existing
-        merged.sourceMemberships = Array(Set(existing.sourceMemberships).union(incoming.sourceMemberships))
+        var merged = incoming
+        for location in existing.locations {
+            merged.mergeLocation(location)
+        }
         merged.primarySourceID = merged.sourceMemberships.min {
-            $0.relativePath.count < $1.relativePath.count
+            if $0.relativePath.count != $1.relativePath.count {
+                return $0.relativePath.count < $1.relativePath.count
+            }
+            return $0.sourceID.uuidString < $1.sourceID.uuidString
         }?.sourceID
-        merged.fileBookmarkData = incoming.fileBookmarkData
-        merged.lastKnownPath = incoming.lastKnownPath
-        merged.fingerprint = incoming.fingerprint
         track.mediaLocator = .referenced(merged)
     }
 
@@ -260,7 +264,7 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
     func fetchArtistSections() async -> [ArtistSection] {
         var buckets: [String: (name: String, tracks: [Track])] = [:]
         for track in allTracks {
-            for component in LibraryNormalization.artistComponents(track.artist) {
+            for component in LibraryNormalization.artistComponents(for: track) {
                 var bucket = buckets[component.canonicalName] ?? (component.displayName, [])
                 bucket.tracks.append(track)
                 buckets[component.canonicalName] = bucket

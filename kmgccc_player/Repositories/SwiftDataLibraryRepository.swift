@@ -81,6 +81,10 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private let playlistArtworkPipeline: PlaylistArtworkPipeline
     private let importSidecarWriter: (Track, String) -> Bool
     private let locatorSidecarWriter: (Track, TrackMediaLocator, TrackAvailability, String) -> Bool
+    /// Injected writers are test seams that must keep their exact synchronous
+    /// call-through semantics; production runs the batched detached path.
+    private let usesInjectedImportSidecarWriter: Bool
+    private let usesInjectedLocatorSidecarWriter: Bool
 
     init(
         modelContext: ModelContext? = nil,
@@ -116,6 +120,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 availabilityOverride: availability
             )
         }
+        usesInjectedImportSidecarWriter = importSidecarWriter != nil
+        usesInjectedLocatorSidecarWriter = locatorSidecarWriter != nil
         self.paths = libraryService.paths
     }
 
@@ -235,7 +241,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     func addTrack(_ track: Track) async {
         allTracks.append(track)
-        _ = persistImportedTrackResources([track], reason: "initialImport")
+        _ = await persistImportedTrackResources([track], reason: "initialImport")
         scheduleSearchIndexUpsert(for: [track], reason: "initialImport")
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
@@ -258,7 +264,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     func addTracks(_ tracks: [Track]) async {
         allTracks.append(contentsOf: tracks)
-        _ = persistImportedTrackResources(tracks, reason: "initialImport")
+        _ = await persistImportedTrackResources(tracks, reason: "initialImport")
         scheduleSearchIndexUpsert(for: tracks, reason: "initialImport")
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
@@ -287,7 +293,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         _ tracks: [Track],
         visibilityGate: @MainActor ([UUID]) async -> Set<UUID>
     ) async -> LibraryTrackPersistenceResult {
-        let persistence = persistImportedTrackResources(tracks, reason: "initialImportCommit")
+        let persistence = await persistImportedTrackResources(tracks, reason: "initialImportCommit")
         let persistedIDs = Set(persistence.persistedTrackIDs)
         let visibleIDs = await visibilityGate(persistence.persistedTrackIDs).intersection(persistedIDs)
         let visibleTracks = tracks.filter { visibleIDs.contains($0.id) }
@@ -338,7 +344,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             $0.id.uuidString < $1.id.uuidString
         }
         let impactedArtists = Set(uniqueTracks.map {
-            LibraryNormalization.artistCanonicalNames($0.artist)
+            LibraryNormalization.artistCanonicalNames(for: $0)
         }.flatMap { $0 })
         let impactedAlbums = Set(uniqueTracks.map(\.albumGroupKey))
         await deleteTracksAndMetadata(
@@ -464,11 +470,12 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func track(matching fingerprint: ReferencedFileFingerprint) async -> Track? {
-        let incomingKey = ReferencedPhysicalIdentityKey(fingerprint)
-        return allTracks.first { track in
-            guard case let .referenced(locator) = track.mediaLocator,
-                  let existingFingerprint = locator.fingerprint else { return false }
-            return ReferencedPhysicalIdentityKey(existingFingerprint) == incomingKey
+        allTracks.first { track in
+            guard case let .referenced(locator) = track.mediaLocator else { return false }
+            return locator.locations.contains { location in
+                guard let existingFingerprint = location.fingerprint else { return false }
+                return TrackIdentityResolver.samePhysicalIdentity(existingFingerprint, fingerprint)
+            }
         }
     }
 
@@ -476,18 +483,19 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         guard case let .referenced(existing) = track.mediaLocator else {
             throw LibraryBackendError.modeMismatch(expected: .referenced, actual: .managed)
         }
-        let memberships = Array(Set(existing.sourceMemberships).union(incoming.sourceMemberships)).sorted {
+        // Keep the incoming location first so a newly discovered usable copy
+        // becomes the preferred playback candidate, while retaining every
+        // existing location for offline/removable-volume fallback.
+        var merged = incoming
+        for location in existing.locations {
+            merged.mergeLocation(location)
+        }
+        merged.primarySourceID = merged.sourceMemberships.min {
             if $0.relativePath.count != $1.relativePath.count {
                 return $0.relativePath.count < $1.relativePath.count
             }
             return $0.sourceID.uuidString < $1.sourceID.uuidString
-        }
-        var merged = existing
-        merged.sourceMemberships = memberships
-        merged.primarySourceID = memberships.min { $0.relativePath.count < $1.relativePath.count }?.sourceID
-        merged.fileBookmarkData = incoming.fileBookmarkData
-        merged.lastKnownPath = incoming.lastKnownPath
-        merged.fingerprint = incoming.fingerprint
+        }?.sourceID
         let mergedLocator = TrackMediaLocator.referenced(merged)
         guard locatorSidecarWriter(track, mergedLocator, track.availability, "referencedMembershipMerge") else {
             throw CocoaError(.fileWriteUnknown)
@@ -502,24 +510,137 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         _ mutations: [ReferencedSourceLocatorMutation]
     ) async -> LibraryTrackPersistenceResult {
         let tracksByID = Dictionary(uniqueKeysWithValues: allTracks.map { ($0.id, $0) })
-        var persisted: [UUID] = []
-        var failed: [UUID] = []
+
+        if usesInjectedLocatorSidecarWriter {
+            var persisted: [UUID] = []
+            var failed: [UUID] = []
+            for mutation in mutations {
+                guard let track = tracksByID[mutation.trackID],
+                      locatorSidecarWriter(
+                        track,
+                        .referenced(mutation.locator),
+                        mutation.availability,
+                        "referencedSourceReconcile"
+                      ) else {
+                    failed.append(mutation.trackID)
+                    continue
+                }
+                persisted.append(mutation.trackID)
+            }
+            return LibraryTrackPersistenceResult(
+                persistedTrackIDs: persisted,
+                failedTrackIDs: failed
+            )
+        }
+
+        // Production path: group payloads on the main actor, then perform
+        // every encode + atomic write inside one detached task (the
+        // `persistTracks` pattern). Reconciling a large source previously
+        // serialized one disk write per track on the main actor. Awaiting
+        // completion keeps the caller's transactional expectation: when this
+        // returns, every successful sidecar is durably written.
+        var failedTrackIDs: [UUID] = []
+        var payloads: [(trackID: UUID, snapshot: TrackPersistenceSnapshot)] = []
+        payloads.reserveCapacity(mutations.count)
+        let statsByTrackID = preferenceStatsService.getStats(for: mutations.map(\.trackID))
         for mutation in mutations {
-            guard let track = tracksByID[mutation.trackID],
-                  locatorSidecarWriter(
-                    track,
-                    .referenced(mutation.locator),
-                    mutation.availability,
-                    "referencedSourceReconcile"
-                  ) else {
-                failed.append(mutation.trackID)
+            guard let track = tracksByID[mutation.trackID] else {
+                failedTrackIDs.append(mutation.trackID)
                 continue
             }
-            persisted.append(mutation.trackID)
+            let carrier = makeCommitPayloadTrack(
+                from: track,
+                locator: mutation.locator,
+                availability: mutation.availability
+            )
+            payloads.append((
+                mutation.trackID,
+                TrackPersistenceSnapshot(
+                    track: carrier,
+                    preferenceStats: statsByTrackID[mutation.trackID] ?? TrackPreferenceStats()
+                )
+            ))
+        }
+
+        let capturedPaths = paths
+        let capturedPayloads = payloads
+        let results = await Task.detached(priority: .utility) { @Sendable in
+            capturedPayloads.map { payload in
+                autoreleasepool {
+                    (
+                        payload.trackID,
+                        LocalLibraryService.persistTrackSnapshotOnBackground(
+                            payload.snapshot,
+                            paths: capturedPaths,
+                            mode: .metaOnly,
+                            reason: "referencedSourceReconcile"
+                        ).succeeded
+                    )
+                }
+            }
+        }.value
+
+        var persisted: [UUID] = []
+        for (trackID, succeeded) in results {
+            if succeeded {
+                persisted.append(trackID)
+            } else {
+                failedTrackIDs.append(trackID)
+            }
         }
         return LibraryTrackPersistenceResult(
             persistedTrackIDs: persisted,
-            failedTrackIDs: failed
+            failedTrackIDs: failedTrackIDs
+        )
+    }
+
+    /// Standalone value carrier for a committed locator: a copy of the source
+    /// track carrying the mutation's locator/availability, so the background
+    /// writer persists the NEW authority while runtime objects stay untouched
+    /// until `attachReferencedSourceMutations` applies them.
+    private func makeCommitPayloadTrack(
+        from source: Track,
+        locator: ReferencedFileLocator,
+        availability: TrackAvailability
+    ) -> Track {
+        Track(
+            id: source.id,
+            title: source.title,
+            artist: source.artist,
+            artistCredits: source.artistCredits,
+            album: source.album,
+            albumArtist: source.albumArtist,
+            userDescription: source.userDescription,
+            genreTags: source.genreTags,
+            language: source.language,
+            labelOrCompany: source.labelOrCompany,
+            releaseDate: source.releaseDate,
+            qqMusicSongMid: source.qqMusicSongMid,
+            metadataSource: source.metadataSource,
+            metadataFetchedAt: source.metadataFetchedAt,
+            metadataConfidence: source.metadataConfidence,
+            musicBrainzReleaseID: source.musicBrainzReleaseID,
+            embeddedMetadataSnapshot: source.embeddedMetadataSnapshot,
+            duration: source.duration,
+            addedAt: source.addedAt,
+            importedAt: source.importedAt,
+            lyricsTimeOffsetMs: source.lyricsTimeOffsetMs,
+            fileBookmarkData: locator.fileBookmarkData,
+            originalFilePath: locator.lastKnownPath,
+            mediaLocator: .referenced(locator),
+            availability: availability,
+            artworkData: source.artworkData,
+            ttmlLyricText: source.ttmlLyricText,
+            lyricsText: source.lyricsText,
+            libraryRootSnapshot: source.libraryRootSnapshot,
+            audioFileName: source.audioFileName,
+            artworkFileName: source.artworkFileName,
+            lyricsFileName: source.lyricsFileName,
+            ttmlLyricsFileName: source.ttmlLyricsFileName,
+            ncmConversionAssociation: source.ncmConversionAssociation,
+            importProvenance: source.importProvenance,
+            audioProperties: source.audioProperties,
+            enrichmentSuggestions: source.enrichmentSuggestions
         )
     }
 
@@ -779,7 +900,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
 
         let affectedTracks = allTracks.filter {
-            LibraryNormalization.containsArtist(original.canonicalName, in: $0.artist)
+            LibraryNormalization.containsArtist(original.canonicalName, in: $0)
         }
         for track in affectedTracks {
             track.artist = LibraryNormalization.replacingArtistComponent(
@@ -787,6 +908,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 matching: original.canonicalName,
                 with: resolvedName
             )
+            track.artistCredits = track.artistCredits.map { credit in
+                guard credit.canonicalName == original.canonicalName else { return credit }
+                return TrackCredit(
+                    id: credit.id,
+                    displayName: resolvedName,
+                    role: credit.role
+                )
+            }
         }
         _ = await persistTrackMetaOnly(affectedTracks, reason: "artistRename")
     }
@@ -847,7 +976,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     func deleteArtist(_ entry: ArtistEntry) async {
         let affectedTracks = allTracks.filter {
-            LibraryNormalization.containsArtist(entry.canonicalName, in: $0.artist)
+            LibraryNormalization.containsArtist(entry.canonicalName, in: $0)
         }
         let affectedAlbumKeys = Set(affectedTracks.map {
             $0.albumGroupKey
@@ -1030,6 +1159,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             id: meta.id,
             title: meta.title,
             artist: meta.artist,
+            artistCredits: meta.artistCredits,
             album: meta.album,
             albumArtist: meta.albumArtist,
             userDescription: meta.description,
@@ -1041,6 +1171,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             metadataSource: meta.metadataSource,
             metadataFetchedAt: meta.metadataFetchedAt,
             metadataConfidence: meta.metadataConfidence,
+            musicBrainzReleaseID: meta.musicBrainzReleaseID,
+            embeddedMetadataSnapshot: meta.embeddedMetadataSnapshot,
             duration: meta.duration,
             addedAt: meta.addedAt,
             importedAt: meta.importedAt,
@@ -1053,7 +1185,10 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             artworkData: nil,
             ttmlLyricText: nil,
             lyricsText: nil,
-            ncmConversionAssociation: meta.ncmConversionAssociation
+            ncmConversionAssociation: meta.ncmConversionAssociation,
+            importProvenance: meta.importProvenance,
+            audioProperties: meta.audioProperties,
+            enrichmentSuggestions: meta.enrichmentSuggestions
         )
 
         track.libraryRootSnapshot = paths.rootURL.path
@@ -1076,7 +1211,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             )
             dedup[dedupKey, default: 0] += 1
 
-            for component in LibraryNormalization.artistComponents(track.artist) {
+            for component in LibraryNormalization.artistComponents(for: track) {
                 var artistValue = artistBucket[component.canonicalName] ?? (component.displayName, 0)
                 artistValue.count += 1
                 if artistValue.name == LibraryNormalization.unknownArtist {
@@ -1402,7 +1537,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         var albumKeysByArtist: [String: Set<String>] = [:]
         var totalDurationByArtist: [String: Double] = [:]
         for track in allTracks {
-            for artistKey in LibraryNormalization.artistCanonicalNames(track.artist) {
+            for artistKey in LibraryNormalization.artistCanonicalNames(for: track) {
                 albumKeysByArtist[artistKey, default: []].insert(track.albumGroupKey)
                 totalDurationByArtist[artistKey, default: 0] += track.duration
             }
@@ -1613,7 +1748,10 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 playCount: stats.playCount,
                 preferenceScore: stats.preferenceScoreCache,
                 lastPlayedAt: stats.lastPlayedAt,
-                updatedAt: Date()
+                updatedAt: Date(),
+                artistCreditsRaw: track.artistCreditsDisplayText,
+                filePathRaw: track.originalFilePath,
+                formatRaw: URL(fileURLWithPath: track.originalFilePath).pathExtension
             )
         }
     }
@@ -1722,7 +1860,16 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     /// Import-only full resource persistence for newly created track folders.
-    private func persistImportedTrackResources(_ tracks: [Track], reason: String) -> LibraryTrackPersistenceResult {
+    ///
+    /// Production batches every sidecar through one detached task (the
+    /// `persistTracks` pattern): encoding + atomically writing thousands of
+    /// import sidecars must never serialize on the main actor. Injected
+    /// writers keep the legacy synchronous loop for exact call-through
+    /// semantics in tests.
+    private func persistImportedTrackResources(
+        _ tracks: [Track],
+        reason: String
+    ) async -> LibraryTrackPersistenceResult {
         let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
             $0.id.uuidString < $1.id.uuidString
         }
@@ -1735,15 +1882,43 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             category: .library
         )
 
-        var persisted: [UUID] = []
-        var failed: [UUID] = []
-        for track in uniqueTracks {
-            let didWrite = autoreleasepool {
-                importSidecarWriter(track, reason)
+        if usesInjectedImportSidecarWriter {
+            var persisted: [UUID] = []
+            var failed: [UUID] = []
+            for track in uniqueTracks {
+                let didWrite = autoreleasepool {
+                    importSidecarWriter(track, reason)
+                }
+                if didWrite { persisted.append(track.id) } else { failed.append(track.id) }
             }
-            if didWrite { persisted.append(track.id) } else { failed.append(track.id) }
+            return LibraryTrackPersistenceResult(persistedTrackIDs: persisted, failedTrackIDs: failed)
         }
-        return LibraryTrackPersistenceResult(persistedTrackIDs: persisted, failedTrackIDs: failed)
+
+        let statsByTrackID = preferenceStatsService.getStats(for: uniqueTracks.map(\.id))
+        let snapshots = uniqueTracks.map { track in
+            TrackPersistenceSnapshot(
+                track: track,
+                preferenceStats: statsByTrackID[track.id] ?? TrackPreferenceStats()
+            )
+        }
+        let capturedPaths = paths
+        let results = await Task.detached(priority: .utility) { @Sendable in
+            snapshots.map { snapshot in
+                autoreleasepool {
+                    LocalLibraryService.persistTrackSnapshotOnBackground(
+                        snapshot,
+                        paths: capturedPaths,
+                        mode: .metaLyricsAndArtwork,
+                        reason: reason
+                    )
+                }
+            }
+        }.value
+
+        return LibraryTrackPersistenceResult(
+            persistedTrackIDs: results.filter(\.succeeded).map(\.trackID),
+            failedTrackIDs: results.filter { !$0.succeeded }.map(\.trackID)
+        )
     }
 
     private func clearTrackIndexCache() {
