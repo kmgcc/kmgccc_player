@@ -160,17 +160,36 @@ actor LibrarySearchIndex {
         }
     }
 
-    func search(query rawQuery: String, scopedTo allowedTrackIDs: Set<UUID>? = nil, limit: Int = 200) async -> [LibrarySearchHit] {
+    func search(
+        query rawQuery: String,
+        scopedTo allowedTrackIDs: Set<UUID>? = nil,
+        fields requestedFields: Set<LibrarySearchField> = [.all],
+        sort: LibrarySearchSort = .relevance,
+        limit: Int = 200
+    ) async -> [LibrarySearchHit] {
         let query = SearchQuery(rawValue: rawQuery)
-        guard !query.normalized.isEmpty else { return [] }
+        guard !query.normalized.isEmpty, limit > 0 else { return [] }
+        let fields = requestedFields.contains(.all) || requestedFields.isEmpty
+            ? Set(LibrarySearchField.allCases)
+            : requestedFields
 
         do {
             try ensureSchema()
 
             var candidateScores: [String: Double] = [:]
             let retrievalLimit = max(300, min(4_000, limit * 12))
-            try retrieveFTSCandidates(query: query, limit: retrievalLimit, into: &candidateScores)
-            try retrieveNgramCandidates(query: query, limit: retrievalLimit, into: &candidateScores)
+            try retrieveFTSCandidates(
+                query: query,
+                fields: fields,
+                limit: retrievalLimit,
+                into: &candidateScores
+            )
+            try retrieveNgramCandidates(
+                query: query,
+                fields: fields,
+                limit: retrievalLimit,
+                into: &candidateScores
+            )
 
             let allowedStrings = allowedTrackIDs.map { Set($0.map(\.uuidString)) }
             let candidateIDs = candidateScores.keys.filter { id in
@@ -181,22 +200,58 @@ actor LibrarySearchIndex {
             let documents = try fetchDocuments(trackIDs: Array(candidateIDs))
             let ranked = documents.compactMap { document -> LibrarySearchHit? in
                 let baseScore = candidateScores[document.trackID.uuidString] ?? 0
-                let ranking = rank(document: document, query: query, baseScore: baseScore)
+                let ranking = rank(
+                    document: document,
+                    query: query,
+                    fields: fields,
+                    baseScore: baseScore
+                )
                 guard ranking.score > minimumScore(for: query) else { return nil }
                 return LibrarySearchHit(
                     trackID: document.trackID,
                     score: ranking.score,
+                    titleSortKey: document.titleNormalized,
+                    artistSortKey: document.artistNormalized,
+                    albumSortKey: document.albumNormalized,
+                    newestSortValue: document.updatedAt.timeIntervalSince1970,
                     lyricSnippetLine: ranking.lyricSnippet?.line,
                     lyricSnippetStartTime: ranking.lyricSnippet?.startTime,
                     lyricHighlightRanges: ranking.lyricSnippet?.highlightRanges ?? [],
                     matchedLyrics: ranking.matchedLyrics
                 )
             }
-            .sorted {
-                if abs($0.score - $1.score) > 0.000_1 {
-                    return $0.score > $1.score
+            .sorted { lhs, rhs in
+                switch sort {
+                case .relevance:
+                    if abs(lhs.score - rhs.score) > 0.000_1 {
+                        return lhs.score > rhs.score
+                    }
+                case .title, .artist, .album, .newest:
+                    let left: String
+                    let right: String
+                    switch sort {
+                    case .title:
+                        left = lhs.titleSortKey
+                        right = rhs.titleSortKey
+                    case .artist:
+                        left = lhs.artistSortKey
+                        right = rhs.artistSortKey
+                    case .album:
+                        left = lhs.albumSortKey
+                        right = rhs.albumSortKey
+                    case .relevance, .newest:
+                        left = ""
+                        right = ""
+                    }
+                    if sort != .newest, left != right {
+                        return left.localizedStandardCompare(right) == .orderedAscending
+                    }
+                    if sort == .newest,
+                       abs(lhs.newestSortValue - rhs.newestSortValue) > 0.000_1 {
+                        return lhs.newestSortValue > rhs.newestSortValue
+                    }
                 }
-                return $0.trackID.uuidString < $1.trackID.uuidString
+                return lhs.trackID.uuidString < rhs.trackID.uuidString
             }
 
             return Array(ranked.prefix(limit))
@@ -225,6 +280,14 @@ actor LibrarySearchIndex {
                 artist_norm TEXT NOT NULL,
                 album_raw TEXT NOT NULL,
                 album_norm TEXT NOT NULL,
+                album_artist_raw TEXT NOT NULL DEFAULT '',
+                album_artist_norm TEXT NOT NULL DEFAULT '',
+                artist_credits_raw TEXT NOT NULL DEFAULT '',
+                artist_credits_norm TEXT NOT NULL DEFAULT '',
+                file_path_raw TEXT NOT NULL DEFAULT '',
+                file_path_norm TEXT NOT NULL DEFAULT '',
+                format_raw TEXT NOT NULL DEFAULT '',
+                format_norm TEXT NOT NULL DEFAULT '',
                 combined_norm TEXT NOT NULL,
                 lyrics_raw TEXT NOT NULL,
                 lyrics_norm TEXT NOT NULL,
@@ -273,8 +336,22 @@ actor LibrarySearchIndex {
 
     private func migrateDocumentSchemaIfNeeded() throws {
         let columns = try documentColumnNames()
-        guard !columns.contains("lyrics_line_starts") else { return }
-        try execute("ALTER TABLE documents ADD COLUMN lyrics_line_starts TEXT")
+        let additions: [(name: String, definition: String)] = [
+            ("album_artist_raw", "TEXT NOT NULL DEFAULT ''"),
+            ("album_artist_norm", "TEXT NOT NULL DEFAULT ''"),
+            ("artist_credits_raw", "TEXT NOT NULL DEFAULT ''"),
+            ("artist_credits_norm", "TEXT NOT NULL DEFAULT ''"),
+            ("file_path_raw", "TEXT NOT NULL DEFAULT ''"),
+            ("file_path_norm", "TEXT NOT NULL DEFAULT ''"),
+            ("format_raw", "TEXT NOT NULL DEFAULT ''"),
+            ("format_norm", "TEXT NOT NULL DEFAULT ''"),
+            ("lyrics_line_starts", "TEXT")
+        ]
+        for addition in additions where !columns.contains(addition.name) {
+            try execute(
+                "ALTER TABLE documents ADD COLUMN \(addition.name) \(addition.definition)"
+            )
+        }
     }
 
     private func documentColumnNames() throws -> Set<String> {
@@ -315,13 +392,22 @@ actor LibrarySearchIndex {
         reusable existing: SearchIndexedDocument?
     ) throws -> SearchIndexedDocument {
         let titleNormalized = LibrarySearchTextNormalizer.normalize(source.titleRaw)
-        let artistNormalized = LibrarySearchTextNormalizer.normalize(source.artistRaw)
+        let artistSearchRaw = [source.artistRaw, source.artistCreditsRaw ?? ""]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let artistNormalized = LibrarySearchTextNormalizer.normalize(artistSearchRaw)
         let albumNormalized = LibrarySearchTextNormalizer.normalize(source.albumRaw)
+        let albumArtistNormalized = LibrarySearchTextNormalizer.normalize(source.albumArtistRaw ?? "")
+        let artistCreditsNormalized = LibrarySearchTextNormalizer.normalize(source.artistCreditsRaw ?? "")
+        let filePathNormalized = LibrarySearchTextNormalizer.normalize(source.filePathRaw ?? "")
+        let formatNormalized = LibrarySearchTextNormalizer.normalize(source.formatRaw ?? "")
         let combinedRaw = [
             source.titleRaw,
             source.artistRaw,
+            source.artistCreditsRaw ?? "",
             source.albumArtistRaw ?? "",
-            source.albumRaw
+            source.albumRaw,
+            source.filePathRaw ?? ""
         ].filter { !$0.isEmpty }.joined(separator: " ")
         let combinedNormalized = LibrarySearchTextNormalizer.normalize(combinedRaw)
         let lyrics = try resolveLyrics(for: source, reusable: existing)
@@ -334,6 +420,14 @@ actor LibrarySearchIndex {
             artistNormalized: artistNormalized,
             albumRaw: source.albumRaw,
             albumNormalized: albumNormalized,
+            albumArtistRaw: source.albumArtistRaw ?? "",
+            albumArtistNormalized: albumArtistNormalized,
+            artistCreditsRaw: source.artistCreditsRaw ?? "",
+            artistCreditsNormalized: artistCreditsNormalized,
+            filePathRaw: source.filePathRaw ?? "",
+            filePathNormalized: filePathNormalized,
+            formatRaw: source.formatRaw ?? "",
+            formatNormalized: formatNormalized,
             titleArtistCombinedNormalized: combinedNormalized,
             lyricsPlainTextRaw: lyrics.raw,
             lyricsPlainTextNormalized: LibrarySearchTextNormalizer.normalize(lyrics.raw),
@@ -361,10 +455,17 @@ actor LibrarySearchIndex {
             """
             INSERT INTO documents (
                 track_id, title_raw, title_norm, artist_raw, artist_norm,
-                album_raw, album_norm, combined_norm, lyrics_raw, lyrics_norm,
+                album_raw, album_norm, album_artist_raw, album_artist_norm,
+                artist_credits_raw, artist_credits_norm, file_path_raw,
+                file_path_norm, format_raw, format_norm, combined_norm,
+                lyrics_raw, lyrics_norm,
                 lyrics_line_starts, lyrics_path, lyrics_mtime, lyrics_size, lyrics_hash,
                 play_count, preference_score, last_played_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
             """
         let statement = try prepare(sql)
         defer { sqlite3_finalize(statement) }
@@ -376,18 +477,26 @@ actor LibrarySearchIndex {
         bindText(document.artistNormalized, to: statement, at: 5)
         bindText(document.albumRaw, to: statement, at: 6)
         bindText(document.albumNormalized, to: statement, at: 7)
-        bindText(document.titleArtistCombinedNormalized, to: statement, at: 8)
-        bindText(document.lyricsPlainTextRaw, to: statement, at: 9)
-        bindText(document.lyricsPlainTextNormalized, to: statement, at: 10)
-        bindText(encodeLyricLineStartTimes(document.lyricLineStartTimes), to: statement, at: 11)
-        bindOptionalText(document.lyricsFilePath, to: statement, at: 12)
-        bindOptionalDouble(document.lyricsFileModifiedAt, to: statement, at: 13)
-        bindOptionalInt64(document.lyricsFileSize, to: statement, at: 14)
-        bindOptionalText(document.lyricsHash, to: statement, at: 15)
-        sqlite3_bind_int(statement, 16, Int32(document.playCount))
-        sqlite3_bind_double(statement, 17, document.preferenceScore)
-        bindOptionalDouble(document.lastPlayedAt?.timeIntervalSince1970, to: statement, at: 18)
-        sqlite3_bind_double(statement, 19, document.updatedAt.timeIntervalSince1970)
+        bindText(document.albumArtistRaw, to: statement, at: 8)
+        bindText(document.albumArtistNormalized, to: statement, at: 9)
+        bindText(document.artistCreditsRaw, to: statement, at: 10)
+        bindText(document.artistCreditsNormalized, to: statement, at: 11)
+        bindText(document.filePathRaw, to: statement, at: 12)
+        bindText(document.filePathNormalized, to: statement, at: 13)
+        bindText(document.formatRaw, to: statement, at: 14)
+        bindText(document.formatNormalized, to: statement, at: 15)
+        bindText(document.titleArtistCombinedNormalized, to: statement, at: 16)
+        bindText(document.lyricsPlainTextRaw, to: statement, at: 17)
+        bindText(document.lyricsPlainTextNormalized, to: statement, at: 18)
+        bindText(encodeLyricLineStartTimes(document.lyricLineStartTimes), to: statement, at: 19)
+        bindOptionalText(document.lyricsFilePath, to: statement, at: 20)
+        bindOptionalDouble(document.lyricsFileModifiedAt, to: statement, at: 21)
+        bindOptionalInt64(document.lyricsFileSize, to: statement, at: 22)
+        bindOptionalText(document.lyricsHash, to: statement, at: 23)
+        sqlite3_bind_int(statement, 24, Int32(document.playCount))
+        sqlite3_bind_double(statement, 25, document.preferenceScore)
+        bindOptionalDouble(document.lastPlayedAt?.timeIntervalSince1970, to: statement, at: 26)
+        sqlite3_bind_double(statement, 27, document.updatedAt.timeIntervalSince1970)
 
         try stepDone(statement)
     }
@@ -436,7 +545,11 @@ actor LibrarySearchIndex {
 
         try insert(field: "title", text: document.titleNormalized, weight: 12)
         try insert(field: "artist", text: document.artistNormalized, weight: 8)
+        try insert(field: "artistCredits", text: document.artistCreditsNormalized, weight: 8)
         try insert(field: "album", text: document.albumNormalized, weight: 4)
+        try insert(field: "albumArtist", text: document.albumArtistNormalized, weight: 4)
+        try insert(field: "path", text: document.filePathNormalized, weight: 2)
+        try insert(field: "format", text: document.formatNormalized, weight: 2)
         try insert(field: "combined", text: document.titleArtistCombinedNormalized, weight: 10)
         if !document.lyricsPlainTextNormalized.isEmpty {
             try insert(field: "lyrics", text: document.lyricsPlainTextNormalized, weight: 1, limit: 6_000)
@@ -566,9 +679,12 @@ actor LibrarySearchIndex {
 
     private func retrieveFTSCandidates(
         query: SearchQuery,
+        fields: Set<LibrarySearchField>,
         limit: Int,
         into candidateScores: inout [String: Double]
     ) throws {
+        let ftsFields: Set<LibrarySearchField> = [.all, .title, .artist, .album, .lyrics]
+        guard !fields.isDisjoint(with: ftsFields) else { return }
         let expression = makeFTSExpression(query: query)
         guard !expression.isEmpty else { return }
 
@@ -588,6 +704,7 @@ actor LibrarySearchIndex {
 
     private func retrieveNgramCandidates(
         query: SearchQuery,
+        fields: Set<LibrarySearchField>,
         limit: Int,
         into candidateScores: inout [String: Double]
     ) throws {
@@ -596,7 +713,29 @@ actor LibrarySearchIndex {
 
         let placeholders = Array(repeating: "?", count: grams.count).joined(separator: ",")
         let skipLyrics = query.compact.count < 2
-        let fieldClause = skipLyrics ? " AND field != 'lyrics'" : ""
+        let selectedFields: [String]
+        if fields.contains(.all) {
+            selectedFields = []
+        } else {
+            var values: [String] = []
+            if fields.contains(.title) { values.append("title") }
+            if fields.contains(.artist) {
+                values.append(contentsOf: ["artist", "artistCredits"])
+            }
+            if fields.contains(.album) { values.append("album") }
+            if fields.contains(.albumArtist) { values.append("albumArtist") }
+            if fields.contains(.path) { values.append("path") }
+            if fields.contains(.format) { values.append("format") }
+            if fields.contains(.lyrics) { values.append("lyrics") }
+            selectedFields = values
+        }
+        let fieldClause: String
+        if selectedFields.isEmpty {
+            fieldClause = skipLyrics ? " AND field != 'lyrics'" : ""
+        } else {
+            let fieldPlaceholders = Array(repeating: "?", count: selectedFields.count).joined(separator: ",")
+            fieldClause = " AND field IN (\(fieldPlaceholders))"
+        }
         let sql =
             """
             SELECT track_id, SUM(weight) AS score, COUNT(*) AS hits
@@ -612,7 +751,12 @@ actor LibrarySearchIndex {
         for (index, gram) in grams.enumerated() {
             bindText(gram, to: statement, at: Int32(index + 1))
         }
-        sqlite3_bind_int(statement, Int32(grams.count + 1), Int32(limit))
+        var nextBindIndex = Int32(grams.count + 1)
+        for field in selectedFields {
+            bindText(field, to: statement, at: nextBindIndex)
+            nextBindIndex += 1
+        }
+        sqlite3_bind_int(statement, nextBindIndex, Int32(limit))
 
         while sqlite3_step(statement) == SQLITE_ROW {
             guard let id = columnText(statement, 0) else { continue }
@@ -667,58 +811,120 @@ actor LibrarySearchIndex {
     private func rank(
         document: SearchIndexedDocument,
         query: SearchQuery,
+        fields: Set<LibrarySearchField>,
         baseScore: Double
     ) -> RankingResult {
+        let searchesAllFields = fields.contains(.all)
+        func searches(_ field: LibrarySearchField) -> Bool {
+            searchesAllFields || fields.contains(field)
+        }
+
         let titleCompact = LibrarySearchTextNormalizer.compact(document.titleNormalized)
         let artistCompact = LibrarySearchTextNormalizer.compact(document.artistNormalized)
         let albumCompact = LibrarySearchTextNormalizer.compact(document.albumNormalized)
+        let albumArtistCompact = LibrarySearchTextNormalizer.compact(document.albumArtistNormalized)
+        let artistCreditsCompact = LibrarySearchTextNormalizer.compact(document.artistCreditsNormalized)
+        let filePathCompact = LibrarySearchTextNormalizer.compact(document.filePathNormalized)
+        let formatCompact = LibrarySearchTextNormalizer.compact(document.formatNormalized)
         let combinedCompact = LibrarySearchTextNormalizer.compact(document.titleArtistCombinedNormalized)
         let lyricsCompact = LibrarySearchTextNormalizer.compact(document.lyricsPlainTextNormalized)
 
         var score = baseScore
-        score += fieldScore(
-            normalized: document.titleNormalized,
-            compact: titleCompact,
-            query: query,
-            exact: 1_000,
-            prefix: 760,
-            contains: 460,
-            fuzzy: 240
-        )
-        score += fieldScore(
-            normalized: document.artistNormalized,
-            compact: artistCompact,
-            query: query,
-            exact: 420,
-            prefix: 320,
-            contains: 220,
-            fuzzy: 140
-        )
-        score += fieldScore(
-            normalized: document.albumNormalized,
-            compact: albumCompact,
-            query: query,
-            exact: 220,
-            prefix: 160,
-            contains: 110,
-            fuzzy: 70
-        )
+        if searches(.title) {
+            score += fieldScore(
+                normalized: document.titleNormalized,
+                compact: titleCompact,
+                query: query,
+                exact: 1_000,
+                prefix: 760,
+                contains: 460,
+                fuzzy: 240
+            )
+        }
+        if searches(.artist) {
+            score += fieldScore(
+                normalized: document.artistNormalized,
+                compact: artistCompact,
+                query: query,
+                exact: 420,
+                prefix: 320,
+                contains: 220,
+                fuzzy: 140
+            )
+            score += fieldScore(
+                normalized: document.artistCreditsNormalized,
+                compact: artistCreditsCompact,
+                query: query,
+                exact: 390,
+                prefix: 290,
+                contains: 200,
+                fuzzy: 125
+            )
+        }
+        if searches(.album) {
+            score += fieldScore(
+                normalized: document.albumNormalized,
+                compact: albumCompact,
+                query: query,
+                exact: 220,
+                prefix: 160,
+                contains: 110,
+                fuzzy: 70
+            )
+        }
+        if searches(.albumArtist) {
+            score += fieldScore(
+                normalized: document.albumArtistNormalized,
+                compact: albumArtistCompact,
+                query: query,
+                exact: 300,
+                prefix: 230,
+                contains: 150,
+                fuzzy: 100
+            )
+        }
+        if searches(.path) {
+            score += fieldScore(
+                normalized: document.filePathNormalized,
+                compact: filePathCompact,
+                query: query,
+                exact: 160,
+                prefix: 120,
+                contains: 90,
+                fuzzy: 60
+            )
+        }
+        if searches(.format) {
+            score += fieldScore(
+                normalized: document.formatNormalized,
+                compact: formatCompact,
+                query: query,
+                exact: 180,
+                prefix: 130,
+                contains: 90,
+                fuzzy: 50
+            )
+        }
 
-        if combinedCompact.contains(query.compact), query.compact.count >= 2 {
+        if searchesAllFields, combinedCompact.contains(query.compact), query.compact.count >= 2 {
             score += 360
         }
-        score += titleArtistCombinationScore(
-            titleCompact: titleCompact,
-            artistCompact: artistCompact,
-            combinedCompact: combinedCompact,
-            query: query
-        )
+        if searches(.title) && searches(.artist) {
+            score += titleArtistCombinationScore(
+                titleCompact: titleCompact,
+                artistCompact: artistCompact,
+                combinedCompact: combinedCompact,
+                query: query
+            )
+        }
 
-        let lyricsScore = lyricScore(
-            lyricsNormalized: document.lyricsPlainTextNormalized,
-            lyricsCompact: lyricsCompact,
-            query: query
-        )
+        let lyricsScore = searches(.lyrics)
+            ? lyricScore(
+                lyricsNormalized: document.lyricsPlainTextNormalized,
+                lyricsCompact: lyricsCompact,
+                query: query
+            )
+            : 0
         score += lyricsScore
 
         score += min(16, log(Double(max(document.playCount, 0)) + 1) * 3)
@@ -1017,9 +1223,12 @@ actor LibrarySearchIndex {
         let statement = try prepare(
             """
             SELECT track_id, title_raw, title_norm, artist_raw, artist_norm,
-                   album_raw, album_norm, combined_norm, lyrics_raw, lyrics_norm,
-                   lyrics_line_starts, lyrics_path, lyrics_mtime, lyrics_size, lyrics_hash,
-                   play_count, preference_score, last_played_at, updated_at
+                   album_raw, album_norm, album_artist_raw, album_artist_norm,
+                   artist_credits_raw, artist_credits_norm, file_path_raw,
+                   file_path_norm, format_raw, format_norm, combined_norm,
+                   lyrics_raw, lyrics_norm, lyrics_line_starts, lyrics_path,
+                   lyrics_mtime, lyrics_size, lyrics_hash, play_count,
+                   preference_score, last_played_at, updated_at
             FROM documents
             WHERE track_id IN (\(placeholders))
             """
@@ -1044,18 +1253,26 @@ actor LibrarySearchIndex {
                 artistNormalized: columnText(statement, 4) ?? "",
                 albumRaw: columnText(statement, 5) ?? "",
                 albumNormalized: columnText(statement, 6) ?? "",
-                titleArtistCombinedNormalized: columnText(statement, 7) ?? "",
-                lyricsPlainTextRaw: columnText(statement, 8) ?? "",
-                lyricsPlainTextNormalized: columnText(statement, 9) ?? "",
-                lyricLineStartTimes: decodeLyricLineStartTimes(columnText(statement, 10)),
-                lyricsFilePath: columnText(statement, 11),
-                lyricsFileModifiedAt: optionalDouble(statement, 12),
-                lyricsFileSize: optionalInt64(statement, 13),
-                lyricsHash: columnText(statement, 14),
-                playCount: Int(sqlite3_column_int(statement, 15)),
-                preferenceScore: sqlite3_column_double(statement, 16),
-                lastPlayedAt: optionalDouble(statement, 17).map(Date.init(timeIntervalSince1970:)),
-                updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 18))
+                albumArtistRaw: columnText(statement, 7) ?? "",
+                albumArtistNormalized: columnText(statement, 8) ?? "",
+                artistCreditsRaw: columnText(statement, 9) ?? "",
+                artistCreditsNormalized: columnText(statement, 10) ?? "",
+                filePathRaw: columnText(statement, 11) ?? "",
+                filePathNormalized: columnText(statement, 12) ?? "",
+                formatRaw: columnText(statement, 13) ?? "",
+                formatNormalized: columnText(statement, 14) ?? "",
+                titleArtistCombinedNormalized: columnText(statement, 15) ?? "",
+                lyricsPlainTextRaw: columnText(statement, 16) ?? "",
+                lyricsPlainTextNormalized: columnText(statement, 17) ?? "",
+                lyricLineStartTimes: decodeLyricLineStartTimes(columnText(statement, 18)),
+                lyricsFilePath: columnText(statement, 19),
+                lyricsFileModifiedAt: optionalDouble(statement, 20),
+                lyricsFileSize: optionalInt64(statement, 21),
+                lyricsHash: columnText(statement, 22),
+                playCount: Int(sqlite3_column_int(statement, 23)),
+                preferenceScore: sqlite3_column_double(statement, 24),
+                lastPlayedAt: optionalDouble(statement, 25).map(Date.init(timeIntervalSince1970:)),
+                updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 26))
             )
             documents.append(hydrateLegacyLineStartTimesIfNeeded(document))
         }
@@ -1088,6 +1305,14 @@ actor LibrarySearchIndex {
             artistNormalized: document.artistNormalized,
             albumRaw: document.albumRaw,
             albumNormalized: document.albumNormalized,
+            albumArtistRaw: document.albumArtistRaw,
+            albumArtistNormalized: document.albumArtistNormalized,
+            artistCreditsRaw: document.artistCreditsRaw,
+            artistCreditsNormalized: document.artistCreditsNormalized,
+            filePathRaw: document.filePathRaw,
+            filePathNormalized: document.filePathNormalized,
+            formatRaw: document.formatRaw,
+            formatNormalized: document.formatNormalized,
             titleArtistCombinedNormalized: document.titleArtistCombinedNormalized,
             lyricsPlainTextRaw: document.lyricsPlainTextRaw,
             lyricsPlainTextNormalized: document.lyricsPlainTextNormalized,
