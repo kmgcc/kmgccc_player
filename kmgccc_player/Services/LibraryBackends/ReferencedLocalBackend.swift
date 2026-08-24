@@ -12,6 +12,7 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
     private let paths: LibraryPaths
     private let sourceStore: ReferencedSourceStore
     private let sourceScope: ReferencedSourceScope
+    private let playlistMembershipStore: ReferencedPlaylistMembershipStore
     private let bookmarkResolver: any BookmarkResolving
     private let requiresSecurityScope: Bool
     private var selectionLeases: [URL: SecurityScopedResourceLease] = [:]
@@ -23,12 +24,15 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         paths: LibraryPaths,
         sourceStore: ReferencedSourceStore,
         sourceScope: ReferencedSourceScope,
+        playlistMembershipStore: ReferencedPlaylistMembershipStore? = nil,
         bookmarkResolver: any BookmarkResolving = SystemBookmarkResolver(),
         requiresSecurityScope: Bool = false
     ) {
         self.paths = paths
         self.sourceStore = sourceStore
         self.sourceScope = sourceScope
+        self.playlistMembershipStore = playlistMembershipStore
+            ?? ReferencedPlaylistMembershipStore(paths: paths)
         self.bookmarkResolver = bookmarkResolver
         self.requiresSecurityScope = requiresSecurityScope
     }
@@ -230,6 +234,78 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
     func validate(_ placement: ImportPlacement) throws {
         guard placement.storageKind == .referenced else {
             throw LibraryBackendError.modeMismatch(expected: mode, actual: placement.storageKind)
+        }
+    }
+
+    func bindSourcesToPlaylist(
+        _ sourceIDs: Set<UUID>,
+        playlistID: UUID
+    ) async throws -> [UUID: UUID] {
+        var result: [UUID: UUID] = [:]
+        for sourceID in sourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+            let binding = try await sourceStore.ensurePlaylistBinding(
+                sourceID: sourceID,
+                playlistID: playlistID
+            )
+            result[sourceID] = binding.id
+        }
+        return result
+    }
+
+    func recordSourceMemberships(_ tracks: [Track], playlistID: UUID) async {
+        for track in tracks {
+            guard case let .referenced(locator) = track.mediaLocator else { continue }
+            for sourceID in Set(locator.allSourceMemberships.map(\.sourceID)) {
+                guard let bindings = try? await sourceStore.bindings(for: sourceID) else { continue }
+                let bindingIDs = bindings
+                    .filter { $0.playlistID == playlistID }
+                    .map(\.id)
+                guard !bindingIDs.isEmpty else { continue }
+                do {
+                    try await playlistMembershipStore.recordSourceContribution(
+                        playlistID: playlistID,
+                        trackID: track.id,
+                        bindingIDs: bindingIDs
+                    )
+                } catch {
+                    Log.warning(
+                        "[ReferencedLocalBackend] failed to persist playlist source membership: \(error)",
+                        category: .library
+                    )
+                }
+            }
+        }
+    }
+
+    func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async {
+        do {
+            try await playlistMembershipStore.recordManualAddition(
+                playlistID: playlistID,
+                trackIDs: trackIDs
+            )
+        } catch {
+            Log.warning(
+                "[ReferencedLocalBackend] failed to persist manual playlist addition: \(error)",
+                category: .library
+            )
+        }
+    }
+
+    func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async {
+        do {
+            let bindingIDs = try await sourceStore.allBindings()
+                .filter { $0.binding.playlistID == playlistID }
+                .map { $0.binding.id }
+            try await playlistMembershipStore.recordManualRemoval(
+                playlistID: playlistID,
+                trackIDs: trackIDs,
+                bindingIDs: bindingIDs
+            )
+        } catch {
+            Log.warning(
+                "[ReferencedLocalBackend] failed to persist manual playlist removal: \(error)",
+                category: .library
+            )
         }
     }
 

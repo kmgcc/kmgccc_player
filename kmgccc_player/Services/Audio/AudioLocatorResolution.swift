@@ -130,83 +130,108 @@ nonisolated struct LocalAudioResourceResolver: Sendable {
     }
 
     private func resolveReferenced(_ locator: ReferencedFileLocator) throws -> AudioLocatorResolution {
-        let orderedMemberships = locator.sourceMemberships.sorted { lhs, rhs in
-            lhs.sourceID == locator.primarySourceID && rhs.sourceID != locator.primarySourceID
-        }
-        for membership in orderedMemberships {
-            guard TrackMediaLocator.isSafeRelativePath(membership.relativePath) else {
-                throw LocalAudioResolutionError.pathTraversal
-            }
-            guard let authorizedRoot = authorizedSourceRoots[membership.sourceID] else { continue }
-            let lexicalRoot = authorizedRoot.url.standardizedFileURL
-            let lexicalCandidate = lexicalRoot.appendingPathComponent(membership.relativePath).standardizedFileURL
-            guard Self.contains(lexicalCandidate, root: lexicalRoot) else {
-                throw LocalAudioResolutionError.pathTraversal
-            }
-            let canonicalRoot = lexicalRoot.resolvingSymlinksInPath().standardizedFileURL
-            let canonicalCandidate = lexicalCandidate.resolvingSymlinksInPath().standardizedFileURL
-            guard Self.contains(canonicalCandidate, root: canonicalRoot) else {
-                throw LocalAudioResolutionError.permissionDenied
-            }
-            // A previously poisoned authorized root may point into the
-            // Trash (bookmark inode-follow); never play from there.
-            guard !Self.isInTrash(canonicalCandidate) else { continue }
-            if FileManager.default.fileExists(atPath: canonicalCandidate.path) {
-                try validateReadableFile(canonicalCandidate)
-                return AudioLocatorResolution(
-                    url: canonicalCandidate,
-                    lease: .none,
-                    refreshedLocator: nil,
-                    availability: .available
-                )
-            }
-        }
+        var lastError: LocalAudioResolutionError = .missing
 
-        guard !locator.fileBookmarkData.isEmpty else {
-            throw LocalAudioResolutionError.missing
-        }
-        let resolved: (url: URL, isStale: Bool)
-        do {
-            resolved = try bookmarkResolver.resolve(locator.fileBookmarkData)
-        } catch {
-            throw LocalAudioResolutionError.bookmarkUnresolved
-        }
-        // Bookmarks follow the inode: a file moved to the Trash still
-        // resolves and would keep playing from there. Treat trashed files
-        // as missing instead — relocation tracking to real folders stays.
-        guard !Self.isInTrash(resolved.url) else {
-            throw LocalAudioResolutionError.missing
-        }
+        for (locationIndex, location) in locator.locations.enumerated() {
+            let orderedMemberships = location.sourceMemberships.sorted { lhs, rhs in
+                if locationIndex == 0 {
+                    return lhs.sourceID == locator.primarySourceID && rhs.sourceID != locator.primarySourceID
+                }
+                return lhs.relativePath.count < rhs.relativePath.count
+            }
+            for membership in orderedMemberships {
+                guard TrackMediaLocator.isSafeRelativePath(membership.relativePath) else {
+                    throw LocalAudioResolutionError.pathTraversal
+                }
+                guard let authorizedRoot = authorizedSourceRoots[membership.sourceID] else { continue }
+                let lexicalRoot = authorizedRoot.url.standardizedFileURL
+                let lexicalCandidate = lexicalRoot.appendingPathComponent(membership.relativePath).standardizedFileURL
+                guard Self.contains(lexicalCandidate, root: lexicalRoot) else {
+                    throw LocalAudioResolutionError.pathTraversal
+                }
+                let canonicalRoot = lexicalRoot.resolvingSymlinksInPath().standardizedFileURL
+                let canonicalCandidate = lexicalCandidate.resolvingSymlinksInPath().standardizedFileURL
+                guard Self.contains(canonicalCandidate, root: canonicalRoot) else {
+                    lastError = .permissionDenied
+                    continue
+                }
+                // A previously poisoned authorized root may point into the
+                // Trash (bookmark inode-follow); never play from there.
+                guard !Self.isInTrash(canonicalCandidate) else { continue }
+                if FileManager.default.fileExists(atPath: canonicalCandidate.path) {
+                    do {
+                        try validateReadableFile(canonicalCandidate)
+                        return AudioLocatorResolution(
+                            url: canonicalCandidate,
+                            lease: .none,
+                            refreshedLocator: nil,
+                            availability: .available
+                        )
+                    } catch let error as LocalAudioResolutionError {
+                        lastError = error
+                    } catch {
+                        lastError = .missing
+                    }
+                }
+            }
 
-        let didStart = bookmarkResolver.startAccessing(resolved.url)
-        guard didStart || (!requiresSecurityScope && FileManager.default.isReadableFile(atPath: resolved.url.path)) else {
-            throw LocalAudioResolutionError.permissionDenied
-        }
-        let lease = didStart
-            ? SecurityScopedResourceLease { bookmarkResolver.stopAccessing(resolved.url) }
-            : .none
-        do {
-            try validateReadableFile(resolved.url)
-        } catch {
-            lease.release()
-            throw error
-        }
+            guard !location.fileBookmarkData.isEmpty else { continue }
+            let resolved: (url: URL, isStale: Bool)
+            do {
+                resolved = try bookmarkResolver.resolve(location.fileBookmarkData)
+            } catch {
+                lastError = .bookmarkUnresolved
+                continue
+            }
+            // Bookmarks follow the inode: a file moved to the Trash still
+            // resolves and would keep playing from there. Treat trashed files
+            // as missing instead — relocation tracking to real folders stays.
+            guard !Self.isInTrash(resolved.url) else {
+                lastError = .missing
+                continue
+            }
 
-        var refreshedLocator: TrackMediaLocator?
-        if resolved.isStale {
-            var updated = locator
-            if let data = try? bookmarkResolver.refreshBookmark(for: resolved.url) {
-                updated.fileBookmarkData = data
-                updated.lastKnownPath = resolved.url.path
+            let didStart = bookmarkResolver.startAccessing(resolved.url)
+            guard didStart || (!requiresSecurityScope && FileManager.default.isReadableFile(atPath: resolved.url.path)) else {
+                lastError = .permissionDenied
+                continue
+            }
+            let lease = didStart
+                ? SecurityScopedResourceLease { bookmarkResolver.stopAccessing(resolved.url) }
+                : .none
+            do {
+                try validateReadableFile(resolved.url)
+            } catch let error as LocalAudioResolutionError {
+                lease.release()
+                lastError = error
+                continue
+            } catch {
+                lease.release()
+                lastError = .missing
+                continue
+            }
+
+            var refreshedLocator: TrackMediaLocator?
+            if resolved.isStale, let data = try? bookmarkResolver.refreshBookmark(for: resolved.url) {
+                var updated = locator
+                if locationIndex == 0 {
+                    updated.fileBookmarkData = data
+                    updated.lastKnownPath = resolved.url.path
+                } else if locationIndex - 1 < updated.alternateLocations.count {
+                    updated.alternateLocations[locationIndex - 1].fileBookmarkData = data
+                    updated.alternateLocations[locationIndex - 1].lastKnownPath = resolved.url.path
+                }
                 refreshedLocator = .referenced(updated)
             }
+            return AudioLocatorResolution(
+                url: resolved.url,
+                lease: lease,
+                refreshedLocator: refreshedLocator,
+                availability: resolved.isStale ? .stale : .available
+            )
         }
-        return AudioLocatorResolution(
-            url: resolved.url,
-            lease: lease,
-            refreshedLocator: refreshedLocator,
-            availability: resolved.isStale ? .stale : .available
-        )
+
+        throw lastError
     }
 
     private static func contains(_ candidate: URL, root: URL) -> Bool {

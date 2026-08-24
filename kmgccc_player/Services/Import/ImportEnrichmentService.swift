@@ -349,11 +349,13 @@ final class ImportEnrichmentService {
     func cancelEnrichment(for trackIDs: Set<UUID>) async {
         guard !trackIDs.isEmpty else { return }
 
+        var cancelledTasks: [Task<Void, Never>] = []
         queue.removeAll { trackIDs.contains($0.trackID) }
         queuedRequests = queuedRequests.filter { !trackIDs.contains($0.trackID) }
         runningRequests = runningRequests.filter { !trackIDs.contains($0.trackID) }
         for (request, task) in activeTasks where trackIDs.contains(request.trackID) {
             task.cancel()
+            cancelledTasks.append(task)
             activeTasks[request] = nil
         }
 
@@ -374,6 +376,9 @@ final class ImportEnrichmentService {
         }
 
         refreshProgress()
+        for task in cancelledTasks {
+            await task.value
+        }
         Log.info(
             "[ImportEnrichment] cancelled deleted tracks count=\(trackIDs.count)",
             category: .import
@@ -1062,6 +1067,10 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportLyricsLookupOutcome
     ) async {
+        guard !isClosed, !Task.isCancelled else {
+            finish(request)
+            return
+        }
         guard let track = trackByID[request.trackID], var state = itemStates[request.trackID] else {
             finish(request)
             return
@@ -1123,6 +1132,10 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportCoverLookupOutcome
     ) async {
+        guard !isClosed, !Task.isCancelled else {
+            finish(request)
+            return
+        }
         guard let track = trackByID[request.trackID], var state = itemStates[request.trackID] else {
             finish(request)
             return
@@ -1200,6 +1213,10 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportTrackMetadataOutcome
     ) async {
+        guard !isClosed, !Task.isCancelled else {
+            finish(request)
+            return
+        }
         guard let _ = trackByID[request.trackID], var state = itemStates[request.trackID] else {
             finish(request)
             return
@@ -1309,6 +1326,10 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportArtistMetadataOutcome
     ) async {
+        guard !isClosed, !Task.isCancelled else {
+            finish(request)
+            return
+        }
         guard let _ = trackByID[request.trackID], var state = itemStates[request.trackID] else {
             finish(request)
             return
@@ -1360,6 +1381,10 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportAlbumMetadataOutcome
     ) async {
+        guard !isClosed, !Task.isCancelled else {
+            finish(request)
+            return
+        }
         guard let _ = trackByID[request.trackID], var state = itemStates[request.trackID] else {
             finish(request)
             return
@@ -1411,6 +1436,10 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportArtistArtworkOutcome
     ) async {
+        guard !isClosed, !Task.isCancelled else {
+            finish(request)
+            return
+        }
         guard let _ = trackByID[request.trackID], var state = itemStates[request.trackID] else {
             finish(request)
             return
@@ -1462,6 +1491,10 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportAlbumArtworkOutcome
     ) async {
+        guard !isClosed, !Task.isCancelled else {
+            finish(request)
+            return
+        }
         guard let _ = trackByID[request.trackID], var state = itemStates[request.trackID] else {
             finish(request)
             return
@@ -1549,15 +1582,37 @@ final class ImportEnrichmentService {
     private var flushWatchdogTask: Task<Void, Never>?
     private var isClosed = false
 
-    /// Session teardown: stop all scheduled flush/watchdog work so no
-    /// persistence runs against the released ModelContainer (SwiftData
-    /// traps — not throws — on a dangling ModelContext).
-    func close() {
+    /// Session teardown: cancel and await every enrichment worker and
+    /// persistence task before the ModelContainer is released. SwiftData
+    /// traps — not throws — when a dangling ModelContext is touched.
+    func quiesce() async {
         isClosed = true
         flushTask?.cancel()
+        let pendingFlushTask = flushTask
         flushTask = nil
         flushWatchdogTask?.cancel()
+        let pendingWatchdogTask = flushWatchdogTask
         flushWatchdogTask = nil
+
+        let activeTasks = Array(self.activeTasks.values)
+        activeTasks.forEach { $0.cancel() }
+        self.activeTasks.removeAll()
+        queue.removeAll()
+        queuedRequests.removeAll()
+        runningRequests.removeAll()
+        pendingFlushPatches.removeAll()
+        isFlushing = false
+
+        for task in activeTasks {
+            await task.value
+        }
+        await pendingFlushTask?.value
+        await pendingWatchdogTask?.value
+    }
+
+    /// Idempotent compatibility entry point for session teardown callers.
+    func close() async {
+        await quiesce()
     }
 
     private func armFlushWatchdogIfNeeded() {
@@ -1639,7 +1694,7 @@ final class ImportEnrichmentService {
         if pendingFlushPatches.count >= flushBatchSize {
             flushTask?.cancel()
             flushTask = nil
-            Task { @MainActor in
+            flushTask = Task { @MainActor in
                 await flushBufferedUpdates(reason: "threshold:\(reason)")
             }
             return
@@ -1648,7 +1703,7 @@ final class ImportEnrichmentService {
         if queue.isEmpty && runningRequests.isEmpty {
             flushTask?.cancel()
             flushTask = nil
-            Task { @MainActor in
+            flushTask = Task { @MainActor in
                 await flushBufferedUpdates(reason: "idle:\(reason)")
             }
             return

@@ -126,6 +126,14 @@ nonisolated enum LibraryInitialImportError: Error, Equatable {
     case initialImportFailed(LibraryInitialImportResult)
 }
 
+/// Controls whether the setup flow waits for the first import.  Creating the
+/// library itself is a short lifecycle transaction; importing and enriching
+/// its first sources is session-scoped background work.
+nonisolated enum LibraryInitialImportPolicy: Sendable, Equatable {
+    case waitForCompletion
+    case background
+}
+
 nonisolated enum CreateMusicLibraryResult: Sendable, Equatable {
     case created(LibraryContext, initialImport: LibraryInitialImportResult?)
     case existingLibrary(LibraryContext)
@@ -163,6 +171,17 @@ final class LibraryInitialImportSelection {
         let active = leases
         leases.removeAll()
         for lease in active { lease.release() }
+    }
+
+    /// Duplicate the selection's security-scope ownership for work that must
+    /// continue after the setup panel releases its own picker leases.
+    @MainActor
+    func retainedCopy() -> LibraryInitialImportSelection {
+        LibraryInitialImportSelection(
+            urls: urls,
+            createPlaylistsForDirectories: createPlaylistsForDirectories,
+            playlistSourceEntries: playlistSourceEntries
+        )
     }
 
     deinit {

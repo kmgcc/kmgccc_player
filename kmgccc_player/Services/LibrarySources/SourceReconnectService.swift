@@ -222,7 +222,7 @@ final class SourceReconnectService {
         guard case let .referenced(locator) = track.mediaLocator else {
             throw SourceReconnectServiceError.trackIsNotReferenced(trackID)
         }
-        guard track.availability != .available, locator.sourceMemberships.isEmpty else {
+        guard track.availability != .available, locator.allSourceMemberships.isEmpty else {
             throw SourceReconnectServiceError.trackIsNotStandaloneMissing(trackID)
         }
         let fileAccess = try acquireAccess(to: selectedURL)
@@ -254,7 +254,7 @@ final class SourceReconnectService {
         guard case var .referenced(locator) = track.mediaLocator else {
             throw SourceReconnectServiceError.trackIsNotReferenced(proposal.trackID)
         }
-        guard track.availability != .available, locator.sourceMemberships.isEmpty else {
+        guard track.availability != .available, locator.allSourceMemberships.isEmpty else {
             throw SourceReconnectServiceError.trackIsNotStandaloneMissing(proposal.trackID)
         }
 
@@ -293,15 +293,18 @@ final class SourceReconnectService {
 
         for track in allTracks {
             guard case var .referenced(locator) = track.mediaLocator,
-                  locator.sourceMemberships.contains(where: { $0.sourceID == sourceID }) else {
+                  locator.containsSource(sourceID) else {
                 continue
             }
             if let match = acceptedByTrackID[track.id] {
-                locator.fileBookmarkData = try bookmarkResolver.refreshBookmark(for: match.candidate.url)
-                locator.lastKnownPath = match.candidate.url.path
-                locator.fingerprint = match.candidate.fingerprint
-                locator.sourceMemberships.removeAll { $0.sourceID == sourceID }
-                locator.sourceMemberships.append(.init(
+                let bookmark = try bookmarkResolver.refreshBookmark(for: match.candidate.url)
+                locator.refreshLocation(
+                    for: sourceID,
+                    fileBookmarkData: bookmark,
+                    lastKnownPath: match.candidate.url.path,
+                    fingerprint: match.candidate.fingerprint
+                )
+                locator.setSourceMembership(.init(
                     sourceID: sourceID,
                     relativePath: match.candidate.relativePath
                 ))
@@ -336,7 +339,7 @@ final class SourceReconnectService {
         }
         return tracks.compactMap { track in
             guard case let .referenced(locator) = track.mediaLocator,
-                  let membership = locator.sourceMemberships.first(where: {
+                  let membership = locator.allSourceMemberships.first(where: {
                       $0.sourceID == sourceID
                   }) else {
                 return nil
@@ -363,7 +366,7 @@ final class SourceReconnectService {
         _ locator: ReferencedFileLocator,
         excluding sourceID: UUID
     ) -> Bool {
-        locator.sourceMemberships.contains { membership in
+        locator.allSourceMemberships.contains { membership in
             guard membership.sourceID != sourceID,
                   let root = sourceScope.authorizedRoots[membership.sourceID]?.url else {
                 return false

@@ -130,6 +130,14 @@ private actor MonitorRecorder {
     func snapshot() -> [(Set<UUID>, Bool)] { batches }
 }
 
+private actor NoticeRecorder: kmgccc_player.ReferencedSourceNoticePublishing {
+    private(set) var notices: [kmgccc_player.ReferencedSourceNotice] = []
+    func publish(_ notice: kmgccc_player.ReferencedSourceNotice) async {
+        notices.append(notice)
+    }
+    func snapshot() -> [kmgccc_player.ReferencedSourceNotice] { notices }
+}
+
 @MainActor
 final class ReferencedSourceReconcilerTests: XCTestCase {
     func testUniqueFallbackIdentityRenamePreservesUUIDMembershipAndAvailability() async throws {
@@ -267,6 +275,48 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         XCTAssertEqual(
             ReferencedPhysicalIdentityKey(try XCTUnwrap(replacement.mediaLocator.referencedFile?.fingerprint)),
             ReferencedPhysicalIdentityKey(replacementFingerprint)
+        )
+    }
+
+    func testDirectoryExclusionIsNonDestructiveAndCanBeReenabled() async throws {
+        let fixture = try await ReconcileFixture()
+        defer { fixture.cleanup() }
+        let excludedDirectory = fixture.sourceRoot.appendingPathComponent("Ignored", isDirectory: true)
+        try FileManager.default.createDirectory(at: excludedDirectory, withIntermediateDirectories: true)
+        let songURL = excludedDirectory.appendingPathComponent("song.mp3")
+        try Data("audio".utf8).write(to: songURL)
+
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+        let initialTracks = await fixture.repository.fetchTracks(in: nil)
+        let initialTrack = try XCTUnwrap(initialTracks.first)
+        XCTAssertEqual(initialTrack.availability, .available)
+
+        try await fixture.reconciler.setExcludedRelativePath(
+            sourceID: fixture.sourceID,
+            relativePath: "Ignored",
+            excluded: true
+        )
+        let excludedTracks = await fixture.repository.fetchTracks(in: nil)
+        XCTAssertEqual(excludedTracks.map(\.id), [initialTrack.id])
+        XCTAssertEqual(excludedTracks.first?.availability, .missing)
+        XCTAssertTrue(excludedTracks.first?.mediaLocator.referencedFile?.allSourceMemberships.isEmpty == true)
+        let excludedDescriptor = try await fixture.store.load(id: fixture.sourceID)
+        XCTAssertEqual(
+            excludedDescriptor.excludedRelativePaths,
+            ["Ignored"]
+        )
+
+        try await fixture.reconciler.setExcludedRelativePath(
+            sourceID: fixture.sourceID,
+            relativePath: "Ignored",
+            excluded: false
+        )
+        let restoredTracks = await fixture.repository.fetchTracks(in: nil)
+        XCTAssertEqual(restoredTracks.map(\.id), [initialTrack.id])
+        XCTAssertEqual(restoredTracks.first?.availability, .available)
+        XCTAssertEqual(
+            restoredTracks.first?.mediaLocator.referencedFile?.allSourceMemberships,
+            [.init(sourceID: fixture.sourceID, relativePath: "Ignored/song.mp3")]
         )
     }
 
@@ -1225,6 +1275,7 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
             libraryService: libraryService,
             importEnrichmentService: enrichment,
             storageBackend: backend,
+            operationCoordinator: LibraryOperationCoordinator(),
             qqMusicCoverService: cache.qqMusicCoverService,
             artistArtworkProviderCoordinator: cache.artistArtworkProviderCoordinator,
             lyricsSearchCoordinator: cache.lyricsSearchCoordinator,
@@ -1240,7 +1291,13 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         XCTAssertFalse(uiWasPresented)
         XCTAssertEqual(imported.count, 1)
         let track = try XCTUnwrap(imported.first)
-        XCTAssertEqual(track.title, "Production Automatic.wav")
+        // 未打标签的临时 WAV 的标题来自 Spotlight 兜底：宿主索引器可能返回带扩展名
+        // 的 kMDItemTitle，也可能未及时索引而走 deletingPathExtension 兜底。两种都
+        // 是合法结果，断言不能依赖宿主机索引状态。
+        XCTAssertTrue(
+            track.title == "Production Automatic.wav" || track.title == "Production Automatic",
+            "Unexpected title: \(track.title)"
+        )
         XCTAssertEqual(track.availability, .available)
         XCTAssertEqual(track.mediaLocator.referencedFile?.lastKnownPath, wavURL.path)
         let membership = try XCTUnwrap(track.mediaLocator.referencedFile?.sourceMemberships.first)
@@ -1295,6 +1352,91 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
             XCTAssertFalse(filter.shouldProcess(.init(path: url.path, requiresFullScan: false)))
         }
     }
+
+    func testInitialReconcileAttemptsEverySourceWhenOneFails() async throws {
+        let recorder = NoticeRecorder()
+        let writer = PartialLocatorWriter()
+        let fixture = try await ReconcileFixture(
+            locatorWriter: { track, _, _, _ in writer.write(track) },
+            noticePublisher: recorder
+        )
+        defer { fixture.cleanup() }
+
+        // Bind source A's track through the fixture's own repository so the
+        // availability sidecar commit below goes through the failing writer.
+        let songA = fixture.sourceRoot.appendingPathComponent("a.mp3")
+        try Data("audio-a".utf8).write(to: songA)
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+        let importedTracks = await fixture.repository.fetchTracks(in: nil)
+        let trackA = try XCTUnwrap(importedTracks.first)
+
+        let sourceBRoot = fixture.root.appendingPathComponent("External-B", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceBRoot, withIntermediateDirectories: true)
+        let sourceBID = UUID()
+        try await fixture.store.save(ReferencedSourceDescriptor(
+            id: sourceBID,
+            rootBookmarkData: Data(sourceBRoot.path.utf8),
+            lastKnownPath: sourceBRoot.path,
+            displayName: "External-B"
+        ))
+        fixture.scope.add(sourceID: sourceBID, url: sourceBRoot, lease: .none)
+        let songB = sourceBRoot.appendingPathComponent("b.mp3")
+        try Data("audio-b".utf8).write(to: songB)
+
+        writer.failOnceID = trackA.id
+        try FileManager.default.moveItem(at: fixture.sourceRoot, to: fixture.offlineRoot)
+
+        let outcome = try await LibrarySession.runInitialReconcile(
+            reconciler: fixture.reconciler,
+            operationCoordinator: LibraryOperationCoordinator()
+        )
+
+        XCTAssertEqual(outcome.attemptedSourceIDs, Set([fixture.sourceID, sourceBID]))
+        XCTAssertEqual(outcome.failedSourceIDs, Set([fixture.sourceID]))
+        let failure = try XCTUnwrap(outcome.failedSources.first)
+        XCTAssertEqual(failure.sourceID, fixture.sourceID)
+        XCTAssertFalse(failure.reason.isEmpty)
+        XCTAssertGreaterThanOrEqual(outcome.finishedAt, outcome.startedAt)
+
+        let tracks = await fixture.repository.fetchTracks(in: nil)
+        XCTAssertEqual(tracks.count, 2)
+        XCTAssertTrue(tracks.contains {
+            $0.mediaLocator.referencedFile?.sourceMemberships.first?.sourceID == sourceBID
+        })
+
+        let notices = await recorder.notices
+        let failureNoticeSourceIDs = notices.compactMap { notice -> [UUID]? in
+            guard case .monitorFailure(let ids, _) = notice else { return nil }
+            return ids
+        }
+        XCTAssertEqual(failureNoticeSourceIDs, [[fixture.sourceID]])
+    }
+
+    func testCancelledInitialReconcileDoesNotReportSourceFailures() async throws {
+        let recorder = NoticeRecorder()
+        let fixture = try await ReconcileFixture(noticePublisher: recorder)
+        defer { fixture.cleanup() }
+        let song = fixture.sourceRoot.appendingPathComponent("cancel.mp3")
+        try Data("audio".utf8).write(to: song)
+
+        let task = Task {
+            try await LibrarySession.runInitialReconcile(
+                reconciler: fixture.reconciler,
+                operationCoordinator: LibraryOperationCoordinator()
+            )
+        }
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation to propagate out of the initial reconcile")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "unexpected error: \(error)")
+        }
+
+        let notices = await recorder.notices
+        XCTAssertTrue(notices.isEmpty, "cancelled switch must not publish source failure notices")
+    }
 }
 
 @MainActor
@@ -1318,7 +1460,8 @@ private final class ReconcileFixture {
         fingerprintProvider: @escaping @Sendable (URL) throws -> kmgccc_player.ReferencedFileFingerprint = {
             try ReferencedFileIdentityProvider().fingerprint(for: $0)
         },
-        locatorWriter: ((Track, kmgccc_player.TrackMediaLocator, kmgccc_player.TrackAvailability, String) -> Bool)? = nil
+        locatorWriter: ((Track, kmgccc_player.TrackMediaLocator, kmgccc_player.TrackAvailability, String) -> Bool)? = nil,
+        noticePublisher: (any kmgccc_player.ReferencedSourceNoticePublishing)? = nil
     ) async throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         sourceRoot = root.appendingPathComponent("External", isDirectory: true)
@@ -1364,7 +1507,8 @@ private final class ReconcileFixture {
             scanner: scanner,
             ignoredItemsStore: ignoredItemsStore,
             ncmRegistry: ncmRegistry,
-            bookmarkResolver: ReconcileBookmarkResolver()
+            bookmarkResolver: ReconcileBookmarkResolver(),
+            noticePublisher: noticePublisher ?? LogReferencedSourceNoticePublisher()
         )
     }
 

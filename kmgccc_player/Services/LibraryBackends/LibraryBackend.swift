@@ -36,6 +36,18 @@ protocol LibraryStorageBackend: AnyObject {
         stagingDirectoryURL: URL
     ) async throws -> ImportPlacement
     func validate(_ placement: ImportPlacement) throws
+    /// Creates or reuses explicit source-to-playlist edges for an import
+    /// target. Managed libraries intentionally return an empty map because
+    /// their imported files have no external source lifecycle.
+    func bindSourcesToPlaylist(
+        _ sourceIDs: Set<UUID>,
+        playlistID: UUID
+    ) async throws -> [UUID: UUID]
+    /// Persists source/manual membership provenance separately from the
+    /// ordered playlist sidecar.
+    func recordSourceMemberships(_ tracks: [Track], playlistID: UUID) async
+    func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async
+    func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async
     /// Removes single-file sources created during the last `prepareInputs`
     /// batch whose file did not produce an imported or reused track (for
     /// example corrupt audio). Sources referenced by an imported track's
@@ -49,6 +61,15 @@ protocol LibraryStorageBackend: AnyObject {
 }
 
 extension LibraryStorageBackend {
+    func bindSourcesToPlaylist(
+        _ sourceIDs: Set<UUID>,
+        playlistID _: UUID
+    ) async throws -> [UUID: UUID] { [:] }
+
+    func recordSourceMemberships(_ tracks: [Track], playlistID: UUID) async {}
+    func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async {}
+    func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async {}
+
     func pruneUnimportedFileSources(importedURLs _: Set<String>, importedSourceIDs _: Set<UUID>) async {}
 }
 
@@ -58,6 +79,7 @@ enum LibraryStorageBackendFactory {
         context: LibraryContext,
         sourceStore: ReferencedSourceStore? = nil,
         sourceScope: ReferencedSourceScope? = nil,
+        playlistMembershipStore: ReferencedPlaylistMembershipStore? = nil,
         requiresSecurityScope: Bool = false
     ) throws -> any LibraryStorageBackend {
         switch context.mode {
@@ -71,6 +93,7 @@ enum LibraryStorageBackendFactory {
                 paths: context.paths,
                 sourceStore: sourceStore,
                 sourceScope: sourceScope,
+                playlistMembershipStore: playlistMembershipStore,
                 requiresSecurityScope: requiresSecurityScope
             )
         }

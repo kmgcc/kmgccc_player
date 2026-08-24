@@ -48,40 +48,47 @@ nonisolated final class FSEventsLibraryFileEventSource: LibraryFileEventSource, 
     private let queue = DispatchQueue(label: "com.kmgccc.player.library-fsevents", qos: .utility)
 
     func start(paths: [String], handler: @escaping @Sendable ([LibraryFileEvent]) -> Void) throws {
-        stop()
-        guard !paths.isEmpty else { return }
-        let box = CallbackBox(handler: handler)
-        let info = Unmanaged.passRetained(box).toOpaque()
-        var context = FSEventStreamContext(version: 0, info: info, retain: nil, release: { pointer in
-            guard let pointer else { return }
-            Unmanaged<CallbackBox>.fromOpaque(pointer).release()
-        }, copyDescription: nil)
-        let callback: FSEventStreamCallback = { _, clientInfo, count, eventPaths, flags, _ in
-            guard let clientInfo else { return }
-            let box = Unmanaged<CallbackBox>.fromOpaque(clientInfo).takeUnretainedValue()
-            let paths = unsafeBitCast(eventPaths, to: NSArray.self) as? [String] ?? []
-            var events: [LibraryFileEvent] = []
-            events.reserveCapacity(count)
-            for index in 0..<min(count, paths.count) {
-                let flag = flags[index]
-                let fullMask = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped | kFSEventStreamEventFlagRootChanged)
-                events.append(.init(path: paths[index], requiresFullScan: flag & fullMask != 0))
+        try queue.sync {
+            releaseStream()
+            guard !paths.isEmpty else { return }
+            let box = CallbackBox(handler: handler)
+            let info = Unmanaged.passRetained(box).toOpaque()
+            var context = FSEventStreamContext(version: 0, info: info, retain: nil, release: { pointer in
+                guard let pointer else { return }
+                Unmanaged<CallbackBox>.fromOpaque(pointer).release()
+            }, copyDescription: nil)
+            let callback: FSEventStreamCallback = { _, clientInfo, count, eventPaths, flags, _ in
+                guard let clientInfo else { return }
+                let box = Unmanaged<CallbackBox>.fromOpaque(clientInfo).takeUnretainedValue()
+                let paths = unsafeBitCast(eventPaths, to: NSArray.self) as? [String] ?? []
+                var events: [LibraryFileEvent] = []
+                events.reserveCapacity(count)
+                for index in 0..<min(count, paths.count) {
+                    let flag = flags[index]
+                    let fullMask = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagEventIdsWrapped | kFSEventStreamEventFlagRootChanged)
+                    events.append(.init(path: paths[index], requiresFullScan: flag & fullMask != 0))
+                }
+                box.handler(events)
             }
-            box.handler(events)
-        }
-        guard let created = FSEventStreamCreate(nil, callback, &context, paths as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.2, UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot | kFSEventStreamCreateFlagUseCFTypes)) else {
-            Unmanaged<CallbackBox>.fromOpaque(info).release()
-            throw CocoaError(.fileReadUnknown)
-        }
-        stream = created
-        FSEventStreamSetDispatchQueue(created, queue)
-        guard FSEventStreamStart(created) else {
-            stop()
-            throw CocoaError(.fileReadUnknown)
+            guard let created = FSEventStreamCreate(nil, callback, &context, paths as CFArray, FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.2, UInt32(kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagWatchRoot | kFSEventStreamCreateFlagUseCFTypes)) else {
+                Unmanaged<CallbackBox>.fromOpaque(info).release()
+                throw CocoaError(.fileReadUnknown)
+            }
+            stream = created
+            FSEventStreamSetDispatchQueue(created, queue)
+            guard FSEventStreamStart(created) else {
+                releaseStream()
+                throw CocoaError(.fileReadUnknown)
+            }
         }
     }
 
     func stop() {
+        queue.sync { releaseStream() }
+    }
+
+    /// Must only be called from `queue.sync` context.
+    private func releaseStream() {
         guard let stream else { return }
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)
@@ -112,10 +119,27 @@ actor LibraryChangeMonitor {
     private var eventFilter: EventFilter?
     private var stopped = true
     private var sourceStates: [UUID: ReferencedSourceScanState] = [:]
+    /// Push hook for UI consumers: fired on every scan-state transition so
+    /// views can observe a published snapshot instead of polling. The receiver
+    /// is responsible for hopping to the MainActor.
+    private var scanStateChangeHandler: (@Sendable ([UUID: ReferencedSourceScanState]) -> Void)?
 
     init(eventSource: LibraryFileEventSource = FSEventsLibraryFileEventSource(), debounceNanoseconds: UInt64 = 750_000_000) {
         self.eventSource = eventSource
         self.debounceNanoseconds = debounceNanoseconds
+    }
+
+    /// Installs (or clears) the callback invoked whenever `sourceStates`
+    /// transitions. Fires immediately with the current snapshot so a freshly
+    /// bound consumer starts consistent.
+    func setScanStateChangeHandler(_ handler: (@Sendable ([UUID: ReferencedSourceScanState]) -> Void)?) {
+        scanStateChangeHandler = handler
+        notifyScanStateChange()
+    }
+
+    private func notifyScanStateChange() {
+        guard let scanStateChangeHandler else { return }
+        scanStateChangeHandler(sourceStates)
     }
 
     func start(
@@ -127,6 +151,7 @@ actor LibraryChangeMonitor {
         await stopAndWait()
         sourcePaths = sourceRoots.mapValues { $0.standardizedFileURL.path }
         sourceStates = sourceRoots.mapValues { _ in .idle }
+        notifyScanStateChange()
         self.handler = handler
         self.eventFilter = eventFilter
         stopped = false
@@ -228,6 +253,7 @@ actor LibraryChangeMonitor {
         dirtySourceIDs.removeAll()
         forceFullScan = false
         for id in ids { sourceStates[id] = .scanning }
+        notifyScanStateChange()
         scanTask = Task { [weak self] in
             await handler(ids, full)
             await self?.scanFinished(ids: ids)
@@ -236,10 +262,12 @@ actor LibraryChangeMonitor {
 
     func markFailed(sourceIDs: Set<UUID>) {
         for id in sourceIDs { sourceStates[id] = .failed }
+        notifyScanStateChange()
     }
 
     private func scanFinished(ids: Set<UUID>) {
         for id in ids where sourceStates[id] == .scanning { sourceStates[id] = .idle }
+        notifyScanStateChange()
         scanTask = nil
         guard !stopped, !dirtySourceIDs.isEmpty else { return }
         scheduleDebounce()

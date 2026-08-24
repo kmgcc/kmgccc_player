@@ -70,14 +70,19 @@ nonisolated enum ImportInputScanner {
 
             for selected in selectedURLs {
                 if selected.hasDirectoryPath {
-                    scanDirectory(
-                        selected,
-                        authorizedRoot: selected,
-                        directorySources: directorySources,
-                        identityProvider: identityProvider,
-                        candidates: &candidates,
-                        failures: &failures
-                    )
+                    do {
+                        try scanDirectory(
+                            selected,
+                            authorizedRoot: selected,
+                            directorySources: directorySources,
+                            identityProvider: identityProvider,
+                            candidates: &candidates,
+                            failures: &failures
+                        )
+                    } catch {
+                        // Sole throw site is Task.checkCancellation(); abort enumeration on cancel.
+                        break
+                    }
                 } else if isAudioFile(selected) {
                     do {
                         let fingerprint = try identityProvider.fingerprint(for: selected)
@@ -131,7 +136,7 @@ nonisolated enum ImportInputScanner {
         identityProvider: ReferencedFileIdentityProvider,
         candidates: inout [(URL, [ReferencedSourceMembership], UUID?, ReferencedFileFingerprint?, fromDirectory: Bool)],
         failures: inout [ImportInputFailure]
-    ) {
+    ) throws {
         let fm = FileManager.default
         let keys: Set<URLResourceKey> = [
             .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .isAliasFileKey,
@@ -144,6 +149,7 @@ nonisolated enum ImportInputScanner {
         var visitedDirectoryPaths = Set<String>()
 
         while let nextDirectory = stack.popLast() {
+            try Task.checkCancellation()
             let canonicalDirectory = nextDirectory.resolvingSymlinksInPath().standardizedFileURL
             guard contains(canonicalDirectory, root: canonicalRoot) else { continue }
             let directoryValues = try? canonicalDirectory.resourceValues(forKeys: [.fileResourceIdentifierKey])
@@ -170,6 +176,7 @@ nonisolated enum ImportInputScanner {
             }
 
             for item in children {
+                try Task.checkCancellation()
                 guard let lexicalValues = try? item.resourceValues(forKeys: keys) else {
                     failures.append(.init(url: item, message: "Unable to inspect item"))
                     continue

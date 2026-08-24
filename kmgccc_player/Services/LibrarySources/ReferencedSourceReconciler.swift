@@ -92,6 +92,7 @@ final class ReferencedSourceReconciler {
     private let ncmRegistry: NCMConversionRegistry
     private let manifestStore: ReferencedSourceScanManifestStore
     private let intentStore: LibraryReconcileIntentStore
+    private let playlistMembershipStore: ReferencedPlaylistMembershipStore
     private let bookmarkResolver: any BookmarkResolving
     private let noticePublisher: any ReferencedSourceNoticePublishing
     private let requiresSecurityScope: Bool
@@ -106,6 +107,7 @@ final class ReferencedSourceReconciler {
         scanner: ReferencedSourceScanner,
         ignoredItemsStore: IgnoredReferencedItemsStore? = nil,
         ncmRegistry: NCMConversionRegistry? = nil,
+        playlistMembershipStore: ReferencedPlaylistMembershipStore? = nil,
         bookmarkResolver: any BookmarkResolving = SystemBookmarkResolver(),
         requiresSecurityScope: Bool = false,
         noticePublisher: any ReferencedSourceNoticePublishing = LogReferencedSourceNoticePublisher()
@@ -121,6 +123,8 @@ final class ReferencedSourceReconciler {
         self.ncmRegistry = ncmRegistry ?? NCMConversionRegistry(paths: context.paths)
         manifestStore = ReferencedSourceScanManifestStore(paths: context.paths)
         intentStore = LibraryReconcileIntentStore(paths: context.paths)
+        self.playlistMembershipStore = playlistMembershipStore
+            ?? ReferencedPlaylistMembershipStore(paths: context.paths)
         self.bookmarkResolver = bookmarkResolver
         self.requiresSecurityScope = requiresSecurityScope
         self.noticePublisher = noticePublisher
@@ -140,8 +144,70 @@ final class ReferencedSourceReconciler {
     /// one-time import snapshot.
     func createPlaylistsForSources(_ sourceIDs: [UUID]) async throws {
         for sourceID in Set(sourceIDs).sorted(by: { $0.uuidString < $1.uuidString }) {
-            try await syncBoundPlaylist(sourceID: sourceID, createIfMissing: true)
+            try await syncBoundPlaylists(sourceID: sourceID, createIfMissing: true)
         }
+    }
+
+    /// Adds explicit source-to-playlist edges for a playlist that already
+    /// exists (for example the setup wizard's “selected files” grouping).
+    /// Directory sources and single-file sources use the same edge model.
+    func bindSourcesToPlaylist(_ sourceIDs: Set<UUID>, playlistID: UUID) async throws {
+        for sourceID in sourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+            _ = try await sourceStore.ensurePlaylistBinding(
+                sourceID: sourceID,
+                playlistID: playlistID
+            )
+            _ = try await syncBoundPlaylists(sourceID: sourceID, createIfMissing: false)
+        }
+    }
+
+    /// Removes one source-to-playlist edge while preserving both the external
+    /// source and the library tracks. Only playlist items whose last live
+    /// ownership was this edge are removed from that playlist; a manual item,
+    /// or an item contributed by another binding, remains visible.
+    @discardableResult
+    func unbindSourceFromPlaylist(sourceID: UUID, bindingID: UUID) async throws -> Int {
+        guard !isClosed, await sourceStore.contains(id: sourceID) else { return 0 }
+
+        // Seed the durable membership sidecar before removing the edge. This
+        // keeps old libraries (which only had playlistManagedTrackIDs) from
+        // losing their manual/source distinction during the first unbind.
+        _ = try await syncBoundPlaylists(sourceID: sourceID, createIfMissing: false)
+        let descriptor = try await sourceStore.load(id: sourceID)
+        guard let binding = descriptor.playlistBindings.first(where: { $0.id == bindingID }) else {
+            return 0
+        }
+
+        let playlist = (await repository.fetchPlaylists()).first { $0.id == binding.playlistID }
+        let memberships = try await playlistMembershipStore.memberships(for: binding.playlistID)
+        let tracksByID = Dictionary(
+            uniqueKeysWithValues: await repository.fetchTracks(in: nil).map { ($0.id, $0) }
+        )
+        let playlistTrackIDs = Set(playlist?.tracks.map(\.id) ?? [])
+        var tracksToRemove: [Track] = []
+
+        for membership in memberships where membership.sourceBindingIDs.contains(bindingID) {
+            try await playlistMembershipStore.removeSourceContribution(
+                playlistID: binding.playlistID,
+                trackID: membership.trackID,
+                bindingID: bindingID
+            )
+            let remainsLive = try await playlistMembershipStore.membership(
+                playlistID: binding.playlistID,
+                trackID: membership.trackID
+            )?.isLive == true
+            if !remainsLive,
+               playlistTrackIDs.contains(membership.trackID),
+               let track = tracksByID[membership.trackID] {
+                tracksToRemove.append(track)
+            }
+        }
+
+        if let playlist, !tracksToRemove.isEmpty {
+            await repository.removeTracks(tracksToRemove, from: playlist)
+        }
+        try await sourceStore.removePlaylistBinding(sourceID: sourceID, bindingID: bindingID)
+        return tracksToRemove.count
     }
 
     @discardableResult
@@ -155,6 +221,41 @@ final class ReferencedSourceReconciler {
         )
         _ = await reconcileBestEffort(sourceIDs: Set(descriptors.map(\.id)))
         return issues
+    }
+
+    /// Reauthorizes and reconciles one source. This is the operation exposed
+    /// by a source row's “重新扫描” action; it must not restart or rescan
+    /// unrelated folders in the same referenced library.
+    @discardableResult
+    func refreshSource(_ sourceID: UUID) async throws -> [ReferencedSourceScopeIssue] {
+        guard !isClosed, await sourceStore.contains(id: sourceID) else { return [] }
+        let descriptor = try await sourceStore.load(id: sourceID)
+        let issues = await sourceScope.refresh(
+            descriptors: [descriptor],
+            store: sourceStore,
+            bookmarkResolver: bookmarkResolver,
+            requiresSecurityScope: requiresSecurityScope
+        )
+        _ = try await reconcile(sourceIDs: [sourceID])
+        return issues
+    }
+
+    /// Updates a source-level directory exclusion and immediately reconciles
+    /// that source. The scanner owns the filter; the reconciler still owns
+    /// Track/source authority and playlist membership, so an exclusion cannot
+    /// silently mutate only one projection.
+    func setExcludedRelativePath(
+        sourceID: UUID,
+        relativePath: String,
+        excluded: Bool
+    ) async throws {
+        guard !isClosed, await sourceStore.contains(id: sourceID) else { return }
+        _ = try await sourceStore.setExcludedRelativePath(
+            sourceID: sourceID,
+            relativePath: relativePath,
+            excluded: excluded
+        )
+        _ = try await reconcile(sourceIDs: [sourceID])
     }
 
     /// Repairs tracks whose memberships reference a source descriptor that
@@ -174,15 +275,18 @@ final class ReferencedSourceReconciler {
         var created = 0
         for track in tracks {
             guard case var .referenced(locator) = track.mediaLocator else { continue }
-            let orphans = locator.sourceMemberships.filter { !knownIDs.contains($0.sourceID) }
+            let orphans = locator.allSourceMemberships.filter { !knownIDs.contains($0.sourceID) }
             guard !orphans.isEmpty else { continue }
             var locatorChanged = false
-            for orphan in orphans where locator.primarySourceID == orphan.sourceID {
-                let fileURL = URL(fileURLWithPath: locator.lastKnownPath)
+            for orphan in orphans {
+                guard let location = locator.locations.first(where: {
+                    $0.sourceMemberships.contains { $0.sourceID == orphan.sourceID }
+                }) else { continue }
+                let fileURL = URL(fileURLWithPath: location.lastKnownPath)
                 guard FileManager.default.fileExists(atPath: fileURL.path) else {
                     // The source record is lost and the file is gone:
                     // settle as missing.
-                    locator.sourceMemberships.removeAll { $0.sourceID == orphan.sourceID }
+                    locator.removeSourcePreservingRecovery(orphan.sourceID)
                     locatorChanged = true
                     continue
                 }
@@ -205,17 +309,24 @@ final class ReferencedSourceReconciler {
                 )
                 try await sourceStore.save(descriptor)
                 created += 1
-                if let index = locator.sourceMemberships.firstIndex(where: { $0.sourceID == orphan.sourceID }) {
-                    locator.sourceMemberships[index].relativePath = fileURL.lastPathComponent
-                    locatorChanged = true
-                }
+                locator.refreshLocation(
+                    for: orphan.sourceID,
+                    fileBookmarkData: bookmark,
+                    lastKnownPath: fileURL.path,
+                    fingerprint: location.fingerprint
+                )
+                locator.setSourceMembership(.init(
+                    sourceID: orphan.sourceID,
+                    relativePath: fileURL.lastPathComponent
+                ))
+                locatorChanged = true
             }
             guard locatorChanged else { continue }
             locator.primarySourceID = primarySourceID(locator.sourceMemberships)
             mutations.append(.init(
                 trackID: track.id,
                 locator: locator,
-                availability: locator.sourceMemberships.isEmpty ? .missing : track.availability
+                availability: locator.allSourceMemberships.isEmpty ? .missing : track.availability
             ))
         }
         if !mutations.isEmpty {
@@ -281,7 +392,12 @@ final class ReferencedSourceReconciler {
                 continue
             }
             var effectiveRoot = root
-            var result = try await scanner.scan(context: context, sourceID: sourceID, rootURL: root)
+            var result = try await scanner.scan(
+                context: context,
+                sourceID: sourceID,
+                rootURL: root,
+                excludedRelativePaths: Set(descriptor.excludedRelativePaths)
+            )
             if result.diff.sourceStatus != .available {
                 // The authorized URL is path-stale after a rename/move while
                 // the app was running; the bookmark still follows the inode.
@@ -298,7 +414,12 @@ final class ReferencedSourceReconciler {
                    let refreshedRoot = sourceScope.authorizedRoots[sourceID]?.url,
                    refreshedRoot != root {
                     effectiveRoot = refreshedRoot
-                    result = try await scanner.scan(context: context, sourceID: sourceID, rootURL: refreshedRoot)
+                    result = try await scanner.scan(
+                        context: context,
+                        sourceID: sourceID,
+                        rootURL: refreshedRoot,
+                        excludedRelativePaths: Set(descriptor.excludedRelativePaths)
+                    )
                 }
             }
             changes += try await apply(result, rootURL: effectiveRoot)
@@ -333,16 +454,12 @@ final class ReferencedSourceReconciler {
         guard !isClosed else { return }
         let tracks = await repository.fetchTracks(in: nil)
         var mutations: [ReferencedSourceLocatorMutation] = []
-        var orphanedTracks: [Track] = []
         for track in tracks {
             guard case var .referenced(locator) = track.mediaLocator,
-                  locator.sourceMemberships.contains(where: { $0.sourceID == sourceID }) else { continue }
-            locator.sourceMemberships.removeAll { $0.sourceID == sourceID }
+                  locator.containsSource(sourceID) else { continue }
+            locator.removeSourcePreservingRecovery(sourceID)
             locator.primarySourceID = primarySourceID(locator.sourceMemberships)
-            let availability: TrackAvailability = locator.sourceMemberships.isEmpty ? .missing : track.availability
-            if locator.sourceMemberships.isEmpty {
-                orphanedTracks.append(track)
-            }
+            let availability: TrackAvailability = locator.allSourceMemberships.isEmpty ? .missing : track.availability
             mutations.append(.init(trackID: track.id, locator: locator, availability: availability))
         }
         let diff = ReferencedSourceDiff(
@@ -513,7 +630,7 @@ final class ReferencedSourceReconciler {
             descriptor.status = intent.diff.sourceStatus
             if intent.diff.sourceStatus == .available { descriptor.lastScan = Date() }
             try await sourceStore.save(descriptor)
-            playlistMembershipChanges += try await syncBoundPlaylist(sourceID: intent.sourceID, createIfMissing: false)
+            playlistMembershipChanges += try await syncBoundPlaylists(sourceID: intent.sourceID, createIfMissing: false)
             let addedTrackIDs = Set(intent.diff.added.compactMap { added in
                 intent.proposedManifest?.entries.first {
                     $0.relativePath == added.relativePath
@@ -538,11 +655,48 @@ final class ReferencedSourceReconciler {
             }
             try await manifestStore.save(manifest)
             try await sourceStore.save(descriptor)
-            playlistMembershipChanges += try await syncBoundPlaylist(sourceID: intent.sourceID, createIfMissing: false)
+            playlistMembershipChanges += try await syncBoundPlaylists(sourceID: intent.sourceID, createIfMissing: false)
         case .sourceRemoval:
-            let orphanedTrackIDs = Set(intent.mutations.compactMap { mutation in
-                mutation.locator.sourceMemberships.isEmpty ? mutation.trackID : nil
+            // Remove the source contribution from bound playlists before the
+            // orphaned track rows are deleted. Manual memberships and tracks
+            // still contributed by another source remain intact.
+            playlistMembershipChanges += try await syncBoundPlaylists(
+                sourceID: intent.sourceID,
+                createIfMissing: false
+            )
+            let candidateOrphanedTrackIDs = Set(intent.mutations.compactMap { mutation in
+                mutation.locator.allSourceMemberships.isEmpty ? mutation.trackID : nil
             })
+            // Older libraries may not have a membership sidecar yet. At this
+            // point source contributions have already been removed from bound
+            // playlists, so any candidate still present in a playlist is a
+            // manual owner and must be recorded before the orphan decision.
+            if !candidateOrphanedTrackIDs.isEmpty {
+                for playlist in await repository.fetchPlaylists() {
+                    let manualTrackIDs = playlist.tracks
+                        .map(\.id)
+                        .filter { candidateOrphanedTrackIDs.contains($0) }
+                    if !manualTrackIDs.isEmpty {
+                        try await playlistMembershipStore.ensureManualMemberships(
+                            playlistID: playlist.id,
+                            trackIDs: manualTrackIDs
+                        )
+                    }
+                }
+            }
+
+            var orphanedTrackIDs = Set<UUID>()
+            for mutation in intent.mutations where mutation.locator.allSourceMemberships.isEmpty {
+                // A track can outlive all physical sources when it is still a
+                // manually curated playlist item. The source contribution was
+                // removed above; only a truly unowned track is deletable.
+                let hasLiveMembership = (try? await playlistMembershipStore.hasLiveMembership(
+                    trackID: mutation.trackID
+                )) == true
+                if !hasLiveMembership {
+                    orphanedTrackIDs.insert(mutation.trackID)
+                }
+            }
             let orphanedTracks = await repository.fetchTracks(in: nil).filter {
                 orphanedTrackIDs.contains($0.id)
             }
@@ -559,61 +713,203 @@ final class ReferencedSourceReconciler {
     }
 
     @discardableResult
-    private func syncBoundPlaylist(sourceID: UUID, createIfMissing: Bool) async throws -> Int {
-        var membershipChanges = 0
+    /// Reconciles every source-to-playlist edge without treating the source
+    /// as owning the playlist itself. A missing playlist is intentionally not
+    /// recreated: deleting a playlist removes the edge through the view-model
+    /// callback, and a stale descriptor must never resurrect user data.
+    private func syncBoundPlaylists(sourceID: UUID, createIfMissing: Bool) async throws -> Int {
         var descriptor = try await sourceStore.load(id: sourceID)
-        guard descriptor.mode == .directory else { return 0 }
-        guard createIfMissing || descriptor.playlistID != nil else { return 0 }
+        guard descriptor.mode == .directory || descriptor.mode == .file else { return 0 }
+
+        if descriptor.playlistBindings.isEmpty, createIfMissing {
+            let playlist = await repository.createPlaylist(name: descriptor.displayName)
+            let binding = try await sourceStore.ensurePlaylistBinding(
+                sourceID: sourceID,
+                playlistID: playlist.id
+            )
+            descriptor.playlistBindings = [binding]
+        }
+        guard !descriptor.playlistBindings.isEmpty else { return 0 }
+
         let playlists = await repository.fetchPlaylists()
-        let playlist: Playlist
-        if let playlistID = descriptor.playlistID,
-           let existing = playlists.first(where: { $0.id == playlistID }) {
-            playlist = existing
-        } else {
-            guard createIfMissing || descriptor.playlistID != nil else { return 0 }
-            playlist = await repository.createPlaylist(name: descriptor.displayName)
-            descriptor.playlistID = playlist.id
-            descriptor.playlistManagedTrackIDs = []
+        let tracks = await repository.fetchTracks(in: nil)
+        var membershipChanges = 0
+        var changedDescriptor = descriptor
+
+        for binding in descriptor.playlistBindings {
+            guard let playlist = playlists.first(where: { $0.id == binding.playlistID }) else {
+                // The playlist may have been deleted by another process or an
+                // older build. Do not recreate it from a source sidecar.
+                continue
+            }
+
+            let sourceTracks = tracks.filter { track in
+                guard case let .referenced(locator) = track.mediaLocator else { return false }
+                return locator.allSourceMemberships.contains { membership in
+                    guard membership.sourceID == sourceID else { return false }
+                    guard let relativePath = binding.relativePath else { return true }
+                    return relativePath == membership.relativePath
+                        || membership.relativePath.hasPrefix(relativePath + "/")
+                }
+            }
+
+            let excludedTrackIDs = Set(binding.excludedTrackIDs)
+                .union(
+                    (try? await playlistMembershipStore.memberships(for: playlist.id))?
+                        .filter { $0.excludedBindingIDs.contains(binding.id) }
+                        .map(\.trackID)
+                        ?? []
+                )
+            let eligibleTracks = sourceTracks.filter { !excludedTrackIDs.contains($0.id) }
+            let eligibleTrackIDs = Set(eligibleTracks.map(\.id))
+
+            // Preserve old playlist sidecars during the schema transition:
+            // entries previously recorded as source-managed are seeded as a
+            // source contribution; the remaining pre-existing entries are
+            // manual and must survive future source scans.
+            let legacyManagedIDs = Set(binding.legacyManagedTrackIDs ?? [])
+            let manualTrackIDs = playlist.tracks
+                .map(\.id)
+                .filter {
+                    !legacyManagedIDs.contains($0)
+                        && !eligibleTrackIDs.contains($0)
+                }
+            try await playlistMembershipStore.ensureManualMemberships(
+                playlistID: playlist.id,
+                trackIDs: manualTrackIDs
+            )
+            if !legacyManagedIDs.isEmpty {
+                try await playlistMembershipStore.recordSourceContributions(
+                    legacyManagedIDs.map { (
+                        playlistID: playlist.id,
+                        trackID: $0,
+                        bindingID: binding.id
+                    ) }
+                )
+            }
+
+            let existingMemberships = try await playlistMembershipStore.memberships(for: playlist.id)
+            let contributedTrackIDs = Set(
+                existingMemberships
+                    .filter { $0.sourceBindingIDs.contains(binding.id) }
+                    .map(\.trackID)
+            )
+            let staleIDs = contributedTrackIDs.subtracting(eligibleTrackIDs)
+            let currentPlaylistTracks = Dictionary(uniqueKeysWithValues: playlist.tracks.map { ($0.id, $0) })
+            for staleID in staleIDs {
+                try await playlistMembershipStore.removeSourceContribution(
+                    playlistID: playlist.id,
+                    trackID: staleID,
+                    bindingID: binding.id
+                )
+                guard let membership = try await playlistMembershipStore.membership(
+                    playlistID: playlist.id,
+                    trackID: staleID
+                ), membership.isLive else {
+                    guard let staleTrack = currentPlaylistTracks[staleID] else { continue }
+                    membershipChanges += 1
+                    await repository.removeTracks([staleTrack], from: playlist)
+                    continue
+                }
+            }
+
+            // One snapshot replaces the previous per-track membership
+            // queries; stale contributions were removed above, so it reflects
+            // current store state without an actor hop per track.
+            let membershipsByTrackID = Dictionary(
+                uniqueKeysWithValues: (try await playlistMembershipStore.memberships(for: playlist.id))
+                    .map { ($0.trackID, $0) }
+            )
+            try await playlistMembershipStore.recordSourceContributions(
+                eligibleTracks.compactMap { track in
+                    guard !(membershipsByTrackID[track.id]?.excludedBindingIDs.contains(binding.id) ?? false)
+                    else { return nil }
+                    return (playlistID: playlist.id, trackID: track.id, bindingID: binding.id)
+                }
+            )
+
+            // §8.3 ordering rule: a first bind adds source songs in stable
+            // relative-path order; later additions append without reshuffling.
+            // Only the append set below consumes this order — existing
+            // playlist entries are never reordered.
+            let sortKeysByTrackID = Dictionary(
+                eligibleTracks.map { track in
+                    (
+                        track.id,
+                        sourceSortKey(
+                            for: track,
+                            sourceID: sourceID,
+                            bindingRelativePath: binding.relativePath
+                        )
+                    )
+                },
+                uniquingKeysWith: { first, _ in first }
+            )
+            let orderedEligibleTracks = eligibleTracks.sorted { lhs, rhs in
+                let comparison = sortKeysByTrackID[lhs.id, default: ""]
+                    .localizedStandardCompare(sortKeysByTrackID[rhs.id, default: ""])
+                if comparison != .orderedSame { return comparison == .orderedAscending }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+
+            let currentPlaylistIDs = Set(playlist.tracks.map(\.id))
+            let missingTracks = orderedEligibleTracks.filter { !currentPlaylistIDs.contains($0.id) }
+            if !missingTracks.isEmpty {
+                membershipChanges += missingTracks.count
+                await repository.addTracks(missingTracks, to: playlist)
+            }
+
+            if let index = changedDescriptor.playlistBindings.firstIndex(where: { $0.id == binding.id }) {
+                changedDescriptor.playlistBindings[index].legacyManagedTrackIDs = eligibleTrackIDs.sorted {
+                    $0.uuidString < $1.uuidString
+                }
+            }
         }
 
-        let sourceTracks = await repository.fetchTracks(in: nil).filter { track in
-            guard case let .referenced(locator) = track.mediaLocator else { return false }
-            return locator.sourceMemberships.contains { $0.sourceID == sourceID }
+        if changedDescriptor != descriptor {
+            try await sourceStore.save(changedDescriptor)
         }
-        let sourceTrackIDs = Set(sourceTracks.map(\.id))
-        let previouslyManagedIDs = Set(descriptor.playlistManagedTrackIDs ?? [])
-        let staleIDs = previouslyManagedIDs.subtracting(sourceTrackIDs)
-        let staleTracks = playlist.tracks.filter { staleIDs.contains($0.id) }
-        if !staleTracks.isEmpty {
-            membershipChanges += staleTracks.count
-            await repository.removeTracks(staleTracks, from: playlist)
-        }
-
-        let currentPlaylistIDs = Set(playlist.tracks.map(\.id))
-        let missingTracks = sourceTracks.filter { !currentPlaylistIDs.contains($0.id) }
-        if !missingTracks.isEmpty {
-            membershipChanges += missingTracks.count
-            await repository.addTracks(missingTracks, to: playlist)
-        }
-
-        descriptor.playlistManagedTrackIDs = sourceTrackIDs.sorted { $0.uuidString < $1.uuidString }
-        try await sourceStore.save(descriptor)
         return membershipChanges
+    }
+
+    /// Stable §8.3 sort key: the track's lexicographically smallest matching
+    /// source-membership relative path for this binding. Deterministic across
+    /// scans because paths mirror the scanned tree layout.
+    private func sourceSortKey(
+        for track: Track,
+        sourceID: UUID,
+        bindingRelativePath: String?
+    ) -> String {
+        guard case let .referenced(locator) = track.mediaLocator else { return "" }
+        let matchingPaths = locator.allSourceMemberships.compactMap { membership -> String? in
+            guard membership.sourceID == sourceID else { return nil }
+            guard let root = bindingRelativePath else { return membership.relativePath }
+            return (membership.relativePath == root || membership.relativePath.hasPrefix(root + "/"))
+                ? membership.relativePath
+                : nil
+        }
+        return matchingPaths.min {
+            $0 != $1 && $0.localizedStandardCompare($1) == .orderedAscending
+        } ?? ""
     }
 
     private func physicalTrackIDMap(_ tracks: [Track]) -> [ReferencedPhysicalIdentityKey: UUID] {
         tracks.reduce(into: [:]) { result, track in
-            guard case let .referenced(locator) = track.mediaLocator,
-                  let fingerprint = locator.fingerprint else { return }
-            result[ReferencedPhysicalIdentityKey(fingerprint)] = track.id
+            guard case let .referenced(locator) = track.mediaLocator else { return }
+            for location in locator.locations {
+                guard let fingerprint = location.fingerprint else { continue }
+                result[ReferencedPhysicalIdentityKey(fingerprint)] = track.id
+            }
         }
     }
 
     private func ncmSourceTrackIDMap(_ tracks: [Track]) -> [ReferencedFileIdentity: UUID] {
         tracks.reduce(into: [:]) { result, track in
-            guard case let .referenced(locator) = track.mediaLocator,
-                  let sourceIdentity = locator.ncmSourceIdentity else { return }
-            result[sourceIdentity] = track.id
+            guard case let .referenced(locator) = track.mediaLocator else { return }
+            for location in locator.locations {
+                guard let sourceIdentity = location.ncmSourceIdentity else { continue }
+                result[sourceIdentity] = track.id
+            }
         }
     }
 
@@ -629,29 +925,69 @@ final class ReferencedSourceReconciler {
         var changes: [UUID: ReferencedSourceLocatorMutation] = [:]
 
         for track in allTracks {
-            guard track.availability != .available,
-                  case let .referenced(locator) = track.mediaLocator,
-                  locator.sourceMemberships.contains(where: { $0.sourceID == diff.sourceID }) else { continue }
-            changes[track.id] = .init(trackID: track.id, locator: locator, availability: .available)
+            guard case var .referenced(locator) = track.mediaLocator else { continue }
+            var didRepairGeneratedOutputMembership = false
+            if let generatedRelativePath = generatedOutputRelativePath(
+                for: track,
+                locator: locator,
+                rootURL: rootURL
+            ), locator.allSourceMemberships.contains(where: {
+                $0.sourceID == diff.sourceID && $0.relativePath == generatedRelativePath
+            }) {
+                locator.removeSourceMembership(
+                    sourceID: diff.sourceID,
+                    relativePath: generatedRelativePath
+                )
+                didRepairGeneratedOutputMembership = true
+            }
+            guard didRepairGeneratedOutputMembership || track.availability != .available else { continue }
+            guard locator.containsSource(diff.sourceID) || didRepairGeneratedOutputMembership else { continue }
+            changes[track.id] = .init(
+                trackID: track.id,
+                locator: locator,
+                availability: locator.allSourceMemberships.isEmpty ? .missing : .available
+            )
         }
 
         for track in importedTracks {
-            guard case var .referenced(locator) = track.mediaLocator,
-                  let relative = relativePath(URL(fileURLWithPath: locator.lastKnownPath), root: rootURL) else { continue }
-            setMembership(sourceID: diff.sourceID, relativePath: relative, locator: &locator)
+            guard case var .referenced(locator) = track.mediaLocator else { continue }
+
+            // For an NCM track the playback locator points at the generated
+            // MP3/FLAC in the conversion folder, while the source membership
+            // must continue to point at the original .ncm input.  The source
+            // scanner deliberately hides generated products, so replacing an
+            // existing membership with `lastKnownPath` here makes the first
+            // scan immediately remove the real source and mark the track
+            // unavailable.  Only synthesize a membership for an imported
+            // track that does not already carry this source's authoritative
+            // membership.
+            if !locator.containsSource(diff.sourceID),
+               let relative = relativePath(URL(fileURLWithPath: locator.lastKnownPath), root: rootURL) {
+                setMembership(sourceID: diff.sourceID, relativePath: relative, locator: &locator)
+            }
             changes[track.id] = .init(trackID: track.id, locator: locator, availability: .available)
         }
         for move in diff.moved {
             guard let track = tracksByID[move.trackID], case var .referenced(locator) = track.mediaLocator else { continue }
             let resolvedURL = url(forRelativePath: move.newRelativePath, root: rootURL, rootIsFile: isFileRoot)
-            refresh(locator: &locator, url: resolvedURL, fingerprint: move.fingerprint)
+            refresh(
+                locator: &locator,
+                sourceID: diff.sourceID,
+                url: resolvedURL,
+                fingerprint: move.fingerprint
+            )
             setMembership(sourceID: diff.sourceID, relativePath: move.newRelativePath, locator: &locator)
             changes[track.id] = .init(trackID: track.id, locator: locator, availability: .available)
         }
         for replacement in diff.replacements {
             guard let track = tracksByID[replacement.trackID], case var .referenced(locator) = track.mediaLocator else { continue }
             let resolvedURL = url(forRelativePath: replacement.relativePath, root: rootURL, rootIsFile: isFileRoot)
-            refresh(locator: &locator, url: resolvedURL, fingerprint: replacement.newFingerprint)
+            refresh(
+                locator: &locator,
+                sourceID: diff.sourceID,
+                url: resolvedURL,
+                fingerprint: replacement.newFingerprint
+            )
             setMembership(sourceID: diff.sourceID, relativePath: replacement.relativePath, locator: &locator)
             changes[track.id] = .init(trackID: track.id, locator: locator, availability: .available)
         }
@@ -659,12 +995,12 @@ final class ReferencedSourceReconciler {
         for missing in diff.missing {
             guard !presentTrackIDs.contains(missing.trackID),
                   let track = tracksByID[missing.trackID], case var .referenced(locator) = track.mediaLocator else { continue }
-            locator.sourceMemberships.removeAll { $0.sourceID == diff.sourceID }
+            locator.removeSourcePreservingRecovery(diff.sourceID)
             locator.primarySourceID = primarySourceID(locator.sourceMemberships)
             changes[track.id] = .init(
                 trackID: track.id,
                 locator: locator,
-                availability: locator.sourceMemberships.isEmpty ? .missing : track.availability
+                availability: locator.allSourceMemberships.isEmpty ? .missing : track.availability
             )
         }
 
@@ -674,35 +1010,77 @@ final class ReferencedSourceReconciler {
         // memberships whose file is absent from the scan are settled here.
         if let firstScanPresentPaths {
             for track in allTracks {
-                guard case var .referenced(locator) = track.mediaLocator,
-                      let membership = locator.sourceMemberships.first(where: { $0.sourceID == diff.sourceID }),
-                      !firstScanPresentPaths.contains(membership.relativePath) else { continue }
-                locator.sourceMemberships.removeAll { $0.sourceID == diff.sourceID }
+                guard case var .referenced(locator) = track.mediaLocator else { continue }
+                let sourceMemberships = locator.allSourceMemberships.filter {
+                    $0.sourceID == diff.sourceID
+                }
+                // A newly imported track has its source membership in the
+                // pending mutation, not on the Track object yet. It must not
+                // be mistaken for a stale pre-existing membership and
+                // overwritten as missing in this same transaction.
+                guard !sourceMemberships.isEmpty,
+                      !sourceMemberships.contains(where: {
+                          firstScanPresentPaths.contains($0.relativePath)
+                      }) else { continue }
+                locator.removeSourcePreservingRecovery(diff.sourceID)
                 locator.primarySourceID = primarySourceID(locator.sourceMemberships)
                 changes[track.id] = .init(
                     trackID: track.id,
                     locator: locator,
-                    availability: locator.sourceMemberships.isEmpty ? .missing : track.availability
+                    availability: locator.allSourceMemberships.isEmpty ? .missing : track.availability
                 )
             }
         }
         return changes.values.sorted { $0.trackID.uuidString < $1.trackID.uuidString }
     }
 
-    private func refresh(locator: inout ReferencedFileLocator, url: URL, fingerprint: ReferencedFileFingerprint) {
-        locator.fileBookmarkData = (try? bookmarkResolver.refreshBookmark(for: url)) ?? locator.fileBookmarkData
-        locator.lastKnownPath = url.path
-        locator.fingerprint = fingerprint
+    private func refresh(
+        locator: inout ReferencedFileLocator,
+        sourceID: UUID,
+        url: URL,
+        fingerprint: ReferencedFileFingerprint
+    ) {
+        let bookmark = (try? bookmarkResolver.refreshBookmark(for: url))
+            ?? locator.fileBookmarkData
+        locator.refreshLocation(
+            for: sourceID,
+            fileBookmarkData: bookmark,
+            lastKnownPath: url.path,
+            fingerprint: fingerprint
+        )
     }
 
     private func setMembership(sourceID: UUID, relativePath: String, locator: inout ReferencedFileLocator) {
-        locator.sourceMemberships.removeAll { $0.sourceID == sourceID }
-        locator.sourceMemberships.append(.init(sourceID: sourceID, relativePath: relativePath))
+        locator.setSourceMembership(.init(sourceID: sourceID, relativePath: relativePath))
         locator.sourceMemberships.sort {
             if $0.relativePath.count != $1.relativePath.count { return $0.relativePath.count < $1.relativePath.count }
             return $0.sourceID.uuidString < $1.sourceID.uuidString
         }
         locator.primarySourceID = primarySourceID(locator.sourceMemberships)
+    }
+
+    private func generatedOutputRelativePath(
+        for track: Track,
+        locator: ReferencedFileLocator,
+        rootURL: URL
+    ) -> String? {
+        let outputURL = URL(fileURLWithPath: locator.lastKnownPath).standardizedFileURL
+        guard !locator.lastKnownPath.isEmpty else { return nil }
+        let associationMatches = track.ncmConversionAssociation.map {
+            URL(fileURLWithPath: $0.outputPath).standardizedFileURL.path == outputURL.path
+        } ?? false
+        let isInNCMOutputDirectory = outputURL.deletingLastPathComponent().lastPathComponent
+            == ReferencedNCMConversionService.outputDirectoryName
+        let markerMatches = isInNCMOutputDirectory
+            ? locator.fingerprint.map {
+                NCMGeneratedOutputMarkerStore.isGeneratedOutput(
+                    outputURL,
+                    fingerprint: $0
+                )
+            } ?? false
+            : false
+        guard associationMatches || markerMatches else { return nil }
+        return relativePath(outputURL, root: rootURL)
     }
 
     private func primarySourceID(_ memberships: [ReferencedSourceMembership]) -> UUID? {
@@ -783,8 +1161,8 @@ final class ReferencedSourceReconciler {
         let tracks = await repository.fetchTracks(in: nil)
         let mutations = tracks.compactMap { track -> ReferencedSourceLocatorMutation? in
             guard case let .referenced(locator) = track.mediaLocator,
-                  locator.sourceMemberships.contains(where: { $0.sourceID == sourceID }) else { return nil }
-            let hasOtherAvailableMembership = locator.sourceMemberships.contains {
+                  locator.containsSource(sourceID) else { return nil }
+            let hasOtherAvailableMembership = locator.allSourceMemberships.contains {
                 authorizedSourceIDs.contains($0.sourceID)
             }
             let availability: TrackAvailability = hasOtherAvailableMembership ? .available : unavailable
