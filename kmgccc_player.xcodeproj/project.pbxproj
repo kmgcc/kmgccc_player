@@ -60,8 +60,17 @@
 		C08000000000000000000001 /* LibraryLifecycleTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C08000000000000000000011 /* LibraryLifecycleTransactionTests.swift */; };
 		C09000000000000000000001 /* MusicSettingsStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C09000000000000000000011 /* MusicSettingsStateTests.swift */; };
 		C0A000000000000000000001 /* LibraryInitialImportIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A000000000000000000011 /* LibraryInitialImportIntegrationTests.swift */; };
+		C0A10000000000000000000001 /* LibraryReimportGrowthIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A10000000000000000000011 /* LibraryReimportGrowthIntegrationTests.swift */; };
 		C0B000000000000000000001 /* MusicSettingsRenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0B000000000000000000011 /* MusicSettingsRenderTests.swift */; };
 		C0C000000000000000000001 /* SourceReconnectMatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0C000000000000000000011 /* SourceReconnectMatcherTests.swift */; };
+		C11000000000000000000001 /* CrossSourceMoveIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11000000000000000000011 /* CrossSourceMoveIntegrationTests.swift */; };
+		C12000000000000000000001 /* ReferencedLibraryDomainMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C12000000000000000000011 /* ReferencedLibraryDomainMigrationTests.swift */; };
+		C13000000000000000000001 /* TrackIdentityResolverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C13000000000000000000011 /* TrackIdentityResolverTests.swift */; };
+		C14000000000000000000001 /* ImportPlannerCommitterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C14000000000000000000011 /* ImportPlannerCommitterTests.swift */; };
+		C15000000000000000000001 /* AlbumIdentityImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15000000000000000000011 /* AlbumIdentityImportTests.swift */; };
+		C0D000000000000000000001 /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D000000000000000000011 /* Log.swift */; };
+		C0E000000000000000000001 /* TrackCredit.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0E000000000000000000011 /* TrackCredit.swift */; };
+		C0F000000000000000000001 /* LibraryTextNormalization.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0F000000000000000000011 /* LibraryTextNormalization.swift */; };
 		F01000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000001 /* AppDelegate.swift */; };
 		F01000000000000000000002 /* DockController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000002 /* DockController.swift */; };
 		F01000000000000000000003 /* PlaybackCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000003 /* PlaybackCommands.swift */; };
@@ -134,8 +143,17 @@
 		C08000000000000000000011 /* LibraryLifecycleTransactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/LibraryLifecycleTransactionTests.swift; sourceTree = "<group>"; };
 		C09000000000000000000011 /* MusicSettingsStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/MusicSettingsStateTests.swift; sourceTree = "<group>"; };
 		C0A000000000000000000011 /* LibraryInitialImportIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/LibraryInitialImportIntegrationTests.swift; sourceTree = "<group>"; };
+		C0A10000000000000000000011 /* LibraryReimportGrowthIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/LibraryReimportGrowthIntegrationTests.swift; sourceTree = "<group>"; };
 		C0B000000000000000000011 /* MusicSettingsRenderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/MusicSettingsRenderTests.swift; sourceTree = "<group>"; };
 		C0C000000000000000000011 /* SourceReconnectMatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/SourceReconnectMatcherTests.swift; sourceTree = "<group>"; };
+		C11000000000000000000011 /* CrossSourceMoveIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/CrossSourceMoveIntegrationTests.swift; sourceTree = "<group>"; };
+		C12000000000000000000011 /* ReferencedLibraryDomainMigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/ReferencedLibraryDomainMigrationTests.swift; sourceTree = "<group>"; };
+		C13000000000000000000011 /* TrackIdentityResolverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/TrackIdentityResolverTests.swift; sourceTree = "<group>"; };
+		C14000000000000000000011 /* ImportPlannerCommitterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/ImportPlannerCommitterTests.swift; sourceTree = "<group>"; };
+		C15000000000000000000011 /* AlbumIdentityImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/AlbumIdentityImportTests.swift; sourceTree = "<group>"; };
+		C0D000000000000000000011 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Log.swift; path = kmgccc_player/Utilities/Log.swift; sourceTree = "<group>"; };
+		C0E000000000000000000011 /* TrackCredit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TrackCredit.swift; path = kmgccc_player/Models/TrackCredit.swift; sourceTree = "<group>"; };
+		C0F000000000000000000011 /* LibraryTextNormalization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LibraryTextNormalization.swift; path = kmgccc_player/Services/Library/LibraryTextNormalization.swift; sourceTree = "<group>"; };
 		E01000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = kmgccc_player/AppDelegate.swift; sourceTree = "<group>"; };
 		E01000000000000000000002 /* DockController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DockController.swift; path = kmgccc_player/DockController.swift; sourceTree = "<group>"; };
 		E01000000000000000000003 /* PlaybackCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlaybackCommands.swift; path = kmgccc_player/PlaybackCommands.swift; sourceTree = "<group>"; };
@@ -337,8 +355,14 @@
 				C08000000000000000000011 /* LibraryLifecycleTransactionTests.swift */,
 				C09000000000000000000011 /* MusicSettingsStateTests.swift */,
 				C0A000000000000000000011 /* LibraryInitialImportIntegrationTests.swift */,
+				C0A10000000000000000000011 /* LibraryReimportGrowthIntegrationTests.swift */,
 				C0B000000000000000000011 /* MusicSettingsRenderTests.swift */,
 				C0C000000000000000000011 /* SourceReconnectMatcherTests.swift */,
+				C11000000000000000000011 /* CrossSourceMoveIntegrationTests.swift */,
+				C12000000000000000000011 /* ReferencedLibraryDomainMigrationTests.swift */,
+				C13000000000000000000011 /* TrackIdentityResolverTests.swift */,
+				C14000000000000000000011 /* ImportPlannerCommitterTests.swift */,
+				C15000000000000000000011 /* AlbumIdentityImportTests.swift */,
 			);
 			name = Tests;
 			sourceTree = "<group>";
@@ -646,8 +670,17 @@
 				C08000000000000000000001 /* LibraryLifecycleTransactionTests.swift in Sources */,
 				C09000000000000000000001 /* MusicSettingsStateTests.swift in Sources */,
 				C0A000000000000000000001 /* LibraryInitialImportIntegrationTests.swift in Sources */,
+				C0A10000000000000000000001 /* LibraryReimportGrowthIntegrationTests.swift in Sources */,
 				C0B000000000000000000001 /* MusicSettingsRenderTests.swift in Sources */,
 				C0C000000000000000000001 /* SourceReconnectMatcherTests.swift in Sources */,
+				C11000000000000000000001 /* CrossSourceMoveIntegrationTests.swift in Sources */,
+				C12000000000000000000001 /* ReferencedLibraryDomainMigrationTests.swift in Sources */,
+				C13000000000000000000001 /* TrackIdentityResolverTests.swift in Sources */,
+				C14000000000000000000001 /* ImportPlannerCommitterTests.swift in Sources */,
+				C15000000000000000000001 /* AlbumIdentityImportTests.swift in Sources */,
+				C0D000000000000000000001 /* Log.swift in Sources */,
+				C0E000000000000000000001 /* TrackCredit.swift in Sources */,
+				C0F000000000000000000001 /* LibraryTextNormalization.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
