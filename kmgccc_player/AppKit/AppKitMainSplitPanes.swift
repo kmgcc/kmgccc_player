@@ -58,10 +58,9 @@ struct AppKitMainSidebarPaneRoot: View {
     }
 }
 
-/// Empty state shown in the content pane when no library is active (fresh
-/// install, or after every library was removed). The setup wizard itself is
-/// presented as a floating panel (same one as Settings) instead of being
-/// embedded into the window.
+/// Recovery state shown only while the lifecycle owner is repairing the active
+/// library. A normal empty library is rendered by HomeView and is never
+/// represented as "没有音乐资料库".
 private struct NoLibraryContentPane: View {
     @ObservedObject var appSession: AppSessionHost
 
@@ -80,13 +79,13 @@ private struct NoLibraryContentPane: View {
 
     private var emptyState: some View {
         ContentUnavailableView {
-            Label("没有音乐资料库", systemImage: "music.note.list")
+            Label("正在准备音乐资料库", systemImage: "music.note.list")
         } description: {
-            Text("新建一个资料库，或打开已有的资料库。")
+            Text("正在打开默认空资料库；完成后这里会显示“没有歌曲待导入”。")
         } actions: {
             HStack(spacing: 12) {
                 Button("新建资料库…") {
-                    appSession.librarySetupFlow.present(.setup(.managed))
+                    appSession.librarySetupFlow.present(.setup(.referenced))
                     LibrarySetupPanelPresenter.present(appSession: appSession)
                 }
                 .buttonStyle(.borderedProminent)
@@ -111,8 +110,6 @@ private struct NoLibraryContentPane: View {
                 defer { access.release() }
                 do {
                     _ = try await appSession.openMusicLibrary(at: url)
-                } catch LibrarySwitchBlockedError.enrichmentInProgress {
-                    // Notice already shown by AppSessionHost.
                 } catch {
                     appSession.uiState.showSidebarNotice("所选位置不是可用资料库", style: .warning)
                 }
@@ -235,6 +232,10 @@ struct AppKitMainContentPaneRoot: View {
                         AllArtistsView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-all-artists")
+                    case .folders:
+                        ReferencedFolderView(appSession: appSession)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .id("appkit-main-referenced-folders")
                     case .allSongs, .playlist, .artist, .album:
                         PlaylistDetailView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -660,7 +661,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         let selection = appSession.libraryVM?.currentSelection ?? .allSongs
         let isPlaylistContext: Bool
         switch selection {
-        case .home, .allPlaylists, .allAlbums, .allArtists:
+        case .home, .folders, .allPlaylists, .allAlbums, .allArtists:
             isPlaylistContext = false
         case .allSongs, .playlist, .artist, .album:
             isPlaylistContext = true

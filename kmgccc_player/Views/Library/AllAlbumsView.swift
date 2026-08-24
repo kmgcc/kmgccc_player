@@ -386,7 +386,7 @@ private struct AlbumListRow: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(titleColor)
                 .lineLimit(1)
-            Text(album.primaryArtistDisplayName)
+            Text(album.presentationArtistDisplayName)
                 .font(.system(size: 12))
                 .foregroundStyle(subtitleColor)
                 .lineLimit(1)

@@ -238,7 +238,7 @@ struct AllArtistsView: View {
         if artist.trackCount > 0 { return artist.trackCount }
         let canonical = artist.canonicalName
         return libraryVM.allTracks.lazy
-            .filter { LibraryNormalization.containsArtist(canonical, in: $0.artist) }
+            .filter { LibraryNormalization.containsArtist(canonical, in: $0) }
             .count
     }
 
@@ -246,7 +246,7 @@ struct AllArtistsView: View {
         if artist.albumCount > 0 { return artist.albumCount }
         let canonical = artist.canonicalName
         let albums = libraryVM.allTracks.lazy
-            .filter { LibraryNormalization.containsArtist(canonical, in: $0.artist) }
+            .filter { LibraryNormalization.containsArtist(canonical, in: $0) }
             .compactMap { $0.albumGroupKey }
         return Set(albums).count
     }
@@ -457,7 +457,7 @@ private struct ArtistListRow: View {
         }
         let canonical = artist.canonicalName
         let tracks = libraryVM.allTracks.filter {
-            LibraryNormalization.containsArtist(canonical, in: $0.artist)
+            LibraryNormalization.containsArtist(canonical, in: $0)
         }
         let trackSources = tracks.map { $0.artistArtworkSource() }
         image = await ArtistArtworkGenerator.shared.generateArtwork(

@@ -95,7 +95,10 @@ struct LibrarySetupFlow: View {
             }
         }
         .frame(width: 500)
-        .interactiveDismissDisabled(flow.operation == .working)
+        // The panel is allowed to close while a lifecycle operation is in
+        // flight.  The operation is owned by AppSessionHost and will either
+        // finish or be quiesced by the session coordinator.
+        .interactiveDismissDisabled(false)
     }
 
     private var title: String {
@@ -121,7 +124,7 @@ struct LibrarySetupFlow: View {
             switch flow.step {
             case .storage: return flow.mode == .managed ? "音乐将复制到资料库。" : "音乐将保留在原位置。"
             case .music: return "可多次添加文件或文件夹，也可稍后添加。"
-            case .location: return "选择资料库的存储目录，或直接使用默认目录。"
+            case .location: return "必须先选择资料库的存储目录。"
             }
         }
     }
@@ -168,22 +171,7 @@ struct LibrarySetupFlow: View {
             musicStepContent
         case .location:
             VStack(alignment: .leading, spacing: 12) {
-                if flow.createdLibraryAwaitingImport != nil {
-                    Label(
-                        "“\(flow.displayName)”已创建，音乐尚未导入",
-                        systemImage: "music.note.list"
-                    )
-                    if case .failed(let message) = flow.operation {
-                        Label(message, systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.red)
-                    }
-                    if flow.operation == .working {
-                        HStack(spacing: 10) {
-                            ProgressView().controlSize(.small)
-                            Text("正在导入")
-                        }
-                    }
-                } else if let existing = flow.existingLibraryContext {
+                if let existing = flow.existingLibraryContext {
                     Label(
                         "所选位置已有\(existing.mode == .managed ? "复制到资料库" : "保留原位置")资料库",
                         systemImage: "externaldrive.fill"
@@ -191,9 +179,9 @@ struct LibrarySetupFlow: View {
                     Text(existing.rootURL.path)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text("可以直接打开它；或忽略它，在同一位置新建另一个资料库（会自动使用新的子目录）。")
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("可以直接打开它；如需新建资料库，请返回并选择一个没有资料库的位置。")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
@@ -270,8 +258,8 @@ struct LibrarySetupFlow: View {
         }
     }
 
-    /// Step 3: required storage directory choice. The default is derived from
-    /// the music sources; the user may override it explicitly.
+    /// Step 3: required storage directory choice. The default directory is
+    /// only the initial browsing location; it is not treated as selected.
     private var storageDirectorySection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("存储目录")
@@ -281,15 +269,16 @@ struct LibrarySetupFlow: View {
                     .foregroundStyle(themeStore.accentColor)
                     .frame(width: 16)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(flow.storageParentURL == nil ? "默认目录" : "自定目录")
+                    Text(flow.storageParentURL == nil ? "尚未选择位置" : "已选择位置")
                         .font(.callout)
-                    Text(flow.effectiveStorageParentURL
-                        .appendingPathComponent(LibraryPaths.rootDirectoryName, isDirectory: true)
-                        .path)
+                    Text(flow.storageParentURL?.appendingPathComponent(
+                        LibraryPaths.rootDirectoryName,
+                        isDirectory: true
+                    ).path ?? "请选择一个目录后继续")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Button("选择位置…") { chooseStorageLocation() }
@@ -307,7 +296,6 @@ struct LibrarySetupFlow: View {
         switch flow.presentation {
         case .reconnectRequired:
             SettingsTaskDialogButton("关闭", kind: .secondary) { dismissFlow() }
-            SettingsTaskDialogButton("重新连接", kind: .primary, disabled: true) {}
         case .sourceReconnect:
             EmptyView()
         case .chooser:
@@ -324,25 +312,19 @@ struct LibrarySetupFlow: View {
                     flow.step = .location
                 }
                 SettingsTaskDialogButton("下一步", kind: .primary) { presentPlaylistSourceSelectionIfNeeded() }
-            case .location:
-                if flow.createdLibraryAwaitingImport != nil {
-                    SettingsTaskDialogButton(
-                        "重试导入",
-                        kind: .primary,
-                        disabled: flow.operation == .working || flow.initialImportSelection == nil
-                    ) { retryInitialImport() }
-                } else if let existing = flow.existingLibraryContext {
-                    // Ignore the library already at this location and create
-                    // a new numbered sibling folder in the same parent.
-                    SettingsTaskDialogButton("不打开，继续新建", kind: .secondary) {
-                        createLibrary(ignoreExistingAtLocation: true)
+                case .location:
+                if let existing = flow.existingLibraryContext {
+                    SettingsTaskDialogButton("重新选择位置", kind: .secondary) {
+                        flow.returnFromExistingLibrary()
                     }
                     SettingsTaskDialogButton("打开", kind: .primary) { openExisting(existing) }
                 } else {
                     SettingsTaskDialogButton(
                         "创建资料库",
                         kind: .primary,
-                        disabled: flow.operation == .working || flow.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        disabled: flow.operation == .working
+                            || !flow.isStorageLocationExplicitlyChosen
+                            || flow.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     ) { createLibrary() }
                 }
             }
@@ -354,9 +336,6 @@ struct LibrarySetupFlow: View {
     private var canGoBack: Bool {
         if case .setup = flow.presentation {
             guard flow.operation != .working else { return false }
-            if flow.createdLibraryAwaitingImport != nil {
-                return flow.step == .location
-            }
             return flow.step != .storage
         }
         return false
@@ -420,35 +399,29 @@ struct LibrarySetupFlow: View {
         }
     }
 
-    private func createLibrary(ignoreExistingAtLocation: Bool = false) {
-        let parent = flow.effectiveStorageParentURL
+    private func createLibrary() {
+        guard let parent = flow.storageParentURL else {
+            flow.fail("请先选择资料库存储位置。")
+            return
+        }
         let parentAccess = LibraryInitialImportSelection(urls: [parent])
-        flow.beginOperation()
-        Task {
+        let operation = flow.beginOperation()
+        let mode = flow.mode
+        let displayName = flow.displayName
+        let initialImportSelection = flow.initialImportSelection
+        let task = Task { @MainActor in
             defer { parentAccess.release() }
             do {
                 let result = try await appSession.createMusicLibrary(
-                    mode: flow.mode,
+                    mode: mode,
                     parentURL: parent,
-                    displayName: flow.displayName,
-                    initialImportSelection: flow.initialImportSelection,
-                    // The default location is an app-owned convenience, not a
-                    // user-selected destination. If it is occupied, keep the
-                    // wizard moving by choosing the next available sibling;
-                    // only an explicit picker choice should ask whether to
-                    // open the existing library.
-                    allowAlternateDestinationWhenOccupied:
-                        ignoreExistingAtLocation || !flow.isStorageLocationExplicitlyChosen
+                    displayName: displayName,
+                    initialImportSelection: initialImportSelection,
+                    initialImportPolicy: .background
                 )
+                guard flow.isCurrentOperation(operation) else { return }
                 switch result {
-                case .created(_, let initialImport):
-                    if let initialImport, initialImport.isPartial {
-                        appSession.uiState.showSidebarNotice(
-                            "部分音乐未导入",
-                            style: .warning,
-                            actionTitle: "打开设置"
-                        )
-                    }
+                case .created(_, _):
                     flow.completeAndDismiss()
                     await onChange()
                 case .existingLibrary(let context):
@@ -456,21 +429,30 @@ struct LibrarySetupFlow: View {
                 case .existingLibraryModeMismatch(let context, let requestedMode):
                     flow.showExistingLibrary(context, requestedMode: requestedMode)
                 }
-            } catch LibraryInitialImportError.initialImportFailed {
-                if let context = appSession.activeLibraryBinding.context {
-                    flow.failInitialImport(
-                        in: context,
-                        message: "未能导入所选音乐，请返回重新选择后重试。"
-                    )
-                } else {
-                    flow.fail("创建失败，请重试。")
-                }
-            } catch LibrarySwitchBlockedError.enrichmentInProgress {
-                flow.fail("正在后台补全歌曲信息，完成后才能切换资料库。")
             } catch {
-                flow.fail("创建失败，请重试。")
+                guard flow.isCurrentOperation(operation) else { return }
+                flow.fail(creationFailureMessage(error, parent: parent))
             }
         }
+        flow.setOperationCancellation { task.cancel() }
+    }
+
+    private func creationFailureMessage(_ error: Error, parent: URL) -> String {
+        let destination = parent
+            .appendingPathComponent(LibraryPaths.rootDirectoryName, isDirectory: true)
+            .standardizedFileURL
+            .path
+        if let creationError = error as? LibraryCreationError {
+            switch creationError {
+            case .destinationContainsUnknownItems:
+                return "该位置已有其他内容：\(destination)。请选择另一个存储目录，或清理后重试。"
+            case .invalidDisplayName:
+                return "资料库名称不能为空。"
+            default:
+                break
+            }
+        }
+        return "创建资料库失败，请检查存储目录权限后重试。"
     }
 
     private func openExisting(_ context: LibraryContext) {
@@ -480,58 +462,30 @@ struct LibrarySetupFlow: View {
             flow.completeAndDismiss()
             return
         }
-        flow.beginOperation()
+        let operation = flow.beginOperation()
         Task {
             do {
                 let sourceIDs = try await appSession.openInspectedMusicLibrary(context)
+                guard flow.isCurrentOperation(operation) else { return }
                 if sourceIDs.isEmpty {
                     flow.completeAndDismiss()
                 } else {
                     flow.present(.sourceReconnect(libraryID: context.id, sourceIDs: sourceIDs))
                 }
                 await onChange()
-            } catch LibrarySwitchBlockedError.enrichmentInProgress {
-                flow.fail("正在后台补全歌曲信息，完成后才能切换资料库。")
             } catch {
+                guard flow.isCurrentOperation(operation) else { return }
                 flow.fail("无法打开资料库。")
             }
         }
     }
 
-    private func retryInitialImport() {
-        guard let selection = flow.initialImportSelection,
-              let expected = flow.createdLibraryAwaitingImport,
-              appSession.activeLibraryBinding.context?.id == expected.id else {
-            flow.fail("当前资料库已更改，请重新打开资料库。")
-            return
-        }
-        flow.beginOperation()
-        Task {
-            do {
-                let result = try await appSession.importMusicSelection(selection)
-                if result.isPartial {
-                    appSession.uiState.showSidebarNotice(
-                        "部分音乐未导入",
-                        style: .warning,
-                        actionTitle: "打开设置"
-                    )
-                }
-                flow.completeAndDismiss()
-                await onChange()
-            } catch {
-                flow.failInitialImport(
-                    in: expected,
-                    message: "仍未能导入所选音乐，请返回重新选择后重试。"
-                )
-            }
-        }
-    }
-
     private func open(_ library: MusicLibraryBookmark) {
-        flow.beginOperation()
+        let operation = flow.beginOperation()
         Task {
             do {
                 let sourceIDs = try await appSession.activateRegisteredLibrary(id: library.id)
+                guard flow.isCurrentOperation(operation) else { return }
                 if sourceIDs.isEmpty {
                     flow.completeAndDismiss()
                 } else {
@@ -539,10 +493,10 @@ struct LibrarySetupFlow: View {
                 }
                 await onChange()
             } catch RegisteredLibraryActivationError.reconnectRequired {
+                guard flow.isCurrentOperation(operation) else { return }
                 flow.present(.reconnectRequired(libraryID: library.id, mode: library.modeProjection))
-            } catch LibrarySwitchBlockedError.enrichmentInProgress {
-                flow.fail("正在后台补全歌曲信息，完成后才能切换资料库。")
             } catch {
+                guard flow.isCurrentOperation(operation) else { return }
                 flow.fail("无法打开资料库。")
             }
         }

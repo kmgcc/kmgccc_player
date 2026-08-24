@@ -821,7 +821,7 @@ struct LibraryDetailHeaderView: View {
                 }
             case .artist(let entry, _):
                 let artistTracks = libraryVM.allTracks.filter {
-                    LibraryNormalization.containsArtist(entry.canonicalName, in: $0.artist)
+                    LibraryNormalization.containsArtist(entry.canonicalName, in: $0)
                         && $0.availability != .missing
                 }
                 let artistTrackSources = artistTracks.map { $0.artistArtworkSource() }
@@ -1055,7 +1055,7 @@ struct ArtistInfoEditSheet: View {
         artworkMessage = nil
         Task {
             let artistTracks = libraryVM.allTracks.filter {
-                LibraryNormalization.containsArtist(entry.canonicalName, in: $0.artist)
+                LibraryNormalization.containsArtist(entry.canonicalName, in: $0)
                     && $0.availability != .missing
             }
             let trackSources = artistTracks.map { $0.artistArtworkSource() }

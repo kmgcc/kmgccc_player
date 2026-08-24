@@ -720,7 +720,7 @@ final class PlaylistPageController {
             switch selection {
             case .playlist, .artist, .album:
                 return true
-            case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
+            case .home, .allSongs, .folders, .allPlaylists, .allAlbums, .allArtists:
                 return false
             }
         }()
@@ -1749,7 +1749,7 @@ final class PlaylistPageController {
 
         let config: DetailHeaderConfig?
         switch selection {
-        case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
+        case .home, .allSongs, .folders, .allPlaylists, .allAlbums, .allArtists:
             config = nil
         case .playlist(let id):
             guard let playlist = libraryVM.playlists.first(where: { $0.id == id }) else { return nil }
@@ -1785,7 +1785,7 @@ final class PlaylistPageController {
             config = .album(
                 entry,
                 stats: AlbumDerivedStats(
-                    artistName: entry.primaryArtistDisplayName,
+                    artistName: entry.presentationArtistDisplayName,
                     trackCount: displayedTracks.count,
                     totalDuration: displayedTotalDuration,
                     artworkImage: fallbackArtwork
@@ -1912,7 +1912,7 @@ final class PlaylistPageController {
         libraryVM: LibraryViewModel
     ) -> [Track] {
         switch selection {
-        case .allPlaylists, .allAlbums, .allArtists:
+        case .folders, .allPlaylists, .allAlbums, .allArtists:
             return []
             // Missing (source file deleted) tracks stay visible as greyed,
             // non-playable rows so the user can delete them manually; only
@@ -1925,7 +1925,7 @@ final class PlaylistPageController {
             return libraryVM.playlists.first(where: { $0.id == id })?.tracks ?? []
         case .artist(let key):
             return libraryVM.allTracks.filter {
-                LibraryNormalization.containsArtist(key, in: $0.artist)
+                LibraryNormalization.containsArtist(key, in: $0)
             }
         case .album(let key):
             return libraryVM.allTracks.filter {

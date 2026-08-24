@@ -38,7 +38,7 @@ struct LibraryReconnectView: View {
             }
         }
         .frame(width: 500)
-        .interactiveDismissDisabled(flow.operation == .working)
+        .interactiveDismissDisabled(false)
         .onDisappear {
             if flow.presentation == .none {
                 retainedSelection?.release()
@@ -207,7 +207,7 @@ struct LibraryReconnectView: View {
             guard result == .OK, let url = panel.url,
                   case let .libraryRoot(libraryID, _) = target else { return }
             let access = LibraryInitialImportSelection(urls: [url])
-            flow.beginOperation()
+            let operation = flow.beginOperation()
             Task {
                 defer { access.release() }
                 do {
@@ -215,6 +215,7 @@ struct LibraryReconnectView: View {
                         id: libraryID,
                         at: url
                     )
+                    guard flow.isCurrentOperation(operation) else { return }
                     if sourceIDs.isEmpty {
                         flow.completeAndDismiss()
                     } else {
@@ -225,10 +226,13 @@ struct LibraryReconnectView: View {
                     }
                     await onChange()
                 } catch LibraryOpenError.reconnectIdentifierMismatch {
+                    guard flow.isCurrentOperation(operation) else { return }
                     flow.fail("所选位置属于另一资料库。")
                 } catch LibraryOpenError.reconnectModeMismatch {
+                    guard flow.isCurrentOperation(operation) else { return }
                     flow.fail("所选资料库的存储方式不一致。")
                 } catch {
+                    guard flow.isCurrentOperation(operation) else { return }
                     flow.fail("无法连接所选资料库。")
                 }
             }
@@ -263,17 +267,19 @@ struct LibraryReconnectView: View {
         preparation = nil
         selectedPlanID = ""
         conflictSelections = [:]
-        flow.beginOperation()
+        let operation = flow.beginOperation()
         Task {
             do {
                 let value = try await appSession.prepareSourceReconnect(
                     sourceID: sourceIDs[sourceIndex],
                     candidateRoots: candidateRoots
                 )
+                guard flow.isCurrentOperation(operation) else { return }
                 preparation = value
                 selectedPlanID = value.plans.first?.id ?? ""
                 flow.finishOperation()
             } catch {
+                guard flow.isCurrentOperation(operation) else { return }
                 flow.fail("无法检查候选位置。")
             }
         }
@@ -294,7 +300,7 @@ struct LibraryReconnectView: View {
             guard !pair.value.isEmpty, let url = candidatesByID[pair.value] else { return }
             result[pair.key] = url
         }
-        flow.beginOperation()
+        let operation = flow.beginOperation()
         Task {
             do {
                 try await appSession.reconnectSource(
@@ -302,6 +308,7 @@ struct LibraryReconnectView: View {
                     planID: plan.id,
                     conflictSelections: selections
                 )
+                guard flow.isCurrentOperation(operation) else { return }
                 let nextIndex = sourceIndex + 1
                 if sourceIDs.indices.contains(nextIndex),
                    let roots = retainedSelection?.urls {
@@ -314,6 +321,7 @@ struct LibraryReconnectView: View {
                     await onChange()
                 }
             } catch {
+                guard flow.isCurrentOperation(operation) else { return }
                 flow.fail("来源没有连接。")
             }
         }
@@ -340,7 +348,6 @@ struct LibraryReconnectView: View {
     }
 
     private func cancel() {
-        guard flow.operation != .working else { return }
         retainedSelection?.release()
         retainedSelection = nil
         flow.dismiss()

@@ -29,13 +29,13 @@ final class LibrarySetupViewModel {
     var step: Step = .storage
     var mode: MusicLibraryMode
     var displayName = "音乐资料库"
-    /// Explicitly chosen storage parent. Nil means "use the standard default
-    /// directory" (see `defaultStorageParentURL`).
+    /// Explicitly chosen storage parent. Nil means the user has not selected a
+    /// destination yet; `effectiveStorageParentURL` is only a picker browsing
+    /// location and must never be passed to the creation service.
     var storageParentURL: URL?
     var isStorageLocationExplicitlyChosen: Bool { storageParentURL != nil }
     private(set) var existingLibraryContext: LibraryContext?
     private(set) var existingRequestedMode: MusicLibraryMode?
-    private(set) var createdLibraryAwaitingImport: LibraryContext?
     var selectedMusicURLs: [URL] = [] {
         didSet {
             rebuildInitialImportSelection()
@@ -43,6 +43,8 @@ final class LibrarySetupViewModel {
     }
     private(set) var playlistSourceEntries: [LibraryImportSourceEntry] = []
     private(set) var initialImportSelection: LibraryInitialImportSelection?
+    private var operationGeneration: UInt64 = 0
+    private var operationCancellation: (() -> Void)?
 
     /// Default storage parent for a newly created library.
     ///
@@ -55,7 +57,8 @@ final class LibrarySetupViewModel {
             .standardizedFileURL
     }
 
-    /// The storage parent that creation will use.
+    /// The initial browsing location for the storage picker. Creation still
+    /// requires `storageParentURL` to be explicitly set by the user.
     var effectiveStorageParentURL: URL {
         (storageParentURL ?? defaultStorageParentURL).standardizedFileURL
     }
@@ -88,11 +91,12 @@ final class LibrarySetupViewModel {
         rebuildInitialImportSelection()
     }
 
-    init(mode: MusicLibraryMode = .managed) {
+    init(mode: MusicLibraryMode = .referenced) {
         self.mode = mode
     }
 
     func present(_ presentation: Presentation) {
+        operationGeneration &+= 1
         self.presentation = presentation
         operation = .idle
         if case .setup(let mode) = presentation {
@@ -101,7 +105,6 @@ final class LibrarySetupViewModel {
             displayName = "音乐资料库"
             existingLibraryContext = nil
             existingRequestedMode = nil
-            createdLibraryAwaitingImport = nil
             playlistSourceEntries = []
             selectedMusicURLs = []
             storageParentURL = nil
@@ -109,9 +112,13 @@ final class LibrarySetupViewModel {
     }
 
     func dismiss() {
-        guard operation != .working else { return }
+        operationCancellation?()
+        operationCancellation = nil
+        operationGeneration &+= 1
         presentation = .none
         operation = .idle
+        existingLibraryContext = nil
+        existingRequestedMode = nil
         selectedMusicURLs = []
         playlistSourceEntries = []
         storageParentURL = nil
@@ -136,15 +143,27 @@ final class LibrarySetupViewModel {
         return nil
     }
 
-    func beginOperation() {
+    @discardableResult
+    func beginOperation() -> UInt64 {
+        operationCancellation = nil
+        operationGeneration &+= 1
         existingLibraryContext = nil
         existingRequestedMode = nil
         operation = .working
+        return operationGeneration
     }
-    func finishOperation() { operation = .idle }
-    func fail(_ message: String) { operation = .failed(message) }
-    func failInitialImport(in context: LibraryContext, message: String) {
-        createdLibraryAwaitingImport = context
+    func isCurrentOperation(_ generation: UInt64) -> Bool {
+        operationGeneration == generation
+    }
+    func setOperationCancellation(_ cancellation: @escaping () -> Void) {
+        operationCancellation = cancellation
+    }
+    func finishOperation() {
+        operationCancellation = nil
+        operation = .idle
+    }
+    func fail(_ message: String) {
+        operationCancellation = nil
         operation = .failed(message)
     }
     func showExistingLibrary(_ context: LibraryContext, requestedMode: MusicLibraryMode) {
@@ -153,14 +172,20 @@ final class LibrarySetupViewModel {
         operation = .idle
     }
     func returnFromExistingLibrary() {
+        operationCancellation = nil
         existingLibraryContext = nil
         existingRequestedMode = nil
+        storageParentURL = nil
         operation = .idle
     }
     func completeAndDismiss() {
+        operationCancellation = nil
+        operationGeneration &+= 1
         operation = .idle
         presentation = .none
-        createdLibraryAwaitingImport = nil
+        existingLibraryContext = nil
+        existingRequestedMode = nil
+        selectedMusicURLs = []
         storageParentURL = nil
         playlistSourceEntries = []
         initialImportSelection?.release()

@@ -93,9 +93,11 @@ private final class LibrarySetupPanelController: NSObject, NSWindowDelegate {
 
     var sheetAnchorPanel: NSPanel? { panel }
 
-    func bringToFront() { panel?.makeKeyAndOrderFront(nil) }
+    func bringToFront() {
+        NSApp.activate(ignoringOtherApps: true)
+        panel?.makeKeyAndOrderFront(nil)
+    }
     func close() {
-        guard appSession.librarySetupFlow.operation != .working else { return }
         finishClosing()
     }
 
@@ -120,7 +122,7 @@ private final class LibrarySetupPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        appSession.librarySetupFlow.operation != .working
+        true
     }
 
     func windowWillClose(_ notification: Notification) {

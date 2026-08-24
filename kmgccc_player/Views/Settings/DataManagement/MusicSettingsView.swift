@@ -9,7 +9,6 @@ struct MusicSettingsView: View {
     @State private var registry = MusicLibraryRegistry()
     @State private var sources: [ReferencedSourceDescriptor] = []
     @State private var settings = LibraryScopedSettings()
-    @State private var sourceScanStates: [UUID: ReferencedSourceScanState] = [:]
     @State private var errorMessage: String?
     @State private var pendingLibraryRemoval: MusicLibraryBookmark?
     @State private var pendingSourceRemoval: ReferencedSourceDescriptor?
@@ -18,7 +17,12 @@ struct MusicSettingsView: View {
     @State private var isImportSourceSelectionPresented = false
     @State private var isSourceListExpanded = false
     @State private var isMissingListExpanded = false
-    @State private var isMissingCleanupConfirmPresented = false
+    @State private var isDuplicateReviewPresented = false
+
+    /// Pushed by AppSessionHost on scan-state transitions; no polling here.
+    private var sourceScanStates: [UUID: ReferencedSourceScanState] {
+        appSession.referencedSourceScanStatesSnapshot
+    }
 
     /// Long source lists collapse to this many rows until expanded.
     private static let collapsedSourceCount = 6
@@ -51,6 +55,7 @@ struct MusicSettingsView: View {
             }
 
             librarySection
+            libraryDiagnosticsSection
 
             if activeMode == .referenced {
                 sourceSection
@@ -60,10 +65,6 @@ struct MusicSettingsView: View {
         }
         .task(id: appSession.activeLibraryBinding.generation) {
             await reload()
-            while !Task.isCancelled {
-                sourceScanStates = await appSession.referencedSourceScanStates()
-                try? await Task.sleep(for: .milliseconds(250))
-            }
         }
         .onChange(of: flow.presentation) { _, presentation in
             guard presentation != .none else { return }
@@ -76,6 +77,9 @@ struct MusicSettingsView: View {
             ) { entries in
                 startImport(urls: urls, playlistSourceEntries: entries)
             }
+        }
+        .sheet(isPresented: $isDuplicateReviewPresented) {
+            LibraryDuplicateReviewView(snapshot: libraryVM.diagnostics)
         }
         .confirmationDialog(
             "移到废纸篓？",
@@ -100,15 +104,6 @@ struct MusicSettingsView: View {
         } message: {
             Text("其中的歌曲将从资料库移除，原文件不会删除。")
         }
-        .confirmationDialog(
-            "清空失效歌曲？",
-            isPresented: $isMissingCleanupConfirmPresented
-        ) {
-            Button("删除 \(unavailableTracks.count) 首失效歌曲", role: .destructive) { cleanupMissingTracks() }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("将从资料库删除这些歌曲的元数据；磁盘上的文件不受影响。若来源只是暂时离线，重连后可恢复的歌曲也会被一并删除。")
-        }
         .alert("操作失败", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("确定", role: .cancel) { errorMessage = nil }
         } message: {
@@ -130,7 +125,7 @@ struct MusicSettingsView: View {
                     Text("已添加资料库").font(.callout.weight(.medium))
                     Spacer()
                     Menu {
-                        Button("新建资料库…") { flow.present(.setup(activeMode ?? .managed)) }
+                        Button("新建资料库…") { flow.present(.setup(.referenced)) }
                         Button("打开资料库…") { openLibraryPanel() }
                     } label: {
                         Image(systemName: "plus")
@@ -154,6 +149,16 @@ struct MusicSettingsView: View {
         }
     }
 
+    private func revealLibrary(_ library: MusicLibraryBookmark) {
+        guard FinderRevealHelper.reveal(path: library.lastKnownPath, bookmarkData: library.rootBookmarkData) else {
+            appSession.uiState.showSidebarNotice(
+                "资料库位置无法访问，可能已被移动或删除。",
+                style: .warning
+            )
+            return
+        }
+    }
+
     private func libraryRow(_ library: MusicLibraryBookmark) -> some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
@@ -173,10 +178,7 @@ struct MusicSettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             Menu {
-                Button("更改位置…") { relocatePanel(library) }
-                Button("在访达中显示") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: library.lastKnownPath)]) }
-                Button("重新扫描") { Task { await libraryVM.reloadLibrary() } }
-                    .disabled(library.id != activeContext?.id)
+                Button("在访达中显示") { revealLibrary(library) }
                 Divider()
                 Button("移到废纸篓…", role: .destructive) { pendingLibraryRemoval = library }
             } label: {
@@ -203,6 +205,16 @@ struct MusicSettingsView: View {
                             .controlSize(.small)
                             .accessibilityLabel("正在添加音乐")
                     }
+                    Button {
+                        refreshSources(sourceID: nil)
+                    } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .help("完整扫描全部来源")
+                    .accessibilityLabel("完整扫描全部来源")
+                    .disabled(isWorking || isAddingMusic || sources.isEmpty || isFullScanRunning)
                     Button {
                         addMusicPanel()
                     } label: {
@@ -257,7 +269,7 @@ struct MusicSettingsView: View {
                         }
 
                         Menu {
-                            Button("重新扫描") { refreshSources() }
+                            Button("重新扫描") { refreshSources(sourceID: source.id) }
                             Button("重新连接…") {
                                 guard let libraryID = activeContext?.id else { return }
                                 flow.present(.sourceReconnect(
@@ -306,6 +318,96 @@ struct MusicSettingsView: View {
         }
     }
 
+    private var libraryDiagnosticsSection: some View {
+        let summary = libraryVM.diagnostics.summary
+        return SettingsSection("资料库概览") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    diagnosticMetric("歌曲", value: "\(summary.totalTracks)", color: themeStore.accentColor)
+                    diagnosticMetric("可播放", value: "\(summary.playableTracks)", color: .green)
+                    diagnosticMetric("总时长", value: formattedDuration(summary.totalDuration), color: .secondary)
+                }
+
+                Divider()
+
+                HStack(spacing: 14) {
+                    statusMetric("文件丢失", count: summary.missingTracks, color: .orange)
+                    statusMetric("来源离线", count: summary.offlineTracks, color: .secondary)
+                    statusMetric("无权限", count: summary.permissionDeniedTracks, color: .orange)
+                    statusMetric("待检查", count: summary.checkingTracks, color: .secondary)
+                }
+
+                if !summary.topFormats.isEmpty {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("格式")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        ForEach(Array(summary.topFormats.prefix(4).enumerated()), id: \.offset) { _, item in
+                            HStack(spacing: 8) {
+                                Text(item.format.uppercased())
+                                    .font(.caption.monospaced())
+                                    .frame(width: 54, alignment: .leading)
+                                ProgressView(
+                                    value: Double(item.count),
+                                    total: Double(max(summary.totalTracks, 1))
+                                )
+                                .tint(themeStore.accentColor)
+                                Text("\(item.count)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 34, alignment: .trailing)
+                            }
+                        }
+                    }
+                }
+
+                if !libraryVM.diagnostics.duplicateGroups.isEmpty {
+                    Divider()
+                    HStack(spacing: 8) {
+                        Image(systemName: "doc.on.doc")
+                            .foregroundStyle(.orange)
+                        Text("发现 \(libraryVM.diagnostics.duplicateGroups.count) 组重复候选")
+                            .font(.callout)
+                        Spacer()
+                        Button("查看") { isDuplicateReviewPresented = true }
+                            .buttonStyle(.borderless)
+                    }
+                }
+            }
+            .padding(12)
+        }
+    }
+
+    private func diagnosticMetric(_ title: String, value: String, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(value)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(color)
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func statusMetric(_ title: String, count: Int, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("\(count)")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(count == 0 ? Color.secondary : color)
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func formattedDuration(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds > 0 else { return "—" }
+        let totalMinutes = Int(seconds / 60)
+        if totalMinutes < 60 { return "\(totalMinutes) 分钟" }
+        return "\(totalMinutes / 60) 小时 \(totalMinutes % 60) 分钟"
+    }
+
     private var deletePolicySection: some View {
         SettingsSection("删除歌曲时") {
             Picker("删除歌曲时", selection: Binding(
@@ -345,15 +447,12 @@ struct MusicSettingsView: View {
                              ? "没有失效歌曲"
                              : "\(unavailableTracks.count) 首歌曲暂时不可用")
                             .font(.callout)
-                        Text("失效歌曲在列表中显示为灰色。清空只删元数据，不动磁盘文件；临时离线请先重连来源。")
+                        Text("失效歌曲在列表中显示为灰色。来源暂时离线或权限失效时，请先重新连接来源；恢复后歌曲会继续保留。")
                             .settingsDescriptionStyle()
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
                     Spacer(minLength: 8)
-
-                    Button("一键清空失效歌曲…") { isMissingCleanupConfirmPresented = true }
-                        .disabled(unavailableTracks.isEmpty || isWorking)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -427,14 +526,6 @@ struct MusicSettingsView: View {
         }
     }
 
-    private func cleanupMissingTracks() {
-        let staleTracks = unavailableTracks
-        guard !staleTracks.isEmpty else { return }
-        Task {
-            await libraryVM.deleteTracks(staleTracks)
-        }
-    }
-
     private func reload() async {
         registry = await appSession.musicLibraryRegistrySnapshot()
         do {
@@ -456,10 +547,11 @@ struct MusicSettingsView: View {
 
     private func open(_ library: MusicLibraryBookmark) {
         guard library.id != activeContext?.id else { return }
-        flow.beginOperation()
+        let operation = flow.beginOperation()
         Task {
             do {
                 let sourceIDs = try await appSession.activateRegisteredLibrary(id: library.id)
+                guard flow.isCurrentOperation(operation) else { return }
                 if sourceIDs.isEmpty {
                     flow.completeAndDismiss()
                 } else {
@@ -467,10 +559,10 @@ struct MusicSettingsView: View {
                 }
                 await reload()
             } catch RegisteredLibraryActivationError.reconnectRequired {
+                guard flow.isCurrentOperation(operation) else { return }
                 flow.present(.reconnectRequired(libraryID: library.id, mode: library.modeProjection))
-            } catch LibrarySwitchBlockedError.enrichmentInProgress {
-                flow.finishOperation()
             } catch {
+                guard flow.isCurrentOperation(operation) else { return }
                 flow.fail("无法打开资料库。")
                 errorMessage = "无法打开资料库。"
             }
@@ -479,11 +571,12 @@ struct MusicSettingsView: View {
 
     private func openLibraryPanel() {
         chooseDirectory(prompt: "打开") { url, access in
-            flow.beginOperation()
+            let operation = flow.beginOperation()
             Task {
                 defer { access.release() }
                 do {
                     let sourceIDs = try await appSession.openMusicLibrary(at: url)
+                    guard flow.isCurrentOperation(operation) else { return }
                     if let libraryID = appSession.activeLibraryBinding.context?.id,
                        !sourceIDs.isEmpty {
                         flow.present(.sourceReconnect(libraryID: libraryID, sourceIDs: sourceIDs))
@@ -492,19 +585,11 @@ struct MusicSettingsView: View {
                     }
                     await reload()
                 }
-                catch LibrarySwitchBlockedError.enrichmentInProgress { flow.finishOperation() }
-                catch { flow.fail("无法打开资料库。"); errorMessage = "所选位置不是可用资料库。" }
-            }
-        }
-    }
-
-    private func relocatePanel(_ library: MusicLibraryBookmark) {
-        chooseDirectory(prompt: "移动") { parent, access in
-            flow.beginOperation()
-            Task {
-                defer { access.release() }
-                do { try await appSession.relocateMusicLibrary(id: library.id, to: parent); flow.completeAndDismiss(); await reload() }
-                catch { flow.fail("无法移动资料库。"); errorMessage = "资料库位置没有更改。" }
+                catch {
+                    guard flow.isCurrentOperation(operation) else { return }
+                    flow.fail("无法打开资料库。")
+                    errorMessage = "所选位置不是可用资料库。"
+                }
             }
         }
     }
@@ -553,13 +638,23 @@ struct MusicSettingsView: View {
         )
         pendingImportURLs = []
         isAddingMusic = true
+        guard let session = appSession.activeLibraryBinding.activeSession else {
+            selection.release()
+            isAddingMusic = false
+            errorMessage = "当前没有可用的音乐资料库。"
+            return
+        }
+        let libraryID = session.context.id
         Task {
             defer {
                 selection.release()
                 isAddingMusic = false
             }
             do {
-                let result = try await appSession.importMusicSelection(selection)
+                let result = try await session.runLibraryOperation {
+                    try await session.importInitialSelection(selection)
+                }
+                guard appSession.activeLibraryBinding.context?.id == libraryID else { return }
                 if result.isPartial {
                     appSession.uiState.showSidebarNotice(
                         "部分音乐未导入",
@@ -571,6 +666,7 @@ struct MusicSettingsView: View {
                 }
                 await reload()
             } catch {
+                guard appSession.activeLibraryBinding.context?.id == libraryID else { return }
                 errorMessage = "未能添加所选音乐。"
                 await reload()
             }
@@ -580,12 +676,13 @@ struct MusicSettingsView: View {
     private func removePendingLibrary() {
         guard let library = pendingLibraryRemoval else { return }
         pendingLibraryRemoval = nil
-        flow.beginOperation()
+        let operation = flow.beginOperation()
         Task {
             let latestRegistry = await appSession.musicLibraryRegistrySnapshot()
             guard let latest = latestRegistry.library(id: library.id),
                   latest.lastKnownPath == library.lastKnownPath,
                   latest.modeProjection == library.modeProjection else {
+                guard flow.isCurrentOperation(operation) else { return }
                 flow.fail("资料库列表已变化，请重新加载后再操作。")
                 errorMessage = "资料库列表已变化，未执行删除。"
                 await reload()
@@ -593,9 +690,11 @@ struct MusicSettingsView: View {
             }
             do {
                 try await appSession.removeMusicLibrary(id: library.id)
+                guard flow.isCurrentOperation(operation) else { return }
                 flow.completeAndDismiss()
                 await reload()
             } catch {
+                guard flow.isCurrentOperation(operation) else { return }
                 flow.fail("无法移到废纸篓。")
                 errorMessage = "资料库没有删除。"
             }
@@ -605,16 +704,44 @@ struct MusicSettingsView: View {
     private func removePendingSource() {
         guard let source = pendingSourceRemoval else { return }
         pendingSourceRemoval = nil
+        guard let session = appSession.activeLibraryBinding.activeSession,
+              session.context.mode == .referenced else { return }
+        let libraryID = session.context.id
         Task {
-            do { try await appSession.removeReferencedSource(id: source.id); await reload() }
-            catch { errorMessage = "来源没有移除。" }
+            do {
+                try await session.runLibraryOperation {
+                    try await session.removeReferencedSource(source.id)
+                }
+                guard appSession.activeLibraryBinding.context?.id == libraryID else { return }
+                await reload()
+            } catch {
+                guard appSession.activeLibraryBinding.context?.id == libraryID else { return }
+                errorMessage = "来源没有移除。"
+            }
         }
     }
 
-    private func refreshSources() {
+    private var isFullScanRunning: Bool {
+        !sources.isEmpty && sources.contains { sourceScanStates[$0.id] == .scanning }
+    }
+
+    private func refreshSources(sourceID: UUID? = nil) {
+        guard let session = appSession.activeLibraryBinding.activeSession,
+              session.context.mode == .referenced else { return }
+        let libraryID = session.context.id
         Task {
-            do { _ = try await appSession.activeLibraryBinding.activeSession?.refreshReferencedSources(); await reload() }
-            catch { errorMessage = "无法重新扫描来源。" }
+            do {
+                if let sourceID {
+                    _ = try await appSession.refreshReferencedSource(id: sourceID)
+                } else {
+                    try await appSession.refreshAllReferencedSources()
+                }
+                guard appSession.activeLibraryBinding.context?.id == libraryID else { return }
+                await reload()
+            } catch {
+                guard appSession.activeLibraryBinding.context?.id == libraryID else { return }
+                errorMessage = "无法重新扫描来源。"
+            }
         }
     }
 

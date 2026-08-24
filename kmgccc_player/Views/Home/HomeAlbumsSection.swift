@@ -282,7 +282,7 @@ private struct HomeAlbumCard: View {
                     .truncationMode(.tail)
                     .foregroundStyle(titleColor)
 
-                Text(album.primaryArtistDisplayName)
+                Text(album.presentationArtistDisplayName)
                     .font(.caption)
                     .foregroundStyle(subtitleColor)
                     .lineLimit(1)

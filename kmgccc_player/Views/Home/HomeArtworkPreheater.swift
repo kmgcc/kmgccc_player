@@ -178,7 +178,7 @@ final class HomeArtworkPreheater {
                 sources = []
             } else {
                 sources = allTracks
-                    .filter { LibraryNormalization.containsArtist(artist.canonicalName, in: $0.artist) }
+                    .filter { LibraryNormalization.containsArtist(artist.canonicalName, in: $0) }
                     .prefix(24)
                     .map { $0.artistArtworkSource() }
             }

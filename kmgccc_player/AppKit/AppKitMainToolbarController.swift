@@ -1008,7 +1008,7 @@ final class AppKitMainToolbarController: NSObject,
         libraryVM: LibraryViewModel
     ) -> Bool {
         switch selection {
-        case .home, .allSongs:
+        case .home, .allSongs, .folders:
             return libraryVM.allTracks.contains { $0.id == track.id }
         case .playlist(let id):
             return libraryVM.playlists
@@ -1016,7 +1016,7 @@ final class AppKitMainToolbarController: NSObject,
                 .tracks
                 .contains { $0.id == track.id } == true
         case .artist(let key):
-            return LibraryNormalization.containsArtist(key, in: track.artist)
+            return LibraryNormalization.containsArtist(key, in: track)
         case .album(let key):
             return track.albumGroupKey == key
         case .allPlaylists, .allAlbums, .allArtists:
@@ -1087,7 +1087,7 @@ final class AppKitMainToolbarController: NSObject,
             return "在最近播放记录中搜索"
         }
         switch currentLibraryVM?.currentSelection {
-        case .home, .allSongs:
+        case .home, .allSongs, .folders:
             return "在所有歌曲中搜索"
         case .allPlaylists:
             return "在所有播放列表中搜索"

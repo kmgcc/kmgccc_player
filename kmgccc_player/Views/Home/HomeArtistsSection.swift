@@ -150,7 +150,7 @@ struct HomeArtistsSection: View {
 
     private func play(_ artist: ArtistEntry) {
         let tracks = libraryVM.allTracks.filter {
-            LibraryNormalization.containsArtist(artist.canonicalName, in: $0.artist)
+            LibraryNormalization.containsArtist(artist.canonicalName, in: $0)
         }
         playbackCoordinator.playRandomTracks(
             tracks,
@@ -325,7 +325,7 @@ private struct HomeArtistCircle: View {
 
         let canonicalName = artist.canonicalName
         let tracks = libraryVM.allTracks.filter {
-            LibraryNormalization.containsArtist(canonicalName, in: $0.artist)
+            LibraryNormalization.containsArtist(canonicalName, in: $0)
         }
         let trackSources = tracks.map { $0.artistArtworkSource() }
         let generated = await ArtistArtworkGenerator.shared.generateArtwork(

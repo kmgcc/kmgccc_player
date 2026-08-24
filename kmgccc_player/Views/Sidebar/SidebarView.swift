@@ -13,6 +13,7 @@
 import Observation
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Sidebar view for navigation and playlists.
 /// IMPORTANT: Do NOT add .background(material) or NSVisualEffectView here!
@@ -43,6 +44,10 @@ struct SidebarView: View {
     @State private var editingArtistEntry: ArtistEntry?
     @State private var editingAlbumEntry: AlbumEntry?
     @State private var isHoveringPlaylists = false
+    @State private var dropTargetPlaylistID: UUID?
+    @State private var isPlaylistsExpanded = true
+    @State private var isPlaylistHeaderDropTargeted = false
+    @State private var playlistHeaderExpandTask: Task<Void, Never>?
     @State private var isArtistsExpanded = false
     @State private var isAlbumsExpanded = false
 
@@ -73,7 +78,8 @@ struct SidebarView: View {
             // Playlists List
             List {
                 Section {
-                    ForEach(libraryVM.sortedPlaylistsForDisplay()) { playlist in
+                    if isPlaylistsExpanded {
+                        ForEach(libraryVM.sortedPlaylistsForDisplay()) { playlist in
                         Button {
                             handleSelection(.playlist(playlist.id))
                         } label: {
@@ -93,9 +99,22 @@ struct SidebarView: View {
                                 selectionFill(
                                     isSelected: currentSelection == .playlist(playlist.id))
                             )
+                            .overlay {
+                                if dropTargetPlaylistID == playlist.id {
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .stroke(themeStore.accentColor, lineWidth: 1.5)
+                                        .opacity(0.9)
+                                }
+                            }
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .onDrop(
+                            of: [UTType.fileURL.identifier, UTType.url.identifier],
+                            isTargeted: dropTargetBinding(for: playlist.id)
+                        ) { providers in
+                            acceptPlaylistDrop(providers, playlistID: playlist.id)
+                        }
                         .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                         .listRowBackground(Color.clear)
                         .contextMenu {
@@ -108,12 +127,28 @@ struct SidebarView: View {
                                 )
                             }
                         }
+                        }
                     }
                 } header: {
                     HStack {
-                        Text("sidebar.playlists")
-                            .font(.caption.bold())
-                            .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                        Button {
+                            setPlaylistsExpanded(!isPlaylistsExpanded)
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text("sidebar.playlists")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                                Text("\(libraryVM.playlists.count)")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor.opacity(0.65))
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                                    .rotationEffect(.degrees(isPlaylistsExpanded ? 90 : 0))
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                         Spacer()
 
                         Button {
@@ -132,6 +167,13 @@ struct SidebarView: View {
                     }
                     .padding(.horizontal, 4)
                     .padding(.bottom, 4)
+                    .contentShape(Rectangle())
+                    .onDrop(
+                        of: [UTType.fileURL.identifier, UTType.url.identifier],
+                        isTargeted: playlistHeaderDropTarget
+                    ) { providers in
+                        acceptPlaylistHeaderDrop(providers)
+                    }
                 }
 
                 // Artists Section
@@ -362,12 +404,19 @@ struct SidebarView: View {
             uiState.updateSidebarWidth(width)
         }
         .onAppear {
+            loadPlaylistsExpandedForActiveLibrary()
+            ensureSelectedPlaylistGroupExpanded()
             scheduleCrashReportSettingsTipIfNeeded()
+        }
+        .onChange(of: appSession.activeLibraryBinding.context?.id) { _, _ in
+            loadPlaylistsExpandedForActiveLibrary()
+            ensureSelectedPlaylistGroupExpanded()
         }
         .onDisappear {
             crashReportTipTask?.cancel()
             crashReportTipTask = nil
             showCrashReportSettingsTip = false
+            cancelPlaylistHeaderAutoExpand()
         }
         .onChange(of: crashReportService.isPromptFlowActive) { _, isActive in
             if isActive {
@@ -469,6 +518,17 @@ struct SidebarView: View {
             ) {
                 libraryVM.selectOrResetCurrentSelection(.allSongs)
                 uiState.showLibrary()
+            }
+
+            if appSession.activeLibraryBinding.context?.mode == .referenced {
+                sidebarNavigationRow(
+                    title: "文件夹",
+                    systemImage: "folder",
+                    selection: .folders
+                ) {
+                    libraryVM.selectOrResetCurrentSelection(.folders)
+                    uiState.showLibrary()
+                }
             }
 
             sidebarNavigationRow(
@@ -771,6 +831,8 @@ struct SidebarView: View {
             libraryVM.selectOrResetCurrentSelection(.home)
         case .allSongs:
             libraryVM.selectOrResetCurrentSelection(.allSongs)
+        case .folders:
+            libraryVM.selectOrResetCurrentSelection(.folders)
         case .history:
             uiState.showPlaybackHistory()
             return
@@ -793,6 +855,154 @@ struct SidebarView: View {
         uiState.showLibrary()
     }
 
+    private func dropTargetBinding(for playlistID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { dropTargetPlaylistID == playlistID },
+            set: { isTargeted in
+                if isTargeted {
+                    dropTargetPlaylistID = playlistID
+                } else if dropTargetPlaylistID == playlistID {
+                    dropTargetPlaylistID = nil
+                }
+            }
+        )
+    }
+
+    // MARK: - Playlist Group Collapse (spec 4.2)
+
+    private var playlistsExpandedStorageKey: String {
+        let libraryID = appSession.activeLibraryBinding.context?.id.uuidString ?? "no-library"
+        return "sidebar.playlists.expanded.\(libraryID)"
+    }
+
+    private func loadPlaylistsExpandedForActiveLibrary() {
+        let stored = UserDefaults.standard.object(forKey: playlistsExpandedStorageKey) as? Bool
+        isPlaylistsExpanded = stored ?? true
+    }
+
+    private func setPlaylistsExpanded(_ expanded: Bool) {
+        withAnimation(.snappy(duration: 0.18)) {
+            isPlaylistsExpanded = expanded
+        }
+        UserDefaults.standard.set(expanded, forKey: playlistsExpandedStorageKey)
+    }
+
+    /// Spec 4.2: when window state restores a playlist selection, its group
+    /// must auto-expand so the selection stays visible.
+    private func ensureSelectedPlaylistGroupExpanded() {
+        var restoredPlaylistID: UUID?
+        if case .playlist(let id) = libraryVM.currentSelection {
+            restoredPlaylistID = id
+        }
+        if restoredPlaylistID == nil,
+           let stored = UserDefaults.standard.string(forKey: "lastSelectedPlaylistId"),
+           let id = UUID(uuidString: stored),
+           libraryVM.playlists.contains(where: { $0.id == id }) {
+            restoredPlaylistID = id
+        }
+        guard restoredPlaylistID != nil, !isPlaylistsExpanded else { return }
+        setPlaylistsExpanded(true)
+    }
+
+    private var playlistHeaderDropTarget: Binding<Bool> {
+        Binding(
+            get: { isPlaylistHeaderDropTargeted },
+            set: { targeted in
+                guard targeted != isPlaylistHeaderDropTargeted else { return }
+                isPlaylistHeaderDropTargeted = targeted
+                if targeted {
+                    schedulePlaylistHeaderAutoExpand()
+                } else {
+                    cancelPlaylistHeaderAutoExpand()
+                }
+            }
+        )
+    }
+
+    private func schedulePlaylistHeaderAutoExpand() {
+        guard !isPlaylistsExpanded else { return }
+        playlistHeaderExpandTask?.cancel()
+        playlistHeaderExpandTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            setPlaylistsExpanded(true)
+        }
+    }
+
+    private func cancelPlaylistHeaderAutoExpand() {
+        playlistHeaderExpandTask?.cancel()
+        playlistHeaderExpandTask = nil
+    }
+
+    /// Spec 4.2: dropping on the group title never picks a random playlist.
+    /// The header accepts the drop so it cannot fall through to window
+    /// import, then hints toward a concrete playlist row.
+    private func acceptPlaylistHeaderDrop(_ providers: [NSItemProvider]) -> Bool {
+        let hasPayload = providers.contains {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+                || $0.hasItemConformingToTypeIdentifier(UTType.url.identifier)
+        }
+        guard hasPayload else { return false }
+        uiState.showSidebarNotice("请将文件拖到具体的播放列表行以导入", style: .warning)
+        return true
+    }
+
+    /// Finder supplies file URLs for both files and directories. Loading the
+    /// providers before constructing the ImportContext keeps the playlist row
+    /// as the fixed destination even if the user changes selection while the
+    /// provider data is being delivered.
+    private func acceptPlaylistDrop(
+        _ providers: [NSItemProvider],
+        playlistID: UUID
+    ) -> Bool {
+        guard providers.contains(where: {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+                || $0.hasItemConformingToTypeIdentifier(UTType.url.identifier)
+        }) else {
+            return false
+        }
+        Task { @MainActor in
+            let urls = await Self.urls(from: providers)
+            guard !urls.isEmpty else { return }
+            await libraryVM.importDroppedURLsToPlaylist(urls, playlistID: playlistID)
+        }
+        return true
+    }
+
+    private static func urls(from providers: [NSItemProvider]) async -> [URL] {
+        var urls: [URL] = []
+        for provider in providers {
+            let typeIdentifier: String?
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                typeIdentifier = UTType.fileURL.identifier
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+                typeIdentifier = UTType.url.identifier
+            } else {
+                typeIdentifier = nil
+            }
+            guard let typeIdentifier else { continue }
+            // `loadItem` returns `NSSecureCoding?`, which is not Sendable and
+            // cannot safely cross the continuation's async boundary under the
+            // project's strict concurrency settings. A data representation is
+            // sufficient for both file URLs and regular URLs and keeps the
+            // provider callback at a Sendable boundary.
+            let data = await withCheckedContinuation { (continuation: CheckedContinuation<Data?, Never>) in
+                provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in
+                    continuation.resume(returning: data)
+                }
+            }
+            guard let data else { continue }
+            if let url = URL(dataRepresentation: data, relativeTo: nil), url.isFileURL {
+                urls.append(url)
+            } else if let string = String(data: data, encoding: .utf8),
+                      let url = URL(string: string),
+                      url.isFileURL {
+                urls.append(url)
+            }
+        }
+        return Array(Dictionary(uniqueKeysWithValues: urls.map { ($0.standardizedFileURL.path, $0) }).values)
+    }
+
     private var currentSelection: SidebarSelection {
         if uiState.contentMode == .playbackHistory {
             return .history
@@ -810,6 +1020,8 @@ struct SidebarView: View {
             return .allArtists
         case .allSongs:
             return .allSongs
+        case .folders:
+            return .folders
         case .playlist(let id):
             return .playlist(id)
         case .artist(let key):
@@ -936,6 +1148,7 @@ private struct SidebarEnrichmentCompletionNotice: View {
 private enum SidebarSelection: Hashable {
     case home
     case allSongs
+    case folders
     case history
     case allPlaylists
     case allAlbums

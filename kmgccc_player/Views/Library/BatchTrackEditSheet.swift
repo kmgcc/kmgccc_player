@@ -77,6 +77,7 @@ struct BatchTrackEditSheet: View {
     @State private var showingLyricsPicker = false
     @State private var statusMessage: String?
     @State private var isSavingCurrent = false
+    @State private var currentSaveTask: Task<Void, Never>?
     @State private var isLoadingDraft = false
     @State private var processStateByTrackID: [UUID: ProcessState] = [:]
     @State private var coverFetchTask: Task<Void, Never>?
@@ -183,6 +184,8 @@ struct BatchTrackEditSheet: View {
             scheduleBatchPreviewRefresh(reason: "sheet appeared", debounceMilliseconds: 0)
         }
         .onDisappear {
+            currentSaveTask?.cancel()
+            currentSaveTask = nil
             coverFetchTask?.cancel()
             coverFetchTask = nil
             metadataFetchTask?.cancel()
@@ -979,7 +982,6 @@ struct BatchTrackEditSheet: View {
         }
 
         isSavingCurrent = true
-        defer { isSavingCurrent = false }
 
         track.title = title.isEmpty ? NSLocalizedString("library.unknown_title", comment: "") : title
         track.artist = artist.isEmpty ? NSLocalizedString("library.unknown_artist", comment: "") : artist
@@ -995,34 +997,49 @@ struct BatchTrackEditSheet: View {
         TrackLyricsDraft.assign(editorText: lyricsText, to: track)
         refreshLiveLyricsIfEditingCurrentTrack(track, reason: "\(reason) draft")
 
-        Task {
-            await libraryVM.saveTrackEdits(
+        let trackID = track.id
+        let persistenceMode = changeSet.persistenceMode
+        let persistenceReason = persistenceReason(
+            for: persistenceMode,
+            preferredReason: reason
+        )
+        currentSaveTask = Task { @MainActor in
+            let result = await libraryVM.saveTrackEdits(
                 track,
-                mode: changeSet.persistenceMode,
-                reason: persistenceReason(for: changeSet.persistenceMode, preferredReason: reason)
+                mode: persistenceMode,
+                reason: persistenceReason
             )
+
+            guard !Task.isCancelled else { return }
+            isSavingCurrent = false
+            currentSaveTask = nil
+
+            guard result.persistedTrackIDs.contains(trackID),
+                  !result.failedTrackIDs.contains(trackID) else {
+                var state = processStateByTrackID[trackID] ?? ProcessState()
+                state.saved = false
+                state.saveError = "资料库写入失败"
+                processStateByTrackID[trackID] = state
+                statusMessage = "保存失败：\(track.title)，请重试"
+                return
+            }
+
             refreshLiveLyricsIfEditingCurrentTrack(track, reason: reason)
+            markTrackCompleted(track: track, edited: true)
+
+            if let index = trackSnapshots.firstIndex(where: { $0.id == trackID }) {
+                trackSnapshots[index].title = track.title
+                trackSnapshots[index].artist = track.artist
+                trackSnapshots[index].album = track.album
+                trackSnapshots[index].artworkData = artworkData
+            }
+            statusMessage = "已保存：\(track.title)"
         }
-        markTrackCompleted(track: track, edited: true)
-        
-        // Update snapshot in our array!
-        if trackSnapshots.indices.contains(currentIndex) {
-            trackSnapshots[currentIndex].title = track.title
-            trackSnapshots[currentIndex].artist = track.artist
-            trackSnapshots[currentIndex].album = track.album
-            trackSnapshots[currentIndex].artworkData = artworkData
-        }
-        
-        statusMessage = "已保存：\(track.title)"
-        
-        print("[BatchTrackEditSheet] Successfully saved track '\(track.title)'. changes: \(changeSet.persistenceMode)")
-        let totalCount = tracks.count
-        let savedCount = processStateByTrackID.values.filter { $0.saved }.count
-        let skippedCount = processStateByTrackID.values.filter { $0.skipped }.count
-        let failedCount = processStateByTrackID.values.filter { $0.saveError != nil }.count
-        print("[BatchTrackEditSheet] Session Stats -> Total: \(totalCount), Saved: \(savedCount), Skipped: \(skippedCount), Failed: \(failedCount)")
-        
-        return true
+
+        // A changed track is not considered processed until the repository
+        // confirms the write. Callers stay on this track while the task is
+        // pending, preventing a second edit from racing the first write.
+        return false
     }
 
     private func markTrackCompleted(track: Track, edited: Bool) {
