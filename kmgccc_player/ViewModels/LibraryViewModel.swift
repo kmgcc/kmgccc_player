@@ -205,6 +205,7 @@ enum LibraryLoadingPhase: Equatable {
 enum LibrarySelection: Hashable {
     case home
     case allSongs
+    case folders
     case allPlaylists
     case allAlbums
     case allArtists
@@ -227,6 +228,8 @@ extension LibrarySelection {
             return "home"
         case .allSongs:
             return "allSongs"
+        case .folders:
+            return "folders"
         case .allPlaylists:
             return "allPlaylists"
         case .allAlbums:
@@ -288,6 +291,10 @@ final class LibraryViewModel {
         didSet { albumKeyFirstTrackMap = nil }
     }
     private(set) var playlistItemAddedAtMap: [UUID: [UUID: Date]] = [:]
+
+    /// Rebuildable quality and duplicate projection for the Data settings
+    /// surface. It is never persisted and never owns a Track.
+    private(set) var diagnostics: LibraryDiagnosticsSnapshot = .empty
 
     // Lazy O(1) index for `firstTrack(forAlbumGroupKey:)`. Rebuilt on next
     // access whenever `allTracks` is reassigned. Not part of the observed
@@ -461,11 +468,29 @@ final class LibraryViewModel {
     private let searchIndex: LibrarySearchIndex
     let detailHeaderArtworkResolver: DetailHeaderArtworkResolver
     nonisolated let libraryPaths: LibraryPaths
+    private let libraryID: UUID
+    private let sessionGeneration: UInt64
     private let metadataDetailCoordinator: MetadataDetailCoordinator
     private let artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator
     private var importService: FileImportServiceProtocol?
     var currentTrackIDProvider: (() -> UUID?)?
     var onTracksDeleted: ((Set<UUID>) -> Void)?
+    var onPlaylistDeleted: ((UUID) async -> Void)?
+    var onManualPlaylistAddition: ((UUID, [UUID]) async -> Void)?
+    var onManualPlaylistRemoval: ((UUID, [UUID]) async -> Void)?
+    /// Session-owned import gate. It is installed by `LibrarySession` so
+    /// toolbar, window-drop, and sidebar imports are quiesced together with
+    /// scans and other library operations.
+    var runOwnedImportOperation: ((
+        @escaping @MainActor () async -> LibraryImportResult
+    ) async -> LibraryImportResult?)?
+    /// Installed by the app shell so an import rejected because the library
+    /// changed or closed can surface a sidebar notice like other library
+    /// notices.
+    var onImportRejectedNotice: ((String) -> Void)?
+    var runOwnedLibraryMutation: ((
+        @escaping @MainActor () async -> Void
+    ) async -> Bool)?
     var prepareTracksForDeletion: (([Track]) async -> TrackAuthorityDeletionPreparationResult)?
     var onTrackDeletionPreparationFailures: (([TrackAuthorityDeletionFailure]) -> Void)?
     var prepareTrackRelocationAction: ((UUID, URL) async throws -> TrackRelocationProposal)?
@@ -497,6 +522,7 @@ final class LibraryViewModel {
     // MARK: - Loading Task Management
 
     private var loadTask: Task<Void, Never>?
+    private var diagnosticsTask: Task<Void, Never>?
     private var loadGeneration: UInt64 = 0
     private var currentTaskID: UUID?
     private struct SortPreference: Codable {
@@ -512,7 +538,9 @@ final class LibraryViewModel {
         searchIndex: LibrarySearchIndex,
         detailHeaderArtworkResolver: DetailHeaderArtworkResolver,
         metadataDetailCoordinator: MetadataDetailCoordinator = .shared,
-        artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator
+        artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator,
+        libraryID: UUID = .zero,
+        sessionGeneration: UInt64 = 0
     ) {
         self.repository = repository
         self.libraryService = libraryService
@@ -521,6 +549,8 @@ final class LibraryViewModel {
         self.searchIndex = searchIndex
         self.detailHeaderArtworkResolver = detailHeaderArtworkResolver
         self.libraryPaths = libraryService.paths
+        self.libraryID = libraryID
+        self.sessionGeneration = sessionGeneration
         self.metadataDetailCoordinator = metadataDetailCoordinator
         self.artistArtworkProviderCoordinator = artistArtworkProviderCoordinator
         self.trackSortKey =
@@ -615,6 +645,7 @@ final class LibraryViewModel {
             playlist.tracks = playlist.tracks.map { refreshedByID[$0.id] ?? $0 }
         }
         totalTrackCount = allTracks.count
+        scheduleDiagnosticsRebuild()
         runtimeArtists = await repository.fetchArtistSections()
         runtimeAlbums = await repository.fetchAlbumSections()
         artistEntries = await repository.fetchArtistEntries()
@@ -695,7 +726,12 @@ final class LibraryViewModel {
     func prepareForSessionClose() {
         loadGeneration &+= 1
         cancelCurrentLoad()
+        diagnosticsTask?.cancel()
+        diagnosticsTask = nil
+        diagnostics = .empty
         importService = nil
+        runOwnedImportOperation = nil
+        runOwnedLibraryMutation = nil
         prepareTrackRelocationAction = nil
         relocateTrackAction = nil
         repository.setChangeHandler(nil)
@@ -817,7 +853,7 @@ final class LibraryViewModel {
         switch selection ?? currentSelection {
         case .playlist, .artist, .album:
             return true
-        case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
+        case .home, .allSongs, .folders, .allPlaylists, .allAlbums, .allArtists:
             return false
         }
     }
@@ -826,7 +862,7 @@ final class LibraryViewModel {
         switch selection ?? currentSelection {
         case .allPlaylists, .allAlbums, .allArtists:
             return true
-        case .home, .allSongs, .playlist, .artist, .album:
+        case .home, .allSongs, .folders, .playlist, .artist, .album:
             return false
         }
     }
@@ -839,7 +875,7 @@ final class LibraryViewModel {
             return albumSortKey == .custom
         case .allArtists:
             return artistSortKey == .custom
-        case .home, .allSongs, .playlist, .artist, .album:
+        case .home, .allSongs, .folders, .playlist, .artist, .album:
             return false
         }
     }
@@ -878,7 +914,7 @@ final class LibraryViewModel {
             guard artistSortKey != .custom else { return false }
             artistSortKey = .custom
             return true
-        case .home, .allSongs, .playlist, .artist, .album:
+        case .home, .allSongs, .folders, .playlist, .artist, .album:
             return false
         }
     }
@@ -997,6 +1033,7 @@ final class LibraryViewModel {
             allTracks = await repository.fetchTracks(in: nil)
             playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
             totalTrackCount = allTracks.count
+            scheduleDiagnosticsRebuild()
             runtimeArtists = await repository.fetchArtistSections()
             runtimeAlbums = await repository.fetchAlbumSections()
             artistEntries = await repository.fetchArtistEntries()
@@ -1073,15 +1110,20 @@ final class LibraryViewModel {
         }
     }
 
-    // MARK: - Import (Per-Playlist)
+    // MARK: - Import
 
     /// Import music files using the currently visible page as context.
-    /// Playlist pages import to that playlist. Artist/album pages override the
-    /// corresponding metadata and otherwise use the first displayed playlist.
-    /// Other pages import to the first displayed playlist.
+    /// Playlist pages import to that playlist. Artist/album pages preserve
+    /// their metadata override but still import only into the library; this
+    /// keeps a context action from manufacturing an unrelated playlist.
     private struct ResolvedImportTarget {
-        let playlist: Playlist
+        let destination: LibraryImportDestination
         let metadataOverride: ImportMetadataOverride?
+
+        var playlistID: UUID? {
+            guard case let .playlist(id) = destination else { return nil }
+            return id
+        }
     }
 
     func importToCurrentContext(contentMode: ContentMode) async {
@@ -1097,75 +1139,96 @@ final class LibraryViewModel {
             return
         }
 
-        await importURLs(selectedURLs, using: selection)
+        await importURLs(selectedURLs, using: selection, origin: .toolbar)
     }
 
     func importDroppedURLsToCurrentContext(_ urls: [URL], contentMode: ContentMode) async {
-        await importURLs(urls, using: importSelection(for: contentMode))
+        await importURLs(urls, using: importSelection(for: contentMode), origin: .windowDrop)
     }
 
     func importToCurrentPlaylist() async {
         await importToCurrentContext(contentMode: .library)
     }
 
-    private func importURLs(_ selectedURLs: [URL], using selection: LibrarySelection) async {
+    private func importURLs(
+        _ selectedURLs: [URL],
+        using selection: LibrarySelection,
+        origin: LibraryImportOrigin
+    ) async {
         guard !selectedURLs.isEmpty else { return }
         guard let service = importService else {
             Log.warning("Import service not available", category: .import)
             return
         }
 
-        let target = await resolvedImportTarget(for: selection)
-        let previousTrackCount = target.playlist.trackCount
-        let count = await service.importSelectedURLs(
-            selectedURLs,
-            to: target.playlist,
-            metadataOverride: target.metadataOverride
-        )
-
-        // Only refresh if tracks were actually imported
-        if count > 0 {
-            await syncVisibleStateFromRepositoryAfterImport()
-            await refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
-                playlistID: target.playlist.id,
-                previousTrackCount: previousTrackCount
+        let target = resolvedImportTarget(for: selection)
+        let previousTrackCount = target.playlistID.flatMap { id in
+            playlists.first(where: { $0.id == id })?.trackCount
+        } ?? 0
+        let importWork: @MainActor () async -> LibraryImportResult = {
+            await service.importSelectedURLs(
+                selectedURLs,
+                context: LibraryImportContext(
+                    libraryID: self.libraryID,
+                    sessionGeneration: self.sessionGeneration,
+                    destination: target.destination,
+                    metadataOverride: target.metadataOverride,
+                    origin: origin
+                )
             )
         }
+        let result: LibraryImportResult
+        if let runOwnedImportOperation {
+            guard let ownedResult = await runOwnedImportOperation(importWork) else {
+                notifyImportRejectedByLibraryChange()
+                return
+            }
+            result = ownedResult
+        } else {
+            result = await importWork()
+        }
+        if result.wasRejectedAsStale {
+            notifyImportRejectedByLibraryChange()
+            return
+        }
+
+        // Only refresh if tracks were actually imported
+        if result.affectedTrackCount > 0 {
+            await syncVisibleStateFromRepositoryAfterImport()
+            if let playlistID = target.playlistID {
+                await refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
+                    playlistID: playlistID,
+                    previousTrackCount: previousTrackCount
+                )
+            }
+        }
+    }
+
+    /// Plan §11: a stale import request must be cancelled AND explained to
+    /// the user instead of failing silently.
+    private func notifyImportRejectedByLibraryChange() {
+        Log.warning(
+            "[Import] request rejected because the library changed or closed",
+            category: .import
+        )
+        onImportRejectedNotice?("资料库已切换或已关闭，本次导入已取消")
     }
 
     private func importSelection(for contentMode: ContentMode) -> LibrarySelection {
         contentMode == .library ? currentSelection : .home
     }
 
-    private func resolvedImportTarget(for selection: LibrarySelection) async -> ResolvedImportTarget {
-        let targetPlaylist: Playlist
-        if case .playlist(let id) = selection,
-           let selected = playlists.first(where: { $0.id == id }) {
-            targetPlaylist = selected
-        } else {
-            targetPlaylist = await firstPlaylistForContextImport()
-        }
-
+    private func resolvedImportTarget(for selection: LibrarySelection) -> ResolvedImportTarget {
         return ResolvedImportTarget(
-            playlist: targetPlaylist,
+            destination: {
+                if case let .playlist(id) = selection,
+                   playlists.contains(where: { $0.id == id }) {
+                    return .playlist(id)
+                }
+                return .libraryOnly
+            }(),
             metadataOverride: metadataOverride(for: selection)
         )
-    }
-
-    private func firstPlaylistForContextImport() async -> Playlist {
-        if let first = sortedPlaylistsForDisplay().first {
-            return first
-        }
-
-        let playlist = await repository.createPlaylist(
-            name: String(
-                format: NSLocalizedString("library.imported_playlist_name", comment: ""),
-                formattedDate
-            )
-        )
-        playlists = await repository.fetchPlaylists()
-        refreshTrigger += 1
-        return playlists.first(where: { $0.id == playlist.id }) ?? playlist
     }
 
     private func metadataOverride(for selection: LibrarySelection) -> ImportMetadataOverride? {
@@ -1224,16 +1287,21 @@ final class LibraryViewModel {
             return
         }
 
-        let previousTrackCount = playlist.trackCount
-        let count = await service.importSelectedURLs(selectedURLs, to: playlist)
+        await importURLs(
+            selectedURLs,
+            using: .playlist(playlist.id),
+            origin: .playlistDrop
+        )
+    }
 
-        if count > 0 {
-            await syncVisibleStateFromRepositoryAfterImport()
-            await refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
-                playlistID: playlist.id,
-                previousTrackCount: previousTrackCount
-            )
-        }
+    /// Finder/sidebar drop entry. The destination is captured from the row's
+    /// stable ID, so a later selection change cannot redirect the import.
+    func importDroppedURLsToPlaylist(_ urls: [URL], playlistID: UUID) async {
+        await importURLs(
+            urls,
+            using: .playlist(playlistID),
+            origin: .playlistDrop
+        )
     }
 
     // MARK: - Playlist Operations
@@ -1278,7 +1346,7 @@ final class LibraryViewModel {
     }
 
     func navigateToArtist(for track: Track, uiState: UIStateViewModel? = nil) {
-        guard let artistKey = LibraryNormalization.artistComponents(track.artist).first?.canonicalName else {
+        guard let artistKey = LibraryNormalization.artistComponents(for: track).first?.canonicalName else {
             return
         }
         let target = LibrarySelection.artist(artistKey)
@@ -1320,7 +1388,18 @@ final class LibraryViewModel {
     }
 
     func deletePlaylist(_ playlist: Playlist) async {
+        if let runOwnedLibraryMutation {
+            _ = await runOwnedLibraryMutation { [weak self] in
+                await self?.deletePlaylistWithoutOwnership(playlist)
+            }
+            return
+        }
+        await deletePlaylistWithoutOwnership(playlist)
+    }
+
+    private func deletePlaylistWithoutOwnership(_ playlist: Playlist) async {
         await repository.deletePlaylist(playlist)
+        await onPlaylistDeleted?(playlist.id)
         playlists.removeAll { $0.id == playlist.id }
         playlistItemAddedAtMap[playlist.id] = nil
         if currentSelection == .playlist(playlist.id) {
@@ -1333,8 +1412,19 @@ final class LibraryViewModel {
     }
 
     func addTracksToPlaylist(_ tracks: [Track], playlist: Playlist) async {
+        if let runOwnedLibraryMutation {
+            _ = await runOwnedLibraryMutation { [weak self] in
+                await self?.addTracksToPlaylistWithoutOwnership(tracks, playlist: playlist)
+            }
+            return
+        }
+        await addTracksToPlaylistWithoutOwnership(tracks, playlist: playlist)
+    }
+
+    private func addTracksToPlaylistWithoutOwnership(_ tracks: [Track], playlist: Playlist) async {
         let previousTrackCount = playlist.trackCount
         await repository.addTracks(tracks, to: playlist)
+        await onManualPlaylistAddition?(playlist.id, tracks.map(\.id))
         playlists = await repository.fetchPlaylists()
         playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
         await refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
@@ -1348,7 +1438,18 @@ final class LibraryViewModel {
     }
 
     func removeTracksFromPlaylist(_ tracks: [Track], playlist: Playlist) async {
+        if let runOwnedLibraryMutation {
+            _ = await runOwnedLibraryMutation { [weak self] in
+                await self?.removeTracksFromPlaylistWithoutOwnership(tracks, playlist: playlist)
+            }
+            return
+        }
+        await removeTracksFromPlaylistWithoutOwnership(tracks, playlist: playlist)
+    }
+
+    private func removeTracksFromPlaylistWithoutOwnership(_ tracks: [Track], playlist: Playlist) async {
         await repository.removeTracks(tracks, from: playlist)
+        await onManualPlaylistRemoval?(playlist.id, tracks.map(\.id))
         playlists = await repository.fetchPlaylists()
         playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
         await invalidateDetailSelectionCachesIfNeeded(
@@ -1816,12 +1917,12 @@ final class LibraryViewModel {
     func deleteArtist(_ entry: ArtistEntry) async {
         let affectedTrackIDs = Set(
             allTracks
-                .filter { LibraryNormalization.containsArtist(entry.canonicalName, in: $0.artist) }
+                .filter { LibraryNormalization.containsArtist(entry.canonicalName, in: $0) }
                 .map(\.id)
         )
         let affectedAlbumKeys = Set(
             allTracks
-                .filter { LibraryNormalization.containsArtist(entry.canonicalName, in: $0.artist) }
+                .filter { LibraryNormalization.containsArtist(entry.canonicalName, in: $0) }
                 .map(\.albumGroupKey)
         )
 
@@ -1916,18 +2017,27 @@ final class LibraryViewModel {
         await refresh()
     }
 
-    func saveTrackEdits(_ track: Track, mode: TrackEditPersistenceMode, reason: String) async {
+    @discardableResult
+    func saveTrackEdits(
+        _ track: Track,
+        mode: TrackEditPersistenceMode,
+        reason: String
+    ) async -> LibraryTrackPersistenceResult {
+        let result: LibraryTrackPersistenceResult
         switch mode {
         case .metaOnly:
-            await repository.persistTrackMetaOnly(track, reason: reason)
+            result = await repository.persistTrackMetaOnly([track], reason: reason)
         case .metaAndLyrics:
-            await repository.persistTrackMetaAndLyrics(track, reason: reason)
+            result = await repository.persistTrackMetaAndLyrics([track], reason: reason)
         case .metaAndArtwork:
-            await repository.persistTrackMetaAndArtwork(track, reason: reason)
+            result = await repository.persistTrackMetaAndArtwork([track], reason: reason)
         case .metaLyricsAndArtwork:
-            await repository.persistTrackMetaLyricsAndArtwork(track, reason: reason)
+            result = await repository.persistTrackMetaLyricsAndArtwork([track], reason: reason)
         }
-        notifyTrackAuxiliaryDataChanged(trackIDs: [track.id])
+        if result.persistedTrackIDs.contains(track.id) {
+            notifyTrackAuxiliaryDataChanged(trackIDs: [track.id])
+        }
+        return result
     }
 
     @discardableResult
@@ -2069,6 +2179,8 @@ final class LibraryViewModel {
     func searchTracks(
         query: String,
         scopedTo trackIDs: Set<UUID>,
+        fields: Set<LibrarySearchField> = [.all],
+        sort: LibrarySearchSort = .relevance,
         limit: Int = 200
     ) async -> [UUID: LibrarySearchHit] {
         guard !trackIDs.isEmpty else { return [:] }
@@ -2076,6 +2188,8 @@ final class LibraryViewModel {
         let hits = await searchIndex.search(
             query: query,
             scopedTo: trackIDs,
+            fields: fields,
+            sort: sort,
             limit: max(1, limit)
         )
         return hits.reduce(into: [:]) { result, hit in
@@ -2123,6 +2237,9 @@ final class LibraryViewModel {
         playlists = []
         allTracks = []
         playlistItemAddedAtMap = [:]
+        diagnosticsTask?.cancel()
+        diagnosticsTask = nil
+        diagnostics = .empty
         runtimeArtists = []
         runtimeAlbums = []
         artistEntries = []
@@ -2141,6 +2258,27 @@ final class LibraryViewModel {
         return formatter.string(from: Date())
     }
 
+    /// Build diagnostics from immutable value inputs off the main actor. The
+    /// generation guard prevents a slow 100k-track calculation from publishing
+    /// into a later library session.
+    private func scheduleDiagnosticsRebuild() {
+        diagnosticsTask?.cancel()
+
+        let inputs = allTracks.map {
+            LibraryTrackDiagnosticInputBuilder.make(from: $0)
+        }
+        let generation = loadGeneration
+        diagnosticsTask = Task { [weak self, inputs] in
+            let snapshot = await Task.detached(priority: .utility) {
+                LibraryDiagnosticsAnalyzer.analyze(inputs)
+            }.value
+            guard !Task.isCancelled, let self, self.loadGeneration == generation else {
+                return
+            }
+            self.diagnostics = snapshot
+        }
+    }
+
     private func syncVisibleStateFromRepositoryAfterImport() async {
         await syncVisibleStateFromRepository(reason: "import", invalidatedSelectionIdentities: [])
     }
@@ -2153,6 +2291,7 @@ final class LibraryViewModel {
         allTracks = await repository.fetchTracks(in: nil)
         playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
         totalTrackCount = allTracks.count
+        scheduleDiagnosticsRebuild()
         runtimeArtists = await repository.fetchArtistSections()
         runtimeAlbums = await repository.fetchAlbumSections()
         artistEntries = await repository.fetchArtistEntries()
@@ -2189,7 +2328,7 @@ final class LibraryViewModel {
             return "ARTIST_\(artistKey)"
         case .album(let albumKey):
             return "ALBUM_\(albumKey)"
-        case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
+        case .home, .allSongs, .folders, .allPlaylists, .allAlbums, .allArtists:
             return "__all_songs__"
         }
     }
@@ -2201,7 +2340,7 @@ final class LibraryViewModel {
         )
 
         switch currentSelection {
-        case .home, .allPlaylists, .allAlbums, .allArtists:
+        case .home, .folders, .allPlaylists, .allAlbums, .allArtists:
             return
         case .playlist(let id):
             if !libraryService.updatePlaylistSortPreference(
@@ -2228,7 +2367,7 @@ final class LibraryViewModel {
 
     private func applySortPreferenceForCurrentSelection() {
         switch currentSelection {
-        case .home, .allPlaylists, .allAlbums, .allArtists:
+        case .home, .folders, .allPlaylists, .allAlbums, .allArtists:
             return
         case .playlist(let id):
             let preferences = loadSortPreferencesMap()
@@ -2363,7 +2502,7 @@ final class LibraryViewModel {
             if let entityIDOverride {
                 identities.insert("album-\(entityIDOverride.uuidString)")
             }
-        case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
+        case .home, .allSongs, .folders, .allPlaylists, .allAlbums, .allArtists:
             break
         }
 
@@ -2378,7 +2517,7 @@ final class LibraryViewModel {
             identities.insert("playlist-\(playlist.id.uuidString)")
         }
         for track in allTracks where deletedTrackIDs.contains(track.id) {
-            for artistKey in LibraryNormalization.artistCanonicalNames(track.artist) {
+            for artistKey in LibraryNormalization.artistCanonicalNames(for: track) {
                 identities.formUnion(selectionIdentityVariants(for: .artist(artistKey)))
             }
             identities.formUnion(
@@ -2392,14 +2531,14 @@ final class LibraryViewModel {
         guard !deletedTrackIDs.isEmpty else { return }
 
         switch currentSelection {
-        case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
+        case .home, .allSongs, .folders, .allPlaylists, .allAlbums, .allArtists:
             return
         case .playlist:
             return
         case .artist(let key):
             let hasRemaining = allTracks.contains {
                 !deletedTrackIDs.contains($0.id)
-                    && LibraryNormalization.containsArtist(key, in: $0.artist)
+                    && LibraryNormalization.containsArtist(key, in: $0)
             }
             if !hasRemaining {
                 currentSelection = .allSongs
@@ -2437,7 +2576,7 @@ final class LibraryViewModel {
 
     private func reconcileSelectionAfterLoad() {
         switch currentSelection {
-        case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
+        case .home, .allSongs, .folders, .allPlaylists, .allAlbums, .allArtists:
             break
         case .playlist(let id):
             guard playlists.contains(where: { $0.id == id }) else {
@@ -2720,7 +2859,7 @@ final class LibraryViewModel {
         switch selection {
         case .playlist, .artist, .album:
             return selection.selectionIdentity(in: self)
-        case .home, .allSongs, .allPlaylists, .allAlbums, .allArtists:
+        case .home, .allSongs, .folders, .allPlaylists, .allAlbums, .allArtists:
             return nil
         }
     }
@@ -2766,7 +2905,7 @@ final class LibraryViewModel {
             return "allAlbums"
         case .allArtists:
             return "allArtists"
-        case .home, .allSongs, .playlist, .artist, .album:
+        case .home, .allSongs, .folders, .playlist, .artist, .album:
             return nil
         }
     }
