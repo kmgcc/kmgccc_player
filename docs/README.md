@@ -11,6 +11,9 @@
 | [歌词渲染系统](lyric-rendering.md) | TTML 解析、WebView 生命周期、多 surface 管理、时间偏移和提前切行算法 |
 | [色彩系统](color-system.md) | 封面分析、OKLCH 语义色、Display P3 输出和局部可读性判断 |
 | [资料库存储](library-storage.md) | 托管/原位模式、registry、目录、source、缓存、索引、播放历史和删除边界 |
+| [本地音乐资料库重构计划](music-library-rearchitecture-plan.md) | 原位资料库重点重构、托管兼容、文件夹与播放列表关系、领域模型迁移、分阶段实施和验收 |
+| [阶段 0-1 入口审计](music-library-stage0-1-entry-audit.md) | 已冻结入口、生命周期 owner、服务链路和阶段验收基线 |
+| [阶段 8 验收记录](music-library-stage8-acceptance.md) | 诊断投影、重复审查、原位排除目录、搜索扩展、批量写回状态和未完成验收边界 |
 | [曲库搜索](search.md) | FTS5、字符 n-gram、TTML 纯文本提取、候选召回与排序 |
 | [偏好随机播放](smart-shuffle.md) | 行为信号、负向衰减、探索与再曝光的权重模型 |
 | [崩溃报告与分析](crash-reporting.md) | 捕获与上报架构、隐私边界、Breadcrumb/会话关联、GitHub Release dSYM、符号化和受控验证 |
