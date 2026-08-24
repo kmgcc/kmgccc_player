@@ -225,6 +225,7 @@ final class LibraryCreationService {
         allowAlternateDestinationWhenOccupied: Bool = false,
         allowStalePathConflictRepair: Bool = false
     ) async throws -> LibraryCreationResult {
+        try Task.checkCancellation()
         do { try gate.acquire() }
         catch { throw LibraryCreationError.stagingFailed }
         defer { gate.release() }
@@ -233,16 +234,17 @@ final class LibraryCreationService {
         guard !trimmedName.isEmpty else { throw LibraryCreationError.invalidDisplayName }
 
         // Resolve the destination directory. The preferred name is the
-        // shared rootDirectoryName; when it already holds a valid library
-        // the caller either gets `.existingLibrary` (default) or — with
-        // allowAlternateDestinationWhenOccupied — a numbered sibling
-        // ("kmgccc_player Library 2", "3", …) so one parent folder can
-        // host several independent libraries.
+        // shared rootDirectoryName. Interactive creation keeps the default
+        // false and reports the concrete existing library to the wizard; only
+        // the system factory-default recovery path opts into a numbered
+        // sibling so it can guarantee a usable empty library without
+        // overwriting user data.
         var destination = parentURL
             .appendingPathComponent(LibraryPaths.rootDirectoryName, isDirectory: true)
             .standardizedFileURL
         var suffix = 1
         while await fileOperator.itemExists(at: destination) {
+            try Task.checkCancellation()
             do {
                 let inspected = try await openService.inspect(
                     selectedURL: destination,
@@ -258,7 +260,18 @@ final class LibraryCreationService {
                     .appendingPathComponent("\(LibraryPaths.rootDirectoryName) \(suffix)", isDirectory: true)
                     .standardizedFileURL
             } catch {
-                // Not a valid library: reuse the slot only when empty.
+                // Never delete or overwrite unknown user data. Explicitly
+                // opting into an alternate destination (used by the system
+                // fallback and the confirmation button) moves to the next
+                // sibling; ordinary creation still reports the conflict.
+                if allowAlternateDestinationWhenOccupied,
+                   (try? await fileOperator.directoryIsEmpty(at: destination)) != true {
+                    suffix += 1
+                    destination = parentURL
+                        .appendingPathComponent("\(LibraryPaths.rootDirectoryName) \(suffix)", isDirectory: true)
+                        .standardizedFileURL
+                    continue
+                }
                 guard (try? await fileOperator.directoryIsEmpty(at: destination)) == true else {
                     throw LibraryCreationError.destinationContainsUnknownItems
                 }
@@ -272,17 +285,25 @@ final class LibraryCreationService {
         do {
             try await fileOperator.createStagedLibrary(at: staging, manifest: manifest)
             try await fileOperator.validateLibrary(at: staging, expectedID: manifest.libraryID, expectedMode: mode)
+            try Task.checkCancellation()
             try await fileOperator.publishStaging(at: staging, to: destination)
+            try Task.checkCancellation()
+        } catch is CancellationError {
+            await fileOperator.removeItemIfPresent(at: staging)
+            await fileOperator.removeItemIfPresent(at: destination)
+            throw CancellationError()
         } catch {
             await fileOperator.removeItemIfPresent(at: staging)
             throw LibraryCreationError.stagingFailed
         }
 
         do {
+            try Task.checkCancellation()
             let inspection = try await openService.inspect(
                 selectedURL: destination,
                 allowStalePathConflictRepair: allowStalePathConflictRepair
             )
+            try Task.checkCancellation()
             let opened = try await openService.commitActivation(inspection, gateAlreadyHeld: true)
             return .created(opened.context, initialImport: initialImport)
         } catch LibraryOpenError.recoveryFailed {

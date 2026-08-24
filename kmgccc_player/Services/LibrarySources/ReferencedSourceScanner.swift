@@ -54,7 +54,12 @@ actor ReferencedSourceScanner {
         self.isIgnored = isIgnored
     }
 
-    func scan(context: LibraryContext, sourceID: UUID, rootURL: URL) async throws -> ReferencedSourceScanResult {
+    func scan(
+        context: LibraryContext,
+        sourceID: UUID,
+        rootURL: URL,
+        excludedRelativePaths: Set<String> = []
+    ) async throws -> ReferencedSourceScanResult {
         guard context.mode == .referenced else { throw ReferencedSourceScanError.sourceOffline }
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: rootURL.path, isDirectory: &isDirectory) else {
@@ -68,7 +73,11 @@ actor ReferencedSourceScanner {
         let generation = (previous?.generation ?? 0) &+ 1
         let snapshot: (entries: [ReferencedSourceScanEntry], ignored: [ReferencedSourceIgnoredFile], failures: [ReferencedSourceScanFailure])
         if isDirectory.boolValue {
-            snapshot = try await enumerate(rootURL: rootURL, generation: generation)
+            snapshot = try await enumerate(
+                rootURL: rootURL,
+                generation: generation,
+                excludedRelativePaths: excludedRelativePaths
+            )
         } else {
             snapshot = try await enumerateSingleFile(rootURL: rootURL, generation: generation)
         }
@@ -130,6 +139,22 @@ actor ReferencedSourceScanner {
         ignored: [ReferencedSourceIgnoredFile],
         failures: [ReferencedSourceScanFailure]
     ) {
+        return try await enumerate(
+            rootURL: rootURL,
+            generation: generation,
+            excludedRelativePaths: []
+        )
+    }
+
+    private func enumerate(
+        rootURL: URL,
+        generation: UInt64,
+        excludedRelativePaths: Set<String>
+    ) async throws -> (
+        entries: [ReferencedSourceScanEntry],
+        ignored: [ReferencedSourceIgnoredFile],
+        failures: [ReferencedSourceScanFailure]
+    ) {
         let root = rootURL.resolvingSymlinksInPath().standardizedFileURL
         var pending = [root]
         var visitedDirectories = Set<String>()
@@ -158,6 +183,10 @@ actor ReferencedSourceScanner {
                     let resolved = values.isSymbolicLink == true ? child.resolvingSymlinksInPath().standardizedFileURL : child.standardizedFileURL
                     guard contains(resolved, in: root) else { continue }
                     if values.isDirectory == true {
+                        if let relative = relativePath(resolved, root: root),
+                           isExcluded(relative, paths: excludedRelativePaths) {
+                            continue
+                        }
                         pending.append(resolved)
                         continue
                     }
@@ -173,6 +202,7 @@ actor ReferencedSourceScanner {
                         continue
                     }
                     guard let relative = relativePath(resolved, root: root) else { continue }
+                    guard !isExcluded(relative, paths: excludedRelativePaths) else { continue }
                     if await isIgnored(fingerprint) {
                         ignored.append(.init(relativePath: relative, fingerprint: fingerprint))
                         continue
@@ -279,6 +309,12 @@ actor ReferencedSourceScanner {
 
     private func contains(_ candidate: URL, in root: URL) -> Bool {
         candidate.path == root.path || candidate.path.hasPrefix(root.path + "/")
+    }
+
+    private func isExcluded(_ relativePath: String, paths: Set<String>) -> Bool {
+        paths.contains { excluded in
+            relativePath == excluded || relativePath.hasPrefix(excluded + "/")
+        }
     }
 
     private func relativePath(_ url: URL, root: URL) -> String? {

@@ -49,7 +49,7 @@ actor ReferencedSourceStore {
             guard let schema = object["schemaVersion"] as? Int else {
                 throw ReferencedSourceStoreError.missingSchema
             }
-            guard schema == ReferencedSourceDescriptor.currentSchemaVersion else {
+            guard schema == 1 || schema == 2 || schema == ReferencedSourceDescriptor.currentSchemaVersion else {
                 throw ReferencedSourceStoreError.unsupportedSchema(schema)
             }
             guard let mode = object["mode"] as? String else {
@@ -60,7 +60,13 @@ actor ReferencedSourceStore {
             }
         }
         let descriptor = try decoder.decode(ReferencedSourceDescriptor.self, from: data)
-        return try validate(descriptor, expectedID: id)
+        let validated = try validate(descriptor, expectedID: id)
+        if schemaVersion(in: data) < ReferencedSourceDescriptor.currentSchemaVersion {
+            // Upgrade one descriptor at a time. The caller can continue even
+            // if another source is unavailable; each write is atomic.
+            try save(validated)
+        }
+        return validated
     }
 
     func save(_ descriptor: ReferencedSourceDescriptor) throws {
@@ -89,6 +95,120 @@ actor ReferencedSourceStore {
         descriptor.status = status
         try save(descriptor)
         return descriptor
+    }
+
+    func ensurePlaylistBinding(
+        sourceID: UUID,
+        playlistID: UUID,
+        relativePath: String? = nil
+    ) throws -> ReferencedPlaylistSourceBinding {
+        var descriptor = try load(id: sourceID)
+        if let existing = descriptor.playlistBindings.first(where: {
+            $0.playlistID == playlistID && $0.relativePath == relativePath
+        }) {
+            return existing
+        }
+        let binding = ReferencedPlaylistSourceBinding(
+            playlistID: playlistID,
+            relativePath: relativePath
+        )
+        descriptor.playlistBindings.append(binding)
+        try save(descriptor)
+        return binding
+    }
+
+    func updatePlaylistBinding(_ binding: ReferencedPlaylistSourceBinding, sourceID: UUID) throws {
+        var descriptor = try load(id: sourceID)
+        guard let index = descriptor.playlistBindings.firstIndex(where: { $0.id == binding.id }) else {
+            return
+        }
+        descriptor.playlistBindings[index] = binding
+        try save(descriptor)
+    }
+
+    func updateExcludedRelativePaths(
+        sourceID: UUID,
+        paths: [String]
+    ) throws -> ReferencedSourceDescriptor {
+        var descriptor = try load(id: sourceID)
+        guard descriptor.mode == .directory else {
+            guard paths.isEmpty else { throw ReferencedSourceStoreError.invalidExcludedPath }
+            descriptor.excludedRelativePaths = []
+            try save(descriptor)
+            return descriptor
+        }
+
+        let trimmedPaths = paths.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard trimmedPaths.allSatisfy({
+            !$0.isEmpty && TrackMediaLocator.isSafeRelativePath($0)
+        }) else {
+            throw ReferencedSourceStoreError.invalidExcludedPath
+        }
+        let normalized = ReferencedSourceDescriptor.normalizedExcludedRelativePaths(trimmedPaths)
+        descriptor.excludedRelativePaths = normalized
+        try save(descriptor)
+        return descriptor
+    }
+
+    func setExcludedRelativePath(
+        sourceID: UUID,
+        relativePath: String,
+        excluded: Bool
+    ) throws -> ReferencedSourceDescriptor {
+        let normalizedPath = relativePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedPath.isEmpty,
+              TrackMediaLocator.isSafeRelativePath(normalizedPath) else {
+            throw ReferencedSourceStoreError.invalidExcludedPath
+        }
+
+        var descriptor = try load(id: sourceID)
+        guard descriptor.mode == .directory else {
+            throw ReferencedSourceStoreError.invalidExcludedPath
+        }
+
+        if excluded {
+            descriptor.excludedRelativePaths.append(normalizedPath)
+        } else {
+            descriptor.excludedRelativePaths.removeAll { existing in
+                existing == normalizedPath
+                    || existing.hasPrefix(normalizedPath + "/")
+            }
+        }
+        descriptor.excludedRelativePaths = ReferencedSourceDescriptor.normalizedExcludedRelativePaths(
+            descriptor.excludedRelativePaths
+        )
+        try save(descriptor)
+        return descriptor
+    }
+
+    func removePlaylistBinding(sourceID: UUID, bindingID: UUID) throws {
+        var descriptor = try load(id: sourceID)
+        descriptor.playlistBindings.removeAll { $0.id == bindingID }
+        try save(descriptor)
+    }
+
+    func bindings(for sourceID: UUID) throws -> [ReferencedPlaylistSourceBinding] {
+        try load(id: sourceID).playlistBindings
+    }
+
+    func allBindings() throws -> [(sourceID: UUID, binding: ReferencedPlaylistSourceBinding)] {
+        try loadAll().flatMap { descriptor in
+            descriptor.playlistBindings.map { (descriptor.id, $0) }
+        }
+    }
+
+    /// Removes bindings for a deleted playlist but leaves source descriptors
+    /// and external files untouched. This is deliberately explicit so a later
+    /// scan can never recreate a deleted playlist from stale source metadata.
+    func removeBindings(for playlistID: UUID) throws {
+        for var descriptor in try loadAll() {
+            let before = descriptor.playlistBindings.count
+            descriptor.playlistBindings.removeAll { $0.playlistID == playlistID }
+            guard descriptor.playlistBindings.count != before else { continue }
+            try save(descriptor)
+        }
     }
 
     func reconnectDescriptor(
@@ -126,6 +246,19 @@ actor ReferencedSourceStore {
         guard !descriptor.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ReferencedSourceStoreError.invalidDisplayName
         }
+        guard descriptor.excludedRelativePaths.allSatisfy({
+            !$0.isEmpty && TrackMediaLocator.isSafeRelativePath($0)
+        }) else {
+            throw ReferencedSourceStoreError.invalidExcludedPath
+        }
         return descriptor
+    }
+
+    private func schemaVersion(in data: Data) -> Int {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let schema = object["schemaVersion"] as? Int else {
+            return ReferencedSourceDescriptor.currentSchemaVersion
+        }
+        return schema
     }
 }

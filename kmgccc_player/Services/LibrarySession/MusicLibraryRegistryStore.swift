@@ -156,6 +156,38 @@ actor MusicLibraryRegistryStore {
     private var registry: MusicLibraryRegistry
     private let beforeCommit: @Sendable () throws -> Void
 
+    /// Creates the process registry with a recoverable startup path. A
+    /// malformed registry is moved aside before rebuilding an empty index;
+    /// physical library roots remain untouched and can be rediscovered by the
+    /// normal default-library/startup policy.
+    nonisolated static func makeApplicationStore(
+        fileURL: URL = MusicLibraryRegistryStore.defaultRegistryURL
+    ) -> MusicLibraryRegistryStore {
+        do {
+            return try MusicLibraryRegistryStore(fileURL: fileURL)
+        } catch {
+            let backupURL = fileURL
+                .deletingPathExtension()
+                .appendingPathExtension("corrupt-\(UUID().uuidString).json")
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try? FileManager.default.moveItem(at: fileURL, to: backupURL)
+            }
+
+            do {
+                return try MusicLibraryRegistryStore(fileURL: fileURL)
+            } catch {
+                let fallbackURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("kmgccc-player-registry-recovery-\(UUID().uuidString)", isDirectory: true)
+                    .appendingPathComponent("LibraryRegistry.json")
+                Log.error(
+                    "[LibraryRegistry] persistent registry unavailable; using session recovery store primary=\(fileURL.path) error=\(error)",
+                    category: .library
+                )
+                return MusicLibraryRegistryStore(recoveryFileURL: fallbackURL)
+            }
+        }
+    }
+
     init(
         fileURL: URL = MusicLibraryRegistryStore.defaultRegistryURL,
         beforeCommit: @escaping @Sendable () throws -> Void = {}
@@ -163,6 +195,12 @@ actor MusicLibraryRegistryStore {
         self.fileURL = fileURL
         self.registry = try MusicLibraryRegistryFile.load(from: fileURL)
         self.beforeCommit = beforeCommit
+    }
+
+    private init(recoveryFileURL: URL) {
+        self.fileURL = recoveryFileURL
+        self.registry = MusicLibraryRegistry()
+        self.beforeCommit = {}
     }
 
     func snapshot() -> MusicLibraryRegistry {

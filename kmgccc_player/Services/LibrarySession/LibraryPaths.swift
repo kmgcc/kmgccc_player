@@ -62,6 +62,17 @@ nonisolated struct LibraryPaths: Sendable, Equatable {
 
     var ignoredItemsURL: URL { sourcesRootURL.appendingPathComponent("ignored-items.json") }
     var ncmConversionsURL: URL { sourcesRootURL.appendingPathComponent("ncm-conversions.json") }
+    /// Durable source-aware playlist membership projection. Playlist sidecars
+    /// continue to own order; this file owns source/manual/exclusion edges.
+    var playlistMembershipsURL: URL {
+        sourcesRootURL.appendingPathComponent("playlist-memberships.json")
+    }
+    var domainMigrationJournalURL: URL {
+        settingsRootURL.appendingPathComponent("domain-migration.json")
+    }
+    var domainMigrationBackupRootURL: URL {
+        settingsRootURL.appendingPathComponent("DomainMigrationBackups", isDirectory: true)
+    }
 
     func trackFolderURL(for id: UUID) -> URL {
         tracksRootURL.appendingPathComponent(id.uuidString, isDirectory: true)

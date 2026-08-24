@@ -97,6 +97,79 @@ final class ReferencedSourceStoreTests: XCTestCase {
         await XCTAssertThrowsErrorAsync(try await store.load(id: id))
         XCTAssertEqual(try Data(contentsOf: url), corrupt)
     }
+
+    func testExcludedRelativePathsRoundTripAndCanBeCleared() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let store = ReferencedSourceStore(paths: fixture.paths)
+        let source = ReferencedSourceDescriptor(
+            rootBookmarkData: Data("bookmark".utf8),
+            lastKnownPath: "/Music",
+            displayName: "Music",
+            excludedRelativePaths: ["Live", "Live/Archive"]
+        )
+
+        try await store.save(source)
+        let loaded = try await store.load(id: source.id)
+        XCTAssertEqual(loaded.excludedRelativePaths, ["Live", "Live/Archive"])
+
+        _ = try await store.setExcludedRelativePath(
+            sourceID: source.id,
+            relativePath: "Live",
+            excluded: false
+        )
+        let cleared = try await store.load(id: source.id)
+        XCTAssertTrue(cleared.excludedRelativePaths.isEmpty)
+    }
+
+    func testSchemaTwoSourceLoadsAndIsUpgradedWithoutLosingBindings() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let store = ReferencedSourceStore(paths: fixture.paths)
+        let source = ReferencedSourceDescriptor(
+            rootBookmarkData: Data("bookmark".utf8),
+            lastKnownPath: "/Music",
+            displayName: "Music",
+            playlistBindings: [.init(playlistID: UUID())]
+        )
+        try await store.save(source)
+
+        let url = fixture.paths.sourceDescriptorURL(for: source.id)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        object["schemaVersion"] = 2
+        object.removeValue(forKey: "excludedRelativePaths")
+        try JSONSerialization.data(withJSONObject: object).write(to: url, options: .atomic)
+
+        let loaded = try await store.load(id: source.id)
+        XCTAssertEqual(loaded.playlistBindings.count, 1)
+        XCTAssertEqual(loaded.excludedRelativePaths, [])
+        let upgraded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        XCTAssertEqual(upgraded["schemaVersion"] as? Int, ReferencedSourceDescriptor.currentSchemaVersion)
+    }
+
+    func testInvalidExcludedRelativePathIsRejectedWithoutMutation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let store = ReferencedSourceStore(paths: fixture.paths)
+        let source = ReferencedSourceDescriptor(
+            rootBookmarkData: Data("bookmark".utf8),
+            lastKnownPath: "/Music",
+            displayName: "Music"
+        )
+        try await store.save(source)
+
+        await XCTAssertThrowsErrorAsync(
+            try await store.setExcludedRelativePath(
+                sourceID: source.id,
+                relativePath: "../Music",
+                excluded: true
+            )
+        ) {
+            XCTAssertEqual($0 as? ReferencedSourceStoreError, .invalidExcludedPath)
+        }
+        let loaded = try await store.load(id: source.id)
+        XCTAssertTrue(loaded.excludedRelativePaths.isEmpty)
+    }
 }
 
 private struct Fixture {
