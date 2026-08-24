@@ -52,7 +52,7 @@ final class LibraryMetadataSync {
         var albumCountByArtist: [String: Set<String>] = [:]
         var totalDurationByArtist: [String: Double] = [:]
         for track in allTracks {
-            for artistKey in LibraryNormalization.artistCanonicalNames(track.artist) {
+            for artistKey in LibraryNormalization.artistCanonicalNames(for: track) {
                 albumCountByArtist[artistKey, default: []].insert(track.albumGroupKey)
                 totalDurationByArtist[artistKey, default: 0] += track.duration
             }

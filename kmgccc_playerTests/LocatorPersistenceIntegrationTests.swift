@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class LocatorPersistenceIntegrationTests: XCTestCase {
-    func testReferencedMetaOnlyWritesSchemaSevenAndPreservesLocator() throws {
+    func testReferencedMetaOnlyWritesCurrentSchemaAndPreservesLocator() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
 
@@ -14,10 +14,46 @@ final class LocatorPersistenceIntegrationTests: XCTestCase {
         XCTAssertEqual(metaURL.deletingLastPathComponent().lastPathComponent, fixture.track.id.uuidString)
         let data = try Data(contentsOf: metaURL)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        XCTAssertEqual(json["schemaVersion"] as? Int, 7)
+        XCTAssertEqual(json["schemaVersion"] as? Int, kmgccc_player.TrackSidecar.currentSchemaVersion)
         let decoded = try fixture.decoder.decode(kmgccc_player.TrackSidecar.self, from: data)
         XCTAssertEqual(decoded.mediaLocator, fixture.locator)
         XCTAssertEqual(decoded.mediaLocator.referencedFile?.fileBookmarkData, Data([1, 2, 3]))
+    }
+
+    func testSchemaNineLayerFieldsRoundTripThroughWriter() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let digest = String(repeating: "c9d4", count: 16)
+        let layeredLocator = kmgccc_player.TrackMediaLocator.referenced(
+            kmgccc_player.ReferencedFileLocator(
+                fileBookmarkData: Data([7, 8]),
+                lastKnownPath: "/diagnostic-only/song.flac",
+                primaryAudioProperties: kmgccc_player.TrackAudioProperties(format: "FLAC", sampleRateHz: 48_000),
+                primaryContentDigest: digest,
+                primaryAvailabilityRaw: kmgccc_player.TrackAvailability.available.rawValue
+            )
+        )
+        fixture.track.mediaLocator = layeredLocator
+        fixture.track.musicBrainzReleaseID = "mbid-9f2"
+        fixture.track.embeddedMetadataSnapshot = kmgccc_player.EmbeddedMetadataSnapshot(
+            title: "Embedded",
+            releaseYear: 2026,
+            capturedAt: Date(timeIntervalSince1970: 1_760_000_000)
+        )
+
+        XCTAssertTrue(fixture.service.writeMetaOnly(for: fixture.track, reason: "testSchemaNineLayers"))
+
+        let decoded = try fixture.decoder.decode(
+            kmgccc_player.TrackSidecar.self,
+            from: Data(contentsOf: fixture.paths.trackMetaURL(for: fixture.track.id))
+        )
+        XCTAssertEqual(decoded.schemaVersion, kmgccc_player.TrackSidecar.currentSchemaVersion)
+        XCTAssertEqual(decoded.musicBrainzReleaseID, "mbid-9f2")
+        XCTAssertEqual(decoded.embeddedMetadataSnapshot?.releaseYear, 2026)
+        let persistedLocator = try XCTUnwrap(decoded.mediaLocator.referencedFile)
+        XCTAssertEqual(persistedLocator.primaryContentDigest, digest)
+        XCTAssertEqual(persistedLocator.locations[0].contentDigest, digest)
+        XCTAssertTrue(fixture.track.contentDigestPresent)
     }
 
     func testRefreshedLocatorPersistsRuntimeAndSidecarTogether() async throws {

@@ -40,6 +40,7 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
     let id: UUID
     let title: String
     let artist: String
+    let artistCredits: [TrackCredit]?
     let album: String
     let albumArtist: String?
     let userDescription: String
@@ -51,6 +52,7 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
     let metadataSource: String?
     let metadataFetchedAt: Date?
     let metadataConfidence: Double?
+    let musicBrainzReleaseID: String?
     let duration: Double
     let addedAt: Date
     let importedAt: Date?
@@ -58,6 +60,10 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
     let originalFilePath: String
     let mediaLocator: TrackMediaLocator
     let availability: TrackAvailability
+    let embeddedMetadataSnapshot: EmbeddedMetadataSnapshot?
+    let importProvenance: ImportProvenance?
+    let audioProperties: TrackAudioProperties?
+    let enrichmentSuggestions: [EnrichmentSuggestion]?
     let artworkData: Data?
     let ttmlLyricText: String?
     let lyricsText: String?
@@ -69,6 +75,7 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
         id = track.id
         title = track.title
         artist = track.artist
+        artistCredits = track.artistCredits
         album = track.album
         albumArtist = track.albumArtist
         userDescription = track.userDescription
@@ -80,6 +87,7 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
         metadataSource = track.metadataSource
         metadataFetchedAt = track.metadataFetchedAt
         metadataConfidence = track.metadataConfidence
+        musicBrainzReleaseID = track.musicBrainzReleaseID
         duration = track.duration
         addedAt = track.addedAt
         importedAt = track.importedAt
@@ -87,6 +95,10 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
         originalFilePath = track.originalFilePath
         mediaLocator = track.mediaLocator
         availability = track.availability
+        embeddedMetadataSnapshot = track.embeddedMetadataSnapshot
+        importProvenance = track.importProvenance
+        audioProperties = track.audioProperties
+        enrichmentSuggestions = track.enrichmentSuggestions
         artworkData = track.artworkData
         ttmlLyricText = track.ttmlLyricText
         lyricsText = track.lyricsText
@@ -559,6 +571,7 @@ final class LocalLibraryService {
             id: track.id,
             title: track.title,
             artist: track.artist,
+            artistCredits: track.artistCredits,
             album: track.album,
             albumArtist: {
                 let trimmed = track.albumArtist?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -582,6 +595,7 @@ final class LocalLibraryService {
             metadataSource: track.metadataSource,
             metadataFetchedAt: track.metadataFetchedAt,
             metadataConfidence: track.metadataConfidence,
+            musicBrainzReleaseID: track.musicBrainzReleaseID,
             duration: track.duration,
             addedAt: track.addedAt,
             importedAt: track.importedAt ?? track.addedAt,
@@ -597,7 +611,11 @@ final class LocalLibraryService {
             ncmConversionAssociation: track.ncmConversionAssociation,
             preferenceStats: preferenceStats,
             mediaLocator: effectiveLocator,
-            availability: availability ?? track.availability
+            availability: availability ?? track.availability,
+            embeddedMetadataSnapshot: track.embeddedMetadataSnapshot,
+            enrichmentSuggestions: track.enrichmentSuggestions,
+            importProvenance: track.importProvenance,
+            audioProperties: track.audioProperties
         )
 
         let data = try encoder.encode(sidecar)
@@ -619,6 +637,7 @@ final class LocalLibraryService {
             id: snapshot.id,
             title: snapshot.title,
             artist: snapshot.artist,
+            artistCredits: snapshot.artistCredits,
             album: snapshot.album,
             albumArtist: {
                 let trimmed = snapshot.albumArtist?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -642,6 +661,7 @@ final class LocalLibraryService {
             metadataSource: snapshot.metadataSource,
             metadataFetchedAt: snapshot.metadataFetchedAt,
             metadataConfidence: snapshot.metadataConfidence,
+            musicBrainzReleaseID: snapshot.musicBrainzReleaseID,
             duration: snapshot.duration,
             addedAt: snapshot.addedAt,
             importedAt: snapshot.importedAt ?? snapshot.addedAt,
@@ -657,7 +677,11 @@ final class LocalLibraryService {
             ncmConversionAssociation: snapshot.ncmConversionAssociation,
             preferenceStats: snapshot.preferenceStats,
             mediaLocator: snapshot.mediaLocator,
-            availability: snapshot.availability
+            availability: snapshot.availability,
+            embeddedMetadataSnapshot: snapshot.embeddedMetadataSnapshot,
+            enrichmentSuggestions: snapshot.enrichmentSuggestions,
+            importProvenance: snapshot.importProvenance,
+            audioProperties: snapshot.audioProperties
         )
 
         let data = try makeJSONEncoder().encode(sidecar)

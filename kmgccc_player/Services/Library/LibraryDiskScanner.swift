@@ -529,6 +529,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
     let id: UUID
     let title: String
     let artist: String
+    let artistCredits: [TrackCredit]?
     let album: String
     let albumArtist: String?
     let description: String
@@ -540,6 +541,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
     let metadataSource: String?
     let metadataFetchedAt: Date?
     let metadataConfidence: Double?
+    let musicBrainzReleaseID: String?
     let duration: Double
     let addedAt: Date
     let importedAt: Date
@@ -547,6 +549,11 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
     let originalFilePath: String
     let mediaLocator: TrackMediaLocator
     let availability: TrackAvailability
+    let embeddedMetadataSnapshot: EmbeddedMetadataSnapshot?
+    let userMetadataOverride: UserMetadataOverride?
+    let enrichmentSuggestions: [EnrichmentSuggestion]?
+    let importProvenance: ImportProvenance?
+    let audioProperties: TrackAudioProperties?
     let audioFileName: String
     let artworkFileName: String?
     let lyricsFileName: String?
@@ -561,6 +568,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         case id
         case title
         case artist
+        case artistCredits
         case album
         case albumArtist
         case description
@@ -572,6 +580,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         case metadataSource
         case metadataFetchedAt
         case metadataConfidence
+        case musicBrainzReleaseID
         case duration
         case addedAt
         case importedAt
@@ -579,6 +588,11 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         case originalFilePath
         case mediaLocator
         case availability
+        case embeddedMetadataSnapshot
+        case userMetadataOverride
+        case enrichmentSuggestions
+        case importProvenance
+        case audioProperties
         case audioFileName
         case artworkFileName
         case lyricsFileName
@@ -594,6 +608,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         id = meta.id
         title = meta.title
         artist = meta.artist
+        artistCredits = meta.artistCredits
         album = meta.album
         albumArtist = meta.albumArtist
         description = meta.description
@@ -605,6 +620,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         metadataSource = meta.metadataSource
         metadataFetchedAt = meta.metadataFetchedAt
         metadataConfidence = meta.metadataConfidence
+        musicBrainzReleaseID = meta.musicBrainzReleaseID
         duration = meta.duration
         addedAt = meta.addedAt
         importedAt = meta.importedAt
@@ -612,6 +628,11 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         originalFilePath = meta.originalFilePath
         mediaLocator = meta.mediaLocator
         availability = meta.availability
+        embeddedMetadataSnapshot = meta.embeddedMetadataSnapshot
+        userMetadataOverride = meta.userMetadataOverride
+        enrichmentSuggestions = meta.enrichmentSuggestions.isEmpty ? nil : meta.enrichmentSuggestions
+        importProvenance = meta.importProvenance
+        audioProperties = meta.audioProperties
         audioFileName = meta.audioFileName
         artworkFileName = meta.artworkFileName
         lyricsFileName = meta.lyricsFileName
@@ -628,6 +649,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         id = try c.decode(UUID.self, forKey: .id)
         title = try c.decode(String.self, forKey: .title)
         artist = try c.decode(String.self, forKey: .artist)
+        artistCredits = try c.decodeIfPresent([TrackCredit].self, forKey: .artistCredits)
         album = try c.decode(String.self, forKey: .album)
         albumArtist = try c.decodeIfPresent(String.self, forKey: .albumArtist)
         description = try c.decode(String.self, forKey: .description)
@@ -639,6 +661,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         metadataSource = try c.decodeIfPresent(String.self, forKey: .metadataSource)
         metadataFetchedAt = try c.decodeIfPresent(Date.self, forKey: .metadataFetchedAt)
         metadataConfidence = try c.decodeIfPresent(Double.self, forKey: .metadataConfidence)
+        musicBrainzReleaseID = try c.decodeIfPresent(String.self, forKey: .musicBrainzReleaseID)
         duration = try c.decode(Double.self, forKey: .duration)
         addedAt = try c.decode(Date.self, forKey: .addedAt)
         importedAt = try c.decode(Date.self, forKey: .importedAt)
@@ -646,6 +669,11 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         originalFilePath = try c.decode(String.self, forKey: .originalFilePath)
         mediaLocator = try c.decode(TrackMediaLocator.self, forKey: .mediaLocator)
         availability = try c.decode(TrackAvailability.self, forKey: .availability)
+        embeddedMetadataSnapshot = try c.decodeIfPresent(EmbeddedMetadataSnapshot.self, forKey: .embeddedMetadataSnapshot)
+        userMetadataOverride = try c.decodeIfPresent(UserMetadataOverride.self, forKey: .userMetadataOverride)
+        enrichmentSuggestions = try c.decodeIfPresent([EnrichmentSuggestion].self, forKey: .enrichmentSuggestions)
+        importProvenance = try c.decodeIfPresent(ImportProvenance.self, forKey: .importProvenance)
+        audioProperties = try c.decodeIfPresent(TrackAudioProperties.self, forKey: .audioProperties)
         audioFileName = try c.decode(String.self, forKey: .audioFileName)
         artworkFileName = try c.decodeIfPresent(String.self, forKey: .artworkFileName)
         lyricsFileName = try c.decodeIfPresent(String.self, forKey: .lyricsFileName)
@@ -663,6 +691,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
             id: id,
             title: title,
             artist: artist,
+            artistCredits: artistCredits,
             album: album,
             albumArtist: albumArtist,
             description: description,
@@ -674,6 +703,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
             metadataSource: metadataSource,
             metadataFetchedAt: metadataFetchedAt,
             metadataConfidence: metadataConfidence,
+            musicBrainzReleaseID: musicBrainzReleaseID,
             duration: duration,
             addedAt: addedAt,
             importedAt: importedAt,
@@ -681,6 +711,11 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
             originalFilePath: originalFilePath,
             mediaLocator: mediaLocator,
             availability: availability,
+            embeddedMetadataSnapshot: embeddedMetadataSnapshot,
+            userMetadataOverride: userMetadataOverride,
+            enrichmentSuggestions: enrichmentSuggestions ?? [],
+            importProvenance: importProvenance,
+            audioProperties: audioProperties,
             audioFileName: audioFileName,
             artworkFileName: artworkFileName,
             lyricsFileName: lyricsFileName,

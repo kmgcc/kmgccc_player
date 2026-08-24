@@ -22,6 +22,30 @@ final class Track {
 
     var title: String
     var artist: String
+    /// JSON-backed structured credits. The raw artist string above is kept
+    /// unchanged so existing displays and metadata round-trips preserve it.
+    var artistCreditsData: Data?
+
+    var artistCredits: [TrackCredit] {
+        get {
+            if let data = artistCreditsData,
+               let credits = try? JSONDecoder().decode([TrackCredit].self, from: data),
+               !credits.isEmpty {
+                return credits
+            }
+            return TrackCredit.fallback(for: artist)
+        }
+        set {
+            let normalized = newValue.filter {
+                !$0.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            artistCreditsData = try? JSONEncoder().encode(normalized)
+        }
+    }
+
+    var artistCreditsDisplayText: String {
+        artistCredits.map(\.displayName).joined(separator: ", ")
+    }
     var album: String
     var albumArtist: String?
     var userDescription: String
@@ -33,6 +57,8 @@ final class Track {
     var metadataSource: String?
     var metadataFetchedAt: Date?
     var metadataConfidence: Double?
+    /// MusicBrainz release identifier mirrored from the sidecar (schema 9).
+    var musicBrainzReleaseID: String?
     var albumGroupKey: String
     var duration: Double  // seconds
     var addedAt: Date
@@ -153,6 +179,83 @@ final class Track {
         }
     }
 
+    // MARK: - Schema 9 Metadata Layers
+
+    /// JSON-backed embedded-tag snapshot mirrored from the sidecar.
+    var embeddedMetadataSnapshotData: Data?
+
+    var embeddedMetadataSnapshot: EmbeddedMetadataSnapshot? {
+        get {
+            guard let data = embeddedMetadataSnapshotData else { return nil }
+            return try? JSONDecoder().decode(EmbeddedMetadataSnapshot.self, from: data)
+        }
+        set {
+            embeddedMetadataSnapshotData = try? newValue.map { try JSONEncoder().encode($0) }
+        }
+    }
+
+    /// JSON-backed import provenance mirrored from the sidecar (schema 9).
+    /// Captured for managed imports at commit time; the identity resolver
+    /// consults it when a re-import no longer matches by canonical path.
+    var importProvenanceData: Data?
+
+    var importProvenance: ImportProvenance? {
+        get {
+            guard let data = importProvenanceData else { return nil }
+            return try? JSONDecoder().decode(ImportProvenance.self, from: data)
+        }
+        set {
+            importProvenanceData = try? newValue.map { try JSONEncoder().encode($0) }
+        }
+    }
+
+    /// JSON-backed technical audio properties for managed copies (schema 9).
+    /// Referenced tracks carry the same values on their locator instead.
+    var audioPropertiesData: Data?
+
+    var audioProperties: TrackAudioProperties? {
+        get {
+            guard let data = audioPropertiesData else { return nil }
+            return try? JSONDecoder().decode(TrackAudioProperties.self, from: data)
+        }
+        set {
+            audioPropertiesData = try? newValue.map { try JSONEncoder().encode($0) }
+        }
+    }
+
+    /// JSON-backed advisory completion candidates mirrored from the sidecar
+    /// (schema 9). Advisory only: nothing here is written back to files.
+    var enrichmentSuggestionsData: Data?
+
+    var enrichmentSuggestions: [EnrichmentSuggestion]? {
+        get {
+            guard let data = enrichmentSuggestionsData else { return nil }
+            return try? JSONDecoder().decode([EnrichmentSuggestion].self, from: data)
+        }
+        set {
+            enrichmentSuggestionsData = try? newValue.map { try JSONEncoder().encode($0) }
+        }
+    }
+
+    var embeddedReleaseYear: Int? { embeddedMetadataSnapshot?.releaseYear }
+
+    var embeddedCompilation: Bool? { embeddedMetadataSnapshot?.compilation }
+
+    /// Compilation evidence with the §10.1 tier precedence used by
+    /// EffectiveMetadata.project: an explicit tag beats an advisory
+    /// suggestion. Purely advisory input for grouping; never written to files.
+    var effectiveCompilationFlag: Bool? {
+        embeddedMetadataSnapshot?.compilation
+            ?? enrichmentSuggestions?.bestByConfidence?.compilation
+    }
+
+    /// Whether the primary playback location already carries a content
+    /// digest. Managed tracks have no referenced location yet, so they
+    /// report false until managed-digest storage lands.
+    var contentDigestPresent: Bool {
+        mediaLocator.referencedFile?.locations.first?.contentDigest != nil
+    }
+
     // MARK: - Lyrics
 
     /// Directly pasted or imported TTML lyrics text (embedded).
@@ -166,6 +269,7 @@ final class Track {
         id: UUID = UUID(),
         title: String,
         artist: String = "",
+        artistCredits: [TrackCredit]? = nil,
         album: String = "",
         albumArtist: String? = nil,
         userDescription: String = "",
@@ -177,6 +281,8 @@ final class Track {
         metadataSource: String? = nil,
         metadataFetchedAt: Date? = nil,
         metadataConfidence: Double? = nil,
+        musicBrainzReleaseID: String? = nil,
+        embeddedMetadataSnapshot: EmbeddedMetadataSnapshot? = nil,
         albumGroupKey: String = "",
         duration: Double = 0,
         addedAt: Date = Date(),
@@ -196,11 +302,17 @@ final class Track {
         lyricsFileName: String? = nil,
         ttmlLyricsFileName: String? = nil,
         ncmConversionAssociation: NCMConversionAssociation? = nil,
+        importProvenance: ImportProvenance? = nil,
+        audioProperties: TrackAudioProperties? = nil,
+        enrichmentSuggestions: [EnrichmentSuggestion]? = nil,
         playCount: Int? = nil  // DEPRECATED: Ignored, use PreferenceStatsService instead
     ) {
         self.id = id
         self.title = title
         self.artist = artist
+        self.artistCreditsData = try? JSONEncoder().encode(
+            artistCredits ?? TrackCredit.fallback(for: artist)
+        )
         self.album = album
         self.albumArtist = albumArtist
         self.userDescription = userDescription
@@ -212,6 +324,11 @@ final class Track {
         self.metadataSource = metadataSource
         self.metadataFetchedAt = metadataFetchedAt
         self.metadataConfidence = metadataConfidence
+        self.musicBrainzReleaseID = musicBrainzReleaseID
+        self.embeddedMetadataSnapshotData = try? embeddedMetadataSnapshot.map { try JSONEncoder().encode($0) }
+        self.importProvenanceData = try? importProvenance.map { try JSONEncoder().encode($0) }
+        self.audioPropertiesData = try? audioProperties.map { try JSONEncoder().encode($0) }
+        self.enrichmentSuggestionsData = try? enrichmentSuggestions.map { try JSONEncoder().encode($0) }
         self.albumGroupKey = albumGroupKey
         self.duration = duration
         self.addedAt = addedAt

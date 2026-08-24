@@ -77,14 +77,14 @@ nonisolated enum TrackMediaLocator: Codable, Sendable, Equatable {
                 )
             }
             let locator = try container.decode(ReferencedFileLocator.self, forKey: .referenced)
-            guard !locator.fileBookmarkData.isEmpty || !locator.sourceMemberships.isEmpty else {
+            guard !locator.fileBookmarkData.isEmpty || !locator.allSourceMemberships.isEmpty else {
                 throw DecodingError.dataCorruptedError(
                     forKey: .referenced,
                     in: container,
                     debugDescription: "Referenced locator requires a bookmark or source membership"
                 )
             }
-            guard locator.sourceMemberships.allSatisfy({ Self.isSafeRelativePath($0.relativePath) }) else {
+            guard locator.allSourceMemberships.allSatisfy({ Self.isSafeRelativePath($0.relativePath) }) else {
                 throw DecodingError.dataCorruptedError(
                     forKey: .referenced,
                     in: container,
@@ -117,8 +117,8 @@ nonisolated enum TrackMediaLocator: Codable, Sendable, Equatable {
             var payload = container.nestedContainer(keyedBy: ManagedCodingKeys.self, forKey: .managed)
             try payload.encode(path, forKey: .libraryRelativePath)
         case let .referenced(locator):
-            guard !locator.fileBookmarkData.isEmpty || !locator.sourceMemberships.isEmpty,
-                  locator.sourceMemberships.allSatisfy({ Self.isSafeRelativePath($0.relativePath) }),
+            guard !locator.fileBookmarkData.isEmpty || !locator.allSourceMemberships.isEmpty,
+                  locator.allSourceMemberships.allSatisfy({ Self.isSafeRelativePath($0.relativePath) }),
                   locator.primarySourceID.map({ primary in
                       locator.sourceMemberships.contains(where: { $0.sourceID == primary })
                   }) ?? true

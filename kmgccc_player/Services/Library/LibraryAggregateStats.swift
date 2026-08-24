@@ -37,7 +37,7 @@ struct LibraryAggregateStats {
                 to: albumPreferenceScores[track.albumGroupKey] ?? Metric()
             )
 
-            for artistKey in LibraryNormalization.artistCanonicalNames(track.artist) {
+            for artistKey in LibraryNormalization.artistCanonicalNames(for: track) {
                 artistPlayCounts[artistKey] = adding(
                     Double(max(stats.playCount, 0)),
                     hasData: stats.playCount > 0,

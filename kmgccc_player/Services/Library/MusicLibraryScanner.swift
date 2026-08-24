@@ -12,6 +12,7 @@ nonisolated struct ScannedTrackMeta: Sendable {
     let id: UUID
     let title: String
     let artist: String
+    let artistCredits: [TrackCredit]?
     let album: String
     let albumArtist: String?
     let description: String
@@ -23,6 +24,7 @@ nonisolated struct ScannedTrackMeta: Sendable {
     let metadataSource: String?
     let metadataFetchedAt: Date?
     let metadataConfidence: Double?
+    let musicBrainzReleaseID: String?
     let duration: Double
     let addedAt: Date
     let importedAt: Date
@@ -30,6 +32,11 @@ nonisolated struct ScannedTrackMeta: Sendable {
     let originalFilePath: String
     let mediaLocator: TrackMediaLocator
     let availability: TrackAvailability
+    let embeddedMetadataSnapshot: EmbeddedMetadataSnapshot?
+    let userMetadataOverride: UserMetadataOverride?
+    let enrichmentSuggestions: [EnrichmentSuggestion]
+    let importProvenance: ImportProvenance?
+    let audioProperties: TrackAudioProperties?
     let audioFileName: String
     let artworkFileName: String?
     let lyricsFileName: String?
@@ -94,6 +101,7 @@ nonisolated struct MusicLibraryScanner: Sendable {
             id: sidecar.id,
             title: LibraryNormalization.displayTitle(sidecar.title),
             artist: LibraryNormalization.displayArtist(sidecar.artist),
+            artistCredits: sidecar.artistCredits,
             album: LibraryNormalization.displayAlbum(sidecar.album),
             albumArtist: normalizedOptional(sidecar.albumArtist),
             description: sidecar.description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
@@ -107,6 +115,7 @@ nonisolated struct MusicLibraryScanner: Sendable {
             metadataSource: normalizedOptional(sidecar.metadataSource),
             metadataFetchedAt: sidecar.metadataFetchedAt,
             metadataConfidence: sidecar.metadataConfidence,
+            musicBrainzReleaseID: normalizedOptional(sidecar.musicBrainzReleaseID),
             duration: sidecar.duration,
             addedAt: sidecar.addedAt,
             importedAt: sidecar.importedAt ?? sidecar.addedAt,
@@ -114,6 +123,11 @@ nonisolated struct MusicLibraryScanner: Sendable {
             originalFilePath: sidecar.originalFilePath ?? sidecar.mediaLocator.referencedFile?.lastKnownPath ?? "",
             mediaLocator: sidecar.mediaLocator,
             availability: sidecar.availability,
+            embeddedMetadataSnapshot: sidecar.embeddedMetadataSnapshot,
+            userMetadataOverride: sidecar.userMetadataOverride,
+            enrichmentSuggestions: sidecar.enrichmentSuggestions ?? [],
+            importProvenance: sidecar.importProvenance,
+            audioProperties: sidecar.audioProperties,
             audioFileName: audioFileName,
             artworkFileName: resolveArtworkFileName(
                 in: folderURL,

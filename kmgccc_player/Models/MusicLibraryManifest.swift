@@ -116,6 +116,6 @@ nonisolated struct MusicLibraryManifest: Codable, Sendable, Equatable {
     }
 }
 
-private nonisolated extension UUID {
+nonisolated extension UUID {
     static let zero = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
 }
