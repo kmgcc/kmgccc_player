@@ -26,11 +26,14 @@ struct MusicSettingsContent: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection("音乐存储方式") {
-                Picker("音乐存储方式", selection: .constant(model.mode)) {
-                    Text("复制到资料库").tag(MusicLibraryMode.managed)
-                    Text("保留原位置").tag(MusicLibraryMode.referenced)
+                HStack(spacing: 10) {
+                    Text("当前模式")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(model.mode.dialogDisplayTitle)
+                        .font(.callout.weight(.medium))
                 }
-                .pickerStyle(.segmented)
+                .accessibilityElement(children: .combine)
             }
             SettingsSection("资料库") {
                 VStack(spacing: 0) {

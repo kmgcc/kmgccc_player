@@ -40,18 +40,13 @@ struct MusicSettingsView: View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection("音乐存储方式") {
                 HStack(spacing: 10) {
-                    Picker("音乐存储方式", selection: modeBinding) {
-                        Text("复制到资料库").tag(MusicLibraryMode.managed)
-                        Text("保留原位置").tag(MusicLibraryMode.referenced)
-                    }
-                    .pickerStyle(.segmented)
-                    .disabled(isWorking || isAddingMusic || activeMode == nil)
-                    .accessibilityValue(activeMode == .referenced ? "保留原位置" : "复制到资料库")
-
-                    if isWorking {
-                        ProgressView().controlSize(.small)
-                    }
+                    Text("当前模式")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(storageModeDisplayTitle)
+                        .font(.callout.weight(.medium))
                 }
+                .accessibilityElement(children: .combine)
             }
 
             librarySection
@@ -111,11 +106,8 @@ struct MusicSettingsView: View {
         }
     }
 
-    private var modeBinding: Binding<MusicLibraryMode> {
-        Binding(
-            get: { activeMode ?? .managed },
-            set: { requested in route(to: requested) }
-        )
+    private var storageModeDisplayTitle: String {
+        activeMode?.dialogDisplayTitle ?? "未打开资料库"
     }
 
     private var librarySection: some View {
@@ -536,15 +528,6 @@ struct MusicSettingsView: View {
         }
     }
 
-    private func route(to mode: MusicLibraryMode) {
-        let target = flow.routeModeSelection(
-            mode,
-            activeMode: activeMode,
-            registry: registry
-        )
-        if let id = target, let library = registry.library(id: id) { open(library) }
-    }
-
     private func open(_ library: MusicLibraryBookmark) {
         guard library.id != activeContext?.id else { return }
         let operation = flow.beginOperation()
@@ -696,7 +679,7 @@ struct MusicSettingsView: View {
             } catch {
                 guard flow.isCurrentOperation(operation) else { return }
                 flow.fail("无法移到废纸篓。")
-                errorMessage = "资料库没有删除。"
+                errorMessage = "资料库没有删除：\(error.localizedDescription)"
             }
         }
     }
@@ -716,7 +699,7 @@ struct MusicSettingsView: View {
                 await reload()
             } catch {
                 guard appSession.activeLibraryBinding.context?.id == libraryID else { return }
-                errorMessage = "来源没有移除。"
+                errorMessage = "来源没有移除：\(error.localizedDescription)"
             }
         }
     }

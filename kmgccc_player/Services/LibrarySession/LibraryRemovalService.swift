@@ -11,10 +11,33 @@ nonisolated enum LibraryRemovalReplayResult: Sendable, Equatable {
     case removed(mode: MusicLibraryMode, didRemoveActive: Bool)
 }
 
-nonisolated enum LibraryRemovalError: Error, Equatable {
+nonisolated enum LibraryRemovalError: Error, Equatable, LocalizedError {
     case libraryNotRegistered, manifestMismatch, closeFailed, recycleFailed
     case intentWriteFailed, pendingRepair, recoveryFailed
     case transactionInProgress, securityScopeDenied
+
+    var errorDescription: String? {
+        switch self {
+        case .libraryNotRegistered:
+            return "资料库不存在或已被移除。"
+        case .manifestMismatch:
+            return "资料库清单与登记记录不一致，无法安全删除。"
+        case .closeFailed:
+            return "资料库会话未能正常关闭，请稍后重试。"
+        case .recycleFailed:
+            return "移入废纸篓失败，文件可能被其他程序占用。"
+        case .intentWriteFailed:
+            return "无法写入删除恢复计划，已中止删除以保护数据。"
+        case .pendingRepair:
+            return "上一次删除尚未完成，请先重新连接该资料库再试。"
+        case .recoveryFailed:
+            return "删除恢复数据已损坏，无法继续操作。"
+        case .transactionInProgress:
+            return "有其他资料库操作正在进行，请稍后再试。"
+        case .securityScopeDenied:
+            return "没有访问资料库所在文件夹的权限。"
+        }
+    }
 }
 
 nonisolated enum LibraryDisplayNameUpdateError: Error, Equatable {
