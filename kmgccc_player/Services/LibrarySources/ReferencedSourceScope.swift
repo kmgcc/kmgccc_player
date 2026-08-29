@@ -91,6 +91,31 @@ final class ReferencedSourceScope {
         return issues
     }
 
+    /// Authorizes only descriptors that currently have no authorized root,
+    /// leaving existing roots and their leases untouched. Unlike `start`
+    /// this never closes the scope; unlike `refresh` it never re-resolves
+    /// an already-authorized source. Import batches use this so persisted
+    /// directory sources cover file selections even after a session-start
+    /// authorization failure.
+    func authorizeMissing(
+        descriptors: [ReferencedSourceDescriptor],
+        store: ReferencedSourceStore,
+        bookmarkResolver: any BookmarkResolving = SystemBookmarkResolver(),
+        requiresSecurityScope: Bool = false
+    ) async -> [ReferencedSourceScopeIssue] {
+        let hydratedRoots = authorizedRoots
+        var issues: [ReferencedSourceScopeIssue] = []
+        for descriptor in descriptors where hydratedRoots[descriptor.id] == nil {
+            issues.append(contentsOf: await authorize(
+                descriptor,
+                store: store,
+                bookmarkResolver: bookmarkResolver,
+                requiresSecurityScope: requiresSecurityScope
+            ))
+        }
+        return issues
+    }
+
     private func authorize(
         _ descriptor: ReferencedSourceDescriptor,
         store: ReferencedSourceStore,

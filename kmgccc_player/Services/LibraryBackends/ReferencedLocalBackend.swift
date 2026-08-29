@@ -57,6 +57,26 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         var existingByCanonicalPath: [String: ReferencedSourceDescriptor] = [:]
         var directoryRootPaths: [String] = []
         var directorySourceRoots: [String: (url: URL, id: UUID)] = [:]
+        // Session-start authorization can legitimately fail (source volume
+        // not yet mounted, transient denial, stale refresh) and nothing else
+        // retries it within the session. Re-arm persisted directory sources
+        // before the selection loop so folder inheritance and NCM
+        // parent-directory checks see them; failures are non-fatal because
+        // the loop below keeps its per-file fallbacks. File sources are
+        // skipped: they never cover other files, so re-arming them would
+        // only mass-start access.
+        let hydrationIssues = await sourceScope.authorizeMissing(
+            descriptors: existingDescriptors.filter { $0.mode == .directory },
+            store: sourceStore,
+            bookmarkResolver: bookmarkResolver,
+            requiresSecurityScope: requiresSecurityScope
+        )
+        if !hydrationIssues.isEmpty {
+            Log.warning(
+                "[ReferencedSource] deferred directory authorization retried, unavailable count=\(hydrationIssues.count)",
+                category: .library
+            )
+        }
         for descriptor in existingDescriptors {
             if descriptor.mode == .directory {
                 // Coverage of files by directory sources must not depend on
@@ -93,15 +113,18 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
             let canonical = canonicalPath(selected)
             let isDirectory = selected.hasDirectoryPath
 
-            // A file chosen from an already-authorized directory must inherit
-            // that directory source. Starting access on the child file can
+            // A file chosen from an already-known directory source must
+            // inherit that source. Starting access on the child file can
             // fail even while the folder is readable, and it also loses the
-            // source membership needed by automatic/NCM imports.
+            // source membership needed by automatic/NCM imports. Inheritance
+            // is coverage-based rather than authorization-based: if the
+            // scope root is still missing (hydration failed above), the
+            // scanner's own readability checks decide the outcome instead of
+            // per-file access attempts.
             if !isDirectory,
                let covered = directorySourceRoots
                    .filter({ path, _ in canonical == path || canonical.hasPrefix(path + "/") })
-                   .max(by: { lhs, rhs in lhs.key.count < rhs.key.count }),
-               sourceScope.authorizedRoots[covered.value.id] != nil {
+                   .max(by: { lhs, rhs in lhs.key.count < rhs.key.count }) {
                 let rootURL = sourceScope.authorizedRoots[covered.value.id]?.url ?? covered.value.url
                 sourceIDs[rootURL] = covered.value.id
                 readableSelectionPaths.insert(canonical)
