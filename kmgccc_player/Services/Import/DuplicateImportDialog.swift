@@ -102,18 +102,33 @@ final class DuplicateImportDialogViewModel: ObservableObject {
     let rows: [DuplicatePairRow]
 
     @Published var selectedIDs: Set<String>
+    private var selectionAnchorID: String?
 
     init(rows: [DuplicatePairRow]) {
         self.rows = rows
         self.selectedIDs = []
     }
 
-    func toggleSelection(_ id: String) {
+    /// Keep in sync with PlaylistPageController.handleMultiselectRowTap.
+    func handleTap(id: String, extendingRange: Bool) {
+        if extendingRange,
+           let anchorID = selectionAnchorID,
+           let anchorIndex = rows.firstIndex(where: { $0.id == anchorID }),
+           let currentIndex = rows.firstIndex(where: { $0.id == id })
+        {
+            let bounds = anchorIndex <= currentIndex
+                ? anchorIndex...currentIndex
+                : currentIndex...anchorIndex
+            selectedIDs.formUnion(rows[bounds].map(\.id))
+            return
+        }
+
         if selectedIDs.contains(id) {
             selectedIDs.remove(id)
         } else {
             selectedIDs.insert(id)
         }
+        selectionAnchorID = id
     }
 
     var buttonTitle: String {
@@ -212,7 +227,10 @@ struct DuplicateImportDialogView: View {
                 .contentShape(Rectangle())
                 .onTapGesture {
                     withAnimation(.easeInOut(duration: 0.15)) {
-                        viewModel.toggleSelection(row.id)
+                        viewModel.handleTap(
+                            id: row.id,
+                            extendingRange: LibraryRowInput.isShiftPressed
+                        )
                     }
                 }
             }

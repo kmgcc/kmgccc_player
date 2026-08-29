@@ -298,7 +298,8 @@ final class FileImportService: FileImportServiceProtocol {
             to: playlist,
             metadataOverride: context.metadataOverride,
             presentation: .interactive,
-            isManualSelection: true
+            isManualSelection: true,
+            origin: context.origin
         )
         let newTrackCount = tracks.filter { !beforeTrackIDs.contains($0.id) }.count
         let sourceBindingCount: Int
@@ -336,7 +337,8 @@ final class FileImportService: FileImportServiceProtocol {
             to: playlist,
             metadataOverride: metadataOverride,
             presentation: .interactive,
-            isManualSelection: true
+            isManualSelection: true,
+            origin: .playlistDrop
         ).count
     }
 
@@ -348,7 +350,8 @@ final class FileImportService: FileImportServiceProtocol {
             to: nil,
             metadataOverride: nil,
             presentation: .automatic,
-            isManualSelection: false
+            isManualSelection: false,
+            origin: .sourceMonitor
         )
     }
 
@@ -360,7 +363,8 @@ final class FileImportService: FileImportServiceProtocol {
             to: nil,
             metadataOverride: nil,
             presentation: .automatic,
-            isManualSelection: true
+            isManualSelection: true,
+            origin: .setup
         )
         let plan = storageBackend.lastPreparedInputPlan
         var failures = plan?.failures ?? []
@@ -410,7 +414,8 @@ final class FileImportService: FileImportServiceProtocol {
         to playlist: Playlist?,
         metadataOverride: ImportMetadataOverride?,
         presentation: ImportPresentation,
-        isManualSelection: Bool
+        isManualSelection: Bool,
+        origin: LibraryImportOrigin
     ) async -> [Track] {
         guard acceptsImports else {
             Log.warning("[Import] request rejected because the library session is quiescing", category: .import)
@@ -423,7 +428,8 @@ final class FileImportService: FileImportServiceProtocol {
                 to: playlist,
                 metadataOverride: metadataOverride,
                 presentation: presentation,
-                isManualSelection: isManualSelection
+                isManualSelection: isManualSelection,
+                origin: origin
             )
         }
         if storageBackend.mode == .referenced {
@@ -520,7 +526,8 @@ final class FileImportService: FileImportServiceProtocol {
         to playlist: Playlist?,
         metadataOverride: ImportMetadataOverride?,
         presentation: ImportPresentation,
-        isManualSelection: Bool
+        isManualSelection: Bool,
+        origin: LibraryImportOrigin
     ) async -> [Track] {
         lastImportFailures = []
         lastImportPossibleDuplicateCount = 0
@@ -542,7 +549,7 @@ final class FileImportService: FileImportServiceProtocol {
             )
         }
         Log.debug(
-            "import URLs destination=\(playlist?.id.uuidString ?? "library") count=\(selectedURLs.count) override=\(String(describing: metadataOverride))",
+            "import URLs destination=\(playlist?.id.uuidString ?? "library") origin=\(origin.rawValue) count=\(selectedURLs.count) override=\(String(describing: metadataOverride))",
             category: .import
         )
 
@@ -690,11 +697,28 @@ final class FileImportService: FileImportServiceProtocol {
             libraryTracks: libraryTracks,
             metadataOverride: metadataOverride,
             cancellationToken: cancellationToken,
-            progressController: progressController
+            progressController: progressController,
+            playlist: playlist
         )
         let uniqueCandidates = preparedCandidates.unique
-        let duplicateRows = preparedCandidates.duplicates
+        var duplicateRows = preparedCandidates.duplicates
         lastImportPossibleDuplicateCount = duplicateRows.count
+
+        // Playlist-destination duplicate policy (planner-side): similarity
+        // duplicates were resolved by reusing the existing library track, so
+        // they join the playlist exactly like fingerprint-reused tracks.
+        for match in preparedCandidates.reusedDuplicates {
+            guard reusedTrackIDs.insert(match.track.id).inserted else { continue }
+            reusedTracks.append(match.track)
+            progressController.updateItem(
+                id: match.progressID,
+                title: match.incoming.title,
+                artist: match.incoming.artist,
+                stage: .duplicateCheck,
+                status: .success,
+                detail: "资料库中已存在，直接加入播放列表"
+            )
+        }
 
         if await isImportCancellationRequested(progressController, cancellationToken) {
             return await committer.finishCancelledImport(
@@ -710,8 +734,11 @@ final class FileImportService: FileImportServiceProtocol {
         // Duplicate policy stays UI-owned: the planner only produced the
         // decision inputs above.
         var selectedDuplicates: [ImportCandidate] = []
-        var policyDecision: ImportExecutionPlan.DuplicatePolicyDecision = duplicateRows.isEmpty ? .none : .automaticImportAllAsNew
-        if !duplicateRows.isEmpty, presentation == .interactive {
+        var policyDecision: ImportExecutionPlan.DuplicatePolicyDecision =
+            duplicateRows.isEmpty
+            ? (preparedCandidates.reusedDuplicates.isEmpty ? .none : .playlistReuseExisting)
+            : .automaticImportAllAsNew
+        if !duplicateRows.isEmpty, presentation == .interactive, playlist == nil {
             Log.debug("Found \(duplicateRows.count) duplicates, presenting dialog...", category: .import)
             progressController.update(
                 stage: .waitingForDuplicateChoice,
@@ -755,6 +782,46 @@ final class FileImportService: FileImportServiceProtocol {
                 policyDecision = .userAborted
                 return []
             }
+        }
+
+        if !duplicateRows.isEmpty, let playlist {
+            // Defense-in-depth for the playlist-destination duplicate policy:
+            // the planner resolves similarity duplicates by reuse before rows
+            // exist, so this fires only if that regresses. Never prompt and
+            // never re-import — fold the matched existing tracks into the
+            // destination playlist instead.
+            policyDecision = .playlistReuseExisting
+            let duplicateCandidatesByID = Dictionary(
+                preparedCandidates.duplicateCandidates.map { ($0.progressID, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            var seenExistingIDs = Set<UUID>()
+            var matchedExistingIDs: [UUID] = []
+            for row in duplicateRows {
+                progressController.updateItem(
+                    id: row.id,
+                    title: row.incoming.title,
+                    artist: row.incoming.artist,
+                    stage: .duplicateCheck,
+                    status: .success,
+                    detail: "资料库中已存在，直接加入播放列表"
+                )
+                if let existingID = duplicateCandidatesByID[row.id]?.existingDuplicateTrackID,
+                   seenExistingIDs.insert(existingID).inserted {
+                    matchedExistingIDs.append(existingID)
+                }
+            }
+            let defenseTracks = matchedExistingIDs.isEmpty
+                ? []
+                : await repository.fetchTracks(ids: matchedExistingIDs)
+            if !defenseTracks.isEmpty {
+                await repository.addTracks(defenseTracks, to: playlist)
+                await storageBackend.recordSourceMemberships(defenseTracks, playlistID: playlist.id)
+                reusedTracks.append(contentsOf: defenseTracks)
+                reusedTrackIDs.formUnion(defenseTracks.map(\.id))
+            }
+            duplicateRows = []
+            lastImportPossibleDuplicateCount = 0
         }
 
         if presentation == .automatic, !duplicateRows.isEmpty {

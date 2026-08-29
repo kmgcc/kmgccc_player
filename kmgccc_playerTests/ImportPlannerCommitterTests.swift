@@ -119,6 +119,92 @@ final class ImportPlannerCommitterTests: XCTestCase {
         XCTAssertEqual(placed.placement?.storageKind, .managed)
     }
 
+    // MARK: - Playlist-destination duplicate policy
+
+    func testPlaylistDestinationResolvesSimilarityDuplicatesByReuse() async throws {
+        let fixture = try makeFixture()
+        defer { fixture.cleanup() }
+
+        let existing = kmgccc_player.Track(
+            title: "Golden Song",
+            fileBookmarkData: Data(),
+            mediaLocator: .managed(libraryRelativePath: "Tracks/existing/audio.m4a"),
+            libraryRootSnapshot: fixture.paths.rootURL.path
+        )
+        existing.artist = "Golden Artist"
+        existing.duration = 180
+        _ = await fixture.repository.commitImportedTracks([existing])
+        let libraryTracks = await fixture.repository.fetchTracks(in: nil)
+
+        let uniqueURL = try writeWAV(named: "brand-new.wav", in: fixture.root)
+        let duplicateURL = try writeWAV(named: "golden-dup.wav", in: fixture.root)
+        let resolved = [
+            ResolvedImportFile(
+                progressID: uniqueURL.path,
+                displayName: uniqueURL.lastPathComponent,
+                fileURL: uniqueURL,
+                ncmResult: makeNCMResult(
+                    url: uniqueURL,
+                    title: "Brand New Song",
+                    artist: "New Artist",
+                    durationSeconds: 200
+                ),
+                discoveredFile: ImportDiscoveredFile(
+                    url: uniqueURL,
+                    memberships: [],
+                    primarySourceID: nil,
+                    fingerprint: nil
+                ),
+                referencedNCMOutput: nil
+            ),
+            ResolvedImportFile(
+                progressID: duplicateURL.path,
+                displayName: duplicateURL.lastPathComponent,
+                fileURL: duplicateURL,
+                ncmResult: makeNCMResult(
+                    url: duplicateURL,
+                    title: "Golden Song",
+                    artist: "Golden Artist",
+                    durationSeconds: 180
+                ),
+                discoveredFile: ImportDiscoveredFile(
+                    url: duplicateURL,
+                    memberships: [],
+                    primarySourceID: nil,
+                    fingerprint: nil
+                ),
+                referencedNCMOutput: nil
+            )
+        ]
+
+        let playlist = await fixture.repository.createPlaylist(name: "Drop Target")
+        let controller = BatchImportProgressDialogController(presentsWindow: false)
+        let token = ImportCancellationToken()
+
+        let prepared = await fixture.planner.prepareCandidates(
+            resolvedFiles: resolved,
+            libraryTracks: libraryTracks,
+            metadataOverride: nil,
+            cancellationToken: token,
+            progressController: controller,
+            playlist: playlist
+        )
+
+        XCTAssertEqual(prepared.unique.count, 1)
+        XCTAssertTrue(prepared.duplicates.isEmpty, "playlist destinations must not produce dialog rows")
+        XCTAssertTrue(prepared.duplicateCandidates.isEmpty)
+        XCTAssertEqual(prepared.reusedDuplicates.count, 1)
+
+        let match = try XCTUnwrap(prepared.reusedDuplicates.first)
+        XCTAssertEqual(match.progressID, duplicateURL.path)
+        XCTAssertEqual(match.track.id, existing.id)
+
+        let playlistTracks = await fixture.repository.fetchTracks(in: playlist)
+        XCTAssertEqual(playlistTracks.map(\.id), [existing.id])
+        let allTracks = await fixture.repository.fetchTracks(in: nil)
+        XCTAssertEqual(allTracks.count, 1, "similarity duplicates must not be re-imported")
+    }
+
     // MARK: - Committer rollback
 
     func testCommitterCancelledFinishRollsBackCommittedTracksAndStaging() async throws {
