@@ -60,7 +60,10 @@ final class LocatorPersistenceIntegrationTests: XCTestCase {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         XCTAssertTrue(fixture.service.writeMetaOnly(for: fixture.track, reason: "seed"))
-        let repository = kmgccc_player.SwiftDataLibraryRepository(libraryService: fixture.service)
+        let repository = kmgccc_player.SwiftDataLibraryRepository(
+            libraryService: fixture.service,
+            preferenceStatsService: fixture.preferenceStatsService
+        )
         await repository.reloadFromLibrary()
         let refreshed = referencedLocator(bookmark: Data([9, 8, 7]))
 
@@ -86,7 +89,10 @@ final class LocatorPersistenceIntegrationTests: XCTestCase {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         XCTAssertTrue(fixture.service.writeMetaOnly(for: fixture.track, reason: "seed"))
-        let repository = kmgccc_player.SwiftDataLibraryRepository(libraryService: fixture.service)
+        let repository = kmgccc_player.SwiftDataLibraryRepository(
+            libraryService: fixture.service,
+            preferenceStatsService: fixture.preferenceStatsService
+        )
         await repository.reloadFromLibrary()
         let fetchedBefore = await repository.fetchTracks(ids: [fixture.track.id])
         let runtimeBefore = try XCTUnwrap(fetchedBefore.first)
@@ -115,6 +121,7 @@ final class LocatorPersistenceIntegrationTests: XCTestCase {
         root: URL,
         paths: kmgccc_player.LibraryPaths,
         service: kmgccc_player.LocalLibraryService,
+        preferenceStatsService: kmgccc_player.PreferenceStatsService,
         track: kmgccc_player.Track,
         locator: kmgccc_player.TrackMediaLocator,
         decoder: JSONDecoder
@@ -122,9 +129,10 @@ final class LocatorPersistenceIntegrationTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LocatorPersistenceTests-\(UUID().uuidString)", isDirectory: true)
         let paths = kmgccc_player.LibraryPaths(rootURL: root)
+        let preferenceStatsService = kmgccc_player.PreferenceStatsService()
         let service = kmgccc_player.LocalLibraryService(
             paths: paths,
-            preferenceStatsService: .shared
+            preferenceStatsService: preferenceStatsService
         )
         service.ensureLibraryFolders()
         let locator = referencedLocator(bookmark: Data([1, 2, 3]))
@@ -141,7 +149,7 @@ final class LocatorPersistenceIntegrationTests: XCTestCase {
         )
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return (root, paths, service, track, locator, decoder)
+        return (root, paths, service, preferenceStatsService, track, locator, decoder)
     }
 
     private func referencedLocator(bookmark: Data) -> kmgccc_player.TrackMediaLocator {
