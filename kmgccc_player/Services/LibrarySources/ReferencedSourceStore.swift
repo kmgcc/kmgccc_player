@@ -102,11 +102,23 @@ actor ReferencedSourceStore {
         playlistID: UUID,
         relativePath: String? = nil
     ) throws -> ReferencedPlaylistSourceBinding {
+        try ensurePlaylistBindingWithCreation(
+            sourceID: sourceID,
+            playlistID: playlistID,
+            relativePath: relativePath
+        ).binding
+    }
+
+    func ensurePlaylistBindingWithCreation(
+        sourceID: UUID,
+        playlistID: UUID,
+        relativePath: String? = nil
+    ) throws -> (binding: ReferencedPlaylistSourceBinding, didCreate: Bool) {
         var descriptor = try load(id: sourceID)
         if let existing = descriptor.playlistBindings.first(where: {
             $0.playlistID == playlistID && $0.relativePath == relativePath
         }) {
-            return existing
+            return (existing, false)
         }
         let binding = ReferencedPlaylistSourceBinding(
             playlistID: playlistID,
@@ -114,7 +126,7 @@ actor ReferencedSourceStore {
         )
         descriptor.playlistBindings.append(binding)
         try save(descriptor)
-        return binding
+        return (binding, true)
     }
 
     func updatePlaylistBinding(_ binding: ReferencedPlaylistSourceBinding, sourceID: UUID) throws {

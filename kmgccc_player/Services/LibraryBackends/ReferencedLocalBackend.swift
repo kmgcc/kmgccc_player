@@ -264,22 +264,33 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         _ sourceIDs: Set<UUID>,
         playlistID: UUID
     ) async throws -> [UUID: UUID] {
+        try await ensureSourcePlaylistBindings(
+            sourceIDs,
+            playlistID: playlistID
+        ).bindingsBySourceID
+    }
+
+    private func ensureSourcePlaylistBindings(
+        _ sourceIDs: Set<UUID>,
+        playlistID: UUID
+    ) async throws -> (
+        bindingsBySourceID: [UUID: UUID],
+        createdBindings: [(sourceID: UUID, bindingID: UUID)]
+    ) {
         var result: [UUID: UUID] = [:]
         var newlyCreatedBindings: [(sourceID: UUID, bindingID: UUID)] = []
         do {
             for sourceID in sourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
-                let descriptor = try await sourceStore.load(id: sourceID)
-                let existing = descriptor.playlistBindings.first { $0.playlistID == playlistID }
-                let binding = try await sourceStore.ensurePlaylistBinding(
+                let ensured = try await sourceStore.ensurePlaylistBindingWithCreation(
                     sourceID: sourceID,
                     playlistID: playlistID
                 )
-                if existing == nil {
-                    newlyCreatedBindings.append((sourceID, binding.id))
+                if ensured.didCreate {
+                    newlyCreatedBindings.append((sourceID, ensured.binding.id))
                 }
-                result[sourceID] = binding.id
+                result[sourceID] = ensured.binding.id
             }
-            return result
+            return (result, newlyCreatedBindings)
         } catch {
             for created in newlyCreatedBindings.reversed() {
                 do {
@@ -328,23 +339,11 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         sourceIDs: Set<UUID>,
         playlistID: UUID
     ) async throws {
-        var existingBindingIDs = Set<UUID>()
-        for sourceID in sourceIDs {
-            let descriptor = try await sourceStore.load(id: sourceID)
-            existingBindingIDs.formUnion(
-                descriptor.playlistBindings
-                    .filter { $0.playlistID == playlistID }
-                    .map(\.id)
-            )
-        }
-
-        let bindingsBySourceID = try await bindSourcesToPlaylist(
+        let bindingTransaction = try await ensureSourcePlaylistBindings(
             sourceIDs,
             playlistID: playlistID
         )
-        let createdBindings = bindingsBySourceID.filter {
-            !existingBindingIDs.contains($0.value)
-        }
+        let bindingsBySourceID = bindingTransaction.bindingsBySourceID
 
         do {
             var entries: [(playlistID: UUID, trackID: UUID, bindingID: UUID)] = []
@@ -357,15 +356,15 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
             }
             try await playlistMembershipStore.recordSourceContributions(entries)
         } catch {
-            for (sourceID, bindingID) in createdBindings {
+            for created in bindingTransaction.createdBindings.reversed() {
                 do {
                     try await sourceStore.removePlaylistBinding(
-                        sourceID: sourceID,
-                        bindingID: bindingID
+                        sourceID: created.sourceID,
+                        bindingID: created.bindingID
                     )
                 } catch {
                     Log.error(
-                        "[ReferencedBackend] failed to roll back import binding source=\(sourceID.uuidString) binding=\(bindingID.uuidString): \(error.localizedDescription)",
+                        "[ReferencedBackend] failed to roll back import binding source=\(created.sourceID.uuidString) binding=\(created.bindingID.uuidString): \(error.localizedDescription)",
                         category: .library
                     )
                 }
