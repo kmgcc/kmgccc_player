@@ -191,6 +191,42 @@ final class RepositoryImportCommitTests: XCTestCase {
         XCTAssertNotNil(fixture.libraryService.loadPlaylistSidecar(playlistID: playlist.id))
     }
 
+    func testMembershipPersistenceFailureRestoresActorState() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.cleanup() }
+        let store = ReferencedPlaylistMembershipStore(paths: fixture.paths)
+        let playlistID = UUID()
+        let existingTrackID = UUID()
+        let rejectedTrackID = UUID()
+        try await store.recordSourceContribution(
+            playlistID: playlistID,
+            trackID: existingTrackID,
+            bindingIDs: [UUID()]
+        )
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500],
+            ofItemAtPath: fixture.paths.sourcesRootURL.path
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: fixture.paths.sourcesRootURL.path
+            )
+        }
+
+        do {
+            try await store.recordManualAddition(
+                playlistID: playlistID,
+                trackIDs: [rejectedTrackID]
+            )
+            XCTFail("expected membership persistence failure")
+        } catch {}
+
+        let inMemoryTrackIDs = Set(try await store.loadAll().map(\.trackID))
+        XCTAssertEqual(inMemoryTrackIDs, [existingTrackID])
+    }
+
     private func makeTrack(
         title: String,
         root: URL,

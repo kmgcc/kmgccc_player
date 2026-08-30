@@ -88,6 +88,8 @@ actor ReferencedPlaylistMembershipStore {
         legacyManagedTrackIDs: [UUID]
     ) throws {
         try ensureLoaded()
+        let originalMemberships = memberships
+        let originalIndex = membershipIndex
         let sourceIDs = Set(sourceTrackIDs).union(legacyManagedTrackIDs)
         var changed = false
         for trackID in Set(trackIDs) {
@@ -106,22 +108,30 @@ actor ReferencedPlaylistMembershipStore {
             upsert(membership)
             changed = true
         }
-        if changed { try persist() }
+        if changed {
+            try persistOrRestore(originalMemberships, originalIndex: originalIndex)
+        }
     }
 
     func ensureManualMemberships(playlistID: UUID, trackIDs: [UUID]) throws {
         try ensureLoaded()
+        let originalMemberships = memberships
+        let originalIndex = membershipIndex
         let existing = Set(memberships.filter { $0.playlistID == playlistID }.map(\.trackID))
         var changed = false
         for trackID in Set(trackIDs) where !existing.contains(trackID) {
             upsert(.init(playlistID: playlistID, trackID: trackID, manual: true))
             changed = true
         }
-        if changed { try persist() }
+        if changed {
+            try persistOrRestore(originalMemberships, originalIndex: originalIndex)
+        }
     }
 
     func recordManualAddition(playlistID: UUID, trackIDs: [UUID]) throws {
         try ensureLoaded()
+        let originalMemberships = memberships
+        let originalIndex = membershipIndex
         var changed = false
         for trackID in Set(trackIDs) {
             var membership = findMembership(playlistID: playlistID, trackID: trackID)
@@ -133,7 +143,9 @@ actor ReferencedPlaylistMembershipStore {
                 changed = true
             }
         }
-        if changed { try persist() }
+        if changed {
+            try persistOrRestore(originalMemberships, originalIndex: originalIndex)
+        }
     }
 
     func recordManualRemoval(
@@ -142,6 +154,8 @@ actor ReferencedPlaylistMembershipStore {
         bindingIDs: [UUID] = []
     ) throws {
         try ensureLoaded()
+        let originalMemberships = memberships
+        let originalIndex = membershipIndex
         var changed = false
         for trackID in Set(trackIDs) {
             guard var membership = findMembership(playlistID: playlistID, trackID: trackID) else {
@@ -169,7 +183,9 @@ actor ReferencedPlaylistMembershipStore {
                 changed = true
             }
         }
-        if changed { try persist() }
+        if changed {
+            try persistOrRestore(originalMemberships, originalIndex: originalIndex)
+        }
     }
 
     func recordSourceContribution(
@@ -179,6 +195,8 @@ actor ReferencedPlaylistMembershipStore {
     ) throws {
         guard !bindingIDs.isEmpty else { return }
         try ensureLoaded()
+        let originalMemberships = memberships
+        let originalIndex = membershipIndex
         var changed = false
         for bindingID in bindingIDs {
             changed = applyingSourceContribution(
@@ -187,7 +205,9 @@ actor ReferencedPlaylistMembershipStore {
                 bindingID: bindingID
             ) || changed
         }
-        if changed { try persist() }
+        if changed {
+            try persistOrRestore(originalMemberships, originalIndex: originalIndex)
+        }
     }
 
     /// Batched form of `recordSourceContribution`: applies every edge in
@@ -212,13 +232,7 @@ actor ReferencedPlaylistMembershipStore {
             ) || changed
         }
         guard changed else { return }
-        do {
-            try persist()
-        } catch {
-            memberships = originalMemberships
-            membershipIndex = originalIndex
-            throw error
-        }
+        try persistOrRestore(originalMemberships, originalIndex: originalIndex)
     }
 
     @discardableResult
@@ -247,13 +261,15 @@ actor ReferencedPlaylistMembershipStore {
     ) throws {
         try ensureLoaded()
         guard var membership = findMembership(playlistID: playlistID, trackID: trackID) else { return }
+        let originalMemberships = memberships
+        let originalIndex = membershipIndex
         membership.sourceBindingIDs.removeAll { $0 == bindingID }
         if !membership.isLive && membership.excludedBindingIDs.isEmpty {
             removeMembership(playlistID: playlistID, trackID: trackID)
         } else {
             upsert(membership)
         }
-        try persist()
+        try persistOrRestore(originalMemberships, originalIndex: originalIndex)
     }
 
     func membership(
@@ -280,20 +296,24 @@ actor ReferencedPlaylistMembershipStore {
 
     func removePlaylist(playlistID: UUID) throws {
         try ensureLoaded()
+        let originalMemberships = memberships
+        let originalIndex = membershipIndex
         let previousCount = memberships.count
         memberships.removeAll { $0.playlistID == playlistID }
         guard previousCount != memberships.count else { return }
         rebuildMembershipIndex()
-        try persist()
+        try persistOrRestore(originalMemberships, originalIndex: originalIndex)
     }
 
     func removeTrack(trackID: UUID) throws {
         try ensureLoaded()
+        let originalMemberships = memberships
+        let originalIndex = membershipIndex
         let previousCount = memberships.count
         memberships.removeAll { $0.trackID == trackID }
         guard previousCount != memberships.count else { return }
         rebuildMembershipIndex()
-        try persist()
+        try persistOrRestore(originalMemberships, originalIndex: originalIndex)
     }
 
     private func ensureLoaded() throws {
@@ -328,6 +348,19 @@ actor ReferencedPlaylistMembershipStore {
         try fileManager.createDirectory(at: paths.sourcesRootURL, withIntermediateDirectories: true)
         let file = ReferencedPlaylistMembershipFile(memberships: normalize(memberships))
         try encoder.encode(file).write(to: paths.playlistMembershipsURL, options: .atomic)
+    }
+
+    private func persistOrRestore(
+        _ originalMemberships: [ReferencedPlaylistMembership],
+        originalIndex: [String: Int]
+    ) throws {
+        do {
+            try persist()
+        } catch {
+            memberships = originalMemberships
+            membershipIndex = originalIndex
+            throw error
+        }
     }
 
     private func findMembership(playlistID: UUID, trackID: UUID) -> ReferencedPlaylistMembership? {
