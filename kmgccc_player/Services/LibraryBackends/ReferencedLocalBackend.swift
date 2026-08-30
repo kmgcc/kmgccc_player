@@ -309,31 +309,6 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         }
     }
 
-    func recordSourceMemberships(_ tracks: [Track], playlistID: UUID) async {
-        for track in tracks {
-            guard case let .referenced(locator) = track.mediaLocator else { continue }
-            for sourceID in Set(locator.allSourceMemberships.map(\.sourceID)) {
-                guard let bindings = try? await sourceStore.bindings(for: sourceID) else { continue }
-                let bindingIDs = bindings
-                    .filter { $0.playlistID == playlistID }
-                    .map(\.id)
-                guard !bindingIDs.isEmpty else { continue }
-                do {
-                    try await playlistMembershipStore.recordSourceContribution(
-                        playlistID: playlistID,
-                        trackID: track.id,
-                        bindingIDs: bindingIDs
-                    )
-                } catch {
-                    Log.warning(
-                        "[ReferencedLocalBackend] failed to persist playlist source membership: \(error)",
-                        category: .library
-                    )
-                }
-            }
-        }
-    }
-
     func commitPlaylistImportSourceEffects(
         tracks: [Track],
         sourceIDs: Set<UUID>,

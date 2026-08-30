@@ -697,7 +697,6 @@ final class FileImportService: FileImportServiceProtocol {
             eligibleNCMFiles: interpretation.eligibleNCMFiles,
             reusedTracks: reusedTracks,
             reusedTrackIDs: reusedTrackIDs,
-            playlist: playlist,
             session: importSession,
             cancellationToken: cancellationToken,
             progressController: progressController

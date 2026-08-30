@@ -336,7 +336,6 @@ final class ImportPlanner {
         eligibleNCMFiles: [ImportDiscoveredFile],
         reusedTracks: [Track],
         reusedTrackIDs: Set<UUID>,
-        playlist: Playlist?,
         session: ImportSession,
         cancellationToken: ImportCancellationToken,
         progressController: BatchImportProgressDialogController
