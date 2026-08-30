@@ -708,8 +708,12 @@ struct ReferencedFolderView: View {
     }
 
     private func reload() async {
+        let targetGeneration = appSession.activeLibraryBinding.generation
+        let targetLibraryID = appSession.activeLibraryBinding.context?.id
         do {
             let loaded = try await appSession.referencedSources()
+            guard appSession.activeLibraryBinding.generation == targetGeneration,
+                  appSession.activeLibraryBinding.context?.id == targetLibraryID else { return }
             sources = loaded
             sourcesRevision += 1
             if selectedSourceID == nil || !loaded.contains(where: { $0.id == selectedSourceID }) {
@@ -717,6 +721,8 @@ struct ReferencedFolderView: View {
                 folderSelection = .all
             }
         } catch {
+            guard appSession.activeLibraryBinding.generation == targetGeneration,
+                  appSession.activeLibraryBinding.context?.id == targetLibraryID else { return }
             errorMessage = "无法读取资料库来源。"
         }
     }
@@ -749,12 +755,16 @@ struct ReferencedFolderView: View {
     }
 
     private func refresh(_ source: ReferencedSourceDescriptor) {
+        guard let libraryID = appSession.activeLibraryBinding.context?.id else { return }
         isWorking = true
         errorMessage = nil
         Task { @MainActor in
             defer { isWorking = false }
             do {
-                _ = try await appSession.refreshReferencedSource(id: source.id)
+                _ = try await appSession.refreshReferencedSource(
+                    id: source.id,
+                    libraryID: libraryID
+                )
                 await reload()
             } catch {
                 errorMessage = "无法重新扫描这个来源。"
@@ -763,12 +773,17 @@ struct ReferencedFolderView: View {
     }
 
     private func bind(_ source: ReferencedSourceDescriptor, playlistID: UUID) {
+        guard let libraryID = appSession.activeLibraryBinding.context?.id else { return }
         isWorking = true
         errorMessage = nil
         Task { @MainActor in
             defer { isWorking = false }
             do {
-                try await appSession.bindReferencedSource(id: source.id, to: playlistID)
+                try await appSession.bindReferencedSource(
+                    id: source.id,
+                    to: playlistID,
+                    libraryID: libraryID
+                )
                 await reload()
             } catch {
                 errorMessage = "无法绑定播放列表。"
@@ -777,12 +792,17 @@ struct ReferencedFolderView: View {
     }
 
     private func unbind(_ source: ReferencedSourceDescriptor, bindingID: UUID) {
+        guard let libraryID = appSession.activeLibraryBinding.context?.id else { return }
         isWorking = true
         errorMessage = nil
         Task { @MainActor in
             defer { isWorking = false }
             do {
-                _ = try await appSession.unbindReferencedSource(id: source.id, bindingID: bindingID)
+                _ = try await appSession.unbindReferencedSource(
+                    id: source.id,
+                    bindingID: bindingID,
+                    libraryID: libraryID
+                )
                 await reload()
             } catch {
                 errorMessage = "无法解除播放列表关系。"
@@ -795,6 +815,7 @@ struct ReferencedFolderView: View {
         path: String,
         excluded: Bool
     ) {
+        guard let libraryID = appSession.activeLibraryBinding.context?.id else { return }
         isWorking = true
         errorMessage = nil
         Task { @MainActor in
@@ -803,7 +824,8 @@ struct ReferencedFolderView: View {
                 try await appSession.setReferencedSourceExcludedPath(
                     id: source.id,
                     relativePath: path,
-                    excluded: excluded
+                    excluded: excluded,
+                    libraryID: libraryID
                 )
                 await reload()
             } catch {
