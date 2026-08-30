@@ -111,6 +111,16 @@ nonisolated enum LibraryStartupResolution: Sendable, Equatable {
     case unavailable
 }
 
+/// A failure to establish the single-writer boundary is not evidence that the
+/// user's active library disappeared. Startup must stay unavailable and leave
+/// the registered library untouched instead of silently creating and
+/// activating a second empty library at an alternate path.
+nonisolated enum LibraryStartupFailurePolicy {
+    static func permitsFactoryDefaultFallback(after error: any Error) -> Bool {
+        error is LibraryWriterLeaseError == false
+    }
+}
+
 @MainActor
 struct LibraryStartupContextResolver {
     let registryStore: MusicLibraryRegistryStore

@@ -738,11 +738,18 @@ final class AppSessionHost: ObservableObject {
                     category: .library
                 )
                 await releaseActiveSessionBindings()
-                if let defaultContext = await ensureFactoryDefaultLibraryIfNeeded(
-                    allowUnreachableActiveLibrary: true
-                ) {
-                    await restorePlaybackMemoryIfNeeded()
-                    _ = defaultContext
+                if LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: error) {
+                    if let defaultContext = await ensureFactoryDefaultLibraryIfNeeded(
+                        allowUnreachableActiveLibrary: true
+                    ) {
+                        await restorePlaybackMemoryIfNeeded()
+                        _ = defaultContext
+                    }
+                } else {
+                    Log.warning(
+                        "[LibrarySession] active library writer lease unavailable; default creation suppressed",
+                        category: .library
+                    )
                 }
             }
         case .noActive:
@@ -821,6 +828,13 @@ final class AppSessionHost: ObservableObject {
                 try await registryStore.setActiveLibrary(id: context.id, manifestMode: context.mode)
                 return context
             } catch {
+                guard LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: error) else {
+                    Log.warning(
+                        "[LibrarySession] registered library writer lease unavailable; default creation suppressed",
+                        category: .library
+                    )
+                    return nil
+                }
                 continue
             }
         }
@@ -836,6 +850,13 @@ final class AppSessionHost: ObservableObject {
                     allowStalePathConflictRepair: true
                 ).context
             } catch {
+                guard LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: error) else {
+                    Log.warning(
+                        "[LibrarySession] default library writer lease unavailable; alternate creation suppressed",
+                        category: .library
+                    )
+                    return nil
+                }
                 Log.debug(
                     "[LibrarySession] default library is not openable; trying creation: \(error)",
                     category: .library

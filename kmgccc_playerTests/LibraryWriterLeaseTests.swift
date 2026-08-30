@@ -61,6 +61,29 @@ final class LibraryWriterLeaseTests: XCTestCase {
         }
     }
 
+    func testWriterLeaseFailureNeverCreatesAnAlternateDefaultLibrary() {
+        let lockURL = URL(fileURLWithPath: "/tmp/library-writer.lock")
+        let errors: [LibraryWriterLeaseError] = [
+            .libraryInUse(lockURL),
+            .writerLeaseUnsupported(lockURL),
+            .cannotPrepareLockDirectory("denied"),
+            .cannotOpenLockFile(lockURL.path, EACCES),
+            .cannotWriteDiagnostic("full")
+        ]
+
+        for error in errors {
+            XCTAssertFalse(
+                LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: error),
+                "writer failure unexpectedly permitted fallback: \(error)"
+            )
+        }
+        XCTAssertTrue(
+            LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(
+                after: CocoaError(.fileReadCorruptFile)
+            )
+        )
+    }
+
     private func temporaryRoot() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("writer-lease-tests-\(UUID().uuidString)", isDirectory: true)
