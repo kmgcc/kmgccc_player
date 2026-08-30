@@ -24,10 +24,12 @@ final class MusicSettingsRenderTests: XCTestCase {
         let bitmap = try XCTUnwrap(rep.bitmapData)
         let byteCount = rep.bytesPerRow * rep.pixelsHigh
         let bytes = UnsafeBufferPointer(start: bitmap, count: byteCount)
+        let samplingStride = max(1, byteCount / 20_000)
+        let sampledBytes = stride(from: 0, to: byteCount, by: samplingStride).map { bytes[$0] }
 
         XCTAssertEqual(hosting.bounds.width, 500)
         XCTAssertEqual(rep.pixelsWide, 500 * Int(NSScreen.main?.backingScaleFactor ?? 2))
-        XCTAssertGreaterThan(Set(bytes.prefix(min(byteCount, 200_000))).count, 8)
+        XCTAssertGreaterThan(Set(sampledBytes).count, 8)
         XCTAssertGreaterThan(png.count, 10_000)
 
         let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
