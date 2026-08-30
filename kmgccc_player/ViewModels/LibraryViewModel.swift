@@ -491,6 +491,7 @@ final class LibraryViewModel {
     var runOwnedLibraryMutation: ((
         @escaping @MainActor () async -> Void
     ) async -> Bool)?
+    private var rejectsUnownedMutations = false
     var prepareTracksForDeletion: (([Track]) async -> TrackAuthorityDeletionPreparationResult)?
     var onTrackDeletionPreparationFailures: (([TrackAuthorityDeletionFailure]) -> Void)?
     var prepareTrackRelocationAction: ((UUID, URL) async throws -> TrackRelocationProposal)?
@@ -712,11 +713,13 @@ final class LibraryViewModel {
         )
     }
 
-    func setManualLikeState(_ state: ManualLikeState, for track: Track) {
-        guard preferenceStatsService.getStats(for: track.id).manualLikeState != state else { return }
-        preferenceStatsService.setManualLikeState(trackID: track.id, state: state)
-        libraryService.writeMetaOnlyInBackground(for: track, reason: "manualLike")
-        notifyTrackAuxiliaryDataChanged(trackIDs: [track.id])
+    func setManualLikeState(_ state: ManualLikeState, for track: Track) async {
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            guard self.preferenceStatsService.getStats(for: track.id).manualLikeState != state else { return }
+            self.preferenceStatsService.setManualLikeState(trackID: track.id, state: state)
+            self.libraryService.writeMetaOnlyInBackground(for: track, reason: "manualLike")
+            self.notifyTrackAuxiliaryDataChanged(trackIDs: [track.id])
+        }
     }
 
     func playlistArtworkRevision(playlistID: UUID) -> String? {
@@ -724,6 +727,7 @@ final class LibraryViewModel {
     }
 
     func prepareForSessionClose() {
+        rejectsUnownedMutations = true
         loadGeneration &+= 1
         cancelCurrentLoad()
         diagnosticsTask?.cancel()
@@ -735,6 +739,23 @@ final class LibraryViewModel {
         prepareTrackRelocationAction = nil
         relocateTrackAction = nil
         repository.setChangeHandler(nil)
+    }
+
+    private func performOwnedLibraryMutation<Result>(
+        rejectingWith fallback: Result,
+        _ work: @escaping @MainActor () async -> Result
+    ) async -> Result {
+        guard !rejectsUnownedMutations else { return fallback }
+        guard let runOwnedLibraryMutation else {
+            return await work()
+        }
+
+        var result: Result?
+        let accepted = await runOwnedLibraryMutation {
+            result = await work()
+        }
+        guard accepted, let result else { return fallback }
+        return result
     }
 
     // MARK: - Computed Properties
@@ -1307,17 +1328,19 @@ final class LibraryViewModel {
     // MARK: - Playlist Operations
 
     /// Create a new playlist and select it.
-    func createPlaylist(name: String) async -> Playlist {
-        Log.debug("createPlaylist: '\(name)'", category: .library)
-        let playlist = await repository.createPlaylist(name: name)
-        playlists = await repository.fetchPlaylists()
-        selectOrResetCurrentSelection(.playlist(playlist.id))
-        refreshTrigger += 1
-        return playlist
+    func createPlaylist(name: String) async -> Playlist? {
+        await performOwnedLibraryMutation(rejectingWith: nil as Playlist?) {
+            Log.debug("createPlaylist: '\(name)'", category: .library)
+            let playlist = await self.repository.createPlaylist(name: name)
+            self.playlists = await self.repository.fetchPlaylists()
+            self.selectOrResetCurrentSelection(.playlist(playlist.id))
+            self.refreshTrigger += 1
+            return playlist
+        }
     }
 
     /// Create a new playlist with default name.
-    func createNewPlaylist() async -> Playlist {
+    func createNewPlaylist() async -> Playlist? {
         let name = String(
             format: NSLocalizedString("library.new_playlist_name", comment: ""), playlists.count + 1
         )
@@ -1369,32 +1392,32 @@ final class LibraryViewModel {
     }
 
     func renamePlaylist(_ playlist: Playlist, name: String) async {
-        await repository.renamePlaylist(playlist, name: name)
-        await refresh()
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.repository.renamePlaylist(playlist, name: name)
+            await self.refresh()
+        }
     }
 
     func savePlaylistEdits(_ playlist: Playlist, name: String, description: String) async {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return }
-        await repository.updatePlaylistDetails(
-            playlist,
-            name: trimmedName,
-            description: description
-        )
-        await invalidateDetailSelectionCachesIfNeeded(
-            selectionIdentities: selectionIdentityVariants(for: .playlist(playlist.id))
-        )
-        await refresh()
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.repository.updatePlaylistDetails(
+                playlist,
+                name: trimmedName,
+                description: description
+            )
+            await self.invalidateDetailSelectionCachesIfNeeded(
+                selectionIdentities: self.selectionIdentityVariants(for: .playlist(playlist.id))
+            )
+            await self.refresh()
+        }
     }
 
     func deletePlaylist(_ playlist: Playlist) async {
-        if let runOwnedLibraryMutation {
-            _ = await runOwnedLibraryMutation { [weak self] in
-                await self?.deletePlaylistWithoutOwnership(playlist)
-            }
-            return
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.deletePlaylistWithoutOwnership(playlist)
         }
-        await deletePlaylistWithoutOwnership(playlist)
     }
 
     private func deletePlaylistWithoutOwnership(_ playlist: Playlist) async {
@@ -1412,13 +1435,9 @@ final class LibraryViewModel {
     }
 
     func addTracksToPlaylist(_ tracks: [Track], playlist: Playlist) async {
-        if let runOwnedLibraryMutation {
-            _ = await runOwnedLibraryMutation { [weak self] in
-                await self?.addTracksToPlaylistWithoutOwnership(tracks, playlist: playlist)
-            }
-            return
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.addTracksToPlaylistWithoutOwnership(tracks, playlist: playlist)
         }
-        await addTracksToPlaylistWithoutOwnership(tracks, playlist: playlist)
     }
 
     private func addTracksToPlaylistWithoutOwnership(_ tracks: [Track], playlist: Playlist) async {
@@ -1438,13 +1457,9 @@ final class LibraryViewModel {
     }
 
     func removeTracksFromPlaylist(_ tracks: [Track], playlist: Playlist) async {
-        if let runOwnedLibraryMutation {
-            _ = await runOwnedLibraryMutation { [weak self] in
-                await self?.removeTracksFromPlaylistWithoutOwnership(tracks, playlist: playlist)
-            }
-            return
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.removeTracksFromPlaylistWithoutOwnership(tracks, playlist: playlist)
         }
-        await removeTracksFromPlaylistWithoutOwnership(tracks, playlist: playlist)
     }
 
     private func removeTracksFromPlaylistWithoutOwnership(_ tracks: [Track], playlist: Playlist) async {
@@ -1498,6 +1513,12 @@ final class LibraryViewModel {
     }
 
     func deleteTracks(_ tracks: [Track]) async {
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.deleteTracksWithoutOwnership(tracks)
+        }
+    }
+
+    private func deleteTracksWithoutOwnership(_ tracks: [Track]) async {
         var uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
             $0.id.uuidString < $1.id.uuidString
         }
@@ -1564,6 +1585,12 @@ final class LibraryViewModel {
     // MARK: - Artist/Album Entry Saves
 
     func saveArtistEntry(_ entry: ArtistEntry) async {
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.saveArtistEntryWithoutOwnership(entry)
+        }
+    }
+
+    private func saveArtistEntryWithoutOwnership(_ entry: ArtistEntry) async {
         var persisted = entry
         persisted.updatedAt = Date()
         await repository.updateArtistEntry(persisted)
@@ -1745,6 +1772,12 @@ final class LibraryViewModel {
     }
 
     func saveArtistEdits(original: ArtistEntry, updated: ArtistEntry) async {
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.saveArtistEditsWithoutOwnership(original: original, updated: updated)
+        }
+    }
+
+    private func saveArtistEditsWithoutOwnership(original: ArtistEntry, updated: ArtistEntry) async {
         let trimmedName = updated.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return }
 
@@ -1770,6 +1803,12 @@ final class LibraryViewModel {
     }
 
     func saveAlbumEntry(_ entry: AlbumEntry) async {
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.saveAlbumEntryWithoutOwnership(entry)
+        }
+    }
+
+    private func saveAlbumEntryWithoutOwnership(_ entry: AlbumEntry) async {
         var persisted = entry
         persisted.updatedAt = Date()
         await repository.updateAlbumEntry(persisted)
@@ -1860,6 +1899,12 @@ final class LibraryViewModel {
     }
 
     func saveAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async {
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.saveAlbumEditsWithoutOwnership(original: original, updated: updated)
+        }
+    }
+
+    private func saveAlbumEditsWithoutOwnership(original: AlbumEntry, updated: AlbumEntry) async {
         let trimmedTitle = updated.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { return }
 
@@ -1891,6 +1936,12 @@ final class LibraryViewModel {
     }
 
     func restoreDefaultAlbumArtwork(_ entry: AlbumEntry) async {
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.restoreDefaultAlbumArtworkWithoutOwnership(entry)
+        }
+    }
+
+    private func restoreDefaultAlbumArtworkWithoutOwnership(_ entry: AlbumEntry) async {
         let fallbackArtwork = allTracks.first {
             $0.albumGroupKey == entry.canonicalKey
         }?.artworkData
@@ -1915,6 +1966,12 @@ final class LibraryViewModel {
     }
 
     func deleteArtist(_ entry: ArtistEntry) async {
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.deleteArtistWithoutOwnership(entry)
+        }
+    }
+
+    private func deleteArtistWithoutOwnership(_ entry: ArtistEntry) async {
         let affectedTrackIDs = Set(
             allTracks
                 .filter { LibraryNormalization.containsArtist(entry.canonicalName, in: $0) }
@@ -1952,6 +2009,12 @@ final class LibraryViewModel {
     }
 
     func deleteAlbum(_ entry: AlbumEntry) async {
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.deleteAlbumWithoutOwnership(entry)
+        }
+    }
+
+    private func deleteAlbumWithoutOwnership(_ entry: AlbumEntry) async {
         let affectedTrackIDs = Set(
             allTracks
                 .filter { $0.albumGroupKey == entry.canonicalKey }
@@ -1982,28 +2045,38 @@ final class LibraryViewModel {
     }
 
     func savePlaylistDescription(_ playlist: Playlist, description: String) async {
-        await repository.updatePlaylistDescription(playlist, description: description)
-        await invalidateDetailSelectionCachesIfNeeded(
-            selectionIdentities: selectionIdentityVariants(for: .playlist(playlist.id))
-        )
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.repository.updatePlaylistDescription(playlist, description: description)
+            await self.invalidateDetailSelectionCachesIfNeeded(
+                selectionIdentities: self.selectionIdentityVariants(for: .playlist(playlist.id))
+            )
+        }
     }
 
     /// Update track availability after bookmark resolution.
     func updateTrackAvailability(
         _ track: Track, availability: TrackAvailability, refreshedBookmark: Data?
     ) async {
-        track.availability = availability
-        if let newBookmark = refreshedBookmark {
-            track.fileBookmarkData = newBookmark
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            track.availability = availability
+            if let newBookmark = refreshedBookmark {
+                track.fileBookmarkData = newBookmark
+            }
+            await self.repository.persistTrackMetaOnly(track, reason: "availabilityRefresh")
+            await self.refresh()
         }
-        await repository.persistTrackMetaOnly(track, reason: "availabilityRefresh")
-        await refresh()
     }
 
     /// Re-links a missing track to a user-picked audio file. Only the audio
     /// location (path/bookmark/availability) is replaced — all metadata,
     /// playlist memberships and library presentation stay untouched.
     func relinkTrack(_ track: Track, to fileURL: URL) async {
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.relinkTrackWithoutOwnership(track, to: fileURL)
+        }
+    }
+
+    private func relinkTrackWithoutOwnership(_ track: Track, to fileURL: URL) async {
         guard let current = allTracks.first(where: { $0.id == track.id }) else { return }
         guard case var .referenced(locator) = current.mediaLocator else { return }
         locator.lastKnownPath = fileURL.path
@@ -2019,6 +2092,21 @@ final class LibraryViewModel {
 
     @discardableResult
     func saveTrackEdits(
+        _ track: Track,
+        mode: TrackEditPersistenceMode,
+        reason: String
+    ) async -> LibraryTrackPersistenceResult {
+        await performOwnedLibraryMutation(
+            rejectingWith: LibraryTrackPersistenceResult(
+                persistedTrackIDs: [],
+                failedTrackIDs: [track.id]
+            )
+        ) {
+            await self.saveTrackEditsWithoutOwnership(track, mode: mode, reason: reason)
+        }
+    }
+
+    private func saveTrackEditsWithoutOwnership(
         _ track: Track,
         mode: TrackEditPersistenceMode,
         reason: String
@@ -2169,8 +2257,10 @@ final class LibraryViewModel {
     }
 
     func clearIndexCacheAndRebuild() async {
-        await repository.clearIndexCacheAndRebuild()
-        await refresh()
+        await performOwnedLibraryMutation(rejectingWith: ()) {
+            await self.repository.clearIndexCacheAndRebuild()
+            await self.refresh()
+        }
     }
 
     /// Search the current library index through the ViewModel boundary.

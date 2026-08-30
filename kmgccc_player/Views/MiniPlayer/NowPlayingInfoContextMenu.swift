@@ -179,7 +179,9 @@ struct TrackActionMenuContent: View {
         Button {
             let nextState: ManualLikeState = isManuallyLiked ? .none : .liked
             invokeAction(isManuallyLiked ? "unlike" : "like") {
-                libraryVM.setManualLikeState(nextState, for: track)
+                Task {
+                    await libraryVM.setManualLikeState(nextState, for: track)
+                }
             }
         } label: {
             if isManuallyLiked {
@@ -309,7 +311,10 @@ struct TrackActionMenuContent: View {
                 detail: "action=createPlaylistAndAdd, track=\(trackIDPrefix)"
             )
             Task {
-                let playlist = await libraryVM.createNewPlaylist()
+                guard let playlist = await libraryVM.createNewPlaylist() else {
+                    ContextMenuDiagnostics.end(token)
+                    return
+                }
                 await libraryVM.addTracksToPlaylist([track], playlist: playlist)
                 ContextMenuDiagnostics.end(token)
             }

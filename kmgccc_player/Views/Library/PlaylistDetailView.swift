@@ -625,7 +625,7 @@ struct PlaylistDetailView: View {
 
                     Button {
                         processBatchAction(actionName: "batchCreatePlaylistAndAdd") { tracks in
-                            let playlist = await libraryVM.createNewPlaylist()
+                            guard let playlist = await libraryVM.createNewPlaylist() else { return }
                             await libraryVM.addTracksToPlaylist(tracks, playlist: playlist)
                         }
                     } label: {

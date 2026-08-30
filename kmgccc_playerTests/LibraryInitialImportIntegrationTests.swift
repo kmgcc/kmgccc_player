@@ -77,6 +77,51 @@ final class LibraryInitialImportIntegrationTests: XCTestCase {
         await restartedSession.close()
     }
 
+    func testDeletePolicyWriteCannotFallThroughToNewlyActiveLibrary() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let host = try makeHost(registryURL: fixture.registryURL)
+
+        _ = try await host.createMusicLibrary(
+            mode: .referenced,
+            parentURL: fixture.libraryParent,
+            displayName: "First",
+            initialImportSelection: nil
+        )
+        let firstContext = try XCTUnwrap(host.activeLibraryBinding.context)
+
+        let secondLibraryParent = fixture.root.appendingPathComponent("Second Library Parent", isDirectory: true)
+        try FileManager.default.createDirectory(at: secondLibraryParent, withIntermediateDirectories: true)
+        _ = try await host.createMusicLibrary(
+            mode: .referenced,
+            parentURL: secondLibraryParent,
+            displayName: "Second",
+            initialImportSelection: nil
+        )
+        let secondContext = try XCTUnwrap(host.activeLibraryBinding.context)
+        XCTAssertNotEqual(firstContext.id, secondContext.id)
+
+        do {
+            try await host.setReferencedTrackDeletePolicy(
+                .recycleSource,
+                libraryID: firstContext.id
+            )
+            XCTFail("stale settings write should be rejected")
+        } catch {
+            XCTAssertEqual(error as? LibraryOperationError, .sessionQuiescing)
+        }
+
+        let firstSettings = try await LibraryScopedSettingsStore(paths: firstContext.paths).load()
+        let secondSettings = try await LibraryScopedSettingsStore(paths: secondContext.paths).load()
+        XCTAssertEqual(firstSettings.referencedTrackDeletePolicy, .onlyLibrary)
+        XCTAssertEqual(secondSettings.referencedTrackDeletePolicy, .onlyLibrary)
+
+        if let session = host.activeLibraryBinding.activeSession {
+            await session.quiesce()
+            await session.close()
+        }
+    }
+
     func testSelectedSourcesCreatePlaylistsAndFolderPlaylistStaysSynchronized() async throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.root) }

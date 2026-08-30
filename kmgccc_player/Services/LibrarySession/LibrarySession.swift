@@ -683,8 +683,9 @@ final class LibrarySession: LibrarySessionLifecycle {
         await fileImportService.quiesce()
         playerViewModel.stop()
         playerViewModel.stopLevelMeter()
-        libraryViewModel.prepareForSessionClose()
         await importEnrichmentService.quiesce()
+        await libraryService.quiesceAndWaitForBackgroundWrites()
+        libraryViewModel.prepareForSessionClose()
     }
 
     func close() async {
@@ -692,8 +693,11 @@ final class LibrarySession: LibrarySessionLifecycle {
         await libraryChangeMonitor?.stopAndWait()
         await operationCoordinator.quiesceAndWait()
         await fileImportService.quiesce()
+        playerViewModel.stop()
+        playerViewModel.stopLevelMeter()
         referencedSourceReconciler?.close()
         await importEnrichmentService.close()
+        await libraryService.quiesceAndWaitForBackgroundWrites()
         isClosed = true
         libraryViewModel.prepareForSessionClose()
         playbackCoordinator.close()

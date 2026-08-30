@@ -132,6 +132,8 @@ final class LocalLibraryService {
     private let fileManager = FileManager.default
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private var acceptsBackgroundWrites = true
+    private var backgroundWriteTasks: [UUID: Task<Void, Never>] = [:]
 
     init(paths: LibraryPaths, preferenceStatsService: PreferenceStatsService) {
         self.paths = paths
@@ -277,15 +279,16 @@ final class LocalLibraryService {
     }
 
     func writeMetaOnlyInBackground(for track: Track, reason: String) {
-        guard Self.isPersistable(track.mediaLocator) else { return }
+        guard acceptsBackgroundWrites, Self.isPersistable(track.mediaLocator) else { return }
 
         let snapshot = TrackPersistenceSnapshot(
             track: track,
             preferenceStats: preferenceStatsService.getStats(for: track.id)
         )
         let capturedPaths = paths
+        let taskID = UUID()
 
-        Task.detached(priority: .utility) { @Sendable in
+        let persistenceTask = Task.detached(priority: .utility) { @Sendable in
             _ = autoreleasepool {
                 LocalLibraryService.persistTrackSnapshotOnBackground(
                     snapshot,
@@ -293,6 +296,24 @@ final class LocalLibraryService {
                     mode: .metaOnly,
                     reason: reason
                 )
+            }
+        }
+        let trackingTask = Task { @MainActor [weak self] in
+            _ = await persistenceTask.value
+            self?.backgroundWriteTasks.removeValue(forKey: taskID)
+        }
+        backgroundWriteTasks[taskID] = trackingTask
+    }
+
+    /// Stops accepting fire-and-forget metadata writes and waits until every
+    /// write that already captured this library's paths has finished. Session
+    /// shutdown must cross this barrier before releasing or deleting a root.
+    func quiesceAndWaitForBackgroundWrites() async {
+        acceptsBackgroundWrites = false
+        while !backgroundWriteTasks.isEmpty {
+            let tasks = Array(backgroundWriteTasks.values)
+            for task in tasks {
+                await task.value
             }
         }
     }

@@ -405,10 +405,22 @@ struct MusicSettingsView: View {
             Picker("删除歌曲时", selection: Binding(
                 get: { settings.referencedTrackDeletePolicy },
                 set: { policy in
+                    guard let libraryID = activeContext?.id else { return }
+                    let previousPolicy = settings.referencedTrackDeletePolicy
                     settings.referencedTrackDeletePolicy = policy
                     Task {
-                        do { try await appSession.setReferencedTrackDeletePolicy(policy) }
-                        catch { errorMessage = "无法保存删除方式。" }
+                        do {
+                            try await appSession.setReferencedTrackDeletePolicy(
+                                policy,
+                                libraryID: libraryID
+                            )
+                        } catch {
+                            guard activeContext?.id == libraryID else { return }
+                            if settings.referencedTrackDeletePolicy == policy {
+                                settings.referencedTrackDeletePolicy = previousPolicy
+                            }
+                            errorMessage = "无法保存删除方式。"
+                        }
                     }
                 }
             )) {
@@ -519,11 +531,20 @@ struct MusicSettingsView: View {
     }
 
     private func reload() async {
-        registry = await appSession.musicLibraryRegistrySnapshot()
+        let targetGeneration = appSession.activeLibraryBinding.generation
+        let targetLibraryID = activeContext?.id
+        let loadedRegistry = await appSession.musicLibraryRegistrySnapshot()
         do {
-            sources = try await appSession.referencedSources()
-            settings = try await appSession.libraryScopedSettings()
+            let loadedSources = try await appSession.referencedSources()
+            let loadedSettings = try await appSession.libraryScopedSettings()
+            guard appSession.activeLibraryBinding.generation == targetGeneration,
+                  activeContext?.id == targetLibraryID else { return }
+            registry = loadedRegistry
+            sources = loadedSources
+            settings = loadedSettings
         } catch {
+            guard appSession.activeLibraryBinding.generation == targetGeneration,
+                  activeContext?.id == targetLibraryID else { return }
             errorMessage = "无法读取资料库设置。"
         }
     }
@@ -715,9 +736,12 @@ struct MusicSettingsView: View {
         Task {
             do {
                 if let sourceID {
-                    _ = try await appSession.refreshReferencedSource(id: sourceID)
+                    _ = try await appSession.refreshReferencedSource(
+                        id: sourceID,
+                        libraryID: libraryID
+                    )
                 } else {
-                    try await appSession.refreshAllReferencedSources()
+                    try await appSession.refreshAllReferencedSources(libraryID: libraryID)
                 }
                 guard appSession.activeLibraryBinding.context?.id == libraryID else { return }
                 await reload()

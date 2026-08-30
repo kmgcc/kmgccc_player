@@ -102,6 +102,56 @@ final class MusicSettingsStateTests: XCTestCase {
         await fulfillment(of: [cancelled], timeout: 1)
     }
 
+    func testLocalLibraryBackgroundWritesQuiesceBeforeRootDeletionAndCannotRestart() async throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = kmgccc_player.LibraryPaths(rootURL: root)
+        try paths.createRequiredDirectories()
+        let service = LocalLibraryService(
+            paths: paths,
+            preferenceStatsService: PreferenceStatsService()
+        )
+        let track = kmgccc_player.Track(
+            title: "Quiesce",
+            fileBookmarkData: Data(),
+            mediaLocator: .managed(libraryRelativePath: "Tracks/quiesce/audio.wav"),
+            libraryRootSnapshot: root.path
+        )
+
+        service.writeMetaOnlyInBackground(for: track, reason: "testBeforeQuiesce")
+        await service.quiesceAndWaitForBackgroundWrites()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: paths.trackMetaURL(for: track.id).path))
+
+        try FileManager.default.removeItem(at: root)
+        service.writeMetaOnlyInBackground(for: track, reason: "testAfterQuiesce")
+        await Task.yield()
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: root.path),
+            "a closed session must not recreate a deleted library root"
+        )
+    }
+
+    func testLibraryViewModelRejectsMutationsAfterOwnershipGateCloses() async throws {
+        let repository = StubLibraryRepository()
+        let viewModel = LibraryViewModel.preview(repository: repository)
+        defer { try? FileManager.default.removeItem(at: viewModel.libraryPaths.rootURL) }
+        let initialPlaylistIDs = Set((await repository.fetchPlaylists()).map(\.id))
+        viewModel.runOwnedLibraryMutation = { _ in false }
+
+        let rejected = await viewModel.createPlaylist(name: "Must Not Exist")
+        XCTAssertNil(rejected)
+        let playlistsAfterGateRejection = await repository.fetchPlaylists()
+        XCTAssertEqual(Set(playlistsAfterGateRejection.map(\.id)), initialPlaylistIDs)
+        XCTAssertFalse(playlistsAfterGateRejection.contains { $0.name == "Must Not Exist" })
+
+        viewModel.prepareForSessionClose()
+        let rejectedAfterClose = await viewModel.createPlaylist(name: "Still Must Not Exist")
+        XCTAssertNil(rejectedAfterClose)
+        let playlistsAfterClose = await repository.fetchPlaylists()
+        XCTAssertEqual(Set(playlistsAfterClose.map(\.id)), initialPlaylistIDs)
+        XCTAssertFalse(playlistsAfterClose.contains { $0.name == "Still Must Not Exist" })
+    }
+
     // MARK: - §14 Observable Task State
 
     @MainActor

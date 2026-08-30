@@ -539,9 +539,15 @@ final class AppSessionHost: ObservableObject {
         return try await store.loadAll()
     }
 
-    func refreshReferencedSource(id: UUID) async throws -> [ReferencedSourceScopeIssue] {
+    func refreshReferencedSource(
+        id: UUID,
+        libraryID: UUID? = nil
+    ) async throws -> [ReferencedSourceScopeIssue] {
         guard let session = activeLibraryBinding.activeSession,
               session.context.mode == .referenced else { return [] }
+        if let libraryID, session.context.id != libraryID {
+            throw LibraryOperationError.sessionQuiescing
+        }
         beginManualScanOverride(sourceIDs: [id])
         do {
             let issues = try await session.runLibraryOperation {
@@ -558,10 +564,13 @@ final class AppSessionHost: ObservableObject {
     /// User-initiated full scan across every referenced source of the active
     /// library (spec 12.1 / 18.1). Scan progress is published through
     /// `referencedSourceScanStatesSnapshot`.
-    func refreshAllReferencedSources() async throws {
+    func refreshAllReferencedSources(libraryID: UUID? = nil) async throws {
         guard let session = activeLibraryBinding.activeSession,
               session.context.mode == .referenced,
               let store = session.referencedSourceStore else { return }
+        if let libraryID, session.context.id != libraryID {
+            throw LibraryOperationError.sessionQuiescing
+        }
         let sourceIDs = try await store.loadAll().map(\.id)
         guard !sourceIDs.isEmpty else { return }
         beginManualScanOverride(sourceIDs: sourceIDs)
@@ -579,11 +588,15 @@ final class AppSessionHost: ObservableObject {
     func setReferencedSourceExcludedPath(
         id: UUID,
         relativePath: String,
-        excluded: Bool
+        excluded: Bool,
+        libraryID: UUID? = nil
     ) async throws {
         guard let session = activeLibraryBinding.activeSession,
               session.context.mode == .referenced else {
             throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        if let libraryID, session.context.id != libraryID {
+            throw LibraryOperationError.sessionQuiescing
         }
         try await session.runLibraryOperation {
             try await session.setReferencedSourceExcludedPath(
@@ -594,11 +607,18 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
-    func bindReferencedSource(id: UUID, to playlistID: UUID) async throws {
+    func bindReferencedSource(
+        id: UUID,
+        to playlistID: UUID,
+        libraryID: UUID? = nil
+    ) async throws {
         guard let session = activeLibraryBinding.activeSession,
               session.context.mode == .referenced,
               let reconciler = session.referencedSourceReconciler else {
             throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        if let libraryID, session.context.id != libraryID {
+            throw LibraryOperationError.sessionQuiescing
         }
         try await session.runLibraryOperation {
             try await reconciler.bindSourcesToPlaylist([id], playlistID: playlistID)
@@ -607,11 +627,18 @@ final class AppSessionHost: ObservableObject {
     }
 
     @discardableResult
-    func unbindReferencedSource(id: UUID, bindingID: UUID) async throws -> Int {
+    func unbindReferencedSource(
+        id: UUID,
+        bindingID: UUID,
+        libraryID: UUID? = nil
+    ) async throws -> Int {
         guard let session = activeLibraryBinding.activeSession,
               session.context.mode == .referenced,
               let reconciler = session.referencedSourceReconciler else {
             throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        if let libraryID, session.context.id != libraryID {
+            throw LibraryOperationError.sessionQuiescing
         }
         let removedCount = try await session.runLibraryOperation {
             try await reconciler.unbindSourceFromPlaylist(
@@ -647,9 +674,19 @@ final class AppSessionHost: ObservableObject {
         return try await LibraryScopedSettingsStore(paths: context.paths).load()
     }
 
-    func setReferencedTrackDeletePolicy(_ policy: ReferencedTrackDeletePolicy) async throws {
-        guard let context = activeLibraryBinding.context, context.mode == .referenced else { return }
-        try await LibraryScopedSettingsStore(paths: context.paths).setReferencedTrackDeletePolicy(policy)
+    func setReferencedTrackDeletePolicy(
+        _ policy: ReferencedTrackDeletePolicy,
+        libraryID: UUID
+    ) async throws {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.id == libraryID,
+              session.context.mode == .referenced else {
+            throw LibraryOperationError.sessionQuiescing
+        }
+        let store = LibraryScopedSettingsStore(paths: session.context.paths)
+        let _: Void = try await session.runLibraryOperation {
+            try await store.setReferencedTrackDeletePolicy(policy)
+        }
     }
 
     func setupIfNeeded() async {
