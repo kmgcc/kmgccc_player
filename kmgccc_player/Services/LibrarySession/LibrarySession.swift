@@ -32,6 +32,7 @@ final class LibrarySession: LibrarySessionLifecycle {
 
     private let playbackService: AVAudioPlaybackService
     private let operationCoordinator: LibraryOperationCoordinator
+    private let mutationCoordinator: LibraryMutationCoordinator
     private var isLoaded = false
     private var isClosed = false
     private(set) var didCompleteLegacyUpgrade = false
@@ -55,6 +56,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         importEnrichmentService: ImportEnrichmentService,
         fileImportService: FileImportService,
         operationCoordinator: LibraryOperationCoordinator,
+        mutationCoordinator: LibraryMutationCoordinator,
         storageBackend: any LibraryStorageBackend,
         referencedSourceStore: ReferencedSourceStore?,
         referencedSourceScope: ReferencedSourceScope?,
@@ -84,6 +86,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         self.importEnrichmentService = importEnrichmentService
         self.fileImportService = fileImportService
         self.operationCoordinator = operationCoordinator
+        self.mutationCoordinator = mutationCoordinator
         self.storageBackend = storageBackend
         self.referencedSourceStore = referencedSourceStore
         self.referencedSourceScope = referencedSourceScope
@@ -314,7 +317,9 @@ final class LibrarySession: LibrarySessionLifecycle {
         libraryViewModel.runOwnedLibraryMutation = { [weak self] work in
             guard let self else { return false }
             do {
-                let _: Void = try await self.runLibraryOperation {
+                let _: Void = try await self.mutationCoordinator.run(
+                    kind: .userLibraryMutation
+                ) {
                     await work()
                 }
                 return true
@@ -682,18 +687,21 @@ final class LibrarySession: LibrarySessionLifecycle {
     func quiesce() async {
         guard !isClosed else { return }
         await libraryChangeMonitor?.stopAndWait()
+        mutationCoordinator.stopAcceptingNewMutations()
         await operationCoordinator.quiesceAndWait()
         await fileImportService.quiesce()
         playerViewModel.stop()
         playerViewModel.stopLevelMeter()
         await importEnrichmentService.quiesce()
         await libraryService.quiesceAndWaitForBackgroundWrites()
+        await mutationCoordinator.waitForDrain()
         libraryViewModel.prepareForSessionClose()
     }
 
     func close() async {
         guard !isClosed else { return }
         await libraryChangeMonitor?.stopAndWait()
+        mutationCoordinator.stopAcceptingNewMutations()
         await operationCoordinator.quiesceAndWait()
         await fileImportService.quiesce()
         playerViewModel.stop()
@@ -701,6 +709,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         referencedSourceReconciler?.close()
         await importEnrichmentService.close()
         await libraryService.quiesceAndWaitForBackgroundWrites()
+        await mutationCoordinator.waitForDrain()
         isClosed = true
         libraryViewModel.prepareForSessionClose()
         playbackCoordinator.close()

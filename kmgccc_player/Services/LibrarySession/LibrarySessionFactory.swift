@@ -51,12 +51,29 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         // source repair, or any sidecar writer can touch this Library root.
         let writerLease = try LibraryWriterLease.acquire(paths: context.paths)
 
+        try context.paths.createRequiredDirectories()
+        let mutationJournal = LibraryMutationJournal(
+            paths: context.paths,
+            libraryID: context.id
+        )
+        let recoveredMutations = try await mutationJournal.recoverInterruptedMutations()
+        if !recoveredMutations.isEmpty {
+            Log.warning(
+                "[LibrarySession] recovered \(recoveredMutations.count) interrupted mutation intent(s) before reload",
+                category: .library
+            )
+        }
+        let mutationCoordinator = LibraryMutationCoordinator(
+            libraryID: context.id,
+            sessionGeneration: context.generation,
+            journal: mutationJournal
+        )
+
         let storageLocations = StorageLocations.scoped(to: context.paths)
         _ = await LegacyLibraryUpgradeCoordinator.prepareStorageIfNeeded(
             context: context,
             storageLocations: storageLocations
         )
-        try context.paths.createRequiredDirectories()
         let cacheServices = LibraryCacheServices(paths: context.paths)
         let modelContainer = try makeModelContainer(paths: context.paths)
         let preferenceStatsService = PreferenceStatsService()
@@ -236,7 +253,10 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         let ignoredItemsStore = sourceScope.map { _ in
             IgnoredReferencedItemsStore(paths: context.paths)
         }
-        let operationCoordinator = LibraryOperationCoordinator()
+        let operationCoordinator = LibraryOperationCoordinator(
+            libraryID: context.id,
+            sessionGeneration: context.generation
+        )
         let ncmRegistry = sourceScope.map { _ in
             NCMConversionRegistry(paths: context.paths)
         }
@@ -470,6 +490,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             importEnrichmentService: importEnrichmentService,
             fileImportService: fileImportService,
             operationCoordinator: operationCoordinator,
+            mutationCoordinator: mutationCoordinator,
             storageBackend: storageBackend,
             referencedSourceStore: sourceStore,
             referencedSourceScope: sourceScope,
