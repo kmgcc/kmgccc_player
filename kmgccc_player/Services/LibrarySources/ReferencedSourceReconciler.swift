@@ -85,6 +85,7 @@ final class ReferencedSourceReconciler {
     private let context: LibraryContext
     private let repository: any LibraryRepositoryProtocol
     private let importer: any AutomaticReferencedFileImporting
+    private let mutationCoordinator: LibraryMutationCoordinator?
     private let sourceStore: ReferencedSourceStore
     private let sourceScope: ReferencedSourceScope
     private let scanner: ReferencedSourceScanner
@@ -102,6 +103,7 @@ final class ReferencedSourceReconciler {
         context: LibraryContext,
         repository: any LibraryRepositoryProtocol,
         importer: any AutomaticReferencedFileImporting,
+        mutationCoordinator: LibraryMutationCoordinator? = nil,
         sourceStore: ReferencedSourceStore,
         sourceScope: ReferencedSourceScope,
         scanner: ReferencedSourceScanner,
@@ -116,6 +118,7 @@ final class ReferencedSourceReconciler {
         self.context = context
         self.repository = repository
         self.importer = importer
+        self.mutationCoordinator = mutationCoordinator
         self.sourceStore = sourceStore
         self.sourceScope = sourceScope
         self.scanner = scanner
@@ -597,6 +600,24 @@ final class ReferencedSourceReconciler {
             }
         }
 
+        let targetIDs = intent.affectedTrackIDs.map(\.uuidString)
+        if let mutationCoordinator {
+            return try await mutationCoordinator.run(
+                kind: .sourceReconcileCommit,
+                targetIDs: targetIDs
+            ) {
+                try await self.commitPrepared(intent, accumulating: changes)
+            }
+        }
+        return try await commitPrepared(intent, accumulating: changes)
+    }
+
+    private func commitPrepared(
+        _ original: LibraryReconcileIntent,
+        accumulating initialChanges: ReferencedReconcileChanges
+    ) async throws -> ReferencedReconcileChanges {
+        var changes = initialChanges
+        var intent = original
         let alreadyCommitted = Set(intent.committedTrackIDs)
         let pending = intent.mutations.filter { !alreadyCommitted.contains($0.trackID) }
         if !pending.isEmpty {
@@ -739,7 +760,11 @@ final class ReferencedSourceReconciler {
         for binding in descriptor.playlistBindings {
             guard let playlist = playlists.first(where: { $0.id == binding.playlistID }) else {
                 // The playlist may have been deleted by another process or an
-                // older build. Do not recreate it from a source sidecar.
+                // older build. Do not recreate it from a source sidecar, and
+                // converge stale binding/membership metadata so a failed
+                // post-delete cleanup cannot leave a permanent dead edge.
+                try await playlistMembershipStore.removePlaylist(playlistID: binding.playlistID)
+                changedDescriptor.playlistBindings.removeAll { $0.id == binding.id }
                 continue
             }
 

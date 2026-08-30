@@ -140,6 +140,25 @@ private actor NoticeRecorder: kmgccc_player.ReferencedSourceNoticePublishing {
 
 @MainActor
 final class ReferencedSourceReconcilerTests: XCTestCase {
+    func testReconcileRemovesBindingWhosePlaylistWasDeletedOutOfBand() async throws {
+        let fixture = try await ReconcileFixture()
+        defer { fixture.cleanup() }
+        let playlist = try await fixture.repository.createPlaylist(name: "Temporary")
+        try await fixture.reconciler.bindSourcesToPlaylist(
+            [fixture.sourceID],
+            playlistID: playlist.id
+        )
+        let boundPlaylistIDs = try await fixture.store.load(id: fixture.sourceID)
+            .playlistBindings.map(\.playlistID)
+        XCTAssertEqual(boundPlaylistIDs, [playlist.id])
+
+        try await fixture.repository.deletePlaylist(playlist)
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+
+        let descriptor = try await fixture.store.load(id: fixture.sourceID)
+        XCTAssertTrue(descriptor.playlistBindings.isEmpty)
+    }
+
     func testUniqueFallbackIdentityRenamePreservesUUIDMembershipAndAvailability() async throws {
         let fallbackFingerprint: @Sendable (URL) throws -> kmgccc_player.ReferencedFileFingerprint = { url in
             let actual = try ReferencedFileIdentityProvider().fingerprint(for: url)

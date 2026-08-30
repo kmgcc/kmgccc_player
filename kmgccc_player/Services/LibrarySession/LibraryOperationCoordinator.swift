@@ -299,7 +299,15 @@ final class LibraryOperationCoordinator {
     // MARK: - Quiesce
 
     func quiesceAndWait() async {
+        stopAcceptingNewOperations()
+        await cancelAndWait()
+    }
+
+    func stopAcceptingNewOperations() {
         acceptingOperations = false
+    }
+
+    func cancelAndWait() async {
         while !operations.isEmpty {
             let pending = operations
             pending.values.forEach { $0.cancel() }

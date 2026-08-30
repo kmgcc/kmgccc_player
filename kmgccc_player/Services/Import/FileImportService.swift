@@ -121,6 +121,7 @@ final class FileImportService: FileImportServiceProtocol {
     private let importEnrichmentService: ImportEnrichmentService
     private let storageBackend: any LibraryStorageBackend
     private let operationCoordinator: LibraryOperationCoordinator
+    private let mutationCoordinator: LibraryMutationCoordinator?
     private let referencedNCMConversionService: ReferencedNCMConversionService?
     private let ignoredItemsStore: IgnoredReferencedItemsStore?
     private let qqMusicCoverService: QQMusicCoverService
@@ -152,6 +153,7 @@ final class FileImportService: FileImportServiceProtocol {
         importEnrichmentService: ImportEnrichmentService,
         storageBackend: any LibraryStorageBackend,
         operationCoordinator: LibraryOperationCoordinator,
+        mutationCoordinator: LibraryMutationCoordinator? = nil,
         referencedNCMConversionService: ReferencedNCMConversionService? = nil,
         ignoredItemsStore: IgnoredReferencedItemsStore? = nil,
         qqMusicCoverService: QQMusicCoverService,
@@ -168,6 +170,7 @@ final class FileImportService: FileImportServiceProtocol {
         self.importEnrichmentService = importEnrichmentService
         self.storageBackend = storageBackend
         self.operationCoordinator = operationCoordinator
+        self.mutationCoordinator = mutationCoordinator
         self.referencedNCMConversionService = referencedNCMConversionService
         self.ignoredItemsStore = ignoredItemsStore
         self.qqMusicCoverService = qqMusicCoverService
@@ -952,11 +955,12 @@ final class FileImportService: FileImportServiceProtocol {
                 )
             }
 
-            guard let savedTracks = await committer.saveImportedTracks(
+            guard let savedTracks = await saveImportedTracksUnderMutation(
                 importedTracks,
                 progressController: progressController,
                 session: importSession,
-                cancellationToken: cancellationToken
+                cancellationToken: cancellationToken,
+                failureURL: selectedURLs[0]
             ) else {
                 return await committer.finishCancelledImport(
                     session: importSession,
@@ -992,11 +996,12 @@ final class FileImportService: FileImportServiceProtocol {
                 )
             }
 
-            guard let savedTracks = await committer.saveImportedTracks(
+            guard let savedTracks = await saveImportedTracksUnderMutation(
                 importedTracks,
                 progressController: progressController,
                 session: importSession,
-                cancellationToken: cancellationToken
+                cancellationToken: cancellationToken,
+                failureURL: selectedURLs[0]
             ) else {
                 return await committer.finishCancelledImport(
                     session: importSession,
@@ -1099,7 +1104,38 @@ final class FileImportService: FileImportServiceProtocol {
         sourceIDs: Set<UUID>,
         to playlist: Playlist?
     ) async throws {
+        let targetIDs = Array(Set(tracks.map(\.id) + Array(referencedReuseLocators.keys)))
+            .sorted { $0.uuidString < $1.uuidString }
+            .map(\.uuidString)
+        if let mutationCoordinator {
+            return try await mutationCoordinator.run(
+                kind: .importCommit,
+                targetIDs: targetIDs
+            ) {
+                try await self.commitImportEffectsUncoordinated(
+                    tracks: tracks,
+                    referencedReuseLocators: referencedReuseLocators,
+                    sourceIDs: sourceIDs,
+                    to: playlist
+                )
+            }
+        }
+        try await commitImportEffectsUncoordinated(
+            tracks: tracks,
+            referencedReuseLocators: referencedReuseLocators,
+            sourceIDs: sourceIDs,
+            to: playlist
+        )
+    }
+
+    private func commitImportEffectsUncoordinated(
+        tracks: [Track],
+        referencedReuseLocators: [UUID: ReferencedFileLocator],
+        sourceIDs: Set<UUID>,
+        to playlist: Playlist?
+    ) async throws {
         var originalLocators: [(track: Track, locator: TrackMediaLocator)] = []
+        var playlistAdditions: [Track] = []
         do {
             for trackID in referencedReuseLocators.keys.sorted(by: { $0.uuidString < $1.uuidString }) {
                 guard let incoming = referencedReuseLocators[trackID],
@@ -1113,15 +1149,30 @@ final class FileImportService: FileImportServiceProtocol {
             guard let playlist else { return }
             var seenTrackIDs = Set<UUID>()
             let uniqueTracks = tracks.filter { seenTrackIDs.insert($0.id).inserted }
+            let originalPlaylistTrackIDs = Set(playlist.tracks.map(\.id))
+            let proposedPlaylistAdditions = uniqueTracks.filter {
+                !originalPlaylistTrackIDs.contains($0.id)
+            }
+            if !uniqueTracks.isEmpty {
+                try await repository.addTracks(uniqueTracks, to: playlist)
+            }
+            playlistAdditions = proposedPlaylistAdditions
             try await storageBackend.commitPlaylistImportSourceEffects(
                 tracks: uniqueTracks,
                 sourceIDs: sourceIDs,
                 playlistID: playlist.id
             )
-            if !uniqueTracks.isEmpty {
-                try await repository.addTracks(uniqueTracks, to: playlist)
-            }
         } catch {
+            if let playlist, !playlistAdditions.isEmpty {
+                do {
+                    try await repository.removeTracks(playlistAdditions, from: playlist)
+                } catch {
+                    Log.error(
+                        "[Import] failed to roll back playlist additions after source-effect failure: \(error)",
+                        category: .library
+                    )
+                }
+            }
             for original in originalLocators.reversed() {
                 original.track.mediaLocator = original.locator
                 await repository.persistTrackMetaOnly(
@@ -1130,6 +1181,48 @@ final class FileImportService: FileImportServiceProtocol {
                 )
             }
             throw error
+        }
+    }
+
+    private func saveImportedTracksUnderMutation(
+        _ tracks: [Track],
+        progressController: BatchImportProgressDialogController,
+        session: ImportSession,
+        cancellationToken: ImportCancellationToken,
+        failureURL: URL
+    ) async -> [Track]? {
+        do {
+            if let mutationCoordinator {
+                let savedIDs: [UUID]? = try await mutationCoordinator.run(
+                    kind: .importCommit,
+                    targetIDs: tracks.map { $0.id.uuidString }
+                ) {
+                    await self.committer.saveImportedTracks(
+                        tracks,
+                        progressController: progressController,
+                        session: session,
+                        cancellationToken: cancellationToken
+                    )?.map(\.id)
+                }
+                guard let savedIDs else { return nil }
+                let savedByID = Dictionary(uniqueKeysWithValues:
+                    await repository.fetchTracks(ids: savedIDs).map { ($0.id, $0) }
+                )
+                return savedIDs.compactMap { savedByID[$0] }
+            }
+            return await committer.saveImportedTracks(
+                tracks,
+                progressController: progressController,
+                session: session,
+                cancellationToken: cancellationToken
+            )
+        } catch {
+            lastImportFailures.append(.init(
+                url: failureURL,
+                message: "无法提交资料库写入：\(error.localizedDescription)"
+            ))
+            Log.error("[Import] mutation commit failed: \(error)", category: .import)
+            return nil
         }
     }
 

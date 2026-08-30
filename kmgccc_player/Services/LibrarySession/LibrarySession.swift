@@ -679,9 +679,10 @@ final class LibrarySession: LibrarySessionLifecycle {
 
     func quiesce() async {
         guard !isClosed else { return }
-        await libraryChangeMonitor?.stopAndWait()
+        operationCoordinator.stopAcceptingNewOperations()
         mutationCoordinator.stopAcceptingNewMutations()
-        await operationCoordinator.quiesceAndWait()
+        await libraryChangeMonitor?.stopAndWait()
+        await operationCoordinator.cancelAndWait()
         await fileImportService.quiesce()
         playerViewModel.stop()
         playerViewModel.stopLevelMeter()
@@ -693,9 +694,10 @@ final class LibrarySession: LibrarySessionLifecycle {
 
     func close() async {
         guard !isClosed else { return }
-        await libraryChangeMonitor?.stopAndWait()
+        operationCoordinator.stopAcceptingNewOperations()
         mutationCoordinator.stopAcceptingNewMutations()
-        await operationCoordinator.quiesceAndWait()
+        await libraryChangeMonitor?.stopAndWait()
+        await operationCoordinator.cancelAndWait()
         await fileImportService.quiesce()
         playerViewModel.stop()
         playerViewModel.stopLevelMeter()

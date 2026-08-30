@@ -40,6 +40,7 @@ final class LibraryMutationCoordinator {
         sessionGeneration: UInt64,
         journal: LibraryMutationJournal
     ) {
+        precondition(journal.libraryID == libraryID)
         self.libraryID = libraryID
         self.sessionGeneration = sessionGeneration
         self.journal = journal
@@ -122,7 +123,7 @@ final class LibraryMutationCoordinator {
 
     func waitForDrain() async {
         while !operations.isEmpty {
-            let pending = operations.values
+            let pending = Array(operations.values)
             for operation in pending {
                 await operation.wait()
             }
