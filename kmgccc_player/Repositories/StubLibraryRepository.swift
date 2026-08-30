@@ -215,30 +215,30 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         playlists
     }
 
-    func createPlaylist(name: String) async -> Playlist {
+    func createPlaylist(name: String) async throws -> Playlist {
         let playlist = Playlist(name: name)
         playlists.append(playlist)
         return playlist
     }
 
-    func renamePlaylist(_ playlist: Playlist, name: String) async {
+    func renamePlaylist(_ playlist: Playlist, name: String) async throws {
         playlist.name = name
     }
 
-    func updatePlaylistDetails(_ playlist: Playlist, name: String, description: String) async {
+    func updatePlaylistDetails(_ playlist: Playlist, name: String, description: String) async throws {
         playlist.name = name
         playlist.userDescription = description
     }
 
-    func deletePlaylist(_ playlist: Playlist) async {
+    func deletePlaylist(_ playlist: Playlist) async throws {
         playlists.removeAll { $0.id == playlist.id }
     }
 
-    func addTracks(_ tracks: [Track], to playlist: Playlist) async {
+    func addTracks(_ tracks: [Track], to playlist: Playlist) async throws {
         playlist.tracks.append(contentsOf: tracks)
     }
 
-    func removeTracks(_ tracks: [Track], from playlist: Playlist) async {
+    func removeTracks(_ tracks: [Track], from playlist: Playlist) async throws {
         let trackIds = Set(tracks.map { $0.id })
         playlist.tracks.removeAll { trackIds.contains($0.id) }
     }
@@ -316,7 +316,7 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
     func applyAlbumEdits(original _: AlbumEntry, updated _: AlbumEntry) async {}
     func deleteArtist(_ entry: ArtistEntry) async {}
     func deleteAlbum(_ entry: AlbumEntry) async {}
-    func updatePlaylistDescription(_ playlist: Playlist, description: String) async {}
+    func updatePlaylistDescription(_ playlist: Playlist, description: String) async throws {}
 
     // MARK: - Fake Data Setup
 

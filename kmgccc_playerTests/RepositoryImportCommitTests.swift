@@ -32,14 +32,15 @@ final class RepositoryImportCommitTests: XCTestCase {
         XCTAssertEqual(result.failedTrackIDs, [failure.id])
         XCTAssertEqual(spy.count(for: success.id), 1)
         XCTAssertEqual(spy.count(for: failure.id), 1)
-        XCTAssertEqual(await repository.fetchTracks(in: nil).map(\.id), [success.id])
+        let tracks = await repository.fetchTracks(in: nil)
+        XCTAssertEqual(tracks.map(\.id), [success.id])
     }
 
     func testFailedMembershipMergeLeavesRuntimeLocatorAndPlaylistUntouched() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.cleanup() }
         let sourceID = UUID()
-        let original = ReferencedFileLocator(
+        let original = kmgccc_player.ReferencedFileLocator(
             fileBookmarkData: Data("old".utf8),
             sourceMemberships: [],
             lastKnownPath: "/old",
@@ -51,8 +52,8 @@ final class RepositoryImportCommitTests: XCTestCase {
             locatorWriter: { _, _, _, _ in false }
         )
         _ = await repository.commitImportedTracks([track])
-        let playlist = await repository.createPlaylist(name: "Playlist")
-        let incoming = ReferencedFileLocator(
+        let playlist = try await repository.createPlaylist(name: "Playlist")
+        let incoming = kmgccc_player.ReferencedFileLocator(
             fileBookmarkData: Data("new".utf8),
             sourceMemberships: [.init(sourceID: sourceID, relativePath: "song.mp3")],
             primarySourceID: sourceID,
@@ -69,12 +70,133 @@ final class RepositoryImportCommitTests: XCTestCase {
         XCTAssertTrue(playlist.tracks.isEmpty)
     }
 
+    func testPlaylistCreationFailureDoesNotPublishRuntimePlaylist() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.cleanup() }
+        try FileManager.default.removeItem(at: fixture.paths.playlistsRootURL)
+        try Data("not-a-directory".utf8).write(to: fixture.paths.playlistsRootURL)
+        let repository = fixture.makeRepository(importWriter: { _, _ in true })
+
+        do {
+            _ = try await repository.createPlaylist(name: "Must Fail")
+            XCTFail("expected typed playlist persistence failure")
+        } catch let error as LibraryPlaylistPersistenceError {
+            guard case .writeFailed = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+
+        let playlists = await repository.fetchPlaylists()
+        XCTAssertTrue(playlists.isEmpty)
+    }
+
+    func testPlaylistUpdateFailureKeepsRuntimeAndDiskSnapshotUnchanged() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.cleanup() }
+        let repository = fixture.makeRepository(importWriter: { _, _ in true })
+        let playlist = try await repository.createPlaylist(name: "Original")
+        let originalSidecar = try XCTUnwrap(
+            fixture.libraryService.loadPlaylistSidecar(playlistID: playlist.id)
+        )
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500],
+            ofItemAtPath: fixture.paths.playlistsRootURL.path
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: fixture.paths.playlistsRootURL.path
+            )
+        }
+
+        do {
+            try await repository.renamePlaylist(playlist, name: "Lost Rename")
+            XCTFail("expected typed playlist persistence failure")
+        } catch let error as LibraryPlaylistPersistenceError {
+            guard case .writeFailed = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+
+        XCTAssertEqual(playlist.name, "Original")
+        let persisted = try XCTUnwrap(
+            fixture.libraryService.loadPlaylistSidecar(playlistID: playlist.id)
+        )
+        XCTAssertEqual(persisted.name, originalSidecar.name)
+    }
+
+    func testPlaylistMembershipWriteFailureKeepsRuntimeAndDiskSnapshotUnchanged() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.cleanup() }
+        let repository = fixture.makeRepository(importWriter: { _, _ in true })
+        let playlist = try await repository.createPlaylist(name: "Membership")
+        let track = makeTrack(title: "Must Not Appear", root: fixture.paths.rootURL)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500],
+            ofItemAtPath: fixture.paths.playlistsRootURL.path
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: fixture.paths.playlistsRootURL.path
+            )
+        }
+
+        do {
+            try await repository.addTracks([track], to: playlist)
+            XCTFail("expected typed playlist persistence failure")
+        } catch let error as LibraryPlaylistPersistenceError {
+            guard case .writeFailed = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+
+        XCTAssertTrue(playlist.tracks.isEmpty)
+        let persisted = try XCTUnwrap(
+            fixture.libraryService.loadPlaylistSidecar(playlistID: playlist.id)
+        )
+        XCTAssertTrue(persisted.items.isEmpty)
+    }
+
+    func testPlaylistDeleteFailureKeepsRuntimeAndDiskSnapshotUnchanged() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.cleanup() }
+        let repository = fixture.makeRepository(importWriter: { _, _ in true })
+        let playlist = try await repository.createPlaylist(name: "Keep Me")
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500],
+            ofItemAtPath: fixture.paths.playlistsRootURL.path
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: fixture.paths.playlistsRootURL.path
+            )
+        }
+
+        do {
+            try await repository.deletePlaylist(playlist)
+            XCTFail("expected typed playlist persistence failure")
+        } catch let error as LibraryPlaylistPersistenceError {
+            guard case .deleteFailed = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+
+        let playlists = await repository.fetchPlaylists()
+        XCTAssertEqual(playlists.map(\.id), [playlist.id])
+        XCTAssertNotNil(fixture.libraryService.loadPlaylistSidecar(playlistID: playlist.id))
+    }
+
     private func makeTrack(
         title: String,
         root: URL,
-        locator: ReferencedFileLocator? = nil
+        locator: kmgccc_player.ReferencedFileLocator? = nil
     ) -> Track {
-        let referenced = locator ?? ReferencedFileLocator(
+        let referenced = locator ?? kmgccc_player.ReferencedFileLocator(
             fileBookmarkData: Data("bookmark".utf8),
             lastKnownPath: "/file",
             fingerprint: .init(fileSize: 1, modifiedAt: 1)
@@ -91,19 +213,24 @@ final class RepositoryImportCommitTests: XCTestCase {
 @MainActor
 private struct RepositoryFixture {
     let root: URL
-    let paths: LibraryPaths
+    let paths: kmgccc_player.LibraryPaths
     let libraryService: LocalLibraryService
 
     init() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        paths = LibraryPaths(rootURL: root)
+        paths = kmgccc_player.LibraryPaths(rootURL: root)
         try paths.createRequiredDirectories()
         libraryService = LocalLibraryService(paths: paths, preferenceStatsService: PreferenceStatsService())
     }
 
     func makeRepository(
         importWriter: @escaping (Track, String) -> Bool,
-        locatorWriter: @escaping (Track, TrackMediaLocator, TrackAvailability, String) -> Bool = { _, _, _, _ in true }
+        locatorWriter: @escaping (
+            Track,
+            kmgccc_player.TrackMediaLocator,
+            kmgccc_player.TrackAvailability,
+            String
+        ) -> Bool = { _, _, _, _ in true }
     ) -> SwiftDataLibraryRepository {
         SwiftDataLibraryRepository(
             libraryService: libraryService,

@@ -118,22 +118,22 @@ protocol LibraryRepositoryProtocol: AnyObject {
     func fetchPlaylists() async -> [Playlist]
 
     /// Create a new playlist.
-    func createPlaylist(name: String) async -> Playlist
+    func createPlaylist(name: String) async throws -> Playlist
 
     /// Rename a playlist.
-    func renamePlaylist(_ playlist: Playlist, name: String) async
+    func renamePlaylist(_ playlist: Playlist, name: String) async throws
 
     /// Persist playlist header metadata in one write path.
-    func updatePlaylistDetails(_ playlist: Playlist, name: String, description: String) async
+    func updatePlaylistDetails(_ playlist: Playlist, name: String, description: String) async throws
 
     /// Delete a playlist.
-    func deletePlaylist(_ playlist: Playlist) async
+    func deletePlaylist(_ playlist: Playlist) async throws
 
     /// Add tracks to a playlist.
-    func addTracks(_ tracks: [Track], to playlist: Playlist) async
+    func addTracks(_ tracks: [Track], to playlist: Playlist) async throws
 
     /// Remove tracks from a playlist.
-    func removeTracks(_ tracks: [Track], from playlist: Playlist) async
+    func removeTracks(_ tracks: [Track], from playlist: Playlist) async throws
 
     // MARK: - Statistics
 
@@ -179,5 +179,5 @@ protocol LibraryRepositoryProtocol: AnyObject {
 
     // MARK: - Playlist Description
 
-    func updatePlaylistDescription(_ playlist: Playlist, description: String) async
+    func updatePlaylistDescription(_ playlist: Playlist, description: String) async throws
 }

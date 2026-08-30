@@ -204,7 +204,7 @@ final class ReferencedSourceReconciler {
         }
 
         if let playlist, !tracksToRemove.isEmpty {
-            await repository.removeTracks(tracksToRemove, from: playlist)
+            try await repository.removeTracks(tracksToRemove, from: playlist)
         }
         try await sourceStore.removePlaylistBinding(sourceID: sourceID, bindingID: bindingID)
         return tracksToRemove.count
@@ -722,7 +722,7 @@ final class ReferencedSourceReconciler {
         guard descriptor.mode == .directory || descriptor.mode == .file else { return 0 }
 
         if descriptor.playlistBindings.isEmpty, createIfMissing {
-            let playlist = await repository.createPlaylist(name: descriptor.displayName)
+            let playlist = try await repository.createPlaylist(name: descriptor.displayName)
             let binding = try await sourceStore.ensurePlaylistBinding(
                 sourceID: sourceID,
                 playlistID: playlist.id
@@ -808,7 +808,7 @@ final class ReferencedSourceReconciler {
                 ), membership.isLive else {
                     guard let staleTrack = currentPlaylistTracks[staleID] else { continue }
                     membershipChanges += 1
-                    await repository.removeTracks([staleTrack], from: playlist)
+                    try await repository.removeTracks([staleTrack], from: playlist)
                     continue
                 }
             }
@@ -856,7 +856,7 @@ final class ReferencedSourceReconciler {
             let missingTracks = orderedEligibleTracks.filter { !currentPlaylistIDs.contains($0.id) }
             if !missingTracks.isEmpty {
                 membershipChanges += missingTracks.count
-                await repository.addTracks(missingTracks, to: playlist)
+                try await repository.addTracks(missingTracks, to: playlist)
             }
 
             if let index = changedDescriptor.playlistBindings.firstIndex(where: { $0.id == binding.id }) {

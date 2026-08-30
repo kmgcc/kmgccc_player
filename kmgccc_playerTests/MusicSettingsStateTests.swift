@@ -136,7 +136,9 @@ final class MusicSettingsStateTests: XCTestCase {
         let viewModel = LibraryViewModel.preview(repository: repository)
         defer { try? FileManager.default.removeItem(at: viewModel.libraryPaths.rootURL) }
         let initialPlaylistIDs = Set((await repository.fetchPlaylists()).map(\.id))
-        viewModel.runOwnedLibraryMutation = { _ in false }
+        viewModel.runOwnedLibraryMutation = { _ in
+            throw LibraryMutationCoordinatorError.sessionQuiescing
+        }
 
         let rejected = await viewModel.createPlaylist(name: "Must Not Exist")
         XCTAssertNil(rejected)

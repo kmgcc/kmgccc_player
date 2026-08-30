@@ -315,20 +315,13 @@ final class LibrarySession: LibrarySessionLifecycle {
             }
         }
         libraryViewModel.runOwnedLibraryMutation = { [weak self] work in
-            guard let self else { return false }
-            do {
-                let _: Void = try await self.mutationCoordinator.run(
-                    kind: .userLibraryMutation
-                ) {
-                    await work()
-                }
-                return true
-            } catch {
-                Log.warning(
-                    "[LibrarySession] library mutation rejected by operation coordinator: \(error)",
-                    category: .library
-                )
-                return false
+            guard let self else {
+                throw LibraryMutationCoordinatorError.sessionQuiescing
+            }
+            let _: Void = try await self.mutationCoordinator.run(
+                kind: .userLibraryMutation
+            ) {
+                try await work()
             }
         }
     }
@@ -364,18 +357,18 @@ final class LibrarySession: LibrarySessionLifecycle {
                 } else {
                     let tracks = await importedTracks(for: entry, result: result)
                     if !tracks.isEmpty {
-                        let playlist = await repository.createPlaylist(name: entry.displayName)
-                        await repository.addTracks(tracks, to: playlist)
+                        let playlist = try await repository.createPlaylist(name: entry.displayName)
+                        try await repository.addTracks(tracks, to: playlist)
                     }
                 }
 
             case .individualFiles:
                 let tracks = await importedTracks(for: entry, result: result)
                 guard !tracks.isEmpty else { continue }
-                let playlist = await repository.createPlaylist(
+                let playlist = try await repository.createPlaylist(
                     name: automaticPlaylistName(for: entry, tracks: tracks)
                 )
-                await repository.addTracks(tracks, to: playlist)
+                try await repository.addTracks(tracks, to: playlist)
                 if context.mode == .referenced {
                     let sourceIDs = Set(tracks.flatMap { track -> [UUID] in
                         guard case let .referenced(locator) = track.mediaLocator else { return [] }

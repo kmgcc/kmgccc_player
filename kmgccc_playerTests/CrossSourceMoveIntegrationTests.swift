@@ -18,7 +18,7 @@ final class CrossSourceMoveIntegrationTests: XCTestCase {
         let sourceA = try await fixture.addDirectorySource(named: "SourceA", at: fixture.sourceARoot)
         let songURL = fixture.sourceARoot.appendingPathComponent("song.wav")
         try writeWavAudio(at: songURL, frames: 4_410)
-        let playlist = await fixture.repository.createPlaylist(name: "Shared")
+        let playlist = try await fixture.repository.createPlaylist(name: "Shared")
         try await fixture.reconciler.bindSourcesToPlaylist([sourceA], playlistID: playlist.id)
 
         try await fixture.reconciler.reconcile(sourceIDs: [sourceA])
@@ -98,7 +98,7 @@ final class CrossSourceMoveIntegrationTests: XCTestCase {
             try writeWavAudio(at: songURL, frames: 5_000)
             let outerID = try await fixture.addDirectorySource(named: "Outer", at: outerRoot)
             let innerID = try await fixture.addDirectorySource(named: "Inner", at: innerRoot)
-            let playlist = await fixture.repository.createPlaylist(name: "Overlap")
+            let playlist = try await fixture.repository.createPlaylist(name: "Overlap")
             try await fixture.reconciler.bindSourcesToPlaylist([outerID, innerID], playlistID: playlist.id)
 
             let first = outerClaimsFirst ? outerID : innerID

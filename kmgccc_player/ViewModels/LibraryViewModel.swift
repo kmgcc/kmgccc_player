@@ -489,8 +489,8 @@ final class LibraryViewModel {
     /// notices.
     var onImportRejectedNotice: ((String) -> Void)?
     var runOwnedLibraryMutation: ((
-        @escaping @MainActor () async -> Void
-    ) async -> Bool)?
+        @escaping @MainActor () async throws -> Void
+    ) async throws -> Void)?
     private var rejectsUnownedMutations = false
     var prepareTracksForDeletion: (([Track]) async -> TrackAuthorityDeletionPreparationResult)?
     var onTrackDeletionPreparationFailures: (([TrackAuthorityDeletionFailure]) -> Void)?
@@ -743,19 +743,34 @@ final class LibraryViewModel {
 
     private func performOwnedLibraryMutation<Result>(
         rejectingWith fallback: Result,
-        _ work: @escaping @MainActor () async -> Result
+        _ work: @escaping @MainActor () async throws -> Result
     ) async -> Result {
         guard !rejectsUnownedMutations else { return fallback }
         guard let runOwnedLibraryMutation else {
-            return await work()
+            do {
+                return try await work()
+            } catch {
+                reportLibraryMutationFailure(error)
+                return fallback
+            }
         }
 
         var result: Result?
-        let accepted = await runOwnedLibraryMutation {
-            result = await work()
+        do {
+            try await runOwnedLibraryMutation {
+                result = try await work()
+            }
+        } catch {
+            reportLibraryMutationFailure(error)
+            return fallback
         }
-        guard accepted, let result else { return fallback }
+        guard let result else { return fallback }
         return result
+    }
+
+    private func reportLibraryMutationFailure(_ error: any Error) {
+        Log.error("[LibraryVM] library mutation failed: \(error)", category: .library)
+        onImportRejectedNotice?("资料库写入失败：\(error.localizedDescription)")
     }
 
     // MARK: - Computed Properties
@@ -1331,7 +1346,7 @@ final class LibraryViewModel {
     func createPlaylist(name: String) async -> Playlist? {
         await performOwnedLibraryMutation(rejectingWith: nil as Playlist?) {
             Log.debug("createPlaylist: '\(name)'", category: .library)
-            let playlist = await self.repository.createPlaylist(name: name)
+            let playlist = try await self.repository.createPlaylist(name: name)
             self.playlists = await self.repository.fetchPlaylists()
             self.selectOrResetCurrentSelection(.playlist(playlist.id))
             self.refreshTrigger += 1
@@ -1393,7 +1408,7 @@ final class LibraryViewModel {
 
     func renamePlaylist(_ playlist: Playlist, name: String) async {
         await performOwnedLibraryMutation(rejectingWith: ()) {
-            await self.repository.renamePlaylist(playlist, name: name)
+            try await self.repository.renamePlaylist(playlist, name: name)
             await self.refresh()
         }
     }
@@ -1402,7 +1417,7 @@ final class LibraryViewModel {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return }
         await performOwnedLibraryMutation(rejectingWith: ()) {
-            await self.repository.updatePlaylistDetails(
+            try await self.repository.updatePlaylistDetails(
                 playlist,
                 name: trimmedName,
                 description: description
@@ -1416,12 +1431,12 @@ final class LibraryViewModel {
 
     func deletePlaylist(_ playlist: Playlist) async {
         await performOwnedLibraryMutation(rejectingWith: ()) {
-            await self.deletePlaylistWithoutOwnership(playlist)
+            try await self.deletePlaylistWithoutOwnership(playlist)
         }
     }
 
-    private func deletePlaylistWithoutOwnership(_ playlist: Playlist) async {
-        await repository.deletePlaylist(playlist)
+    private func deletePlaylistWithoutOwnership(_ playlist: Playlist) async throws {
+        try await repository.deletePlaylist(playlist)
         await onPlaylistDeleted?(playlist.id)
         playlists.removeAll { $0.id == playlist.id }
         playlistItemAddedAtMap[playlist.id] = nil
@@ -1436,13 +1451,16 @@ final class LibraryViewModel {
 
     func addTracksToPlaylist(_ tracks: [Track], playlist: Playlist) async {
         await performOwnedLibraryMutation(rejectingWith: ()) {
-            await self.addTracksToPlaylistWithoutOwnership(tracks, playlist: playlist)
+            try await self.addTracksToPlaylistWithoutOwnership(tracks, playlist: playlist)
         }
     }
 
-    private func addTracksToPlaylistWithoutOwnership(_ tracks: [Track], playlist: Playlist) async {
+    private func addTracksToPlaylistWithoutOwnership(
+        _ tracks: [Track],
+        playlist: Playlist
+    ) async throws {
         let previousTrackCount = playlist.trackCount
-        await repository.addTracks(tracks, to: playlist)
+        try await repository.addTracks(tracks, to: playlist)
         await onManualPlaylistAddition?(playlist.id, tracks.map(\.id))
         playlists = await repository.fetchPlaylists()
         playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
@@ -1458,12 +1476,15 @@ final class LibraryViewModel {
 
     func removeTracksFromPlaylist(_ tracks: [Track], playlist: Playlist) async {
         await performOwnedLibraryMutation(rejectingWith: ()) {
-            await self.removeTracksFromPlaylistWithoutOwnership(tracks, playlist: playlist)
+            try await self.removeTracksFromPlaylistWithoutOwnership(tracks, playlist: playlist)
         }
     }
 
-    private func removeTracksFromPlaylistWithoutOwnership(_ tracks: [Track], playlist: Playlist) async {
-        await repository.removeTracks(tracks, from: playlist)
+    private func removeTracksFromPlaylistWithoutOwnership(
+        _ tracks: [Track],
+        playlist: Playlist
+    ) async throws {
+        try await repository.removeTracks(tracks, from: playlist)
         await onManualPlaylistRemoval?(playlist.id, tracks.map(\.id))
         playlists = await repository.fetchPlaylists()
         playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
@@ -2046,7 +2067,7 @@ final class LibraryViewModel {
 
     func savePlaylistDescription(_ playlist: Playlist, description: String) async {
         await performOwnedLibraryMutation(rejectingWith: ()) {
-            await self.repository.updatePlaylistDescription(playlist, description: description)
+            try await self.repository.updatePlaylistDescription(playlist, description: description)
             await self.invalidateDetailSelectionCachesIfNeeded(
                 selectionIdentities: self.selectionIdentityVariants(for: .playlist(playlist.id))
             )

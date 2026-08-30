@@ -1119,7 +1119,7 @@ final class FileImportService: FileImportServiceProtocol {
                 playlistID: playlist.id
             )
             if !uniqueTracks.isEmpty {
-                await repository.addTracks(uniqueTracks, to: playlist)
+                try await repository.addTracks(uniqueTracks, to: playlist)
             }
         } catch {
             for original in originalLocators.reversed() {

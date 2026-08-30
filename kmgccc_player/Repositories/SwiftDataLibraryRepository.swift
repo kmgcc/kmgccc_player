@@ -329,10 +329,12 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     func addPlaylist(_ playlist: Playlist) async {
+        // Bootstrap/sync attaches a sidecar that is already authoritative.
+        // Writing it back here would turn a disk read into a new mutation and
+        // retrigger the filesystem monitor.
         playlists.append(playlist)
         playlists.sort { $0.createdAt < $1.createdAt }
         playlistItemAddedAtMap[playlist.id] = [:]
-        writePlaylistToDisk(playlist)
     }
 
     func deleteTrack(_ track: Track) async {
@@ -679,54 +681,78 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         playlists
     }
 
-    func createPlaylist(name: String) async -> Playlist {
+    func createPlaylist(name: String) async throws -> Playlist {
         let playlist = Playlist(name: name)
+        try writePlaylistToDisk(playlist, itemDates: [:])
         playlists.append(playlist)
         playlists.sort { $0.createdAt < $1.createdAt }
         playlistItemAddedAtMap[playlist.id] = [:]
-        writePlaylistToDisk(playlist)
         return playlist
     }
 
-    func renamePlaylist(_ playlist: Playlist, name: String) async {
-        await updatePlaylistDetails(
+    func renamePlaylist(_ playlist: Playlist, name: String) async throws {
+        try await updatePlaylistDetails(
             playlist,
             name: name,
             description: playlist.userDescription
         )
     }
 
-    func updatePlaylistDetails(_ playlist: Playlist, name: String, description: String) async {
+    func updatePlaylistDetails(_ playlist: Playlist, name: String, description: String) async throws {
+        try libraryService.writePlaylistSidecar(
+            playlistID: playlist.id,
+            name: name,
+            description: description,
+            createdAt: playlist.createdAt,
+            trackIDs: playlist.tracks.map(\.id),
+            itemAddedAt: playlistItemAddedAtMap[playlist.id] ?? [:]
+        )
         playlist.name = name
         playlist.userDescription = description
-        writePlaylistToDisk(playlist)
     }
 
-    func deletePlaylist(_ playlist: Playlist) async {
+    func deletePlaylist(_ playlist: Playlist) async throws {
+        try libraryService.deletePlaylist(playlist)
         playlists.removeAll { $0.id == playlist.id }
         playlistItemAddedAtMap[playlist.id] = nil
-        libraryService.deletePlaylist(playlist)
     }
 
-    func addTracks(_ tracks: [Track], to playlist: Playlist) async {
+    func addTracks(_ tracks: [Track], to playlist: Playlist) async throws {
         var dates = playlistItemAddedAtMap[playlist.id] ?? [:]
+        var proposedTracks = playlist.tracks
         for track in tracks where !playlist.tracks.contains(where: { $0.id == track.id }) {
-            playlist.tracks.append(track)
+            proposedTracks.append(track)
             dates[track.id] = Date()
         }
+        try libraryService.writePlaylistSidecar(
+            playlistID: playlist.id,
+            name: playlist.name,
+            description: playlist.userDescription,
+            createdAt: playlist.createdAt,
+            trackIDs: proposedTracks.map(\.id),
+            itemAddedAt: dates
+        )
+        playlist.tracks = proposedTracks
         playlistItemAddedAtMap[playlist.id] = dates
-        writePlaylistToDisk(playlist)
     }
 
-    func removeTracks(_ tracks: [Track], from playlist: Playlist) async {
+    func removeTracks(_ tracks: [Track], from playlist: Playlist) async throws {
         let trackIds = Set(tracks.map(\.id))
-        playlist.tracks.removeAll { trackIds.contains($0.id) }
+        let proposedTracks = playlist.tracks.filter { !trackIds.contains($0.id) }
         var dates = playlistItemAddedAtMap[playlist.id] ?? [:]
         for trackID in trackIds {
             dates[trackID] = nil
         }
+        try libraryService.writePlaylistSidecar(
+            playlistID: playlist.id,
+            name: playlist.name,
+            description: playlist.userDescription,
+            createdAt: playlist.createdAt,
+            trackIDs: proposedTracks.map(\.id),
+            itemAddedAt: dates
+        )
+        playlist.tracks = proposedTracks
         playlistItemAddedAtMap[playlist.id] = dates
-        writePlaylistToDisk(playlist)
     }
 
     // MARK: - Statistics & Runtime Sections
@@ -1003,8 +1029,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         )
     }
 
-    func updatePlaylistDescription(_ playlist: Playlist, description: String) async {
-        await updatePlaylistDetails(
+    func updatePlaylistDescription(_ playlist: Playlist, description: String) async throws {
+        try await updatePlaylistDetails(
             playlist,
             name: playlist.name,
             description: description
@@ -1286,9 +1312,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
     }
 
-    private func writePlaylistToDisk(_ playlist: Playlist) {
-        let itemDates = playlistItemAddedAtMap[playlist.id] ?? [:]
-        libraryService.writePlaylist(playlist, itemAddedAt: itemDates)
+    private func writePlaylistToDisk(
+        _ playlist: Playlist,
+        itemDates: [UUID: Date]? = nil
+    ) throws {
+        try libraryService.writePlaylist(
+            playlist,
+            itemAddedAt: itemDates ?? playlistItemAddedAtMap[playlist.id] ?? [:]
+        )
     }
 
     private func writeArtistEntryToDisk(_ entry: ArtistEntry) {
@@ -1495,7 +1526,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             artistEntryIDsToDelete: metadataCleanup.artistEntryIDsToDelete,
             albumEntryIDsToDelete: metadataCleanup.albumEntryIDsToDelete
         )
-        let failedFolderDeletes = await performBackgroundTrackDeletionCleanup(cleanupPlan)
+        let cleanupFailures = await performBackgroundTrackDeletionCleanup(cleanupPlan)
 
         await ArtworkLoader.clearMemoryCache()
         await artworkDerivativeStore.clearMemory()
@@ -1508,7 +1539,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000
 
         Log.info(
-            "[LibraryDelete] reason=\(reason) complete tracks=\(deletedTrackIDs.count) totalMs=\(String(format: "%.1f", elapsedMs)) failedFolderDeletes=\(failedFolderDeletes) memoryBeforeMB=\(memoryBefore.megabytesText) memoryAfterMainMB=\(afterMainMutation.megabytesText) memoryAfterCleanupMB=\(memoryAfterCleanup.megabytesText)",
+            "[LibraryDelete] reason=\(reason) complete tracks=\(deletedTrackIDs.count) totalMs=\(String(format: "%.1f", elapsedMs)) failedPlaylistWrites=\(cleanupFailures.playlistWrites) failedFolderDeletes=\(cleanupFailures.folderDeletes) memoryBeforeMB=\(memoryBefore.megabytesText) memoryAfterMainMB=\(afterMainMutation.megabytesText) memoryAfterCleanupMB=\(memoryAfterCleanup.megabytesText)",
             category: .library
         )
     }
@@ -1660,20 +1691,31 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             || entry.metadataSource != nil
     }
 
-    private func performBackgroundTrackDeletionCleanup(_ cleanupPlan: TrackDeletionCleanupPlan) async -> Int {
+    private func performBackgroundTrackDeletionCleanup(
+        _ cleanupPlan: TrackDeletionCleanupPlan
+    ) async -> (playlistWrites: Int, folderDeletes: Int) {
         await withCheckedContinuation { continuation in
             let libraryService = self.libraryService
             DispatchQueue.global(qos: .utility).async {
+                var failedPlaylistWrites = 0
                 for snapshot in cleanupPlan.playlistSnapshots {
                     autoreleasepool {
-                        libraryService.writePlaylistSidecar(
-                            playlistID: snapshot.playlistID,
-                            name: snapshot.name,
-                            description: snapshot.description,
-                            createdAt: snapshot.createdAt,
-                            trackIDs: snapshot.trackIDs,
-                            itemAddedAt: snapshot.itemAddedAt
-                        )
+                        do {
+                            try libraryService.writePlaylistSidecar(
+                                playlistID: snapshot.playlistID,
+                                name: snapshot.name,
+                                description: snapshot.description,
+                                createdAt: snapshot.createdAt,
+                                trackIDs: snapshot.trackIDs,
+                                itemAddedAt: snapshot.itemAddedAt
+                            )
+                        } catch {
+                            failedPlaylistWrites += 1
+                            Log.error(
+                                "[LibraryDelete] failed playlist persistence playlistID=\(snapshot.playlistID): \(error)",
+                                category: .library
+                            )
+                        }
                     }
                 }
 
@@ -1695,10 +1737,10 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 }
 
                 Log.info(
-                    "[LibraryDelete] reason=\(cleanupPlan.reason) backgroundStageComplete tracks=\(cleanupPlan.deletedTrackIDs.count) failedFolderDeletes=\(failedFolderDeletes) onMainThread=\(Thread.isMainThread)",
+                    "[LibraryDelete] reason=\(cleanupPlan.reason) backgroundStageComplete tracks=\(cleanupPlan.deletedTrackIDs.count) failedPlaylistWrites=\(failedPlaylistWrites) failedFolderDeletes=\(failedFolderDeletes) onMainThread=\(Thread.isMainThread)",
                     category: .library
                 )
-                continuation.resume(returning: failedFolderDeletes)
+                continuation.resume(returning: (failedPlaylistWrites, failedFolderDeletes))
             }
         }
     }

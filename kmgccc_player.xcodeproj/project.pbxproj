@@ -70,6 +70,7 @@
 		C15000000000000000000001 /* AlbumIdentityImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C15000000000000000000011 /* AlbumIdentityImportTests.swift */; };
 		C16000000000000000000001 /* LibraryWriterLeaseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C16000000000000000000011 /* LibraryWriterLeaseTests.swift */; };
 		C17000000000000000000001 /* LibraryMutationCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C17000000000000000000011 /* LibraryMutationCoordinatorTests.swift */; };
+		C18000000000000000000001 /* RepositoryImportCommitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C18000000000000000000011 /* RepositoryImportCommitTests.swift */; };
 		C0D000000000000000000001 /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D000000000000000000011 /* Log.swift */; };
 		C0E000000000000000000001 /* TrackCredit.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0E000000000000000000011 /* TrackCredit.swift */; };
 		C0F000000000000000000001 /* LibraryTextNormalization.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0F000000000000000000011 /* LibraryTextNormalization.swift */; };
@@ -155,6 +156,7 @@
 		C15000000000000000000011 /* AlbumIdentityImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/AlbumIdentityImportTests.swift; sourceTree = "<group>"; };
 		C16000000000000000000011 /* LibraryWriterLeaseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/LibraryWriterLeaseTests.swift; sourceTree = "<group>"; };
 		C17000000000000000000011 /* LibraryMutationCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/LibraryMutationCoordinatorTests.swift; sourceTree = "<group>"; };
+		C18000000000000000000011 /* RepositoryImportCommitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/RepositoryImportCommitTests.swift; sourceTree = "<group>"; };
 		C0D000000000000000000011 /* Log.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Log.swift; path = kmgccc_player/Utilities/Log.swift; sourceTree = "<group>"; };
 		C0E000000000000000000011 /* TrackCredit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = TrackCredit.swift; path = kmgccc_player/Models/TrackCredit.swift; sourceTree = "<group>"; };
 		C0F000000000000000000011 /* LibraryTextNormalization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = LibraryTextNormalization.swift; path = kmgccc_player/Services/Library/LibraryTextNormalization.swift; sourceTree = "<group>"; };
@@ -369,6 +371,7 @@
 				C15000000000000000000011 /* AlbumIdentityImportTests.swift */,
 				C16000000000000000000011 /* LibraryWriterLeaseTests.swift */,
 				C17000000000000000000011 /* LibraryMutationCoordinatorTests.swift */,
+				C18000000000000000000011 /* RepositoryImportCommitTests.swift */,
 			);
 			name = Tests;
 			sourceTree = "<group>";
@@ -686,6 +689,7 @@
 				C15000000000000000000001 /* AlbumIdentityImportTests.swift in Sources */,
 				C16000000000000000000001 /* LibraryWriterLeaseTests.swift in Sources */,
 				C17000000000000000000001 /* LibraryMutationCoordinatorTests.swift in Sources */,
+				C18000000000000000000001 /* RepositoryImportCommitTests.swift in Sources */,
 				C0D000000000000000000001 /* Log.swift in Sources */,
 				C0E000000000000000000001 /* TrackCredit.swift in Sources */,
 				C0F000000000000000000001 /* LibraryTextNormalization.swift in Sources */,

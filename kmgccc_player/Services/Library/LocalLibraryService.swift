@@ -8,6 +8,20 @@
 
 import AppKit
 import Foundation
+
+nonisolated enum LibraryPlaylistPersistenceError: Error, Equatable, LocalizedError, Sendable {
+    case writeFailed(playlistID: UUID, reason: String)
+    case deleteFailed(playlistID: UUID, reason: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .writeFailed(let playlistID, let reason):
+            return "歌单 \(playlistID) 无法写入磁盘：\(reason)"
+        case .deleteFailed(let playlistID, let reason):
+            return "歌单 \(playlistID) 无法从磁盘删除：\(reason)"
+        }
+    }
+}
 import ImageIO
 
 nonisolated struct TrackPersistenceReferences: Sendable {
@@ -163,31 +177,20 @@ final class LocalLibraryService {
     }
 
     nonisolated func ensureLibraryFolders() {
-        let fileManager = FileManager.default
         do {
-            try fileManager.createDirectory(
-                at: paths.rootURL,
-                withIntermediateDirectories: true
-            )
-            try fileManager.createDirectory(
-                at: paths.tracksRootURL,
-                withIntermediateDirectories: true
-            )
-            try fileManager.createDirectory(
-                at: paths.playlistsRootURL,
-                withIntermediateDirectories: true
-            )
-            try fileManager.createDirectory(
-                at: paths.artistsRootURL,
-                withIntermediateDirectories: true
-            )
-            try fileManager.createDirectory(
-                at: paths.albumsRootURL,
-                withIntermediateDirectories: true
-            )
+            try ensureLibraryFoldersThrowing()
         } catch {
             Log.error("Failed to create library folders: \(error)", category: .library)
         }
+    }
+
+    nonisolated private func ensureLibraryFoldersThrowing() throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: paths.rootURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: paths.tracksRootURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: paths.playlistsRootURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: paths.artistsRootURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: paths.albumsRootURL, withIntermediateDirectories: true)
     }
 
     // MARK: - Import
@@ -1147,9 +1150,8 @@ final class LocalLibraryService {
 
     // MARK: - Playlist Sidecars
 
-    func writePlaylist(_ playlist: Playlist, itemAddedAt: [UUID: Date]? = nil) {
-        ensureLibraryFolders()
-        writePlaylistSidecar(
+    func writePlaylist(_ playlist: Playlist, itemAddedAt: [UUID: Date]? = nil) throws {
+        try writePlaylistSidecar(
             playlistID: playlist.id,
             name: playlist.name,
             description: playlist.userDescription,
@@ -1166,8 +1168,15 @@ final class LocalLibraryService {
         createdAt: Date,
         trackIDs: [UUID],
         itemAddedAt: [UUID: Date]
-    ) {
-        ensureLibraryFolders()
+    ) throws {
+        do {
+            try ensureLibraryFoldersThrowing()
+        } catch {
+            throw LibraryPlaylistPersistenceError.writeFailed(
+                playlistID: playlistID,
+                reason: error.localizedDescription
+            )
+        }
         let items = trackIDs.map { trackID in
             PlaylistItemSidecar(
                 trackID: trackID,
@@ -1196,23 +1205,37 @@ final class LocalLibraryService {
             let url = paths.playlistURL(for: playlistID)
             try data.write(to: url, options: .atomic)
         } catch {
-            Log.error("Failed to write playlist sidecar '\(name)': \(error)", category: .library)
+            throw LibraryPlaylistPersistenceError.writeFailed(
+                playlistID: playlistID,
+                reason: error.localizedDescription
+            )
         }
     }
 
-    func writeAllPlaylists(_ playlists: [Playlist]) {
+    func writeAllPlaylists(_ playlists: [Playlist]) throws {
         for playlist in playlists {
-            writePlaylist(playlist)
+            try writePlaylist(playlist)
         }
     }
 
-    func deletePlaylist(_ playlist: Playlist) {
+    func deletePlaylist(_ playlist: Playlist) throws {
+        do {
+            try ensureLibraryFoldersThrowing()
+        } catch {
+            throw LibraryPlaylistPersistenceError.deleteFailed(
+                playlistID: playlist.id,
+                reason: error.localizedDescription
+            )
+        }
         let url = paths.playlistURL(for: playlist.id)
         if fileManager.fileExists(atPath: url.path) {
             do {
                 try fileManager.removeItem(at: url)
             } catch {
-                Log.error("Failed to delete playlist sidecar '\(playlist.name)': \(error)", category: .library)
+                throw LibraryPlaylistPersistenceError.deleteFailed(
+                    playlistID: playlist.id,
+                    reason: error.localizedDescription
+                )
             }
         }
         let artworkURL = paths.legacyPlaylistArtworkURL(for: playlist.id)
@@ -1886,7 +1909,14 @@ final class LocalLibraryService {
         // 3. Delete Stale (In DB, not on Disk)
         for playlist in dbPlaylists where !diskIds.contains(playlist.id) {
             Log.debug("Removing stale playlist from DB: \(playlist.name)", category: .library)
-            await repository.deletePlaylist(playlist)
+            do {
+                try await repository.deletePlaylist(playlist)
+            } catch {
+                Log.error(
+                    "Failed to remove stale playlist '\(playlist.name)' during disk refresh: \(error)",
+                    category: .library
+                )
+            }
         }
 
         // 4. Update Existing

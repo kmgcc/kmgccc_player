@@ -185,7 +185,7 @@ final class ImportPlannerCommitterTests: XCTestCase {
             )
         ]
 
-        let playlist = await fixture.repository.createPlaylist(name: "Drop Target")
+        let playlist = try await fixture.repository.createPlaylist(name: "Drop Target")
         let controller = BatchImportProgressDialogController(presentsWindow: false)
         let token = ImportCancellationToken()
 
