@@ -265,14 +265,37 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         playlistID: UUID
     ) async throws -> [UUID: UUID] {
         var result: [UUID: UUID] = [:]
-        for sourceID in sourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
-            let binding = try await sourceStore.ensurePlaylistBinding(
-                sourceID: sourceID,
-                playlistID: playlistID
-            )
-            result[sourceID] = binding.id
+        var newlyCreatedBindings: [(sourceID: UUID, bindingID: UUID)] = []
+        do {
+            for sourceID in sourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                let descriptor = try await sourceStore.load(id: sourceID)
+                let existing = descriptor.playlistBindings.first { $0.playlistID == playlistID }
+                let binding = try await sourceStore.ensurePlaylistBinding(
+                    sourceID: sourceID,
+                    playlistID: playlistID
+                )
+                if existing == nil {
+                    newlyCreatedBindings.append((sourceID, binding.id))
+                }
+                result[sourceID] = binding.id
+            }
+            return result
+        } catch {
+            for created in newlyCreatedBindings.reversed() {
+                do {
+                    try await sourceStore.removePlaylistBinding(
+                        sourceID: created.sourceID,
+                        bindingID: created.bindingID
+                    )
+                } catch {
+                    Log.error(
+                        "[ReferencedBackend] failed to roll back playlist binding source=\(created.sourceID.uuidString) binding=\(created.bindingID.uuidString): \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
+            }
+            throw error
         }
-        return result
     }
 
     func recordSourceMemberships(_ tracks: [Track], playlistID: UUID) async {
@@ -297,6 +320,57 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
                     )
                 }
             }
+        }
+    }
+
+    func commitPlaylistImportSourceEffects(
+        tracks: [Track],
+        sourceIDs: Set<UUID>,
+        playlistID: UUID
+    ) async throws {
+        var existingBindingIDs = Set<UUID>()
+        for sourceID in sourceIDs {
+            let descriptor = try await sourceStore.load(id: sourceID)
+            existingBindingIDs.formUnion(
+                descriptor.playlistBindings
+                    .filter { $0.playlistID == playlistID }
+                    .map(\.id)
+            )
+        }
+
+        let bindingsBySourceID = try await bindSourcesToPlaylist(
+            sourceIDs,
+            playlistID: playlistID
+        )
+        let createdBindings = bindingsBySourceID.filter {
+            !existingBindingIDs.contains($0.value)
+        }
+
+        do {
+            var entries: [(playlistID: UUID, trackID: UUID, bindingID: UUID)] = []
+            for track in tracks {
+                guard case let .referenced(locator) = track.mediaLocator else { continue }
+                for sourceID in Set(locator.allSourceMemberships.map(\.sourceID)) {
+                    guard let bindingID = bindingsBySourceID[sourceID] else { continue }
+                    entries.append((playlistID, track.id, bindingID))
+                }
+            }
+            try await playlistMembershipStore.recordSourceContributions(entries)
+        } catch {
+            for (sourceID, bindingID) in createdBindings {
+                do {
+                    try await sourceStore.removePlaylistBinding(
+                        sourceID: sourceID,
+                        bindingID: bindingID
+                    )
+                } catch {
+                    Log.error(
+                        "[ReferencedBackend] failed to roll back import binding source=\(sourceID.uuidString) binding=\(bindingID.uuidString): \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
+            }
+            throw error
         }
     }
 

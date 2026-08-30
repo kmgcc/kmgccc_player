@@ -264,11 +264,10 @@ final class ImportCommitter {
 
     func saveImportedTracks(
         _ importedTracks: [Track],
-        to playlist: Playlist?,
         progressController: BatchImportProgressDialogController,
         session: ImportSession,
         cancellationToken: ImportCancellationToken
-    ) async -> Bool {
+    ) async -> [Track]? {
         progressController.update(
             stage: .savingLibrary,
             progress: FileImportService.progress(for: .savingLibrary, completed: 0, total: 2),
@@ -278,7 +277,7 @@ final class ImportCommitter {
         )
 
         guard !(await isImportCancellationRequested(progressController, cancellationToken)) else {
-            return false
+            return nil
         }
 
         do {
@@ -288,17 +287,17 @@ final class ImportCommitter {
                 cancellationToken: cancellationToken
             )
         } catch is CancellationError {
-            return false
+            return nil
         } catch {
             Log.error(
                 "[Import] failed to commit staged audio files: \(error.localizedDescription)",
                 category: .import
             )
-            return false
+            return nil
         }
 
         guard !(await isImportCancellationRequested(progressController, cancellationToken)) else {
-            return false
+            return nil
         }
 
         let referencedNCMConversionService = self.referencedNCMConversionService
@@ -328,20 +327,15 @@ final class ImportCommitter {
         }
         let persistedIDs = Set(commitResult.persistedTrackIDs)
         let persistedTracks = importedTracks.filter { persistedIDs.contains($0.id) }
-        guard !persistedTracks.isEmpty else { return false }
+        guard !persistedTracks.isEmpty else { return nil }
         session.markCommitted(trackIDs: persistedTracks.map(\.id))
         progressController.update(
             stage: .savingLibrary,
             progress: FileImportService.progress(for: .savingLibrary, completed: 1, total: 2),
-            detail: "歌曲已写入资料库，正在加入播放列表",
+            detail: "歌曲已写入资料库，正在整理关联信息",
             completedCount: 1,
             totalCount: 2
         )
-
-        if !persistedTracks.isEmpty, let playlist {
-            await repository.addTracks(persistedTracks, to: playlist)
-            await storageBackend.recordSourceMemberships(persistedTracks, playlistID: playlist.id)
-        }
 
         progressController.update(
             stage: .savingLibrary,
@@ -350,7 +344,7 @@ final class ImportCommitter {
             completedCount: 2,
             totalCount: 2
         )
-        return true
+        return persistedTracks
     }
 
     private func commitStagedAudioFiles(

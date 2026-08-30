@@ -121,7 +121,7 @@ final class ImportPlannerCommitterTests: XCTestCase {
 
     // MARK: - Playlist-destination duplicate policy
 
-    func testPlaylistDestinationResolvesSimilarityDuplicatesByReuse() async throws {
+    func testPlaylistDestinationKeepsSimilarityAsSuggestionAndDoesNotMutatePlaylist() async throws {
         let fixture = try makeFixture()
         defer { fixture.cleanup() }
 
@@ -133,7 +133,15 @@ final class ImportPlannerCommitterTests: XCTestCase {
         )
         existing.artist = "Golden Artist"
         existing.duration = 180
-        _ = await fixture.repository.commitImportedTracks([existing])
+        let secondExisting = kmgccc_player.Track(
+            title: "Golden Song",
+            fileBookmarkData: Data(),
+            mediaLocator: .managed(libraryRelativePath: "Tracks/existing-2/audio.m4a"),
+            libraryRootSnapshot: fixture.paths.rootURL.path
+        )
+        secondExisting.artist = "Golden Artist"
+        secondExisting.duration = 180
+        _ = await fixture.repository.commitImportedTracks([existing, secondExisting])
         let libraryTracks = await fixture.repository.fetchTracks(in: nil)
 
         let uniqueURL = try writeWAV(named: "brand-new.wav", in: fixture.root)
@@ -186,23 +194,18 @@ final class ImportPlannerCommitterTests: XCTestCase {
             libraryTracks: libraryTracks,
             metadataOverride: nil,
             cancellationToken: token,
-            progressController: controller,
-            playlist: playlist
+            progressController: controller
         )
 
         XCTAssertEqual(prepared.unique.count, 1)
-        XCTAssertTrue(prepared.duplicates.isEmpty, "playlist destinations must not produce dialog rows")
-        XCTAssertTrue(prepared.duplicateCandidates.isEmpty)
-        XCTAssertEqual(prepared.reusedDuplicates.count, 1)
-
-        let match = try XCTUnwrap(prepared.reusedDuplicates.first)
-        XCTAssertEqual(match.progressID, duplicateURL.path)
-        XCTAssertEqual(match.track.id, existing.id)
+        XCTAssertEqual(prepared.duplicates.count, 1, "similarity remains a user-facing suggestion")
+        XCTAssertEqual(prepared.duplicateCandidates.count, 1)
+        XCTAssertEqual(prepared.duplicates.first?.existingCount, 2)
 
         let playlistTracks = await fixture.repository.fetchTracks(in: playlist)
-        XCTAssertEqual(playlistTracks.map(\.id), [existing.id])
+        XCTAssertTrue(playlistTracks.isEmpty, "planning must not mutate the destination playlist")
         let allTracks = await fixture.repository.fetchTracks(in: nil)
-        XCTAssertEqual(allTracks.count, 1, "similarity duplicates must not be re-imported")
+        XCTAssertEqual(allTracks.count, 2, "planning must neither merge nor import a similarity match")
     }
 
     // MARK: - Committer rollback

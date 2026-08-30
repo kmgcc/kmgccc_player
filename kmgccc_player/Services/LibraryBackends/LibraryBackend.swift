@@ -46,6 +46,14 @@ protocol LibraryStorageBackend: AnyObject {
     /// Persists source/manual membership provenance separately from the
     /// ordered playlist sidecar.
     func recordSourceMemberships(_ tracks: [Track], playlistID: UUID) async
+    /// Atomically establishes source bindings and source-contribution records
+    /// for the final playlist-import commit. Implementations must roll back
+    /// bindings created by this call when contribution persistence fails.
+    func commitPlaylistImportSourceEffects(
+        tracks: [Track],
+        sourceIDs: Set<UUID>,
+        playlistID: UUID
+    ) async throws
     func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async
     func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async
     /// Removes single-file sources created during the last `prepareInputs`
@@ -67,6 +75,11 @@ extension LibraryStorageBackend {
     ) async throws -> [UUID: UUID] { [:] }
 
     func recordSourceMemberships(_ tracks: [Track], playlistID: UUID) async {}
+    func commitPlaylistImportSourceEffects(
+        tracks _: [Track],
+        sourceIDs _: Set<UUID>,
+        playlistID _: UUID
+    ) async throws {}
     func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async {}
     func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async {}
 

@@ -31,6 +31,17 @@ nonisolated enum AudioImportError: LocalizedError, Sendable {
     }
 }
 
+nonisolated enum ImportEffectCommitError: LocalizedError, Sendable {
+    case missingReusedTrack(UUID)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingReusedTrack(let trackID):
+            return "复用歌曲在提交前已不存在（\(trackID.uuidString)）"
+        }
+    }
+}
+
 nonisolated struct ImportPreview: Sendable {
     let title: String
     let artist: String
@@ -600,18 +611,11 @@ final class FileImportService: FileImportServiceProtocol {
 
         // §16 planning phase 1: input interpretation + identity reuse.
         let interpretation = await planner.interpretInputs(
-            selectedURLs: selectedURLs,
             inputPlan: inputPlan,
-            playlist: playlist,
             libraryTracks: libraryTracks,
             isManualSelection: isManualSelection,
             session: importSession
         )
-        if let bindingFailure = interpretation.bindingFailure {
-            lastImportFailures.append(bindingFailure)
-            importSession.cleanupStaging()
-            return []
-        }
         var reusedTracks = interpretation.reusedTracks
         var reusedTrackIDs = interpretation.reusedTrackIDs
         lastImportPendingNCMCount = interpretation.eligibleNCMFiles.count
@@ -626,7 +630,31 @@ final class FileImportService: FileImportServiceProtocol {
 
         guard discoveredFileCount > 0 else {
             Log.info("No supported audio files found in selection", category: .import)
+            if await isImportCancellationRequested(progressController, cancellationToken) {
+                importSession.cleanupStaging()
+                return []
+            }
+            do {
+                try await commitImportEffects(
+                    tracks: reusedTracks,
+                    referencedReuseLocators: interpretation.referencedReuseLocators,
+                    sourceIDs: interpretation.playlistSourceIDs,
+                    to: playlist
+                )
+            } catch {
+                lastImportFailures.append(.init(
+                    url: selectedURLs[0],
+                    message: "无法保存播放列表导入结果：\(error.localizedDescription)"
+                ))
+                importSession.cleanupStaging()
+                return []
+            }
             importSession.cleanupStaging()
+            lastImportAlreadyInPlaylistCount = playlist.map { _ in
+                reusedTracks.filter { beforePlaylistTrackIDs.contains($0.id) }.count
+            } ?? 0
+            crashBreadcrumbResult = "completed"
+            crashBreadcrumbImportedCount = reusedTracks.count
             return reusedTracks
         }
 
@@ -697,28 +725,11 @@ final class FileImportService: FileImportServiceProtocol {
             libraryTracks: libraryTracks,
             metadataOverride: metadataOverride,
             cancellationToken: cancellationToken,
-            progressController: progressController,
-            playlist: playlist
+            progressController: progressController
         )
         let uniqueCandidates = preparedCandidates.unique
-        var duplicateRows = preparedCandidates.duplicates
+        let duplicateRows = preparedCandidates.duplicates
         lastImportPossibleDuplicateCount = duplicateRows.count
-
-        // Playlist-destination duplicate policy (planner-side): similarity
-        // duplicates were resolved by reusing the existing library track, so
-        // they join the playlist exactly like fingerprint-reused tracks.
-        for match in preparedCandidates.reusedDuplicates {
-            guard reusedTrackIDs.insert(match.track.id).inserted else { continue }
-            reusedTracks.append(match.track)
-            progressController.updateItem(
-                id: match.progressID,
-                title: match.incoming.title,
-                artist: match.incoming.artist,
-                stage: .duplicateCheck,
-                status: .success,
-                detail: "资料库中已存在，直接加入播放列表"
-            )
-        }
 
         if await isImportCancellationRequested(progressController, cancellationToken) {
             return await committer.finishCancelledImport(
@@ -735,10 +746,8 @@ final class FileImportService: FileImportServiceProtocol {
         // decision inputs above.
         var selectedDuplicates: [ImportCandidate] = []
         var policyDecision: ImportExecutionPlan.DuplicatePolicyDecision =
-            duplicateRows.isEmpty
-            ? (preparedCandidates.reusedDuplicates.isEmpty ? .none : .playlistReuseExisting)
-            : .automaticImportAllAsNew
-        if !duplicateRows.isEmpty, presentation == .interactive, playlist == nil {
+            duplicateRows.isEmpty ? .none : .automaticImportAllAsNew
+        if !duplicateRows.isEmpty, presentation == .interactive {
             Log.debug("Found \(duplicateRows.count) duplicates, presenting dialog...", category: .import)
             progressController.update(
                 stage: .waitingForDuplicateChoice,
@@ -779,49 +788,15 @@ final class FileImportService: FileImportServiceProtocol {
                 }
             } else {
                 Log.debug("User cancelled import via duplicate dialog (result was nil)", category: .import)
-                policyDecision = .userAborted
-                return []
-            }
-        }
-
-        if !duplicateRows.isEmpty, let playlist {
-            // Defense-in-depth for the playlist-destination duplicate policy:
-            // the planner resolves similarity duplicates by reuse before rows
-            // exist, so this fires only if that regresses. Never prompt and
-            // never re-import — fold the matched existing tracks into the
-            // destination playlist instead.
-            policyDecision = .playlistReuseExisting
-            let duplicateCandidatesByID = Dictionary(
-                preparedCandidates.duplicateCandidates.map { ($0.progressID, $0) },
-                uniquingKeysWith: { first, _ in first }
-            )
-            var seenExistingIDs = Set<UUID>()
-            var matchedExistingIDs: [UUID] = []
-            for row in duplicateRows {
-                progressController.updateItem(
-                    id: row.id,
-                    title: row.incoming.title,
-                    artist: row.incoming.artist,
-                    stage: .duplicateCheck,
-                    status: .success,
-                    detail: "资料库中已存在，直接加入播放列表"
+                return await committer.finishCancelledImport(
+                    session: importSession,
+                    importedRecords: [],
+                    createdTrackIDs: [],
+                    to: playlist,
+                    progressController: progressController,
+                    totalCount: discoveredFileCount
                 )
-                if let existingID = duplicateCandidatesByID[row.id]?.existingDuplicateTrackID,
-                   seenExistingIDs.insert(existingID).inserted {
-                    matchedExistingIDs.append(existingID)
-                }
             }
-            let defenseTracks = matchedExistingIDs.isEmpty
-                ? []
-                : await repository.fetchTracks(ids: matchedExistingIDs)
-            if !defenseTracks.isEmpty {
-                await repository.addTracks(defenseTracks, to: playlist)
-                await storageBackend.recordSourceMemberships(defenseTracks, playlistID: playlist.id)
-                reusedTracks.append(contentsOf: defenseTracks)
-                reusedTrackIDs.formUnion(defenseTracks.map(\.id))
-            }
-            duplicateRows = []
-            lastImportPossibleDuplicateCount = 0
         }
 
         if presentation == .automatic, !duplicateRows.isEmpty {
@@ -913,12 +888,40 @@ final class FileImportService: FileImportServiceProtocol {
 
         guard !importedRecords.isEmpty else {
             print("⚠️ No tracks to import")
+            if reusedTracks.isEmpty, !finalCandidates.isEmpty {
+                importSession.cleanupStaging()
+                _ = await committer.cleanupFailedImportResidue(reason: "importNoSuccessfulTracks")
+                return []
+            }
+            do {
+                try await commitImportEffects(
+                    tracks: reusedTracks,
+                    referencedReuseLocators: interpretation.referencedReuseLocators,
+                    sourceIDs: interpretation.playlistSourceIDs,
+                    to: playlist
+                )
+            } catch {
+                lastImportFailures.append(.init(
+                    url: selectedURLs[0],
+                    message: "无法保存播放列表导入结果：\(error.localizedDescription)"
+                ))
+                importSession.cleanupStaging()
+                _ = await committer.cleanupFailedImportResidue(reason: "importPlaylistCommitFailed")
+                return []
+            }
             importSession.cleanupStaging()
             _ = await committer.cleanupFailedImportResidue(reason: "importNoSuccessfulTracks")
+            lastImportAlreadyInPlaylistCount = playlist.map { _ in
+                reusedTracks.filter { beforePlaylistTrackIDs.contains($0.id) }.count
+            } ?? 0
+            crashBreadcrumbResult = "completed"
+            crashBreadcrumbImportedCount = reusedTracks.count
             return reusedTracks
         }
 
         let importedTracks = importedRecords.map(\.track)
+        var persistedTracks: [Track] = []
+        var deferredEnrichmentTracks: [Track] = []
 
         switch enrichmentMode {
         case .immediate:
@@ -950,14 +953,12 @@ final class FileImportService: FileImportServiceProtocol {
                 )
             }
 
-            let didSave = await committer.saveImportedTracks(
+            guard let savedTracks = await committer.saveImportedTracks(
                 importedTracks,
-                to: playlist,
                 progressController: progressController,
                 session: importSession,
                 cancellationToken: cancellationToken
-            )
-            guard didSave else {
+            ) else {
                 return await committer.finishCancelledImport(
                     session: importSession,
                     importedRecords: importedRecords,
@@ -967,6 +968,7 @@ final class FileImportService: FileImportServiceProtocol {
                     totalCount: finalCandidates.count
                 )
             }
+            persistedTracks = savedTracks
         case .deferred:
             let recordsNeedingEnrichment = importedRecords.filter(\.needsAnyEnrichment)
             if !recordsNeedingEnrichment.isEmpty {
@@ -991,14 +993,12 @@ final class FileImportService: FileImportServiceProtocol {
                 )
             }
 
-            let didSave = await committer.saveImportedTracks(
+            guard let savedTracks = await committer.saveImportedTracks(
                 importedTracks,
-                to: playlist,
                 progressController: progressController,
                 session: importSession,
                 cancellationToken: cancellationToken
-            )
-            guard didSave else {
+            ) else {
                 return await committer.finishCancelledImport(
                     session: importSession,
                     importedRecords: importedRecords,
@@ -1008,10 +1008,48 @@ final class FileImportService: FileImportServiceProtocol {
                     totalCount: finalCandidates.count
                 )
             }
+            persistedTracks = savedTracks
+            let persistedIDs = Set(savedTracks.map(\.id))
+            deferredEnrichmentTracks = recordsNeedingEnrichment
+                .map(\.track)
+                .filter { persistedIDs.contains($0.id) }
+        }
 
-            if !recordsNeedingEnrichment.isEmpty {
-                await importEnrichmentService.enqueueTracks(recordsNeedingEnrichment.map(\.track))
-            }
+        if await isImportCancellationRequested(progressController, cancellationToken) {
+            return await committer.finishCancelledImport(
+                session: importSession,
+                importedRecords: importedRecords,
+                createdTrackIDs: importBatch.createdTrackIDs,
+                to: playlist,
+                progressController: progressController,
+                totalCount: finalCandidates.count
+            )
+        }
+
+        do {
+            try await commitImportEffects(
+                tracks: persistedTracks + reusedTracks,
+                referencedReuseLocators: interpretation.referencedReuseLocators,
+                sourceIDs: interpretation.playlistSourceIDs,
+                to: playlist
+            )
+        } catch {
+            lastImportFailures.append(.init(
+                url: selectedURLs[0],
+                message: "无法保存播放列表导入结果：\(error.localizedDescription)"
+            ))
+            return await committer.finishCancelledImport(
+                session: importSession,
+                importedRecords: importedRecords,
+                createdTrackIDs: importBatch.createdTrackIDs,
+                to: playlist,
+                progressController: progressController,
+                totalCount: finalCandidates.count
+            )
+        }
+
+        if !deferredEnrichmentTracks.isEmpty {
+            await importEnrichmentService.enqueueTracks(deferredEnrichmentTracks)
         }
 
         operationCoordinator.recordCheckpoint("信息补全阶段完成")
@@ -1019,7 +1057,8 @@ final class FileImportService: FileImportServiceProtocol {
         _ = await committer.cleanupFailedImportResidue(reason: "importCompleted")
         importSession.cleanupStaging()
 
-        for record in importedRecords {
+        let persistedTrackIDs = Set(persistedTracks.map(\.id))
+        for record in importedRecords where persistedTrackIDs.contains(record.track.id) {
             progressController.completeImportedItem(id: record.progressID)
         }
 
@@ -1034,22 +1073,65 @@ final class FileImportService: FileImportServiceProtocol {
         progressController.update(
             stage: .completed,
             progress: 1.0,
-            detail: playlist.map { "已成功导入 \(importedRecords.count) 首歌曲到“\($0.name)”" }
-                ?? "已成功导入 \(importedRecords.count) 首歌曲",
-            completedCount: importedTracks.count,
+            detail: playlist.map { "已成功导入 \(persistedTracks.count) 首歌曲到“\($0.name)”" }
+                ?? "已成功导入 \(persistedTracks.count) 首歌曲",
+            completedCount: persistedTracks.count,
             totalCount: finalCandidates.count
         )
         try? await Task.sleep(nanoseconds: 500_000_000)
 
         lastImportAlreadyInPlaylistCount = playlist.map { destination in
-            (importedTracks + reusedTracks).filter {
+            (persistedTracks + reusedTracks).filter {
                 beforePlaylistTrackIDs.contains($0.id)
             }.count
         } ?? 0
-        print("✅ Import complete: \(importedRecords.count) imported")
+        print("✅ Import complete: \(persistedTracks.count) imported")
         crashBreadcrumbResult = "completed"
-        crashBreadcrumbImportedCount = importedRecords.count + reusedTracks.count
-        return importedTracks + reusedTracks
+        crashBreadcrumbImportedCount = persistedTracks.count + reusedTracks.count
+        return persistedTracks + reusedTracks
+    }
+
+    /// Playlist membership and referenced-source bindings are one final
+    /// commit point. Nothing in planning calls this method, so duplicate
+    /// dialogs, cancellation and failed imports leave the playlist untouched.
+    private func commitImportEffects(
+        tracks: [Track],
+        referencedReuseLocators: [UUID: ReferencedFileLocator],
+        sourceIDs: Set<UUID>,
+        to playlist: Playlist?
+    ) async throws {
+        var originalLocators: [(track: Track, locator: TrackMediaLocator)] = []
+        do {
+            for trackID in referencedReuseLocators.keys.sorted(by: { $0.uuidString < $1.uuidString }) {
+                guard let incoming = referencedReuseLocators[trackID],
+                      let track = await repository.fetchTracks(ids: [trackID]).first else {
+                    throw ImportEffectCommitError.missingReusedTrack(trackID)
+                }
+                originalLocators.append((track, track.mediaLocator))
+                try await repository.mergeReferencedLocator(incoming, into: track)
+            }
+
+            guard let playlist else { return }
+            var seenTrackIDs = Set<UUID>()
+            let uniqueTracks = tracks.filter { seenTrackIDs.insert($0.id).inserted }
+            try await storageBackend.commitPlaylistImportSourceEffects(
+                tracks: uniqueTracks,
+                sourceIDs: sourceIDs,
+                playlistID: playlist.id
+            )
+            if !uniqueTracks.isEmpty {
+                await repository.addTracks(uniqueTracks, to: playlist)
+            }
+        } catch {
+            for original in originalLocators.reversed() {
+                original.track.mediaLocator = original.locator
+                await repository.persistTrackMetaOnly(
+                    original.track,
+                    reason: "importEffectRollback"
+                )
+            }
+            throw error
+        }
     }
 
     private func isImportCancellationRequested(

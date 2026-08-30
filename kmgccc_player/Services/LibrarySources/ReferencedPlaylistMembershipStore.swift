@@ -201,6 +201,8 @@ actor ReferencedPlaylistMembershipStore {
     ) throws {
         guard !entries.isEmpty else { return }
         try ensureLoaded()
+        let originalMemberships = memberships
+        let originalIndex = membershipIndex
         var changed = false
         for entry in entries {
             changed = applyingSourceContribution(
@@ -209,7 +211,14 @@ actor ReferencedPlaylistMembershipStore {
                 bindingID: entry.bindingID
             ) || changed
         }
-        if changed { try persist() }
+        guard changed else { return }
+        do {
+            try persist()
+        } catch {
+            memberships = originalMemberships
+            membershipIndex = originalIndex
+            throw error
+        }
     }
 
     @discardableResult

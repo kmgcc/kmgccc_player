@@ -7,9 +7,9 @@
 //  NCM conversion dispatch, resolved-file coalescing, dedup snapshots,
 //  candidate preparation and placement resolution. It never presents UI: the
 //  duplicate dialog stays on FileImportService, which feeds the chosen policy
-//  back through resolvePlacements. Persistence performed here (reuse playlist
-//  adds, committed-NCM reuse) is inseparable from the decisions themselves at
-//  this pass; ImportExecutionPlan is the value the next pass can lift further.
+//  back through resolvePlacements. Planning is side-effect free with respect
+//  to playlist membership and source bindings; those are committed only after
+//  the track import succeeds.
 //
 
 import CryptoKit
@@ -117,24 +117,6 @@ struct CandidatePreparationResult: Sendable {
     let index: Int
     let candidate: ImportCandidate
     let duplicateRow: DuplicatePairRow?
-    /// Non-nil marks a similarity duplicate resolved by reuse under the
-    /// playlist-destination policy; `candidate` is then ignored downstream.
-    let reusedDuplicate: ReusedDuplicateResolution?
-}
-
-/// A similarity duplicate awaiting track resolution by the planner.
-struct ReusedDuplicateResolution: Sendable {
-    let progressID: String
-    let incoming: ImportPreview
-    let existingTrackID: UUID
-}
-
-/// A similarity duplicate whose existing library track has been reused and
-/// added to the destination playlist; never re-imported.
-struct ReusedDuplicateMatch {
-    let progressID: String
-    let incoming: ImportPreview
-    let track: Track
 }
 
 /// The executable plan handed from planning to persistence. `policyDecision`
@@ -146,13 +128,8 @@ struct ImportExecutionPlan {
         case none
         /// Interactive dialog confirmed; selected rows already folded into placements.
         case userSelected
-        /// Interactive dialog dismissed; import aborted.
-        case userAborted
         /// Automatic mode: similarity matches imported as new tracks.
         case automaticImportAllAsNew
-        /// Playlist destination: similarity matches resolved by reusing the
-        /// existing library track instead of importing.
-        case playlistReuseExisting
     }
 
     let reusedTracks: [Track]
@@ -196,52 +173,26 @@ final class ImportPlanner {
     // MARK: - Input interpretation
 
     struct InputInterpretation {
-        /// Non-nil aborts the import before any conversion work; the caller
-        /// owns staging cleanup and failure collection.
-        let bindingFailure: ImportInputFailure?
+        /// Source bindings are part of the final playlist commit, never input
+        /// planning, so cancellation cannot leave empty/stale bindings.
+        let playlistSourceIDs: Set<UUID>
         let reusedTracks: [Track]
         let reusedTrackIDs: Set<UUID>
+        let referencedReuseLocators: [UUID: ReferencedFileLocator]
         let filesToImport: [ImportDiscoveredFile]
         let eligibleNCMFiles: [ImportDiscoveredFile]
     }
 
     func interpretInputs(
-        selectedURLs: [URL],
         inputPlan: ImportInputPlan,
-        playlist: Playlist?,
         libraryTracks: [Track],
         isManualSelection: Bool,
         session: ImportSession
     ) async -> InputInterpretation {
-        if let playlist {
-            let sourceIDs = Set(
-                inputPlan.directorySources.map(\.source.id)
-                    + inputPlan.files.flatMap { $0.memberships.map(\.sourceID) }
-            )
-            if !sourceIDs.isEmpty {
-                do {
-                    _ = try await storageBackend.bindSourcesToPlaylist(
-                        sourceIDs,
-                        playlistID: playlist.id
-                    )
-                } catch {
-                    Log.error(
-                        "[Import] source-playlist binding failed: \(error.localizedDescription)",
-                        category: .import
-                    )
-                    return InputInterpretation(
-                        bindingFailure: .init(
-                            url: selectedURLs[0],
-                            message: "无法建立播放列表与来源的绑定：\(error.localizedDescription)"
-                        ),
-                        reusedTracks: [],
-                        reusedTrackIDs: [],
-                        filesToImport: [],
-                        eligibleNCMFiles: []
-                    )
-                }
-            }
-        }
+        let playlistSourceIDs = Set(
+            inputPlan.directorySources.map(\.source.id)
+                + inputPlan.files.flatMap { $0.memberships.map(\.sourceID) }
+        )
         if isManualSelection, let ignoredItemsStore {
             let fingerprints = inputPlan.files.compactMap(\.fingerprint)
             do {
@@ -262,6 +213,7 @@ final class ImportPlanner {
         var newFiles: [ImportDiscoveredFile] = []
         var reusedTracks: [Track] = []
         var reusedTrackIDs = Set<UUID>()
+        var referencedReuseLocators: [UUID: ReferencedFileLocator] = [:]
         let identityResolver = TrackIdentityResolver()
         // Managed-mode identity reuse matches by canonical source path. Index
         // the library once per import instead of scanning every track per file.
@@ -311,7 +263,14 @@ final class ImportPlanner {
                             atLocationID: locator.primaryLocationID
                         )
                     }
-                    try await repository.mergeReferencedLocator(locator, into: reuseTarget)
+                    let existingLocator = referencedReuseLocators[reuseTarget.id]
+                        ?? reuseTarget.mediaLocator.referencedFile
+                    if let existingLocator {
+                        for location in existingLocator.locations {
+                            locator.mergeLocation(location)
+                        }
+                    }
+                    referencedReuseLocators[reuseTarget.id] = locator
                     if reusedTrackIDs.insert(reuseTarget.id).inserted {
                         reusedTracks.append(reuseTarget)
                     }
@@ -338,10 +297,6 @@ final class ImportPlanner {
                 }
             }
         }
-        if !reusedTracks.isEmpty, let playlist {
-            await repository.addTracks(reusedTracks, to: playlist)
-            await storageBackend.recordSourceMemberships(reusedTracks, playlistID: playlist.id)
-        }
         operationCoordinator.recordCheckpoint("身份复用完成")
         let filesToImport = newFiles.filter { $0.url.pathExtension.lowercased() != "ncm" }
         let ncmFiles = newFiles.filter { $0.url.pathExtension.lowercased() == "ncm" }
@@ -355,9 +310,10 @@ final class ImportPlanner {
             ? ncmFiles
             : []
         return InputInterpretation(
-            bindingFailure: nil,
+            playlistSourceIDs: playlistSourceIDs,
             reusedTracks: reusedTracks,
             reusedTrackIDs: reusedTrackIDs,
+            referencedReuseLocators: referencedReuseLocators,
             filesToImport: filesToImport,
             eligibleNCMFiles: eligibleNCMFiles
         )
@@ -477,10 +433,6 @@ final class ImportPlanner {
                         if reusedTrackIDs.insert(existing.id).inserted {
                             reusedTracks.append(existing)
                         }
-                        if let playlist {
-                            await repository.addTracks([existing], to: playlist)
-                            await storageBackend.recordSourceMemberships([existing], playlistID: playlist.id)
-                        }
                         progressController.updateItem(
                             id: file.url.path,
                             title: existing.title,
@@ -535,8 +487,6 @@ final class ImportPlanner {
         let unique: [ImportCandidate]
         let duplicates: [DuplicatePairRow]
         let duplicateCandidates: [ImportCandidate]
-        /// Playlist-destination reuse outcomes; empty for library-only imports.
-        let reusedDuplicates: [ReusedDuplicateMatch]
     }
 
     func prepareCandidates(
@@ -544,8 +494,7 @@ final class ImportPlanner {
         libraryTracks: [Track],
         metadataOverride: ImportMetadataOverride?,
         cancellationToken: ImportCancellationToken,
-        progressController: BatchImportProgressDialogController,
-        playlist: Playlist? = nil
+        progressController: BatchImportProgressDialogController
     ) async -> CandidatePreparation {
         let existingByDedupKey = Dictionary(grouping: libraryTracks) {
             LibraryNormalization.normalizedDedupKey(title: $0.title, artist: $0.artist)
@@ -571,44 +520,13 @@ final class ImportPlanner {
             existingMatches: existingSnapshots,
             metadataOverride: metadataOverride,
             progressController: progressController,
-            cancellationToken: cancellationToken,
-            autoReuseExistingDuplicates: playlist != nil
+            cancellationToken: cancellationToken
         )
-
-        // Playlist-destination duplicate policy: a similarity duplicate
-        // resolves to its existing library track — the same outcome as the
-        // physical-fingerprint reuse path in interpretInputs. The membership
-        // is persisted here so the file is neither re-imported nor surfaced
-        // as an interactive dialog row.
-        var reusedDuplicates: [ReusedDuplicateMatch] = []
-        if let playlist, !prepared.reusedDuplicates.isEmpty {
-            let tracksByID = Dictionary(
-                libraryTracks.map { ($0.id, $0) },
-                uniquingKeysWith: { first, _ in first }
-            )
-            var seenTrackIDs = Set<UUID>()
-            for resolution in prepared.reusedDuplicates {
-                guard let track = tracksByID[resolution.existingTrackID],
-                      seenTrackIDs.insert(track.id).inserted else { continue }
-                reusedDuplicates.append(
-                    ReusedDuplicateMatch(
-                        progressID: resolution.progressID,
-                        incoming: resolution.incoming,
-                        track: track
-                    )
-                )
-            }
-            if !reusedDuplicates.isEmpty {
-                await repository.addTracks(reusedDuplicates.map(\.track), to: playlist)
-                await storageBackend.recordSourceMemberships(reusedDuplicates.map(\.track), playlistID: playlist.id)
-            }
-        }
 
         return CandidatePreparation(
             unique: prepared.unique,
             duplicates: prepared.duplicates,
-            duplicateCandidates: prepared.duplicateCandidates,
-            reusedDuplicates: reusedDuplicates
+            duplicateCandidates: prepared.duplicateCandidates
         )
     }
 
@@ -842,15 +760,13 @@ final class ImportPlanner {
         existingMatches: [String: ExistingTrackMatchSnapshot],
         metadataOverride: ImportMetadataOverride?,
         progressController: BatchImportProgressDialogController,
-        cancellationToken: ImportCancellationToken,
-        autoReuseExistingDuplicates: Bool
+        cancellationToken: ImportCancellationToken
     ) async -> (
         unique: [ImportCandidate],
         duplicates: [DuplicatePairRow],
-        duplicateCandidates: [ImportCandidate],
-        reusedDuplicates: [ReusedDuplicateResolution]
+        duplicateCandidates: [ImportCandidate]
     ) {
-        guard !files.isEmpty else { return ([], [], [], []) }
+        guard !files.isEmpty else { return ([], [], []) }
 
         progressController.update(
             stage: .readingMetadata,
@@ -880,8 +796,7 @@ final class ImportPlanner {
                         file: file,
                         existingMatches: existingMatches,
                         metadataOverride: metadataOverride,
-                        cancellationToken: cancellationToken,
-                        autoReuseExistingDuplicates: autoReuseExistingDuplicates
+                        cancellationToken: cancellationToken
                     )
                 }
             }
@@ -902,14 +817,10 @@ final class ImportPlanner {
                     totalCount: files.count
                 )
 
-                let itemStatus: BatchImportItemStatus =
-                    output.reusedDuplicate != nil ? .success : (output.duplicateRow == nil ? .success : .warning)
-                let itemDetail: String
-                if output.reusedDuplicate != nil {
-                    itemDetail = "资料库中已存在，将直接加入播放列表"
-                } else {
-                    itemDetail = output.duplicateRow == nil ? "歌曲信息解析完成，未发现重复" : "检测到重复歌曲，等待用户选择"
-                }
+                let itemStatus: BatchImportItemStatus = output.duplicateRow == nil ? .success : .warning
+                let itemDetail = output.duplicateRow == nil
+                    ? "歌曲信息解析完成，未发现重复"
+                    : "检测到重复歌曲，等待用户选择"
                 progressController.updateItem(
                     id: output.candidate.progressID,
                     title: output.candidate.metadata.title,
@@ -937,8 +848,7 @@ final class ImportPlanner {
                             file: file,
                             existingMatches: existingMatches,
                             metadataOverride: metadataOverride,
-                            cancellationToken: cancellationToken,
-                            autoReuseExistingDuplicates: autoReuseExistingDuplicates
+                            cancellationToken: cancellationToken
                         )
                     }
                 }
@@ -948,12 +858,9 @@ final class ImportPlanner {
         var uniqueCandidates: [ImportCandidate] = []
         var duplicateRows: [DuplicatePairRow] = []
         var duplicateCandidates: [ImportCandidate] = []
-        var reusedDuplicates: [ReusedDuplicateResolution] = []
 
         for output in orderedResults.compactMap({ $0 }) {
-            if let reusedDuplicate = output.reusedDuplicate {
-                reusedDuplicates.append(reusedDuplicate)
-            } else if let duplicateRow = output.duplicateRow {
+            if let duplicateRow = output.duplicateRow {
                 duplicateRows.append(duplicateRow)
                 duplicateCandidates.append(output.candidate)
             } else {
@@ -967,7 +874,7 @@ final class ImportPlanner {
             duplicateCandidates = Self.attachingSuggestions(inferredSuggestions, to: duplicateCandidates)
         }
 
-        return (uniqueCandidates, duplicateRows, duplicateCandidates, reusedDuplicates)
+        return (uniqueCandidates, duplicateRows, duplicateCandidates)
     }
 
     // MARK: - §10.3/§10.4 evidence helpers
@@ -1128,8 +1035,7 @@ final class ImportPlanner {
         file: ResolvedImportFile,
         existingMatches: [String: ExistingTrackMatchSnapshot],
         metadataOverride: ImportMetadataOverride?,
-        cancellationToken: ImportCancellationToken,
-        autoReuseExistingDuplicates: Bool
+        cancellationToken: ImportCancellationToken
     ) async -> CandidatePreparationResult {
         if (try? await cancellationToken.checkCancellation()) == nil {
             let preview = ImportPreview(
@@ -1157,8 +1063,7 @@ final class ImportPlanner {
                     ncmLocator: file.referencedNCMOutput?.locator,
                     recoveryTrackID: file.referencedNCMOutput?.trackID
                 ),
-                duplicateRow: nil,
-                reusedDuplicate: nil
+                duplicateRow: nil
             )
         }
         let preview: ImportPreview
@@ -1217,8 +1122,7 @@ final class ImportPlanner {
                         ncmLocator: file.referencedNCMOutput?.locator,
                     recoveryTrackID: file.referencedNCMOutput?.trackID
                 ),
-                duplicateRow: nil,
-                reusedDuplicate: nil
+                duplicateRow: nil
             )
         }
 
@@ -1272,23 +1176,7 @@ final class ImportPlanner {
             candidates: groupMatches.map { SimilarityCandidate(trackID: $0.id, duration: $0.duration) }
         )
         guard case let .possibleDuplicate(existingTrackIDs) = classification else {
-            return CandidatePreparationResult(index: index, candidate: candidate, duplicateRow: nil, reusedDuplicate: nil)
-        }
-
-        // Playlist-destination policy: a similarity duplicate resolves to its
-        // existing library track, mirroring the fingerprint-reuse outcome —
-        // no duplicate candidate, no dialog row, no re-import.
-        if autoReuseExistingDuplicates, let existingTrackID = existingTrackIDs.first {
-            return CandidatePreparationResult(
-                index: index,
-                candidate: candidate,
-                duplicateRow: nil,
-                reusedDuplicate: ReusedDuplicateResolution(
-                    progressID: file.progressID,
-                    incoming: effectivePreview,
-                    existingTrackID: existingTrackID
-                )
-            )
+            return CandidatePreparationResult(index: index, candidate: candidate, duplicateRow: nil)
         }
 
         let matchesByID = Dictionary(uniqueKeysWithValues: groupMatches.map { ($0.id, $0) })
@@ -1319,8 +1207,7 @@ final class ImportPlanner {
         return CandidatePreparationResult(
             index: index,
             candidate: duplicateCandidate,
-            duplicateRow: duplicateRow,
-            reusedDuplicate: nil
+            duplicateRow: duplicateRow
         )
     }
 
