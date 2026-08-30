@@ -245,6 +245,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         )
         let importEnrichmentService = ImportEnrichmentService(
             repository: repository,
+            mutationCoordinator: mutationCoordinator,
             qqMusicCoverService: cacheServices.qqMusicCoverService,
             artistArtworkProviderCoordinator: cacheServices.artistArtworkProviderCoordinator,
             lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,

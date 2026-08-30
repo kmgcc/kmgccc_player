@@ -3,6 +3,7 @@ import Foundation
 nonisolated enum LibraryMutationKind: String, Codable, Sendable, CaseIterable {
     case userLibraryMutation
     case importCommit
+    case enrichmentCommit
     case sourceReconcileCommit
     case settingsUpdate
     case maintenance

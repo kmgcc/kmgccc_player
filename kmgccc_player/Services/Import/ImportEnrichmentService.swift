@@ -275,6 +275,7 @@ nonisolated private struct PendingTrackEnrichmentPatch: Sendable {
 @Observable
 final class ImportEnrichmentService {
     private let repository: LibraryRepositoryProtocol
+    private let mutationCoordinator: LibraryMutationCoordinator?
     private let qqMusicCoverService: QQMusicCoverService
     private let artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator
     private let lyricsSearchCoordinator: LyricsSearchCoordinator
@@ -327,6 +328,7 @@ final class ImportEnrichmentService {
 
     init(
         repository: LibraryRepositoryProtocol,
+        mutationCoordinator: LibraryMutationCoordinator? = nil,
         maxConcurrent: Int = 2,
         qqMusicCoverService: QQMusicCoverService,
         artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator,
@@ -334,6 +336,7 @@ final class ImportEnrichmentService {
         amllDBService: AMLLDBService
     ) {
         self.repository = repository
+        self.mutationCoordinator = mutationCoordinator
         self.qqMusicCoverService = qqMusicCoverService
         self.artistArtworkProviderCoordinator = artistArtworkProviderCoordinator
         self.lyricsSearchCoordinator = lyricsSearchCoordinator
@@ -732,8 +735,9 @@ final class ImportEnrichmentService {
         let entry = await latestArtistEntry(canonical: canonical, displayName: artist)
         let result = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: entry)
         guard result.changed else { return false }
-        await repository.updateArtistEntry(result.value)
-        return true
+        return await commitMetadataEntry(id: result.value.id) {
+            await self.repository.updateArtistEntry(result.value)
+        }
     }
 
     private func applyArtistArtworkDataUnlocked(_ data: Data, artist: String) async -> Bool {
@@ -744,8 +748,9 @@ final class ImportEnrichmentService {
         entry.artworkData = data
         entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
-        await repository.updateArtistEntry(entry)
-        return true
+        return await commitMetadataEntry(id: entry.id) {
+            await self.repository.updateArtistEntry(entry)
+        }
     }
 
     private func applyAlbumMetadataDetailUnlocked(
@@ -757,8 +762,9 @@ final class ImportEnrichmentService {
         let entry = await latestAlbumEntry(album: album, artist: artist)
         let result = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: entry)
         guard result.changed else { return false }
-        await repository.updateAlbumEntry(result.value)
-        return true
+        return await commitMetadataEntry(id: result.value.id) {
+            await self.repository.updateAlbumEntry(result.value)
+        }
     }
 
     private func applyAlbumArtworkDataUnlocked(_ data: Data, album: String, artist: String) async -> Bool {
@@ -768,8 +774,34 @@ final class ImportEnrichmentService {
         entry.artworkData = data
         entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
-        await repository.updateAlbumEntry(entry)
-        return true
+        return await commitMetadataEntry(id: entry.id) {
+            await self.repository.updateAlbumEntry(entry)
+        }
+    }
+
+    private func commitMetadataEntry(
+        id: UUID,
+        _ work: @escaping @MainActor () async -> Void
+    ) async -> Bool {
+        do {
+            if let mutationCoordinator {
+                return try await mutationCoordinator.run(
+                    kind: .enrichmentCommit,
+                    targetIDs: [id.uuidString]
+                ) {
+                    await work()
+                    return true
+                }
+            }
+            await work()
+            return true
+        } catch {
+            Log.error(
+                "[ImportEnrichment] metadata entry commit rejected: \(error)",
+                category: .import
+            )
+            return false
+        }
     }
 
     private func latestArtistEntry(canonical: String, displayName: String) async -> ArtistEntry {
@@ -1932,52 +1964,98 @@ final class ImportEnrichmentService {
             return patch.trackMetadataShouldFlush && patch.lyricShouldFlush && patch.coverShouldFlush
         }
 
-        var persistedTrackIDs: Set<UUID> = []
-        var failedTrackIDs: Set<UUID> = []
+        let persistBatches: @MainActor () async -> (persisted: Set<UUID>, failed: Set<UUID>) = {
+            var persistedTrackIDs: Set<UUID> = []
+            var failedTrackIDs: Set<UUID> = []
 
-        // close() can only interleave at these suspension points; bail out
-        // before touching the repository again once the session is gone.
-        if !metaOnlyTracks.isEmpty {
-            let result = await repository.persistTrackMetaOnly(metaOnlyTracks, reason: "importEnrichmentMetadata")
-            persistedTrackIDs.formUnion(result.persistedTrackIDs)
-            failedTrackIDs.formUnion(result.failedTrackIDs)
+            // close() can only interleave at these suspension points; bail out
+            // before touching the repository again once the session is gone.
+            if !metaOnlyTracks.isEmpty {
+                let result = await self.repository.persistTrackMetaOnly(
+                    metaOnlyTracks,
+                    reason: "importEnrichmentMetadata"
+                )
+                persistedTrackIDs.formUnion(result.persistedTrackIDs)
+                failedTrackIDs.formUnion(result.failedTrackIDs)
+            }
+            guard !self.isClosed else { return (persistedTrackIDs, failedTrackIDs) }
+            if !lyricOnlyTracks.isEmpty {
+                let result = await self.repository.persistTrackMetaAndLyrics(
+                    lyricOnlyTracks,
+                    reason: "importEnrichmentLyrics"
+                )
+                persistedTrackIDs.formUnion(result.persistedTrackIDs)
+                failedTrackIDs.formUnion(result.failedTrackIDs)
+            }
+            guard !self.isClosed else { return (persistedTrackIDs, failedTrackIDs) }
+            if !coverOnlyTracks.isEmpty {
+                let result = await self.repository.persistTrackMetaAndArtwork(
+                    coverOnlyTracks,
+                    reason: "importEnrichmentArtwork"
+                )
+                persistedTrackIDs.formUnion(result.persistedTrackIDs)
+                failedTrackIDs.formUnion(result.failedTrackIDs)
+            }
+            guard !self.isClosed else { return (persistedTrackIDs, failedTrackIDs) }
+            if !lyricAndCoverTracks.isEmpty {
+                let result = await self.repository.persistTrackMetaLyricsAndArtwork(
+                    lyricAndCoverTracks,
+                    reason: "importEnrichmentLyricsArtwork"
+                )
+                persistedTrackIDs.formUnion(result.persistedTrackIDs)
+                failedTrackIDs.formUnion(result.failedTrackIDs)
+            }
+            guard !self.isClosed else { return (persistedTrackIDs, failedTrackIDs) }
+            if !metaAndLyricTracks.isEmpty {
+                let result = await self.repository.persistTrackMetaAndLyrics(
+                    metaAndLyricTracks,
+                    reason: "importEnrichmentMetadataLyrics"
+                )
+                persistedTrackIDs.formUnion(result.persistedTrackIDs)
+                failedTrackIDs.formUnion(result.failedTrackIDs)
+            }
+            guard !self.isClosed else { return (persistedTrackIDs, failedTrackIDs) }
+            if !metaAndCoverTracks.isEmpty {
+                let result = await self.repository.persistTrackMetaAndArtwork(
+                    metaAndCoverTracks,
+                    reason: "importEnrichmentMetadataArtwork"
+                )
+                persistedTrackIDs.formUnion(result.persistedTrackIDs)
+                failedTrackIDs.formUnion(result.failedTrackIDs)
+            }
+            guard !self.isClosed else { return (persistedTrackIDs, failedTrackIDs) }
+            if !metaLyricAndCoverTracks.isEmpty {
+                let result = await self.repository.persistTrackMetaLyricsAndArtwork(
+                    metaLyricAndCoverTracks,
+                    reason: "importEnrichmentMetadataLyricsArtwork"
+                )
+                persistedTrackIDs.formUnion(result.persistedTrackIDs)
+                failedTrackIDs.formUnion(result.failedTrackIDs)
+            }
+            return (persistedTrackIDs, failedTrackIDs)
         }
-        guard !isClosed else { return }
-        if !lyricOnlyTracks.isEmpty {
-            let result = await repository.persistTrackMetaAndLyrics(lyricOnlyTracks, reason: "importEnrichmentLyrics")
-            persistedTrackIDs.formUnion(result.persistedTrackIDs)
-            failedTrackIDs.formUnion(result.failedTrackIDs)
+
+        let commitResult: (persisted: Set<UUID>, failed: Set<UUID>)
+        do {
+            if let mutationCoordinator {
+                commitResult = try await mutationCoordinator.run(
+                    kind: .enrichmentCommit,
+                    targetIDs: trackIDs.map(\.uuidString)
+                ) {
+                    await persistBatches()
+                }
+            } else {
+                commitResult = await persistBatches()
+            }
+        } catch {
+            Log.error(
+                "[ImportEnrichment] batch commit rejected: \(error)",
+                category: .import
+            )
+            commitResult = ([], Set(touchedTracks.map(\.id)))
         }
-        guard !isClosed else { return }
-        if !coverOnlyTracks.isEmpty {
-            let result = await repository.persistTrackMetaAndArtwork(coverOnlyTracks, reason: "importEnrichmentArtwork")
-            persistedTrackIDs.formUnion(result.persistedTrackIDs)
-            failedTrackIDs.formUnion(result.failedTrackIDs)
-        }
-        guard !isClosed else { return }
-        if !lyricAndCoverTracks.isEmpty {
-            let result = await repository.persistTrackMetaLyricsAndArtwork(lyricAndCoverTracks, reason: "importEnrichmentLyricsArtwork")
-            persistedTrackIDs.formUnion(result.persistedTrackIDs)
-            failedTrackIDs.formUnion(result.failedTrackIDs)
-        }
-        guard !isClosed else { return }
-        if !metaAndLyricTracks.isEmpty {
-            let result = await repository.persistTrackMetaAndLyrics(metaAndLyricTracks, reason: "importEnrichmentMetadataLyrics")
-            persistedTrackIDs.formUnion(result.persistedTrackIDs)
-            failedTrackIDs.formUnion(result.failedTrackIDs)
-        }
-        guard !isClosed else { return }
-        if !metaAndCoverTracks.isEmpty {
-            let result = await repository.persistTrackMetaAndArtwork(metaAndCoverTracks, reason: "importEnrichmentMetadataArtwork")
-            persistedTrackIDs.formUnion(result.persistedTrackIDs)
-            failedTrackIDs.formUnion(result.failedTrackIDs)
-        }
-        guard !isClosed else { return }
-        if !metaLyricAndCoverTracks.isEmpty {
-            let result = await repository.persistTrackMetaLyricsAndArtwork(metaLyricAndCoverTracks, reason: "importEnrichmentMetadataLyricsArtwork")
-            persistedTrackIDs.formUnion(result.persistedTrackIDs)
-            failedTrackIDs.formUnion(result.failedTrackIDs)
-        }
+        let persistedTrackIDs = commitResult.persisted
+        let failedTrackIDs = commitResult.failed
         guard !isClosed else { return }
 
         for trackID in persistedTrackIDs {
