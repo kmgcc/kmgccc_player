@@ -23,6 +23,15 @@ nonisolated struct LibraryPaths: Sendable, Equatable {
     var settingsRootURL: URL { directory("Settings") }
     var librarySettingsURL: URL { settingsRootURL.appendingPathComponent("library-settings.json") }
     var upgradeJournalURL: URL { settingsRootURL.appendingPathComponent("library-upgrade.json") }
+    var writerLockURL: URL { settingsRootURL.appendingPathComponent(".writer.lock") }
+
+    var transactionsRootURL: URL { directory("Transactions") }
+    var pendingTransactionsRootURL: URL {
+        transactionsRootURL.appendingPathComponent("Pending", isDirectory: true)
+    }
+    var completedTransactionsRootURL: URL {
+        transactionsRootURL.appendingPathComponent("Completed", isDirectory: true)
+    }
 
     var tracksRootURL: URL { directory("Tracks") }
     var sourcesRootURL: URL { directory("Sources") }
@@ -182,6 +191,8 @@ nonisolated struct LibraryPaths: Sendable, Equatable {
     var requiredDirectories: [URL] {
         [
             settingsRootURL,
+            pendingTransactionsRootURL,
+            completedTransactionsRootURL,
             tracksRootURL,
             sourcesRootURL,
             playlistsRootURL,

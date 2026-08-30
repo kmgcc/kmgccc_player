@@ -47,6 +47,10 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             throw LibrarySessionFactoryError.manifestModeMismatch
         }
 
+        // Acquire the single-writer boundary before migrations, SQLite setup,
+        // source repair, or any sidecar writer can touch this Library root.
+        let writerLease = try LibraryWriterLease.acquire(paths: context.paths)
+
         let storageLocations = StorageLocations.scoped(to: context.paths)
         _ = await LegacyLibraryUpgradeCoordinator.prepareStorageIfNeeded(
             context: context,
@@ -451,6 +455,7 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         let session = LibrarySession(
             context: context,
             rootAccessLease: rootAccessLease,
+            writerLease: writerLease,
             modelContainer: modelContainer,
             cacheServices: cacheServices,
             repository: repository,

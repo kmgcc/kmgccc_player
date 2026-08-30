@@ -5,6 +5,7 @@ import SwiftData
 final class LibrarySession: LibrarySessionLifecycle {
     let context: LibraryContext
     private let rootAccessLease: LibraryRootAccessLease
+    private let writerLease: LibraryWriterLease
     let modelContainer: ModelContainer
     let cacheServices: LibraryCacheServices
     let repository: SwiftDataLibraryRepository
@@ -39,6 +40,7 @@ final class LibrarySession: LibrarySessionLifecycle {
     init(
         context: LibraryContext,
         rootAccessLease: LibraryRootAccessLease,
+        writerLease: LibraryWriterLease,
         modelContainer: ModelContainer,
         cacheServices: LibraryCacheServices,
         repository: SwiftDataLibraryRepository,
@@ -67,6 +69,7 @@ final class LibrarySession: LibrarySessionLifecycle {
     ) {
         self.context = context
         self.rootAccessLease = rootAccessLease
+        self.writerLease = writerLease
         self.modelContainer = modelContainer
         self.cacheServices = cacheServices
         self.repository = repository
@@ -705,6 +708,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         await storageBackend.close()
         await cacheServices.close()
         preferenceStatsService.clearCache()
+        writerLease.release()
         rootAccessLease.release()
         isLoaded = false
     }
