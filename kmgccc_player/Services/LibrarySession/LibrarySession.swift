@@ -680,7 +680,6 @@ final class LibrarySession: LibrarySessionLifecycle {
     func quiesce() async {
         guard !isClosed else { return }
         operationCoordinator.stopAcceptingNewOperations()
-        mutationCoordinator.stopAcceptingNewMutations()
         await libraryChangeMonitor?.stopAndWait()
         await operationCoordinator.cancelAndWait()
         await fileImportService.quiesce()
@@ -688,6 +687,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         playerViewModel.stopLevelMeter()
         await importEnrichmentService.quiesce()
         await libraryService.quiesceAndWaitForBackgroundWrites()
+        mutationCoordinator.stopAcceptingNewMutations()
         await mutationCoordinator.waitForDrain()
         libraryViewModel.prepareForSessionClose()
     }
@@ -695,7 +695,6 @@ final class LibrarySession: LibrarySessionLifecycle {
     func close() async {
         guard !isClosed else { return }
         operationCoordinator.stopAcceptingNewOperations()
-        mutationCoordinator.stopAcceptingNewMutations()
         await libraryChangeMonitor?.stopAndWait()
         await operationCoordinator.cancelAndWait()
         await fileImportService.quiesce()
@@ -704,6 +703,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         referencedSourceReconciler?.close()
         await importEnrichmentService.close()
         await libraryService.quiesceAndWaitForBackgroundWrites()
+        mutationCoordinator.stopAcceptingNewMutations()
         await mutationCoordinator.waitForDrain()
         isClosed = true
         libraryViewModel.prepareForSessionClose()
