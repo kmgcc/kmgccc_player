@@ -755,6 +755,25 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         playlistItemAddedAtMap[playlist.id] = dates
     }
 
+    func replacePlaylistTracks(
+        _ tracks: [Track],
+        in playlist: Playlist,
+        itemAddedAt: [UUID: Date]
+    ) async throws {
+        let trackIDs = Set(tracks.map(\.id))
+        let dates = itemAddedAt.filter { trackIDs.contains($0.key) }
+        try libraryService.writePlaylistSidecar(
+            playlistID: playlist.id,
+            name: playlist.name,
+            description: playlist.userDescription,
+            createdAt: playlist.createdAt,
+            trackIDs: tracks.map(\.id),
+            itemAddedAt: dates
+        )
+        playlist.tracks = tracks
+        playlistItemAddedAtMap[playlist.id] = dates
+    }
+
     // MARK: - Statistics & Runtime Sections
 
     func totalTrackCount() async -> Int {

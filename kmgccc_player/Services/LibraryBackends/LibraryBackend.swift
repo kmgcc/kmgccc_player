@@ -51,8 +51,8 @@ protocol LibraryStorageBackend: AnyObject {
         sourceIDs: Set<UUID>,
         playlistID: UUID
     ) async throws
-    func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async
-    func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async
+    func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async throws
+    func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async throws
     /// Removes single-file sources created during the last `prepareInputs`
     /// batch whose file did not produce an imported or reused track (for
     /// example corrupt audio). Sources referenced by an imported track's
@@ -76,8 +76,8 @@ extension LibraryStorageBackend {
         sourceIDs _: Set<UUID>,
         playlistID _: UUID
     ) async throws {}
-    func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async {}
-    func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async {}
+    func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async throws {}
+    func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async throws {}
 
     func pruneUnimportedFileSources(importedURLs _: Set<String>, importedSourceIDs _: Set<UUID>) async {}
 }

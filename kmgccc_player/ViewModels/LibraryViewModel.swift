@@ -476,8 +476,8 @@ final class LibraryViewModel {
     var currentTrackIDProvider: (() -> UUID?)?
     var onTracksDeleted: ((Set<UUID>) -> Void)?
     var onPlaylistDeleted: ((UUID) async -> Void)?
-    var onManualPlaylistAddition: ((UUID, [UUID]) async -> Void)?
-    var onManualPlaylistRemoval: ((UUID, [UUID]) async -> Void)?
+    var onManualPlaylistAddition: ((UUID, [UUID]) async throws -> Void)?
+    var onManualPlaylistRemoval: ((UUID, [UUID]) async throws -> Void)?
     /// Session-owned import gate. It is installed by `LibrarySession` so
     /// toolbar, window-drop, and sidebar imports are quiesced together with
     /// scans and other library operations.
@@ -1460,8 +1460,28 @@ final class LibraryViewModel {
         playlist: Playlist
     ) async throws {
         let previousTrackCount = playlist.trackCount
+        let previousTracks = playlist.tracks
+        let previousItemAddedAt = playlistItemAddedAtMap[playlist.id] ?? [:]
         try await repository.addTracks(tracks, to: playlist)
-        await onManualPlaylistAddition?(playlist.id, tracks.map(\.id))
+        do {
+            try await onManualPlaylistAddition?(playlist.id, tracks.map(\.id))
+        } catch {
+            let membershipError = error
+            do {
+                try await repository.replacePlaylistTracks(
+                    previousTracks,
+                    in: playlist,
+                    itemAddedAt: previousItemAddedAt
+                )
+            } catch {
+                Log.error(
+                    "[LibraryVM] failed to roll back playlist after membership addition failure: \(error)",
+                    category: .library
+                )
+                throw error
+            }
+            throw membershipError
+        }
         playlists = await repository.fetchPlaylists()
         playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
         await refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
@@ -1484,8 +1504,30 @@ final class LibraryViewModel {
         _ tracks: [Track],
         playlist: Playlist
     ) async throws {
-        try await repository.removeTracks(tracks, from: playlist)
-        await onManualPlaylistRemoval?(playlist.id, tracks.map(\.id))
+        let previousTracks = playlist.tracks
+        let previousItemAddedAt = playlistItemAddedAtMap[playlist.id] ?? [:]
+        let previousTrackIDs = Set(previousTracks.map(\.id))
+        let removedTracks = tracks.filter { previousTrackIDs.contains($0.id) }
+        try await repository.removeTracks(removedTracks, from: playlist)
+        do {
+            try await onManualPlaylistRemoval?(playlist.id, removedTracks.map(\.id))
+        } catch {
+            let membershipError = error
+            do {
+                try await repository.replacePlaylistTracks(
+                    previousTracks,
+                    in: playlist,
+                    itemAddedAt: previousItemAddedAt
+                )
+            } catch {
+                Log.error(
+                    "[LibraryVM] failed to roll back playlist after membership removal failure: \(error)",
+                    category: .library
+                )
+                throw error
+            }
+            throw membershipError
+        }
         playlists = await repository.fetchPlaylists()
         playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
         await invalidateDetailSelectionCachesIfNeeded(

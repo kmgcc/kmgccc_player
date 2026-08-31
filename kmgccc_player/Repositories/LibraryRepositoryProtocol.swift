@@ -135,6 +135,14 @@ protocol LibraryRepositoryProtocol: AnyObject {
     /// Remove tracks from a playlist.
     func removeTracks(_ tracks: [Track], from playlist: Playlist) async throws
 
+    /// Restores an exact playlist snapshot after a related sidecar commit
+    /// fails. Both ordering and original item timestamps are authoritative.
+    func replacePlaylistTracks(
+        _ tracks: [Track],
+        in playlist: Playlist,
+        itemAddedAt: [UUID: Date]
+    ) async throws
+
     // MARK: - Statistics
 
     /// Get total track count in library.

@@ -243,6 +243,14 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         playlist.tracks.removeAll { trackIds.contains($0.id) }
     }
 
+    func replacePlaylistTracks(
+        _ tracks: [Track],
+        in playlist: Playlist,
+        itemAddedAt _: [UUID: Date]
+    ) async throws {
+        playlist.tracks = tracks
+    }
+
     // MARK: - Statistics
 
     func totalTrackCount() async -> Int {

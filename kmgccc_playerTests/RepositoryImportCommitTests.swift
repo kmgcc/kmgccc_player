@@ -160,6 +160,40 @@ final class RepositoryImportCommitTests: XCTestCase {
         XCTAssertTrue(persisted.items.isEmpty)
     }
 
+    func testPlaylistSnapshotReplacementRestoresOrderAndOriginalDates() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.cleanup() }
+        let repository = fixture.makeRepository(importWriter: { _, _ in true })
+        let playlist = try await repository.createPlaylist(name: "Rollback")
+        let first = makeTrack(title: "First", root: fixture.paths.rootURL)
+        let second = makeTrack(title: "Second", root: fixture.paths.rootURL)
+        try await repository.addTracks([first, second], to: playlist)
+        let originalDateMap = await repository.fetchPlaylistItemAddedAtMap()
+        let originalDates = try XCTUnwrap(originalDateMap[playlist.id])
+
+        try await repository.removeTracks([first], from: playlist)
+        try await repository.replacePlaylistTracks(
+            [first, second],
+            in: playlist,
+            itemAddedAt: originalDates
+        )
+
+        XCTAssertEqual(playlist.tracks.map(\.id), [first.id, second.id])
+        let restoredDateMap = await repository.fetchPlaylistItemAddedAtMap()
+        XCTAssertEqual(restoredDateMap[playlist.id], originalDates)
+        let persisted = try XCTUnwrap(
+            fixture.libraryService.loadPlaylistSidecar(playlistID: playlist.id)
+        )
+        XCTAssertEqual(persisted.items.map(\.trackID), [first.id, second.id])
+        for item in persisted.items {
+            XCTAssertEqual(
+                item.addedAt.timeIntervalSince1970,
+                try XCTUnwrap(originalDates[item.trackID]).timeIntervalSince1970,
+                accuracy: 1
+            )
+        }
+    }
+
     func testPlaylistDeleteFailureKeepsRuntimeAndDiskSnapshotUnchanged() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.cleanup() }

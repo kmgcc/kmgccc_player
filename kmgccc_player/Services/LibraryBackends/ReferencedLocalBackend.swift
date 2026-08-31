@@ -348,36 +348,22 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         }
     }
 
-    func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async {
-        do {
-            try await playlistMembershipStore.recordManualAddition(
-                playlistID: playlistID,
-                trackIDs: trackIDs
-            )
-        } catch {
-            Log.warning(
-                "[ReferencedLocalBackend] failed to persist manual playlist addition: \(error)",
-                category: .library
-            )
-        }
+    func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async throws {
+        try await playlistMembershipStore.recordManualAddition(
+            playlistID: playlistID,
+            trackIDs: trackIDs
+        )
     }
 
-    func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async {
-        do {
-            let bindingIDs = try await sourceStore.allBindings()
-                .filter { $0.binding.playlistID == playlistID }
-                .map { $0.binding.id }
-            try await playlistMembershipStore.recordManualRemoval(
-                playlistID: playlistID,
-                trackIDs: trackIDs,
-                bindingIDs: bindingIDs
-            )
-        } catch {
-            Log.warning(
-                "[ReferencedLocalBackend] failed to persist manual playlist removal: \(error)",
-                category: .library
-            )
-        }
+    func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async throws {
+        let bindingIDs = try await sourceStore.allBindings()
+            .filter { $0.binding.playlistID == playlistID }
+            .map { $0.binding.id }
+        try await playlistMembershipStore.recordManualRemoval(
+            playlistID: playlistID,
+            trackIDs: trackIDs,
+            bindingIDs: bindingIDs
+        )
     }
 
     func finishImportBatch() {

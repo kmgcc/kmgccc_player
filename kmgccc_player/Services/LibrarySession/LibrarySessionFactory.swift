@@ -350,13 +350,13 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         )
         libraryViewModel.setImportService(fileImportService)
         libraryViewModel.onManualPlaylistAddition = { playlistID, trackIDs in
-            await storageBackend.recordManualPlaylistAddition(
+            try await storageBackend.recordManualPlaylistAddition(
                 playlistID: playlistID,
                 trackIDs: trackIDs
             )
         }
         libraryViewModel.onManualPlaylistRemoval = { playlistID, trackIDs in
-            await storageBackend.recordManualPlaylistRemoval(
+            try await storageBackend.recordManualPlaylistRemoval(
                 playlistID: playlistID,
                 trackIDs: trackIDs
             )
