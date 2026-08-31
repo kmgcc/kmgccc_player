@@ -57,6 +57,7 @@ private func isImportCancellationRequested(
 @MainActor
 final class ImportImmediateEnrichmentEngine {
     private let repository: LibraryRepositoryProtocol
+    private let mutationCoordinator: LibraryMutationCoordinator?
     private let qqMusicCoverService: QQMusicCoverService
     private let artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator
     private let lyricsSearchCoordinator: LyricsSearchCoordinator
@@ -64,12 +65,14 @@ final class ImportImmediateEnrichmentEngine {
 
     init(
         repository: LibraryRepositoryProtocol,
+        mutationCoordinator: LibraryMutationCoordinator? = nil,
         qqMusicCoverService: QQMusicCoverService,
         artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator,
         lyricsSearchCoordinator: LyricsSearchCoordinator,
         amllDBService: AMLLDBService
     ) {
         self.repository = repository
+        self.mutationCoordinator = mutationCoordinator
         self.qqMusicCoverService = qqMusicCoverService
         self.artistArtworkProviderCoordinator = artistArtworkProviderCoordinator
         self.lyricsSearchCoordinator = lyricsSearchCoordinator
@@ -313,8 +316,9 @@ final class ImportImmediateEnrichmentEngine {
         let entry = await latestArtistEntry(canonical: canonical, displayName: artist)
         let result = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: entry)
         guard result.changed else { return false }
-        await repository.updateArtistEntry(result.value)
-        return true
+        return await commitMetadataEntry(id: result.value.id) {
+            await self.repository.updateArtistEntry(result.value)
+        }
     }
 
     private func applyArtistArtworkData(_ data: Data, artist: String) async -> Bool {
@@ -325,8 +329,9 @@ final class ImportImmediateEnrichmentEngine {
         entry.artworkData = data
         entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
-        await repository.updateArtistEntry(entry)
-        return true
+        return await commitMetadataEntry(id: entry.id) {
+            await self.repository.updateArtistEntry(entry)
+        }
     }
 
     private func applyAlbumMetadataDetail(
@@ -338,8 +343,9 @@ final class ImportImmediateEnrichmentEngine {
         let entry = await latestAlbumEntry(album: album, artist: artist)
         let result = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: entry)
         guard result.changed else { return false }
-        await repository.updateAlbumEntry(result.value)
-        return true
+        return await commitMetadataEntry(id: result.value.id) {
+            await self.repository.updateAlbumEntry(result.value)
+        }
     }
 
     private func applyAlbumArtworkData(_ data: Data, album: String, artist: String) async -> Bool {
@@ -349,8 +355,34 @@ final class ImportImmediateEnrichmentEngine {
         entry.artworkData = data
         entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
-        await repository.updateAlbumEntry(entry)
-        return true
+        return await commitMetadataEntry(id: entry.id) {
+            await self.repository.updateAlbumEntry(entry)
+        }
+    }
+
+    private func commitMetadataEntry(
+        id: UUID,
+        _ work: @escaping @MainActor () async -> Void
+    ) async -> Bool {
+        do {
+            if let mutationCoordinator {
+                return try await mutationCoordinator.run(
+                    kind: .enrichmentCommit,
+                    targetIDs: [id.uuidString]
+                ) {
+                    await work()
+                    return true
+                }
+            }
+            await work()
+            return true
+        } catch {
+            Log.error(
+                "[ImportImmediateEnrichment] metadata entry commit rejected: \(error)",
+                category: .import
+            )
+            return false
+        }
     }
 
     private func latestArtistEntry(canonical: String, displayName: String) async -> ArtistEntry {

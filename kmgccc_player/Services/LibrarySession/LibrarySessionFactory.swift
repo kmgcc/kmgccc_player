@@ -79,7 +79,8 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         let preferenceStatsService = PreferenceStatsService()
         let libraryService = LocalLibraryService(
             paths: context.paths,
-            preferenceStatsService: preferenceStatsService
+            preferenceStatsService: preferenceStatsService,
+            mutationCoordinator: mutationCoordinator
         )
         let sourceStore: ReferencedSourceStore?
         let sourceScope: ReferencedSourceScope?

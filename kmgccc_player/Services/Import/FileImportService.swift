@@ -182,6 +182,7 @@ final class FileImportService: FileImportServiceProtocol {
         self.sessionGeneration = sessionGeneration
         self.immediateEnrichmentEngine = ImportImmediateEnrichmentEngine(
             repository: repository,
+            mutationCoordinator: mutationCoordinator,
             qqMusicCoverService: qqMusicCoverService,
             artistArtworkProviderCoordinator: artistArtworkProviderCoordinator,
             lyricsSearchCoordinator: lyricsSearchCoordinator,

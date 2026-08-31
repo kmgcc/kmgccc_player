@@ -143,15 +143,21 @@ struct PersistedPlaylistArtworkRecord {
 final class LocalLibraryService {
     nonisolated let paths: LibraryPaths
     private let preferenceStatsService: PreferenceStatsService
+    private let mutationCoordinator: LibraryMutationCoordinator?
     private let fileManager = FileManager.default
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
     private var acceptsBackgroundWrites = true
     private var backgroundWriteTasks: [UUID: Task<Void, Never>] = [:]
 
-    init(paths: LibraryPaths, preferenceStatsService: PreferenceStatsService) {
+    init(
+        paths: LibraryPaths,
+        preferenceStatsService: PreferenceStatsService,
+        mutationCoordinator: LibraryMutationCoordinator? = nil
+    ) {
         self.paths = paths
         self.preferenceStatsService = preferenceStatsService
+        self.mutationCoordinator = mutationCoordinator
         encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -291,19 +297,38 @@ final class LocalLibraryService {
         let capturedPaths = paths
         let taskID = UUID()
 
-        let persistenceTask = Task.detached(priority: .utility) { @Sendable in
-            _ = autoreleasepool {
-                LocalLibraryService.persistTrackSnapshotOnBackground(
-                    snapshot,
-                    paths: capturedPaths,
-                    mode: .metaOnly,
-                    reason: reason
-                )
-            }
-        }
+        let mutationCoordinator = mutationCoordinator
         let trackingTask = Task { @MainActor [weak self] in
-            _ = await persistenceTask.value
-            self?.backgroundWriteTasks.removeValue(forKey: taskID)
+            defer { self?.backgroundWriteTasks.removeValue(forKey: taskID) }
+            let persist: @Sendable () async -> TrackPersistenceWriteResult = {
+                await Task.detached(priority: .utility) { @Sendable in
+                    autoreleasepool {
+                        LocalLibraryService.persistTrackSnapshotOnBackground(
+                            snapshot,
+                            paths: capturedPaths,
+                            mode: .metaOnly,
+                            reason: reason
+                        )
+                    }
+                }.value
+            }
+            if let mutationCoordinator {
+                do {
+                    _ = try await mutationCoordinator.run(
+                        kind: .userLibraryMutation,
+                        targetIDs: [snapshot.id.uuidString]
+                    ) {
+                        _ = await persist()
+                    }
+                } catch {
+                    Log.error(
+                        "[Library] background metadata mutation rejected: \(error)",
+                        category: .library
+                    )
+                }
+            } else {
+                _ = await persist()
+            }
         }
         backgroundWriteTasks[taskID] = trackingTask
     }
