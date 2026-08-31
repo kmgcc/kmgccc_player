@@ -138,11 +138,18 @@ struct ImportRollbackService {
         }
 
         if !tracksToDelete.isEmpty {
-            await repository.deleteTracks(tracksToDelete)
-            Log.info(
-                "[ImportRollback] repository rollback reason=\(reason) tracks=\(tracksToDelete.count)",
-                category: .import
-            )
+            do {
+                try await repository.deleteTracks(tracksToDelete)
+                Log.info(
+                    "[ImportRollback] repository rollback reason=\(reason) tracks=\(tracksToDelete.count)",
+                    category: .import
+                )
+            } catch {
+                Log.error(
+                    "[ImportRollback] repository rollback failed reason=\(reason) tracks=\(tracksToDelete.count): \(error.localizedDescription)",
+                    category: .import
+                )
+            }
         }
 
         let fileTrackIDs = createdTrackIDs

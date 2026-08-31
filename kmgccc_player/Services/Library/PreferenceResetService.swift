@@ -55,6 +55,17 @@ struct MusicPreferenceResetResult: Sendable {
     let failures: [MusicPreferenceResetFailure]
     let updatedTrackIDs: [UUID]
     let didClearPlaybackHistory: Bool
+
+    static func empty(totalCount: Int) -> Self {
+        Self(
+            totalCount: totalCount,
+            successCount: 0,
+            failureCount: 0,
+            failures: [],
+            updatedTrackIDs: [],
+            didClearPlaybackHistory: false
+        )
+    }
 }
 
 private struct PreferenceResetTrackSnapshot: Sendable {

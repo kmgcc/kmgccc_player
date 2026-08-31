@@ -8,6 +8,25 @@ nonisolated enum LibraryMutationKind: String, Codable, Sendable, CaseIterable {
     case settingsUpdate
     case maintenance
     case automation
+
+    var defaultStepIDs: [String] {
+        switch self {
+        case .importCommit:
+            return ["tracks", "sources", "membership", "index", "finalize"]
+        case .sourceReconcileCommit:
+            return ["authority", "sidecars", "membership", "manifest", "finalize"]
+        case .userLibraryMutation:
+            return ["authority", "sidecars", "index", "finalize"]
+        case .enrichmentCommit:
+            return ["metadata", "index", "finalize"]
+        case .settingsUpdate:
+            return ["settings", "finalize"]
+        case .maintenance:
+            return ["maintenance", "finalize"]
+        case .automation:
+            return ["automation", "finalize"]
+        }
+    }
 }
 
 nonisolated enum LibraryMutationJournalState: String, Codable, Sendable {
@@ -18,8 +37,29 @@ nonisolated enum LibraryMutationJournalState: String, Codable, Sendable {
     case recovered
 }
 
+nonisolated enum LibraryMutationStepState: String, Codable, Sendable {
+    case pending
+    case completed
+    case failed
+    case recovered
+}
+
+nonisolated struct LibraryMutationStep: Codable, Equatable, Sendable, Identifiable {
+    let id: String
+    var state: LibraryMutationStepState
+    var updatedAt: Date
+    var resultSummary: String?
+
+    init(id: String, state: LibraryMutationStepState = .pending, updatedAt: Date = Date()) {
+        self.id = id
+        self.state = state
+        self.updatedAt = updatedAt
+        resultSummary = nil
+    }
+}
+
 nonisolated struct LibraryMutationIntent: Codable, Equatable, Identifiable, Sendable {
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
 
     let schemaVersion: Int
     let id: UUID
@@ -27,6 +67,7 @@ nonisolated struct LibraryMutationIntent: Codable, Equatable, Identifiable, Send
     let sessionGeneration: UInt64
     let kind: LibraryMutationKind
     let targetIDs: [String]
+    var steps: [LibraryMutationStep]
     let createdAt: Date
     var updatedAt: Date
     var state: LibraryMutationJournalState
@@ -39,6 +80,7 @@ nonisolated struct LibraryMutationIntent: Codable, Equatable, Identifiable, Send
         sessionGeneration: UInt64,
         kind: LibraryMutationKind,
         targetIDs: [String] = [],
+        stepIDs: [String] = [],
         createdAt: Date = Date()
     ) {
         schemaVersion = Self.currentSchemaVersion
@@ -47,9 +89,53 @@ nonisolated struct LibraryMutationIntent: Codable, Equatable, Identifiable, Send
         self.sessionGeneration = sessionGeneration
         self.kind = kind
         self.targetIDs = Array(Set(targetIDs)).sorted()
+        let normalizedStepIDs = Array(Set(stepIDs)).sorted()
+        steps = normalizedStepIDs.map { LibraryMutationStep(id: $0, updatedAt: createdAt) }
         self.createdAt = createdAt
         updatedAt = createdAt
         state = .prepared
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case id
+        case libraryID
+        case sessionGeneration
+        case kind
+        case targetIDs
+        case steps
+        case createdAt
+        case updatedAt
+        case state
+        case failureSummary
+        case recoverySummary
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        id = try container.decode(UUID.self, forKey: .id)
+        libraryID = try container.decode(UUID.self, forKey: .libraryID)
+        sessionGeneration = try container.decode(UInt64.self, forKey: .sessionGeneration)
+        kind = try container.decode(LibraryMutationKind.self, forKey: .kind)
+        targetIDs = Array(Set(try container.decode([String].self, forKey: .targetIDs))).sorted()
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        let decodedSteps = try container.decodeIfPresent([LibraryMutationStep].self, forKey: .steps)
+        if let decodedSteps, !decodedSteps.isEmpty {
+            steps = decodedSteps
+        } else {
+            let defaultStepIDs = kind.defaultStepIDs
+            var defaultSteps: [LibraryMutationStep] = []
+            defaultSteps.reserveCapacity(defaultStepIDs.count)
+            for stepID in defaultStepIDs {
+                defaultSteps.append(LibraryMutationStep(id: stepID, updatedAt: createdAt))
+            }
+            steps = defaultSteps
+        }
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        state = try container.decode(LibraryMutationJournalState.self, forKey: .state)
+        failureSummary = try container.decodeIfPresent(String.self, forKey: .failureSummary)
+        recoverySummary = try container.decodeIfPresent(String.self, forKey: .recoverySummary)
     }
 }
 
@@ -58,6 +144,7 @@ nonisolated enum LibraryMutationJournalError: Error, Equatable, LocalizedError, 
     case libraryIdentityMismatch(expected: UUID, actual: UUID)
     case missingIntent(UUID)
     case invalidTransition(from: LibraryMutationJournalState, to: LibraryMutationJournalState)
+    case invalidStep(String)
 
     var errorDescription: String? {
         switch self {
@@ -69,6 +156,8 @@ nonisolated enum LibraryMutationJournalError: Error, Equatable, LocalizedError, 
             return "资料库事务日志不存在：\(id)"
         case .invalidTransition(let from, let to):
             return "非法的资料库事务状态转换：\(from.rawValue) → \(to.rawValue)"
+        case .invalidStep(let id):
+            return "资料库事务步骤不存在或尚未进入提交阶段：\(id)"
         }
     }
 }
@@ -108,14 +197,16 @@ actor LibraryMutationJournal {
     func prepare(
         kind: LibraryMutationKind,
         sessionGeneration: UInt64,
-        targetIDs: [String] = []
+        targetIDs: [String] = [],
+        stepIDs: [String] = []
     ) throws -> LibraryMutationIntent {
         try prepareDirectories()
         let intent = LibraryMutationIntent(
             libraryID: libraryID,
             sessionGeneration: sessionGeneration,
             kind: kind,
-            targetIDs: targetIDs
+            targetIDs: targetIDs,
+            stepIDs: stepIDs.isEmpty ? kind.defaultStepIDs : stepIDs
         )
         try persist(intent, to: pendingURL(for: intent.id))
         return intent
@@ -123,6 +214,27 @@ actor LibraryMutationJournal {
 
     func markCommitting(_ intent: LibraryMutationIntent) throws -> LibraryMutationIntent {
         try transition(intent, to: .committing)
+    }
+
+    func markStepCompleted(
+        _ intent: LibraryMutationIntent,
+        stepID: String,
+        summary: String? = nil
+    ) throws -> LibraryMutationIntent {
+        try updateStep(intent, stepID: stepID, state: .completed, summary: summary)
+    }
+
+    func markStepFailed(
+        _ intent: LibraryMutationIntent,
+        stepID: String,
+        error: any Error
+    ) throws -> LibraryMutationIntent {
+        try updateStep(
+            intent,
+            stepID: stepID,
+            state: .failed,
+            summary: String(String(describing: error).prefix(1_024))
+        )
     }
 
     func markFailed(
@@ -174,7 +286,12 @@ actor LibraryMutationJournal {
 
             intent.state = .recovered
             intent.updatedAt = Date()
-            intent.recoverySummary = "authoritative stores reloaded at next session open"
+            let pendingSteps = intent.steps
+                .filter { $0.state != .completed }
+                .map(\.id)
+            intent.recoverySummary = pendingSteps.isEmpty
+                ? "authoritative stores reloaded at next session open; no step completion was claimed"
+                : "authoritative stores reloaded at next session open; unresolved steps: \(pendingSteps.joined(separator: ","))"
             try persist(intent, to: completedURL(for: intent.id))
             try fileManager.removeItem(at: url)
             recovered.append(intent)
@@ -208,6 +325,25 @@ actor LibraryMutationJournal {
         return updated
     }
 
+    private func updateStep(
+        _ intent: LibraryMutationIntent,
+        stepID: String,
+        state: LibraryMutationStepState,
+        summary: String?
+    ) throws -> LibraryMutationIntent {
+        var updated = try loadPending(id: intent.id)
+        guard updated.state == .committing,
+              let index = updated.steps.firstIndex(where: { $0.id == stepID }) else {
+            throw LibraryMutationJournalError.invalidStep(stepID)
+        }
+        updated.steps[index].state = state
+        updated.steps[index].updatedAt = Date()
+        updated.steps[index].resultSummary = summary
+        updated.updatedAt = Date()
+        try persist(updated, to: pendingURL(for: updated.id))
+        return updated
+    }
+
     private func loadPending(id: UUID) throws -> LibraryMutationIntent {
         let url = pendingURL(for: id)
         guard fileManager.fileExists(atPath: url.path) else {
@@ -219,7 +355,7 @@ actor LibraryMutationJournal {
     }
 
     private func validate(_ intent: LibraryMutationIntent) throws {
-        guard intent.schemaVersion == LibraryMutationIntent.currentSchemaVersion else {
+        guard intent.schemaVersion == 1 || intent.schemaVersion == LibraryMutationIntent.currentSchemaVersion else {
             throw LibraryMutationJournalError.unsupportedSchema(intent.schemaVersion)
         }
         guard intent.libraryID == libraryID else {

@@ -162,7 +162,8 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             preferenceStatsService: preferenceStatsService,
             searchIndex: searchIndex,
             artworkDerivativeStore: cacheServices.artworkDerivativeStore,
-            playlistArtworkPipeline: cacheServices.playlistArtworkPipeline
+            playlistArtworkPipeline: cacheServices.playlistArtworkPipeline,
+            mutationCoordinator: mutationCoordinator
         )
         var playlistMembershipMigrationSucceeded = true
         let migrationValidationSnapshot: ReferencedDomainMigrationValidator.Snapshot?
@@ -350,21 +351,25 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
             sessionGeneration: context.generation
         )
         libraryViewModel.setImportService(fileImportService)
-        libraryViewModel.onManualPlaylistAddition = { playlistID, trackIDs in
-            try await storageBackend.recordManualPlaylistAddition(
+        libraryViewModel.onPlaylistDeletionCommit = { playlistID, commitPlaylist in
+            try await storageBackend.commitPlaylistDeletion(
                 playlistID: playlistID,
-                trackIDs: trackIDs
+                commitPlaylist: commitPlaylist
             )
         }
-        libraryViewModel.onManualPlaylistRemoval = { playlistID, trackIDs in
-            try await storageBackend.recordManualPlaylistRemoval(
+        libraryViewModel.onManualPlaylistAdditionCommit = { playlistID, trackIDs, commitPlaylist in
+            try await storageBackend.commitManualPlaylistAddition(
                 playlistID: playlistID,
-                trackIDs: trackIDs
+                trackIDs: trackIDs,
+                commitPlaylist: commitPlaylist
             )
         }
-        libraryViewModel.onPlaylistDeleted = { playlistID in
-            try? await sourceStore?.removeBindings(for: playlistID)
-            try? await playlistMembershipStore?.removePlaylist(playlistID: playlistID)
+        libraryViewModel.onManualPlaylistRemovalCommit = { playlistID, trackIDs, commitPlaylist in
+            try await storageBackend.commitManualPlaylistRemoval(
+                playlistID: playlistID,
+                trackIDs: trackIDs,
+                commitPlaylist: commitPlaylist
+            )
         }
         if let sourceScope, let ignoredItemsStore, let ncmRegistry {
             let deletionService = ReferencedTrackDeletionService(

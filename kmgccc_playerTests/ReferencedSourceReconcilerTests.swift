@@ -271,7 +271,7 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         let preparation = await deletion.prepareForAuthorityDeletion([imported])
         XCTAssertEqual(preparation.approvedTrackIDs, Set([imported.id]))
         XCTAssertTrue(preparation.failures.isEmpty)
-        await fixture.repository.deleteTracks([imported])
+        try await fixture.repository.deleteTracks([imported])
         let isIgnoredAfterDeletion = try await fixture.ignoredItemsStore.contains(originalFingerprint)
         XCTAssertTrue(isIgnoredAfterDeletion)
 

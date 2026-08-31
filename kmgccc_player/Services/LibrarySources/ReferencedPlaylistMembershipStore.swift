@@ -77,6 +77,31 @@ actor ReferencedPlaylistMembershipStore {
         return memberships
     }
 
+    /// Captures the complete membership projection so a cross-store playlist
+    /// commit can restore it if the playlist sidecar write fails.
+    func snapshot() throws -> [ReferencedPlaylistMembership] {
+        try ensureLoaded()
+        return memberships
+    }
+
+    /// Restores a previously captured projection and persists it atomically.
+    /// This is intentionally explicit: callers use it only as compensation
+    /// for a failed transaction, never as a second source of truth.
+    func restore(_ snapshot: [ReferencedPlaylistMembership]) throws {
+        try ensureLoaded()
+        let originalMemberships = memberships
+        let originalIndex = membershipIndex
+        memberships = normalize(snapshot)
+        rebuildMembershipIndex()
+        do {
+            try persist()
+        } catch {
+            memberships = originalMemberships
+            membershipIndex = originalIndex
+            throw error
+        }
+    }
+
     /// Converts the legacy playlist sidecar projection into durable source
     /// edges. The caller supplies only IDs and source membership decisions so
     /// this actor never crosses a SwiftData object graph boundary.

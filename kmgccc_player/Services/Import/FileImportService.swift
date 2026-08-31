@@ -196,7 +196,6 @@ final class FileImportService: FileImportServiceProtocol {
             storageBackend: storageBackend,
             paths: libraryService.paths,
             referencedNCMConversionService: referencedNCMConversionService,
-            ignoredItemsStore: ignoredItemsStore,
             operationCoordinator: operationCoordinator,
             ncmConversionPipeline: self.ncmConversionPipeline
         )
@@ -608,6 +607,10 @@ final class FileImportService: FileImportServiceProtocol {
         // The backend captures panel/drag scopes before this suspension returns.
         let inputPlan = await storageBackend.prepareInputs(selectedURLs)
         defer { storageBackend.finishImportBatch() }
+        await prepareManualRetryIfNeeded(
+            inputPlan: inputPlan,
+            isManualSelection: isManualSelection
+        )
         operationCoordinator.recordCheckpoint("输入规划完成")
 
         let libraryTracks = await repository.fetchTracks(in: nil)
@@ -1096,6 +1099,32 @@ final class FileImportService: FileImportServiceProtocol {
         return persistedTracks + reusedTracks
     }
 
+    /// Manual selection is an explicit request to retry items previously
+    /// ignored by automatic source scans. Keep that durable state transition
+    /// in the import orchestrator (the preflight boundary), rather than
+    /// hiding a write inside the otherwise read-only planner.
+    private func prepareManualRetryIfNeeded(
+        inputPlan: ImportInputPlan,
+        isManualSelection: Bool
+    ) async {
+        guard isManualSelection, let ignoredItemsStore else { return }
+        let fingerprints = inputPlan.files.compactMap(\.fingerprint)
+        do {
+            try await ignoredItemsStore.remove(matching: fingerprints)
+            if let referencedNCMConversionService {
+                for file in inputPlan.files where file.url.pathExtension.lowercased() == "ncm" {
+                    let related = try await referencedNCMConversionService.allowManualRetry(file)
+                    try await ignoredItemsStore.remove(matching: related)
+                }
+            }
+        } catch {
+            Log.error(
+                "[Import] failed to clear ignored item before manual import: \(error.localizedDescription)",
+                category: .import
+            )
+        }
+    }
+
     /// Playlist membership and referenced-source bindings are one final
     /// commit point. Nothing in planning calls this method, so duplicate
     /// dialogs, cancellation and failed imports leave the playlist untouched.
@@ -1136,8 +1165,10 @@ final class FileImportService: FileImportServiceProtocol {
         to playlist: Playlist?
     ) async throws {
         var originalLocators: [(track: Track, locator: TrackMediaLocator)] = []
-        var playlistAdditions: [Track] = []
         do {
+            // Source descriptors created during prepareInputs are provisional;
+            // persist them only once the import reaches its final commit.
+            try await storageBackend.commitPreparedSources()
             for trackID in referencedReuseLocators.keys.sorted(by: { $0.uuidString < $1.uuidString }) {
                 guard let incoming = referencedReuseLocators[trackID],
                       let track = await repository.fetchTracks(ids: [trackID]).first else {
@@ -1150,30 +1181,17 @@ final class FileImportService: FileImportServiceProtocol {
             guard let playlist else { return }
             var seenTrackIDs = Set<UUID>()
             let uniqueTracks = tracks.filter { seenTrackIDs.insert($0.id).inserted }
-            let originalPlaylistTrackIDs = Set(playlist.tracks.map(\.id))
-            let proposedPlaylistAdditions = uniqueTracks.filter {
-                !originalPlaylistTrackIDs.contains($0.id)
-            }
-            if !uniqueTracks.isEmpty {
-                try await repository.addTracks(uniqueTracks, to: playlist)
-            }
-            playlistAdditions = proposedPlaylistAdditions
             try await storageBackend.commitPlaylistImportSourceEffects(
                 tracks: uniqueTracks,
                 sourceIDs: sourceIDs,
-                playlistID: playlist.id
+                playlistID: playlist.id,
+                commitPlaylist: {
+                    guard !uniqueTracks.isEmpty else { return }
+                    try await self.repository.addTracks(uniqueTracks, to: playlist)
+                }
             )
         } catch {
-            if let playlist, !playlistAdditions.isEmpty {
-                do {
-                    try await repository.removeTracks(playlistAdditions, from: playlist)
-                } catch {
-                    Log.error(
-                        "[Import] failed to roll back playlist additions after source-effect failure: \(error)",
-                        category: .library
-                    )
-                }
-            }
+            await storageBackend.rollbackPreparedSources()
             for original in originalLocators.reversed() {
                 original.track.mediaLocator = original.locator
                 await repository.persistTrackMetaOnly(

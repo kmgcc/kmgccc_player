@@ -317,7 +317,7 @@ final class ImportImmediateEnrichmentEngine {
         let result = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: entry)
         guard result.changed else { return false }
         return await commitMetadataEntry(id: result.value.id) {
-            await self.repository.updateArtistEntry(result.value)
+            try await self.repository.updateArtistEntry(result.value)
         }
     }
 
@@ -330,7 +330,7 @@ final class ImportImmediateEnrichmentEngine {
         entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
         return await commitMetadataEntry(id: entry.id) {
-            await self.repository.updateArtistEntry(entry)
+            try await self.repository.updateArtistEntry(entry)
         }
     }
 
@@ -344,7 +344,7 @@ final class ImportImmediateEnrichmentEngine {
         let result = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: entry)
         guard result.changed else { return false }
         return await commitMetadataEntry(id: result.value.id) {
-            await self.repository.updateAlbumEntry(result.value)
+            try await self.repository.updateAlbumEntry(result.value)
         }
     }
 
@@ -356,13 +356,13 @@ final class ImportImmediateEnrichmentEngine {
         entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
         return await commitMetadataEntry(id: entry.id) {
-            await self.repository.updateAlbumEntry(entry)
+            try await self.repository.updateAlbumEntry(entry)
         }
     }
 
     private func commitMetadataEntry(
         id: UUID,
-        _ work: @escaping @MainActor () async -> Void
+        _ work: @escaping @MainActor () async throws -> Void
     ) async -> Bool {
         do {
             if let mutationCoordinator {
@@ -370,11 +370,11 @@ final class ImportImmediateEnrichmentEngine {
                     kind: .enrichmentCommit,
                     targetIDs: [id.uuidString]
                 ) {
-                    await work()
+                    try await work()
                     return true
                 }
             }
-            await work()
+            try await work()
             return true
         } catch {
             Log.error(

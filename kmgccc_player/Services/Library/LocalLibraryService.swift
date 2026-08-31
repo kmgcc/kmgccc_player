@@ -22,6 +22,55 @@ nonisolated enum LibraryPlaylistPersistenceError: Error, Equatable, LocalizedErr
         }
     }
 }
+
+nonisolated enum LibraryMetadataPersistenceError: Error, Equatable, LocalizedError, Sendable {
+    case writeArtistFailed(artistID: UUID, reason: String)
+    case writeAlbumFailed(albumID: UUID, reason: String)
+    case deleteArtistFailed(artistID: UUID, reason: String)
+    case deleteAlbumFailed(albumID: UUID, reason: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .writeArtistFailed(let id, let reason):
+            return "艺人资料 \(id) 无法写入磁盘：\(reason)"
+        case .writeAlbumFailed(let id, let reason):
+            return "专辑资料 \(id) 无法写入磁盘：\(reason)"
+        case .deleteArtistFailed(let id, let reason):
+            return "艺人资料 \(id) 无法从磁盘删除：\(reason)"
+        case .deleteAlbumFailed(let id, let reason):
+            return "专辑资料 \(id) 无法从磁盘删除：\(reason)"
+        }
+    }
+}
+
+nonisolated enum LibraryTrackDeletionError: Error, Equatable, LocalizedError, Sendable {
+    case playlistPersistenceFailed(playlistID: UUID, reason: String)
+    case cleanupIncomplete(
+        trackFolderIDs: [UUID],
+        artistEntryIDs: [UUID],
+        albumEntryIDs: [UUID]
+    )
+
+    var errorDescription: String? {
+        switch self {
+        case .playlistPersistenceFailed(let id, let reason):
+            return "删除歌曲时无法保存歌单 \(id)：\(reason)"
+        case .cleanupIncomplete(let tracks, let artists, let albums):
+            return "删除已提交，但仍有清理残留（歌曲文件夹 \(tracks.count) 个，艺人 \(artists.count) 个，专辑 \(albums.count) 个）。"
+        }
+    }
+}
+
+nonisolated enum LibraryBackgroundPersistenceError: Error, Equatable, LocalizedError, Sendable {
+    case failed(trackID: UUID, reason: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .failed(let trackID, let reason):
+            return "歌曲 \(trackID) 的后台资料写入失败（\(reason)）"
+        }
+    }
+}
 import ImageIO
 
 nonisolated struct TrackPersistenceReferences: Sendable {
@@ -318,7 +367,13 @@ final class LocalLibraryService {
                         kind: .userLibraryMutation,
                         targetIDs: [snapshot.id.uuidString]
                     ) {
-                        _ = await persist()
+                        let result = await persist()
+                        guard result.succeeded else {
+                            throw LibraryBackgroundPersistenceError.failed(
+                                trackID: snapshot.id,
+                                reason: reason
+                            )
+                        }
                     }
                 } catch {
                     Log.error(
@@ -327,7 +382,13 @@ final class LocalLibraryService {
                     )
                 }
             } else {
-                _ = await persist()
+                let result = await persist()
+                if !result.succeeded {
+                    Log.error(
+                        "[Library] background metadata write failed for \(snapshot.id) (\(reason))",
+                        category: .library
+                    )
+                }
             }
         }
         backgroundWriteTasks[taskID] = trackingTask
@@ -1152,24 +1213,48 @@ final class LocalLibraryService {
 
     @discardableResult
     nonisolated func deleteTrackFolder(trackID: UUID) -> Bool {
+        do {
+            try deleteTrackFolderOrThrow(trackID: trackID)
+            return true
+        } catch {
+            Log.error(
+                "Failed to delete track folder \(trackID): \(error.localizedDescription)",
+                category: .library
+            )
+            return false
+        }
+    }
+
+    /// Deletes a managed track folder and reports a failure even when the
+    /// anti-resurrection meta fallback succeeds. Callers that are committing a
+    /// user deletion must surface the residue instead of treating it as a
+    /// successful cleanup.
+    nonisolated func deleteTrackFolderOrThrow(trackID: UUID) throws {
         let fileManager = FileManager.default
         let folder = paths.trackFolderURL(for: trackID)
-        guard fileManager.fileExists(atPath: folder.path) else { return true }
+        guard fileManager.fileExists(atPath: folder.path) else { return }
 
         do {
             try fileManager.removeItem(at: folder)
-            return true
         } catch {
             // Fallback: remove meta.json so a later full rescan cannot resurrect the deleted track.
             let metaURL = folder.appendingPathComponent("meta.json")
             if fileManager.fileExists(atPath: metaURL.path) {
-                try? fileManager.removeItem(at: metaURL)
+                do {
+                    try fileManager.removeItem(at: metaURL)
+                } catch {
+                    throw LibraryTrackDeletionError.cleanupIncomplete(
+                        trackFolderIDs: [trackID],
+                        artistEntryIDs: [],
+                        albumEntryIDs: []
+                    )
+                }
             }
-            Log.error(
-                "Failed to delete track folder \(folder.lastPathComponent): \(error)",
-                category: .library
+            throw LibraryTrackDeletionError.cleanupIncomplete(
+                trackFolderIDs: [trackID],
+                artistEntryIDs: [],
+                albumEntryIDs: []
             )
-            return false
         }
     }
 
@@ -1798,7 +1883,7 @@ final class LocalLibraryService {
         }
     }
 
-    func writeArtistSidecar(_ sidecar: ArtistSidecar, artworkData: Data?) {
+    func writeArtistSidecar(_ sidecar: ArtistSidecar, artworkData: Data?) throws {
         let folder = paths.artistFolderURL(for: sidecar.id)
         do {
             try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -1810,11 +1895,14 @@ final class LocalLibraryService {
                 try artworkData.write(to: artworkURL, options: .atomic)
             }
         } catch {
-            Log.error("Failed to write artist sidecar '\(sidecar.displayName)': \(error)", category: .library)
+            throw LibraryMetadataPersistenceError.writeArtistFailed(
+                artistID: sidecar.id,
+                reason: error.localizedDescription
+            )
         }
     }
 
-    func writeAlbumSidecar(_ sidecar: AlbumSidecar, artworkData: Data?) {
+    func writeAlbumSidecar(_ sidecar: AlbumSidecar, artworkData: Data?) throws {
         let folder = paths.albumFolderURL(for: sidecar.id)
         do {
             try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -1836,22 +1924,39 @@ final class LocalLibraryService {
                 try artworkData.write(to: artworkURL, options: .atomic)
             }
         } catch {
-            Log.error("Failed to write album sidecar '\(sidecar.displayTitle)': \(error)", category: .library)
+            throw LibraryMetadataPersistenceError.writeAlbumFailed(
+                albumID: sidecar.id,
+                reason: error.localizedDescription
+            )
         }
     }
 
-    nonisolated func deleteArtistEntry(id: UUID) {
+    nonisolated func deleteArtistEntry(id: UUID) throws {
         let fileManager = FileManager.default
         let folder = paths.artistFolderURL(for: id)
         guard fileManager.fileExists(atPath: folder.path) else { return }
-        try? fileManager.removeItem(at: folder)
+        do {
+            try fileManager.removeItem(at: folder)
+        } catch {
+            throw LibraryMetadataPersistenceError.deleteArtistFailed(
+                artistID: id,
+                reason: error.localizedDescription
+            )
+        }
     }
 
-    nonisolated func deleteAlbumEntry(id: UUID) {
+    nonisolated func deleteAlbumEntry(id: UUID) throws {
         let fileManager = FileManager.default
         let folder = paths.albumFolderURL(for: id)
         guard fileManager.fileExists(atPath: folder.path) else { return }
-        try? fileManager.removeItem(at: folder)
+        do {
+            try fileManager.removeItem(at: folder)
+        } catch {
+            throw LibraryMetadataPersistenceError.deleteAlbumFailed(
+                albumID: id,
+                reason: error.localizedDescription
+            )
+        }
     }
 
     // MARK: - Bootstrap / Sync

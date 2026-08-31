@@ -60,10 +60,10 @@ protocol LibraryRepositoryProtocol: AnyObject {
     func addPlaylist(_ playlist: Playlist) async
 
     /// Delete a track from the library.
-    func deleteTrack(_ track: Track) async
+    func deleteTrack(_ track: Track) async throws
 
     /// Delete multiple tracks from the library in one pass.
-    func deleteTracks(_ tracks: [Track]) async
+    func deleteTracks(_ tracks: [Track]) async throws
 
     /// Persist track sidecar metadata only, preserving existing artwork/lyrics file references.
     func persistTrackMetaOnly(_ track: Track, reason: String) async
@@ -178,12 +178,12 @@ protocol LibraryRepositoryProtocol: AnyObject {
 
     func fetchArtistEntries() async -> [ArtistEntry]
     func fetchAlbumEntries() async -> [AlbumEntry]
-    func updateArtistEntry(_ entry: ArtistEntry) async
-    func updateAlbumEntry(_ entry: AlbumEntry) async
-    func applyArtistEdits(original: ArtistEntry, updated: ArtistEntry) async
-    func applyAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async
-    func deleteArtist(_ entry: ArtistEntry) async
-    func deleteAlbum(_ entry: AlbumEntry) async
+    func updateArtistEntry(_ entry: ArtistEntry) async throws
+    func updateAlbumEntry(_ entry: AlbumEntry) async throws
+    func applyArtistEdits(original: ArtistEntry, updated: ArtistEntry) async throws
+    func applyAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async throws
+    func deleteArtist(_ entry: ArtistEntry) async throws
+    func deleteAlbum(_ entry: AlbumEntry) async throws
 
     // MARK: - Playlist Description
 

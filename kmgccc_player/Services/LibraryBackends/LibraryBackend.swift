@@ -49,10 +49,30 @@ protocol LibraryStorageBackend: AnyObject {
     func commitPlaylistImportSourceEffects(
         tracks: [Track],
         sourceIDs: Set<UUID>,
-        playlistID: UUID
+        playlistID: UUID,
+        commitPlaylist: @MainActor () async throws -> Void
     ) async throws
-    func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async throws
-    func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async throws
+    /// Persists source descriptors created by the current input plan. Input
+    /// planning remains read-only; this is the first durable source write and
+    /// runs inside the same short mutation as the playlist commit.
+    func commitPreparedSources() async throws
+    /// Compensates source descriptors committed by the current import when a
+    /// later playlist or membership step fails. Existing sources are untouched.
+    func rollbackPreparedSources() async
+    func commitManualPlaylistAddition(
+        playlistID: UUID,
+        trackIDs: [UUID],
+        commitPlaylist: @MainActor () async throws -> Void
+    ) async throws
+    func commitManualPlaylistRemoval(
+        playlistID: UUID,
+        trackIDs: [UUID],
+        commitPlaylist: @MainActor () async throws -> Void
+    ) async throws
+    func commitPlaylistDeletion(
+        playlistID: UUID,
+        commitPlaylist: @MainActor () async throws -> Void
+    ) async throws
     /// Removes single-file sources created during the last `prepareInputs`
     /// batch whose file did not produce an imported or reused track (for
     /// example corrupt audio). Sources referenced by an imported track's
@@ -74,10 +94,25 @@ extension LibraryStorageBackend {
     func commitPlaylistImportSourceEffects(
         tracks _: [Track],
         sourceIDs _: Set<UUID>,
-        playlistID _: UUID
-    ) async throws {}
-    func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async throws {}
-    func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async throws {}
+        playlistID _: UUID,
+        commitPlaylist: @MainActor () async throws -> Void
+    ) async throws { try await commitPlaylist() }
+    func commitPreparedSources() async throws {}
+    func rollbackPreparedSources() async {}
+    func commitManualPlaylistAddition(
+        playlistID _: UUID,
+        trackIDs _: [UUID],
+        commitPlaylist: @MainActor () async throws -> Void
+    ) async throws { try await commitPlaylist() }
+    func commitManualPlaylistRemoval(
+        playlistID _: UUID,
+        trackIDs _: [UUID],
+        commitPlaylist: @MainActor () async throws -> Void
+    ) async throws { try await commitPlaylist() }
+    func commitPlaylistDeletion(
+        playlistID _: UUID,
+        commitPlaylist: @MainActor () async throws -> Void
+    ) async throws { try await commitPlaylist() }
 
     func pruneUnimportedFileSources(importedURLs _: Set<String>, importedSourceIDs _: Set<UUID>) async {}
 }

@@ -19,6 +19,10 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
     /// File sources created during the latest `prepareInputs` batch. Pruned
     /// when their file does not survive the import pipeline.
     private var batchCreatedFileSources: [(id: UUID, path: String)] = []
+    /// New source descriptors stay provisional until the import reaches its
+    /// final commit point. This keeps cancelled or failed planning read-only.
+    private var batchPendingSources: [UUID: ReferencedSourceDescriptor] = [:]
+    private var batchCommittedSourceIDs: Set<UUID> = []
 
     init(
         paths: LibraryPaths,
@@ -39,6 +43,8 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
 
     func prepareInputs(_ selectedURLs: [URL]) async -> ImportInputPlan {
         batchCreatedFileSources = []
+        batchPendingSources = [:]
+        batchCommittedSourceIDs = []
         var sourceIDs: [URL: UUID] = [:]
         var sources: [ImportSourceSelection] = []
         var failures: [ImportInputFailure] = []
@@ -168,7 +174,7 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
                     lastKnownPath: selected.path,
                     displayName: selected.lastPathComponent
                 )
-                try await sourceStore.save(descriptor)
+                batchPendingSources[id] = descriptor
                 existingByCanonicalPath[canonical] = descriptor
                 if isDirectory {
                     directoryRootPaths.append(canonical)
@@ -200,6 +206,59 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         )
         lastPreparedInputPlan = plan
         return plan
+    }
+
+    func commitPreparedSources() async throws {
+        guard !batchPendingSources.isEmpty else { return }
+        let pending = batchPendingSources.values.sorted { $0.id.uuidString < $1.id.uuidString }
+        var committed: [UUID] = []
+        do {
+            for descriptor in pending {
+                try await sourceStore.save(descriptor)
+                committed.append(descriptor.id)
+            }
+            batchCommittedSourceIDs.formUnion(committed)
+            batchPendingSources.removeAll()
+        } catch {
+            for sourceID in committed {
+                do {
+                    try await sourceStore.remove(id: sourceID)
+                } catch {
+                    Log.error(
+                        "[ReferencedBackend] failed to roll back partially committed source \(sourceID): \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
+            }
+            for descriptor in pending {
+                sourceScope.remove(sourceID: descriptor.id)
+            }
+            batchCreatedFileSources.removeAll { entry in
+                pending.contains { $0.id == entry.id }
+            }
+            throw error
+        }
+    }
+
+    func rollbackPreparedSources() async {
+        let committed = batchCommittedSourceIDs
+        batchCommittedSourceIDs.removeAll()
+        for sourceID in committed.sorted(by: { $0.uuidString < $1.uuidString }) {
+            do {
+                try await sourceStore.remove(id: sourceID)
+            } catch {
+                Log.error(
+                    "[ReferencedBackend] failed to roll back source \(sourceID): \(error.localizedDescription)",
+                    category: .library
+                )
+            }
+            sourceScope.remove(sourceID: sourceID)
+        }
+        for descriptor in batchPendingSources.values {
+            sourceScope.remove(sourceID: descriptor.id)
+        }
+        batchPendingSources.removeAll()
+        batchCreatedFileSources.removeAll()
     }
 
     private func canonicalPath(_ url: URL) -> String {
@@ -312,8 +371,10 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
     func commitPlaylistImportSourceEffects(
         tracks: [Track],
         sourceIDs: Set<UUID>,
-        playlistID: UUID
+        playlistID: UUID,
+        commitPlaylist: @MainActor () async throws -> Void
     ) async throws {
+        let membershipSnapshot = try await playlistMembershipStore.snapshot()
         let bindingTransaction = try await ensureSourcePlaylistBindings(
             sourceIDs,
             playlistID: playlistID
@@ -330,7 +391,16 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
                 }
             }
             try await playlistMembershipStore.recordSourceContributions(entries)
+            try await commitPlaylist()
         } catch {
+            do {
+                try await playlistMembershipStore.restore(membershipSnapshot)
+            } catch {
+                Log.error(
+                    "[ReferencedBackend] failed to restore memberships after import commit failure: \(error.localizedDescription)",
+                    category: .library
+                )
+            }
             for created in bindingTransaction.createdBindings.reversed() {
                 do {
                     try await sourceStore.removePlaylistBinding(
@@ -348,6 +418,35 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         }
     }
 
+    func commitManualPlaylistAddition(
+        playlistID: UUID,
+        trackIDs: [UUID],
+        commitPlaylist: @MainActor () async throws -> Void
+    ) async throws {
+        let snapshot = try await playlistMembershipStore.snapshot()
+        do {
+            try await playlistMembershipStore.recordManualAddition(
+                playlistID: playlistID,
+                trackIDs: trackIDs
+            )
+            try await commitPlaylist()
+        } catch {
+            do {
+                try await playlistMembershipStore.restore(snapshot)
+            } catch {
+                Log.error(
+                    "[ReferencedBackend] failed to restore memberships after manual addition failure: \(error.localizedDescription)",
+                    category: .library
+                )
+            }
+            throw error
+        }
+    }
+
+    /// Compatibility entry point for callers from the pre-transaction API.
+    /// New code must use commitManualPlaylistAddition so playlist and
+    /// membership sidecars share one compensation boundary.
+    @available(*, deprecated, message: "Use commitManualPlaylistAddition(playlistID:trackIDs:commitPlaylist:)")
     func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async throws {
         try await playlistMembershipStore.recordManualAddition(
             playlistID: playlistID,
@@ -355,6 +454,37 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         )
     }
 
+    func commitManualPlaylistRemoval(
+        playlistID: UUID,
+        trackIDs: [UUID],
+        commitPlaylist: @MainActor () async throws -> Void
+    ) async throws {
+        let bindingIDs = try await sourceStore.allBindings()
+            .filter { $0.binding.playlistID == playlistID }
+            .map { $0.binding.id }
+        let snapshot = try await playlistMembershipStore.snapshot()
+        do {
+            try await playlistMembershipStore.recordManualRemoval(
+                playlistID: playlistID,
+                trackIDs: trackIDs,
+                bindingIDs: bindingIDs
+            )
+            try await commitPlaylist()
+        } catch {
+            do {
+                try await playlistMembershipStore.restore(snapshot)
+            } catch {
+                Log.error(
+                    "[ReferencedBackend] failed to restore memberships after manual removal failure: \(error.localizedDescription)",
+                    category: .library
+                )
+            }
+            throw error
+        }
+    }
+
+    /// Compatibility entry point for callers from the pre-transaction API.
+    @available(*, deprecated, message: "Use commitManualPlaylistRemoval(playlistID:trackIDs:commitPlaylist:)")
     func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async throws {
         let bindingIDs = try await sourceStore.allBindings()
             .filter { $0.binding.playlistID == playlistID }
@@ -366,7 +496,58 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
         )
     }
 
+    func commitPlaylistDeletion(
+        playlistID: UUID,
+        commitPlaylist: @MainActor () async throws -> Void
+    ) async throws {
+        // Both projections can recreate a deleted playlist during the next
+        // source scan, so take their durable snapshots before removing either
+        // one. The playlist sidecar is the final commit step; if it fails the
+        // source graph is restored before the error reaches the UI.
+        let membershipSnapshot = try await playlistMembershipStore.snapshot()
+        let sourceSnapshots = try await sourceStore.loadAll().filter { descriptor in
+            descriptor.playlistBindings.contains { $0.playlistID == playlistID }
+        }
+        do {
+            try await playlistMembershipStore.removePlaylist(playlistID: playlistID)
+            try await sourceStore.removeBindings(for: playlistID)
+            try await commitPlaylist()
+        } catch {
+            do {
+                try await playlistMembershipStore.restore(membershipSnapshot)
+            } catch {
+                Log.error(
+                    "[ReferencedBackend] failed to restore playlist memberships after deletion failure: \(error.localizedDescription)",
+                    category: .library
+                )
+            }
+            for descriptor in sourceSnapshots {
+                do {
+                    try await sourceStore.save(descriptor)
+                } catch {
+                    Log.error(
+                        "[ReferencedBackend] failed to restore source bindings after playlist deletion failure source=\(descriptor.id.uuidString): \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
+            }
+            throw error
+        }
+    }
+
     func finishImportBatch() {
+        // Provisional descriptors never reached the durable commit point.
+        // Remove only their in-memory authorization roots; committed sources
+        // remain active for the monitor and are released at session close.
+        for descriptor in batchPendingSources.values {
+            sourceScope.remove(sourceID: descriptor.id)
+        }
+        batchPendingSources.removeAll()
+        batchCommittedSourceIDs.removeAll()
+        // Keep the created-file ledger until FileImportService performs its
+        // post-import prune. That callback runs after performImport's defer
+        // releases this batch; clearing it here would leave corrupt/unsupported
+        // single-file selections as durable orphan sources.
         let leases = selectionLeases.values
         selectionLeases.removeAll()
         for lease in leases { lease.release() }
@@ -374,6 +555,7 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
 
     func close() async {
         finishImportBatch()
+        batchCreatedFileSources.removeAll()
         sourceScope.close()
     }
 }

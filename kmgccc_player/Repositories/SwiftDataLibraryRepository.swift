@@ -66,6 +66,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     private let paths: LibraryPaths
     private let fileManager = FileManager.default
     private let indexContext: ModelContext?
+    private let mutationCoordinator: LibraryMutationCoordinator?
     private var changeHandler: LibraryRepositoryChangeHandler?
 
     private var allTracks: [Track] = []
@@ -93,6 +94,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         searchIndex: LibrarySearchIndex? = nil,
         artworkDerivativeStore: ArtworkDerivativeCacheStore? = nil,
         playlistArtworkPipeline: PlaylistArtworkPipeline? = nil,
+        mutationCoordinator: LibraryMutationCoordinator? = nil,
         importSidecarWriter: ((Track, String) -> Bool)? = nil,
         locatorSidecarWriter: ((Track, TrackMediaLocator, TrackAvailability, String) -> Bool)? = nil
     ) {
@@ -109,6 +111,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         self.playlistArtworkPipeline = playlistArtworkPipeline ?? PlaylistArtworkPipeline(
             derivativeStore: resolvedDerivativeStore
         )
+        self.mutationCoordinator = mutationCoordinator
         self.importSidecarWriter = importSidecarWriter ?? { track, reason in
             libraryService.writeImportedTrackSidecar(for: track, reason: reason)
         }
@@ -185,16 +188,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
         scheduleSearchIndexRebuild(reason: "repositoryReload")
-        let (artists, albums) = metadataSync.sync(
-            derivedArtists: runtimeArtists,
-            derivedAlbums: runtimeAlbums,
-            allTracks: allTracks,
+        await applyMetadataSync(
             artistSidecars: snapshot.artistSidecars,
             albumSidecars: snapshot.albumSidecars,
-            libraryService: libraryService
+            reason: "repositoryReload"
         )
-        artistEntries = artists
-        albumEntries = albums
         await performLibraryMaintenanceAfterReload(reason: "repositoryReload")
     }
 
@@ -250,16 +248,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             let scanner = LibraryDiskScanner(paths: capturedPaths)
             return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
         }.value
-        let (artists, albums) = metadataSync.sync(
-            derivedArtists: runtimeArtists,
-            derivedAlbums: runtimeAlbums,
-            allTracks: allTracks,
+        await applyMetadataSync(
             artistSidecars: artistSidecars,
             albumSidecars: albumSidecars,
-            libraryService: libraryService
+            reason: "addTrack"
         )
-        artistEntries = artists
-        albumEntries = albums
     }
 
     func addTracks(_ tracks: [Track]) async {
@@ -273,16 +266,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             let scanner = LibraryDiskScanner(paths: capturedPaths)
             return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
         }.value
-        let (artists, albums) = metadataSync.sync(
-            derivedArtists: runtimeArtists,
-            derivedAlbums: runtimeAlbums,
-            allTracks: allTracks,
+        await applyMetadataSync(
             artistSidecars: artistSidecars,
             albumSidecars: albumSidecars,
-            libraryService: libraryService
+            reason: "addTracks"
         )
-        artistEntries = artists
-        albumEntries = albums
     }
 
     func commitImportedTracks(_ tracks: [Track]) async -> LibraryTrackPersistenceResult {
@@ -316,16 +304,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             let scanner = LibraryDiskScanner(paths: capturedPaths)
             return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
         }.value
-        let (artists, albums) = metadataSync.sync(
-            derivedArtists: runtimeArtists,
-            derivedAlbums: runtimeAlbums,
-            allTracks: allTracks,
+        await applyMetadataSync(
             artistSidecars: artistSidecars,
             albumSidecars: albumSidecars,
-            libraryService: libraryService
+            reason: "attachImportedTracks"
         )
-        artistEntries = artists
-        albumEntries = albums
     }
 
     func addPlaylist(_ playlist: Playlist) async {
@@ -337,11 +320,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         playlistItemAddedAtMap[playlist.id] = [:]
     }
 
-    func deleteTrack(_ track: Track) async {
-        await deleteTracks([track])
+    func deleteTrack(_ track: Track) async throws {
+        try await deleteTracks([track])
     }
 
-    func deleteTracks(_ tracks: [Track]) async {
+    func deleteTracks(_ tracks: [Track]) async throws {
         let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
             $0.id.uuidString < $1.id.uuidString
         }
@@ -349,7 +332,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             LibraryNormalization.artistCanonicalNames(for: $0)
         }.flatMap { $0 })
         let impactedAlbums = Set(uniqueTracks.map(\.albumGroupKey))
-        await deleteTracksAndMetadata(
+        try await deleteTracksAndMetadata(
             tracks: uniqueTracks,
             cleanupArtistCanonicalNames: impactedArtists,
             cleanupAlbumKeys: impactedAlbums,
@@ -448,16 +431,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             let scanner = LibraryDiskScanner(paths: capturedPaths)
             return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
         }.value
-        let (artists, albums) = metadataSync.sync(
-            derivedArtists: runtimeArtists,
-            derivedAlbums: runtimeAlbums,
-            allTracks: allTracks,
+        await applyMetadataSync(
             artistSidecars: artistSidecars,
             albumSidecars: albumSidecars,
-            libraryService: libraryService
+            reason: "refreshTracks"
         )
-        artistEntries = artists
-        albumEntries = albums
 
         let refreshedIDs = refreshedTracks.map(\.id.uuidString)
         Log.info(
@@ -810,7 +788,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         albumEntries
     }
 
-    func updateArtistEntry(_ entry: ArtistEntry) async {
+    func updateArtistEntry(_ entry: ArtistEntry) async throws {
         let canonicalName = entry.canonicalName
         let displayName = entry.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? LibraryNormalization.displayArtist(entry.displayName)
@@ -825,10 +803,10 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             displayName: displayName
         )
 
-        writeArtistEntryToDisk(entryToPersist)
+        try writeArtistEntryToDisk(entryToPersist)
 
         if let target {
-            libraryService.deleteArtistEntry(id: entry.id)
+            try libraryService.deleteArtistEntry(id: entry.id)
             artistEntries.removeAll { $0.id == entry.id }
             if let idx = artistEntries.firstIndex(where: { $0.id == target.id }) {
                 artistEntries[idx] = entryToPersist
@@ -842,7 +820,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
     }
 
-    func updateAlbumEntry(_ entry: AlbumEntry) async {
+    func updateAlbumEntry(_ entry: AlbumEntry) async throws {
         let target = albumEntries.first {
             $0.canonicalKey == entry.canonicalKey && $0.id != entry.id
         }
@@ -855,10 +833,10 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             primaryArtistDisplayName: entry.primaryArtistDisplayName
         )
 
-        writeAlbumEntryToDisk(entryToPersist)
+        try writeAlbumEntryToDisk(entryToPersist)
 
         if let target {
-            libraryService.deleteAlbumEntry(id: entry.id)
+            try libraryService.deleteAlbumEntry(id: entry.id)
             albumEntries.removeAll { $0.id == entry.id }
             if let idx = albumEntries.firstIndex(where: { $0.id == target.id }) {
                 albumEntries[idx] = entryToPersist
@@ -872,7 +850,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
     }
 
-    func applyArtistEdits(original: ArtistEntry, updated: ArtistEntry) async {
+    func applyArtistEdits(original: ArtistEntry, updated: ArtistEntry) async throws {
         let trimmedName = updated.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedName = trimmedName.isEmpty ? original.displayName : trimmedName
         let newCanonicalName = LibraryNormalization.normalizeArtist(resolvedName)
@@ -886,7 +864,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         finalEntry.updatedAt = Date()
 
         guard isRename else {
-            await updateArtistEntry(finalEntry)
+            try await updateArtistEntry(finalEntry)
             return
         }
 
@@ -899,9 +877,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             canonicalName: newCanonicalName,
             displayName: resolvedName
         )
-        writeArtistEntryToDisk(entryToPersist)
+        try writeArtistEntryToDisk(entryToPersist)
         if let targetArtist {
-            libraryService.deleteArtistEntry(id: original.id)
+            try libraryService.deleteArtistEntry(id: original.id)
             artistEntries.removeAll { $0.id == original.id }
             if let idx = artistEntries.firstIndex(where: { $0.id == targetArtist.id }) {
                 artistEntries[idx] = entryToPersist
@@ -932,9 +910,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
                 primaryArtistCanonicalName: newCanonicalName,
                 primaryArtistDisplayName: resolvedName
             )
-            writeAlbumEntryToDisk(albumToPersist)
+            try writeAlbumEntryToDisk(albumToPersist)
             if let targetAlbum {
-                libraryService.deleteAlbumEntry(id: album.id)
+                try libraryService.deleteAlbumEntry(id: album.id)
                 albumEntries.removeAll { $0.id == album.id }
                 if let idx = albumEntries.firstIndex(where: { $0.id == targetAlbum.id }) {
                     albumEntries[idx] = albumToPersist
@@ -965,7 +943,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         _ = await persistTrackMetaOnly(affectedTracks, reason: "artistRename")
     }
 
-    func applyAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async {
+    func applyAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async throws {
         let trimmedTitle = updated.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedTitle = trimmedTitle.isEmpty ? original.displayTitle : trimmedTitle
         let newCanonicalKey = LibraryNormalization.retitledAlbumKey(
@@ -984,7 +962,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         finalEntry.updatedAt = Date()
 
         guard isRename else {
-            await updateAlbumEntry(finalEntry)
+            try await updateAlbumEntry(finalEntry)
             return
         }
 
@@ -999,9 +977,9 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             primaryArtistCanonicalName: original.primaryArtistCanonicalName,
             primaryArtistDisplayName: original.primaryArtistDisplayName
         )
-        writeAlbumEntryToDisk(entryToPersist)
+        try writeAlbumEntryToDisk(entryToPersist)
         if let targetAlbum {
-            libraryService.deleteAlbumEntry(id: original.id)
+            try libraryService.deleteAlbumEntry(id: original.id)
             albumEntries.removeAll { $0.id == original.id }
             if let idx = albumEntries.firstIndex(where: { $0.id == targetAlbum.id }) {
                 albumEntries[idx] = entryToPersist
@@ -1019,14 +997,14 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         _ = await persistTrackMetaOnly(affectedTracks, reason: "albumRename")
     }
 
-    func deleteArtist(_ entry: ArtistEntry) async {
+    func deleteArtist(_ entry: ArtistEntry) async throws {
         let affectedTracks = allTracks.filter {
             LibraryNormalization.containsArtist(entry.canonicalName, in: $0)
         }
         let affectedAlbumKeys = Set(affectedTracks.map {
             $0.albumGroupKey
         })
-        await deleteTracksAndMetadata(
+        try await deleteTracksAndMetadata(
             tracks: affectedTracks,
             cleanupArtistCanonicalNames: [entry.canonicalName],
             cleanupAlbumKeys: affectedAlbumKeys,
@@ -1035,11 +1013,11 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         )
     }
 
-    func deleteAlbum(_ entry: AlbumEntry) async {
+    func deleteAlbum(_ entry: AlbumEntry) async throws {
         let affectedTracks = allTracks.filter {
             $0.albumGroupKey == entry.canonicalKey
         }
-        await deleteTracksAndMetadata(
+        try await deleteTracksAndMetadata(
             tracks: affectedTracks,
             cleanupArtistCanonicalNames: [entry.primaryArtistCanonicalName],
             cleanupAlbumKeys: [entry.canonicalKey],
@@ -1081,6 +1059,47 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
     }
 
     // MARK: - Private Helpers
+
+    private func applyMetadataSync(
+        artistSidecars: [(sidecar: ArtistSidecar, folderURL: URL)],
+        albumSidecars: [(sidecar: AlbumSidecar, folderURL: URL)],
+        reason: String
+    ) async {
+        let apply = { @MainActor [self] in
+            let (artists, albums) = try metadataSync.sync(
+                derivedArtists: runtimeArtists,
+                derivedAlbums: runtimeAlbums,
+                allTracks: allTracks,
+                artistSidecars: artistSidecars,
+                albumSidecars: albumSidecars,
+                libraryService: libraryService
+            )
+            artistEntries = artists
+            albumEntries = albums
+        }
+        do {
+            if let mutationCoordinator {
+                let targetIDs = artistSidecars.map { $0.sidecar.id.uuidString }
+                    + albumSidecars.map { $0.sidecar.id.uuidString }
+                try await mutationCoordinator.run(
+                    kind: .maintenance,
+                    targetIDs: targetIDs
+                ) {
+                    try apply()
+                }
+            } else {
+                try apply()
+            }
+        } catch {
+            // Keep the last coherent in-memory metadata projection. A failed
+            // sidecar write must not be presented as a successful edit or
+            // replace a known-good cache with a partial sync.
+            Log.error(
+                "[LibraryMetadataSync] \(reason) did not commit metadata sidecars: \(error.localizedDescription)",
+                category: .library
+            )
+        }
+    }
 
     private func uniqueTrackMetas(_ metas: [ScannedTrackMeta]) -> [ScannedTrackMeta] {
         var seen = Set<UUID>()
@@ -1297,17 +1316,29 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         )
 
         if !orphanReport.deletedArtistIDs.isEmpty {
-            let deletedIDs = Set(orphanReport.deletedArtistIDs)
-            artistEntries.removeAll { deletedIDs.contains($0.id) }
             for artistID in orphanReport.deletedArtistIDs {
-                libraryService.deleteArtistEntry(id: artistID)
+                do {
+                    try libraryService.deleteArtistEntry(id: artistID)
+                    artistEntries.removeAll { $0.id == artistID }
+                } catch {
+                    Log.error(
+                        "[LibraryMaintenance] failed to delete orphan artist \(artistID): \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
             }
         }
         if !orphanReport.deletedAlbumIDs.isEmpty {
-            let deletedIDs = Set(orphanReport.deletedAlbumIDs)
-            albumEntries.removeAll { deletedIDs.contains($0.id) }
             for albumID in orphanReport.deletedAlbumIDs {
-                libraryService.deleteAlbumEntry(id: albumID)
+                do {
+                    try libraryService.deleteAlbumEntry(id: albumID)
+                    albumEntries.removeAll { $0.id == albumID }
+                } catch {
+                    Log.error(
+                        "[LibraryMaintenance] failed to delete orphan album \(albumID): \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
             }
         }
 
@@ -1341,7 +1372,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         )
     }
 
-    private func writeArtistEntryToDisk(_ entry: ArtistEntry) {
+    private func writeArtistEntryToDisk(_ entry: ArtistEntry) throws {
         let sidecar = ArtistSidecar(
             id: entry.id,
             canonicalName: entry.canonicalName,
@@ -1358,10 +1389,10 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             createdAt: entry.createdAt,
             updatedAt: entry.updatedAt
         )
-        libraryService.writeArtistSidecar(sidecar, artworkData: entry.artworkData)
+        try libraryService.writeArtistSidecar(sidecar, artworkData: entry.artworkData)
     }
 
-    private func writeAlbumEntryToDisk(_ entry: AlbumEntry) {
+    private func writeAlbumEntryToDisk(_ entry: AlbumEntry) throws {
         let sidecar = AlbumSidecar(
             id: entry.id,
             canonicalKey: entry.canonicalKey,
@@ -1384,7 +1415,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             createdAt: entry.createdAt,
             updatedAt: entry.updatedAt
         )
-        libraryService.writeAlbumSidecar(
+        try libraryService.writeAlbumSidecar(
             sidecar,
             artworkData: entry.artworkFileName != nil ? entry.artworkData : nil
         )
@@ -1478,7 +1509,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         forcedArtistDeletionIDs: Set<UUID> = [],
         forcedAlbumDeletionIDs: Set<UUID> = [],
         reason: String
-    ) async {
+    ) async throws {
         let startedAt = ContinuousClock.now
         let memoryBefore = TrackDeletionMemorySnapshot.capture()
         let uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
@@ -1493,22 +1524,85 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         )
 
         var playlistSnapshots: [PlaylistPersistenceSnapshot] = []
+        var originalPlaylistSnapshots: [PlaylistPersistenceSnapshot] = []
         if !deletedTrackIDSet.isEmpty {
-            allTracks.removeAll { deletedTrackIDSet.contains($0.id) }
-
             for playlist in playlists {
                 let removedTrackIDs = playlist.tracks
                     .filter { deletedTrackIDSet.contains($0.id) }
                     .map(\.id)
                 guard !removedTrackIDs.isEmpty else { continue }
 
+                let original = playlistPersistenceSnapshot(for: playlist)
+                var dates = playlistItemAddedAtMap[playlist.id] ?? [:]
+                for trackID in removedTrackIDs {
+                    dates[trackID] = nil
+                }
+                let proposed = PlaylistPersistenceSnapshot(
+                    playlistID: playlist.id,
+                    name: playlist.name,
+                    description: playlist.userDescription,
+                    createdAt: playlist.createdAt,
+                    trackIDs: playlist.tracks
+                        .filter { !deletedTrackIDSet.contains($0.id) }
+                        .map(\.id),
+                    itemAddedAt: dates
+                )
+                originalPlaylistSnapshots.append(original)
+                playlistSnapshots.append(proposed)
+            }
+
+            var persistedPlaylistIDs: [UUID] = []
+            do {
+                for snapshot in playlistSnapshots {
+                    try libraryService.writePlaylistSidecar(
+                        playlistID: snapshot.playlistID,
+                        name: snapshot.name,
+                        description: snapshot.description,
+                        createdAt: snapshot.createdAt,
+                        trackIDs: snapshot.trackIDs,
+                        itemAddedAt: snapshot.itemAddedAt
+                    )
+                    persistedPlaylistIDs.append(snapshot.playlistID)
+                }
+            } catch {
+                // Restore every sidecar touched by this attempt. The original
+                // playlist objects have not been mutated yet, so a failed
+                // delete remains fully visible and retryable.
+                for original in originalPlaylistSnapshots {
+                    do {
+                        try libraryService.writePlaylistSidecar(
+                            playlistID: original.playlistID,
+                            name: original.name,
+                            description: original.description,
+                            createdAt: original.createdAt,
+                            trackIDs: original.trackIDs,
+                            itemAddedAt: original.itemAddedAt
+                        )
+                    } catch {
+                        Log.error(
+                            "[LibraryDelete] failed to restore playlist sidecar playlistID=\(original.playlistID): \(error.localizedDescription)",
+                            category: .library
+                        )
+                    }
+                }
+                throw LibraryTrackDeletionError.playlistPersistenceFailed(
+                    playlistID: persistedPlaylistIDs.last ?? playlistSnapshots.first?.playlistID ?? UUID(),
+                    reason: error.localizedDescription
+                )
+            }
+
+            allTracks.removeAll { deletedTrackIDSet.contains($0.id) }
+            for playlist in playlists {
+                let removedTrackIDs = playlist.tracks
+                    .filter { deletedTrackIDSet.contains($0.id) }
+                    .map(\.id)
+                guard !removedTrackIDs.isEmpty else { continue }
                 playlist.tracks.removeAll { deletedTrackIDSet.contains($0.id) }
                 var dates = playlistItemAddedAtMap[playlist.id] ?? [:]
                 for trackID in removedTrackIDs {
                     dates[trackID] = nil
                 }
                 playlistItemAddedAtMap[playlist.id] = dates
-                playlistSnapshots.append(playlistPersistenceSnapshot(for: playlist))
             }
 
             for track in uniqueTracks {
@@ -1520,6 +1614,8 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
 
         rebuildRuntimeDerivedState()
+        let originalArtistEntries = artistEntries
+        let originalAlbumEntries = albumEntries
         let metadataCleanup = reconcileMetadataEntriesAfterDeletion(
             impactedArtistCanonicalNames: cleanupArtistCanonicalNames,
             impactedAlbumKeys: cleanupAlbumKeys,
@@ -1558,9 +1654,76 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             + Double(elapsed.components.attoseconds) / 1_000_000_000_000_000
 
         Log.info(
-            "[LibraryDelete] reason=\(reason) complete tracks=\(deletedTrackIDs.count) totalMs=\(String(format: "%.1f", elapsedMs)) failedPlaylistWrites=\(cleanupFailures.playlistWrites) failedFolderDeletes=\(cleanupFailures.folderDeletes) memoryBeforeMB=\(memoryBefore.megabytesText) memoryAfterMainMB=\(afterMainMutation.megabytesText) memoryAfterCleanupMB=\(memoryAfterCleanup.megabytesText)",
+            "[LibraryDelete] reason=\(reason) complete tracks=\(deletedTrackIDs.count) totalMs=\(String(format: "%.1f", elapsedMs)) failedFolderDeletes=\(cleanupFailures.failedTrackFolderIDs.count) failedArtistDeletes=\(cleanupFailures.failedArtistIDs.count) failedAlbumDeletes=\(cleanupFailures.failedAlbumIDs.count) memoryBeforeMB=\(memoryBefore.megabytesText) memoryAfterMainMB=\(afterMainMutation.megabytesText) memoryAfterCleanupMB=\(memoryAfterCleanup.megabytesText)",
             category: .library
         )
+        if !cleanupFailures.failedTrackFolderIDs.isEmpty
+            || !cleanupFailures.failedArtistIDs.isEmpty
+            || !cleanupFailures.failedAlbumIDs.isEmpty {
+            // Keep failed metadata sidecar deletions visible as orphaned entries.
+            // The track commit is already durable, but retaining the entry makes
+            // the residue observable and retryable instead of silently dropping
+            // it from the in-memory projection until the next reload.
+            restoreFailedArtistEntries(
+                cleanupFailures.failedArtistIDs,
+                from: originalArtistEntries
+            )
+            restoreFailedAlbumEntries(
+                cleanupFailures.failedAlbumIDs,
+                from: originalAlbumEntries
+            )
+            throw LibraryTrackDeletionError.cleanupIncomplete(
+                trackFolderIDs: cleanupFailures.failedTrackFolderIDs,
+                artistEntryIDs: cleanupFailures.failedArtistIDs,
+                albumEntryIDs: cleanupFailures.failedAlbumIDs
+            )
+        }
+    }
+
+    private func restoreFailedArtistEntries(
+        _ failedIDs: [UUID],
+        from originalEntries: [ArtistEntry]
+    ) {
+        guard !failedIDs.isEmpty else { return }
+        for id in failedIDs {
+            guard var entry = originalEntries.first(where: { $0.id == id }) else { continue }
+            entry.trackCount = 0
+            entry.albumCount = 0
+            entry.totalDuration = 0
+            entry.isOrphaned = true
+            if let index = artistEntries.firstIndex(where: { $0.id == id }) {
+                artistEntries[index] = entry
+            } else {
+                artistEntries.append(entry)
+            }
+        }
+        artistEntries.sort {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+    }
+
+    private func restoreFailedAlbumEntries(
+        _ failedIDs: [UUID],
+        from originalEntries: [AlbumEntry]
+    ) {
+        guard !failedIDs.isEmpty else { return }
+        for id in failedIDs {
+            guard var entry = originalEntries.first(where: { $0.id == id }) else { continue }
+            entry.trackCount = 0
+            entry.totalDuration = 0
+            entry.isOrphaned = true
+            if entry.artworkFileName == nil {
+                entry.artworkData = nil
+            }
+            if let index = albumEntries.firstIndex(where: { $0.id == id }) {
+                albumEntries[index] = entry
+            } else {
+                albumEntries.append(entry)
+            }
+        }
+        albumEntries.sort {
+            $0.displayTitle.localizedCaseInsensitiveCompare($1.displayTitle) == .orderedAscending
+        }
     }
 
     private func playlistPersistenceSnapshot(for playlist: Playlist) -> PlaylistPersistenceSnapshot {
@@ -1712,54 +1875,64 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
 
     private func performBackgroundTrackDeletionCleanup(
         _ cleanupPlan: TrackDeletionCleanupPlan
-    ) async -> (playlistWrites: Int, folderDeletes: Int) {
+    ) async -> (
+        failedTrackFolderIDs: [UUID],
+        failedArtistIDs: [UUID],
+        failedAlbumIDs: [UUID]
+    ) {
         await withCheckedContinuation { continuation in
             let libraryService = self.libraryService
             DispatchQueue.global(qos: .utility).async {
-                var failedPlaylistWrites = 0
-                for snapshot in cleanupPlan.playlistSnapshots {
+                var failedTrackFolderIDs: [UUID] = []
+                for trackID in cleanupPlan.trackFolderIDs {
                     autoreleasepool {
                         do {
-                            try libraryService.writePlaylistSidecar(
-                                playlistID: snapshot.playlistID,
-                                name: snapshot.name,
-                                description: snapshot.description,
-                                createdAt: snapshot.createdAt,
-                                trackIDs: snapshot.trackIDs,
-                                itemAddedAt: snapshot.itemAddedAt
-                            )
+                            try libraryService.deleteTrackFolderOrThrow(trackID: trackID)
                         } catch {
-                            failedPlaylistWrites += 1
+                            failedTrackFolderIDs.append(trackID)
                             Log.error(
-                                "[LibraryDelete] failed playlist persistence playlistID=\(snapshot.playlistID): \(error)",
+                                "[LibraryDelete] failed to delete track folder trackID=\(trackID): \(error.localizedDescription)",
                                 category: .library
                             )
                         }
                     }
                 }
 
-                var failedFolderDeletes = 0
-                for trackID in cleanupPlan.trackFolderIDs {
-                    autoreleasepool {
-                        if !libraryService.deleteTrackFolder(trackID: trackID) {
-                            failedFolderDeletes += 1
-                        }
+                var failedArtistIDs: [UUID] = []
+                for artistID in cleanupPlan.artistEntryIDsToDelete {
+                    do {
+                        try libraryService.deleteArtistEntry(id: artistID)
+                    } catch {
+                        failedArtistIDs.append(artistID)
+                        Log.error(
+                            "[LibraryDelete] failed to delete artist sidecar artistID=\(artistID): \(error.localizedDescription)",
+                            category: .library
+                        )
                     }
                 }
 
-                for artistID in cleanupPlan.artistEntryIDsToDelete {
-                    libraryService.deleteArtistEntry(id: artistID)
-                }
-
+                var failedAlbumIDs: [UUID] = []
                 for albumID in cleanupPlan.albumEntryIDsToDelete {
-                    libraryService.deleteAlbumEntry(id: albumID)
+                    do {
+                        try libraryService.deleteAlbumEntry(id: albumID)
+                    } catch {
+                        failedAlbumIDs.append(albumID)
+                        Log.error(
+                            "[LibraryDelete] failed to delete album sidecar albumID=\(albumID): \(error.localizedDescription)",
+                            category: .library
+                        )
+                    }
                 }
 
                 Log.info(
-                    "[LibraryDelete] reason=\(cleanupPlan.reason) backgroundStageComplete tracks=\(cleanupPlan.deletedTrackIDs.count) failedPlaylistWrites=\(failedPlaylistWrites) failedFolderDeletes=\(failedFolderDeletes) onMainThread=\(Thread.isMainThread)",
+                    "[LibraryDelete] reason=\(cleanupPlan.reason) backgroundStageComplete tracks=\(cleanupPlan.deletedTrackIDs.count) failedFolderDeletes=\(failedTrackFolderIDs.count) failedArtistDeletes=\(failedArtistIDs.count) failedAlbumDeletes=\(failedAlbumIDs.count) onMainThread=\(Thread.isMainThread)",
                     category: .library
                 )
-                continuation.resume(returning: (failedPlaylistWrites, failedFolderDeletes))
+                continuation.resume(returning: (
+                    failedTrackFolderIDs: failedTrackFolderIDs,
+                    failedArtistIDs: failedArtistIDs,
+                    failedAlbumIDs: failedAlbumIDs
+                ))
             }
         }
     }

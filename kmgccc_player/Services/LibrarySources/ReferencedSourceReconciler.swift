@@ -146,8 +146,14 @@ final class ReferencedSourceReconciler {
     /// the playlist synchronized with the source rather than treating it as a
     /// one-time import snapshot.
     func createPlaylistsForSources(_ sourceIDs: [UUID]) async throws {
-        for sourceID in Set(sourceIDs).sorted(by: { $0.uuidString < $1.uuidString }) {
-            try await syncBoundPlaylists(sourceID: sourceID, createIfMissing: true)
+        let orderedSourceIDs = Set(sourceIDs).sorted { $0.uuidString < $1.uuidString }
+        try await runShortMutation(
+            kind: .sourceReconcileCommit,
+            targetIDs: orderedSourceIDs.map(\.uuidString)
+        ) {
+            for sourceID in orderedSourceIDs {
+                try await self.syncBoundPlaylists(sourceID: sourceID, createIfMissing: true)
+            }
         }
     }
 
@@ -155,12 +161,39 @@ final class ReferencedSourceReconciler {
     /// exists (for example the setup wizard's “selected files” grouping).
     /// Directory sources and single-file sources use the same edge model.
     func bindSourcesToPlaylist(_ sourceIDs: Set<UUID>, playlistID: UUID) async throws {
-        for sourceID in sourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
-            _ = try await sourceStore.ensurePlaylistBinding(
-                sourceID: sourceID,
-                playlistID: playlistID
-            )
-            _ = try await syncBoundPlaylists(sourceID: sourceID, createIfMissing: false)
+        let orderedSourceIDs = sourceIDs.sorted { $0.uuidString < $1.uuidString }
+        try await runShortMutation(
+            kind: .sourceReconcileCommit,
+            targetIDs: orderedSourceIDs.map(\.uuidString) + [playlistID.uuidString]
+        ) {
+            var createdBindings: [(sourceID: UUID, bindingID: UUID)] = []
+            do {
+                for sourceID in orderedSourceIDs {
+                    let ensured = try await self.sourceStore.ensurePlaylistBindingWithCreation(
+                        sourceID: sourceID,
+                        playlistID: playlistID
+                    )
+                    if ensured.didCreate {
+                        createdBindings.append((sourceID: sourceID, bindingID: ensured.binding.id))
+                    }
+                    _ = try await self.syncBoundPlaylists(sourceID: sourceID, createIfMissing: false)
+                }
+            } catch {
+                for created in createdBindings.reversed() {
+                    do {
+                        try await self.sourceStore.removePlaylistBinding(
+                            sourceID: created.sourceID,
+                            bindingID: created.bindingID
+                        )
+                    } catch {
+                        Log.error(
+                            "[ReferencedSource] failed to roll back binding \(created.bindingID): \(error.localizedDescription)",
+                            category: .library
+                        )
+                    }
+                }
+                throw error
+            }
         }
     }
 
@@ -170,6 +203,21 @@ final class ReferencedSourceReconciler {
     /// or an item contributed by another binding, remains visible.
     @discardableResult
     func unbindSourceFromPlaylist(sourceID: UUID, bindingID: UUID) async throws -> Int {
+        try await runShortMutation(
+            kind: .sourceReconcileCommit,
+            targetIDs: [sourceID.uuidString, bindingID.uuidString]
+        ) {
+            try await self.unbindSourceFromPlaylistUncoordinated(
+                sourceID: sourceID,
+                bindingID: bindingID
+            )
+        }
+    }
+
+    private func unbindSourceFromPlaylistUncoordinated(
+        sourceID: UUID,
+        bindingID: UUID
+    ) async throws -> Int {
         guard !isClosed, await sourceStore.contains(id: sourceID) else { return 0 }
 
         // Seed the durable membership sidecar before removing the edge. This
@@ -182,34 +230,63 @@ final class ReferencedSourceReconciler {
         }
 
         let playlist = (await repository.fetchPlaylists()).first { $0.id == binding.playlistID }
+        let membershipSnapshot = try await playlistMembershipStore.snapshot()
         let memberships = try await playlistMembershipStore.memberships(for: binding.playlistID)
         let tracksByID = Dictionary(
             uniqueKeysWithValues: await repository.fetchTracks(in: nil).map { ($0.id, $0) }
         )
+        let originalPlaylistTracks = playlist?.tracks
+        let originalPlaylistItemAddedAt = await repository.fetchPlaylistItemAddedAtMap()[binding.playlistID] ?? [:]
         let playlistTrackIDs = Set(playlist?.tracks.map(\.id) ?? [])
         var tracksToRemove: [Track] = []
 
-        for membership in memberships where membership.sourceBindingIDs.contains(bindingID) {
-            try await playlistMembershipStore.removeSourceContribution(
-                playlistID: binding.playlistID,
-                trackID: membership.trackID,
-                bindingID: bindingID
-            )
-            let remainsLive = try await playlistMembershipStore.membership(
-                playlistID: binding.playlistID,
-                trackID: membership.trackID
-            )?.isLive == true
-            if !remainsLive,
-               playlistTrackIDs.contains(membership.trackID),
-               let track = tracksByID[membership.trackID] {
-                tracksToRemove.append(track)
+        do {
+            for membership in memberships where membership.sourceBindingIDs.contains(bindingID) {
+                try await playlistMembershipStore.removeSourceContribution(
+                    playlistID: binding.playlistID,
+                    trackID: membership.trackID,
+                    bindingID: bindingID
+                )
+                let remainsLive = try await playlistMembershipStore.membership(
+                    playlistID: binding.playlistID,
+                    trackID: membership.trackID
+                )?.isLive == true
+                if !remainsLive,
+                   playlistTrackIDs.contains(membership.trackID),
+                   let track = tracksByID[membership.trackID] {
+                    tracksToRemove.append(track)
+                }
             }
-        }
 
-        if let playlist, !tracksToRemove.isEmpty {
-            try await repository.removeTracks(tracksToRemove, from: playlist)
+            if let playlist, !tracksToRemove.isEmpty {
+                try await repository.removeTracks(tracksToRemove, from: playlist)
+            }
+            try await sourceStore.removePlaylistBinding(sourceID: sourceID, bindingID: bindingID)
+        } catch {
+            do {
+                try await playlistMembershipStore.restore(membershipSnapshot)
+            } catch {
+                Log.error(
+                    "[ReferencedSource] failed to restore memberships after unbind failure: \(error.localizedDescription)",
+                    category: .library
+                )
+            }
+            if let playlist, let originalPlaylistTracks {
+                do {
+                    try await repository.replacePlaylistTracks(
+                        originalPlaylistTracks,
+                        in: playlist,
+                        itemAddedAt: originalPlaylistItemAddedAt
+                    )
+                } catch {
+                    Log.error(
+                        "[ReferencedSource] failed to restore playlist after unbind failure: \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
+            }
+            throw error
         }
-        try await sourceStore.removePlaylistBinding(sourceID: sourceID, bindingID: bindingID)
         return tracksToRemove.count
     }
 
@@ -233,12 +310,22 @@ final class ReferencedSourceReconciler {
     func refreshSource(_ sourceID: UUID) async throws -> [ReferencedSourceScopeIssue] {
         guard !isClosed, await sourceStore.contains(id: sourceID) else { return [] }
         let descriptor = try await sourceStore.load(id: sourceID)
-        let issues = await sourceScope.refresh(
-            descriptors: [descriptor],
-            store: sourceStore,
-            bookmarkResolver: bookmarkResolver,
-            requiresSecurityScope: requiresSecurityScope
-        )
+        // Reauthorization may update the source status/bookmark, so keep the
+        // durable part under the short mutation owner. The scan itself is a
+        // long operation and must not hold the mutation queue while reading a
+        // large folder or importing discovered files.
+        var issues: [ReferencedSourceScopeIssue] = []
+        try await runShortMutation(
+            kind: .sourceReconcileCommit,
+            targetIDs: [sourceID.uuidString]
+        ) {
+            issues = await self.sourceScope.refresh(
+                descriptors: [descriptor],
+                store: self.sourceStore,
+                bookmarkResolver: self.bookmarkResolver,
+                requiresSecurityScope: self.requiresSecurityScope
+            )
+        }
         _ = try await reconcile(sourceIDs: [sourceID])
         return issues
     }
@@ -253,11 +340,13 @@ final class ReferencedSourceReconciler {
         excluded: Bool
     ) async throws {
         guard !isClosed, await sourceStore.contains(id: sourceID) else { return }
-        _ = try await sourceStore.setExcludedRelativePath(
-            sourceID: sourceID,
-            relativePath: relativePath,
-            excluded: excluded
-        )
+        try await runShortMutation(kind: .sourceReconcileCommit, targetIDs: [sourceID.uuidString]) {
+            _ = try await self.sourceStore.setExcludedRelativePath(
+                sourceID: sourceID,
+                relativePath: relativePath,
+                excluded: excluded
+            )
+        }
         _ = try await reconcile(sourceIDs: [sourceID])
     }
 
@@ -271,11 +360,19 @@ final class ReferencedSourceReconciler {
     /// is stripped so the track settles as missing.
     @discardableResult
     func repairOrphanedFileSources() async throws -> Int {
+        // The identity scan and bookmark resolution can touch every track.
+        // Keep that long read outside the mutation queue; only each durable
+        // descriptor/authority commit below enters the short owner.
+        try await repairOrphanedFileSourcesUncoordinated()
+    }
+
+    private func repairOrphanedFileSourcesUncoordinated() async throws -> Int {
         guard !isClosed else { return 0 }
         let knownIDs = Set(try await sourceStore.loadAll().map(\.id))
         let tracks = await repository.fetchTracks(in: nil)
         var mutations: [ReferencedSourceLocatorMutation] = []
         var created = 0
+        var persistedSourceIDs = Set<UUID>()
         for track in tracks {
             guard case var .referenced(locator) = track.mediaLocator else { continue }
             let orphans = locator.allSourceMemberships.filter { !knownIDs.contains($0.sourceID) }
@@ -310,8 +407,15 @@ final class ReferencedSourceReconciler {
                     lastKnownPath: fileURL.path,
                     displayName: fileURL.lastPathComponent
                 )
-                try await sourceStore.save(descriptor)
-                created += 1
+                if persistedSourceIDs.insert(descriptor.id).inserted {
+                    try await runShortMutation(
+                        kind: .sourceReconcileCommit,
+                        targetIDs: [descriptor.id.uuidString]
+                    ) {
+                        try await self.sourceStore.save(descriptor)
+                    }
+                    created += 1
+                }
                 locator.refreshLocation(
                     for: orphan.sourceID,
                     fileBookmarkData: bookmark,
@@ -332,22 +436,36 @@ final class ReferencedSourceReconciler {
                 availability: locator.allSourceMemberships.isEmpty ? .missing : track.availability
             ))
         }
-        if !mutations.isEmpty {
-            _ = await repository.commitReferencedSourceMutations(mutations)
-            Log.warning(
-                "[ReferencedSource] repaired orphaned memberships tracks=\(mutations.count) recreatedSources=\(created)",
-                category: .library
-            )
-        }
+
         if created > 0 {
-            // Re-arm the scope so the recreated roots become authorized and
-            // eligible for monitoring before the next reconcile.
+            // Re-arm the scope before committing track locators. If a later
+            // sidecar write fails, the recreated descriptors are still
+            // reachable by the normal source scan and can converge on retry.
             let descriptors = try await sourceStore.loadAll()
             _ = await sourceScope.start(
                 descriptors: descriptors,
                 store: sourceStore,
                 bookmarkResolver: bookmarkResolver,
                 requiresSecurityScope: requiresSecurityScope
+            )
+        }
+        if !mutations.isEmpty {
+            let result = try await runShortMutation(
+                kind: .sourceReconcileCommit,
+                targetIDs: mutations.map { $0.trackID.uuidString }
+            ) {
+                await self.repository.commitReferencedSourceMutations(mutations)
+            }
+            guard result.failedTrackIDs.isEmpty else {
+                Log.error(
+                    "[ReferencedSource] orphan repair authority commit failed tracks=\(result.failedTrackIDs)",
+                    category: .library
+                )
+                throw ReferencedSourceReconcileError.authorityCommitFailed(result.failedTrackIDs)
+            }
+            Log.warning(
+                "[ReferencedSource] repaired orphaned memberships tracks=\(mutations.count) recreatedSources=\(created)",
+                category: .library
             )
         }
         return created
@@ -528,6 +646,21 @@ final class ReferencedSourceReconciler {
 
     func close() { isClosed = true }
 
+    private func runShortMutation<Value: Sendable>(
+        kind: LibraryMutationKind,
+        targetIDs: [String] = [],
+        _ work: @escaping @MainActor () async throws -> Value
+    ) async throws -> Value {
+        if let mutationCoordinator {
+            return try await mutationCoordinator.run(
+                kind: kind,
+                targetIDs: targetIDs,
+                work
+            )
+        }
+        return try await work()
+    }
+
     @discardableResult
     private func apply(_ result: ReferencedSourceScanResult, rootURL: URL) async throws -> ReferencedReconcileChanges {
         let diff = result.diff
@@ -678,6 +811,15 @@ final class ReferencedSourceReconciler {
             try await sourceStore.save(descriptor)
             playlistMembershipChanges += try await syncBoundPlaylists(sourceID: intent.sourceID, createIfMissing: false)
         case .sourceRemoval:
+            // Source removal is intentionally idempotent. A process crash can
+            // happen after the descriptor is deleted but before the reconcile
+            // intent is removed; replay must still be able to finish by
+            // cleaning the manifest and dropping the authorization scope.
+            guard await sourceStore.contains(id: intent.sourceID) else {
+                try await manifestStore.remove(sourceID: intent.sourceID)
+                sourceScope.remove(sourceID: intent.sourceID)
+                break
+            }
             // Remove the source contribution from bound playlists before the
             // orphaned track rows are deleted. Manual memberships and tracks
             // still contributed by another source remain intact.
@@ -723,7 +865,7 @@ final class ReferencedSourceReconciler {
             }
             try await prepareRemovedNCMRecords(for: orphanedTracks)
             if !orphanedTracks.isEmpty {
-                await repository.deleteTracks(orphanedTracks)
+                try await repository.deleteTracks(orphanedTracks)
             }
             try await manifestStore.remove(sourceID: intent.sourceID)
             sourceScope.remove(sourceID: intent.sourceID)
@@ -742,15 +884,32 @@ final class ReferencedSourceReconciler {
         var descriptor = try await sourceStore.load(id: sourceID)
         guard descriptor.mode == .directory || descriptor.mode == .file else { return 0 }
 
+        var createdPlaylist: Playlist?
+        var createdBindingID: UUID?
         if descriptor.playlistBindings.isEmpty, createIfMissing {
             let playlist = try await repository.createPlaylist(name: descriptor.displayName)
-            let binding = try await sourceStore.ensurePlaylistBinding(
-                sourceID: sourceID,
-                playlistID: playlist.id
-            )
-            descriptor.playlistBindings = [binding]
+            do {
+                let ensured = try await sourceStore.ensurePlaylistBindingWithCreation(
+                    sourceID: sourceID,
+                    playlistID: playlist.id
+                )
+                createdPlaylist = playlist
+                createdBindingID = ensured.didCreate ? ensured.binding.id : nil
+                descriptor.playlistBindings = [ensured.binding]
+            } catch {
+                do {
+                    try await repository.deletePlaylist(playlist)
+                } catch {
+                    Log.error(
+                        "[ReferencedSource] failed to roll back playlist created for source \(sourceID): \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
+                throw error
+            }
         }
-        guard !descriptor.playlistBindings.isEmpty else { return 0 }
+        do {
+            guard !descriptor.playlistBindings.isEmpty else { return 0 }
 
         let playlists = await repository.fetchPlaylists()
         let tracks = await repository.fetchTracks(in: nil)
@@ -895,6 +1054,40 @@ final class ReferencedSourceReconciler {
             try await sourceStore.save(changedDescriptor)
         }
         return membershipChanges
+        } catch {
+            if let createdBindingID {
+                do {
+                    try await sourceStore.removePlaylistBinding(
+                        sourceID: sourceID,
+                        bindingID: createdBindingID
+                    )
+                } catch {
+                    Log.error(
+                        "[ReferencedSource] failed to roll back binding \(createdBindingID) after playlist sync failure: \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
+            }
+            if let createdPlaylist {
+                do {
+                    try await playlistMembershipStore.removePlaylist(playlistID: createdPlaylist.id)
+                } catch {
+                    Log.error(
+                        "[ReferencedSource] failed to roll back membership for playlist \(createdPlaylist.id): \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
+                do {
+                    try await repository.deletePlaylist(createdPlaylist)
+                } catch {
+                    Log.error(
+                        "[ReferencedSource] failed to roll back playlist \(createdPlaylist.id): \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
+            }
+            throw error
+        }
     }
 
     /// Stable §8.3 sort key: the track's lexicographically smallest matching

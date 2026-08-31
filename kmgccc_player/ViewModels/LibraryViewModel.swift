@@ -476,8 +476,23 @@ final class LibraryViewModel {
     var currentTrackIDProvider: (() -> UUID?)?
     var onTracksDeleted: ((Set<UUID>) -> Void)?
     var onPlaylistDeleted: ((UUID) async -> Void)?
+    /// Session-owned transaction for deleting a playlist and its referenced
+    /// source/membership projections. The supplied closure is the final
+    /// playlist sidecar commit and is invoked only after those projections are
+    /// ready to be removed (or restored on failure).
+    typealias PlaylistDeletionCommitAction = @MainActor (UUID, PlaylistCommitAction) async throws -> Void
+    var onPlaylistDeletionCommit: PlaylistDeletionCommitAction?
     var onManualPlaylistAddition: ((UUID, [UUID]) async throws -> Void)?
     var onManualPlaylistRemoval: ((UUID, [UUID]) async throws -> Void)?
+    /// Session-owned transactional hooks. The backend records its durable
+    /// membership projection and invokes the supplied playlist commit only
+    /// after that projection is ready, restoring it if the playlist write
+    /// fails. The legacy hooks above remain available to lightweight previews
+    /// and tests that do not construct a referenced backend.
+    typealias PlaylistCommitAction = @MainActor () async throws -> Void
+    typealias ManualPlaylistCommitAction = @MainActor (UUID, [UUID], PlaylistCommitAction) async throws -> Void
+    var onManualPlaylistAdditionCommit: ManualPlaylistCommitAction?
+    var onManualPlaylistRemovalCommit: ManualPlaylistCommitAction?
     /// Session-owned import gate. It is installed by `LibrarySession` so
     /// toolbar, window-drop, and sidebar imports are quiesced together with
     /// scans and other library operations.
@@ -706,11 +721,15 @@ final class LibraryViewModel {
         options: ResetMusicPreferenceOptions,
         progress: @escaping @MainActor (MusicPreferenceResetProgress) -> Void
     ) async -> MusicPreferenceResetResult {
-        await preferenceResetService.resetLibraryTracks(
-            tracks,
-            options: options,
-            progress: progress
-        )
+        await performOwnedLibraryMutation(
+            rejectingWith: MusicPreferenceResetResult.empty(totalCount: tracks.count)
+        ) {
+            await self.preferenceResetService.resetLibraryTracks(
+                tracks,
+                options: options,
+                progress: progress
+            )
+        }
     }
 
     func setManualLikeState(_ state: ManualLikeState, for track: Track) async {
@@ -736,6 +755,9 @@ final class LibraryViewModel {
         importService = nil
         runOwnedImportOperation = nil
         runOwnedLibraryMutation = nil
+        onManualPlaylistAdditionCommit = nil
+        onManualPlaylistRemovalCommit = nil
+        onPlaylistDeletionCommit = nil
         prepareTrackRelocationAction = nil
         relocateTrackAction = nil
         repository.setChangeHandler(nil)
@@ -1436,8 +1458,14 @@ final class LibraryViewModel {
     }
 
     private func deletePlaylistWithoutOwnership(_ playlist: Playlist) async throws {
-        try await repository.deletePlaylist(playlist)
-        await onPlaylistDeleted?(playlist.id)
+        if let commit = onPlaylistDeletionCommit {
+            try await commit(playlist.id) {
+                try await self.repository.deletePlaylist(playlist)
+            }
+        } else {
+            try await repository.deletePlaylist(playlist)
+            await onPlaylistDeleted?(playlist.id)
+        }
         playlists.removeAll { $0.id == playlist.id }
         playlistItemAddedAtMap[playlist.id] = nil
         if currentSelection == .playlist(playlist.id) {
@@ -1462,25 +1490,31 @@ final class LibraryViewModel {
         let previousTrackCount = playlist.trackCount
         let previousTracks = playlist.tracks
         let previousItemAddedAt = playlistItemAddedAtMap[playlist.id] ?? [:]
-        try await repository.addTracks(tracks, to: playlist)
-        do {
-            try await onManualPlaylistAddition?(playlist.id, tracks.map(\.id))
-        } catch {
-            let membershipError = error
-            do {
-                try await repository.replacePlaylistTracks(
-                    previousTracks,
-                    in: playlist,
-                    itemAddedAt: previousItemAddedAt
-                )
-            } catch {
-                Log.error(
-                    "[LibraryVM] failed to roll back playlist after membership addition failure: \(error)",
-                    category: .library
-                )
-                throw error
+        if let commit = onManualPlaylistAdditionCommit {
+            try await commit(playlist.id, tracks.map(\.id)) {
+                try await self.repository.addTracks(tracks, to: playlist)
             }
-            throw membershipError
+        } else {
+            try await repository.addTracks(tracks, to: playlist)
+            do {
+                try await onManualPlaylistAddition?(playlist.id, tracks.map(\.id))
+            } catch {
+                let membershipError = error
+                do {
+                    try await repository.replacePlaylistTracks(
+                        previousTracks,
+                        in: playlist,
+                        itemAddedAt: previousItemAddedAt
+                    )
+                } catch {
+                    Log.error(
+                        "[LibraryVM] failed to roll back playlist after membership addition failure: \(error)",
+                        category: .library
+                    )
+                    throw error
+                }
+                throw membershipError
+            }
         }
         playlists = await repository.fetchPlaylists()
         playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
@@ -1508,25 +1542,31 @@ final class LibraryViewModel {
         let previousItemAddedAt = playlistItemAddedAtMap[playlist.id] ?? [:]
         let previousTrackIDs = Set(previousTracks.map(\.id))
         let removedTracks = tracks.filter { previousTrackIDs.contains($0.id) }
-        try await repository.removeTracks(removedTracks, from: playlist)
-        do {
-            try await onManualPlaylistRemoval?(playlist.id, removedTracks.map(\.id))
-        } catch {
-            let membershipError = error
-            do {
-                try await repository.replacePlaylistTracks(
-                    previousTracks,
-                    in: playlist,
-                    itemAddedAt: previousItemAddedAt
-                )
-            } catch {
-                Log.error(
-                    "[LibraryVM] failed to roll back playlist after membership removal failure: \(error)",
-                    category: .library
-                )
-                throw error
+        if let commit = onManualPlaylistRemovalCommit {
+            try await commit(playlist.id, removedTracks.map(\.id)) {
+                try await self.repository.removeTracks(removedTracks, from: playlist)
             }
-            throw membershipError
+        } else {
+            try await repository.removeTracks(removedTracks, from: playlist)
+            do {
+                try await onManualPlaylistRemoval?(playlist.id, removedTracks.map(\.id))
+            } catch {
+                let membershipError = error
+                do {
+                    try await repository.replacePlaylistTracks(
+                        previousTracks,
+                        in: playlist,
+                        itemAddedAt: previousItemAddedAt
+                    )
+                } catch {
+                    Log.error(
+                        "[LibraryVM] failed to roll back playlist after membership removal failure: \(error)",
+                        category: .library
+                    )
+                    throw error
+                }
+                throw membershipError
+            }
         }
         playlists = await repository.fetchPlaylists()
         playlistItemAddedAtMap = await repository.fetchPlaylistItemAddedAtMap()
@@ -1577,11 +1617,11 @@ final class LibraryViewModel {
 
     func deleteTracks(_ tracks: [Track]) async {
         await performOwnedLibraryMutation(rejectingWith: ()) {
-            await self.deleteTracksWithoutOwnership(tracks)
+            try await self.deleteTracksWithoutOwnership(tracks)
         }
     }
 
-    private func deleteTracksWithoutOwnership(_ tracks: [Track]) async {
+    private func deleteTracksWithoutOwnership(_ tracks: [Track]) async throws {
         var uniqueTracks = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, $0) }).values.sorted {
             $0.id.uuidString < $1.id.uuidString
         }
@@ -1600,17 +1640,26 @@ final class LibraryViewModel {
             deletedTrackIDs
         )
 
-        resetSelectionIfNeededAfterDeletingTracks(deletedTrackIDs)
         await importService?.cancelEnrichment(for: deletedTrackIDs)
         cleanupPlaybackAfterDeletingTracks(deletedTrackIDs)
         releaseTransientResources(for: uniqueTracks)
+
+        pendingRepositoryDeletionTrackIDs.formUnion(deletedTrackIDs)
+        do {
+            try await repository.deleteTracks(uniqueTracks)
+        } catch {
+            pendingRepositoryDeletionTrackIDs.subtract(deletedTrackIDs)
+            await syncVisibleStateFromRepository(
+                reason: "trackDeleteFailed",
+                invalidatedSelectionIdentities: invalidatedSelectionIdentities
+            )
+            throw error
+        }
+        pendingRepositoryDeletionTrackIDs.subtract(deletedTrackIDs)
+        resetSelectionIfNeededAfterDeletingTracks(deletedTrackIDs)
         removeDeletedTracksFromVisibleState(deletedTrackIDs)
         await invalidateSelectionCaches(invalidatedSelectionIdentities)
         refreshTrigger += 1
-
-        pendingRepositoryDeletionTrackIDs.formUnion(deletedTrackIDs)
-        await repository.deleteTracks(uniqueTracks)
-        pendingRepositoryDeletionTrackIDs.subtract(deletedTrackIDs)
         await syncVisibleStateFromRepository(
             reason: "trackDelete",
             invalidatedSelectionIdentities: invalidatedSelectionIdentities
@@ -1649,14 +1698,14 @@ final class LibraryViewModel {
 
     func saveArtistEntry(_ entry: ArtistEntry) async {
         await performOwnedLibraryMutation(rejectingWith: ()) {
-            await self.saveArtistEntryWithoutOwnership(entry)
+            try await self.saveArtistEntryWithoutOwnership(entry)
         }
     }
 
-    private func saveArtistEntryWithoutOwnership(_ entry: ArtistEntry) async {
+    private func saveArtistEntryWithoutOwnership(_ entry: ArtistEntry) async throws {
         var persisted = entry
         persisted.updatedAt = Date()
-        await repository.updateArtistEntry(persisted)
+        try await repository.updateArtistEntry(persisted)
         if let idx = artistEntries.firstIndex(where: { $0.id == persisted.id }) {
             artistEntries[idx] = persisted
         }
@@ -1836,11 +1885,11 @@ final class LibraryViewModel {
 
     func saveArtistEdits(original: ArtistEntry, updated: ArtistEntry) async {
         await performOwnedLibraryMutation(rejectingWith: ()) {
-            await self.saveArtistEditsWithoutOwnership(original: original, updated: updated)
+            try await self.saveArtistEditsWithoutOwnership(original: original, updated: updated)
         }
     }
 
-    private func saveArtistEditsWithoutOwnership(original: ArtistEntry, updated: ArtistEntry) async {
+    private func saveArtistEditsWithoutOwnership(original: ArtistEntry, updated: ArtistEntry) async throws {
         let trimmedName = updated.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return }
 
@@ -1849,7 +1898,7 @@ final class LibraryViewModel {
         persisted.canonicalName = LibraryNormalization.normalizeArtist(trimmedName)
         persisted.updatedAt = Date()
 
-        await repository.applyArtistEdits(original: original, updated: persisted)
+        try await repository.applyArtistEdits(original: original, updated: persisted)
         currentSelection = .artist(persisted.canonicalName)
         await invalidateDetailSelectionCachesIfNeeded(
             selectionIdentities: selectionIdentityVariants(
@@ -1867,14 +1916,14 @@ final class LibraryViewModel {
 
     func saveAlbumEntry(_ entry: AlbumEntry) async {
         await performOwnedLibraryMutation(rejectingWith: ()) {
-            await self.saveAlbumEntryWithoutOwnership(entry)
+            try await self.saveAlbumEntryWithoutOwnership(entry)
         }
     }
 
-    private func saveAlbumEntryWithoutOwnership(_ entry: AlbumEntry) async {
+    private func saveAlbumEntryWithoutOwnership(_ entry: AlbumEntry) async throws {
         var persisted = entry
         persisted.updatedAt = Date()
-        await repository.updateAlbumEntry(persisted)
+        try await repository.updateAlbumEntry(persisted)
         if let idx = albumEntries.firstIndex(where: { $0.id == persisted.id }) {
             albumEntries[idx] = persisted
         }
@@ -1963,11 +2012,11 @@ final class LibraryViewModel {
 
     func saveAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async {
         await performOwnedLibraryMutation(rejectingWith: ()) {
-            await self.saveAlbumEditsWithoutOwnership(original: original, updated: updated)
+            try await self.saveAlbumEditsWithoutOwnership(original: original, updated: updated)
         }
     }
 
-    private func saveAlbumEditsWithoutOwnership(original: AlbumEntry, updated: AlbumEntry) async {
+    private func saveAlbumEditsWithoutOwnership(original: AlbumEntry, updated: AlbumEntry) async throws {
         let trimmedTitle = updated.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTitle.isEmpty else { return }
 
@@ -1981,7 +2030,7 @@ final class LibraryViewModel {
         persisted.primaryArtistDisplayName = original.primaryArtistDisplayName
         persisted.updatedAt = Date()
 
-        await repository.applyAlbumEdits(original: original, updated: persisted)
+        try await repository.applyAlbumEdits(original: original, updated: persisted)
         currentSelection = .album(persisted.canonicalKey)
         selectedAlbumName = persisted.displayTitle
         await invalidateDetailSelectionCachesIfNeeded(
@@ -2000,11 +2049,11 @@ final class LibraryViewModel {
 
     func restoreDefaultAlbumArtwork(_ entry: AlbumEntry) async {
         await performOwnedLibraryMutation(rejectingWith: ()) {
-            await self.restoreDefaultAlbumArtworkWithoutOwnership(entry)
+            try await self.restoreDefaultAlbumArtworkWithoutOwnership(entry)
         }
     }
 
-    private func restoreDefaultAlbumArtworkWithoutOwnership(_ entry: AlbumEntry) async {
+    private func restoreDefaultAlbumArtworkWithoutOwnership(_ entry: AlbumEntry) async throws {
         let fallbackArtwork = allTracks.first {
             $0.albumGroupKey == entry.canonicalKey
         }?.artworkData
@@ -2014,7 +2063,7 @@ final class LibraryViewModel {
         updated.artworkData = fallbackArtwork
         updated.updatedAt = Date()
 
-        await repository.updateAlbumEntry(updated)
+        try await repository.updateAlbumEntry(updated)
         if let idx = albumEntries.firstIndex(where: { $0.id == updated.id }) {
             albumEntries[idx] = updated
         }
@@ -2030,11 +2079,12 @@ final class LibraryViewModel {
 
     func deleteArtist(_ entry: ArtistEntry) async {
         await performOwnedLibraryMutation(rejectingWith: ()) {
-            await self.deleteArtistWithoutOwnership(entry)
+            try await self.deleteArtistWithoutOwnership(entry)
         }
     }
 
-    private func deleteArtistWithoutOwnership(_ entry: ArtistEntry) async {
+    private func deleteArtistWithoutOwnership(_ entry: ArtistEntry) async throws {
+        let previousSelection = currentSelection
         let affectedTrackIDs = Set(
             allTracks
                 .filter { LibraryNormalization.containsArtist(entry.canonicalName, in: $0) }
@@ -2063,7 +2113,17 @@ final class LibraryViewModel {
         refreshTrigger += 1
 
         pendingRepositoryDeletionTrackIDs.formUnion(affectedTrackIDs)
-        await repository.deleteArtist(entry)
+        do {
+            try await repository.deleteArtist(entry)
+        } catch {
+            pendingRepositoryDeletionTrackIDs.subtract(affectedTrackIDs)
+            currentSelection = previousSelection
+            await syncVisibleStateFromRepository(
+                reason: "artistDeleteFailed",
+                invalidatedSelectionIdentities: invalidatedSelectionIdentities
+            )
+            throw error
+        }
         pendingRepositoryDeletionTrackIDs.subtract(affectedTrackIDs)
         await syncVisibleStateFromRepository(
             reason: "artistDelete",
@@ -2073,11 +2133,12 @@ final class LibraryViewModel {
 
     func deleteAlbum(_ entry: AlbumEntry) async {
         await performOwnedLibraryMutation(rejectingWith: ()) {
-            await self.deleteAlbumWithoutOwnership(entry)
+            try await self.deleteAlbumWithoutOwnership(entry)
         }
     }
 
-    private func deleteAlbumWithoutOwnership(_ entry: AlbumEntry) async {
+    private func deleteAlbumWithoutOwnership(_ entry: AlbumEntry) async throws {
+        let previousSelection = currentSelection
         let affectedTrackIDs = Set(
             allTracks
                 .filter { $0.albumGroupKey == entry.canonicalKey }
@@ -2099,7 +2160,17 @@ final class LibraryViewModel {
         refreshTrigger += 1
 
         pendingRepositoryDeletionTrackIDs.formUnion(affectedTrackIDs)
-        await repository.deleteAlbum(entry)
+        do {
+            try await repository.deleteAlbum(entry)
+        } catch {
+            pendingRepositoryDeletionTrackIDs.subtract(affectedTrackIDs)
+            currentSelection = previousSelection
+            await syncVisibleStateFromRepository(
+                reason: "albumDeleteFailed",
+                invalidatedSelectionIdentities: invalidatedSelectionIdentities
+            )
+            throw error
+        }
         pendingRepositoryDeletionTrackIDs.subtract(affectedTrackIDs)
         await syncVisibleStateFromRepository(
             reason: "albumDelete",

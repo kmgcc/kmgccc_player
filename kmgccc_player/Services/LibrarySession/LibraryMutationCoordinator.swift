@@ -80,6 +80,18 @@ final class LibraryMutationCoordinator {
                 ) {
                     try await work()
                 }
+                // A mutation body is intentionally the only place that can
+                // publish all of its durable projections. Marking the
+                // deterministic step set after the body succeeds prevents a
+                // crash/retry from claiming a partially completed operation;
+                // interrupted bodies retain pending step IDs for startup
+                // adjudication.
+                for step in intent.steps {
+                    intent = try await journal.markStepCompleted(
+                        intent,
+                        stepID: step.id
+                    )
+                }
                 _ = try await journal.complete(intent)
                 return value
             } catch {

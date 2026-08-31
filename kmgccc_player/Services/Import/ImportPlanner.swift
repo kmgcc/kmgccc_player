@@ -148,7 +148,6 @@ final class ImportPlanner {
     private let storageBackend: any LibraryStorageBackend
     private let paths: LibraryPaths
     private let referencedNCMConversionService: ReferencedNCMConversionService?
-    private let ignoredItemsStore: IgnoredReferencedItemsStore?
     private let operationCoordinator: LibraryOperationCoordinator
     private let ncmConversionPipeline: ManagedNCMConversionPipeline
 
@@ -157,7 +156,9 @@ final class ImportPlanner {
         storageBackend: any LibraryStorageBackend,
         paths: LibraryPaths,
         referencedNCMConversionService: ReferencedNCMConversionService?,
-        ignoredItemsStore: IgnoredReferencedItemsStore?,
+        // Kept as a source-compatible parameter for callers created before
+        // manual retry cleanup moved to FileImportService's preflight.
+        ignoredItemsStore: IgnoredReferencedItemsStore? = nil,
         operationCoordinator: LibraryOperationCoordinator,
         ncmConversionPipeline: ManagedNCMConversionPipeline
     ) {
@@ -165,7 +166,7 @@ final class ImportPlanner {
         self.storageBackend = storageBackend
         self.paths = paths
         self.referencedNCMConversionService = referencedNCMConversionService
-        self.ignoredItemsStore = ignoredItemsStore
+        _ = ignoredItemsStore
         self.operationCoordinator = operationCoordinator
         self.ncmConversionPipeline = ncmConversionPipeline
     }
@@ -193,23 +194,6 @@ final class ImportPlanner {
             inputPlan.directorySources.map(\.source.id)
                 + inputPlan.files.flatMap { $0.memberships.map(\.sourceID) }
         )
-        if isManualSelection, let ignoredItemsStore {
-            let fingerprints = inputPlan.files.compactMap(\.fingerprint)
-            do {
-                try await ignoredItemsStore.remove(matching: fingerprints)
-                if let referencedNCMConversionService {
-                    for file in inputPlan.files where file.url.pathExtension.lowercased() == "ncm" {
-                        let related = try await referencedNCMConversionService.allowManualRetry(file)
-                        try await ignoredItemsStore.remove(matching: related)
-                    }
-                }
-            } catch {
-                Log.error(
-                    "[Import] failed to clear ignored item before manual import: \(error.localizedDescription)",
-                    category: .import
-                )
-            }
-        }
         var newFiles: [ImportDiscoveredFile] = []
         var reusedTracks: [Track] = []
         var reusedTrackIDs = Set<UUID>()
@@ -234,7 +218,11 @@ final class ImportPlanner {
                 }
                 var reuse: DigestTierReuseMatch?
                 if let fingerprintMatch = await repository.track(matching: fingerprint) {
-                    reuse = DigestTierReuseMatch(track: fingerprintMatch, incomingDigest: nil)
+                    reuse = DigestTierReuseMatch(
+                        track: fingerprintMatch,
+                        incomingDigest: nil,
+                        computedDigests: [:]
+                    )
                 } else {
                     reuse = await digestTierReuse(
                         for: file,
@@ -269,6 +257,10 @@ final class ImportPlanner {
                         for location in existingLocator.locations {
                             locator.mergeLocation(location)
                         }
+                    }
+                    for (locationID, digest) in (reuse?.computedDigests ?? [:])
+                        .sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
+                        _ = locator.setContentDigest(digest, atLocationID: locationID)
                     }
                     referencedReuseLocators[reuseTarget.id] = locator
                     if reusedTrackIDs.insert(reuseTarget.id).inserted {
@@ -591,14 +583,15 @@ final class ImportPlanner {
     private struct DigestTierReuseMatch {
         let track: Track
         let incomingDigest: String?
+        let computedDigests: [UUID: String]
     }
 
     /// Plan §11 tier 4: content-digest matching, consulted only after the
     /// physical-identity lookup missed. Candidates are pre-filtered by exact
     /// byte size before any hashing, so this can never degrade into an
-    /// unconditional library-wide digest sweep. Digests computed here are
-    /// persisted back onto their locations so later imports take the stored
-    /// fast path instead of re-hashing.
+    /// unconditional library-wide digest sweep. Computed digests are carried
+    /// into the final reuse locator and persisted with that commit; planning
+    /// itself never writes a sidecar.
     private func digestTierReuse(
         for file: ImportDiscoveredFile,
         fingerprint: ReferencedFileFingerprint,
@@ -635,22 +628,11 @@ final class ImportPlanner {
               let track = libraryTracks.first(where: { $0.id == trackID }) else {
             return nil
         }
-        await persistComputedLocationDigests(result.computedDigests, on: track)
-        return DigestTierReuseMatch(track: track, incomingDigest: result.incomingDigest)
-    }
-
-    private func persistComputedLocationDigests(_ digests: [UUID: String], on track: Track) async {
-        guard !digests.isEmpty else { return }
-        guard var locator = track.mediaLocator.referencedFile else { return }
-        var changed = false
-        for (locationID, digest) in digests.sorted(by: { $0.key.uuidString < $1.key.uuidString }) {
-            if locator.setContentDigest(digest, atLocationID: locationID) {
-                changed = true
-            }
-        }
-        guard changed else { return }
-        track.mediaLocator = .referenced(locator)
-        await repository.persistTrackMetaOnly(track, reason: "contentDigestBackfill")
+        return DigestTierReuseMatch(
+            track: track,
+            incomingDigest: result.incomingDigest,
+            computedDigests: result.computedDigests
+        )
     }
 
     /// Managed-mode fallback after the canonical-path index missed (renamed or
@@ -689,10 +671,6 @@ final class ImportPlanner {
         guard case let .matched(trackID, _) = result.resolution,
               let track = libraryTracks.first(where: { $0.id == trackID }) else {
             return nil
-        }
-        if let digest = result.computedDigests[trackID] {
-            track.importProvenance?.contentDigest = digest
-            await repository.persistTrackMetaOnly(track, reason: "importProvenanceDigest")
         }
         return track
     }

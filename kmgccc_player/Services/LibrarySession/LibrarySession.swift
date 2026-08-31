@@ -357,27 +357,46 @@ final class LibrarySession: LibrarySessionLifecycle {
                 } else {
                     let tracks = await importedTracks(for: entry, result: result)
                     if !tracks.isEmpty {
-                        let playlist = try await repository.createPlaylist(name: entry.displayName)
-                        try await repository.addTracks(tracks, to: playlist)
+                        _ = try await createPlaylistAndAddTracks(
+                            name: entry.displayName,
+                            tracks: tracks
+                        )
                     }
                 }
 
             case .individualFiles:
                 let tracks = await importedTracks(for: entry, result: result)
                 guard !tracks.isEmpty else { continue }
-                let playlist = try await repository.createPlaylist(
-                    name: automaticPlaylistName(for: entry, tracks: tracks)
+                let playlist = try await createPlaylistAndAddTracks(
+                    name: automaticPlaylistName(for: entry, tracks: tracks),
+                    tracks: tracks
                 )
-                try await repository.addTracks(tracks, to: playlist)
                 if context.mode == .referenced {
                     let sourceIDs = Set(tracks.flatMap { track -> [UUID] in
                         guard case let .referenced(locator) = track.mediaLocator else { return [] }
                         return locator.allSourceMemberships.map(\.sourceID)
                     })
-                    try await referencedSourceReconciler?.bindSourcesToPlaylist(
-                        sourceIDs,
-                        playlistID: playlist.id
-                    )
+                    do {
+                        try await referencedSourceReconciler?.bindSourcesToPlaylist(
+                            sourceIDs,
+                            playlistID: playlist.id
+                        )
+                    } catch {
+                        do {
+                            try await mutationCoordinator.run(
+                                kind: .userLibraryMutation,
+                                targetIDs: [playlist.id.uuidString]
+                            ) {
+                                try await self.repository.deletePlaylist(playlist)
+                            }
+                        } catch {
+                            Log.error(
+                                "[LibrarySession] failed to roll back automatic playlist \(playlist.id) after source binding failure: \(error.localizedDescription)",
+                                category: .library
+                            )
+                        }
+                        throw error
+                    }
                 }
             }
         }
@@ -385,6 +404,44 @@ final class LibrarySession: LibrarySessionLifecycle {
         if context.mode == .referenced, !boundDirectorySourceIDs.isEmpty {
             try await referencedSourceReconciler?.createPlaylistsForSources(boundDirectorySourceIDs)
         }
+    }
+
+    /// Creates and populates an automatic playlist as one short durable
+    /// mutation. If the item write fails, remove the newly-created empty
+    /// playlist before returning the original error so setup cannot leave a
+    /// half-created collection behind.
+    private func createPlaylistAndAddTracks(
+        name: String,
+        tracks: [Track]
+    ) async throws -> Playlist {
+        var createdPlaylist: Playlist?
+        try await mutationCoordinator.run(
+            kind: .userLibraryMutation,
+            targetIDs: tracks.map(\.id.uuidString)
+        ) { [self] in
+            let playlist = try await self.repository.createPlaylist(name: name)
+            createdPlaylist = playlist
+            do {
+                try await self.repository.addTracks(tracks, to: playlist)
+            } catch {
+                do {
+                    try await self.repository.deletePlaylist(playlist)
+                } catch {
+                    Log.error(
+                        "[LibrarySession] failed to roll back automatic playlist \(playlist.id): \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
+                throw error
+            }
+        }
+        guard let createdPlaylist else {
+            throw LibraryPlaylistPersistenceError.writeFailed(
+                playlistID: UUID(),
+                reason: "自动播放列表未返回稳定 ID"
+            )
+        }
+        return createdPlaylist
     }
 
     private func importedTracks(
