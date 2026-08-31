@@ -57,6 +57,38 @@ final class LibraryLifecycleTransactionTests: XCTestCase {
         XCTAssertEqual(try MusicLibraryManifest.read(from: opened.paths.manifestURL).displayName, "Reference")
     }
 
+    func testCreationSelectingExistingRootDoesNotNestAnotherLibrary() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let parent = fixture.root.appendingPathComponent("parent")
+        let existing = try await fixture.creationService().create(
+            mode: .referenced,
+            parentURL: parent,
+            displayName: "Reference"
+        )
+        guard case let .created(original, _) = existing else { return XCTFail("Expected creation") }
+
+        let selectedRoot = original.rootURL
+        let result = try await fixture.creationService().create(
+            mode: .referenced,
+            parentURL: selectedRoot,
+            displayName: "Should Not Nest"
+        )
+        guard case let .existingLibrary(opened) = result else {
+            return XCTFail("Selecting the existing root should open it")
+        }
+        XCTAssertEqual(opened.id, original.id)
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: selectedRoot.appendingPathComponent(LibraryPaths.rootDirectoryName).path
+            )
+        )
+        XCTAssertEqual(
+            try MusicLibraryManifest.read(from: original.paths.manifestURL).displayName,
+            "Reference"
+        )
+    }
+
     func testOpenDeduplicatesIDRefreshesMovedPathAndRejectsPathConflict() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }

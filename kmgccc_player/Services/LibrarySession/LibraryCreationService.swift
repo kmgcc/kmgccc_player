@@ -233,6 +233,27 @@ final class LibraryCreationService {
         let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { throw LibraryCreationError.invalidDisplayName }
 
+        // The picker asks for the directory that should contain the fixed
+        // library root. Users can still navigate into an existing
+        // `kmgccc_player Library` and choose that root itself. Treat that as
+        // selecting the existing library instead of silently creating a
+        // nested `kmgccc_player Library/kmgccc_player Library`.
+        let selectedParent = parentURL.standardizedFileURL
+        let selectedRootManifest = LibraryPaths(rootURL: selectedParent).manifestURL
+        if await fileOperator.itemExists(at: selectedRootManifest) {
+            do {
+                let inspected = try await openService.inspect(
+                    selectedURL: selectedParent,
+                    allowStalePathConflictRepair: allowStalePathConflictRepair
+                )
+                return inspected.context.mode == mode
+                    ? .existingLibrary(inspected.context)
+                    : .existingLibraryModeMismatch(inspected.context, requestedMode: mode)
+            } catch {
+                throw LibraryCreationError.invalidExistingLibrary
+            }
+        }
+
         // Resolve the destination directory. The preferred name is the
         // shared rootDirectoryName. Interactive creation keeps the default
         // false and reports the concrete existing library to the wizard; only
