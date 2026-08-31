@@ -12,6 +12,7 @@
 | [色彩系统](color-system.md) | 封面分析、OKLCH 语义色、Display P3 输出和局部可读性判断 |
 | [资料库存储](library-storage.md) | 托管/原位模式、registry、目录、source、缓存、索引、播放历史和删除边界 |
 | [资料库写入 authority matrix](library-write-authority.md) | Phase 0 的函数级持久化 owner、提交顺序、失败补偿与生命周期合同 |
+| [Automation CLI / 本地 IPC](automation-cli-ipc.md) | Phase 1 的版本化只读协议、AF_UNIX framing、CLI 探针和边界 |
 | [本地音乐资料库重构计划](music-library-rearchitecture-plan.md) | 原位资料库重点重构、托管兼容、文件夹与播放列表关系、领域模型迁移、分阶段实施和验收 |
 | [阶段 0-1 入口审计](music-library-stage0-1-entry-audit.md) | 已冻结入口、生命周期 owner、服务链路和阶段验收基线 |
 | [阶段 8 验收记录](music-library-stage8-acceptance.md) | 诊断投影、重复审查、原位排除目录、搜索扩展、批量写回状态和未完成验收边界 |

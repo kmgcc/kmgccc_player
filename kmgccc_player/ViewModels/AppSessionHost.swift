@@ -107,6 +107,17 @@ final class AppSessionHost: ObservableObject {
     }
 
     private var hasSetupDependencies = false
+    private lazy var automationIPCServer: AutomationIPCServer? = {
+        do {
+            return try AutomationIPCServer(appSession: self)
+        } catch {
+            Log.error(
+                "[Automation] failed to create IPC server: \(error.localizedDescription)",
+                category: .library
+            )
+            return nil
+        }
+    }()
     private var playbackModeObserver: NSObjectProtocol?
     private var workspaceLibraryObservers: [NSObjectProtocol] = []
     private var appActiveLibraryObserver: NSObjectProtocol?
@@ -791,6 +802,18 @@ final class AppSessionHost: ObservableObject {
             scheduleDeferredLaunchPromptsIfNeeded()
         }
         hasCompletedInitialSetup = true
+        do {
+            try await automationIPCServer?.start()
+        } catch {
+            // Automation is an optional control plane. A stale socket or a
+            // transient listener failure must not prevent normal playback and
+            // library UI startup; the CLI receives a bounded unavailable
+            // result until the next App launch.
+            Log.error(
+                "[Automation] failed to start IPC server: \(error.localizedDescription)",
+                category: .library
+            )
+        }
         // Covers the path where deferred prompts ran before
         // `hasCompletedInitialSetup` flipped (no crash-report prompt
         // queued); when prompts are crash-gated the drained handler calls
@@ -1150,6 +1173,7 @@ final class AppSessionHost: ObservableObject {
                 )
             }
             Task {
+                await self.automationIPCServer?.stop()
                 if let monitor = self.activeLibraryBinding.activeSession?.libraryChangeMonitor {
                     await monitor.stopAndWait()
                 }

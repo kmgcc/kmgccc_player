@@ -414,6 +414,8 @@
 			packageProductDependencies = (
 				AA0000000000000000000004 /* CrashReporter */,
 				AA0000000000000000000002 /* WhatsNewKit */,
+				D10000000000000000000002 /* PlayerAutomationProtocol */,
+				D10000000000000000000003 /* PlayerAutomationIPC */,
 			);
 			productName = kmgccc_player;
 			productReference = 935118922F3231C500766A5F /* kmgccc_player.app */;
@@ -470,6 +472,7 @@
 			packageReferences = (
 				AA0000000000000000000001 /* XCRemoteSwiftPackageReference "WhatsNewKit" */,
 				AA0000000000000000000003 /* XCRemoteSwiftPackageReference "plcrashreporter" */,
+				D10000000000000000000001 /* XCLocalSwiftPackageReference "PlayerAutomation" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 935118932F3231C500766A5F /* Products */;
@@ -1034,6 +1037,13 @@
 		};
 /* End XCRemoteSwiftPackageReference section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		D10000000000000000000001 /* XCLocalSwiftPackageReference "PlayerAutomation" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Dependencies/PlayerAutomation;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		AA0000000000000000000002 /* WhatsNewKit */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -1044,6 +1054,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA0000000000000000000003 /* XCRemoteSwiftPackageReference "plcrashreporter" */;
 			productName = CrashReporter;
+		};
+		D10000000000000000000002 /* PlayerAutomationProtocol */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D10000000000000000000001 /* XCLocalSwiftPackageReference "PlayerAutomation" */;
+			productName = PlayerAutomationProtocol;
+		};
+		D10000000000000000000003 /* PlayerAutomationIPC */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D10000000000000000000001 /* XCLocalSwiftPackageReference "PlayerAutomation" */;
+			productName = PlayerAutomationIPC;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
