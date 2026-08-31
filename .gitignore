@@ -55,6 +55,7 @@ Tools/ColorGoldenMaster/
 # Xcode
 build/
 /.build/
+Dependencies/PlayerAutomation/.build/
 *.project/xcuserdata
 *.project/xcshareddata
 *.project/project.xcworkspace/xcuserdata
