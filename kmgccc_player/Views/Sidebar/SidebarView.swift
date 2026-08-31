@@ -706,6 +706,7 @@ struct SidebarView: View {
             showSettings = true
         }
         .symbolEffect(.rotate, value: settingsRotateTrigger)
+        .keyboardShortcut(",", modifiers: .command)
         .popover(isPresented: $showCrashReportSettingsTip, arrowEdge: .bottom) {
             CrashReportSettingsTipView(
                 onOpenSettings: {

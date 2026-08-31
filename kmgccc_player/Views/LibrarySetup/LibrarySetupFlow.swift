@@ -539,40 +539,43 @@ struct LibraryImportSourceSelectionSheet: View {
             },
             content: {
                 VStack(alignment: .leading, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(entries) { entry in
-                            Toggle(
-                                isOn: Binding(
-                                    get: { selectedEntryIDs.contains(entry.id) },
-                                    set: { selected in
-                                        if selected {
-                                            selectedEntryIDs.insert(entry.id)
-                                        } else {
-                                            selectedEntryIDs.remove(entry.id)
+                    ScrollView(.vertical) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(entries) { entry in
+                                Toggle(
+                                    isOn: Binding(
+                                        get: { selectedEntryIDs.contains(entry.id) },
+                                        set: { selected in
+                                            if selected {
+                                                selectedEntryIDs.insert(entry.id)
+                                            } else {
+                                                selectedEntryIDs.remove(entry.id)
+                                            }
+                                        }
+                                    )
+                                ) {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: entry.kind == .directory ? "folder.fill" : "music.note.list")
+                                            .foregroundStyle(.secondary)
+                                            .frame(width: 16)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(entry.displayName)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
+                                            Text(entry.detail)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
                                         }
                                     }
-                                )
-                            ) {
-                                HStack(spacing: 8) {
-                                    Image(systemName: entry.kind == .directory ? "folder.fill" : "music.note.list")
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: 16)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(entry.displayName)
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
-                                        Text(entry.detail)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
-                                    }
                                 }
+                                .toggleStyle(.checkbox)
+                                .padding(.vertical, 5)
                             }
-                            .toggleStyle(.checkbox)
-                            .padding(.vertical, 5)
                         }
                     }
+                    .frame(maxHeight: 190)
                     .padding(.leading, 4)
 
                     Text("文件夹播放列表会随来源中的歌曲增减自动同步；单独歌曲分组只在本次导入时生成。")

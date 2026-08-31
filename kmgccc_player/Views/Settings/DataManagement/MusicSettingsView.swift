@@ -153,21 +153,26 @@ struct MusicSettingsView: View {
 
     private func libraryRow(_ library: MusicLibraryBookmark) -> some View {
         HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(library.displayName).lineLimit(1).truncationMode(.middle)
-                    if library.id == activeContext?.id {
-                        Text("当前").font(.caption2).foregroundStyle(themeStore.accentColor)
+            Button {
+                open(library)
+            } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(library.displayName).lineLimit(1).truncationMode(.middle)
+                        if library.id == activeContext?.id {
+                            Text("当前").font(.caption2).foregroundStyle(themeStore.accentColor)
+                        }
                     }
+                    Text(library.lastKnownPath)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(library.lastKnownPath)
                 }
-                Text(library.lastKnownPath)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(library.lastKnownPath)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .buttonStyle(.plain)
 
             Menu {
                 Button("在访达中显示") { revealLibrary(library) }
@@ -179,8 +184,6 @@ struct MusicSettingsView: View {
             .menuStyle(.borderlessButton)
             .help("资料库操作")
         }
-        .contentShape(Rectangle())
-        .onTapGesture { open(library) }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
     }
