@@ -28,7 +28,7 @@ nonisolated enum LibraryWriterLeaseError: Error, Equatable, LocalizedError, Send
 /// Session-lifetime, cross-process single-writer lease for one Library root.
 ///
 /// The file content is diagnostic only. Exclusivity comes exclusively from
-/// a kernel-managed POSIX record lock, which is released automatically if the
+/// a kernel-managed BSD advisory lock, which is released automatically if the
 /// process exits and explicitly after every runtime owner has closed.
 nonisolated final class LibraryWriterLease: @unchecked Sendable {
     private struct State {
@@ -94,6 +94,10 @@ nonisolated final class LibraryWriterLease: @unchecked Sendable {
                 throw LibraryWriterLeaseError.cannotOpenLockFile(path, errno)
             }
             try acquireExclusiveLock(descriptor: descriptor, lockURL: paths.writerLockURL)
+            try verifyExclusiveLockAcrossProcess(
+                descriptor: descriptor,
+                lockURL: paths.writerLockURL
+            )
             activeLockPaths.withLock { _ = $0.insert(registryKey) }
             try writeDiagnostic(
                 descriptor: descriptor,
@@ -135,15 +139,9 @@ nonisolated final class LibraryWriterLease: @unchecked Sendable {
         descriptor: Int32,
         lockURL: URL
     ) throws {
-        var lock = Darwin.flock()
-        lock.l_type = Int16(F_WRLCK)
-        lock.l_whence = Int16(SEEK_SET)
-        lock.l_start = 0
-        lock.l_len = 0
-
-        guard Darwin.fcntl(descriptor, F_SETLK, &lock) == 0 else {
+        guard kmgccc_flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
             let code = errno
-            if code == EACCES || code == EAGAIN {
+            if code == EWOULDBLOCK || code == EAGAIN {
                 throw LibraryWriterLeaseError.libraryInUse(lockURL)
             }
             if code == ENOTSUP || code == EOPNOTSUPP {
@@ -153,13 +151,22 @@ nonisolated final class LibraryWriterLease: @unchecked Sendable {
         }
     }
 
+    /// A filesystem may accept `flock` while failing to enforce it between
+    /// independent opens. Probe with a child process and a fresh descriptor;
+    /// writable sessions fail closed unless the child observes contention.
+    private static func verifyExclusiveLockAcrossProcess(
+        descriptor: Int32,
+        lockURL: URL
+    ) throws {
+        precondition(descriptor >= 0)
+        let result = lockURL.path.withCString(kmgccc_verify_flock_exclusion)
+        guard result == 0 else {
+            throw LibraryWriterLeaseError.writerLeaseUnsupported(lockURL)
+        }
+    }
+
     nonisolated private static func unlock(descriptor: Int32) {
-        var lock = Darwin.flock()
-        lock.l_type = Int16(F_UNLCK)
-        lock.l_whence = Int16(SEEK_SET)
-        lock.l_start = 0
-        lock.l_len = 0
-        _ = Darwin.fcntl(descriptor, F_SETLK, &lock)
+        _ = kmgccc_flock(descriptor, LOCK_UN)
     }
 
     private static func writeDiagnostic(
