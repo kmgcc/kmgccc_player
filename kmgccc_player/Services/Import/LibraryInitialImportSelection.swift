@@ -147,6 +147,7 @@ final class LibraryInitialImportSelection {
     let urls: [URL]
     let createPlaylistsForDirectories: Bool
     let playlistSourceEntries: [LibraryImportSourceEntry]
+    private let bookmarkResolver: any BookmarkResolving
     private var leases: [SecurityScopedResourceLease]
 
     init(
@@ -156,14 +157,33 @@ final class LibraryInitialImportSelection {
         bookmarkResolver: any BookmarkResolving = SystemBookmarkResolver()
     ) {
         self.urls = urls
+        self.bookmarkResolver = bookmarkResolver
         self.playlistSourceEntries = playlistSourceEntries
         self.createPlaylistsForDirectories = createPlaylistsForDirectories
             || playlistSourceEntries.contains { $0.kind == .directory }
-        leases = urls.compactMap { url in
-            guard bookmarkResolver.startAccessing(url) else { return nil }
-            return SecurityScopedResourceLease {
-                bookmarkResolver.stopAccessing(url)
+        let groupedRoots = SecurityScopeAuthorization.groupedRoots(for: urls)
+        var failedRoots: [URL] = []
+        leases = groupedRoots.compactMap { root in
+            guard bookmarkResolver.startAccessing(root) else {
+                failedRoots.append(root)
+                return nil
             }
+            return SecurityScopedResourceLease {
+                bookmarkResolver.stopAccessing(root)
+            }
+        }
+        // A resolver may grant a file but reject its parent (for example a
+        // stale picker URL). Preserve that rare fallback without making it
+        // the normal path for multi-file drags.
+        for url in urls where urls.count == 1 {
+            let path = SecurityScopeAuthorization.canonicalPath(url)
+            guard failedRoots.contains(where: { root in
+                let rootPath = SecurityScopeAuthorization.canonicalPath(root)
+                return path == rootPath || path.hasPrefix(rootPath + "/")
+            }), bookmarkResolver.startAccessing(url) else { continue }
+            leases.append(SecurityScopedResourceLease {
+                bookmarkResolver.stopAccessing(url)
+            })
         }
     }
 
@@ -180,7 +200,8 @@ final class LibraryInitialImportSelection {
         LibraryInitialImportSelection(
             urls: urls,
             createPlaylistsForDirectories: createPlaylistsForDirectories,
-            playlistSourceEntries: playlistSourceEntries
+            playlistSourceEntries: playlistSourceEntries,
+            bookmarkResolver: bookmarkResolver
         )
     }
 

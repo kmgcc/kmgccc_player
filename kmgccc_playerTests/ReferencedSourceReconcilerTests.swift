@@ -1262,10 +1262,12 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         try paths.createRequiredDirectories()
         let wavURL = sourceRoot.appendingPathComponent("Production Automatic.wav")
         let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1))
-        let audioFile = try AVAudioFile(forWriting: wavURL, settings: format.settings)
-        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_410))
-        buffer.frameLength = 4_410
-        try audioFile.write(from: buffer)
+        do {
+            let audioFile = try AVAudioFile(forWriting: wavURL, settings: format.settings)
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_410))
+            buffer.frameLength = 4_410
+            try audioFile.write(from: buffer)
+        }
 
         let libraryService = LocalLibraryService(
             paths: paths,

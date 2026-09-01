@@ -27,62 +27,85 @@ struct MusicSettingsContent: View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection("音乐存储方式") {
                 HStack(spacing: 10) {
-                    Text("当前模式")
-                        .foregroundStyle(.secondary)
-                    Spacer()
                     Text(model.mode.dialogDisplayTitle)
                         .font(.callout.weight(.medium))
+                    Spacer()
+                    Text(model.mode == .managed ? "音乐复制到资料库" : "音乐留在原位置，资料库保存索引")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                        .lineLimit(2)
                 }
                 .accessibilityElement(children: .combine)
             }
             SettingsSection("资料库") {
-                VStack(spacing: 0) {
-                    ForEach(Array(model.libraries.enumerated()), id: \.element.id) { index, row in
-                        compactRow(name: row.name, path: row.path, status: row.isActive ? "当前" : nil, scanning: false)
-                        if index < model.libraries.count - 1 { Divider().padding(.leading, 12) }
+                VStack(alignment: .leading, spacing: 10) {
+                    if model.libraries.isEmpty {
+                        previewEmptyState("还没有资料库", systemImage: "externaldrive")
+                    } else {
+                        ForEach(model.libraries) { row in
+                            MusicLibrarySettingsRow(
+                                name: row.name,
+                                path: row.path,
+                                mode: model.mode,
+                                isActive: row.isActive,
+                                onOpen: {},
+                                onReveal: {},
+                                onRemove: {}
+                            )
+                        }
                     }
                 }
             }
             if model.mode == .referenced {
                 SettingsSection("音乐来源") {
-                    VStack(spacing: 0) {
-                        ForEach(Array(model.sources.enumerated()), id: \.element.id) { index, row in
-                            compactRow(
+                    VStack(alignment: .leading, spacing: 10) {
+                        if model.sources.isEmpty {
+                            previewEmptyState("尚未添加来源", systemImage: "folder")
+                        }
+                        ForEach(model.sources) { row in
+                            MusicSourceSettingsRow(
                                 name: row.name,
                                 path: row.path,
-                                status: row.status,
-                                scanning: row.scanState == .scanning
+                                mode: .directory,
+                                status: row.status == "可用" ? .available : .offline,
+                                isScanning: row.scanState == .scanning,
+                                scanFailed: row.scanState == .failed,
+                                onRescan: {},
+                                onReconnect: {},
+                                onRemove: {}
                             )
-                            if index < model.sources.count - 1 { Divider().padding(.leading, 12) }
                         }
                     }
                 }
-                SettingsSection("删除歌曲时") {
-                    Picker("删除歌曲时", selection: .constant(model.deletePolicy)) {
-                        Text("仅从资料库移除").tag(ReferencedTrackDeletePolicy.onlyLibrary)
-                        Text("将原文件移到废纸篓").tag(ReferencedTrackDeletePolicy.recycleSource)
+                SettingsSection("偏好设置") {
+                    HStack(spacing: 12) {
+                        Text("删除歌曲")
+                            .font(.callout)
+                        Spacer(minLength: 8)
+                        AppDialogCapsuleSlider(
+                            segments: ReferencedTrackDeletePolicy.allCases,
+                            selection: .constant(model.deletePolicy),
+                            label: { $0.dialogDisplayTitle }
+                        )
                     }
-                    .pickerStyle(.radioGroup)
                 }
             }
         }
     }
 
-    private func compactRow(name: String, path: String, status: String?, scanning: Bool) -> some View {
+    private func previewEmptyState(_ title: String, systemImage: String) -> some View {
         HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(name).lineLimit(1).truncationMode(.middle)
-                    if let status { Text(status).font(.caption2).foregroundStyle(.secondary) }
-                }
-                Text(path).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            if scanning { ProgressView().controlSize(.small) }
-            Image(systemName: "ellipsis.circle").foregroundStyle(.secondary)
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     static var longPathFixture: MusicSettingsContentModel {
@@ -114,6 +137,7 @@ struct MusicSettingsContent: View {
     MusicSettingsContent(model: MusicSettingsContent.longPathFixture)
         .frame(width: 500)
         .padding()
+        .environmentObject(ThemeStore.shared)
         .preferredColorScheme(.light)
 }
 
@@ -121,6 +145,7 @@ struct MusicSettingsContent: View {
     MusicSettingsContent(model: MusicSettingsContent.longPathFixture)
         .frame(width: 500)
         .padding()
+        .environmentObject(ThemeStore.shared)
         .preferredColorScheme(.dark)
 }
 
@@ -128,5 +153,6 @@ struct MusicSettingsContent: View {
     MusicSettingsContent(model: MusicSettingsContent.longPathFixture)
         .frame(width: 500)
         .padding()
+        .environmentObject(ThemeStore.shared)
         .transaction { $0.animation = nil }
 }

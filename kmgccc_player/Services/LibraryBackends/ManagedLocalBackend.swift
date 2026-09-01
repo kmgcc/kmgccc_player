@@ -15,9 +15,12 @@ final class ManagedLocalBackend: LibraryStorageBackend {
     init(paths: LibraryPaths) { self.paths = paths }
 
     func prepareInputs(_ selectedURLs: [URL]) async -> ImportInputPlan {
-        for url in selectedURLs {
-            if url.startAccessingSecurityScopedResource() {
-                selectionLeases.append(SecurityScopedResourceLease { url.stopAccessingSecurityScopedResource() })
+        // A drag of several files commonly comes from Finder locations that
+        // are not themselves security-scoped file URLs. Authorize each unique
+        // parent directory once; the scanner can then read all children.
+        for root in SecurityScopeAuthorization.groupedRoots(for: selectedURLs) {
+            if root.startAccessingSecurityScopedResource() {
+                selectionLeases.append(SecurityScopedResourceLease { root.stopAccessingSecurityScopedResource() })
             }
         }
         let plan = await ImportInputScanner.scan(selectedURLs: selectedURLs, directorySources: [:])

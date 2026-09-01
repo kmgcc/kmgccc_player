@@ -13,6 +13,7 @@ struct LibrarySetupFlow: View {
     @EnvironmentObject private var appSession: AppSessionHost
     @EnvironmentObject private var themeStore: ThemeStore
     @State private var isPlaylistCreationPromptPresented = false
+    @State private var shouldPresentPlaylistSourceSelectionAfterPromptDismiss = false
     @State private var isPlaylistSourceSelectionPresented = false
 
     @ViewBuilder
@@ -53,20 +54,25 @@ struct LibrarySetupFlow: View {
                 flow.step = .location
             }
         }
-        .alert(
-            "基于这些来源新建播放列表？",
-            isPresented: $isPlaylistCreationPromptPresented
-        ) {
-            Button("新建播放列表") {
+        .sheet(
+            isPresented: $isPlaylistCreationPromptPresented,
+            onDismiss: {
+                guard shouldPresentPlaylistSourceSelectionAfterPromptDismiss else { return }
+                shouldPresentPlaylistSourceSelectionAfterPromptDismiss = false
                 isPlaylistSourceSelectionPresented = true
             }
-            Button("暂不新建") {
-                flow.clearPlaylistSourceEntries()
-                flow.step = .location
-            }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("你可以按文件夹或单独选择的歌曲创建播放列表。")
+        ) {
+            LibraryPlaylistCreationPrompt(
+                onCreate: {
+                    shouldPresentPlaylistSourceSelectionAfterPromptDismiss = true
+                    isPlaylistCreationPromptPresented = false
+                },
+                onSkip: {
+                    flow.clearPlaylistSourceEntries()
+                    flow.step = .location
+                    isPlaylistCreationPromptPresented = false
+                }
+            )
         }
     }
 
@@ -94,7 +100,7 @@ struct LibrarySetupFlow: View {
                 footerButtons
             }
         }
-        .frame(width: 500)
+        .frame(minWidth: 460, idealWidth: 500, maxWidth: 560)
         // The panel is allowed to close while a lifecycle operation is in
         // flight.  The operation is owned by AppSessionHost and will either
         // finish or be quiesced by the session coordinator.
@@ -117,14 +123,14 @@ struct LibrarySetupFlow: View {
 
     private var subtitle: String {
         switch flow.presentation {
-        case .chooser: return "选择要打开的资料库。"
-        case .reconnectRequired: return "选择资料库的新位置。"
-        case .sourceReconnect: return "选择外部音乐的新位置。"
+        case .chooser: return "选择要打开的资料库"
+        case .reconnectRequired: return "选择资料库的新位置"
+        case .sourceReconnect: return "选择外部音乐的新位置"
         default:
             switch flow.step {
-            case .storage: return flow.mode == .managed ? "音乐将复制到资料库。" : "音乐将保留在原位置。"
-            case .music: return "可多次添加文件或文件夹，也可稍后添加。"
-            case .location: return "必须先选择资料库的存储目录。"
+            case .storage: return flow.mode == .managed ? "音乐会复制到资料库" : "音乐保留在原位置"
+            case .music: return "可稍后添加"
+            case .location: return "选择资料库的存储位置"
             }
         }
     }
@@ -185,8 +191,16 @@ struct LibrarySetupFlow: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
-                    TextField("资料库名称", text: $flow.displayName)
-                        .textFieldStyle(.roundedBorder)
+                    HStack(spacing: 9) {
+                        Image(systemName: "character.cursor.ibeam")
+                            .foregroundStyle(themeStore.accentColor)
+                            .frame(width: 18)
+                        TextField("资料库名称", text: $flow.displayName)
+                            .textFieldStyle(.plain)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     storageDirectorySection
                     if case .failed(let message) = flow.operation {
                         Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red)
@@ -204,7 +218,12 @@ struct LibrarySetupFlow: View {
     private var musicStepContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Button("添加文件或文件夹…") { chooseMusic() }
+                Button {
+                    chooseMusic()
+                } label: {
+                    Label("添加文件或文件夹", systemImage: "plus")
+                }
+                .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
                 Spacer()
                 if !flow.selectedMusicURLs.isEmpty {
                     Text("已选择 \(flow.selectedMusicURLs.count) 项")
@@ -243,13 +262,13 @@ struct LibrarySetupFlow: View {
                                 .help("移除")
                                 .accessibilityLabel("移除 \(url.lastPathComponent)")
                             }
-                            // Trailing padding keeps the remove button clear
-                            // of the overlay scrollbar.
-                            .padding(.vertical, 6)
-                            .padding(.trailing, 14)
-                            if index < flow.selectedMusicURLs.count - 1 {
-                                Divider().opacity(0.25)
-                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(
+                                Color.primary.opacity(0.045),
+                                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            )
+                            .padding(.bottom, index < flow.selectedMusicURLs.count - 1 ? 6 : 0)
                         }
                     }
                 }
@@ -261,34 +280,32 @@ struct LibrarySetupFlow: View {
     /// Step 3: required storage directory choice. The default directory is
     /// only the initial browsing location; it is not treated as selected.
     private var storageDirectorySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("存储目录")
-                .font(.callout.weight(.medium))
-            HStack(spacing: 10) {
-                Image(systemName: "externaldrive.fill")
-                    .foregroundStyle(themeStore.accentColor)
-                    .frame(width: 16)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(flow.storageParentURL == nil ? "尚未选择位置" : "已选择位置")
-                        .font(.callout)
-                    Text(flow.storageParentURL?.appendingPathComponent(
-                        LibraryPaths.rootDirectoryName,
-                        isDirectory: true
-                    ).path ?? "请选择一个目录后继续")
+        HStack(spacing: 10) {
+            Image(systemName: "externaldrive.fill")
+                .foregroundStyle(themeStore.accentColor)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(flow.storageParentURL == nil ? "未选择" : "存储位置")
+                    .font(.callout.weight(.medium))
+                if let parent = flow.storageParentURL {
+                    Text(parent.path)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
                         .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Button("选择位置…") { chooseStorageLocation() }
-                    .disabled(flow.operation == .working)
             }
-            Text("资料库目录包含索引、元数据以及缓存，将在其中创建“\(LibraryPaths.rootDirectoryName)”文件夹。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button(flow.storageParentURL == nil ? "选择位置" : "更改") {
+                chooseStorageLocation()
+            }
+            .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
+            .disabled(flow.operation == .working)
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     @ViewBuilder
@@ -312,7 +329,7 @@ struct LibrarySetupFlow: View {
                     flow.step = .location
                 }
                 SettingsTaskDialogButton("下一步", kind: .primary) { presentPlaylistSourceSelectionIfNeeded() }
-                case .location:
+            case .location:
                 if let existing = flow.existingLibraryContext {
                     SettingsTaskDialogButton("重新选择位置", kind: .secondary) {
                         flow.returnFromExistingLibrary()
@@ -503,6 +520,65 @@ struct LibrarySetupFlow: View {
     }
 }
 
+/// Small custom confirmation used between the music and storage steps.  A
+/// native alert here made the wizard switch visual languages; this keeps the
+/// same glass header/footer and button treatment as the rest of the flow.
+private struct LibraryPlaylistCreationPrompt: View {
+    let onCreate: () -> Void
+    let onSkip: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        AppDialogFrame(
+            header: {
+                AppDialogHeader(
+                    title: "创建播放列表？",
+                    subtitle: "从已选音乐中选择要同步的来源",
+                    systemImage: "music.note.list",
+                    iconColor: themeStore.accentColor
+                )
+                .padding(.horizontal, AppDialogTokens.headerHorizontalPadding)
+                .padding(.top, 12)
+                .padding(.bottom, 12)
+            },
+            content: {
+                Text("文件夹来源会持续同步；单独歌曲只加入这次创建的播放列表。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            },
+            footer: {
+                AppDialogFooter {
+                    HStack {
+                        Spacer()
+                        Button("取消") { dismiss() }
+                            .keyboardShortcut(.cancelAction)
+                            .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
+                        Button("暂不新建") {
+                            onSkip()
+                            dismiss()
+                        }
+                        .buttonStyle(AppDialogGlassButtonStyle(kind: .secondary))
+                        Button("创建播放列表") {
+                            onCreate()
+                            dismiss()
+                        }
+                        .keyboardShortcut(.defaultAction)
+                        .buttonStyle(
+                            AppDialogGlassButtonStyle(kind: .primary, tint: themeStore.accentColor)
+                        )
+                    }
+                }
+            }
+        )
+        .frame(width: 460)
+    }
+}
+
 /// Compact source selection shared by library creation and Settings source
 /// import. It keeps all individual files as one selectable row and lets folder
 /// rows opt into the persisted source-to-playlist binding.
@@ -529,7 +605,7 @@ struct LibraryImportSourceSelectionSheet: View {
             header: {
                 AppDialogHeader(
                     title: "选择播放列表来源",
-                    subtitle: "勾选需要随音乐导入的来源",
+                    subtitle: "选择要同步的来源",
                     systemImage: "music.note.list",
                     iconColor: themeStore.accentColor
                 )
@@ -540,21 +616,20 @@ struct LibraryImportSourceSelectionSheet: View {
             content: {
                 VStack(alignment: .leading, spacing: 12) {
                     ScrollView(.vertical) {
-                        VStack(alignment: .leading, spacing: 0) {
+                        VStack(alignment: .leading, spacing: 6) {
                             ForEach(entries) { entry in
-                                Toggle(
-                                    isOn: Binding(
-                                        get: { selectedEntryIDs.contains(entry.id) },
-                                        set: { selected in
-                                            if selected {
-                                                selectedEntryIDs.insert(entry.id)
-                                            } else {
-                                                selectedEntryIDs.remove(entry.id)
-                                            }
-                                        }
-                                    )
-                                ) {
+                                let isSelected = selectedEntryIDs.contains(entry.id)
+                                Button {
+                                    if isSelected {
+                                        selectedEntryIDs.remove(entry.id)
+                                    } else {
+                                        selectedEntryIDs.insert(entry.id)
+                                    }
+                                } label: {
                                     HStack(spacing: 8) {
+                                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                            .foregroundStyle(isSelected ? themeStore.accentColor : .secondary)
+                                            .font(.system(size: 16, weight: .medium))
                                         Image(systemName: entry.kind == .directory ? "folder.fill" : "music.note.list")
                                             .foregroundStyle(.secondary)
                                             .frame(width: 16)
@@ -566,19 +641,27 @@ struct LibraryImportSourceSelectionSheet: View {
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
                                                 .lineLimit(1)
-                                                .truncationMode(.middle)
+                                            .truncationMode(.middle)
                                         }
                                     }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                                 }
-                                .toggleStyle(.checkbox)
-                                .padding(.vertical, 5)
+                                .buttonStyle(.plain)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 8)
+                                .background(
+                                    isSelected
+                                        ? themeStore.accentColor.opacity(0.10)
+                                        : Color.primary.opacity(0.045),
+                                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                )
                             }
                         }
                     }
                     .frame(maxHeight: 190)
                     .padding(.leading, 4)
 
-                    Text("文件夹播放列表会随来源中的歌曲增减自动同步；单独歌曲分组只在本次导入时生成。")
+                    Text("文件夹来源会随扫描更新。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

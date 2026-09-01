@@ -213,12 +213,21 @@ nonisolated enum PerAudioFileImportTask {
     ) throws {
         if knownDuration > 0, knownDuration.isFinite { return }
         do {
-            _ = try AVAudioFile(forReading: url)
+            let file = try AVAudioFile(forReading: url)
+            guard file.length > 0,
+                  file.processingFormat.sampleRate.isFinite,
+                  file.processingFormat.sampleRate > 0,
+                  file.processingFormat.channelCount > 0 else {
+                throw AudioImportError.undecodable(fileName: url.lastPathComponent)
+            }
         } catch {
             Log.warning(
                 "[Import] rejected undecodable file '\(url.lastPathComponent)': \(error.localizedDescription)",
                 category: .import
             )
+            if error is AudioImportError {
+                throw error
+            }
             throw AudioImportError.undecodable(fileName: url.lastPathComponent)
         }
     }
@@ -231,11 +240,15 @@ nonisolated enum PerAudioFileImportTask {
         durationSeconds: Double
     ) -> TrackAudioProperties? {
         let format = url.pathExtension.uppercased()
+        var codec = Self.inferredCodec(forPathExtension: url.pathExtension)
         var sampleRateHz: Int?
         var channelCount: Int?
         var bitDepth: Int?
 
         if let audioFile = try? AVAudioFile(forReading: url) {
+            codec = Self.codecName(
+                for: audioFile.fileFormat.streamDescription.pointee.mFormatID
+            ) ?? codec
             let processingFormat = audioFile.processingFormat
             if processingFormat.sampleRate > 0 {
                 sampleRateHz = Int(processingFormat.sampleRate)
@@ -264,11 +277,48 @@ nonisolated enum PerAudioFileImportTask {
         }
         return TrackAudioProperties(
             format: format.isEmpty ? nil : format,
+            codec: codec,
             bitrateKbps: bitrateKbps,
             sampleRateHz: sampleRateHz,
             bitDepth: bitDepth,
             channelCount: channelCount
         )
+    }
+
+    /// AVAudioFile exposes the source stream's format id separately from the
+    /// decoded processing format. Keep the user-facing names short and stable
+    /// so diagnostics can distinguish, for example, M4A/AAC from M4A/ALAC.
+    private nonisolated static func codecName(for formatID: AudioFormatID) -> String? {
+        let bytes = [
+            UInt8((formatID >> 24) & 0xff),
+            UInt8((formatID >> 16) & 0xff),
+            UInt8((formatID >> 8) & 0xff),
+            UInt8(formatID & 0xff)
+        ]
+        guard let rawTag = String(bytes: bytes, encoding: .ascii) else { return nil }
+        switch rawTag.trimmingCharacters(in: .whitespacesAndNewlines) {
+        case "aac": return "AAC"
+        case ".mp3": return "MP3"
+        case "alac": return "ALAC"
+        case "lpcm": return "PCM"
+        case "flac": return "FLAC"
+        case "opus": return "Opus"
+        case "vorb": return "Vorbis"
+        case "ima4": return "IMA4"
+        case "ulaw": return "μ-law"
+        case "alaw": return "A-law"
+        default: return nil
+        }
+    }
+
+    private nonisolated static func inferredCodec(forPathExtension pathExtension: String) -> String? {
+        switch pathExtension.lowercased() {
+        case "mp3": return "MP3"
+        case "flac": return "FLAC"
+        case "alac": return "ALAC"
+        case "wav", "wave", "aif", "aiff": return "PCM"
+        default: return nil
+        }
     }
 
     // MARK: - Concurrency calculators

@@ -22,6 +22,9 @@ nonisolated struct NCMConversionAssociation: Codable, Sendable, Equatable {
 /// so these live per-location rather than on the track.
 nonisolated struct TrackAudioProperties: Codable, Equatable, Hashable, Sendable {
     var format: String?
+    /// Codec carried by the audio stream (for example AAC, ALAC, FLAC or
+    /// PCM). `format` remains the container/filename format for compatibility.
+    var codec: String?
     var bitrateKbps: Int?
     var sampleRateHz: Int?
     var bitDepth: Int?
@@ -29,12 +32,14 @@ nonisolated struct TrackAudioProperties: Codable, Equatable, Hashable, Sendable 
 
     init(
         format: String? = nil,
+        codec: String? = nil,
         bitrateKbps: Int? = nil,
         sampleRateHz: Int? = nil,
         bitDepth: Int? = nil,
         channelCount: Int? = nil
     ) {
         self.format = format
+        self.codec = codec
         self.bitrateKbps = bitrateKbps
         self.sampleRateHz = sampleRateHz
         self.bitDepth = bitDepth

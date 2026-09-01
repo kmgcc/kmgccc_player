@@ -123,6 +123,72 @@ final class ReferencedNCMConversionTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.sourceRoot.path), ["song.ncm"])
     }
 
+    func testImportBatchAuthorizesSameNCMParentOnlyOnce() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let secondURL = fixture.sourceRoot.appendingPathComponent("second.ncm")
+        try Data("second-ncm-source".utf8).write(to: secondURL)
+
+        fixture.service.beginImportBatch()
+        defer { fixture.service.finishImportBatch() }
+
+        _ = try await fixture.service.convert(try fixture.input())
+        _ = try await fixture.service.convert(try fixture.input(url: secondURL))
+
+        XCTAssertEqual(
+            fixture.authorizer.calls,
+            1,
+            "Files from one parent directory must share one authorization"
+        )
+    }
+
+    func testImportBatchAuthorizesDifferentNCMParentsIndependently() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let secondParent = fixture.root.appendingPathComponent("Other", isDirectory: true)
+        try FileManager.default.createDirectory(at: secondParent, withIntermediateDirectories: true)
+        let secondURL = secondParent.appendingPathComponent("second.ncm")
+        try Data("second-ncm-source".utf8).write(to: secondURL)
+
+        fixture.service.beginImportBatch()
+        defer { fixture.service.finishImportBatch() }
+
+        _ = try await fixture.service.convert(try fixture.input())
+        _ = try await fixture.service.convert(try fixture.input(url: secondURL))
+
+        XCTAssertEqual(
+            fixture.authorizer.calls,
+            2,
+            "Different parent directories need separate authorization scopes"
+        )
+    }
+
+    func testImportBatchDoesNotRepromptAfterParentAuthorizationCancellation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let secondURL = fixture.sourceRoot.appendingPathComponent("second.ncm")
+        try Data("second-ncm-source".utf8).write(to: secondURL)
+        fixture.authorizer.error = ReferencedNCMConversionError.parentAuthorizationDenied
+
+        fixture.service.beginImportBatch()
+        defer { fixture.service.finishImportBatch() }
+
+        for input in [try fixture.input(), try fixture.input(url: secondURL)] {
+            do {
+                _ = try await fixture.service.convert(input)
+                XCTFail("Expected parent authorization denial")
+            } catch {
+                XCTAssertEqual(error as? ReferencedNCMConversionError, .parentAuthorizationDenied)
+            }
+        }
+
+        XCTAssertEqual(
+            fixture.authorizer.calls,
+            1,
+            "Cancelling one parent prompt must fail the rest of that parent batch without reopening it"
+        )
+    }
+
     func testExistingValidOutputIsReusedWithoutOverwriteOrNumberedCopy() async throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
@@ -601,12 +667,13 @@ private final class Fixture {
     }
 
     func input(
+        url: URL? = nil,
         memberships: [kmgccc_player.ReferencedSourceMembership] = [],
         primarySourceID: UUID? = nil
     ) throws -> kmgccc_player.ImportDiscoveredFile {
         kmgccc_player.ImportDiscoveredFile(
-            url: ncmURL, memberships: memberships, primarySourceID: primarySourceID,
-            fingerprint: try kmgccc_player.ReferencedFileIdentityProvider().fingerprint(for: ncmURL)
+            url: url ?? ncmURL, memberships: memberships, primarySourceID: primarySourceID,
+            fingerprint: try kmgccc_player.ReferencedFileIdentityProvider().fingerprint(for: url ?? ncmURL)
         )
     }
 

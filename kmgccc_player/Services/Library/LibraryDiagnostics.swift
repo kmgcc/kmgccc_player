@@ -19,11 +19,42 @@ nonisolated struct LibraryTrackDiagnosticInput: Sendable, Equatable {
     let duration: Double
     let availability: TrackAvailability
     let format: String
+    let codec: String?
     let fileSize: Int64?
     let physicalKey: String?
     let metadataKey: String?
     let path: String
     let storageKind: LocalTrackStorageKind
+
+    init(
+        id: UUID,
+        title: String,
+        artist: String,
+        album: String,
+        duration: Double,
+        availability: TrackAvailability,
+        format: String,
+        codec: String? = nil,
+        fileSize: Int64?,
+        physicalKey: String?,
+        metadataKey: String?,
+        path: String,
+        storageKind: LocalTrackStorageKind
+    ) {
+        self.id = id
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.duration = duration
+        self.availability = availability
+        self.format = format
+        self.codec = codec
+        self.fileSize = fileSize
+        self.physicalKey = physicalKey
+        self.metadataKey = metadataKey
+        self.path = path
+        self.storageKind = storageKind
+    }
 }
 
 nonisolated enum LibraryDuplicateReason: String, Codable, Sendable, Equatable {
@@ -140,7 +171,14 @@ nonisolated enum LibraryDiagnosticsAnalyzer {
             }
 
             let format = track.format.isEmpty ? "unknown" : track.format
-            formatCounts[format, default: 0] += 1
+            let codec = track.codec?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayFormat: String
+            if let codec, !codec.isEmpty, codec.caseInsensitiveCompare(format) != .orderedSame {
+                displayFormat = "\(format) · \(codec)"
+            } else {
+                displayFormat = format
+            }
+            formatCounts[displayFormat, default: 0] += 1
 
             if let physicalKey = track.physicalKey {
                 physicalGroups[physicalKey, default: []].append(track)
@@ -216,18 +254,21 @@ enum LibraryTrackDiagnosticInputBuilder {
         let rawPath: String
         let fileSize: Int64?
         let physicalKey: String?
+        let audioProperties: TrackAudioProperties?
 
         switch locator {
         case let .managed(libraryRelativePath):
             rawPath = libraryRelativePath
             fileSize = nil
             physicalKey = nil
+            audioProperties = track.audioProperties
         case let .referenced(locator):
             rawPath = locator.lastKnownPath
             fileSize = locator.fingerprint?.fileSize
             physicalKey = locator.fingerprint.flatMap {
                 Self.physicalKey(for: $0, path: rawPath)
             }
+            audioProperties = locator.primaryAudioProperties ?? track.audioProperties
         }
 
         let format = URL(fileURLWithPath: rawPath).pathExtension.lowercased()
@@ -257,6 +298,7 @@ enum LibraryTrackDiagnosticInputBuilder {
             duration: track.duration,
             availability: track.availability,
             format: format,
+            codec: audioProperties?.codec,
             fileSize: fileSize,
             physicalKey: physicalKey,
             metadataKey: metadataKey,

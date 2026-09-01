@@ -115,9 +115,44 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
             (lhs.hasDirectoryPath ? 0 : 1) < (rhs.hasDirectoryPath ? 0 : 1)
         }
 
+        // Authorize the smallest set of parent directories up front. Child
+        // leases are handed to individual file sources below, but they all
+        // share this pool so Finder presents one prompt per parent, not one
+        // prompt per file.
+        let groupedAuthorizationRoots = SecurityScopeAuthorization
+            .groupedRoots(for: uniqueSelections)
+            .filter { root in
+                let rootPath = canonicalPath(root)
+                return !directoryRootPaths.contains {
+                    rootPath == $0 || rootPath.hasPrefix($0 + "/")
+                }
+            }
+        var authorizationPools: [String: SecurityScopedResourceLeasePool] = [:]
+        for root in groupedAuthorizationRoots {
+            let didStart = bookmarkResolver.startAccessing(root)
+            guard didStart else { continue }
+            let lease = SecurityScopedResourceLease { [bookmarkResolver] in
+                bookmarkResolver.stopAccessing(root)
+            }
+            authorizationPools[canonicalPath(root)] = SecurityScopedResourceLeasePool(rootLease: lease)
+        }
+
         for selected in uniqueSelections {
             let canonical = canonicalPath(selected)
             let isDirectory = selected.hasDirectoryPath
+
+            if isDirectory,
+               let existingDirectory = directorySourceRoots[canonical],
+               let existingDescriptor = existingDescriptors.first(where: { $0.id == existingDirectory.id }) {
+                sourceIDs[selected] = existingDirectory.id
+                readableSelectionPaths.insert(canonical)
+                // Keep an existing source in the returned plan as well. The
+                // scanner only needs the ID mapping, but callers use the plan
+                // to present the selected source and to carry its root into
+                // setup/reimport bookkeeping.
+                sources.append(.init(source: existingDescriptor, rootURL: selected))
+                continue
+            }
 
             // A file chosen from an already-known directory source must
             // inherit that source. Starting access on the child file can
@@ -137,14 +172,38 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
                 continue
             }
 
-            let didStart = bookmarkResolver.startAccessing(selected)
-            guard didStart || (!requiresSecurityScope && FileManager.default.isReadableFile(atPath: selected.path)) else {
+            let selectedPath = canonicalPath(selected)
+            let authorizationPool = groupedAuthorizationRoots
+                .first { root in
+                    let rootPath = canonicalPath(root)
+                    return selectedPath == rootPath || selectedPath.hasPrefix(rootPath + "/")
+                }
+                .flatMap { authorizationPools[canonicalPath($0)] }
+            if let authorizationPool {
+                selectionLeases[selected] = authorizationPool.makeLease()
+            } else if requiresSecurityScope,
+                      uniqueSelections.count == 1 {
+                // A single stale picker URL can still be recovered by its
+                // file-scoped token. For a multi-file selection, never fall
+                // back to one authorization attempt per file: a denied parent
+                // is reported for the whole group instead.
+                guard bookmarkResolver.startAccessing(selected) else {
+                    failures.append(.init(url: selected, message: "Permission denied"))
+                    continue
+                }
+                selectionLeases[selected] = SecurityScopedResourceLease { [bookmarkResolver] in
+                    bookmarkResolver.stopAccessing(selected)
+                }
+            } else if requiresSecurityScope,
+                      groupedAuthorizationRoots.contains(where: { root in
+                          let rootPath = canonicalPath(root)
+                          return selectedPath == rootPath || selectedPath.hasPrefix(rootPath + "/")
+                      }) {
                 failures.append(.init(url: selected, message: "Permission denied"))
                 continue
+            } else {
+                selectionLeases[selected] = SecurityScopedResourceLease.none
             }
-            selectionLeases[selected] = didStart
-                ? SecurityScopedResourceLease { [bookmarkResolver] in bookmarkResolver.stopAccessing(selected) }
-                : .none
 
             // Single audio files become first-class file sources so they show
             // up in the source list and can be monitored and removed.

@@ -120,6 +120,20 @@ final class ReferencedNCMConversionService {
     private let validate: Validate
     private let fileManager: FileManager
 
+    /// Parent-directory authorizations are batch-scoped.  A drag or picker
+    /// selection can contain several NCM files from the same folder; asking
+    /// for that folder once and retaining its lease for the complete import
+    /// avoids one authorization panel per file.  A denied parent is cached as
+    /// well, so cancelling the first prompt does not immediately reopen it for
+    /// every remaining item in the batch.
+    private enum BatchParentAuthorization {
+        case authorized(NCMParentDirectoryAuthorization)
+        case denied
+    }
+
+    private var batchParentAuthorizations: [String: BatchParentAuthorization] = [:]
+    private var isImportBatchActive = false
+
     init(
         paths: LibraryPaths,
         sourceScope: ReferencedSourceScope,
@@ -149,6 +163,29 @@ final class ReferencedNCMConversionService {
                 fetchCover: true,
                 progressHandler: nil
             )
+        }
+    }
+
+    /// Starts a new import authorization scope.  The caller must pair this
+    /// with `finishImportBatch()` even when the import is cancelled or fails.
+    /// Keeping this boundary in the conversion service (rather than in the
+    /// UI) also covers toolbar, sidebar-drop and source-monitor imports.
+    func beginImportBatch() {
+        finishImportBatch()
+        isImportBatchActive = true
+    }
+
+    /// Releases all parent-directory leases acquired for the current batch.
+    /// No bookmark or authorization is retained after the batch ends; the
+    /// durable source/locator bookmarks remain the long-lived access path.
+    func finishImportBatch() {
+        let authorizations = batchParentAuthorizations.values
+        batchParentAuthorizations.removeAll()
+        isImportBatchActive = false
+        for authorization in authorizations {
+            guard case let .authorized(value) = authorization,
+                  value.releasesLease else { continue }
+            value.lease.release()
         }
     }
 
@@ -677,7 +714,44 @@ final class ReferencedNCMConversionService {
                 releasesLease: false
             )
         }
-        return try await parentAuthorizer.authorizeParentDirectory(of: file.url)
+
+        guard isImportBatchActive else {
+            return try await parentAuthorizer.authorizeParentDirectory(of: file.url)
+        }
+
+        let parent = file.url.deletingLastPathComponent().standardizedFileURL
+        let key = SecurityScopeAuthorization.canonicalPath(parent)
+        if let cached = batchParentAuthorizations[key] {
+            switch cached {
+            case .authorized(let authorization):
+                // The cached authorization owns the parent lease.  Individual
+                // conversions must not release it; the batch boundary does.
+                return NCMParentDirectoryAuthorization(
+                    directoryURL: authorization.directoryURL,
+                    bookmarkData: authorization.bookmarkData,
+                    lease: .none,
+                    releasesLease: false
+                )
+            case .denied:
+                throw ReferencedNCMConversionError.parentAuthorizationDenied
+            }
+        }
+
+        do {
+            let authorization = try await parentAuthorizer.authorizeParentDirectory(of: file.url)
+            batchParentAuthorizations[key] = .authorized(authorization)
+            return NCMParentDirectoryAuthorization(
+                directoryURL: authorization.directoryURL,
+                bookmarkData: authorization.bookmarkData,
+                lease: .none,
+                releasesLease: false
+            )
+        } catch {
+            // Treat a cancellation/denial as item-scoped for this parent, but
+            // do not ask the user again for every other selected NCM file.
+            batchParentAuthorizations[key] = .denied
+            throw error
+        }
     }
 
     /// Dedicated subfolder (inside the NCM's parent directory) that holds

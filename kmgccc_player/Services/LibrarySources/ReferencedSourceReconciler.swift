@@ -43,8 +43,9 @@ nonisolated struct ReferencedSourceReconcileOutcome: Sendable, Equatable {
 nonisolated enum ReferencedSourceNotice: Sendable, Equatable {
     case filesImported(sourceID: UUID, count: Int)
     case unavailable(sourceID: UUID, status: ReferencedSourceStatus)
-    case fileFailures(sourceID: UUID, count: Int)
-    case reconcileFailures(sourceID: UUID, trackIDs: [UUID])
+    case fileFailures(sourceID: UUID, failures: [ReferencedSourceScanFailure])
+    case scanFailures(sourceID: UUID, failures: [ReferencedSourceScanFailure])
+    case reconcileFailures(sourceID: UUID, failures: [ReferencedSourceScanFailure])
     case monitorFailure(sourceIDs: [UUID], summary: String)
 }
 
@@ -710,16 +711,19 @@ final class ReferencedSourceReconciler {
             let tracks = await repository.fetchTracks(in: nil)
             let physicalTrackIDs = physicalTrackIDMap(tracks)
             let ncmSourceTrackIDs = ncmSourceTrackIDMap(tracks)
-            let resolvedAddedCount = intent.diff.added.reduce(into: 0) { count, added in
-                if physicalTrackIDs[ReferencedPhysicalIdentityKey(added.fingerprint)] != nil
-                    || added.fingerprint.identity.flatMap({ ncmSourceTrackIDs[$0] }) != nil {
-                    count += 1
-                }
+            let unresolvedAdded = intent.diff.added.filter { added in
+                physicalTrackIDs[ReferencedPhysicalIdentityKey(added.fingerprint)] == nil
+                    && added.fingerprint.identity.flatMap({ ncmSourceTrackIDs[$0] }) == nil
             }
-            if resolvedAddedCount < intent.diff.added.count {
+            if !unresolvedAdded.isEmpty {
                 await noticePublisher.publish(.fileFailures(
                     sourceID: intent.sourceID,
-                    count: intent.diff.added.count - resolvedAddedCount
+                    failures: unresolvedAdded.map {
+                        ReferencedSourceScanFailure(
+                            relativePath: $0.relativePath,
+                            summary: "未能导入"
+                        )
+                    }
                 ))
             }
             if var manifest = intent.proposedManifest {
@@ -758,7 +762,28 @@ final class ReferencedSourceReconciler {
             changes.committedTrackMutations += result.persistedTrackIDs.count
             intent = try await intentStore.recordAuthorityCommits(intent, trackIDs: result.persistedTrackIDs)
             if !result.failedTrackIDs.isEmpty {
-                await noticePublisher.publish(.reconcileFailures(sourceID: intent.sourceID, trackIDs: result.failedTrackIDs))
+                let failedIDs = Set(result.failedTrackIDs)
+                let failures = pending
+                    .filter { failedIDs.contains($0.trackID) }
+                    .map { mutation in
+                        ReferencedSourceScanFailure(
+                            relativePath: mutation.locator.allSourceMemberships.first {
+                                $0.sourceID == intent.sourceID
+                            }?.relativePath,
+                            summary: "资料库信息保存失败"
+                        )
+                    }
+                await noticePublisher.publish(.reconcileFailures(
+                    sourceID: intent.sourceID,
+                    failures: failures.isEmpty
+                        ? result.failedTrackIDs.map { _ in
+                            ReferencedSourceScanFailure(
+                                relativePath: nil,
+                                summary: "资料库信息保存失败"
+                            )
+                        }
+                        : failures
+                ))
                 throw ReferencedSourceReconcileError.authorityCommitFailed(result.failedTrackIDs)
             }
         }
@@ -800,7 +825,10 @@ final class ReferencedSourceReconciler {
                 await noticePublisher.publish(.unavailable(sourceID: intent.sourceID, status: intent.diff.sourceStatus))
             }
             if !intent.diff.failures.isEmpty {
-                await noticePublisher.publish(.fileFailures(sourceID: intent.sourceID, count: intent.diff.failures.count))
+                await noticePublisher.publish(.scanFailures(
+                    sourceID: intent.sourceID,
+                    failures: intent.diff.failures
+                ))
             }
         case .sourceReconnect:
             guard let manifest = intent.proposedManifest,

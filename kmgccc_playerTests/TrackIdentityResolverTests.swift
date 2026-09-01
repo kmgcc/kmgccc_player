@@ -226,7 +226,7 @@ final class TrackIdentityResolverTests: XCTestCase {
         XCTAssertEqual(hasher.callCount, 2, "digest tier hashes incoming + candidate exactly once each")
         XCTAssertEqual(digestResolution.computedDigests[locationID], hasher.digest)
 
-        await resolver.resolveReferencedMatch(
+        _ = await resolver.resolveReferencedMatch(
             incomingFingerprint: digestIncoming,
             incomingURL: incomingURL,
             candidates: [digestCandidate]

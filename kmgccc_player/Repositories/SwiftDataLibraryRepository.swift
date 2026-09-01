@@ -477,10 +477,15 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
             return $0.sourceID.uuidString < $1.sourceID.uuidString
         }?.sourceID
         let mergedLocator = TrackMediaLocator.referenced(merged)
-        guard locatorSidecarWriter(track, mergedLocator, track.availability, "referencedMembershipMerge") else {
+        // A successful import supplies a newly readable physical location.
+        // Clear a stale `.missing` state immediately so playlist playback can
+        // select the reused track before the next background reconciliation.
+        let mergedAvailability: TrackAvailability = .available
+        guard locatorSidecarWriter(track, mergedLocator, mergedAvailability, "referencedMembershipMerge") else {
             throw CocoaError(.fileWriteUnknown)
         }
         track.mediaLocator = mergedLocator
+        track.availability = mergedAvailability
         upsertTrackIndexEntries(for: [track])
         scheduleSearchIndexUpsert(for: [track], reason: "referencedMembershipMerge")
         changeHandler?(.trackUpdated(track.id))

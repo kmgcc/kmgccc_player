@@ -178,6 +178,10 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
             return $0.sourceID.uuidString < $1.sourceID.uuidString
         }?.sourceID
         track.mediaLocator = .referenced(merged)
+        // The incoming locator was produced from a readable import selection;
+        // a reused track must become playable immediately, even if a previous
+        // failed resolution had left its cached state as `.missing`.
+        track.availability = .available
     }
 
     func commitReferencedSourceMutations(

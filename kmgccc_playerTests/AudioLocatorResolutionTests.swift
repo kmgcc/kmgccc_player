@@ -1,5 +1,7 @@
 import Foundation
+import AVFoundation
 import XCTest
+@testable import kmgccc_player
 
 private final class BookmarkResolverSpy: BookmarkResolving, @unchecked Sendable {
     var url: URL
@@ -60,6 +62,28 @@ final class AudioLocatorResolutionTests: XCTestCase {
             ))).url,
             referenced
         )
+    }
+
+    func testSingleFileSourceRootResolvesItsMembershipWithoutAppendingToFile() throws {
+        let root = try temporaryDirectory()
+        let song = root.appendingPathComponent("song.mp3")
+        try Data("audio".utf8).write(to: song)
+        let sourceID = UUID()
+        let resolver = LocalAudioResourceResolver(
+            paths: LibraryPaths(rootURL: root),
+            authorizedSourceRoots: [
+                sourceID: AuthorizedSourceRoot(url: song, scopeOwner: .none)
+            ]
+        )
+
+        let resolution = try resolver.resolve(.referenced(ReferencedFileLocator(
+            fileBookmarkData: Data(),
+            sourceMemberships: [.init(sourceID: sourceID, relativePath: "song.mp3")],
+            primarySourceID: sourceID,
+            lastKnownPath: song.path
+        )))
+
+        XCTAssertEqual(resolution.url, song)
     }
 
     func testTraversalIsRejectedBeforeFilesystemAccess() throws {
@@ -129,6 +153,85 @@ final class AudioLocatorResolutionTests: XCTestCase {
         result.lease.release()
         result.lease.release()
         XCTAssertEqual(spy.stops, 1)
+    }
+
+    func testInvalidSourceMembershipDoesNotHideValidBookmarkFallback() throws {
+        let root = try temporaryDirectory()
+        let file = root.appendingPathComponent("song.wav")
+        try Data("audio".utf8).write(to: file)
+        let spy = BookmarkResolverSpy(url: file)
+        let resolver = LocalAudioResourceResolver(
+            paths: LibraryPaths(rootURL: root),
+            authorizedSourceRoots: [
+                UUID(): AuthorizedSourceRoot(url: root, scopeOwner: .none)
+            ],
+            bookmarkResolver: spy
+        )
+
+        // Old sidecars can contain one stale source edge alongside a still
+        // usable bookmark. The unsafe edge must be skipped, not turn the
+        // entire track into a missing file.
+        let result = try resolver.resolve(.referenced(ReferencedFileLocator(
+            fileBookmarkData: Data([1]),
+            sourceMemberships: [
+                .init(sourceID: UUID(), relativePath: "../outside/song.wav")
+            ],
+            lastKnownPath: file.path
+        )))
+        XCTAssertEqual(result.url.standardizedFileURL, file.standardizedFileURL)
+        result.lease.release()
+    }
+
+    @MainActor
+    func testPreparationFallsBackWhenPreferredReferencedCopyCannotOpen() async throws {
+        let root = try temporaryDirectory()
+        let broken = root.appendingPathComponent("broken.wav")
+        try Data("metadata can still be read from this placeholder".utf8).write(to: broken)
+
+        let playable = root.appendingPathComponent("playable.wav")
+        let format = try XCTUnwrap(
+            AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)
+        )
+        do {
+            let audioFile = try AVAudioFile(forWriting: playable, settings: format.settings)
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4_410))
+            buffer.frameLength = 4_410
+            try audioFile.write(from: buffer)
+        }
+
+        let brokenSourceID = UUID()
+        let playableSourceID = UUID()
+        let locator = kmgccc_player.ReferencedFileLocator(
+            fileBookmarkData: Data(),
+            sourceMemberships: [
+                .init(sourceID: brokenSourceID, relativePath: broken.lastPathComponent)
+            ],
+            primarySourceID: brokenSourceID,
+            lastKnownPath: broken.path,
+            alternateLocations: [
+                kmgccc_player.ReferencedTrackLocation(
+                    fileBookmarkData: Data(),
+                    sourceMemberships: [
+                        .init(sourceID: playableSourceID, relativePath: playable.lastPathComponent)
+                    ],
+                    lastKnownPath: playable.path
+                )
+            ]
+        )
+        let request = AudioPrepRequest(
+            trackID: UUID(),
+            locator: .referenced(locator),
+            libraryPaths: kmgccc_player.LibraryPaths(rootURL: root),
+            authorizedSourceRoots: [
+                brokenSourceID: kmgccc_player.AuthorizedSourceRoot(url: broken, scopeOwner: .none),
+                playableSourceID: kmgccc_player.AuthorizedSourceRoot(url: playable, scopeOwner: .none)
+            ],
+            titleForLog: "fallback"
+        )
+
+        let resource = try await AudioFilePreparationActor().prepare(request)
+        XCTAssertEqual(resource.resolvedURL.standardizedFileURL, playable.standardizedFileURL)
+        resource.lease.release()
     }
 
     // Narrow sidecar writes are covered through LocalLibraryService in the app target.

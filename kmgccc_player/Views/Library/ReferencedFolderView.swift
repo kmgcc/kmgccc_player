@@ -18,11 +18,11 @@ struct ReferencedFolderView: View {
     @State private var folderSelection: FolderSelection = .all
     @State private var isWorking = false
     @State private var errorMessage: String?
-    @State private var folderSearchText = ""
     /// Explicit expand/collapse overrides keyed by "sourceID|path". Missing
     /// keys fall back to the default rule: depth-0 roots expanded.
     @State private var folderExpansionOverrides: [String: Bool] = [:]
     @State private var contentMemo = FolderContentMemo()
+    @State private var layout = HomeWindowLayoutState.shared
 
     private enum FolderSelection: Hashable {
         case all
@@ -69,13 +69,55 @@ struct ReferencedFolderView: View {
         }
     }
 
-    var body: some View {
-        HSplitView {
-            sourceTree
-                .frame(minWidth: 220, idealWidth: 260, maxWidth: 330)
+    /// The source tree and its detail pane are both useful at normal window
+    /// widths, but keeping two independently scrollable columns below this
+    /// width makes every row compete for horizontal space.  A stacked layout
+    /// keeps the same selection model while giving each surface a readable
+    /// width.
+    private static let stackedLayoutBreakpoint: CGFloat = 780
+    private static let sourceActionControlSize: CGFloat = 36
 
-            detailPane
-                .frame(minWidth: 430, idealWidth: 620)
+    private var normalizedFolderSearchText: String {
+        libraryVM.referencedSourceSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// File selections are persisted as first-class `.file` sources so they
+    /// can retain bookmarks and survive a restart. They are still one user
+    /// concept in this screen, though: all individually added songs belong in
+    /// one grouped row instead of being scattered among directory sources.
+    private var directorySources: [ReferencedSourceDescriptor] {
+        sources.filter { $0.mode == .directory }
+    }
+
+    private var individualSourceIDs: Set<UUID> {
+        Set(sources.filter { $0.mode == .file }.map(\.id))
+    }
+
+    private var hasStandaloneContent: Bool {
+        !standaloneTracks.isEmpty
+    }
+
+    private var miniPlayerBottomInset: CGFloat {
+        let height = layout.miniPlayerFrameInWindow.height
+        return height > 1 ? height + 36 : 120
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            Group {
+                if proxy.size.width < Self.stackedLayoutBreakpoint {
+                    stackedContent
+                } else {
+                    HSplitView {
+                        sourceTree
+                            .frame(minWidth: 220, idealWidth: 260, maxWidth: 330)
+
+                        detailPane
+                            .frame(minWidth: 430, idealWidth: 620)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task(id: appSession.activeLibraryBinding.generation) {
             await reload()
@@ -85,76 +127,151 @@ struct ReferencedFolderView: View {
     private var sourceTree: some View {
         List {
             Section("资料库来源") {
-                if sources.isEmpty {
-                    Text("还没有绑定文件夹")
-                        .foregroundStyle(.secondary)
-                        .padding(.vertical, 8)
-                } else {
-                    ForEach(sources) { source in
-                        Button {
-                            selectedSourceID = source.id
-                            folderSelection = .all
-                        } label: {
-                            HStack(spacing: 9) {
-                                Image(systemName: source.mode == .directory ? "folder" : "music.note")
-                                    .foregroundStyle(sourceStatusColor(source))
-                                    .frame(width: 18)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(source.displayName)
-                                        .lineLimit(1)
-                                    Text(source.lastKnownPath)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                }
-                                Spacer(minLength: 4)
-                                scanIndicator(for: source)
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .tag(source.id)
-                        .listRowBackground(
-                            selectedSourceID == source.id
-                                ? themeStore.selectionFill
-                                : Color.clear
-                        )
-                    }
+                sourceRows
+            }
+
+            if hasStandaloneContent {
+                Section("单独添加") {
+                    standaloneRow
                 }
             }
 
             if selectedSource != nil {
-                Section("文件夹") {
-                    TextField("按路径筛选", text: $folderSearchText)
-                        .textFieldStyle(.roundedBorder)
-                        .controlSize(.small)
-                    folderRow(title: "全部歌曲", systemImage: "music.note.list", selection: .all)
-                    ForEach(visibleFolderEntries) { entry in
-                        folderRow(
-                            title: entry.path.isEmpty ? "根目录" : entry.path,
-                            systemImage: "folder",
-                            detail: "\(entry.count) 首",
-                            selection: .folder(entry.path),
-                            depth: entry.depth,
-                            isExcluded: entry.isExcluded,
-                            isBranch: directChildCount(for: entry) > 0,
-                            isExpanded: isFolderExpanded(entry),
-                            onToggleChevron: { toggleFolderExpanded(entry) }
-                        )
-                    }
-                    if memoized.standaloneTrackCount > 0 {
-                        folderRow(
-                            title: "单独添加的歌曲",
-                            systemImage: "music.note",
-                            detail: "\(memoized.standaloneTrackCount) 首",
-                            selection: .standalone
-                        )
-                    }
-                }
+                folderTreeRows
             }
         }
         .listStyle(.sidebar)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Color.clear
+                .frame(height: miniPlayerBottomInset)
+                .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder
+    private var sourceRows: some View {
+        if directorySources.isEmpty {
+            Text("还没有音乐来源")
+                .foregroundStyle(.secondary)
+                .padding(.vertical, 12)
+        } else {
+            ForEach(directorySources) { source in
+                sourceSelectionRow(source)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var folderTreeRows: some View {
+        ForEach(visibleFolderEntries) { entry in
+            folderRow(
+                title: entry.path.isEmpty ? "根目录" : entry.path,
+                systemImage: "folder",
+                detail: "\(entry.count) 首",
+                selection: .folder(entry.path),
+                depth: entry.depth,
+                isExcluded: entry.isExcluded,
+                isBranch: directChildCount(for: entry) > 0,
+                isExpanded: isFolderExpanded(entry),
+                onToggleChevron: { toggleFolderExpanded(entry) }
+            )
+        }
+    }
+
+    private var standaloneRow: some View {
+        folderRow(
+            title: "单独添加的歌曲",
+            systemImage: "music.note.list",
+            detail: "\(visibleStandaloneTrackCount) 首",
+            selection: .standalone
+        )
+    }
+
+    private func sourceSelectionRow(_ source: ReferencedSourceDescriptor) -> some View {
+        Button {
+            selectedSourceID = source.id
+            folderSelection = .all
+            libraryVM.setReferencedSourceSearchScope(id: source.id, title: source.displayName)
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "folder")
+                    .foregroundStyle(sourceStatusColor(source))
+                    .frame(width: 22)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(source.displayName)
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+                    Text(source.lastKnownPath)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 4)
+            }
+            .contentShape(Rectangle())
+            // Keep the icon comfortably inside the selected rounded shape;
+            // source rows intentionally match the height of a normal track row.
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(
+                selectedSourceID == source.id
+                    ? themeStore.selectionFill
+                    : Color.clear,
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .tag(source.id)
+        .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
+        .listRowBackground(Color.clear)
+    }
+
+    private var stackedContent: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("资料库来源")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 4)
+                    if directorySources.isEmpty {
+                        Text("还没有音乐来源")
+                            .foregroundStyle(.secondary)
+                            .padding(12)
+                    } else {
+                        ForEach(directorySources) { source in
+                            sourceSelectionRow(source)
+                                .padding(.horizontal, 4)
+                        }
+                    }
+
+                    if hasStandaloneContent {
+                        standaloneRow
+                            .padding(.horizontal, 4)
+                            .padding(.top, 4)
+                    }
+
+                    if selectedSource != nil {
+                        folderTreeRows
+                            .padding(.top, 6)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, 12)
+
+                Divider()
+
+                detailContent
+                    .padding(22)
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Color.clear
+                .frame(height: miniPlayerBottomInset)
+                .allowsHitTesting(false)
+        }
     }
 
     @ViewBuilder
@@ -171,23 +288,31 @@ struct ReferencedFolderView: View {
     ) -> some View {
         Button {
             folderSelection = selection
+            if selection == .standalone {
+                selectedSourceID = nil
+                libraryVM.setReferencedSourceSearchScope(
+                    id: nil,
+                    title: "单独添加的歌曲"
+                )
+            }
         } label: {
             HStack(spacing: 8) {
                 if isBranch {
                     Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.semibold))
-                        .frame(width: 11)
+                        .font(.caption.weight(.semibold))
+                        .frame(width: 14)
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         .onTapGesture { onToggleChevron?() }
                 }
                 Image(systemName: systemImage)
-                    .frame(width: 18)
+                    .frame(width: 22)
                 Text(title)
+                    .font(.body.weight(.medium))
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 if let detail {
                     Text(detail)
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
                 if isExcluded {
@@ -198,13 +323,19 @@ struct ReferencedFolderView: View {
             }
             .contentShape(Rectangle())
             .padding(.leading, CGFloat(depth) * 12)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .frame(minHeight: 48)
+            .background(
+                folderSelection == selection
+                    ? themeStore.selectionFill
+                    : Color.clear,
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
         }
         .buttonStyle(.plain)
-        .listRowBackground(
-            folderSelection == selection
-                ? themeStore.selectionFill
-                : Color.clear
-        )
+        .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
+        .listRowBackground(Color.clear)
         .contextMenu {
             if case let .folder(path) = selection,
                !path.isEmpty,
@@ -225,30 +356,95 @@ struct ReferencedFolderView: View {
 
     @ViewBuilder
     private var detailPane: some View {
-        if let source = selectedSource {
+        if selectedSource != nil || folderSelection == .standalone {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    sourceHeader(source)
-                    sourceStatusNotice(source)
-                    playlistRelations(source)
-                    trackSection(source)
-                }
-                .padding(22)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                detailContent
+                    .padding(22)
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                Color.clear
+                    .frame(height: miniPlayerBottomInset)
+                    .allowsHitTesting(false)
             }
         } else {
-            ContentUnavailableView {
-                Label("选择一个来源", systemImage: "folder.badge.gearshape")
-            } description: {
-                Text("左侧显示原位资料库的文件夹来源；选择后可以查看歌曲和播放列表的关系。")
+            detailContent
+        }
+    }
+
+    @ViewBuilder
+    private var detailContent: some View {
+        if folderSelection == .standalone {
+            VStack(alignment: .leading, spacing: 18) {
+                standaloneHeader
+                trackSection(nil)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else if let source = selectedSource {
+            VStack(alignment: .leading, spacing: 18) {
+                sourceHeader(source)
+                sourceStatusNotice(source)
+                playlistRelations(source)
+                trackSection(source)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            VStack(spacing: 9) {
+                Image(systemName: "folder.badge.gearshape")
+                    .font(.system(size: 28, weight: .medium))
+                    .foregroundStyle(themeStore.accentColor)
+                Text("选择一个来源")
+                    .font(.headline)
+                Text("从左侧选择文件夹，查看其中的歌曲。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    private func sourceHeader(_ source: ReferencedSourceDescriptor) -> some View {
+    private var standaloneHeader: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: source.mode == .directory ? "folder.fill" : "music.note")
+            Image(systemName: "music.note.list")
+                .font(.system(size: 26, weight: .medium))
+                .foregroundStyle(themeStore.accentColor)
+                .frame(width: 42, height: 42)
+                .background(
+                    themeStore.accentColor.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+                )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("单独添加的歌曲")
+                    .font(.title3.weight(.semibold))
+                Text("\(memoized.visibleTracks.count) 首")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func sourceHeader(_ source: ReferencedSourceDescriptor) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 12) {
+                sourceHeaderInfo(source)
+                Spacer(minLength: 8)
+                sourceHeaderActions(source)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                sourceHeaderInfo(source)
+                HStack {
+                    Spacer(minLength: 0)
+                    sourceHeaderActions(source)
+                }
+            }
+        }
+    }
+
+    private func sourceHeaderInfo(_ source: ReferencedSourceDescriptor) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "folder.fill")
                 .font(.system(size: 26, weight: .medium))
                 .foregroundStyle(themeStore.accentColor)
                 .frame(width: 42, height: 42)
@@ -257,79 +453,118 @@ struct ReferencedFolderView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(source.displayName)
                     .font(.title3.weight(.semibold))
+                    .lineLimit(1)
                 Text(source.lastKnownPath)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .truncationMode(.middle)
-                if let lastScan = source.lastScan {
-                    Text("上次扫描：\(lastScan.formatted(date: .abbreviated, time: .shortened))")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func sourceHeaderActions(_ source: ReferencedSourceDescriptor) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                reveal(source)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.up.forward.app")
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(width: 18, height: 18, alignment: .center)
+                        // SF Symbols' diagonal arrow has a slightly high/right
+                        // optical center; this keeps it centered in the same
+                        // 36pt control as the refresh circle.
+                        .offset(x: -0.5, y: 0.5)
+                    Text("在访达中显示")
+                }
+                .frame(height: Self.sourceActionControlSize, alignment: .center)
+            }
+            .buttonStyle(.plain)
+            .frame(height: Self.sourceActionControlSize)
+            .font(.callout.weight(.medium))
+            .foregroundStyle(themeStore.accentColor)
+            .padding(.horizontal, 14)
+            .background(
+                themeStore.accentColor.opacity(0.12),
+                in: Capsule(style: .continuous)
+            )
+            .contentShape(Capsule(style: .continuous))
+            .help("在访达中显示来源")
+
+            Button {
+                refresh(source)
+            } label: {
+                if isWorking {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.clockwise")
                 }
             }
-
-            Spacer(minLength: 8)
-
-            HStack(spacing: 8) {
-                Button {
-                    reveal(source)
-                } label: {
-                    Label("在访达中显示", systemImage: "arrow.up.forward.app")
-                }
-                .buttonStyle(.bordered)
-
-                Button {
-                    refresh(source)
-                } label: {
-                    if isWorking {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Label("重新扫描", systemImage: "arrow.clockwise")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(isWorking)
-            }
+            .buttonStyle(.plain)
+            .foregroundStyle(themeStore.accentColor)
+            .frame(
+                width: Self.sourceActionControlSize,
+                height: Self.sourceActionControlSize,
+                alignment: .center
+            )
+            .background(
+                themeStore.accentColor.opacity(0.12),
+                in: Circle()
+            )
+            .contentShape(Circle())
+            .help("重新扫描来源")
+            .accessibilityLabel("重新扫描来源")
+            .disabled(isWorking)
         }
     }
 
     @ViewBuilder
     private func sourceStatusNotice(_ source: ReferencedSourceDescriptor) -> some View {
-        HStack(spacing: 9) {
-            Image(systemName: sourceStatusIcon(source))
-                .foregroundStyle(sourceStatusColor(source))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(sourceStatusTitle(source))
-                    .font(.callout.weight(.medium))
-                Text(sourceStatusDetail(source))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        let scanState = appSession.referencedSourceScanStatesSnapshot[source.id] ?? .idle
+        if source.status != .available || scanState == .failed {
+            HStack(spacing: 9) {
+                Image(systemName: sourceStatusIcon(source))
+                    .foregroundStyle(sourceStatusColor(source))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(sourceStatusTitle(source))
+                        .font(.callout.weight(.medium))
+                    Text(sourceStatusDetail(source))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            .padding(12)
+            .background(
+                sourceStatusColor(source).opacity(0.10),
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
         }
-        .padding(12)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private func trackSection(_ source: ReferencedSourceDescriptor) -> some View {
+    private func trackSection(_ source: ReferencedSourceDescriptor?) -> some View {
         let tracks = memoized.visibleTracks
         return VStack(alignment: .leading, spacing: 9) {
             HStack {
                 Text(folderSelectionTitle)
                     .font(.headline)
-                Spacer()
-                Text("\(tracks.count) 首")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if folderSelection != .standalone {
+                    Spacer()
+                    Text("\(tracks.count) 首")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             if tracks.isEmpty {
                 Text("这个位置目前没有歌曲")
                     .foregroundStyle(.secondary)
-                    .padding(.vertical, 16)
+                    .padding(.vertical, 20)
             } else {
-                LazyVStack(spacing: 0) {
+                LazyVStack(spacing: 5) {
                     ForEach(tracks) { track in
                         HStack(spacing: 10) {
                             Image(systemName: track.availability.isPlayable ? "music.note" : "exclamationmark.triangle")
@@ -344,7 +579,9 @@ struct ReferencedFolderView: View {
                                     .lineLimit(1)
                             }
                             Spacer(minLength: 8)
-                            if let path = membershipPath(track, sourceID: source.id) {
+                            if let path = source
+                                .flatMap({ membershipPath(track, sourceID: $0.id) })
+                                ?? standalonePath(track) {
                                 Text(path)
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
@@ -353,10 +590,15 @@ struct ReferencedFolderView: View {
                                     .frame(maxWidth: 220, alignment: .trailing)
                             }
                         }
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 2)
+                        .frame(minHeight: 44)
+                        .background(
+                            Color.primary.opacity(0.035),
+                            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        )
                         .contentShape(Rectangle())
                         .contextMenu { trackRowMenu(track, source: source) }
-                        Divider()
                     }
                 }
             }
@@ -364,7 +606,7 @@ struct ReferencedFolderView: View {
     }
 
     @ViewBuilder
-    private func trackRowMenu(_ track: Track, source: ReferencedSourceDescriptor) -> some View {
+    private func trackRowMenu(_ track: Track, source: ReferencedSourceDescriptor?) -> some View {
         Button {
             playbackCoordinator.playTrack(track, inQueueFrom: memoized.visibleTracks)
         } label: {
@@ -383,10 +625,18 @@ struct ReferencedFolderView: View {
 
         Divider()
 
-        Button {
-            revealTrack(track, source: source)
-        } label: {
-            Label("在访达中显示", systemImage: "arrow.up.forward.app")
+        if let source {
+            Button {
+                revealTrack(track, source: source)
+            } label: {
+                Label("在访达中显示", systemImage: "arrow.up.forward.app")
+            }
+        } else {
+            Button {
+                revealStandaloneTrack(track)
+            } label: {
+                Label("在访达中显示", systemImage: "arrow.up.forward.app")
+            }
         }
     }
 
@@ -422,7 +672,7 @@ struct ReferencedFolderView: View {
             } else {
                 ForEach(source.playlistBindings) { binding in
                     HStack(spacing: 10) {
-                        Image(systemName: "music.note.list")
+                        Image(systemName: "folder.fill")
                             .foregroundStyle(themeStore.accentColor)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(playlistName(for: binding.playlistID))
@@ -430,18 +680,14 @@ struct ReferencedFolderView: View {
                                 Text("仅同步 \(relativePath)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                            } else {
-                                Text("同步这个来源中的全部歌曲")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
                             }
                         }
                         Spacer(minLength: 8)
-                        Button("解除关系") {
+                        Button("解除关系", role: .destructive) {
                             unbind(source, bindingID: binding.id)
                         }
                         .buttonStyle(.borderless)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.red)
                         .disabled(isWorking)
                     }
                     .padding(.vertical, 6)
@@ -471,7 +717,7 @@ struct ReferencedFolderView: View {
             trackCount: libraryVM.totalTrackCount,
             sourceID: selectedSourceID,
             selection: folderSelection,
-            searchText: folderSearchText
+            searchText: libraryVM.referencedSourceSearchText
         )
         if contentMemo.key == key {
             return contentMemo
@@ -489,7 +735,7 @@ struct ReferencedFolderView: View {
                 let parent = entry.path.split(separator: "/").dropLast().joined(separator: "/")
                 childCounts[parent, default: 0] += 1
             }
-            contentMemo.directChildCounts = childCounts
+                contentMemo.directChildCounts = childCounts
         }
         contentMemo.standaloneTrackCount = computeStandaloneTrackCount()
         contentMemo.visibleTracks = computeVisibleTracks()
@@ -500,10 +746,70 @@ struct ReferencedFolderView: View {
     /// otherwise an entry is visible only when every ancestor is expanded.
     private var visibleFolderEntries: [FolderEntry] {
         let entries = memoized.folderEntries
-        guard !folderSearchText.isEmpty else {
+        let query = normalizedFolderSearchText
+        guard !query.isEmpty else {
             return entries.filter { ancestorsExpanded(for: $0) }
         }
-        return entries.filter { $0.path.localizedCaseInsensitiveContains(folderSearchText) }
+
+        guard let source = selectedSource else { return [] }
+
+        // A path filter should work with either a folder name, a complete
+        // relative path, or the file name itself.  The old implementation only
+        // searched FolderEntry.path, so files directly under the source root
+        // (and every query that named the file) appeared to have no results.
+        let sourceRootMatches = source.lastKnownPath.localizedCaseInsensitiveContains(query)
+        var includedPaths = Set(
+            entries
+                .filter { $0.path.localizedCaseInsensitiveContains(query) }
+                .map(\.path)
+        )
+
+        let matchingRelativePaths = memoized.sourceTracks
+            .flatMap { membershipPaths($0, sourceID: source.id) }
+            .filter { $0.localizedCaseInsensitiveContains(query) }
+
+        if sourceRootMatches {
+            includedPaths.formUnion(entries.map(\.path))
+        } else {
+            for relativePath in matchingRelativePaths {
+                let folder = folderPath(for: relativePath)
+                guard !folder.isEmpty else { continue }
+                var components = folder.split(separator: "/").map(String.init)
+                while !components.isEmpty {
+                    includedPaths.insert(components.joined(separator: "/"))
+                    components.removeLast()
+                }
+            }
+        }
+
+        var filtered = entries.filter { includedPaths.contains($0.path) }
+
+        // Root-level files have no folder entry in the persisted membership
+        // tree.  Provide a temporary root row when the query actually matches
+        // one, so the user can select it and inspect the matching tracks.
+        let matchingRootTrackCount = matchingRelativePaths.reduce(into: 0) { count, path in
+            if folderPath(for: path).isEmpty { count += 1 }
+        }
+        if matchingRootTrackCount > 0, !filtered.contains(where: { $0.path.isEmpty }) {
+            filtered.insert(
+                FolderEntry(
+                    path: "",
+                    count: matchingRootTrackCount,
+                    depth: 0,
+                    isExcluded: false
+                ),
+                at: 0
+            )
+        }
+        return filtered
+    }
+
+    private var visibleStandaloneTrackCount: Int {
+        let query = normalizedFolderSearchText
+        guard !query.isEmpty else { return memoized.standaloneTrackCount }
+        return standaloneTracks.filter {
+            standaloneSearchText(for: $0).localizedCaseInsensitiveContains(query)
+        }.count
     }
 
     private func directChildCount(for entry: FolderEntry) -> Int {
@@ -585,10 +891,34 @@ struct ReferencedFolderView: View {
     }
 
     private func computeStandaloneTrackCount() -> Int {
+        standaloneTracks.count
+    }
+
+    private var standaloneTracks: [Track] {
         libraryVM.allTracks.filter { track in
             guard case let .referenced(locator) = track.mediaLocator else { return false }
-            return locator.allSourceMemberships.isEmpty
-        }.count
+            let memberships = locator.allSourceMemberships
+            // A single-file source is an implementation detail used to keep a
+            // bookmark alive. In the folder projection it belongs to the
+            // single, grouped "单独添加的歌曲" section. Tracks that also have
+            // a directory membership stay with that directory instead of
+            // appearing twice.
+            let hasDirectoryMembership = memberships.contains { membership in
+                sources.first(where: { $0.id == membership.sourceID })?.mode == .directory
+            }
+            guard !hasDirectoryMembership else { return false }
+            return memberships.isEmpty || memberships.allSatisfy { individualSourceIDs.contains($0.sourceID) }
+        }
+    }
+
+    private func standaloneSearchText(for track: Track) -> String {
+        [
+            track.title,
+            track.artist,
+            track.originalFilePath,
+            track.resolvedAudioURL()?.path ?? ""
+        ]
+        .joined(separator: " ")
     }
 
     private var folderSelectionTitle: String {
@@ -607,6 +937,23 @@ struct ReferencedFolderView: View {
     }
 
     private func computeVisibleTracks() -> [Track] {
+        if folderSelection == .standalone {
+            let query = normalizedFolderSearchText
+            let filtered = query.isEmpty
+                ? standaloneTracks
+                : standaloneTracks.filter {
+                    standaloneSearchText(for: $0).localizedCaseInsensitiveContains(query)
+                }
+            return filtered.sorted {
+                let leftPath = standalonePath($0) ?? ""
+                let rightPath = standalonePath($1) ?? ""
+                if leftPath != rightPath {
+                    return leftPath.localizedStandardCompare(rightPath) == .orderedAscending
+                }
+                return $0.title.localizedStandardCompare($1.title) == .orderedAscending
+            }
+        }
+
         guard let source = selectedSource else { return [] }
         let tracks: [Track]
         switch folderSelection {
@@ -620,12 +967,29 @@ struct ReferencedFolderView: View {
                 }
             }
         case .standalone:
-            tracks = libraryVM.allTracks.filter { track in
-                guard case let .referenced(locator) = track.mediaLocator else { return false }
-                return locator.allSourceMemberships.isEmpty
+            tracks = standaloneTracks
+        }
+        let filteredTracks: [Track]
+        let query = normalizedFolderSearchText
+        if query.isEmpty {
+            filteredTracks = tracks
+        } else if selectedSource?.lastKnownPath.localizedCaseInsensitiveContains(query) == true {
+            // A user may paste the absolute source path.  In that case the
+            // source itself is the match and all of its songs remain visible.
+            filteredTracks = tracks
+        } else if folderSelection == .standalone {
+            filteredTracks = tracks.filter {
+                standaloneSearchText(for: $0).localizedCaseInsensitiveContains(query)
+            }
+        } else {
+            filteredTracks = tracks.filter { track in
+                membershipPaths(track, sourceID: source.id).contains {
+                    $0.localizedCaseInsensitiveContains(query)
+                }
             }
         }
-        return tracks.sorted {
+
+        return filteredTracks.sorted {
             let leftPath = membershipPath($0, sourceID: source.id) ?? ""
             let rightPath = membershipPath($1, sourceID: source.id) ?? ""
             if leftPath != rightPath {
@@ -646,6 +1010,14 @@ struct ReferencedFolderView: View {
         membershipPaths(track, sourceID: sourceID).first
     }
 
+    private func standalonePath(_ track: Track) -> String? {
+        guard case let .referenced(locator) = track.mediaLocator else {
+            return track.resolvedAudioURL()?.path
+        }
+        let path = locator.lastKnownPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.isEmpty ? track.resolvedAudioURL()?.path : path
+    }
+
     private func folderPath(for relativePath: String) -> String {
         let url = URL(fileURLWithPath: relativePath)
         let folder = url.deletingLastPathComponent().path
@@ -656,22 +1028,10 @@ struct ReferencedFolderView: View {
         libraryVM.playlists.first { $0.id == playlistID }?.name ?? "已删除的播放列表"
     }
 
-    private func scanIndicator(for source: ReferencedSourceDescriptor) -> some View {
-        Group {
-            switch appSession.referencedSourceScanStatesSnapshot[source.id] ?? .idle {
-            case .idle:
-                Circle().fill(sourceStatusColor(source)).frame(width: 7, height: 7)
-            case .scanning:
-                ProgressView().controlSize(.mini)
-            case .failed:
-                Image(systemName: "exclamationmark.circle.fill")
-                    .foregroundStyle(.orange)
-            }
-        }
-        .frame(width: 14, height: 14)
-    }
-
     private func sourceStatusTitle(_ source: ReferencedSourceDescriptor) -> String {
+        if appSession.referencedSourceScanStatesSnapshot[source.id] == .failed {
+            return "扫描失败"
+        }
         switch source.status {
         case .available: return "来源可用"
         case .stale: return "来源需要重新连接"
@@ -682,16 +1042,22 @@ struct ReferencedFolderView: View {
 
     private func sourceStatusDetail(_ source: ReferencedSourceDescriptor) -> String {
         switch appSession.referencedSourceScanStatesSnapshot[source.id] ?? .idle {
-        case .scanning: return "正在扫描文件变化，歌曲关系会保持不变。"
-        case .failed: return "最近一次扫描失败；可以重试，或到设置中重新连接来源。"
+        case .scanning: return "正在扫描"
+        case .failed: return "扫描失败，可重试"
         case .idle:
-            return source.status == .available
-                ? "来源中的文件会自动同步到所有歌曲。"
-                : "歌曲仍保留在资料库中，恢复来源后会继续可用。"
+            switch source.status {
+            case .available: return ""
+            case .stale: return "需要重新连接"
+            case .permissionDenied: return "权限失效"
+            case .offline: return "来源离线"
+            }
         }
     }
 
     private func sourceStatusIcon(_ source: ReferencedSourceDescriptor) -> String {
+        if appSession.referencedSourceScanStatesSnapshot[source.id] == .failed {
+            return "exclamationmark.triangle.fill"
+        }
         switch source.status {
         case .available: return "checkmark.circle.fill"
         case .stale, .permissionDenied: return "lock.trianglebadge.exclamationmark"
@@ -700,6 +1066,9 @@ struct ReferencedFolderView: View {
     }
 
     private func sourceStatusColor(_ source: ReferencedSourceDescriptor) -> Color {
+        if appSession.referencedSourceScanStatesSnapshot[source.id] == .failed {
+            return .orange
+        }
         switch source.status {
         case .available: return .green
         case .stale, .permissionDenied: return .orange
@@ -716,9 +1085,23 @@ struct ReferencedFolderView: View {
                   appSession.activeLibraryBinding.context?.id == targetLibraryID else { return }
             sources = loaded
             sourcesRevision += 1
-            if selectedSourceID == nil || !loaded.contains(where: { $0.id == selectedSourceID }) {
-                selectedSourceID = loaded.first?.id
+            let loadedDirectories = loaded.filter { $0.mode == .directory }
+            if folderSelection == .standalone {
+                selectedSourceID = nil
+                libraryVM.setReferencedSourceSearchScope(
+                    id: nil,
+                    title: "单独添加的歌曲"
+                )
+            } else if selectedSourceID == nil || !loadedDirectories.contains(where: { $0.id == selectedSourceID }) {
+                selectedSourceID = loadedDirectories.first?.id
                 folderSelection = .all
+                if let source = loadedDirectories.first {
+                    libraryVM.setReferencedSourceSearchScope(id: source.id, title: source.displayName)
+                } else {
+                    libraryVM.clearReferencedSourceSearch()
+                }
+            } else if let selectedSource {
+                libraryVM.setReferencedSourceSearchScope(id: selectedSource.id, title: selectedSource.displayName)
             }
         } catch {
             guard appSession.activeLibraryBinding.generation == targetGeneration,
@@ -746,6 +1129,17 @@ struct ReferencedFolderView: View {
         let absolutePath = (source.lastKnownPath as NSString)
             .appendingPathComponent(relativePath)
         guard FinderRevealHelper.reveal(path: absolutePath) else {
+            appSession.uiState.showSidebarNotice(
+                "歌曲文件不在预期位置，可能已被移动或删除。",
+                style: .warning
+            )
+            return
+        }
+    }
+
+    private func revealStandaloneTrack(_ track: Track) {
+        guard let path = standalonePath(track),
+              FinderRevealHelper.reveal(path: path) else {
             appSession.uiState.showSidebarNotice(
                 "歌曲文件不在预期位置，可能已被移动或删除。",
                 style: .warning

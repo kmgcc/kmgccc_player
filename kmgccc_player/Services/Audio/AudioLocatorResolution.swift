@@ -63,6 +63,95 @@ nonisolated final class SecurityScopedResourceLease: @unchecked Sendable {
     static let none = SecurityScopedResourceLease(releaseAction: {})
 }
 
+/// Shares one security-scope authorization across several selected files.
+/// Each source/operation receives its own child lease, while the underlying
+/// parent-directory scope is started and stopped exactly once.
+nonisolated final class SecurityScopedResourceLeasePool: @unchecked Sendable {
+    private let lock = NSLock()
+    private let rootLease: SecurityScopedResourceLease
+    private var references = 0
+    private var isReleased = false
+
+    init(rootLease: SecurityScopedResourceLease) {
+        self.rootLease = rootLease
+    }
+
+    func makeLease() -> SecurityScopedResourceLease {
+        lock.lock()
+        guard !isReleased else {
+            lock.unlock()
+            return .none
+        }
+        references += 1
+        lock.unlock()
+        return SecurityScopedResourceLease { [self] in
+            releaseReference()
+        }
+    }
+
+    private func releaseReference() {
+        lock.lock()
+        guard references > 0 else {
+            lock.unlock()
+            return
+        }
+        references -= 1
+        let shouldReleaseRoot = references == 0 && !isReleased
+        if shouldReleaseRoot { isReleased = true }
+        lock.unlock()
+        if shouldReleaseRoot { rootLease.release() }
+    }
+
+    deinit {
+        lock.lock()
+        let shouldReleaseRoot = !isReleased
+        isReleased = true
+        lock.unlock()
+        if shouldReleaseRoot { rootLease.release() }
+    }
+}
+
+/// Groups selected files by the directory that actually needs authorization.
+/// Directory selections cover descendants, so a parent scope is retained once
+/// instead of prompting once for every dropped file.
+nonisolated enum SecurityScopeAuthorization {
+    static func groupedRoots(for urls: [URL]) -> [URL] {
+        let candidates = urls
+            .map { authorizationRoot(for: $0) }
+            .reduce(into: [URL]()) { result, url in
+                let path = canonicalPath(url)
+                guard !result.contains(where: { canonicalPath($0) == path }) else { return }
+                result.append(url)
+            }
+            .sorted { canonicalPath($0).count < canonicalPath($1).count }
+
+        var roots: [URL] = []
+        for candidate in candidates {
+            let path = canonicalPath(candidate)
+            guard !roots.contains(where: { root in
+                let rootPath = canonicalPath(root)
+                return path == rootPath || path.hasPrefix(rootPath + "/")
+            }) else { continue }
+            roots.append(candidate)
+        }
+        return roots
+    }
+
+    static func authorizationRoot(for url: URL) -> URL {
+        let candidate: URL
+        if url.hasDirectoryPath || (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+            candidate = url
+        } else {
+            candidate = url.deletingLastPathComponent()
+        }
+        return candidate.standardizedFileURL
+    }
+
+    static func canonicalPath(_ url: URL) -> String {
+        url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+}
+
 nonisolated enum LocalAudioResolutionError: Error, Equatable, Sendable {
     case malformedLocator
     case pathTraversal
@@ -109,6 +198,25 @@ nonisolated struct LocalAudioResourceResolver: Sendable {
     }
 
     func resolve(_ locator: TrackMediaLocator) throws -> AudioLocatorResolution {
+        let candidates = try resolveCandidates(locator)
+        guard let first = candidates.first else {
+            throw LocalAudioResolutionError.missing
+        }
+        // `resolve` is the legacy single-result API. It must not retain
+        // security scopes for fallback candidates that the caller cannot see.
+        for candidate in candidates.dropFirst() {
+            candidate.lease.release()
+        }
+        return first
+    }
+
+    /// Resolves every currently usable physical location in preference order.
+    ///
+    /// A referenced duplicate may carry a newly selected copy whose metadata is
+    /// readable while its codec/container is not playable by AVAudioFile. The
+    /// playback preparation actor uses this list to fall back to the original
+    /// location instead of treating the first readable path as authoritative.
+    func resolveCandidates(_ locator: TrackMediaLocator) throws -> [AudioLocatorResolution] {
         switch locator {
         case let .managed(relativePath):
             guard TrackMediaLocator.isSafeRelativePath(relativePath) else {
@@ -118,19 +226,21 @@ nonisolated struct LocalAudioResourceResolver: Sendable {
                 throw LocalAudioResolutionError.pathTraversal
             }
             try validateReadableFile(url)
-            return AudioLocatorResolution(
+            return [AudioLocatorResolution(
                 url: url,
                 lease: .none,
                 refreshedLocator: nil,
                 availability: .available
-            )
+            )]
         case let .referenced(referenced):
-            return try resolveReferenced(referenced)
+            return try resolveReferencedCandidates(referenced)
         }
     }
 
-    private func resolveReferenced(_ locator: ReferencedFileLocator) throws -> AudioLocatorResolution {
+    private func resolveReferencedCandidates(_ locator: ReferencedFileLocator) throws -> [AudioLocatorResolution] {
         var lastError: LocalAudioResolutionError = .missing
+        var resolutions: [AudioLocatorResolution] = []
+        var resolvedPaths = Set<String>()
 
         for (locationIndex, location) in locator.locations.enumerated() {
             let orderedMemberships = location.sourceMemberships.sorted { lhs, rhs in
@@ -141,13 +251,50 @@ nonisolated struct LocalAudioResourceResolver: Sendable {
             }
             for membership in orderedMemberships {
                 guard TrackMediaLocator.isSafeRelativePath(membership.relativePath) else {
-                    throw LocalAudioResolutionError.pathTraversal
+                    // A malformed/stale source edge must not hide a valid
+                    // bookmark or alternate location. Reject this candidate
+                    // in isolation and continue; no unsafe path is ever
+                    // constructed or accessed.
+                    lastError = .pathTraversal
+                    continue
                 }
                 guard let authorizedRoot = authorizedSourceRoots[membership.sourceID] else { continue }
                 let lexicalRoot = authorizedRoot.url.standardizedFileURL
-                let lexicalCandidate = lexicalRoot.appendingPathComponent(membership.relativePath).standardizedFileURL
+                // A single-file source intentionally keeps its file URL as
+                // the authorized root (so it cannot grant access to the
+                // surrounding directory). Its membership is the file name,
+                // not a child path below that file. Resolve that shape to the
+                // root itself; appending the membership would otherwise
+                // produce `/song.mp3/song.mp3` and make the imported track
+                // appear unavailable during playback.
+                let rootIsDirectory: Bool
+                if let resourceValues = try? lexicalRoot.resourceValues(forKeys: [.isDirectoryKey]),
+                   let isDirectory = resourceValues.isDirectory {
+                    rootIsDirectory = isDirectory
+                } else {
+                    rootIsDirectory = lexicalRoot.hasDirectoryPath
+                }
+                let lexicalCandidate: URL
+                if rootIsDirectory {
+                    lexicalCandidate = lexicalRoot
+                        .appendingPathComponent(membership.relativePath)
+                        .standardizedFileURL
+                } else {
+                    let canonicalRootName = lexicalRoot
+                        .resolvingSymlinksInPath()
+                        .standardizedFileURL
+                        .lastPathComponent
+                    guard membership.relativePath == lexicalRoot.lastPathComponent
+                        || membership.relativePath == canonicalRootName
+                    else {
+                        lastError = .permissionDenied
+                        continue
+                    }
+                    lexicalCandidate = lexicalRoot
+                }
                 guard Self.contains(lexicalCandidate, root: lexicalRoot) else {
-                    throw LocalAudioResolutionError.pathTraversal
+                    lastError = .pathTraversal
+                    continue
                 }
                 let canonicalRoot = lexicalRoot.resolvingSymlinksInPath().standardizedFileURL
                 let canonicalCandidate = lexicalCandidate.resolvingSymlinksInPath().standardizedFileURL
@@ -161,12 +308,15 @@ nonisolated struct LocalAudioResourceResolver: Sendable {
                 if FileManager.default.fileExists(atPath: canonicalCandidate.path) {
                     do {
                         try validateReadableFile(canonicalCandidate)
-                        return AudioLocatorResolution(
+                        let canonicalPath = canonicalCandidate.path
+                        guard resolvedPaths.insert(canonicalPath).inserted else { continue }
+                        let resolution = AudioLocatorResolution(
                             url: canonicalCandidate,
                             lease: .none,
                             refreshedLocator: nil,
                             availability: .available
                         )
+                        resolutions.append(resolution)
                     } catch let error as LocalAudioResolutionError {
                         lastError = error
                     } catch {
@@ -223,15 +373,21 @@ nonisolated struct LocalAudioResourceResolver: Sendable {
                 }
                 refreshedLocator = .referenced(updated)
             }
-            return AudioLocatorResolution(
+            let canonicalPath = resolved.url.resolvingSymlinksInPath().standardizedFileURL.path
+            guard resolvedPaths.insert(canonicalPath).inserted else {
+                lease.release()
+                continue
+            }
+            resolutions.append(AudioLocatorResolution(
                 url: resolved.url,
                 lease: lease,
                 refreshedLocator: refreshedLocator,
                 availability: resolved.isStale ? .stale : .available
-            )
+            ))
         }
 
-        throw lastError
+        guard !resolutions.isEmpty else { throw lastError }
+        return resolutions
     }
 
     private static func contains(_ candidate: URL, root: URL) -> Bool {
