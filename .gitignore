@@ -49,6 +49,7 @@ Tools/ColorGoldenMaster/
 .codegraph/
 .codex/
 .playwright-mcp/
+.mnemon/
 
 # macOS
 .DS_Store
