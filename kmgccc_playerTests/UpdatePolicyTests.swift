@@ -180,6 +180,37 @@ final class UpdatePreferencesTests: XCTestCase {
                 for: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut)
             )
         )
+        XCTAssertTrue(
+            UpdateFallbackPolicy.shouldUseFallback(
+                for: NSError(domain: "SUSparkleErrorDomain", code: 2001)
+            )
+        )
+    }
+
+    func testNoUpdateErrorIsRecognizedAsNormalTerminalOutcome() {
+        XCTAssertTrue(
+            UpdateFallbackPolicy.isNoUpdateFound(
+                NSError(domain: "SUSparkleErrorDomain", code: 1001)
+            )
+        )
+        XCTAssertFalse(
+            UpdateFallbackPolicy.isNoUpdateFound(
+                NSError(domain: "SUSparkleErrorDomain", code: 1000)
+            )
+        )
+    }
+
+    func testFallbackRecoveryIsBounded() {
+        XCTAssertFalse(
+            UpdateCheckRecoveryPolicy.hasExhaustedFallbackRetries(
+                UpdateCheckRecoveryPolicy.maximumFallbackRetryAttempts - 1
+            )
+        )
+        XCTAssertTrue(
+            UpdateCheckRecoveryPolicy.hasExhaustedFallbackRetries(
+                UpdateCheckRecoveryPolicy.maximumFallbackRetryAttempts
+            )
+        )
     }
 
     func testFallbackPolicyRejectsCancellationAuthenticationAndInstallFailures() {

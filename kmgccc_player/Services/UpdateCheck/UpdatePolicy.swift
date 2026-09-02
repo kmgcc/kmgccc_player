@@ -127,6 +127,11 @@ struct UpdateEnvironment: Equatable {
 }
 
 enum UpdateFallbackPolicy {
+    static func isNoUpdateFound(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == "SUSparkleErrorDomain" && nsError.code == 1001
+    }
+
     static func shouldUseFallback(for error: Error) -> Bool {
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain {
@@ -137,6 +142,16 @@ enum UpdateFallbackPolicy {
 
         guard nsError.domain == "SUSparkleErrorDomain" else { return false }
         return [1000, 1002, 1004, 2001].contains(nsError.code)
+    }
+}
+
+enum UpdateCheckRecoveryPolicy {
+    static let checkTimeout: TimeInterval = 60
+    static let fallbackRetryInterval: TimeInterval = 0.25
+    static let maximumFallbackRetryAttempts = 20
+
+    static func hasExhaustedFallbackRetries(_ attempts: Int) -> Bool {
+        attempts >= maximumFallbackRetryAttempts
     }
 }
 

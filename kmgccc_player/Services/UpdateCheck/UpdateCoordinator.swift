@@ -90,6 +90,10 @@ final class UpdateCoordinator: NSObject, ObservableObject {
     private var retryTerminationInFlight = false
     private var retryTerminationGeneration = 0
     private var retryTerminationTimer: Timer?
+    private var fallbackRetryTimer: Timer?
+    private var fallbackRetryAttempts = 0
+    private var checkTimeoutTimer: Timer?
+    private var checkGeneration = 0
     private var expectedDownloadLength: UInt64 = 0
     private var receivedDownloadLength: UInt64 = 0
     private var expiryTimer: Timer?
@@ -144,7 +148,13 @@ final class UpdateCoordinator: NSObject, ObservableObject {
     }
 
     var canCancelCurrentOperation: Bool {
-        checkCancellation != nil || downloadCancellation != nil
+        if checkCancellation != nil || downloadCancellation != nil || fallbackRetryTimer != nil {
+            return true
+        }
+        if case .checking = state {
+            return true
+        }
+        return false
     }
 
     var isInstallReplyPending: Bool {
@@ -155,6 +165,8 @@ final class UpdateCoordinator: NSObject, ObservableObject {
     func startAutomaticUpdatesIfNeeded() {
         guard startUpdaterIfNeeded() else { return }
         expireReadyUpdateIfNeeded()
+
+        guard !isCheckInFlight else { return }
 
         guard automaticUpdatesEnabled else {
             Log.debug("[UpdateCoordinator] Automatic updates are disabled", category: .ui)
@@ -167,6 +179,15 @@ final class UpdateCoordinator: NSObject, ObservableObject {
     func checkManually() {
         guard startUpdaterIfNeeded() else { return }
         expireReadyUpdateIfNeeded()
+
+        guard !isCheckInFlight else {
+            showAlert(
+                title: "正在处理更新",
+                message: "当前更新任务尚未结束，请稍后再试。"
+            )
+            return
+        }
+
         beginCheck(.manual, useFallback: false)
     }
 
@@ -182,6 +203,7 @@ final class UpdateCoordinator: NSObject, ObservableObject {
         updater.automaticallyDownloadsUpdates = false
 
         if enabled {
+            guard !isCheckInFlight else { return }
             beginCheck(.automatic, useFallback: false)
         } else {
             cancelCurrentUpdate(markSuppressed: false)
@@ -289,6 +311,16 @@ final class UpdateCoordinator: NSObject, ObservableObject {
         }
     }
 
+    private var isCheckInFlight: Bool {
+        if fallbackRetryTimer != nil {
+            return true
+        }
+        if case .checking = state {
+            return true
+        }
+        return false
+    }
+
     private func beginCheck(_ kind: CheckKind, useFallback: Bool) {
         guard hasStarted, let environment else { return }
         guard updater.canCheckForUpdates else {
@@ -310,7 +342,10 @@ final class UpdateCoordinator: NSObject, ObservableObject {
             pendingPrimaryError = nil
         }
         shouldRetryUsingFallback = false
+        checkGeneration += 1
+        invalidateCheckRecoveryTimers()
         state = .checking(manual: kind == .manual)
+        scheduleCheckTimeout()
 
         switch kind {
         case .automatic:
@@ -329,6 +364,12 @@ final class UpdateCoordinator: NSObject, ObservableObject {
         downloadCancellation = nil
         checkCancellation?()
         checkCancellation = nil
+
+        checkGeneration += 1
+        invalidateCheckRecoveryTimers()
+        shouldRetryUsingFallback = false
+        pendingPrimaryError = nil
+        attemptedFallback = false
 
         readyMetadata = nil
         UpdatePreferences.setReadyMetadata(nil)
@@ -446,6 +487,106 @@ final class UpdateCoordinator: NSObject, ObservableObject {
         shouldRetryUsingFallback = true
     }
 
+    private func scheduleCheckTimeout() {
+        checkTimeoutTimer?.invalidate()
+        let generation = checkGeneration
+        checkTimeoutTimer = Timer.scheduledTimer(
+            withTimeInterval: UpdateCheckRecoveryPolicy.checkTimeout,
+            repeats: false
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.checkGeneration == generation else { return }
+                self.handleCheckTimeout()
+            }
+        }
+    }
+
+    private func handleCheckTimeout() {
+        guard case .checking = state else { return }
+
+        checkCancellation?()
+        checkCancellation = nil
+        updater.resetUpdateCycle()
+
+        let error = NSError(
+            domain: "KMGUpdateCoordinator",
+            code: 1,
+            userInfo: [
+                NSLocalizedDescriptionKey: "检查更新超时，请检查网络连接后重试。"
+            ]
+        )
+        finishUpdateCheckWithFailure(error)
+    }
+
+    private func scheduleFallbackCheckWhenReady(kind: CheckKind) {
+        fallbackRetryTimer?.invalidate()
+        fallbackRetryTimer = nil
+        fallbackRetryAttempts = 0
+        let generation = checkGeneration
+        scheduleFallbackRetry(kind: kind, generation: generation)
+    }
+
+    private func scheduleFallbackRetry(kind: CheckKind, generation: Int) {
+        guard shouldRetryUsingFallback, generation == checkGeneration else { return }
+
+        fallbackRetryTimer = Timer.scheduledTimer(
+            withTimeInterval: UpdateCheckRecoveryPolicy.fallbackRetryInterval,
+            repeats: false
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.checkGeneration == generation else { return }
+                self.fallbackRetryTimer = nil
+                self.tryFallbackCheck(kind: kind, generation: generation)
+            }
+        }
+    }
+
+    private func tryFallbackCheck(kind: CheckKind, generation: Int) {
+        guard shouldRetryUsingFallback, generation == checkGeneration else { return }
+
+        guard updater.canCheckForUpdates else {
+            fallbackRetryAttempts += 1
+            if UpdateCheckRecoveryPolicy.hasExhaustedFallbackRetries(fallbackRetryAttempts) {
+                shouldRetryUsingFallback = false
+                finishUpdateCheckWithFailure(
+                    pendingPrimaryError
+                        ?? NSError(
+                            domain: "KMGUpdateCoordinator",
+                            code: 2,
+                            userInfo: [
+                                NSLocalizedDescriptionKey: "备用更新源暂时不可用，请稍后重试。"
+                            ]
+                        )
+                )
+            } else {
+                scheduleFallbackRetry(kind: kind, generation: generation)
+            }
+            return
+        }
+
+        shouldRetryUsingFallback = false
+        attemptedFallback = true
+        beginCheck(kind, useFallback: true)
+    }
+
+    private func finishUpdateCheckWithFailure(_ error: Error) {
+        let failure = UpdateFailure(
+            stage: .download,
+            title: "检查更新失败",
+            message: error.localizedDescription,
+            metadata: nil
+        )
+        resetAfterAbortedInstallation(finalState: .failed(failure))
+    }
+
+    private func invalidateCheckRecoveryTimers() {
+        checkTimeoutTimer?.invalidate()
+        checkTimeoutTimer = nil
+        fallbackRetryTimer?.invalidate()
+        fallbackRetryTimer = nil
+        fallbackRetryAttempts = 0
+    }
+
     private func resetAfterAbortedInstallation(finalState: UpdateCoordinatorState = .idle) {
         let wasPreparingInstallation: Bool
         switch state {
@@ -455,6 +596,12 @@ final class UpdateCoordinator: NSObject, ObservableObject {
             wasPreparingInstallation = readyMetadata != nil
         }
 
+        checkGeneration += 1
+        invalidateCheckRecoveryTimers()
+        shouldRetryUsingFallback = false
+        pendingPrimaryError = nil
+        attemptedFallback = false
+        activeFeedURL = environment?.primaryFeedURL
         checkCancellation = nil
         downloadCancellation = nil
         readyChoiceReply = nil
@@ -508,6 +655,10 @@ extension UpdateCoordinator: SPUUserDriver {
     ) {
         currentItem = appcastItem
         checkCancellation = nil
+        checkTimeoutTimer?.invalidate()
+        checkTimeoutTimer = nil
+        shouldRetryUsingFallback = false
+        pendingPrimaryError = nil
 
         if appcastItem.isInformationOnlyUpdate {
             if updateState.userInitiated, let infoURL = appcastItem.infoURL {
@@ -543,6 +694,12 @@ extension UpdateCoordinator: SPUUserDriver {
         acknowledgement: @escaping () -> Void
     ) {
         checkCancellation = nil
+        checkGeneration += 1
+        invalidateCheckRecoveryTimers()
+        shouldRetryUsingFallback = false
+        pendingPrimaryError = nil
+        attemptedFallback = false
+        activeFeedURL = environment?.primaryFeedURL
         if checkKind == .manual {
             showAlert(title: "已是最新版本", message: "当前没有可用的新版本。")
         }
@@ -553,6 +710,13 @@ extension UpdateCoordinator: SPUUserDriver {
     func showUpdaterError(_ error: Error, acknowledgement: @escaping () -> Void) {
         if isCancellation(error) {
             resetAfterAbortedInstallation()
+            acknowledgement()
+            return
+        }
+        // Sparkle reports SUNoUpdateError through didAbortWithError after the
+        // user driver has already presented the normal "up to date" result.
+        // It is a successful terminal outcome, not a failed update check.
+        if UpdateFallbackPolicy.isNoUpdateFound(error) {
             acknowledgement()
             return
         }
@@ -571,7 +735,7 @@ extension UpdateCoordinator: SPUUserDriver {
         case .ready, .installReplyPending, .waitingForTermination, .installing:
             failure = UpdateFailure(stage: .installation, title: "更新安装失败", message: error.localizedDescription, metadata: readyMetadata)
         default:
-            failure = checkKind == .manual ? UpdateFailure(stage: .download, title: "检查更新失败", message: error.localizedDescription, metadata: nil) : nil
+            failure = UpdateFailure(stage: .download, title: "检查更新失败", message: error.localizedDescription, metadata: nil)
         }
         if let failure {
             resetAfterAbortedInstallation(finalState: .failed(failure))
@@ -723,23 +887,33 @@ extension UpdateCoordinator: SPUUpdaterDelegate {
         }
 
         if shouldRetryUsingFallback {
-            shouldRetryUsingFallback = false
-            attemptedFallback = true
             let kind = checkKind
-            DispatchQueue.main.async { [weak self] in
-                self?.beginCheck(kind, useFallback: true)
-            }
+            scheduleFallbackCheckWhenReady(kind: kind)
             return
         }
 
+        checkTimeoutTimer?.invalidate()
+        checkTimeoutTimer = nil
+
         if let error, !isCancellation(error) {
-            switch state {
-            case .failed:
-                break
-            case .downloading, .preparing, .ready, .installReplyPending, .waitingForTermination, .installing:
-                showUpdaterError(error, acknowledgement: {})
-            default:
-                break
+            if UpdateFallbackPolicy.isNoUpdateFound(error) {
+                // The user driver normally moves the state to idle first. Keep
+                // this defensive branch so callback ordering cannot leave the
+                // coordinator stuck in checking or mark a normal result failed.
+                if case .checking = state {
+                    state = .idle
+                }
+            } else {
+                switch state {
+                case .failed:
+                    break
+                case .checking:
+                    finishUpdateCheckWithFailure(error)
+                case .downloading, .preparing, .ready, .installReplyPending, .waitingForTermination, .installing:
+                    showUpdaterError(error, acknowledgement: {})
+                default:
+                    break
+                }
             }
         } else if error != nil {
             resetAfterAbortedInstallation()
