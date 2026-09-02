@@ -48,6 +48,7 @@ Tools/ColorGoldenMaster/
 .sisyphus/
 .codegraph/
 .codex/
+.omo/
 
 # macOS
 .DS_Store
