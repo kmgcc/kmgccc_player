@@ -95,6 +95,17 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
     private var spatialPendingBoundary: SpatialPendingBoundary?
 
+    /// A renderer load is asynchronous because decoding is serialized on its
+    /// private queue. Keep the latest explicit seek alive until that queue has
+    /// committed the new synchronizer anchor; progress callbacks from the old
+    /// renderer must not overwrite the target in the meantime.
+    private struct SpatialPendingSeek {
+        let segmentID: UUID
+        let position: Double
+        let wasPlaying: Bool
+    }
+    private var spatialPendingSeek: SpatialPendingSeek?
+
     // MARK: - Playback State
 
     private var sampleRate: Double = 44100
@@ -143,6 +154,13 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             return lookaheadSeconds
         }
         return lookaheadSeconds + outputLatencySnapshot.compensationSeconds
+    }
+
+    /// URL exposed to the system media session. Keeping this tied to the
+    /// resolved current resource gives macOS the same asset context that IINA
+    /// publishes alongside its AVSampleBufferAudioRenderer output.
+    var nowPlayingAssetURL: URL? {
+        currentFileURL
     }
 
     var currentPlaybackOrderMode: PlaybackOrderMode {
@@ -347,7 +365,35 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         rendererPipeline.setVolume(Float(volume))
         rendererPipeline.setAnalysisDeliveryLeadSeconds(audioOutputDelay)
         rendererPipeline.onProgress = { [weak self] clock in
-            self?.spatialClockTime = clock
+            guard let self, self.spatialPendingSeek == nil else { return }
+            self.spatialClockTime = clock
+        }
+        rendererPipeline.onTimelineMutationCommitted = { [weak self] segmentID, clock, autoplay in
+            guard let self,
+                  self.outputBackend == .spatialRenderer,
+                  let pending = self.spatialPendingSeek,
+                  pending.segmentID == segmentID else { return }
+            self.spatialPendingSeek = nil
+            self.spatialClockTime = clock
+            self.currentTime = pending.position
+            self.isPlaying = autoplay
+            self.smartController.endSeek()
+            AudioAnalysisHub.shared.setPlaying(autoplay)
+            if autoplay {
+                self.startProgressTimer()
+            } else {
+                self.stopProgressTimer()
+                if self.duration > 0 {
+                    self.smartController.updateProgress(
+                        currentTime: self.currentTime,
+                        duration: self.duration
+                    )
+                }
+            }
+            // The coordinator already publishes the target immediately from
+            // seek(to:). Republish at the commit boundary so the system media
+            // session follows the same one-shot timeline transaction.
+            NowPlayingService.shared.syncLocalPlaybackState()
         }
         rendererPipeline.onAnalysisPCM = { pcm in
             // Feed only when the renderer clock reaches the output-compensated
@@ -375,7 +421,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             )
         }
         rendererPipeline.onFailure = { [weak self] error in
-            self?.fallbackToLegacyEngine(after: error)
+            guard let self else { return }
+            if self.spatialPendingSeek != nil {
+                self.spatialPendingSeek = nil
+                self.smartController.endSeek()
+            }
+            self.fallbackToLegacyEngine(after: error)
         }
     }
 
@@ -534,6 +585,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         resetGaplessSchedulingState(reason: "rendererFailureFallback")
         spatialCurrentProvider = nil
         spatialCurrentSegmentID = nil
+        spatialPendingSeek = nil
         spatialPendingBoundary = nil
         spatialCurrentLogicalStart = 0
         spatialClockTime = 0
@@ -1218,6 +1270,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         spatialCurrentSegmentID = segmentID
         spatialCurrentLogicalStart = 0
         spatialClockTime = position
+        spatialPendingSeek = nil
         spatialPendingBoundary = nil
         startingFramePosition = frame
         currentTime = position
@@ -1343,6 +1396,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
         cancelPendingCompletion()
         if outputBackend == .spatialRenderer {
+            if spatialPendingSeek != nil {
+                spatialPendingSeek = nil
+                smartController.endSeek()
+            }
             rendererPipeline.pause()
             AudioAnalysisHub.shared.setPlaying(false)
             isPlaying = false
@@ -1407,6 +1464,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         spatialCurrentSegmentID = nil
         spatialCurrentLogicalStart = 0
         spatialClockTime = 0
+        spatialPendingSeek = nil
+        smartController.endSeek()
         AudioAnalysisHub.shared.setPlaying(false)
         playerNode.stop()
         resetDelayBufferIfActive()
@@ -1501,6 +1560,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         spatialCurrentSegmentID = segmentID
         spatialCurrentLogicalStart = 0
         spatialClockTime = position
+        spatialPendingSeek = SpatialPendingSeek(
+            segmentID: segmentID,
+            position: position,
+            wasPlaying: wasPlaying
+        )
         spatialPendingBoundary = nil
         startingFramePosition = targetFrame
         currentTime = position
@@ -1509,6 +1573,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         refreshOutputLatency(force: true)
         rendererPipeline.setAnalysisLeadSeconds(lookaheadSeconds)
         rendererPipeline.setAnalysisDeliveryLeadSeconds(audioOutputDelay)
+        // Drop the old analysis window and stop its processing timer before the
+        // asynchronous renderer load can begin. The commit callback above
+        // restarts it only after the new timeline wins.
+        AudioAnalysisHub.shared.enableExternalFeed()
+        AudioAnalysisHub.shared.setPlaying(false)
+        stopProgressTimer()
         rendererPipeline.load(
             source: provider,
             sourcePosition: targetFrame,
@@ -1520,14 +1590,6 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             autoplay: wasPlaying
         )
         isPlaying = wasPlaying
-        AudioAnalysisHub.shared.setPlaying(wasPlaying)
-        smartController.endSeek()
-        if wasPlaying {
-            startProgressTimer()
-        } else {
-            stopProgressTimer()
-        }
-        NowPlayingService.shared.syncLocalPlaybackState()
     }
 
     // MARK: - Queue Management
@@ -1707,7 +1769,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private func updateSpatialRendererProgress() {
-        guard isPlaying else { return }
+        guard isPlaying, spatialPendingSeek == nil else { return }
 
         let mediaTime = spatialClockTime - spatialCurrentLogicalStart
         currentTime = max(0, min(mediaTime, duration))

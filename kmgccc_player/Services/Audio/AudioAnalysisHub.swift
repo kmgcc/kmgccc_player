@@ -137,7 +137,8 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         // now that a mixer is available; without this, the tap would never be
         // installed (nothing re-calls `start()` after the mixer attaches) and
         // every visualizer would stay frozen for the whole session.
-        let needsInstall = activeClients > 0 && !isInstalled
+        let hasConsumers = hasActiveConsumersLocked()
+        let needsInstall = hasConsumers && !isInstalled
         if needsInstall {
             let format = mixer.outputFormat(forBus: 0)
             installTapLocked(on: mixer, format: format, bufferSize: tapBufferSize)
@@ -182,12 +183,15 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     func stop() {
         stateLock.lock()
         activeClients = max(0, activeClients - 1)
-        if activeClients > 0 {
+        let hasConsumers = hasActiveConsumersLocked()
+        if hasConsumers {
             stateLock.unlock()
+            updateTimerState()
             return
         }
         guard isInstalled else {
             stateLock.unlock()
+            updateTimerState()
             purgeInactiveState(preservingMixerAttachment: true)
             return
         }
@@ -218,7 +222,8 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
     func restoreAfterEngineConfigurationChange() {
         stateLock.lock()
-        guard activeClients > 0 else {
+        let hasConsumers = hasActiveConsumersLocked()
+        guard hasConsumers else {
             stateLock.unlock()
             return
         }
@@ -243,7 +248,8 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
     func reinstallTapIfActive() {
         stateLock.lock()
-        guard activeClients > 0 else {
+        let hasConsumers = hasActiveConsumersLocked()
+        guard hasConsumers else {
             stateLock.unlock()
             return
         }
@@ -274,6 +280,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         consumerLock.lock()
         consumers[id] = callback
         consumerLock.unlock()
+        updateTimerState()
         return id
     }
 
@@ -281,6 +288,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         consumerLock.lock()
         consumers.removeValue(forKey: id)
         consumerLock.unlock()
+        updateTimerState()
     }
 
     // MARK: - Internal Processing
@@ -308,6 +316,11 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     }
 
     nonisolated private func enqueue(_ buffer: AVAudioPCMBuffer) {
+        stateLock.lock()
+        let isExternal = isExternalFeedEnabled
+        stateLock.unlock()
+        guard !isExternal else { return }
+
         guard let channelData = buffer.floatChannelData else { return }
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0 else { return }
@@ -410,12 +423,21 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         }
     }
 
+    /// Helper to check if any consumers or active clients exist.
+    /// Caller MUST hold `stateLock`.
+    private func hasActiveConsumersLocked() -> Bool {
+        consumerLock.lock()
+        defer { consumerLock.unlock() }
+        return !consumers.isEmpty || activeClients > 0
+    }
+
     /// Starts/stops the process timer to match the desired run state. Acquires
     /// `stateLock`; never call while already holding it.
     private func updateTimerState() {
         stateLock.lock()
+        let hasConsumers = hasActiveConsumersLocked()
         let inputAvailable = isInstalled || isExternalFeedEnabled
-        let shouldRun = inputAvailable && activeClients > 0 && (isPlaying || pauseLingerActive)
+        let shouldRun = inputAvailable && hasConsumers && (isPlaying || pauseLingerActive)
         if shouldRun {
             if timer == nil { startTimer() }
         } else if timer != nil {
@@ -462,10 +484,6 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     }
 
     private func purgeInactiveState(preservingMixerAttachment: Bool) {
-        consumerLock.lock()
-        consumers.removeAll()
-        consumerLock.unlock()
-
         // `stop()` can be called from the main actor (LEDMeterService) or from
         // another visualization queue. Cancelling the timer does not wait for a
         // `process()` invocation that is already running, so replacing FFT
@@ -644,8 +662,9 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
     private nonisolated func isPlaybackActiveForDiagnostics() -> Bool {
         stateLock.lock()
+        let hasConsumers = hasActiveConsumersLocked()
         let inputAvailable = isInstalled || isExternalFeedEnabled
-        let active = inputAvailable && activeClients > 0 && (isPlaying || pauseLingerActive)
+        let active = inputAvailable && hasConsumers && (isPlaying || pauseLingerActive)
         stateLock.unlock()
         return active
     }

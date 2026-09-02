@@ -103,19 +103,12 @@ struct MusicSourceSettingsRow: View {
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: mode == .directory ? "folder.fill" : "music.note")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(themeStore.accentColor)
-                .frame(width: 38, height: 38)
-                .background(
-                    themeStore.accentColor.opacity(0.12),
-                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                )
+        HStack(spacing: 12) {
+            sourceIcon
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(name)
-                    .font(.body.weight(.medium))
+                    .font(.callout.weight(.medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Text(path)
@@ -136,7 +129,7 @@ struct MusicSourceSettingsRow: View {
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(statusColor)
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
+                    .padding(.vertical, 4)
                     .background(statusColor.opacity(0.11), in: Capsule(style: .continuous))
             }
 
@@ -149,8 +142,8 @@ struct MusicSourceSettingsRow: View {
                 Button("移除来源…", role: .destructive, action: onRemove)
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 13, weight: .semibold))
-                    .frame(width: 28, height: 28)
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 26, height: 26)
                     .contentShape(Circle())
             }
             .menuStyle(.borderlessButton)
@@ -159,8 +152,28 @@ struct MusicSourceSettingsRow: View {
             .help("来源操作")
             .accessibilityLabel("来源操作")
         }
-        .padding(14)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var sourceIcon: some View {
+        if mode == .directory {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(themeStore.accentColor)
+                .frame(width: 32, height: 32)
+                .background(
+                    themeStore.accentColor.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                )
+        } else {
+            Image(systemName: "music.note")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(themeStore.accentColor)
+                .frame(width: 32, height: 32)
+        }
     }
 
     private var statusLabel: String? {

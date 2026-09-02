@@ -84,9 +84,8 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     private var currentVolume: Float = 1
 
     /// Explicit loads/seeks and system auto-flushes share the same renderer
-    /// queue, but the synchronizer rate change is applied on the main queue.
-    /// These fields prevent a notification queued during an explicit flush
-    /// from re-seeking the newly requested provider to the old clock.
+    /// queue. These fields prevent a notification queued during an explicit
+    /// flush from re-seeking the newly requested provider to the old clock.
     private var timelineMutationInProgress = false
     private var lastExplicitTimelineMutationWallTime: TimeInterval = 0
     private var explicitTimelineClock: Double = 0
@@ -99,6 +98,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     private var stallRecoveryScheduled = false
 
     var onProgress: ((Double) -> Void)?
+    /// Called on the main queue after a load/seek has flushed the old timeline,
+    /// primed the new samples, and committed the synchronizer's rate/anchor.
+    /// The segment ID lets the owner discard a callback from an older seek.
+    var onTimelineMutationCommitted: ((UUID, Double, Bool) -> Void)?
     var onSystemReconfigEvent: (() -> Void)?
     var onEnqueue: ((CanonicalPCM, Double) -> Void)?
     var onAnalysisPCM: ((CanonicalPCM) -> Void)?
@@ -121,6 +124,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         pipelineQueue.setSpecific(key: pipelineQueueKey, value: ())
         configureRenderer(renderer)
         synchronizer.addRenderer(renderer)
+        // Keep this ordering identical to the verified AVSampleBuffer demo:
+        // spatialization eligibility is declared after the renderer is attached
+        // to its synchronizer, but before the first sample is enqueued.
+        configureSpatialization(renderer)
         if #available(macOS 11.3, *) {
             synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
         }
@@ -141,8 +148,11 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     }
 
     private func configureRenderer(_ renderer: AVSampleBufferAudioRenderer) {
-        renderer.allowedAudioSpatializationFormats = [.monoStereoAndMultichannel]
         renderer.volume = currentVolume
+    }
+
+    private func configureSpatialization(_ renderer: AVSampleBufferAudioRenderer) {
+        renderer.allowedAudioSpatializationFormats = [.monoStereoAndMultichannel]
     }
 
     private func installRendererObservers(for renderer: AVSampleBufferAudioRenderer) {
@@ -264,7 +274,11 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             self.isLoaded = true
             self.isPlaybackActive = autoplay
             self.resetStallBaseline(clock: clockTimeSeconds)
-            self.primeOneBatch()
+            // A seek should become audible as soon as the new anchor is
+            // committed. Priming a full 1.5 s window here makes AirPods wait
+            // for an unnecessarily large queue during their route handoff;
+            // steady-state feed/recovery still use the larger bounded window.
+            self.primeOneBatch(maxChunks: 2)
 
             let rate: Float = autoplay ? 1 : 0
             let clock = CMTime(seconds: max(0, clockTimeSeconds), preferredTimescale: 600)
@@ -272,6 +286,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             self.lastExplicitTimelineMutationWallTime = ProcessInfo.processInfo.systemUptime
             self.timelineMutationInProgress = false
             self.startFeedTimerIfNeeded()
+            let committedClock = max(0, clockTimeSeconds)
+            DispatchQueue.main.async { [weak self] in
+                self?.onTimelineMutationCommitted?(segmentID, committedClock, autoplay)
+            }
         }
     }
 
@@ -421,12 +439,12 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         feedTimer = nil
     }
 
-    private func primeOneBatch() {
+    private func primeOneBatch(maxChunks: Int = 16) {
         var count = 0
         // AirPods can take longer to accept the first queue after a route or
-        // spatial-mode transition. Prime roughly one target-ahead window, but
-        // never call enqueue while the renderer reports backpressure.
-        while count < 16,
+        // spatial-mode transition. Prime a bounded batch, but never call
+        // enqueue while the renderer reports backpressure.
+        while count < max(0, maxChunks),
               renderer.isReadyForMoreMediaData,
               enqueueOneChunk() {
             count += 1
@@ -721,6 +739,7 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         configureRenderer(replacement)
         renderer = replacement
         synchronizer.addRenderer(replacement)
+        configureSpatialization(replacement)
         installRendererObservers(for: replacement)
         analysisQueue.removeAll(keepingCapacity: true)
         recoverSources(atTimelineSeconds: clock, reanchorClock: true)
@@ -753,22 +772,12 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         return seconds.isFinite ? max(0, seconds) : 0
     }
 
-    /// Apply the synchronizer rate/anchor without blocking the pipeline queue on
-    /// the main thread. `append` and `stop` are synchronous queue barriers, so a
-    /// main-thread caller waiting on either one must be able to drain this queue
-    /// even while a preceding `load` is finishing its timeline mutation.
+    /// Apply the synchronizer rate/anchor on the same serial queue that flushes
+    /// and enqueues samples. AVSampleBufferRenderSynchronizer is thread-safe;
+    /// keeping the operation on this queue makes a seek one ordered transaction
+    /// instead of posting an anchor to main.async behind a stale route callback.
     private func setSynchronizerRateSynchronously(_ rate: Float, time: CMTime) {
-        if Thread.isMainThread {
-            synchronizer.setRate(rate, time: time)
-        } else if DispatchQueue.getSpecific(key: pipelineQueueKey) != nil {
-            DispatchQueue.main.async { [weak self] in
-                self?.synchronizer.setRate(rate, time: time)
-            }
-        } else {
-            DispatchQueue.main.sync {
-                self.synchronizer.setRate(rate, time: time)
-            }
-        }
+        synchronizer.setRate(rate, time: time)
     }
 
     private func startStatusPolling() {

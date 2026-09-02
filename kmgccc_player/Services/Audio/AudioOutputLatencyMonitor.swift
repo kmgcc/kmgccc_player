@@ -74,11 +74,14 @@ enum AudioOutputLatencyMonitor {
             streamLatency = max(streamLatency, latency)
         }
 
-        let totalFrames = UInt64(deviceLatency) + UInt64(streamLatency)
-        // A broken/transitioning device can briefly report nonsense. Keep the
-        // value useful for UI timing and avoid turning a route change into a
-        // multi-second lyric jump.
-        let seconds = min(2, max(0, Double(totalFrames) / sampleRate))
+        // Core Audio's device and stream latency properties are not guaranteed
+        // to be additive. On Bluetooth routes they commonly describe
+        // overlapping portions of the same output path; summing them made the
+        // UI compensate twice and put lyrics/visualization visibly behind the
+        // sound. Use the larger reported component and keep a conservative cap
+        // for transient values while a route is being reconfigured.
+        let observedFrames = max(deviceLatency, streamLatency)
+        let seconds = min(0.25, max(0, Double(observedFrames) / sampleRate))
 
         return AudioOutputLatencySnapshot(
             deviceID: deviceID,

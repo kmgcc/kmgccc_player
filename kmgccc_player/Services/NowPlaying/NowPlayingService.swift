@@ -99,7 +99,11 @@ final class NowPlayingService {
         info[MPMediaItemPropertyPlaybackDuration] = player.duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player.currentTime
         info[MPNowPlayingInfoPropertyPlaybackRate] = player.isPlaying ? 1.0 : 0.0
-        applyAudioMetadata(to: &info, trackID: track.id)
+        applyAudioMetadata(
+            to: &info,
+            trackID: track.id,
+            assetURL: player.nowPlayingAssetURL
+        )
 
         scheduleArtworkLoadIfNeeded(for: track)
         if let artwork = mediaArtwork(for: track) {
@@ -149,7 +153,13 @@ final class NowPlayingService {
         info[MPMediaItemPropertyPlaybackDuration] = presentation.duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = presentation.currentTime
         info[MPNowPlayingInfoPropertyPlaybackRate] = presentation.isPlaying ? 1.0 : 0.0
-        applyAudioMetadata(to: &info, trackID: presentation.localTrack?.id)
+        applyAudioMetadata(
+            to: &info,
+            trackID: presentation.localTrack?.id,
+            assetURL: presentation.source == .local
+                ? coordinator?.localNowPlayingAssetURL
+                : nil
+        )
 
         if let artwork = mediaArtwork(for: presentation) {
             info[MPMediaItemPropertyArtwork] = artwork
@@ -165,14 +175,24 @@ final class NowPlayingService {
         }
     }
 
-    private func applyAudioMetadata(to info: inout [String: Any], trackID: UUID?) {
+    private func applyAudioMetadata(
+        to info: inout [String: Any],
+        trackID: UUID?,
+        assetURL: URL?
+    ) {
         info[MPNowPlayingInfoPropertyMediaType] = NSNumber(
             value: MPNowPlayingInfoMediaType.audio.rawValue
         )
+        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = NSNumber(value: 1.0)
         if let trackID {
             info[MPNowPlayingInfoPropertyExternalContentIdentifier] = trackID.uuidString
         } else {
             info.removeValue(forKey: MPNowPlayingInfoPropertyExternalContentIdentifier)
+        }
+        if let assetURL {
+            info[MPNowPlayingInfoPropertyAssetURL] = assetURL
+        } else {
+            info.removeValue(forKey: MPNowPlayingInfoPropertyAssetURL)
         }
     }
 

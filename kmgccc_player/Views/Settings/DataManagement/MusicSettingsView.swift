@@ -60,6 +60,13 @@ struct MusicSettingsView: View {
             if activeMode == .referenced {
                 sourceSection
                 deletePolicySection
+            }
+
+            if !libraryVM.diagnostics.duplicateGroups.isEmpty {
+                duplicateTracksSection
+            }
+
+            if activeMode == .referenced {
                 missingTracksSection
             }
         }
@@ -298,13 +305,17 @@ struct MusicSettingsView: View {
             + summary.permissionDeniedTracks
             + summary.staleTracks
             + summary.checkingTracks
-        let metrics: [(String, String, Color)] = [
+        var metrics: [(title: String, value: String, color: Color)] = [
             ("歌曲", "\(summary.totalTracks)", themeStore.accentColor),
             ("可播放", "\(summary.playableTracks)", .green),
-            ("总时长", formattedDuration(summary.totalDuration), .secondary),
-            ("来源", activeMode == .referenced ? "\(logicalSourceCount)" : "—", .secondary),
-            ("异常", "\(anomalyCount)", anomalyCount == 0 ? .secondary : .orange)
+            ("总时长", formattedDuration(summary.totalDuration), .secondary)
         ]
+        if activeMode == .referenced {
+            metrics.append(("来源", "\(logicalSourceCount)", .secondary))
+        }
+        if anomalyCount > 0 {
+            metrics.append(("异常", "\(anomalyCount)", .orange))
+        }
 
         return VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 11) {
@@ -327,7 +338,7 @@ struct MusicSettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 if let activeMode {
-                        Text(activeMode == .referenced ? "原位" : "收集")
+                    Text(activeMode == .referenced ? "原位" : "收集")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 8)
@@ -338,37 +349,18 @@ struct MusicSettingsView: View {
 
             Divider()
 
-            LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(minimum: 64), spacing: 8), count: 5),
-                alignment: .leading,
-                spacing: 8
-            ) {
-                ForEach(Array(metrics.enumerated()), id: \.offset) { _, metric in
-                    diagnosticMetric(metric.0, value: metric.1, color: metric.2)
+            HStack(alignment: .top, spacing: 0) {
+                ForEach(Array(metrics.enumerated()), id: \.offset) { index, metric in
+                    if index > 0 {
+                        Spacer(minLength: 12)
+                    }
+                    diagnosticMetric(metric.title, value: metric.value, color: metric.color)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if !summary.topFormats.isEmpty {
                 audioFormatBreakdown(summary)
-            }
-
-            if !libraryVM.diagnostics.duplicateGroups.isEmpty {
-                Button {
-                    isDuplicateReviewPresented = true
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "doc.on.doc")
-                            .foregroundStyle(.orange)
-                        Text("重复歌曲")
-                            .font(.callout.weight(.medium))
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
             }
         }
         .padding(14)
@@ -380,12 +372,12 @@ struct MusicSettingsView: View {
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(color)
                 .lineLimit(1)
-                .minimumScaleFactor(0.72)
+                .minimumScaleFactor(0.8)
             Text(title)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func formattedDuration(_ seconds: Double) -> String {
@@ -415,16 +407,22 @@ struct MusicSettingsView: View {
 
             HStack(spacing: 6) {
                 ForEach(Array(entries.enumerated()), id: \.offset) { index, item in
-                    Text("\(item.format) \(item.count)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(
-                            audioFormatColor(index).opacity(0.12),
-                            in: Capsule(style: .continuous)
-                        )
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(audioFormatColor(index))
+                            .frame(width: 6, height: 6)
+                        Text("\(item.format) \(item.count)")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .padding(.leading, 6)
+                    .padding(.trailing, 7)
+                    .padding(.vertical, 3)
+                    .background(
+                        audioFormatColor(index).opacity(0.12),
+                        in: Capsule(style: .continuous)
+                    )
                 }
                 Spacer(minLength: 0)
             }
@@ -501,6 +499,30 @@ struct MusicSettingsView: View {
         }
     }
 
+    private var duplicateTracksSection: some View {
+        SettingsSection("重复歌曲") {
+            Button {
+                isDuplicateReviewPresented = true
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "doc.on.doc.fill")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                    Text("\(libraryVM.diagnostics.duplicateGroups.count) 组重复候选")
+                        .font(.callout)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 12)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
     private var missingTracksSection: some View {
         SettingsSection("失效歌曲") {
             VStack(spacing: 0) {
@@ -511,6 +533,16 @@ struct MusicSettingsView: View {
                         .font(.callout)
 
                     Spacer(minLength: 8)
+
+                    if !unavailableTracks.isEmpty {
+                        Button("一键删除") {
+                            trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: unavailableTracks)
+                        }
+                        .buttonStyle(.bordered)
+                        .clipShape(Capsule())
+                        .controlSize(.small)
+                        .disabled(isWorking || !deletingTrackIDs.isEmpty)
+                    }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 12)

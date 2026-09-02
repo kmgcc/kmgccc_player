@@ -32,6 +32,11 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
     /// Currently playing track (nil if nothing playing).
     var currentTrack: Track? { get }
 
+    /// Resolved local file URL for the active item, when one is available. This
+    /// is published to the system media session so macOS can classify the
+    /// renderer as an audio player for spatial-mode eligibility.
+    var nowPlayingAssetURL: URL? { get }
+
     /// Effective playback order mode for the active local playback session.
     var currentPlaybackOrderMode: PlaybackOrderMode { get }
 
@@ -100,6 +105,8 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
 // MARK: - Convenience Extension
 
 extension AudioPlaybackServiceProtocol {
+
+    var nowPlayingAssetURL: URL? { nil }
 
     /// Toggle between play and pause.
     func togglePlayPause() {

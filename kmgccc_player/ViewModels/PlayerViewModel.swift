@@ -58,6 +58,10 @@ final class PlayerViewModel {
         playbackService.currentTrack
     }
 
+    var nowPlayingAssetURL: URL? {
+        playbackService.nowPlayingAssetURL
+    }
+
     var currentPlaybackOrderMode: PlaybackOrderMode {
         playbackService.currentPlaybackOrderMode
     }

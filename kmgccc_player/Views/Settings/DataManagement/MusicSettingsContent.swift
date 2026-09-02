@@ -11,6 +11,7 @@ nonisolated struct MusicSettingsContentModel: Sendable {
         let id: UUID
         let name: String
         let path: String
+        var mode: ReferencedSourceMode = .directory
         let status: String
         let scanState: ReferencedSourceScanState
     }
@@ -67,7 +68,7 @@ struct MusicSettingsContent: View {
                             MusicSourceSettingsRow(
                                 name: row.name,
                                 path: row.path,
-                                mode: .directory,
+                                mode: row.mode,
                                 status: row.status == "可用" ? .available : .offline,
                                 isScanning: row.scanState == .scanning,
                                 scanFailed: row.scanState == .failed,
@@ -124,8 +125,17 @@ struct MusicSettingsContent: View {
                     id: UUID(),
                     name: "现场录音与母带归档",
                     path: "/Volumes/Studio Archive/Projects/2026/Very Long Session Name/Original Audio Files",
+                    mode: .directory,
                     status: "可用",
                     scanState: .scanning
+                ),
+                .init(
+                    id: UUID(),
+                    name: "Single Track Recording.flac",
+                    path: "/Volumes/Studio Archive/Projects/2026/Single Track Recording.flac",
+                    mode: .file,
+                    status: "可用",
+                    scanState: .idle
                 )
             ],
             deletePolicy: .onlyLibrary

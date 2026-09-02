@@ -19,6 +19,7 @@ protocol LocalPlaybackControlling: AnyObject {
     var audioOutputDelay: Double { get }
     var duration: Double { get }
     var currentTrack: Track? { get }
+    var nowPlayingAssetURL: URL? { get }
     var currentPlaybackOrderMode: PlaybackOrderMode { get }
     var volume: Double { get }
     var currentQueueTracks: [Track] { get }
@@ -44,6 +45,10 @@ protocol LocalPlaybackControlling: AnyObject {
 }
 
 extension PlayerViewModel: LocalPlaybackControlling {}
+
+extension LocalPlaybackControlling {
+    var nowPlayingAssetURL: URL? { nil }
+}
 
 @Observable
 @MainActor
@@ -84,6 +89,10 @@ final class PlaybackCoordinator {
 
     private(set) var activeSource: PlaybackSource
     private(set) var presentation: NowPlayingPresentation = .emptyLocal
+
+    var localNowPlayingAssetURL: URL? {
+        localPlayback?.nowPlayingAssetURL
+    }
 
     var onActiveSourceChanged: ((PlaybackSource) -> Void)?
     var onTelemetryPlaybackStateChanged: ((PlaybackSource, Bool) -> Void)?
