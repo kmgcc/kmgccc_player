@@ -32,6 +32,67 @@ final class AudioLocatorResolutionTests: XCTestCase {
         return url
     }
 
+    func testSystemBookmarkResolverAcceptsRegularBookmarkData() throws {
+        let root = try temporaryDirectory()
+        let resolver = SystemBookmarkResolver()
+        let bookmark = try root.bookmarkData(
+            options: [],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+
+        let resolved = try resolver.resolve(bookmark)
+        XCTAssertEqual(resolved.url.standardizedFileURL, root.standardizedFileURL)
+        XCTAssertFalse(resolved.isStale)
+    }
+
+    func testSystemBookmarkResolverStillAcceptsSecurityScopedBookmarkData() throws {
+        let root = try temporaryDirectory()
+        let resolver = SystemBookmarkResolver()
+        let bookmark = try root.bookmarkData(
+            options: .withSecurityScope,
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+
+        let resolved = try resolver.resolve(bookmark)
+        XCTAssertEqual(resolved.url.standardizedFileURL, root.standardizedFileURL)
+        XCTAssertFalse(resolved.isStale)
+    }
+
+    func testStartupResolverActivatesLibraryWithRegularBookmark() async throws {
+        let root = try temporaryDirectory()
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("Tracks", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let manifest = kmgccc_player.MusicLibraryManifest(displayName: "Regular startup", mode: .managed)
+        try manifest.write(to: LibraryPaths(rootURL: root).manifestURL)
+        let descriptor = kmgccc_player.MusicLibraryBookmark(
+            id: manifest.libraryID,
+            displayName: manifest.displayName,
+            rootBookmarkData: try root.bookmarkData(
+                options: [],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            ),
+            lastKnownPath: root.path,
+            modeProjection: manifest.mode
+        )
+        let store = try kmgccc_player.MusicLibraryRegistryStore(
+            fileURL: root.appendingPathComponent("LibraryRegistry.json")
+        )
+        try await store.register(descriptor)
+        try await store.setActiveLibrary(id: descriptor.id, manifestMode: descriptor.modeProjection)
+
+        let resolution = await LibraryStartupContextResolver(registryStore: store).resolve()
+        guard case let .context(context) = resolution else {
+            return XCTFail("Expected a regular bookmark library to be reachable at startup")
+        }
+        XCTAssertEqual(context.id, manifest.libraryID)
+        XCTAssertEqual(context.rootURL.standardizedFileURL, root.standardizedFileURL)
+    }
+
     func testManagedAndReferencedMembershipResolve() throws {
         let root = try temporaryDirectory()
         let managed = root.appendingPathComponent("Tracks/id/audio.flac")

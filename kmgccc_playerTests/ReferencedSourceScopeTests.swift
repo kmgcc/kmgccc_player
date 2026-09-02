@@ -135,6 +135,38 @@ final class ReferencedSourceScopeTests: XCTestCase {
         XCTAssertTrue(sandboxScope.authorizedRoots.isEmpty)
     }
 
+    func testRegularBookmarkSourceIsAvailableOutsideSandboxPolicy() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = try makePaths(root)
+        let bookmark = try root.bookmarkData(
+            options: [],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
+        let source = ReferencedSourceDescriptor(
+            rootBookmarkData: bookmark,
+            lastKnownPath: root.path,
+            displayName: "Regular bookmark",
+            status: .offline
+        )
+        let store = ReferencedSourceStore(paths: paths)
+        try await store.save(source)
+        let scope = ReferencedSourceScope()
+
+        let issues = await scope.start(
+            descriptors: [source],
+            store: store,
+            bookmarkResolver: SystemBookmarkResolver(),
+            requiresSecurityScope: false
+        )
+
+        XCTAssertTrue(issues.isEmpty)
+        XCTAssertEqual(scope.authorizedRoots[source.id]?.url.standardizedFileURL, root.standardizedFileURL)
+        XCTAssertEqual(try await store.load(id: source.id).status, .available)
+        scope.close()
+    }
+
     private func makeRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

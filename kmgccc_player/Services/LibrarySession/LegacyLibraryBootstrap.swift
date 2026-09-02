@@ -32,21 +32,10 @@ nonisolated struct LegacyLibraryBootstrap: Sendable {
     init(
         registryURL: URL = MusicLibraryRegistryFile.defaultURL(),
         bookmarkDataProvider: @escaping BookmarkDataProvider = { url in
-            try url.bookmarkData(
-                options: .withSecurityScope,
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
-            )
+            try SystemBookmarkResolver().refreshBookmark(for: url)
         },
         bookmarkURLResolver: @escaping BookmarkURLResolver = { data in
-            var isStale = false
-            let url = try URL(
-                resolvingBookmarkData: data,
-                options: [.withSecurityScope, .withoutUI],
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            )
-            return (url, isStale)
+            try SystemBookmarkResolver().resolve(data)
         }
     ) {
         self.registryURL = registryURL

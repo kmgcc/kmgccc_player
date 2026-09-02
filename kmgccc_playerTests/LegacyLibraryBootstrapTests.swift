@@ -38,6 +38,40 @@ final class LegacyLibraryBootstrapTests: XCTestCase {
         XCTAssertTrue(result.requiresPostRegistrationMigration)
     }
 
+    func testDefaultBookmarkResolverRestoresRegularBookmark() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.container) }
+        try FileManager.default.createDirectory(
+            at: fixture.root.appendingPathComponent("Tracks", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let manifest = MusicLibraryManifest(displayName: "Regular bookmark", mode: .managed)
+        try manifest.write(to: LibraryPaths(rootURL: fixture.root).manifestURL)
+        let descriptor = MusicLibraryBookmark(
+            id: manifest.libraryID,
+            displayName: manifest.displayName,
+            rootBookmarkData: try fixture.root.bookmarkData(
+                options: [],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            ),
+            lastKnownPath: fixture.root.path,
+            modeProjection: manifest.mode
+        )
+        let registry = MusicLibraryRegistry(
+            libraries: [descriptor],
+            activeLibraryID: descriptor.id,
+            recentManagedLibraryID: descriptor.id
+        )
+        try MusicLibraryRegistryFile.save(registry, to: fixture.registry)
+
+        let result = try LegacyLibraryBootstrap(registryURL: fixture.registry)
+            .run(legacyRootURL: fixture.container.appendingPathComponent("not-the-library"))
+
+        XCTAssertEqual(result.context?.id, manifest.libraryID)
+        XCTAssertEqual(result.context?.rootURL.standardizedFileURL, fixture.root.standardizedFileURL)
+    }
+
     func testRegistryWithoutActiveLibraryFallsBackToLegacyDiscovery() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.container) }

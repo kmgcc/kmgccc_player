@@ -109,6 +109,8 @@ struct HomeHeroView: View {
     }
 
     @State private var trackToEdit: Track?
+    @State private var isShowingDescriptionReader = false
+    @State private var isHoveringDescription = false
 
     init(
         track: Track,
@@ -283,6 +285,17 @@ struct HomeHeroView: View {
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
                 .environmentObject(themeStore)
+        }
+        .sheet(isPresented: $isShowingDescriptionReader) {
+            DetailDescriptionReaderSheet(
+                title: "歌曲详情",
+                systemImage: "music.note",
+                subtitle: "\(track.title) · \(track.artist)",
+                text: heroDescription,
+                artworkImage: coverImage,
+                artworkData: track.artworkData
+            )
+            .environmentObject(themeStore)
         }
         .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in
             Task {
@@ -631,17 +644,34 @@ struct HomeHeroView: View {
     private var descriptionLine: some View {
         let description = heroDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         if !description.isEmpty {
-            AppKitFullTextScrollView(
-                text: description,
-                font: NSFont.systemFont(ofSize: descriptionFontSize, weight: .ultraLight),
-                textColor: NSColor(heroPlusBlendTextProfile.secondaryColor),
-                lineSpacing: 1.5,
-                showsVerticalScroller: true
-            )
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                isShowingDescriptionReader = true
+            } label: {
+                AppKitFullTextScrollView(
+                    text: description,
+                    font: NSFont.systemFont(ofSize: descriptionFontSize, weight: .ultraLight),
+                    textColor: NSColor(heroPlusBlendTextProfile.secondaryColor),
+                    lineSpacing: 1.5,
+                    showsVerticalScroller: false
+                )
+                .allowsHitTesting(false)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: descriptionScrollHeight, alignment: .top)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isHoveringDescription ? Color.white.opacity(0.08) : Color.clear)
+                )
+            }
+            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHoveringDescription = hovering
+            }
+            .help("点击查看完整详情")
             .compositingGroup()
             .blendMode(heroPlusBlendTextProfile.blendMode)
-            .frame(height: descriptionScrollHeight, alignment: .top)
             .clipped()
             .layoutPriority(1)
             .padding(.top, 4)

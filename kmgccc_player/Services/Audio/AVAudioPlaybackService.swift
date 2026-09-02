@@ -147,13 +147,13 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private static let outputLatencyRefreshInterval: TimeInterval = 0.25
     private var outputLatencySnapshot = AudioOutputLatencySnapshot.zero
     private var lastOutputLatencyRefreshUptime: TimeInterval = 0
-    private var lastAppliedAnalysisDeliveryLead: Double = -1
 
     var audioOutputDelay: Double {
-        guard outputBackend == .spatialRenderer else {
-            return lookaheadSeconds
-        }
-        return lookaheadSeconds + outputLatencySnapshot.compensationSeconds
+        // This value is intentionally limited to the application's own
+        // visualization lookahead. Bluetooth/device latency is represented by
+        // the AVSampleBufferAudioRenderer's output-device clock and must not be
+        // added here, otherwise lyrics and analysis are delayed twice.
+        lookaheadSeconds
     }
 
     /// URL exposed to the system media session. Keeping this tied to the
@@ -363,7 +363,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private func setupRendererPipeline() {
         rendererPipeline.setVolume(Float(volume))
-        rendererPipeline.setAnalysisDeliveryLeadSeconds(audioOutputDelay)
+        rendererPipeline.setAnalysisDeliveryLeadSeconds(lookaheadSeconds)
         rendererPipeline.onProgress = { [weak self] clock in
             guard let self, self.spatialPendingSeek == nil else { return }
             self.spatialClockTime = clock
@@ -396,12 +396,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             NowPlayingService.shared.syncLocalPlaybackState()
         }
         rendererPipeline.onAnalysisPCM = { pcm in
-            // Feed only when the renderer clock reaches the output-compensated
-            // delivery lead (lookahead plus any current Bluetooth estimate),
-            // avoiding the renderer's larger decode pre-roll. The raw
-            // `onEnqueue` hook remains available for diagnostics, but feeding
-            // it directly would make visualizers run ahead whenever the
-            // bounded queue is full.
+            // Feed only when the renderer clock reaches the application-owned
+            // lookahead delivery point, avoiding the renderer's larger decode
+            // pre-roll. The output device's Core Audio clock is selected on the
+            // renderer; no route-specific delay estimate belongs in this path.
             AudioAnalysisHub.shared.enqueueExternalPCM(pcm)
         }
         rendererPipeline.onSegmentExhausted = { [weak self] descriptor in
@@ -430,10 +428,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
     }
 
-    /// Refresh the system-reported output latency at the same cadence as the
-    /// playback presentation timer. Core Audio exposes device + stream latency
-    /// but AVSampleBufferAudioRenderer has no macOS latency property of its own.
-    /// The snapshot is intentionally route-based and does not pin a device UID.
+    /// Refresh the active Core Audio output route at the same cadence as the
+    /// playback presentation timer. The renderer itself is bound to the
+    /// reported device UID so its synchronizer follows the device clock. The
+    /// latency fields are retained for diagnostics only; they never become a
+    /// presentation offset.
     private func refreshOutputLatency(force: Bool = false) {
         let now = ProcessInfo.processInfo.systemUptime
         guard force || now - lastOutputLatencyRefreshUptime >= Self.outputLatencyRefreshInterval else {
@@ -443,18 +442,17 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         let snapshot = AudioOutputLatencyMonitor.currentSnapshot()
         let snapshotChanged = snapshot != outputLatencySnapshot
+        let outputDeviceChanged = snapshot.deviceID != outputLatencySnapshot.deviceID
+            || snapshot.deviceUID != outputLatencySnapshot.deviceUID
         outputLatencySnapshot = snapshot
-
-        let analysisLead = audioOutputDelay
         if snapshotChanged {
             Log.info(
-                "[AudioLatency] output=\(snapshot.deviceName) transport=\(snapshot.transportType) deviceFrames=\(snapshot.deviceLatencyFrames) streamFrames=\(snapshot.streamLatencyFrames) reportedSeconds=\(String(format: "%.4f", snapshot.seconds)) compensationSeconds=\(String(format: "%.4f", snapshot.compensationSeconds))",
+                "[AudioClock] output=\(snapshot.deviceName) uid=\(snapshot.deviceUID ?? "default") transport=\(snapshot.transportType) deviceFrames=\(snapshot.deviceLatencyFrames) streamFrames=\(snapshot.streamLatencyFrames) reportedSeconds=\(String(format: "%.4f", snapshot.seconds)) presentationOffset=0",
                 category: .audio
             )
         }
-        if snapshotChanged || abs(analysisLead - lastAppliedAnalysisDeliveryLead) > 0.000_5 {
-            lastAppliedAnalysisDeliveryLead = analysisLead
-            rendererPipeline.setAnalysisDeliveryLeadSeconds(analysisLead)
+        if outputDeviceChanged {
+            rendererPipeline.setAudioOutputDeviceUniqueID(snapshot.deviceUID)
         }
     }
 
@@ -791,7 +789,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             spatialPendingBoundary = nil
             rendererPipeline.setAnalysisLeadSeconds(lookaheadSeconds)
             refreshOutputLatency(force: true)
-            rendererPipeline.setAnalysisDeliveryLeadSeconds(audioOutputDelay)
+            rendererPipeline.setAnalysisDeliveryLeadSeconds(lookaheadSeconds)
             rendererPipeline.load(
                 source: provider,
                 sourcePosition: targetFrame,
@@ -1281,7 +1279,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         AudioAnalysisHub.shared.setPlaying(!restorePaused)
         rendererPipeline.setVolume(Float(volume))
         rendererPipeline.setAnalysisLeadSeconds(lookaheadSeconds)
-        rendererPipeline.setAnalysisDeliveryLeadSeconds(audioOutputDelay)
+        rendererPipeline.setAnalysisDeliveryLeadSeconds(lookaheadSeconds)
         rendererPipeline.load(
             source: provider,
             sourcePosition: frame,
@@ -1423,6 +1421,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
         applyLookaheadPreferenceChangeIfNeeded(reason: "resume")
         if outputBackend == .spatialRenderer {
+            // A route can change while the player is paused, when the progress
+            // timer is not running. Refresh immediately so the renderer resumes
+            // on the current device clock instead of an old explicit UID.
+            refreshOutputLatency(force: true)
             rendererPipeline.play()
             AudioAnalysisHub.shared.setPlaying(true)
             isPlaying = true
@@ -1572,7 +1574,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         refreshOutputLatency(force: true)
         rendererPipeline.setAnalysisLeadSeconds(lookaheadSeconds)
-        rendererPipeline.setAnalysisDeliveryLeadSeconds(audioOutputDelay)
+        rendererPipeline.setAnalysisDeliveryLeadSeconds(lookaheadSeconds)
         // Drop the old analysis window and stop its processing timer before the
         // asynchronous renderer load can begin. The commit callback above
         // restarts it only after the new timeline wins.

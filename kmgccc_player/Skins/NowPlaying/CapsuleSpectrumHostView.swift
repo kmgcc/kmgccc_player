@@ -645,7 +645,6 @@ final class CapsuleSpectrumHostView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         installWindowVisibilityObserversIfNeeded()
-        configureVisualizationDynamicRange()
         applyColors()
         reconcileVisibleConsumer()
         if window != nil {
@@ -668,7 +667,6 @@ final class CapsuleSpectrumHostView: NSView {
 
     @objc private func handleWindowVisibilityChanged(_ notification: Notification) {
         if notification.name == NSWindow.didChangeScreenNotification {
-            configureVisualizationDynamicRange()
             applyColors()
         }
         reconcileVisibleConsumer()
@@ -772,40 +770,19 @@ final class CapsuleSpectrumHostView: NSView {
 
     private func applyColors() {
         guard !capsuleLayers.isEmpty else { return }
-        configureVisualizationDynamicRange()
-        let screen = window?.screen
-        let headroom = ColorRenderingAdapter.visualizationHeadroom(for: screen)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for (index, layer) in capsuleLayers.enumerated() {
             if index < fillColors.count {
-                layer.backgroundColor = ColorRenderingAdapter.makeExtendedDynamicRangeCGColor(
-                    fillColors[index],
-                    headroom: headroom
-                )
+                layer.backgroundColor = fillColors[index]
             }
             if let strokeColors, index < strokeColors.count {
-                layer.borderColor = ColorRenderingAdapter.makeExtendedDynamicRangeCGColor(
-                    strokeColors[index],
-                    headroom: headroom
-                )
+                layer.borderColor = strokeColors[index]
             } else if index < fillColors.count {
-                layer.borderColor = ColorRenderingAdapter.makeExtendedDynamicRangeCGColor(
-                    fillColors[index],
-                    headroom: headroom
-                )
+                layer.borderColor = fillColors[index]
             }
         }
         CATransaction.commit()
-    }
-
-    private func configureVisualizationDynamicRange() {
-        let screen = window?.screen
-        ColorRenderingAdapter.configureVisualizationLayer(layer, screen: screen)
-        ColorRenderingAdapter.configureVisualizationLayer(rootLayer, screen: screen)
-        for capsuleLayer in capsuleLayers {
-            ColorRenderingAdapter.configureVisualizationLayer(capsuleLayer, screen: screen)
-        }
     }
 
     /// Write the per-bar *static* properties (center, width, cornerRadius) once.

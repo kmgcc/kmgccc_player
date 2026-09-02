@@ -137,25 +137,22 @@ struct MusicSettingsView: View {
     }
 
     private var librarySection: some View {
-        SettingsSection {
+        SettingsSection("资料库", headerTrailing: {
+            Menu {
+                Button("新建资料库…") { flow.present(.setup(.referenced)) }
+                Button("打开资料库…") { openLibraryPanel() }
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 28, height: 28)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .help("添加资料库")
+            .accessibilityLabel("添加资料库")
+            .disabled(isWorking || isAddingMusic)
+        }) {
             VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    SettingsSectionTitle("资料库")
-                    Spacer()
-                    Menu {
-                        Button("新建资料库…") { flow.present(.setup(.referenced)) }
-                        Button("打开资料库…") { openLibraryPanel() }
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 13, weight: .semibold))
-                            .frame(width: 28, height: 28)
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .help("添加资料库")
-                    .accessibilityLabel("添加资料库")
-                    .disabled(isWorking || isAddingMusic)
-                }
                 if registry.libraries.isEmpty {
                     settingsEmptyState("还没有资料库", systemImage: "externaldrive")
                 } else {
@@ -206,38 +203,38 @@ struct MusicSettingsView: View {
     }
 
     private var sourceSection: some View {
-        SettingsSection {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    SettingsSectionTitle("音乐来源")
-                    Spacer()
-                    if isAddingMusic {
-                        ProgressView()
-                            .controlSize(.small)
-                            .accessibilityLabel("正在添加音乐")
-                    }
-                    Button {
-                        refreshSources(sourceID: nil)
-                    } label: {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .frame(width: 28, height: 28)
-                    }
-                    .buttonStyle(.plain)
-                    .help("完整扫描全部来源")
-                    .accessibilityLabel("完整扫描全部来源")
-                    .disabled(isWorking || isAddingMusic || sources.isEmpty || isFullScanRunning)
-                    Button {
-                        addMusicPanel()
-                    } label: {
-                        Image(systemName: "plus")
-                            .frame(width: 28, height: 28)
-                    }
-                    .buttonStyle(.plain)
-                    .help("添加音乐")
-                    .accessibilityLabel("添加音乐")
-                    .disabled(isWorking || isAddingMusic)
+        SettingsSection("音乐来源", headerTrailing: {
+            HStack(spacing: 4) {
+                if isAddingMusic {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("正在添加音乐")
                 }
-
+                Button {
+                    refreshSources(sourceID: nil)
+                } label: {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 13, weight: .medium))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .help("完整扫描全部来源")
+                .accessibilityLabel("完整扫描全部来源")
+                .disabled(isWorking || isAddingMusic || sources.isEmpty || isFullScanRunning)
+                Button {
+                    addMusicPanel()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .help("添加音乐")
+                .accessibilityLabel("添加音乐")
+                .disabled(isWorking || isAddingMusic)
+            }
+        }) {
+            VStack(alignment: .leading, spacing: 10) {
                 if sources.isEmpty {
                     settingsEmptyState("尚未添加来源", systemImage: "folder")
                 } else {
@@ -524,30 +521,26 @@ struct MusicSettingsView: View {
     }
 
     private var missingTracksSection: some View {
-        SettingsSection("失效歌曲") {
-            VStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    Text(unavailableTracks.isEmpty
-                         ? "没有失效歌曲"
-                         : "\(unavailableTracks.count) 首歌曲暂时不可用")
-                        .font(.callout)
-
-                    Spacer(minLength: 8)
-
-                    if !unavailableTracks.isEmpty {
-                        Button("一键删除") {
-                            trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: unavailableTracks)
-                        }
-                        .buttonStyle(.bordered)
-                        .clipShape(Capsule())
-                        .controlSize(.small)
-                        .disabled(isWorking || !deletingTrackIDs.isEmpty)
-                    }
+        SettingsSection("失效歌曲", headerTrailing: {
+            if !unavailableTracks.isEmpty {
+                Button("一键删除") {
+                    trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: unavailableTracks)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 12)
+                .buttonStyle(.bordered)
+                .clipShape(Capsule())
+                .controlSize(.small)
+                .disabled(isWorking || !deletingTrackIDs.isEmpty)
+            }
+        }) {
+            if unavailableTracks.isEmpty {
+                settingsEmptyState("没有失效歌曲", systemImage: "checkmark.circle")
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("\(unavailableTracks.count) 首歌曲暂时不可用")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 2)
 
-                if !unavailableTracks.isEmpty {
                     LazyVStack(spacing: 8) {
                         ForEach(visibleUnavailableTracks) { track in
                             unavailableTrackRow(track)
@@ -567,13 +560,15 @@ struct MusicSettingsView: View {
                                     .rotationEffect(.degrees(isMissingListExpanded ? 90 : 0))
                                 Text(isMissingListExpanded ? "收起" : "显示全部 \(unavailableTracks.count) 首")
                                     .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                Spacer(minLength: 0)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .contentShape(Rectangle())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 4)
                         }
                         .buttonStyle(.plain)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
                     }
                 }
             }

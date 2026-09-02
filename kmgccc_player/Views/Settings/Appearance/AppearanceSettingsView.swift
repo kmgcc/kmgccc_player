@@ -59,7 +59,7 @@ struct AppearanceSettingsView: View {
 
             SettingsSection("常规") {
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack(spacing: 14) {
+                    HStack(alignment: .top, spacing: 14) {
                         SettingsSwitchRow(
                             title: "全局取色",
                             isOn: $globalArtworkTintEnabled
@@ -68,10 +68,12 @@ struct AppearanceSettingsView: View {
 
                         Divider()
                             .frame(height: 18)
+                            .padding(.top, 2)
 
                         SettingsSwitchRow(
-                            title: "HDR",
-                            isOn: $audioVisualizationHDREnabled
+                            title: "HDR 效果",
+                            isOn: $audioVisualizationHDREnabled,
+                            detail: "开启后部分视觉元素会使用 HDR 来增强可读性与视觉效果"
                         )
                         .frame(maxWidth: .infinity)
                     }

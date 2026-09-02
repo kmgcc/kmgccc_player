@@ -105,6 +105,8 @@ struct LibraryDetailHeaderView: View {
     @State private var lastArtistAutofillIdentity: String?
     @State private var isShowingArtistInfo = false
     @State private var isShowingAlbumInfo = false
+    @State private var isShowingDescriptionReader = false
+    @State private var isHoveringDescription = false
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("LibraryDetailHeaderView.body")
@@ -149,6 +151,17 @@ struct LibraryDetailHeaderView: View {
                 }
                 .presentationSizing(.page)
             }
+        }
+        .sheet(isPresented: $isShowingDescriptionReader) {
+            DetailDescriptionReaderSheet(
+                title: readerTitle,
+                systemImage: readerSystemImage,
+                subtitle: readerSubtitle,
+                text: headerDescriptionText,
+                artworkImage: currentArtwork,
+                isCircleArtwork: config.isCircle
+            )
+            .environmentObject(themeStore)
         }
     }
 
@@ -438,15 +451,60 @@ struct LibraryDetailHeaderView: View {
     }
 
     private func descriptionReadView(text: String) -> some View {
-        AppKitFullTextScrollView(
-            text: text,
-            font: NSFont.preferredFont(forTextStyle: .callout),
-            textColor: NSColor(headerSecondaryTextColor),
-            lineSpacing: 0,
-            showsVerticalScroller: false
-        )
-        .frame(height: headerDescriptionVisibleHeight, alignment: .top)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        Button {
+            isShowingDescriptionReader = true
+        } label: {
+            AppKitFullTextScrollView(
+                text: text,
+                font: NSFont.preferredFont(forTextStyle: .callout),
+                textColor: NSColor(headerSecondaryTextColor),
+                lineSpacing: 0,
+                showsVerticalScroller: false
+            )
+            .allowsHitTesting(false)
+            .frame(height: headerDescriptionVisibleHeight, alignment: .top)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isHoveringDescription ? Color.primary.opacity(0.06) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHoveringDescription = hovering
+        }
+        .help("点击查看完整详情")
+    }
+
+    private var readerTitle: String {
+        switch config {
+        case .playlist: return "歌单详情"
+        case .artist: return "艺人详情"
+        case .album: return "专辑详情"
+        }
+    }
+
+    private var readerSystemImage: String {
+        switch config {
+        case .playlist: return "music.note.list"
+        case .artist: return "person.crop.circle"
+        case .album: return "opticaldisc"
+        }
+    }
+
+    private var readerSubtitle: String {
+        switch config {
+        case .playlist(let p, _): return p.name
+        case .artist(let e, _): return e.displayName
+        case .album(let e, let stats):
+            if !stats.artistName.isEmpty {
+                return "\(e.displayTitle) · \(stats.artistName)"
+            }
+            return e.displayTitle
+        }
     }
 
     private var headerDescriptionVisibleHeight: CGFloat {

@@ -41,7 +41,7 @@ struct SkinPreviewCard<Preview: View>: View {
     }
 
     private var outerStrokeLineWidth: CGFloat {
-        presentationStyle.scaled(isSelected ? 2 : 1)
+        presentationStyle.scaled(2.5)
     }
 
     init(
@@ -87,12 +87,14 @@ struct SkinPreviewCard<Preview: View>: View {
             }
             .frame(width: cardSize.width, height: cardSize.height)
             .clipShape(outerShape)
-            .overlay(
-                outerShape
-                    .inset(by: outerStrokeLineWidth / 2)
-                    .stroke(outerStrokeColor, lineWidth: outerStrokeLineWidth)
-                    .allowsHitTesting(false)
-            )
+            .overlay {
+                if isSelected {
+                    outerShape
+                        .inset(by: outerStrokeLineWidth / 2)
+                        .stroke(outerStrokeColor, lineWidth: outerStrokeLineWidth)
+                        .allowsHitTesting(false)
+                }
+            }
             .contentShape(outerShape)
         }
         .buttonStyle(SkinCardButtonStyle())
@@ -100,26 +102,22 @@ struct SkinPreviewCard<Preview: View>: View {
 
     // MARK: - Appearance
 
-    @ViewBuilder
     private var cardSurface: some View {
+        outerShape
+            .fill(cardBackgroundColor)
+    }
+
+    private var cardBackgroundColor: Color {
         if presentationStyle.usesUnifiedOverlayForeground {
-            // The Quick Panel already sits on Clear Glass and its sections use
-            // Ultra Thin Material. A plain translucent fill avoids glass-on-
-            // glass while keeping the preview card visibly interactive.
-            outerShape
-                .fill(
-                    presentationStyle.primaryTextColor.opacity(isSelected ? 0.10 : 0.035)
-                )
-        } else {
-            outerShape
-                .fill(Color.clear)
-                .glassEffect(.clear, in: outerShape)
-                .overlay(
-                    outerShape
-                        .fill(isSelected ? selectionAccentColor.opacity(0.10) : Color.clear)
-                        .allowsHitTesting(false)
-                )
+            return presentationStyle.primaryTextColor.opacity(isSelected ? 0.12 : 0.045)
         }
+        if isSelected {
+            return selectionAccentColor.opacity(0.12)
+        }
+        if let appColors {
+            return appColors.secondary.opacity(0.08)
+        }
+        return colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.05)
     }
 
     private var titleColor: Color {
@@ -141,18 +139,9 @@ struct SkinPreviewCard<Preview: View>: View {
 
     private var outerStrokeColor: Color {
         if presentationStyle.usesUnifiedOverlayForeground {
-            return presentationStyle.primaryTextColor.opacity(isSelected ? 0.72 : 0.12)
+            return presentationStyle.primaryTextColor.opacity(0.85)
         }
-        if isSelected {
-            return selectionAccentColor.opacity(0.98)
-        }
-        if let appColors {
-            return appColors.secondary.opacity(0.16)
-        }
-        if colorScheme == .dark {
-            return Color.white.opacity(0.10)
-        }
-        return Color.black.opacity(0.08)
+        return selectionAccentColor.opacity(0.98)
     }
 
 }

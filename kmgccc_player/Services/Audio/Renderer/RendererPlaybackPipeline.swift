@@ -76,12 +76,17 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     private var isPlaybackActive = false
     private var pendingAutoFlushResync = false
     /// Renderer PTS lead used for source re-seeks after a route/mode flush.
-    /// This is intentionally separate from analysis delivery lead because the
-    /// Bluetooth output estimate can change without moving the logical timeline.
+    /// This is intentionally separate from analysis delivery lead so the
+    /// application-owned visualization lookahead remains explicit and stable.
     private var analysisLeadSeconds: Double = 0
     private var analysisDeliveryLeadSeconds: Double = 0
     private var analysisQueue: [AnalysisChunk] = []
     private var currentVolume: Float = 1
+    /// Core Audio UID currently selected for this renderer. On macOS the
+    /// synchronizer uses the attached audio renderer's device clock, so keeping
+    /// this value explicit avoids falling back to a host-time clock during a
+    /// route transition.
+    private var audioOutputDeviceUniqueID: String?
 
     /// Explicit loads/seeks and system auto-flushes share the same renderer
     /// queue. These fields prevent a notification queued during an explicit
@@ -149,6 +154,12 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
 
     private func configureRenderer(_ renderer: AVSampleBufferAudioRenderer) {
         renderer.volume = currentVolume
+        // The SDK documents this property as nullable, but the current macOS
+        // renderer asserts if nil is explicitly assigned. Leaving it untouched
+        // is exactly the documented default-device behavior.
+        if let audioOutputDeviceUniqueID {
+            renderer.audioOutputDeviceUniqueID = audioOutputDeviceUniqueID
+        }
     }
 
     private func configureSpatialization(_ renderer: AVSampleBufferAudioRenderer) {
@@ -202,12 +213,88 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
 
     /// Controls how far decoded PCM is released to the analysis hub ahead of
     /// the synchronizer clock. This is independent of the renderer PTS lead so
-    /// a route-reported Bluetooth latency can be compensated without moving
-    /// the renderer's seek/recovery anchor.
+    /// the application-owned visualization lookahead can be preserved without
+    /// moving the renderer's seek/recovery anchor. Output-route latency is
+    /// represented by the renderer's device clock, never by this value.
     func setAnalysisDeliveryLeadSeconds(_ seconds: Double) {
         pipelineQueue.async { [weak self] in
             self?.analysisDeliveryLeadSeconds = max(0, seconds)
         }
+    }
+
+    /// Binds the renderer and its synchronizer to a Core Audio output device.
+    ///
+    /// AVSampleBufferAudioRenderer can change the synchronizer's source clock
+    /// when this property changes. Serialize the change with enqueueing and
+    /// perform it as one stop/flush/reprime transaction so a running AirPods
+    /// route cannot leave the timebase paused or release an old queue after the
+    /// new device has become active.
+    func setAudioOutputDeviceUniqueID(_ uniqueID: String?) {
+        pipelineQueue.async { [weak self] in
+            guard let self, self.audioOutputDeviceUniqueID != uniqueID else { return }
+
+            let oldUID = self.audioOutputDeviceUniqueID
+            self.audioOutputDeviceUniqueID = uniqueID
+            let clock = self.currentSynchronizerClockSeconds()
+            let wasPlaying = self.isPlaybackActive
+            self.lastSystemChangeWallTime = ProcessInfo.processInfo.systemUptime
+
+            guard self.isLoaded else {
+                if uniqueID == nil, oldUID != nil {
+                    self.replaceRendererForDefaultOutput()
+                } else if let uniqueID {
+                    self.renderer.audioOutputDeviceUniqueID = uniqueID
+                }
+                Self.pipelineLog.info(
+                    "output device clock selected old=\(oldUID ?? "default", privacy: .public) new=\(uniqueID ?? "default", privacy: .public) loaded=false"
+                )
+                return
+            }
+
+            let anchor = CMTime(seconds: clock, preferredTimescale: 600)
+            self.timelineMutationInProgress = true
+            self.explicitTimelineClock = clock
+            self.lastExplicitTimelineMutationWallTime = ProcessInfo.processInfo.systemUptime
+            self.stopFeedTimer()
+
+            // Apple documents that changing audioOutputDeviceUniqueID while a
+            // timebase is running may briefly set its rate to zero. Establish a
+            // known state before changing the source clock, then explicitly
+            // restore the previous playback state after the new queue is ready.
+            self.setSynchronizerRateSynchronously(0, time: anchor)
+            if uniqueID == nil, oldUID != nil {
+                self.replaceRendererForDefaultOutput()
+            } else if let uniqueID {
+                self.renderer.audioOutputDeviceUniqueID = uniqueID
+            }
+            self.renderer.flush()
+            self.analysisQueue.removeAll(keepingCapacity: true)
+            self.recoverSources(atTimelineSeconds: clock, reanchorClock: false)
+            self.setSynchronizerRateSynchronously(wasPlaying ? 1 : 0, time: anchor)
+            self.timelineMutationInProgress = false
+            self.resetStallBaseline(clock: clock)
+
+            Self.pipelineLog.info(
+                "output device clock changed old=\(oldUID ?? "default", privacy: .public) new=\(uniqueID ?? "default", privacy: .public) anchor=\(clock, format: .fixed(precision: 3)) rate=\(wasPlaying ? 1 : 0)"
+            )
+        }
+    }
+
+    /// Recreate the renderer when returning to the default output device. The
+    /// current macOS implementation rejects an explicit `nil` assignment to
+    /// audioOutputDeviceUniqueID, while a fresh renderer naturally starts with
+    /// the default device selected.
+    private func replaceRendererForDefaultOutput() {
+        removeRendererObservers(for: renderer)
+        renderer.flush()
+        synchronizer.removeRenderer(renderer, at: .positiveInfinity)
+
+        let replacement = AVSampleBufferAudioRenderer()
+        renderer = replacement
+        configureRenderer(replacement)
+        synchronizer.addRenderer(replacement)
+        configureSpatialization(replacement)
+        installRendererObservers(for: replacement)
     }
 
     // MARK: - Source timeline
@@ -551,10 +638,9 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
         if isPlaybackActive {
             // `analysisLeadSeconds` is already encoded in every sample's PTS
             // (the renderer deliberately starts the first buffer after the
-            // logical clock by that amount).  Subtract only the remaining
-            // route latency here: using `clock + analysisDeliveryLeadSeconds`
-            // would release Bluetooth PCM before it is audible and cancel the
-            // lyric/visual compensation exposed by AVAudioPlaybackService.
+            // logical clock by that amount). The delivery lead is the same
+            // application-owned lookahead, not a route-latency estimate. The
+            // active output device clock is selected on the renderer itself.
             let threshold = clock
                 + analysisLeadSeconds
                 - analysisDeliveryLeadSeconds
@@ -769,7 +855,14 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
 
     private func currentSynchronizerClockSeconds() -> Double {
         let seconds = synchronizer.currentTime().seconds
-        return seconds.isFinite ? max(0, seconds) : 0
+        guard seconds.isFinite, seconds >= 0 else {
+            // During a Core Audio route handoff the synchronizer can briefly
+            // report an invalid time. Keep the last committed/advancing anchor
+            // so rebinding the output clock cannot turn a live route change
+            // into an unintended seek to the beginning of the track.
+            return max(0, max(explicitTimelineClock, lastAdvancingClock))
+        }
+        return seconds
     }
 
     /// Apply the synchronizer rate/anchor on the same serial queue that flushes

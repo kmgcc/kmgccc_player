@@ -46,9 +46,9 @@ private struct ApplicationDataSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            // Import settings
-            SettingsSection {
-                VStack(alignment: .leading, spacing: 12) {
+            // Import and enrichment settings
+            SettingsSection("歌曲信息与补全") {
+                VStack(alignment: .leading, spacing: 14) {
                     SettingsSwitchRow(
                         title: "导入时延后补全歌曲信息",
                         isOn: Binding(
@@ -57,31 +57,30 @@ private struct ApplicationDataSettingsView: View {
                         ),
                         detail: "导入时先完成文件复制，在后台补全歌词和封面"
                     )
-                }
-            }
 
-            // Manual library completion
-            SettingsSection {
-                VStack(alignment: .leading, spacing: 10) {
-                    Button {
-                        LibraryCompletionDialogPresenter.present(
-                            libraryVM: libraryVM,
-                            cacheServices: cacheServices
-                        )
-                    } label: {
-                        Text("补全所有歌曲信息")
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button {
+                            LibraryCompletionDialogPresenter.present(
+                                libraryVM: libraryVM,
+                                cacheServices: cacheServices
+                            )
+                        } label: {
+                            Text("补全所有歌曲信息")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .clipShape(Capsule())
+
+                        Text("自动联网补全本地曲库中缺失的歌曲信息、封面和歌词")
+                            .settingsDescriptionStyle()
                     }
-                    .buttonStyle(.borderedProminent)
-                    .clipShape(Capsule())
-
-                    Text("自动联网补全本地曲库中缺失的歌曲信息、封面和歌词")
-                        .settingsDescriptionStyle()
                 }
             }
 
             // Reset app settings
-            SettingsSection {
-                VStack(alignment: .leading, spacing: 12) {
+            SettingsSection("重置设置") {
+                VStack(alignment: .leading, spacing: 8) {
                     Button("重置应用设置与状态", role: .destructive) {
                         showResetDataAlert = true
                     }
@@ -94,21 +93,31 @@ private struct ApplicationDataSettingsView: View {
             }
 
             // More settings
-            SettingsSection {
-                VStack(alignment: .leading, spacing: 0) {
-                    CollapsibleSectionHeader(
-                        "更多设置",
-                        systemImage: "list.bullet.rectangle",
-                        isExpanded: $isMoreSettingsExpanded
-                    )
-
-                    if isMoreSettingsExpanded {
-                        VStack(alignment: .leading, spacing: 16) {
-                            cacheManagementControls
-                            musicPreferenceResetControl
-                        }
-                        .padding(.top, 12)
+            SettingsSection("更多设置", headerTrailing: {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isMoreSettingsExpanded.toggle()
                     }
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isMoreSettingsExpanded ? 90 : 0))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(isMoreSettingsExpanded ? "收起" : "展开")
+                .accessibilityLabel(isMoreSettingsExpanded ? "收起更多设置" : "展开更多设置")
+            }) {
+                if isMoreSettingsExpanded {
+                    VStack(alignment: .leading, spacing: 16) {
+                        cacheManagementControls
+                        musicPreferenceResetControl
+                    }
+                } else {
+                    Text("包含缓存清理与播放统计数据重置")
+                        .settingsDescriptionStyle()
                 }
             }
 

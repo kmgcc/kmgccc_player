@@ -120,6 +120,12 @@ struct SidebarView: View {
                         .listRowBackground(Color.clear)
                         .contextMenu {
                             Button {
+                                play(playlist)
+                            } label: {
+                                Label("播放该播放列表", systemImage: "play.fill")
+                            }
+
+                            Button {
                                 Task { @MainActor in
                                     let count = await libraryVM.importToPlaylist(playlist)
                                     guard count > 0 else { return }
@@ -1192,8 +1198,15 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func selectionFill(isSelected: Bool) -> some View {
-        Capsule(style: .continuous)
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
             .fill(isSelected ? themeStore.selectionFill : Color.clear)
+    }
+
+    private func play(_ playlist: Playlist) {
+        playbackCoordinator.playRandomTracks(
+            playlist.tracks,
+            libraryQueueSource: .librarySelection("sidebar-playlist-\(playlist.id.uuidString)")
+        )
     }
 
     private var importEnrichmentSidebarProgress: SidebarTaskProgress {
@@ -1622,6 +1635,7 @@ private struct SidebarTaskProgressView: View {
                 ProgressView()
                     .controlSize(.small)
                     .scaleEffect(0.7)
+                    .tint(themeStore.accentColor)
             } else {
                 Image(systemName: "arrow.down.circle")
                     .font(.system(size: 14, weight: .semibold))

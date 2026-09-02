@@ -222,14 +222,10 @@ nonisolated enum SpectrumColorResolver {
         fallback accentColor: NSColor,
         usesDarkForeground: Bool,
         lightModeDarkening: Bool = false,
-        capsuleCount: Int = 9,
-        isHDR: Bool? = nil
+        capsuleCount: Int = 9
     ) -> (fillColors: [CGColor], strokeColors: [CGColor]) {
-        let hdrActive = isHDR ?? (Thread.isMainThread ? MainActor.assumeIsolated { AppSettings.shared.audioVisualizationHDREnabled } : true)
         // Both reasons to darken the fill share the same brightness treatment.
-        // In HDR mode, we preserve bright emissive base colors so the EDR headroom
-        // can project glowing light instead of being clamped to dark ink.
-        let darken = (usesDarkForeground || lightModeDarkening) && !hdrActive
+        let darken = usesDarkForeground || lightModeDarkening
         let sources = Array(artworkColors.prefix(2))
         let leftSource = sources.first ?? accentColor
         let rightSource: NSColor = {
@@ -386,15 +382,12 @@ nonisolated enum SpectrumColorResolver {
         accentColor: NSColor,
         usesDarkForeground: Bool,
         lightModeDarkening: Bool = false,
-        capsuleCount: Int = 9,
-        isHDR: Bool? = nil
+        capsuleCount: Int = 9
     ) -> Int {
-        let hdrActive = isHDR ?? (Thread.isMainThread ? MainActor.assumeIsolated { AppSettings.shared.audioVisualizationHDREnabled } : true)
         var hasher = Hasher()
         hasher.combine(usesDarkForeground)
         hasher.combine(lightModeDarkening)
         hasher.combine(capsuleCount)
-        hasher.combine(hdrActive)
         for color in artworkColors.prefix(2) { appendColor(color, to: &hasher) }
         appendColor(accentColor, to: &hasher)
         return hasher.finalize()

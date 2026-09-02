@@ -223,6 +223,7 @@ struct FullscreenPlayerView: View {
     }
 
     @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(LibraryViewModel.self) private var libraryVM: LibraryViewModel?
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
@@ -267,6 +268,7 @@ struct FullscreenPlayerView: View {
     @State private var fullscreenLyricsHostMounted = false
     @State private var isLeftActionsExpanded = false
     @State private var isQuickAppearancePanelPresented = false
+    @State private var isDetailReaderPanelPresented = false
     /// Cover Blur fullscreen background readability maps, written by the skin
     /// background bridge and read here to resolve the local control polarity.
     @State private var backdropReadabilityState = FullscreenBackdropReadabilityState()
@@ -442,10 +444,7 @@ struct FullscreenPlayerView: View {
         GeometryReader { proxy in
             fullscreenContent(for: proxy)
         }
-        .ignoresSafeArea(
-            .container,
-            edges: hostContext == .embeddedWindow && isCoverBlurFullscreenSkin ? .all : []
-        )
+        .ignoresSafeArea()
         .background(
             WindowToolbarAccessor(
                 configure: { window in
@@ -712,6 +711,7 @@ struct FullscreenPlayerView: View {
         pendingFullscreenLyricsAutoRestoreTrackID = nil
         embeddedInitialThemeUnlocked = false
         isQuickAppearancePanelPresented = false
+        isDetailReaderPanelPresented = false
         isFullscreenBottomControlsAppearancePanelHovered = false
         cancelFullscreenBottomControlsAutoHide()
         cancelFullscreenSideControlCollapses()
@@ -733,6 +733,12 @@ struct FullscreenPlayerView: View {
     @ViewBuilder
     private func fullscreenContextMenu() -> some View {
         Button {
+            setDetailReaderPanelPresented(true)
+        } label: {
+            Label("查看详情", systemImage: "doc.text")
+        }
+
+        Button {
             forceRefreshFullscreenLyricsColors(reason: "context-menu-refresh")
         } label: {
             Label(
@@ -742,6 +748,38 @@ struct FullscreenPlayerView: View {
                 ),
                 systemImage: "arrow.clockwise"
             )
+        }
+    }
+
+    private var fullscreenDetailReaderTitle: String {
+        "歌曲详情"
+    }
+
+    private var fullscreenDetailReaderSubtitle: String? {
+        let title = playbackCoordinator.presentation.title
+        let artist = playbackCoordinator.presentation.artist
+        if !title.isEmpty, !artist.isEmpty {
+            return "\(title) · \(artist)"
+        }
+        return title.isEmpty ? artist : title
+    }
+
+    private var fullscreenDetailReaderText: String {
+        if let track = playbackCoordinator.presentation.localTrack {
+            let desc = track.userDescription.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            if !desc.isEmpty { return desc }
+            if let album = libraryVM?.albumEntries.first(where: { $0.canonicalKey == track.albumGroupKey }) {
+                let albumDesc = album.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                if !albumDesc.isEmpty { return albumDesc }
+            }
+        }
+        return ""
+    }
+
+    private func setDetailReaderPanelPresented(_ presented: Bool) {
+        guard isDetailReaderPanelPresented != presented else { return }
+        withAnimation(.easeOut(duration: 0.22)) {
+            isDetailReaderPanelPresented = presented
         }
     }
 
@@ -865,6 +903,7 @@ struct FullscreenPlayerView: View {
                     fullscreenScaledContainer(selectedSkin: selectedSkin, scale: scale)
                         .frame(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight)
                         .scaleEffect(scale, anchor: .center)
+                        .frame(width: Self.baseCanvasWidth * scale, height: Self.baseCanvasHeight * scale)
                         .id("\(skinIdentity)_scaled")
                         .onAppear { FSDiagnostics.emit("skinScaled onAppear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
                         .onDisappear { FSDiagnostics.emit("skinScaled onDisappear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
@@ -877,18 +916,42 @@ struct FullscreenPlayerView: View {
                     screenHeight: proxy.size.height
                 )
                     .frame(width: proxy.size.width, height: proxy.size.height)
-                    .id("\(skinIdentity)_bottom")
                     .onAppear { FSDiagnostics.emit("skinBottom onAppear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
                     .task(id: playbackModeRetapTipTaskID) {
                         await schedulePlaybackModeRetapTipIfNeeded()
                     }
 
                 panoramicArtworkVolumeLayer(viewportSize: proxy.size, scale: scale)
+
+                if isDetailReaderPanelPresented {
+                    Color.black.opacity(0.001)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            setDetailReaderPanelPresented(false)
+                        }
+                        .transition(.opacity)
+                        .zIndex(10)
+
+                    FullscreenDetailReaderPanel(
+                        title: fullscreenDetailReaderTitle,
+                        subtitle: fullscreenDetailReaderSubtitle,
+                        text: fullscreenDetailReaderText,
+                        scale: scale,
+                        foregroundProfile: fullscreenQuickPanelForegroundProfile,
+                        onDismiss: { setDetailReaderPanelPresented(false) }
+                    )
+                    .position(x: proxy.size.width * 0.5, y: proxy.size.height * 0.5)
+                    .transition(
+                        .opacity.combined(with: .offset(x: 0, y: 8))
+                    )
+                    .zIndex(11)
+                }
             } else {
                 Color.clear
             }
         }
         .frame(width: proxy.size.width, height: proxy.size.height)
+        .animation(.easeOut(duration: 0.22), value: isDetailReaderPanelPresented)
         .onAppear {
             currentFullscreenScale = scale
             fullscreenViewportSize = proxy.size
@@ -2241,6 +2304,10 @@ struct FullscreenPlayerView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .offset(x: -groupLeftShift)
+        .contentShape(Rectangle())
+        .contextMenu {
+            fullscreenContextMenu()
+        }
     }
 
     // MARK: - Lyrics Area (No Material Background)

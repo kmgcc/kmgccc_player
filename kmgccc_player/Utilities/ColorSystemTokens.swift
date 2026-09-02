@@ -539,7 +539,7 @@ nonisolated enum ColorSystemTokens {
         static let ledHDRLightLowChromaScale: CGFloat = 2.60
         static let ledHDRLightPeakChromaScale: CGFloat = 1.25
         static let ledHDRDarkChromaCapScale: CGFloat = 2.20
-        static let ledHDRShadowDriftScale: CGFloat = 8.2
+        static let ledHDRShadowDriftScale: CGFloat = 11.5
         static let ledHDRColorfulMinimumChroma: CGFloat = 0.085
 
         // Artistic fullscreen lyrics. Single-seed ladder: callers MUST pass

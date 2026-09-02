@@ -374,7 +374,7 @@ struct MiniPlayerProgressSpectrumRow: View {
                 isActive: isSpectrumActive,
                 accentColor: spectrumFallbackColor,
                 artworkColors: spectrumArtworkColors,
-                usesDarkForeground: resolvedSpectrumUsesDarkForeground && !AppSettings.shared.audioVisualizationHDREnabled,
+                usesDarkForeground: resolvedSpectrumUsesDarkForeground,
                 scale: scale,
                 isHovered: false,
                 pausedBehavior: .minimalDots,

@@ -2,10 +2,9 @@
 //  AudioOutputLatencyMonitor.swift
 //  myPlayer2
 //
-//  Best-effort output latency information for the current Core Audio default
-//  output.  AVSampleBufferAudioRenderer does not expose an output-latency
-//  property on macOS, so the public Core Audio device and stream properties are
-//  the narrowest system-provided estimate available to the player.
+//  Diagnostic information for the current Core Audio default output. The
+//  renderer's presentation timeline is driven by the output-device clock; the
+//  reported latency fields are intentionally not converted into a UI offset.
 //
 
 import CoreAudio
@@ -13,11 +12,17 @@ import Foundation
 
 nonisolated struct AudioOutputLatencySnapshot: Equatable, Sendable {
     let deviceID: AudioDeviceID
+    /// Core Audio's stable identifier for the output device. This is the value
+    /// AVSampleBufferAudioRenderer uses to bind the synchronizer to the active
+    /// device clock. It is optional because Core Audio may temporarily report
+    /// no default device while a route is being reconfigured.
+    let deviceUID: String?
     let deviceName: String
     let transportType: UInt32
     let sampleRate: Double
     let deviceLatencyFrames: UInt32
     let streamLatencyFrames: UInt32
+    /// HAL-reported presentation latency, retained for diagnostics only.
     let seconds: Double
 
     var isBluetooth: Bool {
@@ -25,15 +30,9 @@ nonisolated struct AudioOutputLatencySnapshot: Equatable, Sendable {
             || transportType == kAudioDeviceTransportTypeBluetoothLE
     }
 
-    /// Only Bluetooth output is folded into the UI/analysis compensation. The
-    /// built-in path is intentionally left at zero so a few reported hardware
-    /// frames do not change the established local-speaker behavior.
-    var compensationSeconds: Double {
-        isBluetooth ? seconds : 0
-    }
-
     static let zero = AudioOutputLatencySnapshot(
         deviceID: kAudioObjectUnknown,
+        deviceUID: nil,
         deviceName: "unknown",
         transportType: kAudioDeviceTransportTypeUnknown,
         sampleRate: 0,
@@ -59,6 +58,10 @@ enum AudioOutputLatencyMonitor {
             deviceID,
             selector: kAudioDevicePropertyTransportType
         ) ?? kAudioDeviceTransportTypeUnknown
+        let deviceUID = stringValue(
+            deviceID,
+            selector: kAudioDevicePropertyDeviceUID
+        )
         let deviceLatency: UInt32 = read(
             deviceID,
             selector: kAudioDevicePropertyLatency,
@@ -75,16 +78,15 @@ enum AudioOutputLatencyMonitor {
         }
 
         // Core Audio's device and stream latency properties are not guaranteed
-        // to be additive. On Bluetooth routes they commonly describe
-        // overlapping portions of the same output path; summing them made the
-        // UI compensate twice and put lyrics/visualization visibly behind the
-        // sound. Use the larger reported component and keep a conservative cap
-        // for transient values while a route is being reconfigured.
+        // to be additive. Keep the larger component as a bounded diagnostic
+        // value while a route is being reconfigured; this value is never fed
+        // into the playback, lyrics, or visualization clocks.
         let observedFrames = max(deviceLatency, streamLatency)
         let seconds = min(0.25, max(0, Double(observedFrames) / sampleRate))
 
         return AudioOutputLatencySnapshot(
             deviceID: deviceID,
+            deviceUID: deviceUID,
             deviceName: deviceName(for: deviceID),
             transportType: transport,
             sampleRate: sampleRate,
@@ -148,24 +150,32 @@ enum AudioOutputLatencyMonitor {
     }
 
     private static func deviceName(for deviceID: AudioDeviceID) -> String {
+        stringValue(deviceID, selector: kAudioObjectPropertyName)
+            ?? "device#\(deviceID)"
+    }
+
+    private static func stringValue(
+        _ objectID: AudioObjectID,
+        selector: AudioObjectPropertySelector
+    ) -> String? {
         var name: Unmanaged<CFString>?
         var size = UInt32(MemoryLayout<CFString?>.size)
         var address = AudioObjectPropertyAddress(
-            mSelector: kAudioObjectPropertyName,
+            mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
         guard AudioObjectGetPropertyData(
-            deviceID,
+            objectID,
             &address,
             0,
             nil,
             &size,
             &name
         ) == noErr else {
-            return "device#\(deviceID)"
+            return nil
         }
-        return name?.takeUnretainedValue() as String? ?? "device#\(deviceID)"
+        return name?.takeUnretainedValue() as String?
     }
 
     private static func read<T>(

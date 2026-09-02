@@ -16,22 +16,63 @@ nonisolated protocol BookmarkResolving: Sendable {
 
 nonisolated struct SystemBookmarkResolver: BookmarkResolving {
     func resolve(_ data: Data) throws -> (url: URL, isStale: Bool) {
+        // A bookmark created by a non-sandboxed build (or by an older
+        // version of the app) may be a regular bookmark even though the
+        // current app is capable of using security-scoped bookmarks. Passing
+        // `.withSecurityScope` for that data fails with Cocoa error 259 before
+        // the URL can be used. Try the scoped form first so new/sandboxed
+        // libraries retain their authorization, then fall back to the regular
+        // form for existing libraries. The caller still decides whether a
+        // security scope is mandatory.
+        do {
+            return try resolve(data, options: [.withSecurityScope, .withoutUI])
+        } catch let scopedError {
+            do {
+                return try resolve(data, options: [.withoutUI])
+            } catch {
+                // Preserve the original error when neither representation is
+                // valid. This keeps malformed/corrupt bookmark diagnostics
+                // compatible with the previous behavior.
+                throw scopedError
+            }
+        }
+    }
+
+    func refreshBookmark(for url: URL) throws -> Data {
+        do {
+            return try url.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+        } catch let scopedError {
+            do {
+                // Unsandboxed/library records from older builds may not
+                // support security-scope bookmark creation. A regular
+                // bookmark is still a valid durable locator in that mode.
+                return try url.bookmarkData(
+                    options: [],
+                    includingResourceValuesForKeys: nil,
+                    relativeTo: nil
+                )
+            } catch {
+                throw scopedError
+            }
+        }
+    }
+
+    private func resolve(
+        _ data: Data,
+        options: URL.BookmarkResolutionOptions
+    ) throws -> (url: URL, isStale: Bool) {
         var isStale = false
         let url = try URL(
             resolvingBookmarkData: data,
-            options: .withSecurityScope,
+            options: options,
             relativeTo: nil,
             bookmarkDataIsStale: &isStale
         )
         return (url, isStale)
-    }
-
-    func refreshBookmark(for url: URL) throws -> Data {
-        try url.bookmarkData(
-            options: .withSecurityScope,
-            includingResourceValuesForKeys: nil,
-            relativeTo: nil
-        )
     }
 
     func startAccessing(_ url: URL) -> Bool { url.startAccessingSecurityScopedResource() }
