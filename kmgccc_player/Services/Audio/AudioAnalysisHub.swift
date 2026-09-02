@@ -96,6 +96,10 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     private nonisolated(unsafe) var isPlaying = false
     private nonisolated(unsafe) var pauseLingerActive = false
     private nonisolated(unsafe) var pauseLingerGeneration: UInt64 = 0
+    /// Renderer playback supplies decoded PCM directly instead of through the
+    /// silent legacy mixer tap. Once enabled, the FFT timer may run from that
+    /// external feed while keeping the mixer path available for fallback.
+    private nonisolated(unsafe) var isExternalFeedEnabled = false
     private static let pauseLingerSeconds: TimeInterval = 0.45
     private static let sampleBusDiagnosticsInterval: TimeInterval = 2.0
     private static let sampleBusWarningThrottle: TimeInterval = 10.0
@@ -281,6 +285,28 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
     // MARK: - Internal Processing
 
+    /// Feed renderer-timed canonical PCM into the existing FFT/ring-buffer
+    /// owner. RendererPlaybackPipeline schedules these calls against its output
+    /// clock, so eagerly decoded buffers do not make visualizers run ahead by
+    /// the renderer's entire prebuffer window.
+    nonisolated func enqueueExternalPCM(_ pcm: CanonicalPCM) {
+        guard pcm.frames > 0, pcm.channelCount > 0 else { return }
+        guard ringLock.try() else {
+            droppedTapBuffers &+= 1
+            return
+        }
+        sampleRate = Float(pcm.sampleRate)
+        let capacity = ringBuffer.count
+        for frame in 0..<pcm.frames {
+            ringBuffer[writeIndex] = pcm.data[frame * pcm.channelCount]
+            writeIndex += 1
+            if writeIndex >= capacity {
+                writeIndex = 0
+            }
+        }
+        ringLock.unlock()
+    }
+
     nonisolated private func enqueue(_ buffer: AVAudioPCMBuffer) {
         guard let channelData = buffer.floatChannelData else { return }
         let frameLength = Int(buffer.frameLength)
@@ -312,6 +338,34 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     }
 
     // MARK: - Playback-state gating
+
+    /// Enables the renderer-owned PCM feed without removing the legacy mixer
+    /// attachment. Keeping both inputs available lets playback fall back to
+    /// AVAudioEngine after a renderer/CoreAudio failure without rebuilding the
+    /// visualization ownership graph.
+    func enableExternalFeed() {
+        stateLock.lock()
+        isExternalFeedEnabled = true
+        stateLock.unlock()
+        // A renderer load/route change is a new timeline. Drop any PCM left
+        // by the legacy mixer tap so the first FFT window cannot display the
+        // previous track while the renderer is still priming.
+        syncOnProcessingQueue {
+            resetBuffer()
+        }
+        updateTimerState()
+    }
+
+    /// Returns analysis ownership to the legacy mixer-tap path. The renderer
+    /// calls this when a track/session ends or when it falls back to
+    /// AVAudioEngine; leaving the external-feed flag set would keep a stale
+    /// renderer input advertised after its timeline has been flushed.
+    func disableExternalFeed() {
+        stateLock.lock()
+        isExternalFeedEnabled = false
+        stateLock.unlock()
+        updateTimerState()
+    }
 
     /// Drives whether the FFT `process()` timer runs. When playback pauses, the
     /// timer keeps running for a short linger (so meters fade to silence), then
@@ -360,7 +414,8 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     /// `stateLock`; never call while already holding it.
     private func updateTimerState() {
         stateLock.lock()
-        let shouldRun = isInstalled && activeClients > 0 && (isPlaying || pauseLingerActive)
+        let inputAvailable = isInstalled || isExternalFeedEnabled
+        let shouldRun = inputAvailable && activeClients > 0 && (isPlaying || pauseLingerActive)
         if shouldRun {
             if timer == nil { startTimer() }
         } else if timer != nil {
@@ -455,6 +510,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
             readIdx += 1
             if readIdx >= capacity { readIdx = 0 }
         }
+        let currentSampleRate = sampleRate
         ringLock.unlock()  // Release lock ASAP
 
         // 1b. Remove DC offset BEFORE metrics and windowing. Decoded music usually
@@ -515,7 +571,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         // 5. Notify Consumers
         let data = AudioAnalysisData(
             magnitudes: fftMagnitudes,
-            sampleRate: sampleRate,
+            sampleRate: currentSampleRate,
             fftSize: fftSize,
             rms: rms,
             peak: peak,
@@ -588,7 +644,8 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
     private nonisolated func isPlaybackActiveForDiagnostics() -> Bool {
         stateLock.lock()
-        let active = isInstalled && activeClients > 0 && (isPlaying || pauseLingerActive)
+        let inputAvailable = isInstalled || isExternalFeedEnabled
+        let active = inputAvailable && activeClients > 0 && (isPlaying || pauseLingerActive)
         stateLock.unlock()
         return active
     }

@@ -32,6 +32,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     var volume: Double {
         didSet {
             playerNode.volume = Float(volume)
+            rendererPipeline.setVolume(Float(volume))
             AppSettings.shared.volume = volume
             // Forward to the spectrum service so it can volume-compensate its
             // time-domain loudness measurement; otherwise the quiet/normal/loud
@@ -67,6 +68,32 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// analysis tap and never as a substitute for delaying `playerNode.play()`.
     private let delayNode = AVAudioUnitDelay()
     private var audioFile: AVAudioFile?
+
+    /// The renderer path is the primary output so macOS can expose system
+    /// spatial-audio modes (Off / Fixed / Head Tracked). AVAudioEngine remains
+    /// intact as a session-level fallback for unsupported formats or a hard
+    /// renderer/CoreAudio failure.
+    private enum AudioOutputBackend {
+        case spatialRenderer
+        case legacyEngine
+    }
+    private var outputBackend: AudioOutputBackend = .spatialRenderer
+    private let rendererPipeline = RendererPlaybackPipeline()
+    private var spatialCurrentProvider: AVFilePCMProvider?
+    private var spatialCurrentSegmentID: UUID?
+    private var spatialCurrentLogicalStart: Double = 0
+    private var spatialClockTime: Double = 0
+    private var isHandlingRendererFailure = false
+
+    private struct SpatialPendingBoundary {
+        let trackID: UUID
+        let descriptor: RendererSegmentDescriptor
+        let provider: AVFilePCMProvider
+        let token: UUID
+        let duration: Double
+        let startFrameInFile: AVAudioFramePosition
+    }
+    private var spatialPendingBoundary: SpatialPendingBoundary?
 
     // MARK: - Playback State
 
@@ -106,9 +133,16 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private var lastKnownShuffleEnabled = AppSettings.shared.shuffleEnabled
     private var activePlaybackOrderModeOverride: PlaybackOrderMode?
     private static let fixedAudioOutputDelaySeconds: Double = 0.18
+    private static let outputLatencyRefreshInterval: TimeInterval = 0.25
+    private var outputLatencySnapshot = AudioOutputLatencySnapshot.zero
+    private var lastOutputLatencyRefreshUptime: TimeInterval = 0
+    private var lastAppliedAnalysisDeliveryLead: Double = -1
 
     var audioOutputDelay: Double {
-        lookaheadSeconds
+        guard outputBackend == .spatialRenderer else {
+            return lookaheadSeconds
+        }
+        return lookaheadSeconds + outputLatencySnapshot.compensationSeconds
     }
 
     var currentPlaybackOrderMode: PlaybackOrderMode {
@@ -163,10 +197,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// tick after a fallback. Reset whenever the committed current item changes.
     private var prefetchAttemptedForCurrentItem = false
     /// Security-scope owner for the prefetched-but-not-yet-current item. This is
-    /// the ONLY scope owner besides `currentFileURL` / `currentFileSecurityScoped`
-    /// (which own the committed current item). Released on discard, or
-    /// TRANSFERRED into the current-file bookkeeping at a gapless boundary commit
-    /// — never double-released.
+    /// the ONLY scope owner besides `currentFileLease` (which owns the committed
+    /// current item). Released on discard, or TRANSFERRED into the current-file
+    /// bookkeeping at a gapless boundary commit — never double-released.
     private var prefetchedResource: PreparedAudioResource?
     /// Seconds of remaining current-track audio at/under which the next track is
     /// prefetched and gapless-scheduled.
@@ -248,6 +281,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         self.volume = AppSettings.shared.volume
         // Engine is now lazily initialized on first access (see `engine` property)
         setupSmartController()
+        setupRendererPipeline()
+        refreshOutputLatency(force: true)
         Log.info(
             "[PlaybackPipeline] AVAudioPlaybackService init id=\(ObjectIdentifier(self)) engine=deferred",
             category: .audio
@@ -308,6 +343,70 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
     }
 
+    private func setupRendererPipeline() {
+        rendererPipeline.setVolume(Float(volume))
+        rendererPipeline.setAnalysisDeliveryLeadSeconds(audioOutputDelay)
+        rendererPipeline.onProgress = { [weak self] clock in
+            self?.spatialClockTime = clock
+        }
+        rendererPipeline.onAnalysisPCM = { pcm in
+            // Feed only when the renderer clock reaches the output-compensated
+            // delivery lead (lookahead plus any current Bluetooth estimate),
+            // avoiding the renderer's larger decode pre-roll. The raw
+            // `onEnqueue` hook remains available for diagnostics, but feeding
+            // it directly would make visualizers run ahead whenever the
+            // bounded queue is full.
+            AudioAnalysisHub.shared.enqueueExternalPCM(pcm)
+        }
+        rendererPipeline.onSegmentExhausted = { [weak self] descriptor in
+            // This is the renderer equivalent of RendererEngine.onTrackEnded:
+            // the source is fully queued, so give the existing prefetch owner
+            // one more opportunity to prepare the next item. Progress-based
+            // prefetch remains the normal early path.
+            guard let self,
+                  self.outputBackend == .spatialRenderer,
+                  descriptor.id == self.spatialCurrentSegmentID else { return }
+            self.maybeTriggerGaplessPrefetch()
+        }
+        rendererPipeline.onSystemReconfigEvent = {
+            Log.info(
+                "[SpatialAudio] renderer output configuration changed; timeline recovery requested",
+                category: .audio
+            )
+        }
+        rendererPipeline.onFailure = { [weak self] error in
+            self?.fallbackToLegacyEngine(after: error)
+        }
+    }
+
+    /// Refresh the system-reported output latency at the same cadence as the
+    /// playback presentation timer. Core Audio exposes device + stream latency
+    /// but AVSampleBufferAudioRenderer has no macOS latency property of its own.
+    /// The snapshot is intentionally route-based and does not pin a device UID.
+    private func refreshOutputLatency(force: Bool = false) {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard force || now - lastOutputLatencyRefreshUptime >= Self.outputLatencyRefreshInterval else {
+            return
+        }
+        lastOutputLatencyRefreshUptime = now
+
+        let snapshot = AudioOutputLatencyMonitor.currentSnapshot()
+        let snapshotChanged = snapshot != outputLatencySnapshot
+        outputLatencySnapshot = snapshot
+
+        let analysisLead = audioOutputDelay
+        if snapshotChanged {
+            Log.info(
+                "[AudioLatency] output=\(snapshot.deviceName) transport=\(snapshot.transportType) deviceFrames=\(snapshot.deviceLatencyFrames) streamFrames=\(snapshot.streamLatencyFrames) reportedSeconds=\(String(format: "%.4f", snapshot.seconds)) compensationSeconds=\(String(format: "%.4f", snapshot.compensationSeconds))",
+                category: .audio
+            )
+        }
+        if snapshotChanged || abs(analysisLead - lastAppliedAnalysisDeliveryLead) > 0.000_5 {
+            lastAppliedAnalysisDeliveryLead = analysisLead
+            rendererPipeline.setAnalysisDeliveryLeadSeconds(analysisLead)
+        }
+    }
+
     // MARK: - Engine Management
 
     @objc nonisolated private func handleEngineConfigurationChange(_ notification: Notification) {
@@ -321,6 +420,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     private func reconnectEngineAndResume() async {
+        // The legacy engine can be initialized solely to host the visualization
+        // mixer. Its device-change notifications must not disturb live renderer
+        // playback; the renderer owns its own route/auto-flush recovery.
+        guard outputBackend == .legacyEngine else { return }
         let wasPlaying = isPlaying
         let savedTime = currentTime
         let savedTrack = currentTrack
@@ -405,6 +508,85 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             lookahead: activeLookaheadEnabled,
             operation: "reconnectAudioGraph"
         )
+    }
+
+    /// Session-level safety net. A renderer failure must never turn a playable
+    /// local file into silence: stop the spatial path, preserve the current
+    /// media position, and resume through the existing AVAudioEngine graph.
+    private func fallbackToLegacyEngine(after rendererError: RendererPipelineError) {
+        guard outputBackend == .spatialRenderer,
+              !isHandlingRendererFailure,
+              let file = audioFile,
+              currentTrack != nil else { return }
+
+        isHandlingRendererFailure = true
+        defer { isHandlingRendererFailure = false }
+        let wasPlaying = isPlaying
+        let resumeTime = max(0, min(currentTime, duration))
+        Log.error(
+            "[SpatialAudio] renderer failed; falling back to AVAudioEngine at \(String(format: "%.3f", resumeTime))s error=\(rendererError)",
+            category: .audio
+        )
+
+        outputBackend = .legacyEngine
+        rendererPipeline.stop()
+        AudioAnalysisHub.shared.disableExternalFeed()
+        resetGaplessSchedulingState(reason: "rendererFailureFallback")
+        spatialCurrentProvider = nil
+        spatialCurrentSegmentID = nil
+        spatialPendingBoundary = nil
+        spatialCurrentLogicalStart = 0
+        spatialClockTime = 0
+
+        rebuildPlaybackGraph(
+            engine,
+            format: file.processingFormat,
+            lookahead: desiredLookaheadEnabled,
+            operation: "rendererFailureFallback"
+        )
+        do {
+            if !engine.isRunning {
+                try engine.start()
+            }
+        } catch {
+            graphState = .failed
+            isPlaying = false
+            AudioAnalysisHub.shared.setPlaying(false)
+            Log.error(
+                "[SpatialAudio] legacy fallback engine failed to start: \(error)",
+                category: .audio
+            )
+            return
+        }
+
+        configureDelay()
+        resetDelayBufferIfActive()
+        let upperFrame = max(0, file.length - 1)
+        let targetFrame = max(
+            0,
+            min(AVAudioFramePosition(resumeTime * sampleRate), upperFrame)
+        )
+        startingFramePosition = targetFrame
+        currentTime = resumeTime
+        let frameCount = AVAudioFrameCount(file.length - targetFrame)
+        scheduleSegment(file, startingFrame: targetFrame, frameCount: frameCount)
+
+        guard wasPlaying else {
+            isPlaying = false
+            AudioAnalysisHub.shared.setPlaying(false)
+            return
+        }
+        guard graphReadyForPlay(
+            scheduledGeneration: scheduledGraphGeneration,
+            operation: "rendererFailureFallback.play"
+        ) else {
+            failPlaybackRequest(reason: "legacy graph not ready after renderer failure")
+            return
+        }
+        playerNode.play()
+        isPlaying = true
+        AudioAnalysisHub.shared.setPlaying(true)
+        startProgressTimer()
     }
 
     // MARK: - Lookahead (Audio Delay)
@@ -532,6 +714,46 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             category: .audio
         )
 
+        if outputBackend == .spatialRenderer {
+            let wasPlaying = isPlaying
+            let resumeTime = currentTime
+            cancelPendingCompletion()
+            invalidateScheduleToken()
+            activeLookaheadEnabled = desired
+            guard let file = audioFile else { return }
+
+            let targetFrame = AVAudioFramePosition(resumeTime * sampleRate)
+            guard targetFrame >= 0, targetFrame < file.length else {
+                Log.warning(
+                    "[SpatialAudio] cannot apply output delay at invalid frame=\(targetFrame)",
+                    category: .audio
+                )
+                return
+            }
+            let provider = AVFilePCMProvider(file: file)
+            let segmentID = UUID()
+            spatialCurrentProvider = provider
+            spatialCurrentSegmentID = segmentID
+            spatialCurrentLogicalStart = 0
+            spatialClockTime = resumeTime
+            spatialPendingBoundary = nil
+            rendererPipeline.setAnalysisLeadSeconds(lookaheadSeconds)
+            refreshOutputLatency(force: true)
+            rendererPipeline.setAnalysisDeliveryLeadSeconds(audioOutputDelay)
+            rendererPipeline.load(
+                source: provider,
+                sourcePosition: targetFrame,
+                // The descriptor anchor represents source time zero; the
+                // pipeline adds `sourcePosition` to the first buffer PTS.
+                presentationStartSeconds: lookaheadSeconds,
+                clockTimeSeconds: resumeTime,
+                segmentID: segmentID,
+                autoplay: wasPlaying
+            )
+            AudioAnalysisHub.shared.setPlaying(wasPlaying)
+            return
+        }
+
         let wasPlaying = isPlaying
         let resumeTime = currentTime
         cancelPendingCompletion()
@@ -614,6 +836,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         prefetchTask = nil
         prefetchAttemptedForCurrentItem = false
         releasePrefetchedResource(reason: reason)
+        spatialPendingBoundary = nil
         scheduleQueue.reset()
     }
 
@@ -909,6 +1132,15 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             onAudioLocatorResolved?(track.id, refreshed, resource.newAvailability)
         }
 
+        if outputBackend == .spatialRenderer {
+            startSpatialRenderer(
+                resource: resource,
+                track: track,
+                restorePaused: restorePaused
+            )
+            return
+        }
+
         let desiredLookahead = desiredLookaheadEnabled
         if desiredLookahead != activeLookaheadEnabled {
             Log.info(
@@ -962,6 +1194,67 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         Log.info(
             "[PlaybackPipeline] item loaded track=\(resource.trackID.uuidString) duration=\(String(format: "%.1f", resource.duration))s engineRunning=\(engine.isRunning)",
+            category: .audio
+        )
+    }
+
+    private func startSpatialRenderer(
+        resource: PreparedAudioResource,
+        track: Track,
+        restorePaused: Bool
+    ) {
+        let requestedPosition = restorePaused ? (pendingRestorePositionSeconds ?? 0) : 0
+        restorePausedGeneration = nil
+        pendingRestorePositionSeconds = nil
+
+        let upperBound = duration > 0.5 ? duration - 0.5 : 0
+        let position = max(0, min(requestedPosition, upperBound))
+        let frame = AVAudioFramePosition(position * sampleRate)
+        let provider = AVFilePCMProvider(file: resource.file)
+        let segmentID = UUID()
+
+        activeLookaheadEnabled = desiredLookaheadEnabled
+        spatialCurrentProvider = provider
+        spatialCurrentSegmentID = segmentID
+        spatialCurrentLogicalStart = 0
+        spatialClockTime = position
+        spatialPendingBoundary = nil
+        startingFramePosition = frame
+        currentTime = position
+        activeScheduleToken = UUID()
+
+        refreshOutputLatency(force: true)
+        AudioAnalysisHub.shared.enableExternalFeed()
+        AudioAnalysisHub.shared.setPlaying(!restorePaused)
+        rendererPipeline.setVolume(Float(volume))
+        rendererPipeline.setAnalysisLeadSeconds(lookaheadSeconds)
+        rendererPipeline.setAnalysisDeliveryLeadSeconds(audioOutputDelay)
+        rendererPipeline.load(
+            source: provider,
+            sourcePosition: frame,
+            // The descriptor anchor represents source time zero; the
+            // pipeline adds `sourcePosition` to the first buffer PTS.
+            presentationStartSeconds: lookaheadSeconds,
+            clockTimeSeconds: position,
+            segmentID: segmentID,
+            autoplay: !restorePaused
+        )
+
+        isPlaying = !restorePaused
+        if isPlaying {
+            startProgressTimer()
+        } else if duration > 0 {
+            smartController.updateProgress(currentTime: currentTime, duration: duration)
+        }
+
+        // The preparation path can update Now Playing while the player is
+        // still paused. Re-publish after the renderer actually starts so
+        // macOS sees an active local media session before deciding which
+        // AirPods spatial modes to offer.
+        NowPlayingService.shared.syncLocalPlaybackState()
+
+        Log.info(
+            "[SpatialAudio] renderer loaded track=\(track.id.uuidString) position=\(String(format: "%.3f", position))s duration=\(String(format: "%.1f", duration))s outputDelay=\(String(format: "%.3f", audioOutputDelay))s autoplay=\(!restorePaused)",
             category: .audio
         )
     }
@@ -1049,6 +1342,13 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             )
         }
         cancelPendingCompletion()
+        if outputBackend == .spatialRenderer {
+            rendererPipeline.pause()
+            AudioAnalysisHub.shared.setPlaying(false)
+            isPlaying = false
+            stopProgressTimer()
+            return
+        }
         playerNode.pause()
         resetDelayBufferIfActive()
         isPlaying = false
@@ -1065,6 +1365,13 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             )
         }
         applyLookaheadPreferenceChangeIfNeeded(reason: "resume")
+        if outputBackend == .spatialRenderer {
+            rendererPipeline.play()
+            AudioAnalysisHub.shared.setPlaying(true)
+            isPlaying = true
+            startProgressTimer()
+            return
+        }
         configureDelay()
         resetDelayBufferIfActive()
         guard graphReadyForPlay(scheduledGeneration: scheduledGraphGeneration, operation: "resume.play") else {
@@ -1094,6 +1401,13 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         invalidatePreparation()
         cancelPendingCompletion()
         invalidateScheduleToken()
+        rendererPipeline.stop()
+        AudioAnalysisHub.shared.disableExternalFeed()
+        spatialCurrentProvider = nil
+        spatialCurrentSegmentID = nil
+        spatialCurrentLogicalStart = 0
+        spatialClockTime = 0
+        AudioAnalysisHub.shared.setPlaying(false)
         playerNode.stop()
         resetDelayBufferIfActive()
         stopProgressTimer()
@@ -1125,6 +1439,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
 
         smartController.beginSeek()
+
+        if outputBackend == .spatialRenderer {
+            seekSpatialRenderer(to: seconds, file: audioFile, wasPlaying: wasPlaying)
+            return
+        }
 
         cancelPendingCompletion()
         invalidateScheduleToken()
@@ -1159,6 +1478,56 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             isPlaying = true
             startProgressTimer()
         }
+    }
+
+    private func seekSpatialRenderer(
+        to seconds: Double,
+        file: AVAudioFile,
+        wasPlaying: Bool
+    ) {
+        cancelPendingCompletion()
+        invalidateScheduleToken()
+        let targetFrame = AVAudioFramePosition(seconds * sampleRate)
+        guard targetFrame >= 0, targetFrame < file.length else {
+            Log.warning("[SpatialAudio] seek target out of range frame=\(targetFrame)", category: .audio)
+            smartController.endSeek()
+            return
+        }
+
+        let position = max(0, min(seconds, duration))
+        let provider = AVFilePCMProvider(file: file)
+        let segmentID = UUID()
+        spatialCurrentProvider = provider
+        spatialCurrentSegmentID = segmentID
+        spatialCurrentLogicalStart = 0
+        spatialClockTime = position
+        spatialPendingBoundary = nil
+        startingFramePosition = targetFrame
+        currentTime = position
+        smartController.recordSeek(to: currentTime)
+
+        refreshOutputLatency(force: true)
+        rendererPipeline.setAnalysisLeadSeconds(lookaheadSeconds)
+        rendererPipeline.setAnalysisDeliveryLeadSeconds(audioOutputDelay)
+        rendererPipeline.load(
+            source: provider,
+            sourcePosition: targetFrame,
+            // The descriptor anchor represents source time zero; the
+            // pipeline adds `sourcePosition` to the first buffer PTS.
+            presentationStartSeconds: lookaheadSeconds,
+            clockTimeSeconds: position,
+            segmentID: segmentID,
+            autoplay: wasPlaying
+        )
+        isPlaying = wasPlaying
+        AudioAnalysisHub.shared.setPlaying(wasPlaying)
+        smartController.endSeek()
+        if wasPlaying {
+            startProgressTimer()
+        } else {
+            stopProgressTimer()
+        }
+        NowPlayingService.shared.syncLocalPlaybackState()
     }
 
     // MARK: - Queue Management
@@ -1238,6 +1607,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     private func updateProgress() {
         applyLookaheadPreferenceChangeIfNeeded(reason: "progressTick")
+        refreshOutputLatency()
 
         let nowUptime = ProcessInfo.processInfo.systemUptime
         let previousUptime = lastProgressUpdateUptime
@@ -1254,6 +1624,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             if duration > 0 {
                 smartController.updateProgress(currentTime: currentTime, duration: duration)
             }
+            return
+        }
+
+        if outputBackend == .spatialRenderer {
+            updateSpatialRendererProgress()
             return
         }
 
@@ -1331,6 +1706,43 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         maybeTriggerGaplessPrefetch()
     }
 
+    private func updateSpatialRendererProgress() {
+        guard isPlaying else { return }
+
+        let mediaTime = spatialClockTime - spatialCurrentLogicalStart
+        currentTime = max(0, min(mediaTime, duration))
+        if duration > 0 {
+            smartController.updateProgress(currentTime: currentTime, duration: duration)
+        }
+
+        maybeTriggerGaplessPrefetch()
+
+        guard duration > 0, mediaTime >= duration - 0.02 else { return }
+        if let pending = spatialPendingBoundary {
+            if let reason = spatialGaplessBoundaryBlockReason(pending: pending) {
+                logGaplessFallback(
+                    reason,
+                    context: "renderer boundary track=\(pending.descriptor.id.uuidString.prefix(8))"
+                )
+                abandonSpatialGaplessAndFinalize()
+            } else {
+                commitSpatialGaplessBoundary(pending)
+            }
+            return
+        }
+
+        let token = activeScheduleToken
+        // The progress observer intentionally accepts a 20 ms boundary
+        // tolerance. Include any not-yet-reached media tail in the drain so a
+        // tick just before `duration` can never pause the renderer early.
+        let drainDelay = lookaheadSeconds + max(0, duration - mediaTime)
+        if drainDelay > 0 {
+            beginDrain(delaySeconds: drainDelay, token: token)
+        } else {
+            finalizePlaybackCompletion(token: token)
+        }
+    }
+
     // MARK: - Gapless Prefetch
 
     /// Decide whether to prefetch the upcoming track for a seamless join. Called
@@ -1341,7 +1753,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         guard !prefetchAttemptedForCurrentItem, prefetchTask == nil else { return }
         // Only prefetch when exactly the current item is scheduled (a pending
         // next already covers the boundary).
-        guard scheduleQueue.count == 1 else { return }
+        if outputBackend == .spatialRenderer {
+            guard spatialPendingBoundary == nil else { return }
+        } else {
+            guard scheduleQueue.count == 1 else { return }
+        }
         guard duration > 0 else { return }
 
         // Next track must be deterministic. Repeat-one and stop-after-track do not
@@ -1394,9 +1810,16 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             releaseSecurityScope(for: resource)
             return
         }
-        guard gaplessEnabled, isPlaying, scheduleQueue.count == 1 else {
+        let canAcceptPreparedNext = outputBackend == .spatialRenderer
+            ? spatialPendingBoundary == nil
+            : scheduleQueue.count == 1
+        guard gaplessEnabled, isPlaying, canAcceptPreparedNext else {
             logGaplessFallback(.stateChanged, context: "prepared track=\(resource.trackID.uuidString.prefix(8))")
             releaseSecurityScope(for: resource)
+            return
+        }
+        if outputBackend == .spatialRenderer {
+            scheduleNextSpatial(resource)
             return
         }
         guard let currentFormat = audioFile?.processingFormat,
@@ -1534,6 +1957,43 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// player node, without stopping/rebuilding. The node renders current→next
     /// with no gap. Uses `.dataPlayedBack` so this item's completion fires at the
     /// audible end (the current item keeps its existing completion callback).
+    private func scheduleNextSpatial(_ resource: PreparedAudioResource) {
+        let trim = resolveAACTrim(resource)
+        let startFrame = trim?.headTrimFrames ?? 0
+        let frameCount = trim?.scheduledFrameCount
+            ?? AVAudioFrameCount(resource.file.length)
+        let itemDuration = trim?.scheduledDuration
+            ?? (resource.sampleRate > 0 ? Double(frameCount) / resource.sampleRate : resource.duration)
+        let provider = AVFilePCMProvider(
+            file: resource.file,
+            startingFrame: startFrame,
+            frameCount: frameCount
+        )
+
+        guard let descriptor = rendererPipeline.append(source: provider) else {
+            logGaplessFallback(
+                .notScheduledInTime,
+                context: "renderer append failed track=\(resource.trackID.uuidString.prefix(8))"
+            )
+            releaseSecurityScope(for: resource)
+            return
+        }
+
+        let token = UUID()
+        prefetchedResource = resource
+        spatialPendingBoundary = SpatialPendingBoundary(
+            trackID: resource.trackID,
+            descriptor: descriptor,
+            provider: provider,
+            token: token,
+            duration: itemDuration,
+            startFrameInFile: startFrame
+        )
+        gaplessLog(
+            "[SpatialGapless] queued next track=\(resource.trackID.uuidString.prefix(8)) ptsStart=\(String(format: "%.6f", descriptor.presentationStartSeconds)) duration=\(String(format: "%.3f", itemDuration)) headTrim=\(startFrame)"
+        )
+    }
+
     private func scheduleNextGapless(_ resource: PreparedAudioResource) {
         guard let startNodeSample = scheduleQueue.nextStartNodeSample else {
             logGaplessFallback(.notScheduledInTime, context: "no current item to append after")
@@ -1692,7 +2152,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         // switch).
         let delaySeconds = lookaheadSeconds
         if delaySeconds > 0 {
-            beginDrain(lookaheadSeconds: delaySeconds, token: token)
+            beginDrain(delaySeconds: delaySeconds, token: token)
             return
         }
 
@@ -1701,7 +2161,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         finalizePlaybackCompletion(token: token)
     }
 
-    private func beginDrain(lookaheadSeconds: Double, token: UUID) {
+    private func beginDrain(delaySeconds: Double, token: UUID) {
         cancelPendingCompletion()
         drainStartUptime = ProcessInfo.processInfo.systemUptime
         drainStartTime = duration
@@ -1709,7 +2169,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            try? await Task.sleep(nanoseconds: UInt64(lookaheadSeconds * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
             self.finalizePlaybackCompletion(token: token)
         }
     }
@@ -1720,6 +2180,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         stopProgressTimer()
 
         Log.info("[PlaybackPipeline] Playback completed: \(currentTrack?.title ?? "unknown")", category: .audio)
+
+        if outputBackend == .spatialRenderer {
+            rendererPipeline.pause()
+            AudioAnalysisHub.shared.setPlaying(false)
+        }
 
         let playbackOrderMode = effectivePlaybackOrderMode
 
@@ -1743,6 +2208,113 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     // MARK: - Gapless Boundary
+
+    private func spatialGaplessBoundaryBlockReason(
+        pending: SpatialPendingBoundary
+    ) -> GaplessFallbackReason? {
+        if !AppSettings.shared.audioGaplessSchedulingEnabled { return .disabled }
+        let playbackOrderMode = effectivePlaybackOrderMode
+        if playbackOrderMode == .stopAfterTrack { return .stopAfterTrack }
+        if playbackOrderMode == .repeatOne { return .repeatOne }
+        guard let predicted = smartController.peekNextForGapless() else { return .noNext }
+        guard predicted.id == pending.trackID else { return .predictionMismatch }
+        return nil
+    }
+
+    private func commitSpatialGaplessBoundary(_ pending: SpatialPendingBoundary) {
+        guard let resource = prefetchedResource,
+              resource.trackID == pending.trackID else {
+            logGaplessFallback(
+                .notScheduledInTime,
+                context: "renderer boundary missing prefetched resource"
+            )
+            abandonSpatialGaplessAndFinalize()
+            return
+        }
+
+        // The logical/UI boundary intentionally leads the audible renderer PTS
+        // by the configured delay, matching the legacy playerNode -> delayNode
+        // behavior. Keep the outgoing lease alive through that short audible
+        // tail so an automatic renderer flush can still re-read it.
+        let outgoingLease = currentFileLease
+        prefetchedResource = nil
+        currentFileURL = resource.resolvedURL
+        currentFileLease = resource.lease
+        audioFile = resource.file
+        sampleRate = resource.sampleRate
+        duration = pending.duration
+        startingFramePosition = pending.startFrameInFile
+        spatialCurrentProvider = pending.provider
+        spatialCurrentSegmentID = pending.descriptor.id
+        spatialCurrentLogicalStart = pending.descriptor.presentationStartSeconds - lookaheadSeconds
+        spatialPendingBoundary = nil
+        activeScheduleToken = pending.token
+        prefetchAttemptedForCurrentItem = false
+        currentTime = max(0, min(spatialClockTime - spatialCurrentLogicalStart, duration))
+
+        guard let advancedTrack = smartController.commitGaplessAdvance() else {
+            Log.error(
+                "[SpatialGapless] commit found no predicted next track; stopping renderer",
+                category: .audio
+            )
+            rendererPipeline.stop()
+            stopProgressTimer()
+            isPlaying = false
+            outgoingLease?.release()
+            currentFileLease?.release()
+            currentFileLease = nil
+            currentFileURL = nil
+            return
+        }
+
+        advancedTrack.availability = resource.newAvailability
+        if let refreshed = resource.refreshedLocator {
+            advancedTrack.mediaLocator = refreshed
+            onAudioLocatorResolved?(advancedTrack.id, refreshed, resource.newAvailability)
+        }
+        releaseOutgoingSpatialScopeAfterAudibleBoundary(
+            lease: outgoingLease,
+            delay: lookaheadSeconds
+        )
+
+        gaplessLog(
+            "[SpatialGapless] boundary committed track=\(advancedTrack.id.uuidString) title=\(advancedTrack.title) logicalStart=\(String(format: "%.6f", spatialCurrentLogicalStart)) duration=\(String(format: "%.3f", duration))"
+        )
+        if duration > 0 {
+            smartController.updateProgress(currentTime: currentTime, duration: duration)
+        }
+    }
+
+    private func releaseOutgoingSpatialScopeAfterAudibleBoundary(
+        lease: SecurityScopedResourceLease?,
+        delay: Double
+    ) {
+        guard let lease else { return }
+        if delay <= 0 {
+            lease.release()
+            return
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            lease.release()
+        }
+    }
+
+    private func abandonSpatialGaplessAndFinalize() {
+        if let currentSegmentID = spatialCurrentSegmentID {
+            rendererPipeline.discardSegments(after: currentSegmentID)
+        }
+        releasePrefetchedResource(reason: "rendererBoundaryFallback")
+        spatialPendingBoundary = nil
+        let token = activeScheduleToken
+        let mediaTime = spatialClockTime - spatialCurrentLogicalStart
+        let drainDelay = lookaheadSeconds + max(0, duration - mediaTime)
+        if drainDelay > 0 {
+            beginDrain(delaySeconds: drainDelay, token: token)
+        } else {
+            finalizePlaybackCompletion(token: token)
+        }
+    }
 
     /// Returns a reason the pre-scheduled `pending` item must NOT play through
     /// gaplessly (nil = good to commit). Re-derives the natural-advance decision
@@ -1871,6 +2443,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     func prepareForTermination() {
         smartController.prepareForTermination()
+        rendererPipeline.stop()
+        AudioAnalysisHub.shared.setPlaying(false)
+        AudioAnalysisHub.shared.disableExternalFeed()
     }
 
 }

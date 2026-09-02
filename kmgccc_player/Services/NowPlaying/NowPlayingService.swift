@@ -42,6 +42,21 @@ final class NowPlayingService {
         updateNowPlaying(force: true)
     }
 
+    /// Called by the local audio service after an asynchronously prepared
+    /// renderer has actually entered the playing state. Playback commands can
+    /// refresh the coordinator before file preparation finishes, leaving the
+    /// published Now Playing rate at 0 when macOS evaluates AirPods spatial
+    /// eligibility. Refreshing the existing source-aware presentation here
+    /// keeps PlaybackCoordinator as the state owner while making the media
+    /// session transition visible at the renderer start boundary.
+    func syncLocalPlaybackState() {
+        guard coordinator?.activeSource == .local || (coordinator == nil && player != nil) else {
+            return
+        }
+        coordinator?.refreshPresentation()
+        updateNowPlaying(force: true)
+    }
+
     func updateNowPlaying(force: Bool = false) {
         guard coordinator != nil || player != nil else { return }
 
@@ -84,6 +99,7 @@ final class NowPlayingService {
         info[MPMediaItemPropertyPlaybackDuration] = player.duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player.currentTime
         info[MPNowPlayingInfoPropertyPlaybackRate] = player.isPlaying ? 1.0 : 0.0
+        applyAudioMetadata(to: &info, trackID: track.id)
 
         scheduleArtworkLoadIfNeeded(for: track)
         if let artwork = mediaArtwork(for: track) {
@@ -133,6 +149,7 @@ final class NowPlayingService {
         info[MPMediaItemPropertyPlaybackDuration] = presentation.duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = presentation.currentTime
         info[MPNowPlayingInfoPropertyPlaybackRate] = presentation.isPlaying ? 1.0 : 0.0
+        applyAudioMetadata(to: &info, trackID: presentation.localTrack?.id)
 
         if let artwork = mediaArtwork(for: presentation) {
             info[MPMediaItemPropertyArtwork] = artwork
@@ -145,6 +162,17 @@ final class NowPlayingService {
         if #available(macOS 12.0, *) {
             MPNowPlayingInfoCenter.default().playbackState =
                 presentation.isPlaying ? .playing : .paused
+        }
+    }
+
+    private func applyAudioMetadata(to info: inout [String: Any], trackID: UUID?) {
+        info[MPNowPlayingInfoPropertyMediaType] = NSNumber(
+            value: MPNowPlayingInfoMediaType.audio.rawValue
+        )
+        if let trackID {
+            info[MPNowPlayingInfoPropertyExternalContentIdentifier] = trackID.uuidString
+        } else {
+            info.removeValue(forKey: MPNowPlayingInfoPropertyExternalContentIdentifier)
         }
     }
 
