@@ -2481,6 +2481,11 @@ final class LyricsWebViewStore: NSObject {
         let config = WKWebViewConfiguration()
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
+        let highRefreshRateEnabled = HighRefreshRateWebViewConfigurator.enableHighRefreshRate(in: config)
+        Log.info(
+            "[LyricsStore:\(role)] High-refresh-rate WebView configuration \(highRefreshRateEnabled ? "enabled" : "unavailable; using WebKit default")",
+            category: .webview
+        )
         if let roleData = try? JSONEncoder().encode(role),
             let roleJSONString = String(data: roleData, encoding: .utf8)
         {
@@ -2499,6 +2504,9 @@ final class LyricsWebViewStore: NSObject {
             guard let self, let webView else { return }
             self.dispatchHostWheel(event, from: webView, scale: scale)
         }
+        #if DEBUG
+        webView.isInspectable = true
+        #endif
         webView.setValue(false, forKey: "drawsBackground")
         retainedWebView = webView
         applyMouseInteractionSuppression(reason: "ensureWebView")

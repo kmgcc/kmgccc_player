@@ -17,6 +17,7 @@ final class CrashReportService: ObservableObject {
     private var workerTask: Task<Void, Never>?
     private var activationObserver: NSObjectProtocol?
     private var promptQueueDrainedHandler: (() -> Void)?
+    private var activeLibraryRootURL: URL?
 
     private init(
         bootstrap: CrashReporterBootstrap = .shared,
@@ -32,6 +33,10 @@ final class CrashReportService: ObservableObject {
 
     var hasPendingPrompt: Bool {
         currentPrompt != nil
+    }
+
+    func bindLibraryRoot(_ rootURL: URL?) {
+        activeLibraryRootURL = rootURL?.standardizedFileURL
     }
 
     func start(anonymousInstallID: String) async {
@@ -152,7 +157,7 @@ final class CrashReportService: ObservableObject {
             return
         }
 
-        let libraryRootURL = LocalLibraryPaths.libraryRootURL
+        let libraryRootURL = sanitizerLibraryRootURL
         let appDataRootURL = CrashReportPaths.applicationSupport
         do {
             let converted = try await Task.detached(priority: .utility) {
@@ -447,10 +452,26 @@ final class CrashReportService: ObservableObject {
         var candidate = report
         candidate.userDescription = String(description.prefix(1_000))
         let sanitized = CrashReportSanitizer(
-            libraryRootURL: LocalLibraryPaths.libraryRootURL,
+            libraryRootURL: sanitizerLibraryRootURL,
             appDataRootURL: CrashReportPaths.applicationSupport
         ).sanitize(candidate)
         return sanitized.userDescription ?? ""
+    }
+
+    private var sanitizerLibraryRootURL: URL {
+        if let activeLibraryRootURL {
+            return activeLibraryRootURL
+        }
+        if let registry = try? MusicLibraryRegistryFile.load(
+            from: MusicLibraryRegistryStore.defaultRegistryURL
+        ), let activeID = registry.activeLibraryID,
+           let bookmark = registry.library(id: activeID) {
+            return URL(
+                fileURLWithPath: bookmark.lastKnownPath,
+                isDirectory: true
+            ).standardizedFileURL
+        }
+        return LibraryLocationStore.defaultLibraryRootURL
     }
 
     private func installActivationObserverIfNeeded() {

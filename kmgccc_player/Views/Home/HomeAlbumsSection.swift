@@ -198,6 +198,7 @@ private struct HomeAlbumCard: View {
     let onDelete: () -> Void
 
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @State private var image: NSImage?
     @Environment(\.colorScheme) private var colorScheme
 
@@ -281,7 +282,7 @@ private struct HomeAlbumCard: View {
                     .truncationMode(.tail)
                     .foregroundStyle(titleColor)
 
-                Text(album.primaryArtistDisplayName)
+                Text(album.presentationArtistDisplayName)
                     .font(.caption)
                     .foregroundStyle(subtitleColor)
                     .lineLimit(1)
@@ -340,7 +341,8 @@ private struct HomeAlbumCard: View {
         let loaded = await ArtworkLoader.loadImage(
             artworkData: data,
             cacheKey: key,
-            targetPixelSize: targetSize
+            targetPixelSize: targetSize,
+            derivativeStore: cacheServices.artworkDerivativeStore
         )
         if let loaded {
             HomeArtworkMemoryStore.shared.store(

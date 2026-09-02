@@ -28,7 +28,10 @@ actor AppleMusicArtworkResolver {
     }
 
     private let session: URLSession
-    private var cache: [String: Data?] = [:]
+    private var cache = CostBoundedCache<String, Data?>(
+        countLimit: 96,
+        totalCostLimit: 32 * 1024 * 1024
+    )
     private var inFlight: [String: Task<Data?, Never>] = [:]
 
     init(session: URLSession = AppleMusicArtworkResolver.makeDefaultSession()) {
@@ -36,7 +39,7 @@ actor AppleMusicArtworkResolver {
     }
 
     func cachedArtwork(for identity: String) -> Data?? {
-        cache[identity]
+        cache.value(forKey: identity)
     }
 
     func removeCachedArtwork(for identity: String) {
@@ -54,7 +57,7 @@ actor AppleMusicArtworkResolver {
         artist: String?,
         album: String?
     ) async -> Data? {
-        if let cached = cache[identity] {
+        if let cached = cache.value(forKey: identity) {
             return cached
         }
 
@@ -68,7 +71,7 @@ actor AppleMusicArtworkResolver {
         }
         inFlight[identity] = task
         let result = await task.value
-        cache[identity] = result
+        cache.insert(result, forKey: identity, cost: result?.count ?? 1)
         inFlight[identity] = nil
         return result
     }

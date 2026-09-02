@@ -701,6 +701,7 @@ private struct HomeRankArtworkView: View {
     let item: HomeViewModel.PreferenceRankItem
     let side: CGFloat
     @State private var image: NSImage?
+    @Environment(LibraryCacheServices.self) private var cacheServices
 
     init(item: HomeViewModel.PreferenceRankItem, side: CGFloat) {
         self.item = item
@@ -759,7 +760,8 @@ private struct HomeRankArtworkView: View {
         let loaded = await ArtworkLoader.loadImage(
             artworkData: data,
             cacheKey: key,
-            targetPixelSize: targetSize
+            targetPixelSize: targetSize,
+            derivativeStore: cacheServices.artworkDerivativeStore
         )
         if let loaded {
             HomeArtworkMemoryStore.shared.store(

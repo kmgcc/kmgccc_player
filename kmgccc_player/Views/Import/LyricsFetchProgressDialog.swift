@@ -191,6 +191,8 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
     @MainActor
     static func presentAndFetch(
         tracks: [Track],
+        lyricsSearchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService,
         completion: @escaping ([Track]) -> Void
     ) {
         guard !tracks.isEmpty else {
@@ -256,7 +258,12 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
         visualEffect.addSubview(hostingView)
         AppDialogTokens.presentWithFade(panel)
 
-        presenter.startFetchAsync(tracks: tracks, viewModel: viewModel)
+        presenter.startFetchAsync(
+            tracks: tracks,
+            viewModel: viewModel,
+            lyricsSearchCoordinator: lyricsSearchCoordinator,
+            amllDBService: amllDBService
+        )
     }
     
     private func finishWithMinimumDelay(completion: @escaping ([Track]) -> Void) {
@@ -280,7 +287,12 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
         Self.activePresenter = nil
     }
     
-    private func startFetchAsync(tracks: [Track], viewModel: LyricsFetchProgressViewModel) {
+    private func startFetchAsync(
+        tracks: [Track],
+        viewModel: LyricsFetchProgressViewModel,
+        lyricsSearchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService
+    ) {
         // Extract Sendable snapshots before entering detached task
         // (Track is a SwiftData @Model class, not Sendable)
         struct TrackSnapshot: Sendable {
@@ -346,7 +358,9 @@ final class LyricsFetchProgressDialogPresenter: NSObject, NSWindowDelegate {
                                     title: snapshot.title,
                                     artist: snapshot.artist.isEmpty ? nil : snapshot.artist,
                                     album: nil,
-                                    duration: nil
+                                    duration: nil,
+                                    searchCoordinator: lyricsSearchCoordinator,
+                                    amllDBService: amllDBService
                                 )
 
                                 guard let ttml else {

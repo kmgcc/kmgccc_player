@@ -53,7 +53,7 @@ struct FullscreenQueueView: View {
     private var panelHeight: CGFloat { min(visibleHeight * 0.92, 660 * scale) }
 
     /// Corner radius - macOS 26 standard window corner radius (28pt at base scale)
-    /// Reference: UpdateWindowManager.swift uses 28pt for macOS 26 windows
+    /// Matches the large-radius floating window treatment used by app dialogs.
     private var cornerRadius: CGFloat { 28 * scale }
 
     /// Content padding inside panel - increased for more breathing room
@@ -324,6 +324,7 @@ private struct FullscreenQueueTextPalette {
 // MARK: - Queue Row
 
 private struct QueueRow: View {
+    @Environment(LibraryCacheServices.self) private var cacheServices
     let track: Track
     let isPlaying: Bool
     let textPalette: FullscreenQueueTextPalette
@@ -447,7 +448,7 @@ private struct QueueRow: View {
             return
         }
 
-        let image = await TrackArtworkCache.shared.thumbnail(for: source)
+        let image = await cacheServices.trackArtworkCache.thumbnail(for: source)
         guard !Task.isCancelled else { return }
         await MainActor.run {
             if let image {

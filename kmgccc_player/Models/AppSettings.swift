@@ -96,7 +96,7 @@ struct FullscreenLyricsTypography: Codable, Equatable {
                 mainFontNameEn: Self.defaultValue.mainFontNameEn,
                 translationFontName: Self.defaultValue.translationFontName,
                 mainFontWeight: 100,
-                translationFontWeight: 100,
+                translationFontWeight: 300,
                 mainFontSize: Self.defaultValue.mainFontSize,
                 translationFontSize: Self.defaultValue.translationFontSize
             )
@@ -105,53 +105,70 @@ struct FullscreenLyricsTypography: Codable, Equatable {
         }
     }
 
-    /// Defaults written by the previous per-skin typography implementation.
+    /// Defaults written by previous per-skin typography implementations.
     /// They are recognized only during the one-time upgrade so a genuinely
     /// customized profile is not overwritten.
-    static func previousDefaultValue(forFullscreenSkinID skinID: String) -> Self? {
+    static func previousDefaultValues(forFullscreenSkinID skinID: String) -> [Self] {
         switch skinID {
         case "coverLed":
-            return Self(
-                mainFontNameZh: LyricsFontDefaults.skinChinese,
-                mainFontNameEn: LyricsFontDefaults.english,
-                translationFontName: LyricsFontDefaults.skinTranslation,
-                mainFontWeight: 700,
-                translationFontWeight: 600,
-                mainFontSize: 56,
-                translationFontSize: 27
-            )
+            return [
+                Self(
+                    mainFontNameZh: LyricsFontDefaults.skinChinese,
+                    mainFontNameEn: LyricsFontDefaults.english,
+                    translationFontName: LyricsFontDefaults.skinTranslation,
+                    mainFontWeight: 700,
+                    translationFontWeight: 600,
+                    mainFontSize: 56,
+                    translationFontSize: 27
+                )
+            ]
         case "rotatingCover":
-            return Self(
-                mainFontNameZh: LyricsFontDefaults.skinChinese,
-                mainFontNameEn: LyricsFontDefaults.english,
-                translationFontName: LyricsFontDefaults.skinTranslation,
-                mainFontWeight: 600,
-                translationFontWeight: 500,
-                mainFontSize: 54,
-                translationFontSize: 25
-            )
+            return [
+                Self(
+                    mainFontNameZh: LyricsFontDefaults.skinChinese,
+                    mainFontNameEn: LyricsFontDefaults.english,
+                    translationFontName: LyricsFontDefaults.skinTranslation,
+                    mainFontWeight: 600,
+                    translationFontWeight: 500,
+                    mainFontSize: 54,
+                    translationFontSize: 25
+                )
+            ]
         case "kmgccc.cassette":
-            return Self(
-                mainFontNameZh: LyricsFontDefaults.skinChinese,
-                mainFontNameEn: LyricsFontDefaults.english,
-                translationFontName: LyricsFontDefaults.skinTranslation,
-                mainFontWeight: 700,
-                translationFontWeight: 600,
-                mainFontSize: 52,
-                translationFontSize: 24
-            )
+            return [
+                Self(
+                    mainFontNameZh: LyricsFontDefaults.skinChinese,
+                    mainFontNameEn: LyricsFontDefaults.english,
+                    translationFontName: LyricsFontDefaults.skinTranslation,
+                    mainFontWeight: 700,
+                    translationFontWeight: 600,
+                    mainFontSize: 52,
+                    translationFontSize: 24
+                )
+            ]
         case "fullscreen.coverGradientBlur":
-            return Self(
-                mainFontNameZh: LyricsFontDefaults.skinChinese,
-                mainFontNameEn: LyricsFontDefaults.skinEnglish,
-                translationFontName: LyricsFontDefaults.skinTranslation,
-                mainFontWeight: 100,
-                translationFontWeight: 100,
-                mainFontSize: 64,
-                translationFontSize: 24
-            )
+            return [
+                Self(
+                    mainFontNameZh: Self.defaultValue.mainFontNameZh,
+                    mainFontNameEn: Self.defaultValue.mainFontNameEn,
+                    translationFontName: Self.defaultValue.translationFontName,
+                    mainFontWeight: 100,
+                    translationFontWeight: 100,
+                    mainFontSize: Self.defaultValue.mainFontSize,
+                    translationFontSize: Self.defaultValue.translationFontSize
+                ),
+                Self(
+                    mainFontNameZh: LyricsFontDefaults.skinChinese,
+                    mainFontNameEn: LyricsFontDefaults.skinEnglish,
+                    translationFontName: LyricsFontDefaults.skinTranslation,
+                    mainFontWeight: 100,
+                    translationFontWeight: 100,
+                    mainFontSize: 64,
+                    translationFontSize: 24
+                )
+            ]
         default:
-            return nil
+            return []
         }
     }
 }
@@ -332,6 +349,7 @@ public final class AppSettings {
 
     private enum AppearanceKeys {
         static let globalArtworkTintEnabled = "globalArtworkTintEnabled"
+        static let audioVisualizationHDREnabled = "audioVisualizationHDREnabled"
         static let dockProgressVisible = "dockProgressVisible"
         static let followSystemAppearance = "followSystemAppearance"
         static let manualAppearance = "manualAppearance"
@@ -366,6 +384,25 @@ public final class AppSettings {
                 UserDefaults.standard.set(
                     newValue,
                     forKey: AppearanceKeys.globalArtworkTintEnabled
+                )
+            }
+        }
+    }
+
+    /// Whether audio visualization (spectrum / LED) renders in HDR high dynamic range.
+    var audioVisualizationHDREnabled: Bool {
+        get {
+            access(keyPath: \.audioVisualizationHDREnabled)
+            if UserDefaults.standard.object(forKey: AppearanceKeys.audioVisualizationHDREnabled) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: AppearanceKeys.audioVisualizationHDREnabled)
+        }
+        set {
+            withMutation(keyPath: \.audioVisualizationHDREnabled) {
+                UserDefaults.standard.set(
+                    newValue,
+                    forKey: AppearanceKeys.audioVisualizationHDREnabled
                 )
             }
         }
@@ -1112,7 +1149,7 @@ public final class AppSettings {
 
     private enum FullscreenLyricsKeys {
         static let fontDefaultsMigration = "lyricsTypographyDefaultsMigrated_v2"
-        static let perSkinTypographyDefaultsMigration = "fullscreenLyricsPerSkinTypographyDefaults_v5"
+        static let perSkinTypographyDefaultsMigration = "fullscreenLyricsPerSkinTypographyDefaults_v6"
         static let perSkinTypographyEnabled = "fullscreenLyricsPerSkinTypographyEnabled"
         static let perSkinTypographyProfiles = "fullscreenLyricsPerSkinTypographyProfiles_v1"
         static let fontNameZh = "fullscreenLyricsFontNameZh"
@@ -1430,8 +1467,9 @@ public final class AppSettings {
                 forFullscreenSkinID: skinID
             )
             if let existing = profiles[skinID] {
-                let isPreviousGeneratedDefault = existing ==
-                    FullscreenLyricsTypography.previousDefaultValue(forFullscreenSkinID: skinID)
+                let isPreviousGeneratedDefault = FullscreenLyricsTypography
+                    .previousDefaultValues(forFullscreenSkinID: skinID)
+                    .contains(existing)
                 let isGeneratedDefault = existing == globalTypography
                     || existing == FullscreenLyricsTypography.defaultValue
                     || isPreviousGeneratedDefault

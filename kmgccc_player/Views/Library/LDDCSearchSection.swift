@@ -41,6 +41,7 @@ struct LDDCSearchSection: View {
     let onApplyLyrics: (String) -> Void
     
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(LibraryCacheServices.self) private var cacheServices
 
     // MARK: - Logger
     private static let logger = Logger(subsystem: "com.kmgccc.player", category: "LyricsSearch")
@@ -95,8 +96,6 @@ struct LDDCSearchSection: View {
     // Shared instance: this struct is re-initialized on every parent body
     // evaluation, so a per-instance LDDCClient would create a URLSession each time.
     private let client = LDDCClient.shared
-    private let amlldbService = AMLLDBService.shared
-    private let searchCoordinator = LyricsSearchCoordinator.shared
     private let panelMaxWidth: CGFloat = 380
     private let visibleLDDCSources: [LDDCSource] = [.QM, .KG, .NE]
 
@@ -816,7 +815,7 @@ struct LDDCSearchSection: View {
             "[LyricsSearch] Starting search - title: '\(searchTitle)', artist: '\(searchArtist)', AMLLDB enabled: \(enableAMLLDB)"
         )
 
-        let updates = searchCoordinator.search(
+        let updates = cacheServices.lyricsSearchCoordinator.search(
             title: searchTitle,
             artist: searchArtist.isEmpty ? nil : searchArtist,
             album: searchAlbum.isEmpty ? nil : searchAlbum,
@@ -919,7 +918,7 @@ struct LDDCSearchSection: View {
             if candidate.source == "AMLLDB" {
                 // AMLLDB: Download via rawLyricFile (stored in songId)
                 let rawLyricFile = candidate.songId
-                let ttml = try await amlldbService.downloadLyricsByRawFile(rawLyricFile)
+                let ttml = try await cacheServices.amllDBService.downloadLyricsByRawFile(rawLyricFile)
                 loadedOrig = ttml
                 loadedTrans = nil
                 Self.logger.info("[LyricsSearch] Preview load success - AMLLDB TTML: \(rawLyricFile), \(ttml.count) bytes")

@@ -7,12 +7,13 @@
 //  logic stays unit-testable in isolation.
 //
 //  Design rules:
-//  - Only ever emit coarse product-family / chip-generation buckets. Never leak a
-//    precise model identifier (e.g. "Mac15,6"), full CPU marketing string, serial,
-//    UUID, or user-assigned device name.
+//  - Only ever emit coarse product-family / chip-generation-and-tier buckets.
+//    Never leak a precise model identifier (e.g. "Mac15,6"), full CPU marketing
+//    string, serial, UUID, or user-assigned device name.
 //  - These are *restricted strings*, not fixed enums: future Mac product lines,
-//    chip families, and chip tiers (M5/M6/A19/...) flow through naturally; only
-//    genuinely unrecognizable inputs collapse to "unknown".
+//    chip generations, and known performance tiers (M5 Pro/M6 Max/A19 Pro/...)
+//    flow through naturally; only genuinely unrecognizable inputs collapse to
+//    "unknown".
 //
 
 import Foundation
@@ -35,6 +36,7 @@ enum DeviceTelemetryClassifier {
               !raw.isEmpty else { return nil }
         let lower = raw.lowercased()
         // Order matters: match more specific families before generic "MacBook".
+        if lower.contains("macbook neo") || lower.contains("macbookneo") { return "MacBook Neo" }
         if lower.contains("macbook pro") || lower.contains("macbookpro") { return "MacBook Pro" }
         if lower.contains("macbook air") || lower.contains("macbookair") { return "MacBook Air" }
         if lower.contains("mac studio") || lower.contains("macstudio") { return "Mac Studio" }
@@ -58,53 +60,54 @@ enum DeviceTelemetryClassifier {
         return unknown
     }
 
-    // MARK: - Chip family
+    // MARK: - Chip tier
 
-    /// Coarse processor family: "Apple Silicon" / "Intel" / "unknown".
-    /// `isAppleSilicon` comes from `hw.optional.arm64` (reflects hardware even
-    /// under Rosetta); `brandString` is a best-effort fallback only.
-    static func chipFamily(isAppleSilicon: Bool?, brandString: String?) -> String {
-        if isAppleSilicon == true { return "Apple Silicon" }
-        if isAppleSilicon == false { return "Intel" }
-        if let brand = brandString?.lowercased() {
-            if brand.contains("apple") { return "Apple Silicon" }
-            if brand.contains("intel") { return "Intel" }
+    /// Coarse Apple chip generation and performance tier. Keeps the generation
+    /// plus a known "Pro" / "Max" / "Ultra" suffix when present (for example
+    /// "M1 Max"), but never emits the full marketing name or core count
+    /// ("Apple M3 Pro 11-core CPU").
+    static func chipTier(brandString: String?) -> String {
+        guard let brand = brandString, let tier = firstChipTier(in: brand) else {
+            return unknown
+        }
+        return tier
+    }
+
+    /// Resolve a chip tier from preferred-to-fallback system sources.
+    static func chipTier(fromCandidates candidates: [String?]) -> String {
+        for candidate in candidates {
+            if let candidate, let tier = firstChipTier(in: candidate) {
+                return tier
+            }
         }
         return unknown
     }
 
-    // MARK: - Chip tier
-
-    /// Coarse chip generation. For Apple Silicon this is the family token only
-    /// ("M1"/"M2"/.../"M6"/"A19"), never the full marketing name ("Apple M3 Pro
-    /// 11-core CPU"). For Intel it is simply "Intel".
-    static func chipTier(family: String, brandString: String?) -> String {
-        switch family {
-        case "Intel":
-            return "Intel"
-        case "Apple Silicon":
-            if let brand = brandString, let token = firstChipToken(in: brand) {
-                return token
-            }
-            return unknown
-        default:
-            return unknown
-        }
-    }
-
-    /// Extract the first standalone "M<digits>" / "A<digits>" token (case
-    /// insensitive), normalized to an uppercase leading letter. This is what lets
-    /// future tiers (M5/M6/A19/...) pass without hardcoding an enum.
-    static func firstChipToken(in brand: String) -> String? {
-        let pattern = "\\b([MmAa])(\\d{1,3})\\b"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+    /// Extract the first standalone "M<digits>" / "A<digits>" token and an
+    /// optional known performance suffix. The allow-list deliberately avoids
+    /// forwarding arbitrary words from the raw CPU brand string.
+    static func firstChipTier(in brand: String) -> String? {
+        let pattern = #"\b([MA])(\d{1,3})(?:\s+(Pro|Max|Ultra))?\b"#
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern,
+            options: [.caseInsensitive]
+        ) else { return nil }
         let range = NSRange(brand.startIndex..., in: brand)
         guard let match = regex.firstMatch(in: brand, range: range),
               let letterRange = Range(match.range(at: 1), in: brand),
               let digitsRange = Range(match.range(at: 2), in: brand) else {
             return nil
         }
-        return "\(brand[letterRange].uppercased())\(brand[digitsRange])"
+        var tier = "\(brand[letterRange].uppercased())\(brand[digitsRange])"
+        if let suffixRange = Range(match.range(at: 3), in: brand) {
+            switch brand[suffixRange].lowercased() {
+            case "pro": tier += " Pro"
+            case "max": tier += " Max"
+            case "ultra": tier += " Ultra"
+            default: break
+            }
+        }
+        return tier
     }
 
     // MARK: - Memory

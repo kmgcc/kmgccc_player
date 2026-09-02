@@ -1,0 +1,701 @@
+import AVFoundation
+import CommonCrypto
+import Foundation
+@testable import kmgccc_player
+import XCTest
+
+private final class NCMTestBookmarkResolver: kmgccc_player.BookmarkResolving, @unchecked Sendable {
+    func resolve(_ data: Data) throws -> (url: URL, isStale: Bool) {
+        (URL(fileURLWithPath: String(decoding: data, as: UTF8.self)), false)
+    }
+    func refreshBookmark(for url: URL) throws -> Data { Data(url.path.utf8) }
+    func startAccessing(_: URL) -> Bool { true }
+    func stopAccessing(_: URL) {}
+}
+
+@MainActor
+private final class NCMTestParentAuthorizer: NCMParentDirectoryAuthorizing {
+    var error: Error?
+    private(set) var calls = 0
+
+    func authorizeParentDirectory(of sourceURL: URL) async throws -> NCMParentDirectoryAuthorization {
+        calls += 1
+        if let error { throw error }
+        let parent = sourceURL.deletingLastPathComponent()
+        return NCMParentDirectoryAuthorization(
+            directoryURL: parent,
+            bookmarkData: Data(parent.path.utf8),
+            lease: .none,
+            releasesLease: false
+        )
+    }
+}
+
+@MainActor
+private final class CommitFailureGate {
+    private(set) var calls = 0
+
+    func failOnce(operationID _: UUID, trackID _: UUID) throws {
+        calls += 1
+        if calls == 1 { throw CocoaError(.fileWriteUnknown) }
+    }
+}
+
+private actor ConversionCounter {
+    private(set) var count = 0
+    func increment() { count += 1 }
+}
+
+@MainActor
+final class ReferencedNCMConversionTests: XCTestCase {
+    func testFolderSourceWritesIntoOutputSubfolderAndPersistsReservationAssociation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let sourceID = UUID()
+        fixture.scope.add(sourceID: sourceID, url: fixture.sourceRoot, lease: .none)
+        let input = try fixture.input(memberships: [
+            kmgccc_player.ReferencedSourceMembership(sourceID: sourceID, relativePath: "song.ncm")
+        ], primarySourceID: sourceID)
+
+        let output = try await fixture.service.convert(input)
+
+        let outputDirectory = fixture.sourceRoot.appendingPathComponent("NCM 转换", isDirectory: true)
+        XCTAssertEqual(output.result.audioFileURL.deletingLastPathComponent().path, outputDirectory.path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.ncmURL.path))
+        XCTAssertEqual(output.locator.primarySourceID, sourceID)
+        XCTAssertEqual(output.locator.sourceMemberships.first?.relativePath, "song.ncm")
+        XCTAssertEqual(output.locator.ncmSourceIdentity, input.fingerprint?.identity)
+        XCTAssertEqual(fixture.authorizer.calls, 0)
+        let reservedBeforeCommit = try await fixture.service.isReserved(url: output.result.audioFileURL)
+        XCTAssertTrue(reservedBeforeCommit)
+
+        try await fixture.service.markCommitted(operationID: output.operationID, trackID: fixture.trackID)
+        let reservedAfterCommit = try await fixture.service.isReserved(url: output.result.audioFileURL)
+        XCTAssertFalse(reservedAfterCommit)
+
+        let reloaded = NCMConversionRegistry(paths: fixture.paths)
+        let record = try await reloaded.committedRecord(matching: try XCTUnwrap(input.fingerprint))
+        XCTAssertEqual(record?.trackID, fixture.trackID)
+        XCTAssertEqual(record?.expectedOutputPath, output.result.audioFileURL.path)
+    }
+
+    func testCommittedOutputLocatorRepairsLegacyGeneratedPathMembership() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let sourceID = UUID()
+        let input = try fixture.input(memberships: [
+            .init(sourceID: sourceID, relativePath: "song.ncm")
+        ], primarySourceID: sourceID)
+        let output = try await fixture.service.convert(input)
+        try await fixture.service.markCommitted(operationID: output.operationID, trackID: fixture.trackID)
+
+        var legacyLocator = output.locator
+        legacyLocator.sourceMemberships = [
+            .init(sourceID: sourceID, relativePath: "NCM 转换/Converted.mp3")
+        ]
+        try await fixture.registry.updateOutputLocator(
+            operationID: output.operationID,
+            locator: legacyLocator
+        )
+
+        let repaired = try await fixture.service.restoreCommittedOutputLocator(for: input)
+
+        XCTAssertEqual(repaired.sourceMemberships, [
+            .init(sourceID: sourceID, relativePath: "song.ncm")
+        ])
+        XCTAssertEqual(repaired.lastKnownPath, output.result.audioFileURL.path)
+    }
+
+    func testSingleFileRequiresParentAuthorizationAndFailureIsItemScoped() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let input = try fixture.input()
+        fixture.authorizer.error = ReferencedNCMConversionError.parentAuthorizationDenied
+
+        do {
+            _ = try await fixture.service.convert(input)
+            XCTFail("Expected parent authorization failure")
+        } catch {
+            XCTAssertEqual(error as? ReferencedNCMConversionError, .parentAuthorizationDenied)
+        }
+        XCTAssertEqual(fixture.authorizer.calls, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.ncmURL.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.sourceRoot.path), ["song.ncm"])
+    }
+
+    func testImportBatchAuthorizesSameNCMParentOnlyOnce() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let secondURL = fixture.sourceRoot.appendingPathComponent("second.ncm")
+        try Data("second-ncm-source".utf8).write(to: secondURL)
+
+        fixture.service.beginImportBatch()
+        defer { fixture.service.finishImportBatch() }
+
+        _ = try await fixture.service.convert(try fixture.input())
+        _ = try await fixture.service.convert(try fixture.input(url: secondURL))
+
+        XCTAssertEqual(
+            fixture.authorizer.calls,
+            1,
+            "Files from one parent directory must share one authorization"
+        )
+    }
+
+    func testImportBatchAuthorizesDifferentNCMParentsIndependently() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let secondParent = fixture.root.appendingPathComponent("Other", isDirectory: true)
+        try FileManager.default.createDirectory(at: secondParent, withIntermediateDirectories: true)
+        let secondURL = secondParent.appendingPathComponent("second.ncm")
+        try Data("second-ncm-source".utf8).write(to: secondURL)
+
+        fixture.service.beginImportBatch()
+        defer { fixture.service.finishImportBatch() }
+
+        _ = try await fixture.service.convert(try fixture.input())
+        _ = try await fixture.service.convert(try fixture.input(url: secondURL))
+
+        XCTAssertEqual(
+            fixture.authorizer.calls,
+            2,
+            "Different parent directories need separate authorization scopes"
+        )
+    }
+
+    func testImportBatchDoesNotRepromptAfterParentAuthorizationCancellation() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let secondURL = fixture.sourceRoot.appendingPathComponent("second.ncm")
+        try Data("second-ncm-source".utf8).write(to: secondURL)
+        fixture.authorizer.error = ReferencedNCMConversionError.parentAuthorizationDenied
+
+        fixture.service.beginImportBatch()
+        defer { fixture.service.finishImportBatch() }
+
+        for input in [try fixture.input(), try fixture.input(url: secondURL)] {
+            do {
+                _ = try await fixture.service.convert(input)
+                XCTFail("Expected parent authorization denial")
+            } catch {
+                XCTAssertEqual(error as? ReferencedNCMConversionError, .parentAuthorizationDenied)
+            }
+        }
+
+        XCTAssertEqual(
+            fixture.authorizer.calls,
+            1,
+            "Cancelling one parent prompt must fail the rest of that parent batch without reopening it"
+        )
+    }
+
+    func testExistingValidOutputIsReusedWithoutOverwriteOrNumberedCopy() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let outputDirectory = fixture.sourceRoot.appendingPathComponent("NCM 转换", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: false)
+        let existing = outputDirectory.appendingPathComponent("Converted.mp3")
+        let original = Data("existing".utf8)
+        try original.write(to: existing)
+
+        let output = try await fixture.service.convert(try fixture.input())
+        XCTAssertEqual(output.result.audioFileURL, existing)
+        XCTAssertEqual(try Data(contentsOf: existing), original)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: outputDirectory.appendingPathComponent("Converted (1).mp3").path))
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: fixture.sourceRoot.path).contains { $0.hasPrefix(".kmgccc-ncm-") })
+    }
+
+    func testMarkedExistingOutputIsAdoptedWithoutRunningConverter() async throws {
+        let counter = ConversionCounter()
+        let fixture = try Fixture(convert: { _, _ in
+            await counter.increment()
+            throw CocoaError(.fileWriteUnknown)
+        })
+        defer { fixture.cleanup() }
+
+        let outputDirectory = fixture.sourceRoot.appendingPathComponent("NCM 转换", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: false)
+        let existing = outputDirectory.appendingPathComponent("Converted.mp3")
+        try Data("existing-output".utf8).write(to: existing)
+        let sourceFingerprint = try XCTUnwrap(fixture.input().fingerprint)
+        let outputFingerprint = try ReferencedFileIdentityProvider().fingerprint(for: existing)
+        let metadata = NCMMetadata(
+            musicName: "Converted", artist: [["Artist"]], album: "Album",
+            albumPic: "", format: "mp3", bitrate: 320_000, duration: 10
+        )
+        try NCMGeneratedOutputMarkerStore.upsert(
+            NCMGeneratedOutputRecord(
+                operationID: UUID(),
+                sourcePath: fixture.ncmURL.path,
+                sourceFingerprint: sourceFingerprint,
+                outputPath: existing.path,
+                outputFingerprint: outputFingerprint,
+                format: .mp3,
+                metadata: metadata,
+                createdAt: Date(),
+                updatedAt: Date()
+            ),
+            in: outputDirectory
+        )
+
+        let output = try await fixture.service.convert(try fixture.input())
+
+        let conversionCount = await counter.count
+        XCTAssertEqual(conversionCount, 0)
+        XCTAssertEqual(output.result.audioFileURL, existing)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: outputDirectory.appendingPathComponent(NCMGeneratedOutputMarkerStore.fileName).path
+        ))
+        let record = try await fixture.registry.record(operationID: output.operationID)
+        XCTAssertEqual(record?.state, .outputReady)
+    }
+
+    func testLegacyOutputIsFoundFromNCMMetadataWithoutMarkerOrConversion() async throws {
+        let counter = ConversionCounter()
+        let fixture = try Fixture(convert: { _, _ in
+            await counter.increment()
+            throw CocoaError(.fileWriteUnknown)
+        })
+        defer { fixture.cleanup() }
+
+        let metadata = NCMMetadata(
+            musicName: "Legacy Song", artist: [["Artist"]], album: "Album",
+            albumPic: "", format: "mp3", bitrate: 320_000, duration: 10
+        )
+        try Self.makeSyntheticNCM(metadata: metadata).write(to: fixture.ncmURL)
+        let outputDirectory = fixture.sourceRoot.appendingPathComponent("NCM 转换", isDirectory: true)
+        try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: false)
+        let existing = outputDirectory.appendingPathComponent("Legacy Song.mp3")
+        try Data("legacy-output".utf8).write(to: existing)
+
+        let output = try await fixture.service.convert(try fixture.input())
+
+        let conversionCount = await counter.count
+        XCTAssertEqual(conversionCount, 0)
+        XCTAssertEqual(output.result.audioFileURL, existing)
+        XCTAssertEqual(output.result.metadata.title, metadata.title)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: outputDirectory.appendingPathComponent(NCMGeneratedOutputMarkerStore.fileName).path
+        ))
+    }
+
+    func testFailureAndCancellationCleanTemporaryOutputAndKeepNCM() async throws {
+        let fixture = try Fixture(convert: { _, directory in
+            let partial = directory.appendingPathComponent("song.mp3")
+            try Data("partial".utf8).write(to: partial)
+            throw CancellationError()
+        })
+        defer { fixture.cleanup() }
+
+        do {
+            _ = try await fixture.service.convert(try fixture.input())
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {}
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.ncmURL.path))
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: fixture.sourceRoot.path).contains { $0.hasPrefix(".kmgccc-ncm-") })
+    }
+
+    func testConcurrentSameInputHasSingleOutputAndActiveReservationBlocksRetry() async throws {
+        let fixture = try Fixture(convert: { source, directory in
+            try await Task.sleep(for: .milliseconds(150))
+            return try Fixture.makeResult(source: source, directory: directory)
+        })
+        defer { fixture.cleanup() }
+        let input = try fixture.input()
+
+        async let first = fixture.service.convert(input)
+        try await Task.sleep(for: .milliseconds(30))
+        do {
+            _ = try await fixture.service.convert(input)
+            XCTFail("Expected active reservation")
+        } catch ReferencedNCMConversionError.activeReservation {
+        } catch ReferencedNCMConversionError.recoveryOutputMissing {
+        }
+        let output = try await first
+        let productDirectory = fixture.sourceRoot.appendingPathComponent("NCM 转换", isDirectory: true)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: productDirectory.path).filter { $0 == "Converted.mp3" }.count, 1)
+        let isReserved = try await fixture.service.isReserved(url: output.result.audioFileURL)
+        XCTAssertTrue(isReserved)
+    }
+
+    func testOutputReadyRecoveryReusesOperationOutputAndTrackAfterCommitFailure() async throws {
+        let counter = ConversionCounter()
+        let gate = CommitFailureGate()
+        let fixture = try Fixture(
+            convert: { source, directory in
+                await counter.increment()
+                return try Fixture.makeResult(source: source, directory: directory)
+            },
+            commitOverride: { operationID, trackID in
+                try gate.failOnce(operationID: operationID, trackID: trackID)
+            }
+        )
+        defer { fixture.cleanup() }
+        let input = try fixture.input()
+
+        let first = try await fixture.service.convert(input)
+        try await fixture.service.associateTrack(operationID: first.operationID, trackID: fixture.trackID)
+        do {
+            try await fixture.service.markCommitted(operationID: first.operationID, trackID: fixture.trackID)
+            XCTFail("Expected injected registry commit failure")
+        } catch {}
+
+        let recovered = try await fixture.service.convert(input)
+        XCTAssertEqual(recovered.operationID, first.operationID)
+        XCTAssertEqual(recovered.trackID, fixture.trackID)
+        XCTAssertEqual(recovered.result.audioFileURL, first.result.audioFileURL)
+        let conversionCount = await counter.count
+        XCTAssertEqual(conversionCount, 1)
+        try await fixture.service.associateTrack(operationID: recovered.operationID, trackID: fixture.trackID)
+        try await fixture.service.markCommitted(operationID: recovered.operationID, trackID: fixture.trackID)
+
+        let registry = NCMConversionRegistry(paths: fixture.paths)
+        let committed = try await registry.committedRecord(matching: try XCTUnwrap(input.fingerprint))
+        XCTAssertEqual(committed?.id, first.operationID)
+        XCTAssertEqual(committed?.trackID, fixture.trackID)
+        XCTAssertEqual(committed?.state, .committed)
+    }
+
+    func testRemovedConversionBlocksAutomaticReentryAndManualRetryRecoversOutput() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let input = try fixture.input()
+        let converted = try await fixture.service.convert(input)
+        try await fixture.service.associateTrack(operationID: converted.operationID, trackID: fixture.trackID)
+        try await fixture.service.markCommitted(operationID: converted.operationID, trackID: fixture.trackID)
+        _ = try await fixture.registry.markRemoved(operationID: converted.operationID)
+
+        let sourceIsReserved = try await fixture.service.isReserved(url: fixture.ncmURL)
+        let outputIsReserved = try await fixture.service.isReserved(url: converted.result.audioFileURL)
+        XCTAssertTrue(sourceIsReserved)
+        XCTAssertTrue(outputIsReserved)
+        do {
+            _ = try await fixture.service.convert(input)
+            XCTFail("Expected removed conversion to block automatic re-entry")
+        } catch {
+            XCTAssertEqual(error as? ReferencedNCMConversionError, .removedConversion)
+        }
+
+        let cleared = try await fixture.service.allowManualRetry(input)
+        XCTAssertEqual(
+            Set(cleared.map(ReferencedPhysicalIdentityKey.init)),
+            Set([
+                ReferencedPhysicalIdentityKey(try XCTUnwrap(input.fingerprint)),
+                ReferencedPhysicalIdentityKey(try ReferencedFileIdentityProvider().fingerprint(for: converted.result.audioFileURL))
+            ])
+        )
+        let recovered = try await fixture.service.convert(input)
+        XCTAssertEqual(recovered.operationID, converted.operationID)
+        XCTAssertEqual(recovered.result.audioFileURL, converted.result.audioFileURL)
+    }
+
+    func testFingerprintStableAndFallbackDomainsNeverCrossMatch() {
+        let timestamp = 123.0
+        let bytes = Data([1, 2, 3])
+        let stableA = kmgccc_player.ReferencedFileFingerprint(
+            identity: kmgccc_player.ReferencedFileIdentity(volumeUUID: "A", resourceIdentifierArchive: bytes),
+            fileSize: 10,
+            modifiedAt: timestamp
+        )
+        let stableB = kmgccc_player.ReferencedFileFingerprint(
+            identity: kmgccc_player.ReferencedFileIdentity(volumeUUID: "B", resourceIdentifierArchive: bytes),
+            fileSize: 10,
+            modifiedAt: timestamp
+        )
+        let stableDifferentResource = kmgccc_player.ReferencedFileFingerprint(
+            identity: kmgccc_player.ReferencedFileIdentity(volumeUUID: "A", resourceIdentifierArchive: Data([9])),
+            fileSize: 10,
+            modifiedAt: timestamp
+        )
+        let stableChangedInPlace = kmgccc_player.ReferencedFileFingerprint(
+            identity: kmgccc_player.ReferencedFileIdentity(volumeUUID: "A", resourceIdentifierArchive: bytes),
+            fileSize: 11,
+            modifiedAt: timestamp + 1
+        )
+        let missingIdentity = kmgccc_player.ReferencedFileFingerprint(
+            identity: nil,
+            fileSize: 10,
+            modifiedAt: timestamp
+        )
+        let incompleteIdentity = kmgccc_player.ReferencedFileFingerprint(
+            identity: kmgccc_player.ReferencedFileIdentity(volumeUUID: "A", resourceIdentifierArchive: nil),
+            fileSize: 10,
+            modifiedAt: timestamp
+        )
+
+        XCTAssertFalse(NCMConversionRegistry.sameFingerprint(stableA, missingIdentity))
+        XCTAssertFalse(NCMConversionRegistry.sameFingerprint(stableA, incompleteIdentity))
+        XCTAssertFalse(NCMConversionRegistry.sameFingerprint(stableA, stableB))
+        XCTAssertFalse(NCMConversionRegistry.sameFingerprint(stableA, stableDifferentResource))
+        XCTAssertFalse(NCMConversionRegistry.sameFingerprint(stableA, stableChangedInPlace))
+        XCTAssertTrue(NCMConversionRegistry.sameFingerprint(missingIdentity, incompleteIdentity))
+    }
+
+    func testSchemaSevenRoundTripKeepsTransactionAssociation() throws {
+        let association = NCMConversionAssociation(
+            operationID: UUID(), sourceIdentity: ReferencedFileIdentity(volumeUUID: "v"),
+            sourcePath: "/source/song.ncm", outputIdentity: ReferencedFileIdentity(volumeUUID: "v2"),
+            outputPath: "/source/song.mp3"
+        )
+        let sidecar = TrackSidecar(
+            id: UUID(), title: "Song", artist: "Artist", album: "Album", duration: 1,
+            addedAt: Date(timeIntervalSince1970: 1), importedAt: nil, lyricsTimeOffsetMs: nil,
+            originalFilePath: nil, audioFileName: nil, artworkFileName: nil,
+            lyricsFileName: nil, lyricsType: nil, ttmlLyricsFileName: nil, ncmSourcePath: nil,
+            ncmConversionAssociation: association,
+            mediaLocator: .referenced(ReferencedFileLocator(fileBookmarkData: Data("b".utf8)))
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        XCTAssertEqual(try decoder.decode(TrackSidecar.self, from: encoder.encode(sidecar)).ncmConversionAssociation, association)
+    }
+
+    func testStalePendingJournalIsRecoveredAndConversionProceedsAfterRelaunch() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let sourceID = UUID()
+        fixture.scope.add(sourceID: sourceID, url: fixture.sourceRoot, lease: .none)
+        let input = try fixture.input(memberships: [
+            kmgccc_player.ReferencedSourceMembership(sourceID: sourceID, relativePath: "song.ncm")
+        ], primarySourceID: sourceID)
+        let sourceFingerprint = try XCTUnwrap(input.fingerprint)
+        let staleID = UUID()
+        try Self.seedJournal(
+            record: NCMConversionRecord(
+                id: staleID,
+                sourceIdentity: sourceFingerprint.identity,
+                sourceFingerprint: sourceFingerprint,
+                sourceBookmarkData: Data(fixture.ncmURL.path.utf8),
+                parentDirectoryBookmarkData: nil,
+                sourcePath: fixture.ncmURL.path,
+                sourceMemberships: [],
+                sourcePrimaryID: nil,
+                expectedOutputPath: fixture.sourceRoot
+                    .appendingPathComponent(".kmgccc-ncm-\(staleID.uuidString).pending").path,
+                outputIdentity: nil,
+                outputFingerprint: nil,
+                outputLocator: nil,
+                outputFormat: nil,
+                outputMetadata: nil,
+                outputCoverData: nil,
+                trackID: nil,
+                state: .pending,
+                errorSummary: nil,
+                createdAt: Date(),
+                updatedAt: Date()
+            ),
+            paths: fixture.paths
+        )
+        let debrisDirectory = fixture.sourceRoot
+            .appendingPathComponent(".kmgccc-ncm-\(staleID.uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: debrisDirectory, withIntermediateDirectories: false)
+        try Data("partial".utf8).write(to: debrisDirectory.appendingPathComponent("song.mp3"))
+        try Data("placeholder".utf8).write(to: fixture.sourceRoot
+            .appendingPathComponent(".kmgccc-ncm-\(staleID.uuidString).pending"))
+
+        let recoveredIDs = try await fixture.registry.recoverStalePendingReservations()
+
+        XCTAssertEqual(recoveredIDs, [staleID])
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: fixture.sourceRoot.path)
+            .contains { $0.hasPrefix(".kmgccc-ncm-") })
+        let output = try await fixture.service.convert(input)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.result.audioFileURL.path))
+        let reloaded = NCMConversionRegistry(paths: fixture.paths)
+        let retired = try await reloaded.record(operationID: staleID)
+        XCTAssertEqual(retired?.state, .failed)
+        XCTAssertNotNil(retired?.errorSummary)
+    }
+
+    func testAllowManualRetryClearsPendingReservationAndUnblocksConversion() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let input = try fixture.input()
+        let sourceFingerprint = try XCTUnwrap(input.fingerprint)
+        let pendingID = UUID()
+        try await fixture.registry.reserve(NCMConversionRecord(
+            id: pendingID,
+            sourceIdentity: sourceFingerprint.identity,
+            sourceFingerprint: sourceFingerprint,
+            sourceBookmarkData: Data(fixture.ncmURL.path.utf8),
+            parentDirectoryBookmarkData: nil,
+            sourcePath: fixture.ncmURL.path,
+            sourceMemberships: [],
+            sourcePrimaryID: nil,
+            expectedOutputPath: fixture.sourceRoot
+                .appendingPathComponent(".kmgccc-ncm-\(pendingID.uuidString).pending").path,
+            outputIdentity: nil,
+            outputFingerprint: nil,
+            outputLocator: nil,
+            outputFormat: nil,
+            outputMetadata: nil,
+            outputCoverData: nil,
+            trackID: nil,
+            state: .pending,
+            errorSummary: nil,
+            createdAt: Date(),
+            updatedAt: Date()
+        ))
+
+        do {
+            _ = try await fixture.service.convert(input)
+            XCTFail("Expected active reservation")
+        } catch ReferencedNCMConversionError.activeReservation {}
+
+        let cleared = try await fixture.service.allowManualRetry(input)
+        XCTAssertEqual(cleared.map(ReferencedPhysicalIdentityKey.init), [
+            ReferencedPhysicalIdentityKey(sourceFingerprint)
+        ])
+        let clearedRecord = try await fixture.registry.record(operationID: pendingID)
+        XCTAssertEqual(clearedRecord?.state, .failed)
+
+        let output = try await fixture.service.convert(input)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.result.audioFileURL.path))
+    }
+
+    private static func seedJournal(
+        record: NCMConversionRecord,
+        paths: kmgccc_player.LibraryPaths
+    ) throws {
+        var journal = NCMConversionJournal()
+        journal.records = [record]
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(journal).write(to: paths.ncmConversionsURL, options: .atomic)
+    }
+
+    private static func makeSyntheticNCM(metadata: NCMMetadata) throws -> Data {
+        let coreKey = Data([
+            0x68, 0x7A, 0x48, 0x52, 0x41, 0x6D, 0x73, 0x6F,
+            0x35, 0x6B, 0x49, 0x6E, 0x62, 0x61, 0x78, 0x57
+        ])
+        let modifyKey = Data([
+            0x23, 0x31, 0x34, 0x6C, 0x6A, 0x6B, 0x5F, 0x21,
+            0x5C, 0x5D, 0x26, 0x30, 0x55, 0x3C, 0x27, 0x28
+        ])
+        let encryptedKey = try aesECBEncrypt(
+            Data("synthetic-ncm-key-data".utf8),
+            key: coreKey
+        ).map { $0 ^ 0x64 }
+        let metadataJSON = try JSONEncoder().encode(metadata)
+        let encryptedMetadata = try aesECBEncrypt(
+            Data("music:".utf8) + metadataJSON,
+            key: modifyKey
+        )
+        let encodedMetadata = Data("163 key(Don't modify):".utf8)
+            + encryptedMetadata.base64EncodedData()
+        let metadataBody = encodedMetadata.map { $0 ^ 0x63 }
+
+        var result = Data("CTENFDAM".utf8)
+        result.append(contentsOf: [0, 0])
+        appendUInt32LE(encryptedKey.count, to: &result)
+        result.append(contentsOf: encryptedKey)
+        appendUInt32LE(metadataBody.count, to: &result)
+        result.append(contentsOf: metadataBody)
+        return result
+    }
+
+    private static func aesECBEncrypt(_ data: Data, key: Data) throws -> Data {
+        var output = [UInt8](repeating: 0, count: data.count + kCCBlockSizeAES128)
+        var outputLength: size_t = 0
+        let keyBytes = Array(key)
+        let dataBytes = Array(data)
+        let status = keyBytes.withUnsafeBufferPointer { keyPointer in
+            dataBytes.withUnsafeBufferPointer { dataPointer in
+                CCCrypt(
+                    CCOperation(kCCEncrypt),
+                    CCAlgorithm(kCCAlgorithmAES),
+                    CCOptions(kCCOptionECBMode | kCCOptionPKCS7Padding),
+                    keyPointer.baseAddress,
+                    keyBytes.count,
+                    nil,
+                    dataPointer.baseAddress,
+                    dataBytes.count,
+                    &output,
+                    output.count,
+                    &outputLength
+                )
+            }
+        }
+        guard status == kCCSuccess else { throw CocoaError(.fileWriteUnknown) }
+        return Data(output.prefix(Int(outputLength)))
+    }
+
+    private static func appendUInt32LE(_ value: Int, to data: inout Data) {
+        var littleEndian = UInt32(value).littleEndian
+        withUnsafeBytes(of: &littleEndian) { data.append(contentsOf: $0) }
+    }
+}
+
+@MainActor
+private final class Fixture {
+    let root: URL
+    let paths: kmgccc_player.LibraryPaths
+    let sourceRoot: URL
+    let ncmURL: URL
+    let scope = ReferencedSourceScope()
+    let authorizer = NCMTestParentAuthorizer()
+    let resolver = NCMTestBookmarkResolver()
+    let registry: NCMConversionRegistry
+    let service: ReferencedNCMConversionService
+    let trackID = UUID()
+
+    init(
+        convert: ReferencedNCMConversionService.Convert? = nil,
+        commitOverride: ReferencedNCMConversionService.Commit? = nil
+    ) throws {
+        root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        paths = kmgccc_player.LibraryPaths(rootURL: root.appendingPathComponent("Library", isDirectory: true))
+        sourceRoot = root.appendingPathComponent("Source", isDirectory: true)
+        ncmURL = sourceRoot.appendingPathComponent("song.ncm")
+        try paths.createRequiredDirectories()
+        try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
+        try Data("ncm-source".utf8).write(to: ncmURL)
+        registry = NCMConversionRegistry(paths: paths)
+        service = ReferencedNCMConversionService(
+            paths: paths, sourceScope: scope, registry: registry, parentAuthorizer: authorizer,
+            bookmarkResolver: resolver,
+            convert: convert ?? { source, directory in try Self.makeResult(source: source, directory: directory) },
+            commitOverride: commitOverride,
+            validate: { url in
+                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                if size <= 0 { throw ReferencedNCMConversionError.invalidOutput }
+            }
+        )
+    }
+
+    func input(
+        url: URL? = nil,
+        memberships: [kmgccc_player.ReferencedSourceMembership] = [],
+        primarySourceID: UUID? = nil
+    ) throws -> kmgccc_player.ImportDiscoveredFile {
+        kmgccc_player.ImportDiscoveredFile(
+            url: url ?? ncmURL, memberships: memberships, primarySourceID: primarySourceID,
+            fingerprint: try kmgccc_player.ReferencedFileIdentityProvider().fingerprint(for: url ?? ncmURL)
+        )
+    }
+
+    nonisolated static func makeResult(source _: URL, directory: URL) throws -> NCMConversionResult {
+        let output = directory.appendingPathComponent("song.wav")
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
+        let file = try AVAudioFile(forWriting: output, settings: format.settings)
+        let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 441)!
+        buffer.frameLength = 441
+        try file.write(from: buffer)
+        return NCMConversionResult(
+            audioFileURL: output, format: .mp3,
+            metadata: NCMMetadata(
+                musicName: "Converted", artist: [["Artist"]], album: "Album",
+                albumPic: "", format: "mp3", bitrate: 320_000, duration: 10
+            ),
+            coverData: nil
+        )
+    }
+
+    func cleanup() {
+        scope.close()
+        try? FileManager.default.removeItem(at: root)
+    }
+}

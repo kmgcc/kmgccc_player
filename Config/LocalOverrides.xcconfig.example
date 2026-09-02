@@ -4,3 +4,15 @@
 BUILD_EXTENSION_HOOK =
 // BUILD_EXTENSION_MODE = auto
 // BUILD_EXTENSION_STRICT = NO
+
+// To create an isolated test-channel build, uncomment this complete block and
+// supply the matching test Sparkle Ed25519 public key. Never reuse production's key.
+// UPDATE_RELEASE_CHANNEL = test
+// TEST_UPDATE_PRIMARY_FEED_URL = https:/$()/player.kmgccc.cn/api/v1/updates/test/appcast.xml
+// TEST_UPDATE_FALLBACK_FEED_URL = https:/$()/kmgcc.github.io/kmgccc_player/test/appcast.xml
+// TEST_UPDATE_PUBLIC_ED_KEY = REPLACE_WITH_TEST_SPARKLE_PUBLIC_KEY
+// UPDATE_PRIMARY_FEED_URL = $(TEST_UPDATE_PRIMARY_FEED_URL)
+// UPDATE_FALLBACK_FEED_URL = $(TEST_UPDATE_FALLBACK_FEED_URL)
+// UPDATE_PUBLIC_ED_KEY = $(TEST_UPDATE_PUBLIC_ED_KEY)
+// APP_BUNDLE_IDENTIFIER = kmgccc.player.test
+// APP_DISPLAY_NAME = kmgccc_player Test

@@ -19,10 +19,6 @@ final class AMLLDBRawIndexCache: ObservableObject {
 
     private static let logger = Logger(subsystem: "com.kmgccc.player", category: "AMLLDB")
 
-    // MARK: - Singleton
-
-    static let shared = AMLLDBRawIndexCache()
-
     // MARK: - Published State
 
     /// Whether index is ready for search
@@ -48,9 +44,7 @@ final class AMLLDBRawIndexCache: ObservableObject {
     )!
 
     /// Local cache directory
-    private var cacheDirectory: URL {
-        StorageLocations.amllDBCacheURL
-    }
+    private let cacheDirectory: URL
 
     /// Local index file path
     private var localIndexURL: URL {
@@ -76,7 +70,8 @@ final class AMLLDBRawIndexCache: ObservableObject {
     /// Background update task
     private var updateTask: Task<Void, Never>?
 
-    private init() {
+    init(cacheDirectory: URL) {
+        self.cacheDirectory = cacheDirectory
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 60
         config.timeoutIntervalForResource = 300
@@ -321,6 +316,11 @@ final class AMLLDBRawIndexCache: ObservableObject {
 
     // MARK: - Cache Management
 
+    func close() {
+        updateTask?.cancel()
+        updateTask = nil
+    }
+
     /// Clear local cache
     func clearCache() throws {
         if FileManager.default.fileExists(atPath: localIndexURL.path) {
@@ -329,10 +329,6 @@ final class AMLLDBRawIndexCache: ObservableObject {
         if FileManager.default.fileExists(atPath: lastUpdateFileURL.path) {
             try FileManager.default.removeItem(at: lastUpdateFileURL)
         }
-        if FileManager.default.fileExists(atPath: StorageLocations.legacyAMLLDBCacheURL.path) {
-            try? FileManager.default.removeItem(at: StorageLocations.legacyAMLLDBCacheURL)
-        }
-
         entries = []
         entryCount = 0
         isReady = false

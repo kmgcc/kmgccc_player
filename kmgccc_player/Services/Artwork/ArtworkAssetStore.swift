@@ -9,6 +9,41 @@ import AppKit
 import Foundation
 import ImageIO
 
+nonisolated private final class ArtworkOperationState<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isFinished = false
+    private var result: Value?
+    private var continuation: CheckedContinuation<Value?, Never>?
+
+    func wait() async -> Value? {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if isFinished {
+                let result = self.result
+                lock.unlock()
+                continuation.resume(returning: result)
+            } else {
+                self.continuation = continuation
+                lock.unlock()
+            }
+        }
+    }
+
+    func finish(_ result: Value?) {
+        lock.lock()
+        guard !isFinished else {
+            lock.unlock()
+            return
+        }
+        isFinished = true
+        self.result = result
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: result)
+    }
+}
+
 actor ArtworkAssetStore {
     static let shared = ArtworkAssetStore()
 
@@ -27,37 +62,29 @@ actor ArtworkAssetStore {
         cache.totalCostLimit = 64 * 1024 * 1024
         return cache
     }()
-    private var inProgressKeys: Set<String> = []
-    private var waitingContinuations: [String: [CheckedContinuation<ArtworkAssetSnapshot?, Never>]] = [:]
-    private var fullImageInProgressKeys: Set<String> = []
-    private var fullImageWaitingContinuations: [String: [CheckedContinuation<NSImage?, Never>]] = [:]
+    private var inProgressTokens: [String: UUID] = [:]
+    private var waitingContinuations: [String: [UUID: CheckedContinuation<ArtworkAssetSnapshot?, Never>]] = [:]
+    private var metadataGeneration: UInt64 = 0
+    private var fullImageInProgressTokens: [String: UUID] = [:]
+    private var fullImageWaitingContinuations: [String: [UUID: CheckedContinuation<NSImage?, Never>]] = [:]
     private var fullImageGeneration: UInt64 = 0
     
     func clearCache() {
         cache.removeAllObjects()
         fullImageCache.removeAllObjects()
-        inProgressKeys.removeAll()
-        waitingContinuations.removeAll()
-        fullImageInProgressKeys.removeAll()
+        metadataGeneration &+= 1
+        inProgressTokens.removeAll()
+        resumeAllMetadataWaiters(returning: nil)
         fullImageGeneration &+= 1
-        for waiters in fullImageWaitingContinuations.values {
-            for continuation in waiters {
-                continuation.resume(returning: nil)
-            }
-        }
-        fullImageWaitingContinuations.removeAll()
+        fullImageInProgressTokens.removeAll()
+        resumeAllFullImageWaiters(returning: nil)
     }
 
     func purgeHydratedImages() {
         fullImageGeneration &+= 1
         fullImageCache.removeAllObjects()
-        fullImageInProgressKeys.removeAll()
-        for waiters in fullImageWaitingContinuations.values {
-            for continuation in waiters {
-                continuation.resume(returning: nil)
-            }
-        }
-        fullImageWaitingContinuations.removeAll()
+        fullImageInProgressTokens.removeAll()
+        resumeAllFullImageWaiters(returning: nil)
     }
 
     func clearTrackDeletionResidue() {
@@ -144,25 +171,27 @@ actor ArtworkAssetStore {
             return cached
         }
         
-        if inProgressKeys.contains(key) {
-            return await withCheckedContinuation { continuation in
-                waitingContinuations[key, default: []].append(continuation)
-            }
+        if inProgressTokens[key] != nil {
+            return await waitForMetadataResult(for: key)
         }
         
-        inProgressKeys.insert(key)
-        let result = await extract(artworkData, artworkChecksum)
-        
-        if let snapshot = result {
-            cache(snapshot)
+        let operationToken = UUID()
+        inProgressTokens[key] = operationToken
+        let generation = metadataGeneration
+        var result: ArtworkAssetSnapshot?
+        defer {
+            finishMetadataExtraction(
+                for: key,
+                operationToken: operationToken,
+                generation: generation,
+                result: result
+            )
         }
-        
-        inProgressKeys.remove(key)
-        
-        if let waiters = waitingContinuations.removeValue(forKey: key) {
-            for continuation in waiters {
-                continuation.resume(returning: result)
-            }
+
+        result = await Self.runBounded(
+            timeoutNanoseconds: 15_000_000_000
+        ) {
+            await extract(artworkData, artworkChecksum)
         }
         
         return result
@@ -182,38 +211,161 @@ actor ArtworkAssetStore {
             return snapshot.replacing(fullImage: cachedFullImage)
         }
 
-        if fullImageInProgressKeys.contains(hydratedKey) {
-            let image = await withCheckedContinuation { continuation in
-                fullImageWaitingContinuations[hydratedKey, default: []].append(continuation)
-            }
+        if fullImageInProgressTokens[hydratedKey] != nil {
+            let image = await waitForFullImage(for: hydratedKey)
             return snapshot.replacing(fullImage: image)
         }
 
-        fullImageInProgressKeys.insert(hydratedKey)
+        let operationToken = UUID()
+        fullImageInProgressTokens[hydratedKey] = operationToken
         let generation = fullImageGeneration
-        let fullImage = await Task.detached(priority: .utility) {
+        var fullImage: NSImage?
+        defer {
+            finishFullImageExtraction(
+                for: hydratedKey,
+                operationToken: operationToken,
+                cacheKey: key,
+                generation: generation,
+                result: fullImage
+            )
+        }
+
+        fullImage = await Self.runBounded(timeoutNanoseconds: 10_000_000_000) {
             Self.downsampledImage(
                 data: artworkData,
                 maxPixelSize: max(1, fullImageMaxPixelSize)
             )
-        }.value
-
-        if generation == fullImageGeneration, let fullImage {
-            fullImageCache.setObject(
-                fullImage,
-                forKey: key,
-                cost: Self.estimatedCost(for: fullImage)
-            )
-        }
-
-        fullImageInProgressKeys.remove(hydratedKey)
-        if let waiters = fullImageWaitingContinuations.removeValue(forKey: hydratedKey) {
-            for continuation in waiters {
-                continuation.resume(returning: fullImage)
-            }
         }
 
         return snapshot.replacing(fullImage: fullImage)
+    }
+
+    private func waitForMetadataResult(for key: String) async -> ArtworkAssetSnapshot? {
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                waitingContinuations[key, default: [:]][waiterID] = continuation
+            }
+        } onCancel: {
+            Task { [weak self] in
+                await self?.cancelMetadataWaiter(for: key, waiterID: waiterID)
+            }
+        }
+    }
+
+    private func waitForFullImage(for key: String) async -> NSImage? {
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                fullImageWaitingContinuations[key, default: [:]][waiterID] = continuation
+            }
+        } onCancel: {
+            Task { [weak self] in
+                await self?.cancelFullImageWaiter(for: key, waiterID: waiterID)
+            }
+        }
+    }
+
+    private func finishMetadataExtraction(
+        for key: String,
+        operationToken: UUID,
+        generation: UInt64,
+        result: ArtworkAssetSnapshot?
+    ) {
+        guard inProgressTokens[key] == operationToken else { return }
+        let finalResult = generation == metadataGeneration ? result : nil
+        if let finalResult {
+            cache(finalResult)
+        }
+        inProgressTokens.removeValue(forKey: key)
+        resumeMetadataWaiters(for: key, returning: finalResult)
+    }
+
+    private func finishFullImageExtraction(
+        for key: String,
+        operationToken: UUID,
+        cacheKey: NSString,
+        generation: UInt64,
+        result: NSImage?
+    ) {
+        guard fullImageInProgressTokens[key] == operationToken else { return }
+        let finalResult = generation == fullImageGeneration ? result : nil
+        if let finalResult {
+            fullImageCache.setObject(
+                finalResult,
+                forKey: cacheKey,
+                cost: Self.estimatedCost(for: finalResult)
+            )
+        }
+        fullImageInProgressTokens.removeValue(forKey: key)
+        resumeFullImageWaiters(for: key, returning: finalResult)
+    }
+
+    private func cancelMetadataWaiter(for key: String, waiterID: UUID) {
+        guard var waiters = waitingContinuations[key],
+              let continuation = waiters.removeValue(forKey: waiterID)
+        else { return }
+
+        if waiters.isEmpty {
+            waitingContinuations.removeValue(forKey: key)
+        } else {
+            waitingContinuations[key] = waiters
+        }
+        continuation.resume(returning: nil)
+    }
+
+    private func cancelFullImageWaiter(for key: String, waiterID: UUID) {
+        guard var waiters = fullImageWaitingContinuations[key],
+              let continuation = waiters.removeValue(forKey: waiterID)
+        else { return }
+
+        if waiters.isEmpty {
+            fullImageWaitingContinuations.removeValue(forKey: key)
+        } else {
+            fullImageWaitingContinuations[key] = waiters
+        }
+        continuation.resume(returning: nil)
+    }
+
+    private func resumeMetadataWaiters(
+        for key: String,
+        returning result: ArtworkAssetSnapshot?
+    ) {
+        guard let waiters = waitingContinuations.removeValue(forKey: key) else { return }
+        for continuation in waiters.values {
+            continuation.resume(returning: result)
+        }
+    }
+
+    private func resumeAllMetadataWaiters(returning result: ArtworkAssetSnapshot?) {
+        let waiters = waitingContinuations.values.flatMap { $0.values }
+        waitingContinuations.removeAll()
+        for continuation in waiters {
+            continuation.resume(returning: result)
+        }
+    }
+
+    private func resumeFullImageWaiters(for key: String, returning result: NSImage?) {
+        guard let waiters = fullImageWaitingContinuations.removeValue(forKey: key) else { return }
+        for continuation in waiters.values {
+            continuation.resume(returning: result)
+        }
+    }
+
+    private func resumeAllFullImageWaiters(returning result: NSImage?) {
+        let waiters = fullImageWaitingContinuations.values.flatMap { $0.values }
+        fullImageWaitingContinuations.removeAll()
+        for continuation in waiters {
+            continuation.resume(returning: result)
+        }
     }
 
     private func snapshotMetadata(
@@ -226,10 +378,38 @@ actor ArtworkAssetStore {
             artworkData: artworkData,
             artworkChecksum: artworkChecksum
         ) { data, checksum in
-            await Task.detached(priority: .utility) {
-                Self.makeSnapshot(trackID: trackID, artworkData: data, checksum: checksum)
-            }.value
+            Self.makeSnapshot(trackID: trackID, artworkData: data, checksum: checksum)
         }
+    }
+
+    private nonisolated static func runBounded<Value: Sendable>(
+        timeoutNanoseconds: UInt64,
+        operation: @escaping @Sendable () async -> Value?
+    ) async -> Value? {
+        let state = ArtworkOperationState<Value>()
+        let operationTask = Task.detached(priority: .utility) {
+            state.finish(await operation())
+        }
+        let timeoutTask = Task.detached(priority: .utility) {
+            do {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            state.finish(nil)
+        }
+
+        let result = await withTaskCancellationHandler {
+            await state.wait()
+        } onCancel: {
+            operationTask.cancel()
+            timeoutTask.cancel()
+            state.finish(nil)
+        }
+        operationTask.cancel()
+        timeoutTask.cancel()
+        return result
     }
     
     private nonisolated static func makeSnapshot(

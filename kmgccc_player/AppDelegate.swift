@@ -11,6 +11,9 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var shared: AppDelegate?
     static var launchMainWindowHandler: (@MainActor () -> Void)?
+    static var applicationShouldTerminateHandler:
+        ((@escaping @MainActor @Sendable () -> Void) -> Void)?
+    static var shouldCancelTerminationForPendingUpdateHandler: (@MainActor () -> Bool)?
     static var applicationWillTerminateHandler: (@MainActor () -> Void)?
 
     static func showMainWindow() {
@@ -22,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let dockController = DockController()
     private weak var playbackCoordinator: PlaybackCoordinator?
     private var spacebarMonitor: Any?
+    private var terminationReplyPending = false
 
     override init() {
         super.init()
@@ -43,6 +47,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         PaneLayoutTrace.log("AppDelegate.applicationWillTerminate")
         Self.applicationWillTerminateHandler?()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if Self.shouldCancelTerminationForPendingUpdateHandler?() == true {
+            Log.info("[Lifecycle] Cancelled ordinary quit while Sparkle install reply is pending", category: .ui)
+            return .terminateCancel
+        }
+        guard let handler = Self.applicationShouldTerminateHandler else {
+            return .terminateNow
+        }
+        guard !terminationReplyPending else {
+            return .terminateLater
+        }
+
+        terminationReplyPending = true
+        handler { [weak self, weak sender] in
+            Task { @MainActor in
+                self?.terminationReplyPending = false
+                sender?.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        return .terminateLater
     }
 
     func configureDockPlayback(playbackCoordinator: PlaybackCoordinator) {

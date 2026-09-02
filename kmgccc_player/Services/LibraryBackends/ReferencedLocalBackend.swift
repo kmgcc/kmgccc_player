@@ -1,0 +1,620 @@
+//
+//  ReferencedLocalBackend.swift
+//  kmgccc_player
+//
+
+import Foundation
+
+@MainActor
+final class ReferencedLocalBackend: LibraryStorageBackend {
+    let mode: MusicLibraryMode = .referenced
+    private(set) var lastPreparedInputPlan: ImportInputPlan?
+    private let paths: LibraryPaths
+    private let sourceStore: ReferencedSourceStore
+    private let sourceScope: ReferencedSourceScope
+    private let playlistMembershipStore: ReferencedPlaylistMembershipStore
+    private let bookmarkResolver: any BookmarkResolving
+    private let requiresSecurityScope: Bool
+    private var selectionLeases: [URL: SecurityScopedResourceLease] = [:]
+    /// File sources created during the latest `prepareInputs` batch. Pruned
+    /// when their file does not survive the import pipeline.
+    private var batchCreatedFileSources: [(id: UUID, path: String)] = []
+    /// New source descriptors stay provisional until the import reaches its
+    /// final commit point. This keeps cancelled or failed planning read-only.
+    private var batchPendingSources: [UUID: ReferencedSourceDescriptor] = [:]
+    private var batchCommittedSourceIDs: Set<UUID> = []
+
+    init(
+        paths: LibraryPaths,
+        sourceStore: ReferencedSourceStore,
+        sourceScope: ReferencedSourceScope,
+        playlistMembershipStore: ReferencedPlaylistMembershipStore? = nil,
+        bookmarkResolver: any BookmarkResolving = SystemBookmarkResolver(),
+        requiresSecurityScope: Bool = false
+    ) {
+        self.paths = paths
+        self.sourceStore = sourceStore
+        self.sourceScope = sourceScope
+        self.playlistMembershipStore = playlistMembershipStore
+            ?? ReferencedPlaylistMembershipStore(paths: paths)
+        self.bookmarkResolver = bookmarkResolver
+        self.requiresSecurityScope = requiresSecurityScope
+    }
+
+    func prepareInputs(_ selectedURLs: [URL]) async -> ImportInputPlan {
+        batchCreatedFileSources = []
+        batchPendingSources = [:]
+        batchCommittedSourceIDs = []
+        var sourceIDs: [URL: UUID] = [:]
+        var sources: [ImportSourceSelection] = []
+        var failures: [ImportInputFailure] = []
+        let existingDescriptors: [ReferencedSourceDescriptor]
+        do {
+            existingDescriptors = try await sourceStore.loadAll()
+        } catch {
+            let plan = ImportInputPlan(
+                files: [],
+                directorySources: [],
+                failures: [.init(url: paths.sourcesRootURL, message: error.localizedDescription)]
+            )
+            lastPreparedInputPlan = plan
+            return plan
+        }
+        var existingByCanonicalPath: [String: ReferencedSourceDescriptor] = [:]
+        var directoryRootPaths: [String] = []
+        var directorySourceRoots: [String: (url: URL, id: UUID)] = [:]
+        // Session-start authorization can legitimately fail (source volume
+        // not yet mounted, transient denial, stale refresh) and nothing else
+        // retries it within the session. Re-arm persisted directory sources
+        // before the selection loop so folder inheritance and NCM
+        // parent-directory checks see them; failures are non-fatal because
+        // the loop below keeps its per-file fallbacks. File sources are
+        // skipped: they never cover other files, so re-arming them would
+        // only mass-start access.
+        let hydrationIssues = await sourceScope.authorizeMissing(
+            descriptors: existingDescriptors.filter { $0.mode == .directory },
+            store: sourceStore,
+            bookmarkResolver: bookmarkResolver,
+            requiresSecurityScope: requiresSecurityScope
+        )
+        if !hydrationIssues.isEmpty {
+            Log.warning(
+                "[ReferencedSource] deferred directory authorization retried, unavailable count=\(hydrationIssues.count)",
+                category: .library
+            )
+        }
+        for descriptor in existingDescriptors {
+            if descriptor.mode == .directory {
+                // Coverage of files by directory sources must not depend on
+                // bookmark resolution alone: a stale or unresolvable bookmark
+                // would otherwise spawn a duplicate file source.
+                let lastKnownURL = URL(fileURLWithPath: descriptor.lastKnownPath, isDirectory: true)
+                let lastKnownCanonical = canonicalPath(lastKnownURL)
+                directoryRootPaths.append(lastKnownCanonical)
+                existingByCanonicalPath[lastKnownCanonical] = descriptor
+                directorySourceRoots[lastKnownCanonical] = (lastKnownURL, descriptor.id)
+                if let resolved = try? bookmarkResolver.resolve(descriptor.rootBookmarkData) {
+                    let canonical = canonicalPath(resolved.url)
+                    existingByCanonicalPath[canonical] = descriptor
+                    directorySourceRoots[canonical] = (resolved.url, descriptor.id)
+                    if canonical != lastKnownCanonical {
+                        directoryRootPaths.append(canonical)
+                    }
+                }
+            } else if let resolved = try? bookmarkResolver.resolve(descriptor.rootBookmarkData) {
+                existingByCanonicalPath[canonicalPath(resolved.url)] = descriptor
+            }
+        }
+        var seenSelectionPaths = Set<String>()
+        var readableSelectionPaths = Set<String>()
+        // Directories first so a file inside a same-batch directory selection
+        // is recognized as covered by that directory source.
+        let uniqueSelections = selectedURLs.filter { selected in
+            seenSelectionPaths.insert(canonicalPath(selected)).inserted
+        }.sorted { lhs, rhs in
+            (lhs.hasDirectoryPath ? 0 : 1) < (rhs.hasDirectoryPath ? 0 : 1)
+        }
+
+        // Authorize the smallest set of parent directories up front. Child
+        // leases are handed to individual file sources below, but they all
+        // share this pool so Finder presents one prompt per parent, not one
+        // prompt per file.
+        let groupedAuthorizationRoots = SecurityScopeAuthorization
+            .groupedRoots(for: uniqueSelections)
+            .filter { root in
+                let rootPath = canonicalPath(root)
+                return !directoryRootPaths.contains {
+                    rootPath == $0 || rootPath.hasPrefix($0 + "/")
+                }
+            }
+        var authorizationPools: [String: SecurityScopedResourceLeasePool] = [:]
+        for root in groupedAuthorizationRoots {
+            let didStart = bookmarkResolver.startAccessing(root)
+            guard didStart else { continue }
+            let lease = SecurityScopedResourceLease { [bookmarkResolver] in
+                bookmarkResolver.stopAccessing(root)
+            }
+            authorizationPools[canonicalPath(root)] = SecurityScopedResourceLeasePool(rootLease: lease)
+        }
+
+        for selected in uniqueSelections {
+            let canonical = canonicalPath(selected)
+            let isDirectory = selected.hasDirectoryPath
+
+            if isDirectory,
+               let existingDirectory = directorySourceRoots[canonical],
+               let existingDescriptor = existingDescriptors.first(where: { $0.id == existingDirectory.id }) {
+                sourceIDs[selected] = existingDirectory.id
+                readableSelectionPaths.insert(canonical)
+                // Keep an existing source in the returned plan as well. The
+                // scanner only needs the ID mapping, but callers use the plan
+                // to present the selected source and to carry its root into
+                // setup/reimport bookkeeping.
+                sources.append(.init(source: existingDescriptor, rootURL: selected))
+                continue
+            }
+
+            // A file chosen from an already-known directory source must
+            // inherit that source. Starting access on the child file can
+            // fail even while the folder is readable, and it also loses the
+            // source membership needed by automatic/NCM imports. Inheritance
+            // is coverage-based rather than authorization-based: if the
+            // scope root is still missing (hydration failed above), the
+            // scanner's own readability checks decide the outcome instead of
+            // per-file access attempts.
+            if !isDirectory,
+               let covered = directorySourceRoots
+                   .filter({ path, _ in canonical == path || canonical.hasPrefix(path + "/") })
+                   .max(by: { lhs, rhs in lhs.key.count < rhs.key.count }) {
+                let rootURL = sourceScope.authorizedRoots[covered.value.id]?.url ?? covered.value.url
+                sourceIDs[rootURL] = covered.value.id
+                readableSelectionPaths.insert(canonical)
+                continue
+            }
+
+            let selectedPath = canonicalPath(selected)
+            let authorizationPool = groupedAuthorizationRoots
+                .first { root in
+                    let rootPath = canonicalPath(root)
+                    return selectedPath == rootPath || selectedPath.hasPrefix(rootPath + "/")
+                }
+                .flatMap { authorizationPools[canonicalPath($0)] }
+            if let authorizationPool {
+                selectionLeases[selected] = authorizationPool.makeLease()
+            } else if requiresSecurityScope,
+                      uniqueSelections.count == 1 {
+                // A single stale picker URL can still be recovered by its
+                // file-scoped token. For a multi-file selection, never fall
+                // back to one authorization attempt per file: a denied parent
+                // is reported for the whole group instead.
+                guard bookmarkResolver.startAccessing(selected) else {
+                    failures.append(.init(url: selected, message: "Permission denied"))
+                    continue
+                }
+                selectionLeases[selected] = SecurityScopedResourceLease { [bookmarkResolver] in
+                    bookmarkResolver.stopAccessing(selected)
+                }
+            } else if requiresSecurityScope,
+                      groupedAuthorizationRoots.contains(where: { root in
+                          let rootPath = canonicalPath(root)
+                          return selectedPath == rootPath || selectedPath.hasPrefix(rootPath + "/")
+                      }) {
+                failures.append(.init(url: selected, message: "Permission denied"))
+                continue
+            } else {
+                selectionLeases[selected] = SecurityScopedResourceLease.none
+            }
+
+            // Single audio files become first-class file sources so they show
+            // up in the source list and can be monitored and removed.
+            guard isDirectory || AudioFormatSupport.importableExtensions.contains(selected.pathExtension.lowercased()) else { continue }
+            readableSelectionPaths.insert(canonical)
+            if !isDirectory,
+               directoryRootPaths.contains(where: { canonical == $0 || canonical.hasPrefix($0 + "/") }) {
+                // Already managed by a directory source; no separate file
+                // source is created for it.
+                continue
+            }
+            do {
+                if let existing = existingByCanonicalPath[canonical] {
+                    sourceIDs[selected] = existing.id
+                    sources.append(.init(source: existing, rootURL: selected))
+                    if let lease = selectionLeases.removeValue(forKey: selected) {
+                        sourceScope.add(sourceID: existing.id, url: selected, lease: lease)
+                    }
+                    continue
+                }
+                let id = UUID()
+                let bookmark = try bookmarkResolver.refreshBookmark(for: selected)
+                let descriptor = ReferencedSourceDescriptor(
+                    id: id,
+                    mode: isDirectory ? .directory : .file,
+                    rootBookmarkData: bookmark,
+                    lastKnownPath: selected.path,
+                    displayName: selected.lastPathComponent
+                )
+                batchPendingSources[id] = descriptor
+                existingByCanonicalPath[canonical] = descriptor
+                if isDirectory {
+                    directoryRootPaths.append(canonical)
+                    directorySourceRoots[canonical] = (selected, id)
+                } else {
+                    batchCreatedFileSources.append((id: id, path: canonical))
+                }
+                sourceIDs[selected] = id
+                sources.append(.init(source: descriptor, rootURL: selected))
+                if let lease = selectionLeases.removeValue(forKey: selected) {
+                    sourceScope.add(sourceID: id, url: selected, lease: lease)
+                }
+            } catch {
+                failures.append(.init(url: selected, message: error.localizedDescription))
+            }
+        }
+
+        let readableSelections = uniqueSelections.filter { selected in
+            readableSelectionPaths.contains(canonicalPath(selected))
+        }
+        let scanned = await ImportInputScanner.scan(
+            selectedURLs: readableSelections,
+            directorySources: sourceIDs
+        )
+        let plan = ImportInputPlan(
+            files: scanned.files,
+            directorySources: sources,
+            failures: failures + scanned.failures
+        )
+        lastPreparedInputPlan = plan
+        return plan
+    }
+
+    func commitPreparedSources() async throws {
+        guard !batchPendingSources.isEmpty else { return }
+        let pending = batchPendingSources.values.sorted { $0.id.uuidString < $1.id.uuidString }
+        var committed: [UUID] = []
+        do {
+            for descriptor in pending {
+                try await sourceStore.save(descriptor)
+                committed.append(descriptor.id)
+            }
+            batchCommittedSourceIDs.formUnion(committed)
+            batchPendingSources.removeAll()
+        } catch {
+            for sourceID in committed {
+                do {
+                    try await sourceStore.remove(id: sourceID)
+                } catch {
+                    Log.error(
+                        "[ReferencedBackend] failed to roll back partially committed source \(sourceID): \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
+            }
+            for descriptor in pending {
+                sourceScope.remove(sourceID: descriptor.id)
+            }
+            batchCreatedFileSources.removeAll { entry in
+                pending.contains { $0.id == entry.id }
+            }
+            throw error
+        }
+    }
+
+    func rollbackPreparedSources() async {
+        let committed = batchCommittedSourceIDs
+        batchCommittedSourceIDs.removeAll()
+        for sourceID in committed.sorted(by: { $0.uuidString < $1.uuidString }) {
+            do {
+                try await sourceStore.remove(id: sourceID)
+            } catch {
+                Log.error(
+                    "[ReferencedBackend] failed to roll back source \(sourceID): \(error.localizedDescription)",
+                    category: .library
+                )
+            }
+            sourceScope.remove(sourceID: sourceID)
+        }
+        for descriptor in batchPendingSources.values {
+            sourceScope.remove(sourceID: descriptor.id)
+        }
+        batchPendingSources.removeAll()
+        batchCreatedFileSources.removeAll()
+    }
+
+    private func canonicalPath(_ url: URL) -> String {
+        url.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    func pruneUnimportedFileSources(importedURLs: Set<String>, importedSourceIDs: Set<UUID>) async {
+        guard !batchCreatedFileSources.isEmpty else { return }
+        let created = batchCreatedFileSources
+        batchCreatedFileSources = []
+        var removedIDs = Set<UUID>()
+        for entry in created where !importedURLs.contains(entry.path) && !importedSourceIDs.contains(entry.id) {
+            do {
+                try await sourceStore.remove(id: entry.id)
+                sourceScope.remove(sourceID: entry.id)
+                removedIDs.insert(entry.id)
+            } catch {
+                Log.warning(
+                    "[ReferencedSource] failed to prune unimported file source \(entry.id): \(error)",
+                    category: .library
+                )
+            }
+        }
+        guard !removedIDs.isEmpty, let plan = lastPreparedInputPlan else { return }
+        lastPreparedInputPlan = ImportInputPlan(
+            files: plan.files,
+            directorySources: plan.directorySources.filter { !removedIDs.contains($0.source.id) },
+            failures: plan.failures
+        )
+    }
+
+    func makePlacement(
+        for file: ImportDiscoveredFile,
+        trackID _: UUID,
+        stagingDirectoryURL _: URL
+    ) async throws -> ImportPlacement {
+        guard file.url.pathExtension.lowercased() != "ncm" else {
+            throw LibraryBackendError.unsupportedReferencedNCM
+        }
+        let bookmark: Data
+        do {
+            bookmark = try bookmarkResolver.refreshBookmark(for: file.url)
+        } catch {
+            throw LibraryBackendError.bookmarkCreationFailed
+        }
+        return .referenced(ReferencedFileLocator(
+            fileBookmarkData: bookmark,
+            sourceMemberships: file.memberships,
+            primarySourceID: file.primarySourceID,
+            lastKnownPath: file.url.path,
+            fingerprint: file.fingerprint
+        ))
+    }
+
+    func validate(_ placement: ImportPlacement) throws {
+        guard placement.storageKind == .referenced else {
+            throw LibraryBackendError.modeMismatch(expected: mode, actual: placement.storageKind)
+        }
+    }
+
+    func bindSourcesToPlaylist(
+        _ sourceIDs: Set<UUID>,
+        playlistID: UUID
+    ) async throws -> [UUID: UUID] {
+        try await ensureSourcePlaylistBindings(
+            sourceIDs,
+            playlistID: playlistID
+        ).bindingsBySourceID
+    }
+
+    private func ensureSourcePlaylistBindings(
+        _ sourceIDs: Set<UUID>,
+        playlistID: UUID
+    ) async throws -> (
+        bindingsBySourceID: [UUID: UUID],
+        createdBindings: [(sourceID: UUID, bindingID: UUID)]
+    ) {
+        var result: [UUID: UUID] = [:]
+        var newlyCreatedBindings: [(sourceID: UUID, bindingID: UUID)] = []
+        do {
+            for sourceID in sourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
+                let ensured = try await sourceStore.ensurePlaylistBindingWithCreation(
+                    sourceID: sourceID,
+                    playlistID: playlistID
+                )
+                if ensured.didCreate {
+                    newlyCreatedBindings.append((sourceID, ensured.binding.id))
+                }
+                result[sourceID] = ensured.binding.id
+            }
+            return (result, newlyCreatedBindings)
+        } catch {
+            for created in newlyCreatedBindings.reversed() {
+                do {
+                    try await sourceStore.removePlaylistBinding(
+                        sourceID: created.sourceID,
+                        bindingID: created.bindingID
+                    )
+                } catch {
+                    Log.error(
+                        "[ReferencedBackend] failed to roll back playlist binding source=\(created.sourceID.uuidString) binding=\(created.bindingID.uuidString): \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
+            }
+            throw error
+        }
+    }
+
+    func commitPlaylistImportSourceEffects(
+        tracks: [Track],
+        sourceIDs: Set<UUID>,
+        playlistID: UUID,
+        commitPlaylist: @MainActor () async throws -> Void
+    ) async throws {
+        let membershipSnapshot = try await playlistMembershipStore.snapshot()
+        let bindingTransaction = try await ensureSourcePlaylistBindings(
+            sourceIDs,
+            playlistID: playlistID
+        )
+        let bindingsBySourceID = bindingTransaction.bindingsBySourceID
+
+        do {
+            var entries: [(playlistID: UUID, trackID: UUID, bindingID: UUID)] = []
+            for track in tracks {
+                guard case let .referenced(locator) = track.mediaLocator else { continue }
+                for sourceID in Set(locator.allSourceMemberships.map(\.sourceID)) {
+                    guard let bindingID = bindingsBySourceID[sourceID] else { continue }
+                    entries.append((playlistID, track.id, bindingID))
+                }
+            }
+            try await playlistMembershipStore.recordSourceContributions(entries)
+            try await commitPlaylist()
+        } catch {
+            do {
+                try await playlistMembershipStore.restore(membershipSnapshot)
+            } catch {
+                Log.error(
+                    "[ReferencedBackend] failed to restore memberships after import commit failure: \(error.localizedDescription)",
+                    category: .library
+                )
+            }
+            for created in bindingTransaction.createdBindings.reversed() {
+                do {
+                    try await sourceStore.removePlaylistBinding(
+                        sourceID: created.sourceID,
+                        bindingID: created.bindingID
+                    )
+                } catch {
+                    Log.error(
+                        "[ReferencedBackend] failed to roll back import binding source=\(created.sourceID.uuidString) binding=\(created.bindingID.uuidString): \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
+            }
+            throw error
+        }
+    }
+
+    func commitManualPlaylistAddition(
+        playlistID: UUID,
+        trackIDs: [UUID],
+        commitPlaylist: @MainActor () async throws -> Void
+    ) async throws {
+        let snapshot = try await playlistMembershipStore.snapshot()
+        do {
+            try await playlistMembershipStore.recordManualAddition(
+                playlistID: playlistID,
+                trackIDs: trackIDs
+            )
+            try await commitPlaylist()
+        } catch {
+            do {
+                try await playlistMembershipStore.restore(snapshot)
+            } catch {
+                Log.error(
+                    "[ReferencedBackend] failed to restore memberships after manual addition failure: \(error.localizedDescription)",
+                    category: .library
+                )
+            }
+            throw error
+        }
+    }
+
+    /// Compatibility entry point for callers from the pre-transaction API.
+    /// New code must use commitManualPlaylistAddition so playlist and
+    /// membership sidecars share one compensation boundary.
+    @available(*, deprecated, message: "Use commitManualPlaylistAddition(playlistID:trackIDs:commitPlaylist:)")
+    func recordManualPlaylistAddition(playlistID: UUID, trackIDs: [UUID]) async throws {
+        try await playlistMembershipStore.recordManualAddition(
+            playlistID: playlistID,
+            trackIDs: trackIDs
+        )
+    }
+
+    func commitManualPlaylistRemoval(
+        playlistID: UUID,
+        trackIDs: [UUID],
+        commitPlaylist: @MainActor () async throws -> Void
+    ) async throws {
+        let bindingIDs = try await sourceStore.allBindings()
+            .filter { $0.binding.playlistID == playlistID }
+            .map { $0.binding.id }
+        let snapshot = try await playlistMembershipStore.snapshot()
+        do {
+            try await playlistMembershipStore.recordManualRemoval(
+                playlistID: playlistID,
+                trackIDs: trackIDs,
+                bindingIDs: bindingIDs
+            )
+            try await commitPlaylist()
+        } catch {
+            do {
+                try await playlistMembershipStore.restore(snapshot)
+            } catch {
+                Log.error(
+                    "[ReferencedBackend] failed to restore memberships after manual removal failure: \(error.localizedDescription)",
+                    category: .library
+                )
+            }
+            throw error
+        }
+    }
+
+    /// Compatibility entry point for callers from the pre-transaction API.
+    @available(*, deprecated, message: "Use commitManualPlaylistRemoval(playlistID:trackIDs:commitPlaylist:)")
+    func recordManualPlaylistRemoval(playlistID: UUID, trackIDs: [UUID]) async throws {
+        let bindingIDs = try await sourceStore.allBindings()
+            .filter { $0.binding.playlistID == playlistID }
+            .map { $0.binding.id }
+        try await playlistMembershipStore.recordManualRemoval(
+            playlistID: playlistID,
+            trackIDs: trackIDs,
+            bindingIDs: bindingIDs
+        )
+    }
+
+    func commitPlaylistDeletion(
+        playlistID: UUID,
+        commitPlaylist: @MainActor () async throws -> Void
+    ) async throws {
+        // Both projections can recreate a deleted playlist during the next
+        // source scan, so take their durable snapshots before removing either
+        // one. The playlist sidecar is the final commit step; if it fails the
+        // source graph is restored before the error reaches the UI.
+        let membershipSnapshot = try await playlistMembershipStore.snapshot()
+        let sourceSnapshots = try await sourceStore.loadAll().filter { descriptor in
+            descriptor.playlistBindings.contains { $0.playlistID == playlistID }
+        }
+        do {
+            try await playlistMembershipStore.removePlaylist(playlistID: playlistID)
+            try await sourceStore.removeBindings(for: playlistID)
+            try await commitPlaylist()
+        } catch {
+            do {
+                try await playlistMembershipStore.restore(membershipSnapshot)
+            } catch {
+                Log.error(
+                    "[ReferencedBackend] failed to restore playlist memberships after deletion failure: \(error.localizedDescription)",
+                    category: .library
+                )
+            }
+            for descriptor in sourceSnapshots {
+                do {
+                    try await sourceStore.save(descriptor)
+                } catch {
+                    Log.error(
+                        "[ReferencedBackend] failed to restore source bindings after playlist deletion failure source=\(descriptor.id.uuidString): \(error.localizedDescription)",
+                        category: .library
+                    )
+                }
+            }
+            throw error
+        }
+    }
+
+    func finishImportBatch() {
+        // Provisional descriptors never reached the durable commit point.
+        // Remove only their in-memory authorization roots; committed sources
+        // remain active for the monitor and are released at session close.
+        for descriptor in batchPendingSources.values {
+            sourceScope.remove(sourceID: descriptor.id)
+        }
+        batchPendingSources.removeAll()
+        batchCommittedSourceIDs.removeAll()
+        // Keep the created-file ledger until FileImportService performs its
+        // post-import prune. That callback runs after performImport's defer
+        // releases this batch; clearing it here would leave corrupt/unsupported
+        // single-file selections as durable orphan sources.
+        let leases = selectionLeases.values
+        selectionLeases.removeAll()
+        for lease in leases { lease.release() }
+    }
+
+    func close() async {
+        finishImportBatch()
+        batchCreatedFileSources.removeAll()
+        sourceScope.close()
+    }
+}

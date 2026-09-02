@@ -8,6 +8,48 @@ import Foundation
 import CryptoKit
 import Observation
 
+/// Narrow local-playback seam (§16): the coordinator issues transport
+/// commands and reads state through this abstraction instead of holding a
+/// view model strongly. `PlayerViewModel` conforms; the session factory
+/// installs it as a weak link so neither side keeps the other alive.
+@MainActor
+protocol LocalPlaybackControlling: AnyObject {
+    var isPlaying: Bool { get }
+    var currentTime: Double { get }
+    var audioOutputDelay: Double { get }
+    var duration: Double { get }
+    var currentTrack: Track? { get }
+    var nowPlayingAssetURL: URL? { get }
+    var currentPlaybackOrderMode: PlaybackOrderMode { get }
+    var volume: Double { get }
+    var currentQueueTracks: [Track] { get }
+
+    func togglePlayPause()
+    func pause()
+    func resume()
+    func stop()
+    func next()
+    func previous()
+    func seek(to seconds: Double)
+    func setVolume(_ volume: Double)
+    func setPlaybackOrderMode(_ mode: PlaybackOrderMode, announceChange: Bool)
+    func playTracks(
+        _ tracks: [Track],
+        startingAt index: Int,
+        libraryQueueSource: LibraryQueueSource?,
+        startPolicy: PlaybackStartPolicy
+    )
+    func insertTracksAfterCurrent(_ tracks: [Track]) -> Int
+    func play(track: Track)
+    func playTrackFromQueue(_ track: Track)
+}
+
+extension PlayerViewModel: LocalPlaybackControlling {}
+
+extension LocalPlaybackControlling {
+    var nowPlayingAssetURL: URL? { nil }
+}
+
 @Observable
 @MainActor
 final class PlaybackCoordinator {
@@ -15,10 +57,14 @@ final class PlaybackCoordinator {
         static let activeSource = "playback.activeSource"
     }
 
-    private let playerVM: PlayerViewModel
+    private weak var localPlayback: (any LocalPlaybackControlling)?
     private let appleMusicAdapter: AppleMusicPlaybackAdapter
     private let systemNowPlayingProvider: SystemNowPlayingProvider
     private let settings: AppSettings
+    private let preferenceStatsService: PreferenceStatsService
+    private let artworkCache: TrackArtworkCache
+    private let lyricsSearchCoordinator: LyricsSearchCoordinator
+    private let amllDBService: AMLLDBService
     private let meterProvider: AudioLevelMeterProtocol?
     private var presentationTimer: Timer?
     private var currentPresentationInterval: TimeInterval = 0
@@ -44,24 +90,38 @@ final class PlaybackCoordinator {
     private(set) var activeSource: PlaybackSource
     private(set) var presentation: NowPlayingPresentation = .emptyLocal
 
+    var localNowPlayingAssetURL: URL? {
+        localPlayback?.nowPlayingAssetURL
+    }
+
     var onActiveSourceChanged: ((PlaybackSource) -> Void)?
     var onTelemetryPlaybackStateChanged: ((PlaybackSource, Bool) -> Void)?
     var onPresentationChanged: (@MainActor (NowPlayingPresentation, NowPlayingPresentation) -> Void)?
 
     init(
-        playerVM: PlayerViewModel,
+        localPlayback: any LocalPlaybackControlling,
         appleMusicAdapter: AppleMusicPlaybackAdapter,
         systemNowPlayingProvider: SystemNowPlayingProvider,
         settings: AppSettings? = nil,
+        preferenceStatsService: PreferenceStatsService = .shared,
+        artworkCache: TrackArtworkCache,
+        lyricsSearchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService,
         meterProvider: AudioLevelMeterProtocol? = nil,
-        artworkWarmer: PlaybackArtworkWarmer = PlaybackArtworkWarmer()
+        artworkWarmer: PlaybackArtworkWarmer? = nil
     ) {
-        self.playerVM = playerVM
+        self.localPlayback = localPlayback
         self.appleMusicAdapter = appleMusicAdapter
         self.systemNowPlayingProvider = systemNowPlayingProvider
         self.settings = settings ?? AppSettings.shared
+        self.preferenceStatsService = preferenceStatsService
+        self.artworkCache = artworkCache
+        self.lyricsSearchCoordinator = lyricsSearchCoordinator
+        self.amllDBService = amllDBService
         self.meterProvider = meterProvider
-        self.artworkWarmer = artworkWarmer
+        self.artworkWarmer = artworkWarmer ?? PlaybackArtworkWarmer(
+            artworkCache: artworkCache
+        )
         self.activeSource = PlaybackSource(
             rawValue: UserDefaults.standard.string(forKey: Keys.activeSource) ?? ""
         ) ?? .local
@@ -104,8 +164,8 @@ final class PlaybackCoordinator {
         case .local:
             stopExternalProviders()
         case .appleMusic, .systemNowPlaying:
-            if playerVM.isPlaying {
-                playerVM.pause()
+            if localPlayback?.isPlaying == true {
+                localPlayback?.pause()
             }
             externalProvider(for: source)?.start()
         }
@@ -124,7 +184,7 @@ final class PlaybackCoordinator {
         recordCrashPlaybackCommand(.playPause)
         switch activeSource {
         case .local:
-            playerVM.togglePlayPause()
+            localPlayback?.togglePlayPause()
         case .appleMusic, .systemNowPlaying:
             activeExternalProvider?.playPause()
         }
@@ -136,7 +196,7 @@ final class PlaybackCoordinator {
         recordCrashPlaybackCommand(.pause)
         switch activeSource {
         case .local:
-            playerVM.pause()
+            localPlayback?.pause()
         case .appleMusic, .systemNowPlaying:
             activeExternalProvider?.pause()
         }
@@ -148,7 +208,7 @@ final class PlaybackCoordinator {
         recordCrashPlaybackCommand(.resume)
         switch activeSource {
         case .local:
-            playerVM.resume()
+            localPlayback?.resume()
         case .appleMusic, .systemNowPlaying:
             activeExternalProvider?.play()
         }
@@ -156,11 +216,25 @@ final class PlaybackCoordinator {
         NowPlayingService.shared.updateNowPlaying(force: true)
     }
 
+    func close() {
+        presentationTimer?.invalidate()
+        presentationTimer = nil
+        sidecarHydrationTask?.cancel()
+        sidecarHydrationTask = nil
+        activeLyricsRefetchTask?.cancel()
+        activeLyricsRefetchTask = nil
+        stopExternalProviders()
+        artworkWarmer.reset()
+        onActiveSourceChanged = nil
+        onTelemetryPlaybackStateChanged = nil
+        onPresentationChanged = nil
+    }
+
     func stop() {
         recordCrashPlaybackCommand(.stop)
         switch activeSource {
         case .local:
-            playerVM.stop()
+            localPlayback?.stop()
         case .appleMusic, .systemNowPlaying:
             activeExternalProvider?.pause()
         }
@@ -172,7 +246,7 @@ final class PlaybackCoordinator {
         recordCrashPlaybackCommand(.next)
         switch activeSource {
         case .local:
-            playerVM.next()
+            localPlayback?.next()
         case .appleMusic, .systemNowPlaying:
             activeExternalProvider?.next()
         }
@@ -184,7 +258,7 @@ final class PlaybackCoordinator {
         recordCrashPlaybackCommand(.previous)
         switch activeSource {
         case .local:
-            playerVM.previous()
+            localPlayback?.previous()
         case .appleMusic, .systemNowPlaying:
             activeExternalProvider?.previous()
         }
@@ -196,7 +270,7 @@ final class PlaybackCoordinator {
         recordCrashPlaybackCommand(.seek)
         switch activeSource {
         case .local:
-            playerVM.seek(to: seconds)
+            localPlayback?.seek(to: seconds)
         case .appleMusic:
             appleMusicAdapter.seek(to: seconds)
         case .systemNowPlaying:
@@ -214,7 +288,7 @@ final class PlaybackCoordinator {
     func setVolume(_ volume: Double) {
         switch activeSource {
         case .local:
-            playerVM.setVolume(volume)
+            localPlayback?.setVolume(volume)
         case .appleMusic:
             appleMusicAdapter.setVolume(volume)
         case .systemNowPlaying:
@@ -228,7 +302,7 @@ final class PlaybackCoordinator {
     func setPlaybackOrderMode(_ mode: PlaybackOrderMode, announceChange: Bool = true) {
         switch activeSource {
         case .local:
-            playerVM.setPlaybackOrderMode(mode, announceChange: announceChange)
+            localPlayback?.setPlaybackOrderMode(mode, announceChange: announceChange)
         case .appleMusic:
             appleMusicAdapter.setPlaybackOrderMode(mode)
         case .systemNowPlaying:
@@ -341,7 +415,9 @@ final class PlaybackCoordinator {
             title: title,
             artist: artist,
             album: album,
-            duration: duration
+            duration: duration,
+            searchCoordinator: lyricsSearchCoordinator,
+            amllDBService: amllDBService
         )
 
         guard !Task.isCancelled else { return }
@@ -362,7 +438,7 @@ final class PlaybackCoordinator {
         track.lyricsText = nil
         track.lyricsFileName = nil
 
-        if self.playerVM.currentTrack?.id == trackID {
+        if localPlayback?.currentTrack?.id == trackID {
             self.cachedLyricsTrackID = nil
             self.cachedLyricsSignature = nil
             self.refreshPresentation()
@@ -390,20 +466,20 @@ final class PlaybackCoordinator {
     // MARK: - Local Track Playback (auto-switches source)
 
     var canInsertTracksAfterCurrent: Bool {
-        activeSource == .local && playerVM.currentTrack != nil
+        activeSource == .local && localPlayback?.currentTrack != nil
     }
 
     func playTracks(
         _ tracks: [Track],
         startingAt index: Int = 0,
-        libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil,
+        libraryQueueSource: LibraryQueueSource? = nil,
         startPolicy: PlaybackStartPolicy = .useSavedMode
     ) {
         recordCrashPlaybackCommand(.playQueue)
         if activeSource != .local {
             setActiveSource(.local)
         }
-        playerVM.playTracks(
+        localPlayback?.playTracks(
             tracks,
             startingAt: index,
             libraryQueueSource: libraryQueueSource,
@@ -417,7 +493,7 @@ final class PlaybackCoordinator {
         _ tracks: [Track],
         startingAt index: Int = 0,
         seekTo seconds: Double,
-        libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil,
+        libraryQueueSource: LibraryQueueSource? = nil,
         startPolicy: PlaybackStartPolicy = .useSavedMode
     ) {
         guard index >= 0, index < tracks.count else { return }
@@ -433,7 +509,7 @@ final class PlaybackCoordinator {
     @discardableResult
     func insertTracksAfterCurrent(_ tracks: [Track]) -> Int {
         guard canInsertTracksAfterCurrent else { return 0 }
-        let insertedCount = playerVM.insertTracksAfterCurrent(tracks)
+        let insertedCount = localPlayback?.insertTracksAfterCurrent(tracks) ?? 0
         guard insertedCount > 0 else { return 0 }
 
         refreshPresentation()
@@ -441,10 +517,13 @@ final class PlaybackCoordinator {
         return insertedCount
     }
 
-    func playRandomTracks(_ tracks: [Track], libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil) {
+    func playRandomTracks(_ tracks: [Track], libraryQueueSource: LibraryQueueSource? = nil) {
         let queue = WeightedPlaybackSampler.playableUniqueTracks(from: tracks)
         guard !queue.isEmpty else { return }
-        let startTrack = WeightedPlaybackSampler.pick(from: queue) ?? queue[0]
+        let startTrack = WeightedPlaybackSampler.pick(
+            from: queue,
+            preferenceStatsService: preferenceStatsService
+        ) ?? queue[0]
         let startIndex = queue.firstIndex(where: { $0.id == startTrack.id }) ?? 0
         playTracks(
             queue,
@@ -457,7 +536,7 @@ final class PlaybackCoordinator {
     func playTrack(
         _ track: Track,
         inQueueFrom tracks: [Track],
-        libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil
+        libraryQueueSource: LibraryQueueSource? = nil
     ) {
         let queue = WeightedPlaybackSampler.playableUniqueTracks(from: tracks)
         guard !queue.isEmpty else { return }
@@ -473,7 +552,7 @@ final class PlaybackCoordinator {
         _ track: Track,
         inQueueFrom tracks: [Track],
         seekTo seconds: Double,
-        libraryQueueSource: PlayerViewModel.LibraryQueueSource? = nil
+        libraryQueueSource: LibraryQueueSource? = nil
     ) {
         let queue = WeightedPlaybackSampler.playableUniqueTracks(from: tracks)
         guard !queue.isEmpty else { return }
@@ -492,11 +571,11 @@ final class PlaybackCoordinator {
             for _ in 0..<80 {
                 guard let self else { return }
                 guard self.activeSource == .local else { return }
-                guard self.playerVM.currentTrack?.id == trackID else {
+                guard self.localPlayback?.currentTrack?.id == trackID else {
                     try? await Task.sleep(nanoseconds: 50_000_000)
                     continue
                 }
-                guard self.playerVM.isPlaying else {
+                guard self.localPlayback?.isPlaying == true else {
                     try? await Task.sleep(nanoseconds: 50_000_000)
                     continue
                 }
@@ -512,7 +591,7 @@ final class PlaybackCoordinator {
         if activeSource != .local {
             setActiveSource(.local)
         }
-        playerVM.play(track: track)
+        localPlayback?.play(track: track)
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
     }
@@ -522,7 +601,7 @@ final class PlaybackCoordinator {
         if activeSource != .local {
             setActiveSource(.local)
         }
-        playerVM.playTrackFromQueue(track)
+        localPlayback?.playTrackFromQueue(track)
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
     }
@@ -556,7 +635,7 @@ final class PlaybackCoordinator {
         artworkWarmer.update(
             activeSource: activeSource,
             presentation: newPresentation,
-            queue: playerVM.currentQueueTracks
+            queue: localPlayback?.currentQueueTracks ?? []
         )
 
         let previousPresentation = presentation
@@ -570,16 +649,29 @@ final class PlaybackCoordinator {
     }
 
     @available(*, deprecated, message: "Use smartRandomPick for single picks or playRandomTracks for ShuffleSession-backed playback.")
-    static func smartRandomQueue(from tracks: [Track], startingWith startTrack: Track? = nil) -> [Track] {
+    static func smartRandomQueue(
+        from tracks: [Track],
+        startingWith startTrack: Track? = nil,
+        preferenceStatsService: PreferenceStatsService
+    ) -> [Track] {
         if let startTrack,
            let matched = WeightedPlaybackSampler.playableUniqueTracks(from: tracks).first(where: { $0.id == startTrack.id }) {
             return [matched]
         }
-        return WeightedPlaybackSampler.pick(from: tracks).map { [$0] } ?? []
+        return WeightedPlaybackSampler.pick(
+            from: tracks,
+            preferenceStatsService: preferenceStatsService
+        ).map { [$0] } ?? []
     }
 
-    static func smartRandomPick(from tracks: [Track]) -> Track? {
-        WeightedPlaybackSampler.pick(from: tracks)
+    static func smartRandomPick(
+        from tracks: [Track],
+        preferenceStatsService: PreferenceStatsService
+    ) -> Track? {
+        WeightedPlaybackSampler.pick(
+            from: tracks,
+            preferenceStatsService: preferenceStatsService
+        )
     }
 
     private func externalProvider(for source: PlaybackSource) -> (any ExternalPlaybackProvider)? {
@@ -610,7 +702,7 @@ final class PlaybackCoordinator {
     private func isPlayingForTelemetry(_ source: PlaybackSource) -> Bool {
         switch source {
         case .local:
-            return playerVM.isPlaying
+            return localPlayback?.isPlaying ?? false
         case .appleMusic, .systemNowPlaying:
             return externalProvider(for: source)?.presentation.isPlaying ?? false
         }
@@ -653,16 +745,19 @@ final class PlaybackCoordinator {
     }
 
     private func makeLocalPresentation() -> NowPlayingPresentation {
-        guard let track = playerVM.currentTrack else {
+        guard let playback = localPlayback else {
+            return .emptyLocal
+        }
+        guard let track = playback.currentTrack else {
             var empty = NowPlayingPresentation.emptyLocal
-            empty.volume = playerVM.volume
+            empty.volume = playback.volume
             return empty
         }
 
         let artworkData = track.artworkData
         let artworkSource = track.trackArtworkSource(fallbackData: artworkData)
         let hasDiskArtworkCache = artworkSource.map {
-            TrackArtworkCache.shared.hasAnyDiskCache(for: $0)
+            artworkCache.hasAnyDiskCache(for: $0)
         } ?? false
         let lyricsText = preferredLyricsTextSnapshot(for: track)
         let isArtworkLoading = track.artworkData?.isEmpty != false
@@ -673,7 +768,7 @@ final class PlaybackCoordinator {
         return NowPlayingPresentation(
             source: .local,
             localTrack: track,
-            localPlaybackOrderMode: playerVM.currentPlaybackOrderMode,
+            localPlaybackOrderMode: playback.currentPlaybackOrderMode,
             title: track.title,
             artist: track.artist,
             album: track.album.isEmpty ? nil : track.album,
@@ -682,11 +777,11 @@ final class PlaybackCoordinator {
             artworkDisplayTrackID: track.id,
             isArtworkLoading: isArtworkLoading,
             isRefetchingLyrics: isRefetchingLyrics,
-            duration: playerVM.duration,
-            currentTime: playerVM.currentTime,
-            audioOutputDelay: playerVM.audioOutputDelay,
-            isPlaying: playerVM.isPlaying,
-            volume: playerVM.volume,
+            duration: playback.duration,
+            currentTime: playback.currentTime,
+            audioOutputDelay: playback.audioOutputDelay,
+            isPlaying: playback.isPlaying,
+            volume: playback.volume,
             lyricsText: lyricsText,
             lyricsIdentity: track.id.uuidString,
             appleMusicPlaybackMode: nil,
@@ -702,7 +797,7 @@ final class PlaybackCoordinator {
             externalLyricsStatusMessage: nil,
             externalConnectionState: nil,
             isControlEnabled: true,
-            isSeekEnabled: playerVM.duration > 0,
+            isSeekEnabled: playback.duration > 0,
             isVolumeControlEnabled: true,
             isPlaybackModeControlEnabled: true,
             emptyTitleKey: "mini.not_playing"
@@ -761,6 +856,7 @@ final class PlaybackCoordinator {
         let artworkURL = artworkSource?.artworkFileURL
         let ttmlURL = needsTTMLLyrics ? track.resolvedTTMLURL() : nil
         let ttmlFallbackURL = needsTTMLLyrics ? track.resolvedLyricsURL() : nil
+        let artworkCache = artworkCache
 
         sidecarHydrationTask?.cancel()
         sidecarHydratingTrackID = trackID
@@ -772,7 +868,10 @@ final class PlaybackCoordinator {
 
             async let artworkTask: Data? = {
                 guard let artworkSource else { return nil }
-                return await TrackArtworkCache.shared.sourceData(for: artworkSource, purpose: "hydration")
+                return await artworkCache.sourceData(
+                    for: artworkSource,
+                    purpose: "hydration"
+                )
             }()
 
             async let ttmlTask: String? = Task.detached(priority: .utility) { @Sendable in
@@ -810,7 +909,7 @@ final class PlaybackCoordinator {
             if let ttml, track.ttmlLyricText?.isEmpty != false {
                 track.ttmlLyricText = ttml
             }
-            if self.playerVM.currentTrack?.id == trackID {
+            if self.localPlayback?.currentTrack?.id == trackID {
                 self.cachedLyricsTrackID = nil
                 self.cachedLyricsSignature = nil
                 self.refreshPresentation()

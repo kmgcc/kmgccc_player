@@ -4,8 +4,8 @@
 //
 //  kmgccc_player - File Import Service Protocol
 //
-//  Design Decision: Import is ALWAYS per-playlist.
-//  There is no global import action.
+//  Import destination is explicit. A library-only import is valid and does
+//  not manufacture a playlist as a side effect.
 //
 
 import Foundation
@@ -22,12 +22,19 @@ nonisolated struct ImportMetadataOverride: Equatable, Sendable {
     }
 }
 
-/// Protocol for importing audio files into a specific playlist.
+/// Protocol for importing audio files with an explicit destination.
 @MainActor
 protocol FileImportServiceProtocol: AnyObject {
 
     /// Present the system-native file picker and return selected files/folders.
     func pickImportURLs(triggeredAt: Date) async -> [URL]?
+
+    /// Import using an immutable library/session/destination context.
+    @discardableResult
+    func importSelectedURLs(
+        _ urls: [URL],
+        context: LibraryImportContext
+    ) async -> LibraryImportResult
 
     /// Import previously selected files/folders into a playlist.
     @discardableResult

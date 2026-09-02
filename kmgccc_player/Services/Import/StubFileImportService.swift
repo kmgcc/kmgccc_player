@@ -19,6 +19,24 @@ final class StubFileImportService: FileImportServiceProtocol {
     @discardableResult
     func importSelectedURLs(
         _ urls: [URL],
+        context: LibraryImportContext
+    ) async -> LibraryImportResult {
+        print(
+            "📁 StubFileImportService: importSelectedURLs(\(urls.count)) destination=\(String(describing: context.destination)) (no-op)"
+        )
+        return LibraryImportResult(
+            importedTrackCount: 0,
+            reusedTrackCount: 0,
+            playlistMembershipAdditions: 0,
+            sourceBindingCount: 0,
+            failures: [],
+            wasRejectedAsStale: false
+        )
+    }
+
+    @discardableResult
+    func importSelectedURLs(
+        _ urls: [URL],
         to playlist: Playlist,
         metadataOverride: ImportMetadataOverride?
     ) async -> Int {

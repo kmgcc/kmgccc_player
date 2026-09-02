@@ -528,6 +528,20 @@ nonisolated enum ColorSystemTokens {
         static let ledStrokeLightnessTrimLight: CGFloat = 0.040
         static let ledStrokeChromaScale: CGFloat = 0.92
 
+        // MARK: - HDR LED Tone Ladder Specialization
+        static let ledHDRDarkMinL: CGFloat = 0.630
+        static let ledHDRDarkPeakL: CGFloat = 0.850
+        static let ledHDRUltraDarkPeakL: CGFloat = 0.835
+        static let ledHDRLightMinL: CGFloat = 0.680
+        static let ledHDRLightPeakL: CGFloat = 0.840
+        static let ledHDRDarkLowChromaScale: CGFloat = 2.85
+        static let ledHDRDarkPeakChromaScale: CGFloat = 1.35
+        static let ledHDRLightLowChromaScale: CGFloat = 2.60
+        static let ledHDRLightPeakChromaScale: CGFloat = 1.25
+        static let ledHDRDarkChromaCapScale: CGFloat = 2.20
+        static let ledHDRShadowDriftScale: CGFloat = 11.5
+        static let ledHDRColorfulMinimumChroma: CGFloat = 0.085
+
         // Artistic fullscreen lyrics. Single-seed ladder: callers MUST pass
         // the same seed for every role; per-role variation is L (primarily),
         // an optional small chroma adjust, and a family-aware hue drift.

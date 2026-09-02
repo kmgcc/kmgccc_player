@@ -147,7 +147,8 @@ enum ArtworkLoader {
     static func loadImage(
         artworkData: Data?,
         cacheKey: String,
-        targetPixelSize: CGSize
+        targetPixelSize: CGSize,
+        derivativeStore: ArtworkDerivativeCacheStore
     ) async -> NSImage? {
         guard let artworkData, !artworkData.isEmpty else { return nil }
 
@@ -158,7 +159,7 @@ enum ArtworkLoader {
         let signpost = PlaylistPerfDiagnostics.beginDecodeSignpost()
         let startUptime = ProcessInfo.processInfo.systemUptime
 
-        let image = await ArtworkDerivativeCacheStore.shared.image(
+        let image = await derivativeStore.image(
             for: cacheKey,
             artworkData: artworkData,
             targetPixelSize: targetPixelSize
@@ -183,7 +184,8 @@ enum ArtworkLoader {
     static func loadHeaderImage(
         artworkData: Data?,
         cacheKey: String,
-        maxPixelSize: Int = 640
+        maxPixelSize: Int = 640,
+        derivativeStore: ArtworkDerivativeCacheStore
     ) async -> NSImage? {
         guard let artworkData, !artworkData.isEmpty else { return nil }
         if let cached = await cache.image(for: cacheKey) {
@@ -191,7 +193,7 @@ enum ArtworkLoader {
             return cached
         }
         let startUptime = ProcessInfo.processInfo.systemUptime
-        let image = await ArtworkDerivativeCacheStore.shared.image(
+        let image = await derivativeStore.image(
             for: cacheKey,
             artworkData: artworkData,
             maxPixelSize: maxPixelSize
@@ -210,7 +212,8 @@ enum ArtworkLoader {
 
     @discardableResult
     static func prefetch(
-        _ requests: [ArtworkPrefetchRequest]
+        _ requests: [ArtworkPrefetchRequest],
+        derivativeStore: ArtworkDerivativeCacheStore
     ) -> Task<Void, Never>? {
         guard !requests.isEmpty else { return nil }
         return Task.detached(priority: .background) {
@@ -219,7 +222,8 @@ enum ArtworkLoader {
                 _ = await loadImage(
                     artworkData: request.artworkData,
                     cacheKey: request.cacheKey,
-                    targetPixelSize: request.targetPixelSize
+                    targetPixelSize: request.targetPixelSize,
+                    derivativeStore: derivativeStore
                 )
             }
         }

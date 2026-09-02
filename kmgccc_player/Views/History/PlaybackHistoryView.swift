@@ -278,7 +278,7 @@ struct PlaybackHistoryView: View {
             Text(
                 filterDate == nil
                     ? (hasOlderRecords ? "更早的记录已折叠在下面" : "")
-                    : "请尝试更换日期"
+                    : " "
             )
                 .font(.callout)
                 .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)

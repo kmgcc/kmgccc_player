@@ -10,6 +10,7 @@ import SwiftUI
 @MainActor
 struct ExternalPlaybackInfoEditorView: View {
     let presentation: NowPlayingPresentation
+    let metadataStore: ExternalPlaybackMetadataStore
     var onSaved: (_ onlyOffsetChanged: Bool) -> Void
 
     @State private var title: String
@@ -30,8 +31,13 @@ struct ExternalPlaybackInfoEditorView: View {
     private let initialLyricsText: String
     private let initialArtworkData: Data?
 
-    init(presentation: NowPlayingPresentation, onSaved: @escaping (_ onlyOffsetChanged: Bool) -> Void) {
+    init(
+        presentation: NowPlayingPresentation,
+        metadataStore: ExternalPlaybackMetadataStore,
+        onSaved: @escaping (_ onlyOffsetChanged: Bool) -> Void
+    ) {
         self.presentation = presentation
+        self.metadataStore = metadataStore
         self.onSaved = onSaved
         self.stableKey = presentation.externalStableKey
         self.rawTitle = presentation.externalRawTitle ?? presentation.title
@@ -43,14 +49,14 @@ struct ExternalPlaybackInfoEditorView: View {
         // A manual lyrics decision (locked text or an explicit "clear") controls
         // the editor seed: cleared -> empty; no decision -> fall back to the
         // current presentation lyrics.
-        let manualLyrics = stableKey.flatMap { ExternalPlaybackMetadataStore.shared.manualLyrics(for: $0) }
-        let hasManualDecision = stableKey.flatMap { ExternalPlaybackMetadataStore.shared.hasManualLyricsDecision(for: $0) } ?? false
+        let manualLyrics = stableKey.flatMap { metadataStore.manualLyrics(for: $0) }
+        let hasManualDecision = stableKey.flatMap { metadataStore.hasManualLyricsDecision(for: $0) } ?? false
         self.initialLyricsText = hasManualDecision
             ? (LyricsFormatSupport.normalizedTTMLText(manualLyrics) ?? "")
             : (LyricsFormatSupport.normalizedTTMLText(manualLyrics)
                 ?? LyricsFormatSupport.normalizedTTMLText(presentation.lyricsText)
                 ?? "")
-        let existingOverride = stableKey.flatMap { ExternalPlaybackMetadataStore.shared.override(for: $0) }
+        let existingOverride = stableKey.flatMap { metadataStore.override(for: $0) }
         self.initialLyricsTimeOffsetMs = existingOverride?.lyricsTimeOffsetMs ?? 0
         self.initialArtworkData = presentation.artworkData
 
@@ -137,7 +143,7 @@ struct ExternalPlaybackInfoEditorView: View {
             && (artworkData == initialArtworkData)
             && (lyricsTimeOffsetMs != initialLyricsTimeOffsetMs)
 
-        let existingOverride = ExternalPlaybackMetadataStore.shared.override(for: stableKey)
+        let existingOverride = metadataStore.override(for: stableKey)
         let override = ExternalPlaybackMatchOverride(
             title: overrideValue(title, raw: rawTitle),
             artist: overrideValue(artist, raw: rawArtist),
@@ -147,10 +153,10 @@ struct ExternalPlaybackInfoEditorView: View {
             lyricsTimeOffsetMs: lyricsTimeOffsetMs == 0 ? nil : lyricsTimeOffsetMs,
             updatedAt: Date()
         )
-        ExternalPlaybackMetadataStore.shared.saveOverride(override, for: stableKey)
+        metadataStore.saveOverride(override, for: stableKey)
 
         if let artworkData, artworkData != initialArtworkData {
-            ExternalPlaybackMetadataStore.shared.storeNetworkArtwork(
+            metadataStore.storeNetworkArtwork(
                 artworkData,
                 for: stableKey,
                 source: "manualOverride"
@@ -158,7 +164,7 @@ struct ExternalPlaybackInfoEditorView: View {
         }
 
         if lyricsText != initialLyricsText {
-            ExternalPlaybackMetadataStore.shared.saveManualLyrics(
+            metadataStore.saveManualLyrics(
                 lyricsText,
                 source: "manualOverride",
                 for: stableKey
@@ -170,7 +176,7 @@ struct ExternalPlaybackInfoEditorView: View {
 
     private func clearOverride() {
         guard let stableKey else { return }
-        ExternalPlaybackMetadataStore.shared.clearOverride(for: stableKey)
+        metadataStore.clearOverride(for: stableKey)
         onSaved(false)
     }
 

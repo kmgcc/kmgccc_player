@@ -85,8 +85,8 @@ extension Track {
 }
 
 actor TrackArtworkCache {
-    static let shared = TrackArtworkCache()
-
+    private nonisolated let originalsRootURL: URL
+    private nonisolated let derivativesRootURL: URL
     private let imageCache = NSCache<NSString, CachedArtworkImage>()
     private let sourceDataCache = NSCache<NSString, NSData>()
     private let fileManager = FileManager.default
@@ -96,15 +96,9 @@ actor TrackArtworkCache {
     private var completedWarmupKeys: [String] = []
     private var completedWarmupKeySet: Set<String> = []
 
-    private nonisolated var originalsRootURL: URL {
-        StorageLocations.trackArtworkOriginalsURL
-    }
-
-    private nonisolated var derivativesRootURL: URL {
-        StorageLocations.trackArtworkDerivativesURL
-    }
-
-    private init() {
+    init(storage: LibraryStorageLocations) {
+        self.originalsRootURL = storage.trackArtworkOriginalsURL
+        self.derivativesRootURL = storage.trackArtworkDerivativesURL
         imageCache.countLimit = 256
         imageCache.totalCostLimit = 96 * 1024 * 1024
         sourceDataCache.countLimit = 192
@@ -197,7 +191,7 @@ actor TrackArtworkCache {
     }
 
     nonisolated func hasAnyDiskCache(for source: TrackArtworkSource) -> Bool {
-        let originalURL = Self.originalFileURL(for: source)
+        let originalURL = originalFileURL(for: source)
         if FileManager.default.fileExists(atPath: originalURL.path) {
             return true
         }
@@ -215,7 +209,7 @@ actor TrackArtworkCache {
             variant: variant,
             maxPixelSize: maxPixelSize
         )
-        return FileManager.default.fileExists(atPath: Self.derivativeFileURL(for: imageKey).path)
+        return FileManager.default.fileExists(atPath: derivativeFileURL(for: imageKey).path)
     }
 
     func sourceData(for source: TrackArtworkSource, purpose: String = "ui") async -> Data? {
@@ -241,7 +235,7 @@ actor TrackArtworkCache {
             return data
         }
 
-        let cachedURL = Self.originalFileURL(for: source)
+        let cachedURL = originalFileURL(for: source)
         let diskStartedAt = Self.now()
         if let cachedData = await Self.readData(at: cachedURL), !cachedData.isEmpty {
             cacheSourceData(cachedData, for: source)
@@ -338,7 +332,7 @@ actor TrackArtworkCache {
             return cached
         }
 
-        let diskURL = Self.derivativeFileURL(for: imageKey)
+        let diskURL = derivativeFileURL(for: imageKey)
         let diskStartedAt = Self.now()
         if let diskImage = await Self.readImage(at: diskURL, maxPixelSize: maxPixelSize) {
             setMemoryImage(diskImage, key: imageKey)
@@ -500,14 +494,12 @@ actor TrackArtworkCache {
         "\(source.sourceKey)|\(variant)|px:\(max(1, maxPixelSize))"
     }
 
-    private nonisolated static func originalFileURL(for source: TrackArtworkSource) -> URL {
-        StorageLocations.trackArtworkOriginalsURL
-            .appendingPathComponent("\(stableDigest(source.sourceKey)).img")
+    private nonisolated func originalFileURL(for source: TrackArtworkSource) -> URL {
+        originalsRootURL.appendingPathComponent("\(Self.stableDigest(source.sourceKey)).img")
     }
 
-    private nonisolated static func derivativeFileURL(for imageKey: String) -> URL {
-        StorageLocations.trackArtworkDerivativesURL
-            .appendingPathComponent("\(stableDigest(imageKey)).png")
+    private nonisolated func derivativeFileURL(for imageKey: String) -> URL {
+        derivativesRootURL.appendingPathComponent("\(Self.stableDigest(imageKey)).png")
     }
 
     private nonisolated static func readData(at url: URL) async -> Data? {

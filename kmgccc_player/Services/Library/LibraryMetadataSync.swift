@@ -18,14 +18,14 @@ final class LibraryMetadataSync {
         artistSidecars: [(sidecar: ArtistSidecar, folderURL: URL)],
         albumSidecars: [(sidecar: AlbumSidecar, folderURL: URL)],
         libraryService: LocalLibraryService
-    ) -> (artists: [ArtistEntry], albums: [AlbumEntry]) {
-        let artists = syncArtists(
+    ) throws -> (artists: [ArtistEntry], albums: [AlbumEntry]) {
+        let artists = try syncArtists(
             derived: derivedArtists,
             allTracks: allTracks,
             sidecars: artistSidecars,
             libraryService: libraryService
         )
-        let albums = syncAlbums(
+        let albums = try syncAlbums(
             derived: derivedAlbums,
             allTracks: allTracks,
             sidecars: albumSidecars,
@@ -41,8 +41,8 @@ final class LibraryMetadataSync {
         allTracks: [Track],
         sidecars: [(sidecar: ArtistSidecar, folderURL: URL)],
         libraryService: LocalLibraryService
-    ) -> [ArtistEntry] {
-        var existing = repairedArtistSidecarsByCanonical(
+    ) throws -> [ArtistEntry] {
+        var existing = try repairedArtistSidecarsByCanonical(
             sidecars,
             libraryService: libraryService
         )
@@ -50,18 +50,20 @@ final class LibraryMetadataSync {
 
         // Compute album counts per artist canonical key
         var albumCountByArtist: [String: Set<String>] = [:]
+        var totalDurationByArtist: [String: Double] = [:]
         for track in allTracks {
-            for artistKey in LibraryNormalization.artistCanonicalNames(track.artist) {
+            for artistKey in LibraryNormalization.artistCanonicalNames(for: track) {
                 albumCountByArtist[artistKey, default: []].insert(track.albumGroupKey)
+                totalDurationByArtist[artistKey, default: 0] += track.duration
             }
         }
 
         var result: [ArtistEntry] = []
 
         for section in derived {
-            let totalDuration = allTracks
-                .filter { LibraryNormalization.containsArtist(section.key, in: $0.artist) }
-                .reduce(0) { $0 + $1.duration }
+            // Single-pass aggregate computed above; the previous per-artist
+            // `allTracks.filter { containsArtist(...) }` was O(artists × tracks).
+            let totalDuration = totalDurationByArtist[section.key] ?? 0
             let albumCount = albumCountByArtist[section.key]?.count ?? 0
 
             if let (sidecar, folderURL) = existing[section.key] {
@@ -99,7 +101,7 @@ final class LibraryMetadataSync {
                     createdAt: now,
                     updatedAt: now
                 )
-                libraryService.writeArtistSidecar(newSidecar, artworkData: nil)
+                try libraryService.writeArtistSidecar(newSidecar, artworkData: nil)
                 result.append(ArtistEntry(
                     id: newID,
                     canonicalName: section.key,
@@ -127,6 +129,9 @@ final class LibraryMetadataSync {
                 || !(sidecar.foreignName ?? "").isEmpty
                 || sidecar.qqMusicSingerMid != nil
                 || sidecar.metadataSource != nil
+                || sidecar.trackSortKey != nil
+                || sidecar.trackSortOrder != nil
+                || sidecar.customTrackOrder != nil
             if hasUserContent {
                 let artworkData = sidecar.artworkFileName.flatMap { fileName in
                     try? Data(contentsOf: folderURL.appendingPathComponent(fileName))
@@ -153,7 +158,9 @@ final class LibraryMetadataSync {
                     isOrphaned: true
                 ))
             } else {
-                try? FileManager.default.removeItem(at: folderURL)
+                if FileManager.default.fileExists(atPath: folderURL.path) {
+                    try FileManager.default.removeItem(at: folderURL)
+                }
             }
         }
 
@@ -169,17 +176,24 @@ final class LibraryMetadataSync {
         allTracks: [Track],
         sidecars: [(sidecar: AlbumSidecar, folderURL: URL)],
         libraryService: LocalLibraryService
-    ) -> [AlbumEntry] {
-        var existing = repairedAlbumSidecarsByCanonical(
+    ) throws -> [AlbumEntry] {
+        var existing = try repairedAlbumSidecarsByCanonical(
             sidecars,
             libraryService: libraryService
         )
         let now = Date()
 
+        // Single-pass index by album group key; the previous per-album
+        // `allTracks.filter { ... }` was O(albums × tracks).
+        var tracksByAlbumKey: [String: [Track]] = [:]
+        for track in allTracks {
+            tracksByAlbumKey[track.albumGroupKey, default: []].append(track)
+        }
+
         var result: [AlbumEntry] = []
 
         for section in derived {
-            let matchingTracks = allTracks.filter { $0.albumGroupKey == section.key }
+            let matchingTracks = tracksByAlbumKey[section.key] ?? []
             let totalDuration = matchingTracks.reduce(0) { $0 + $1.duration }
             let firstArtwork =
                 matchingTracks.first(where: { $0.artworkData != nil })?.artworkData
@@ -200,7 +214,7 @@ final class LibraryMetadataSync {
                 }
             }
 
-            if let entry = mergedAlbumEntry(
+            if let entry = try mergedAlbumEntry(
                 from: matchedSidecars,
                 section: section,
                 firstArtwork: firstArtwork,
@@ -219,7 +233,7 @@ final class LibraryMetadataSync {
                     createdAt: now,
                     updatedAt: now
                 )
-                libraryService.writeAlbumSidecar(newSidecar, artworkData: nil)
+                try libraryService.writeAlbumSidecar(newSidecar, artworkData: nil)
                 result.append(AlbumEntry(
                     id: newID,
                     canonicalKey: section.key,
@@ -253,6 +267,9 @@ final class LibraryMetadataSync {
                 || !(sidecar.labelOrCompany ?? "").isEmpty
                 || sidecar.qqMusicAlbumMid != nil
                 || sidecar.metadataSource != nil
+                || sidecar.trackSortKey != nil
+                || sidecar.trackSortOrder != nil
+                || sidecar.customTrackOrder != nil
             if hasUserContent {
                 let artworkData = sidecar.artworkFileName.flatMap { fileName in
                     try? Data(contentsOf: folderURL.appendingPathComponent(fileName))
@@ -284,7 +301,9 @@ final class LibraryMetadataSync {
                     isOrphaned: true
                 ))
             } else {
-                try? FileManager.default.removeItem(at: folderURL)
+                if FileManager.default.fileExists(atPath: folderURL.path) {
+                    try FileManager.default.removeItem(at: folderURL)
+                }
             }
         }
 
@@ -312,7 +331,7 @@ final class LibraryMetadataSync {
     private func repairedArtistSidecarsByCanonical(
         _ sidecars: [(sidecar: ArtistSidecar, folderURL: URL)],
         libraryService: LocalLibraryService
-    ) -> [String: (sidecar: ArtistSidecar, folderURL: URL)] {
+    ) throws -> [String: (sidecar: ArtistSidecar, folderURL: URL)] {
         var result: [String: (sidecar: ArtistSidecar, folderURL: URL)] = [:]
         let grouped = Dictionary(grouping: sidecars) { $0.sidecar.canonicalName }
 
@@ -324,7 +343,7 @@ final class LibraryMetadataSync {
                 continue
             }
 
-            let repaired = repairDuplicateArtistSidecars(
+            let repaired = try repairDuplicateArtistSidecars(
                 canonicalName: canonicalName,
                 candidates: candidates,
                 libraryService: libraryService
@@ -338,7 +357,7 @@ final class LibraryMetadataSync {
     private func repairedAlbumSidecarsByCanonical(
         _ sidecars: [(sidecar: AlbumSidecar, folderURL: URL)],
         libraryService: LocalLibraryService
-    ) -> [String: (sidecar: AlbumSidecar, folderURL: URL)] {
+    ) throws -> [String: (sidecar: AlbumSidecar, folderURL: URL)] {
         var result: [String: (sidecar: AlbumSidecar, folderURL: URL)] = [:]
         let grouped = Dictionary(grouping: sidecars) { $0.sidecar.canonicalKey }
 
@@ -350,7 +369,7 @@ final class LibraryMetadataSync {
                 continue
             }
 
-            let repaired = repairDuplicateAlbumSidecars(
+            let repaired = try repairDuplicateAlbumSidecars(
                 canonicalKey: canonicalKey,
                 candidates: candidates,
                 libraryService: libraryService
@@ -365,7 +384,7 @@ final class LibraryMetadataSync {
         canonicalName: String,
         candidates: [(sidecar: ArtistSidecar, folderURL: URL)],
         libraryService: LocalLibraryService
-    ) -> (sidecar: ArtistSidecar, folderURL: URL) {
+    ) throws -> (sidecar: ArtistSidecar, folderURL: URL) {
         let sorted = sortedArtistSidecarCandidates(candidates)
         let keeper = sorted[0]
         let artworkCandidate = bestArtistArtworkCandidate(from: sorted)
@@ -382,12 +401,12 @@ final class LibraryMetadataSync {
             category: .library
         )
 
-        libraryService.writeArtistSidecar(
+        try libraryService.writeArtistSidecar(
             mergedSidecar,
             artworkData: mergedSidecar.artworkFileName != nil ? artworkData : nil
         )
         for duplicate in sorted.dropFirst() {
-            libraryService.deleteArtistEntry(id: duplicate.sidecar.id)
+            try libraryService.deleteArtistEntry(id: duplicate.sidecar.id)
         }
         return (mergedSidecar, keeper.folderURL)
     }
@@ -396,7 +415,7 @@ final class LibraryMetadataSync {
         canonicalKey: String,
         candidates: [(sidecar: AlbumSidecar, folderURL: URL)],
         libraryService: LocalLibraryService
-    ) -> (sidecar: AlbumSidecar, folderURL: URL) {
+    ) throws -> (sidecar: AlbumSidecar, folderURL: URL) {
         let sorted = sortedAlbumSidecarCandidates(candidates)
         let keeper = sorted[0]
         let artworkCandidate = bestAlbumArtworkCandidate(from: sorted)
@@ -413,12 +432,12 @@ final class LibraryMetadataSync {
             category: .library
         )
 
-        libraryService.writeAlbumSidecar(
+        try libraryService.writeAlbumSidecar(
             mergedSidecar,
             artworkData: mergedSidecar.artworkFileName != nil ? artworkData : nil
         )
         for duplicate in sorted.dropFirst() {
-            libraryService.deleteAlbumEntry(id: duplicate.sidecar.id)
+            try libraryService.deleteAlbumEntry(id: duplicate.sidecar.id)
         }
         return (mergedSidecar, keeper.folderURL)
     }
@@ -454,6 +473,8 @@ final class LibraryMetadataSync {
         if !(candidate.sidecar.foreignName ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 1 }
         if candidate.sidecar.qqMusicSingerMid != nil { score += 2 }
         if candidate.sidecar.metadataSource != nil { score += 1 }
+        if candidate.sidecar.trackSortKey != nil || candidate.sidecar.trackSortOrder != nil { score += 4 }
+        if candidate.sidecar.customTrackOrder != nil { score += 6 }
         return score
     }
 
@@ -468,6 +489,8 @@ final class LibraryMetadataSync {
         if !(candidate.sidecar.labelOrCompany ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 1 }
         if candidate.sidecar.qqMusicAlbumMid != nil { score += 2 }
         if candidate.sidecar.metadataSource != nil { score += 1 }
+        if candidate.sidecar.trackSortKey != nil || candidate.sidecar.trackSortOrder != nil { score += 4 }
+        if candidate.sidecar.customTrackOrder != nil { score += 6 }
         return score
     }
 
@@ -519,7 +542,10 @@ final class LibraryMetadataSync {
             metadataFetchedAt: candidates.compactMap(\.sidecar.metadataFetchedAt).max(),
             metadataConfidence: candidates.compactMap(\.sidecar.metadataConfidence).max(),
             createdAt: candidates.map(\.sidecar.createdAt).min() ?? keeper.sidecar.createdAt,
-            updatedAt: Date()
+            updatedAt: Date(),
+            trackSortKey: firstNonEmpty(candidates.map(\.sidecar.trackSortKey)),
+            trackSortOrder: firstNonEmpty(candidates.map(\.sidecar.trackSortOrder)),
+            customTrackOrder: firstNonEmptyUUIDArray(candidates.map(\.sidecar.customTrackOrder))
         )
     }
 
@@ -549,7 +575,10 @@ final class LibraryMetadataSync {
             metadataFetchedAt: candidates.compactMap(\.sidecar.metadataFetchedAt).max(),
             metadataConfidence: candidates.compactMap(\.sidecar.metadataConfidence).max(),
             createdAt: candidates.map(\.sidecar.createdAt).min() ?? keeper.sidecar.createdAt,
-            updatedAt: Date()
+            updatedAt: Date(),
+            trackSortKey: firstNonEmpty(candidates.map(\.sidecar.trackSortKey)),
+            trackSortOrder: firstNonEmpty(candidates.map(\.sidecar.trackSortOrder)),
+            customTrackOrder: firstNonEmptyUUIDArray(candidates.map(\.sidecar.customTrackOrder))
         )
     }
 
@@ -565,6 +594,15 @@ final class LibraryMetadataSync {
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
         }.first
+    }
+
+    private func firstNonEmptyUUIDArray(_ values: [[UUID]?]) -> [UUID]? {
+        for value in values {
+            if let value, !value.isEmpty {
+                return value
+            }
+        }
+        return nil
     }
 
     private func mergedTags(_ tags: [String]) -> [String] {
@@ -588,7 +626,7 @@ final class LibraryMetadataSync {
         totalDuration: Double,
         now: Date,
         libraryService: LocalLibraryService
-    ) -> AlbumEntry? {
+    ) throws -> AlbumEntry? {
         guard !candidates.isEmpty else { return nil }
 
         let sortedCandidates = candidates.sorted { lhs, rhs in
@@ -604,6 +642,9 @@ final class LibraryMetadataSync {
                 || !(lhs.sidecar.labelOrCompany ?? "").isEmpty
                 || lhs.sidecar.qqMusicAlbumMid != nil
                 || lhs.sidecar.metadataSource != nil
+                || lhs.sidecar.trackSortKey != nil
+                || lhs.sidecar.trackSortOrder != nil
+                || lhs.sidecar.customTrackOrder != nil
             let rhsHasUserContent =
                 !(rhs.sidecar.description ?? "").isEmpty
                 || rhs.sidecar.artworkFileName != nil
@@ -616,6 +657,9 @@ final class LibraryMetadataSync {
                 || !(rhs.sidecar.labelOrCompany ?? "").isEmpty
                 || rhs.sidecar.qqMusicAlbumMid != nil
                 || rhs.sidecar.metadataSource != nil
+                || rhs.sidecar.trackSortKey != nil
+                || rhs.sidecar.trackSortOrder != nil
+                || rhs.sidecar.customTrackOrder != nil
 
             if lhsHasUserContent != rhsHasUserContent {
                 return lhsHasUserContent && !rhsHasUserContent
@@ -658,6 +702,11 @@ final class LibraryMetadataSync {
         let mergedMetadataSource = sortedCandidates.compactMap { $0.sidecar.metadataSource }.first
         let mergedMetadataFetchedAt = sortedCandidates.compactMap { $0.sidecar.metadataFetchedAt }.first
         let mergedMetadataConfidence = sortedCandidates.compactMap { $0.sidecar.metadataConfidence }.first
+        let mergedTrackSortKey = firstNonEmpty(sortedCandidates.map { $0.sidecar.trackSortKey })
+        let mergedTrackSortOrder = firstNonEmpty(sortedCandidates.map { $0.sidecar.trackSortOrder })
+        let mergedCustomTrackOrder = firstNonEmptyUUIDArray(
+            sortedCandidates.map { $0.sidecar.customTrackOrder }
+        )
 
         let hasMergedCandidates = sortedCandidates.count > 1
         let candidateSidecar = AlbumSidecar(
@@ -679,7 +728,10 @@ final class LibraryMetadataSync {
             metadataFetchedAt: mergedMetadataFetchedAt,
             metadataConfidence: mergedMetadataConfidence,
             createdAt: sortedCandidates.map { $0.sidecar.createdAt }.min() ?? keeper.sidecar.createdAt,
-            updatedAt: keeper.sidecar.updatedAt
+            updatedAt: keeper.sidecar.updatedAt,
+            trackSortKey: mergedTrackSortKey,
+            trackSortOrder: mergedTrackSortOrder,
+            customTrackOrder: mergedCustomTrackOrder
         )
 
         let needsSidecarWrite =
@@ -700,6 +752,9 @@ final class LibraryMetadataSync {
             || keeper.sidecar.metadataSource != candidateSidecar.metadataSource
             || keeper.sidecar.metadataFetchedAt != candidateSidecar.metadataFetchedAt
             || keeper.sidecar.metadataConfidence != candidateSidecar.metadataConfidence
+            || keeper.sidecar.trackSortKey != candidateSidecar.trackSortKey
+            || keeper.sidecar.trackSortOrder != candidateSidecar.trackSortOrder
+            || keeper.sidecar.customTrackOrder != candidateSidecar.customTrackOrder
             || keeper.sidecar.createdAt != candidateSidecar.createdAt
 
         let mergedSidecar: AlbumSidecar
@@ -723,9 +778,12 @@ final class LibraryMetadataSync {
                 metadataFetchedAt: candidateSidecar.metadataFetchedAt,
                 metadataConfidence: candidateSidecar.metadataConfidence,
                 createdAt: candidateSidecar.createdAt,
-                updatedAt: now
+                updatedAt: now,
+                trackSortKey: candidateSidecar.trackSortKey,
+                trackSortOrder: candidateSidecar.trackSortOrder,
+                customTrackOrder: candidateSidecar.customTrackOrder
             )
-            libraryService.writeAlbumSidecar(
+            try libraryService.writeAlbumSidecar(
                 mergedSidecar,
                 artworkData: mergedSidecar.artworkFileName != nil ? artworkData : nil
             )
@@ -734,7 +792,7 @@ final class LibraryMetadataSync {
         }
 
         for candidate in sortedCandidates.dropFirst() {
-            libraryService.deleteAlbumEntry(id: candidate.sidecar.id)
+            try libraryService.deleteAlbumEntry(id: candidate.sidecar.id)
         }
 
         return AlbumEntry(

@@ -112,7 +112,7 @@ struct PlaylistEditSheet: View {
 
 #Preview("New Playlist") {
     let repository = StubLibraryRepository()
-    let libraryVM = LibraryViewModel(repository: repository)
+    let libraryVM = LibraryViewModel.preview(repository: repository)
 
     PlaylistEditSheet()
         .environment(libraryVM)

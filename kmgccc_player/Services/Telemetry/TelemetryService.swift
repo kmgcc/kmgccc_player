@@ -1239,7 +1239,6 @@ private struct TelemetryUploadClient: Codable, Sendable {
     // Coarse anonymous device info. Optional so old/disabled-consent payloads omit
     // them entirely (nil Optionals are dropped by JSONEncoder via encodeIfPresent).
     let deviceFamily: String?
-    let chipFamily: String?
     let chipTier: String?
     let memoryGB: Int?
     let osMajor: String?
@@ -1250,7 +1249,6 @@ private struct TelemetryUploadClient: Codable, Sendable {
         case platform
         case schemaVersion = "schema_version"
         case deviceFamily = "device_family"
-        case chipFamily = "chip_family"
         case chipTier = "chip_tier"
         case memoryGB = "memory_gb"
         case osMajor = "os_major"
@@ -1397,7 +1395,6 @@ private final class TelemetryUploader {
                 platform: "macOS",
                 schemaVersion: 3,
                 deviceFamily: device?.deviceFamily,
-                chipFamily: device?.chipFamily,
                 chipTier: device?.chipTier,
                 memoryGB: device?.memoryGB,
                 osMajor: device?.osMajor

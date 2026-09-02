@@ -31,12 +31,16 @@ struct NowPlayingView: View {
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
-    let libraryVM = LibraryViewModel(repository: StubLibraryRepository())
-    let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
+    let libraryVM = LibraryViewModel.preview(repository: StubLibraryRepository())
+    let cacheServices = LibraryCacheServices.preview
+    let appleMusicAdapter = AppleMusicPlaybackAdapter(previewLibraryTracksProvider: { [weak libraryVM] in libraryVM?.allTracks ?? [] })
     let playbackCoordinator = PlaybackCoordinator(
-        playerVM: playerVM,
+        localPlayback: playerVM,
         appleMusicAdapter: appleMusicAdapter,
-        systemNowPlayingProvider: SystemNowPlayingProvider(libraryVM: libraryVM)
+        systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryTracksProvider: { [weak libraryVM] in libraryVM?.allTracks ?? [] }),
+        artworkCache: cacheServices.trackArtworkCache,
+        lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
+        amllDBService: cacheServices.amllDBService
     )
     let ledMeter = LEDMeterService()
     let skinManager = SkinManager()
@@ -50,6 +54,7 @@ struct NowPlayingView: View {
         .environment(playerVM)
         .environment(playbackCoordinator)
         .environment(libraryVM)
+        .environment(cacheServices)
         .environment(uiState)
         .environment(ledMeter)
         .environment(skinManager)

@@ -34,6 +34,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         label: "AudioAnalysisHub.processing",
         qos: .utility
     )
+    private let processingQueueKey = DispatchSpecificKey<Void>()
 
     private let fftSize: Int = 2048
     // Tap delivery granularity. Smaller than the FFT window so fresh samples
@@ -95,6 +96,10 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     private nonisolated(unsafe) var isPlaying = false
     private nonisolated(unsafe) var pauseLingerActive = false
     private nonisolated(unsafe) var pauseLingerGeneration: UInt64 = 0
+    /// Renderer playback supplies decoded PCM directly instead of through the
+    /// silent legacy mixer tap. Once enabled, the FFT timer may run from that
+    /// external feed while keeping the mixer path available for fallback.
+    private nonisolated(unsafe) var isExternalFeedEnabled = false
     private static let pauseLingerSeconds: TimeInterval = 0.45
     private static let sampleBusDiagnosticsInterval: TimeInterval = 2.0
     private static let sampleBusWarningThrottle: TimeInterval = 10.0
@@ -117,6 +122,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         self.fftImag = [Float](repeating: 0, count: fftSize / 2)
         self.fftMagnitudes = [Float](repeating: 0, count: fftSize / 2)
 
+        processingQueue.setSpecific(key: processingQueueKey, value: ())
         rebuildFFT()
     }
 
@@ -131,7 +137,8 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         // now that a mixer is available; without this, the tap would never be
         // installed (nothing re-calls `start()` after the mixer attaches) and
         // every visualizer would stay frozen for the whole session.
-        let needsInstall = activeClients > 0 && !isInstalled
+        let hasConsumers = hasActiveConsumersLocked()
+        let needsInstall = hasConsumers && !isInstalled
         if needsInstall {
             let format = mixer.outputFormat(forBus: 0)
             installTapLocked(on: mixer, format: format, bufferSize: tapBufferSize)
@@ -176,12 +183,15 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     func stop() {
         stateLock.lock()
         activeClients = max(0, activeClients - 1)
-        if activeClients > 0 {
+        let hasConsumers = hasActiveConsumersLocked()
+        if hasConsumers {
             stateLock.unlock()
+            updateTimerState()
             return
         }
         guard isInstalled else {
             stateLock.unlock()
+            updateTimerState()
             purgeInactiveState(preservingMixerAttachment: true)
             return
         }
@@ -212,7 +222,8 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
     func restoreAfterEngineConfigurationChange() {
         stateLock.lock()
-        guard activeClients > 0 else {
+        let hasConsumers = hasActiveConsumersLocked()
+        guard hasConsumers else {
             stateLock.unlock()
             return
         }
@@ -237,7 +248,8 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
     func reinstallTapIfActive() {
         stateLock.lock()
-        guard activeClients > 0 else {
+        let hasConsumers = hasActiveConsumersLocked()
+        guard hasConsumers else {
             stateLock.unlock()
             return
         }
@@ -268,6 +280,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         consumerLock.lock()
         consumers[id] = callback
         consumerLock.unlock()
+        updateTimerState()
         return id
     }
 
@@ -275,11 +288,39 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         consumerLock.lock()
         consumers.removeValue(forKey: id)
         consumerLock.unlock()
+        updateTimerState()
     }
 
     // MARK: - Internal Processing
 
+    /// Feed renderer-timed canonical PCM into the existing FFT/ring-buffer
+    /// owner. RendererPlaybackPipeline schedules these calls against its output
+    /// clock, so eagerly decoded buffers do not make visualizers run ahead by
+    /// the renderer's entire prebuffer window.
+    nonisolated func enqueueExternalPCM(_ pcm: CanonicalPCM) {
+        guard pcm.frames > 0, pcm.channelCount > 0 else { return }
+        guard ringLock.try() else {
+            droppedTapBuffers &+= 1
+            return
+        }
+        sampleRate = Float(pcm.sampleRate)
+        let capacity = ringBuffer.count
+        for frame in 0..<pcm.frames {
+            ringBuffer[writeIndex] = pcm.data[frame * pcm.channelCount]
+            writeIndex += 1
+            if writeIndex >= capacity {
+                writeIndex = 0
+            }
+        }
+        ringLock.unlock()
+    }
+
     nonisolated private func enqueue(_ buffer: AVAudioPCMBuffer) {
+        stateLock.lock()
+        let isExternal = isExternalFeedEnabled
+        stateLock.unlock()
+        guard !isExternal else { return }
+
         guard let channelData = buffer.floatChannelData else { return }
         let frameLength = Int(buffer.frameLength)
         guard frameLength > 0 else { return }
@@ -310,6 +351,34 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     }
 
     // MARK: - Playback-state gating
+
+    /// Enables the renderer-owned PCM feed without removing the legacy mixer
+    /// attachment. Keeping both inputs available lets playback fall back to
+    /// AVAudioEngine after a renderer/CoreAudio failure without rebuilding the
+    /// visualization ownership graph.
+    func enableExternalFeed() {
+        stateLock.lock()
+        isExternalFeedEnabled = true
+        stateLock.unlock()
+        // A renderer load/route change is a new timeline. Drop any PCM left
+        // by the legacy mixer tap so the first FFT window cannot display the
+        // previous track while the renderer is still priming.
+        syncOnProcessingQueue {
+            resetBuffer()
+        }
+        updateTimerState()
+    }
+
+    /// Returns analysis ownership to the legacy mixer-tap path. The renderer
+    /// calls this when a track/session ends or when it falls back to
+    /// AVAudioEngine; leaving the external-feed flag set would keep a stale
+    /// renderer input advertised after its timeline has been flushed.
+    func disableExternalFeed() {
+        stateLock.lock()
+        isExternalFeedEnabled = false
+        stateLock.unlock()
+        updateTimerState()
+    }
 
     /// Drives whether the FFT `process()` timer runs. When playback pauses, the
     /// timer keeps running for a short linger (so meters fade to silence), then
@@ -354,11 +423,21 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         }
     }
 
+    /// Helper to check if any consumers or active clients exist.
+    /// Caller MUST hold `stateLock`.
+    private func hasActiveConsumersLocked() -> Bool {
+        consumerLock.lock()
+        defer { consumerLock.unlock() }
+        return !consumers.isEmpty || activeClients > 0
+    }
+
     /// Starts/stops the process timer to match the desired run state. Acquires
     /// `stateLock`; never call while already holding it.
     private func updateTimerState() {
         stateLock.lock()
-        let shouldRun = isInstalled && activeClients > 0 && (isPlaying || pauseLingerActive)
+        let hasConsumers = hasActiveConsumersLocked()
+        let inputAvailable = isInstalled || isExternalFeedEnabled
+        let shouldRun = inputAvailable && hasConsumers && (isPlaying || pauseLingerActive)
         if shouldRun {
             if timer == nil { startTimer() }
         } else if timer != nil {
@@ -405,18 +484,30 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     }
 
     private func purgeInactiveState(preservingMixerAttachment: Bool) {
-        consumerLock.lock()
-        consumers.removeAll()
-        consumerLock.unlock()
-
-        resetBuffer()
-        fftInput = [Float](repeating: 0, count: fftSize)
-        fftReal = [Float](repeating: 0, count: fftSize / 2)
-        fftImag = [Float](repeating: 0, count: fftSize / 2)
-        fftMagnitudes = [Float](repeating: 0, count: fftSize / 2)
-        sampleRate = 44_100
+        // `stop()` can be called from the main actor (LEDMeterService) or from
+        // another visualization queue. Cancelling the timer does not wait for a
+        // `process()` invocation that is already running, so replacing FFT
+        // storage here would race that invocation and can crash in libswiftCore.
+        syncOnProcessingQueue {
+            resetBuffer()
+            fftInput = [Float](repeating: 0, count: fftSize)
+            fftReal = [Float](repeating: 0, count: fftSize / 2)
+            fftImag = [Float](repeating: 0, count: fftSize / 2)
+            fftMagnitudes = [Float](repeating: 0, count: fftSize / 2)
+            sampleRate = 44_100
+        }
         if preservingMixerAttachment == false {
+            stateLock.lock()
             mixerNode = nil
+            stateLock.unlock()
+        }
+    }
+
+    private func syncOnProcessingQueue(_ work: () -> Void) {
+        if DispatchQueue.getSpecific(key: processingQueueKey) != nil {
+            work()
+        } else {
+            processingQueue.sync(execute: work)
         }
     }
 
@@ -437,6 +528,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
             readIdx += 1
             if readIdx >= capacity { readIdx = 0 }
         }
+        let currentSampleRate = sampleRate
         ringLock.unlock()  // Release lock ASAP
 
         // 1b. Remove DC offset BEFORE metrics and windowing. Decoded music usually
@@ -497,7 +589,7 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
         // 5. Notify Consumers
         let data = AudioAnalysisData(
             magnitudes: fftMagnitudes,
-            sampleRate: sampleRate,
+            sampleRate: currentSampleRate,
             fftSize: fftSize,
             rms: rms,
             peak: peak,
@@ -570,7 +662,9 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
 
     private nonisolated func isPlaybackActiveForDiagnostics() -> Bool {
         stateLock.lock()
-        let active = isInstalled && activeClients > 0 && (isPlaying || pauseLingerActive)
+        let hasConsumers = hasActiveConsumersLocked()
+        let inputAvailable = isInstalled || isExternalFeedEnabled
+        let active = inputAvailable && hasConsumers && (isPlaying || pauseLingerActive)
         stateLock.unlock()
         return active
     }

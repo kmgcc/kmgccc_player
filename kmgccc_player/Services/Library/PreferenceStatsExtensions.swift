@@ -8,61 +8,6 @@
 
 import SwiftUI
 
-// MARK: - Track Preference Extensions
-
-@MainActor
-extension Track {
-    /// Get the preference stats for this track.
-    var preferenceStats: TrackPreferenceStats {
-        PreferenceStatsService.shared.getStats(for: id)
-    }
-
-    /// Get the effective weight for weighted random selection.
-    var effectiveWeight: Double {
-        preferenceStats.effectiveWeightCache
-    }
-
-    /// Get the preference score (V2: finalPreference, human-readable range).
-    var preferenceScore: Double {
-        preferenceStats.preferenceScoreCache
-    }
-
-    /// Get the bounded preference (-1.0 ~ 1.0, V2 algorithm).
-    var boundedPreference: Double {
-        let result = PreferenceScorerV2.calculateScore(
-            stats: preferenceStats,
-            duration: duration,
-            manualLikeState: preferenceStats.manualLikeState
-        )
-        return result.boundedPreference
-    }
-
-    /// Whether this track has been manually liked.
-    var isManuallyLiked: Bool {
-        preferenceStats.manualLikeState == .liked
-    }
-
-    /// Whether this track has been manually disliked.
-    var isManuallyDisliked: Bool {
-        preferenceStats.manualLikeState == .disliked
-    }
-
-    /// Toggle the manual like state (none -> liked -> disliked -> none).
-    func toggleManualLikeState() {
-        let current = preferenceStats.manualLikeState
-        let next = current.nextState
-        guard current != next else { return }
-        PreferenceStatsService.shared.setManualLikeState(trackID: id, state: next)
-        LocalLibraryService.shared.writeMetaOnlyInBackground(for: self, reason: "manualLike")
-    }
-
-    /// Set manual like state explicitly.
-    func setManualLikeState(_ state: ManualLikeState) {
-        guard preferenceStats.manualLikeState != state else { return }
-        PreferenceStatsService.shared.setManualLikeState(trackID: id, state: state)
-        LocalLibraryService.shared.writeMetaOnlyInBackground(for: self, reason: "manualLike")
-    }
-}
 
 // MARK: - Preference Score Description
 
@@ -170,14 +115,24 @@ final class PreferenceStatsLifecycleHandler {
     static let shared = PreferenceStatsLifecycleHandler()
 
     private var autosaveTimer: Timer?
+    private weak var statsService: PreferenceStatsService?
     private var trackProvider: ((UUID) -> Track?)?
 
     private init() {
         setupNotifications()
     }
 
-    func configure(trackProvider: @escaping (UUID) -> Track?) {
+    func configure(
+        statsService: PreferenceStatsService,
+        trackProvider: @escaping (UUID) -> Track?
+    ) {
+        self.statsService = statsService
         self.trackProvider = trackProvider
+    }
+
+    func releaseLibrarySession() {
+        statsService = nil
+        trackProvider = nil
     }
 
     private func setupNotifications() {
@@ -212,7 +167,7 @@ final class PreferenceStatsLifecycleHandler {
     }
 
     private func savePendingStatsNow() {
-        PreferenceStatsService.shared.saveAllPendingNow(trackProvider: trackProvider)
+        statsService?.saveAllPendingNow(trackProvider: trackProvider)
     }
 
 }

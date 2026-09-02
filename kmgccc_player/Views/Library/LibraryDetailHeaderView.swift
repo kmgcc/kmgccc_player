@@ -76,6 +76,7 @@ struct LibraryDetailHeaderView: View {
     private static let visibleDescriptionLineCount = 6
 
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(UIStateViewModel.self) private var uiState: UIStateViewModel?
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.libraryHeaderSemanticPalette) private var headerSemanticPalette
     @Environment(\.libraryHeaderForegroundPalette) private var headerForegroundPaletteOverride
@@ -105,6 +106,7 @@ struct LibraryDetailHeaderView: View {
     @State private var lastArtistAutofillIdentity: String?
     @State private var isShowingArtistInfo = false
     @State private var isShowingAlbumInfo = false
+    @State private var isShowingDescriptionReader = false
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("LibraryDetailHeaderView.body")
@@ -149,6 +151,19 @@ struct LibraryDetailHeaderView: View {
                 }
                 .presentationSizing(.page)
             }
+        }
+        .sheet(isPresented: $isShowingDescriptionReader) {
+            DetailDescriptionReaderSheet(
+                title: readerTitle,
+                systemImage: readerSystemImage,
+                subtitle: readerSubtitle,
+                text: headerDescriptionText,
+                artworkImage: currentArtwork,
+                isCircleArtwork: config.isCircle,
+                paletteOverride: headerForegroundPaletteOverride ?? headerSemanticPalette?.appForeground,
+                accentColorOverride: headerSemanticPalette.map { colorScheme == .dark ? $0.uiAccentOnDarkColor : $0.uiAccentOnLightColor }
+            )
+            .environmentObject(themeStore)
         }
     }
 
@@ -357,10 +372,35 @@ struct LibraryDetailHeaderView: View {
         }
     }
 
+    @ViewBuilder
     private var subtitleView: some View {
-        Text(subtitleString)
-            .font(.callout)
-            .foregroundStyle(headerSecondaryTextColor)
+        if case .album(let entry, let stats) = config, !stats.artistName.isEmpty {
+            Button {
+                navigateToArtist(entry: entry, artistName: stats.artistName)
+            } label: {
+                Text(stats.artistName)
+                    .font(.callout)
+                    .foregroundStyle(headerSecondaryTextColor)
+            }
+            .buttonStyle(.plain)
+        } else {
+            Text(subtitleString)
+                .font(.callout)
+                .foregroundStyle(headerSecondaryTextColor)
+        }
+    }
+
+    private func navigateToArtist(entry: AlbumEntry, artistName: String) {
+        let artistKey = !entry.primaryArtistCanonicalName.isEmpty
+            ? entry.primaryArtistCanonicalName
+            : (LibraryNormalization.artistComponents(artistName).first?.canonicalName ?? "")
+        guard !artistKey.isEmpty else { return }
+        let target = LibrarySelection.artist(artistKey)
+        if let uiState {
+            uiState.pushSelectionInHomeContext(target, libraryVM: libraryVM)
+        } else {
+            libraryVM.selectOrResetCurrentSelection(target)
+        }
     }
 
     private var subtitleString: String {
@@ -443,10 +483,39 @@ struct LibraryDetailHeaderView: View {
             font: NSFont.preferredFont(forTextStyle: .callout),
             textColor: NSColor(headerSecondaryTextColor),
             lineSpacing: 0,
-            showsVerticalScroller: false
+            showsVerticalScroller: false,
+            onClick: { isShowingDescriptionReader = true }
         )
         .frame(height: headerDescriptionVisibleHeight, alignment: .top)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var readerTitle: String {
+        switch config {
+        case .playlist: return "歌单详情"
+        case .artist: return "艺人详情"
+        case .album: return "专辑详情"
+        }
+    }
+
+    private var readerSystemImage: String {
+        switch config {
+        case .playlist: return "music.note.list"
+        case .artist: return "person.crop.circle"
+        case .album: return "opticaldisc"
+        }
+    }
+
+    private var readerSubtitle: String {
+        switch config {
+        case .playlist(let p, _): return p.name
+        case .artist(let e, _): return e.displayName
+        case .album(let e, let stats):
+            if !stats.artistName.isEmpty {
+                return "\(e.displayTitle) - \(stats.artistName)"
+            }
+            return e.displayTitle
+        }
     }
 
     private var headerDescriptionVisibleHeight: CGFloat {
@@ -611,10 +680,12 @@ struct LibraryDetailHeaderView: View {
                 switch config {
                 case .playlist(let playlist, _):
                     let playlistID = playlist.id
+                    let libraryPaths = libraryVM.libraryPaths
                     let didSave = await Task.detached(priority: .utility) {
                         LocalLibraryService.savePlaylistCustomArtworkDataOnDisk(
                             playlistID: playlistID,
-                            pngData: pngData
+                            pngData: pngData,
+                            paths: libraryPaths
                         )
                     }.value
                     if didSave {
@@ -794,10 +865,12 @@ struct LibraryDetailHeaderView: View {
                 let didSave: Bool
                 if let generatedPNGData {
                     let playlistID = playlist.id
+                    let libraryPaths = libraryVM.libraryPaths
                     didSave = await Task.detached(priority: .utility) {
                         LocalLibraryService.savePlaylistGeneratedArtworkDataOnDisk(
                             playlistID: playlistID,
-                            pngData: generatedPNGData
+                            pngData: generatedPNGData,
+                            paths: libraryPaths
                         )
                     }.value
                 } else {
@@ -817,7 +890,7 @@ struct LibraryDetailHeaderView: View {
                 }
             case .artist(let entry, _):
                 let artistTracks = libraryVM.allTracks.filter {
-                    LibraryNormalization.containsArtist(entry.canonicalName, in: $0.artist)
+                    LibraryNormalization.containsArtist(entry.canonicalName, in: $0)
                         && $0.availability != .missing
                 }
                 let artistTrackSources = artistTracks.map { $0.artistArtworkSource() }
@@ -1051,7 +1124,7 @@ struct ArtistInfoEditSheet: View {
         artworkMessage = nil
         Task {
             let artistTracks = libraryVM.allTracks.filter {
-                LibraryNormalization.containsArtist(entry.canonicalName, in: $0.artist)
+                LibraryNormalization.containsArtist(entry.canonicalName, in: $0)
                     && $0.availability != .missing
             }
             let trackSources = artistTracks.map { $0.artistArtworkSource() }
@@ -1102,6 +1175,7 @@ struct ArtistInfoEditSheet: View {
 struct AlbumInfoEditSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(CoverDownloadService.self) private var coverDownloadService
     @Environment(NetEaseCoverService.self) private var netEaseCoverService
     @EnvironmentObject private var themeStore: ThemeStore
@@ -1180,7 +1254,8 @@ struct AlbumInfoEditSheet: View {
             load()
             coverCoordinator = CoverSearchCoordinator(
                 coverDownloadService: coverDownloadService,
-                netEaseCoverService: netEaseCoverService
+                netEaseCoverService: netEaseCoverService,
+                qqMusicCoverService: cacheServices.qqMusicCoverService
             )
         }
         .onDisappear {

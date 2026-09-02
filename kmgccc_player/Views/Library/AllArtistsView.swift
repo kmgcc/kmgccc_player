@@ -9,7 +9,7 @@
 //  Search and sort are driven by the existing top toolbar, not by any
 //  page-level controls. Toolbar search writes into
 //  `PlaylistPageController.searchText`; toolbar sort writes into
-//  `LibraryViewModel.artistSortKey` / `trackSortOrder`. This view simply
+//  `LibraryViewModel.artistSortKey` / `artistSortOrder`. This view simply
 //  reads those values to filter and order its rows.
 //
 
@@ -238,7 +238,7 @@ struct AllArtistsView: View {
         if artist.trackCount > 0 { return artist.trackCount }
         let canonical = artist.canonicalName
         return libraryVM.allTracks.lazy
-            .filter { LibraryNormalization.containsArtist(canonical, in: $0.artist) }
+            .filter { LibraryNormalization.containsArtist(canonical, in: $0) }
             .count
     }
 
@@ -246,7 +246,7 @@ struct AllArtistsView: View {
         if artist.albumCount > 0 { return artist.albumCount }
         let canonical = artist.canonicalName
         let albums = libraryVM.allTracks.lazy
-            .filter { LibraryNormalization.containsArtist(canonical, in: $0.artist) }
+            .filter { LibraryNormalization.containsArtist(canonical, in: $0) }
             .compactMap { $0.albumGroupKey }
         return Set(albums).count
     }
@@ -311,6 +311,7 @@ private struct ArtistListRow: View {
     let onDelete: () -> Void
 
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(\.colorScheme) private var colorScheme
     @State private var image: NSImage?
     @State private var isHovering = false
@@ -353,7 +354,9 @@ private struct ArtistListRow: View {
                 }
             }
         }
-        .task { await loadArtwork() }
+        .task(id: artworkLoadIdentity) {
+            await loadArtwork()
+        }
     }
 
     private var artworkView: some View {
@@ -438,29 +441,55 @@ private struct ArtistListRow: View {
         return "\(m) 分"
     }
 
+    private var artworkLoadIdentity: String {
+        [
+            artist.id.uuidString,
+            String(artist.updatedAt.timeIntervalSince1970),
+            artist.artworkFileName ?? "",
+            String(artist.artworkData?.count ?? 0),
+        ].joined(separator: ":")
+    }
+
     private func loadArtwork() async {
-        if let data = artist.artworkData, !data.isEmpty {
-            let checksum = ArtworkLoader.checksum(for: data)
-            let key = ArtworkLoader.cacheKey(
-                trackID: artist.id,
-                checksum: checksum,
-                targetPixelSize: CGSize(width: 132, height: 132)
-            )
-            image = await ArtworkLoader.loadImage(
-                artworkData: data,
-                cacheKey: key,
-                targetPixelSize: CGSize(width: 132, height: 132)
-            )
+        let current = libraryVM.artistEntries.first(where: { $0.id == artist.id }) ?? artist
+        if await loadPersistedArtwork(from: current) {
             return
         }
+
+        let didAutofill = await libraryVM.autofillArtistArtworkIfMissing(current)
+        guard !Task.isCancelled else { return }
+        if didAutofill,
+           let refreshed = libraryVM.artistEntries.first(where: { $0.id == artist.id }),
+           await loadPersistedArtwork(from: refreshed)
+        {
+            return
+        }
+
         let canonical = artist.canonicalName
         let tracks = libraryVM.allTracks.filter {
-            LibraryNormalization.containsArtist(canonical, in: $0.artist)
+            LibraryNormalization.containsArtist(canonical, in: $0)
         }
         let trackSources = tracks.map { $0.artistArtworkSource() }
         image = await ArtistArtworkGenerator.shared.generateArtwork(
             artistName: artist.displayName,
             trackSources: trackSources
         )
+    }
+
+    private func loadPersistedArtwork(from entry: ArtistEntry) async -> Bool {
+        guard let data = entry.artworkData, !data.isEmpty else { return false }
+        let checksum = ArtworkLoader.checksum(for: data)
+        let key = ArtworkLoader.cacheKey(
+            trackID: entry.id,
+            checksum: checksum,
+            targetPixelSize: CGSize(width: 132, height: 132)
+        )
+        image = await ArtworkLoader.loadImage(
+            artworkData: data,
+            cacheKey: key,
+            targetPixelSize: CGSize(width: 132, height: 132),
+            derivativeStore: cacheServices.artworkDerivativeStore
+        )
+        return image != nil
     }
 }

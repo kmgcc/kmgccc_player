@@ -1,13 +1,16 @@
 # 应用架构
 
-kmgccc_player 使用 SwiftUI 构建场景和大部分内容视图，主窗口、歌词宿主和部分桌面行为由 AppKit 补足。播放、歌词、主题和全屏状态分别由明确的服务或 ViewModel 持有。
+kmgccc_player 使用 SwiftUI 构建场景和大部分内容视图，主窗口、歌词宿主和部分桌面行为由 AppKit 补足。进程级播放展示与资料库级存储由独立 owner 管理：`AppSessionHost` 组合长期服务，`LibrarySessionController` 串行切换一套 active `LibrarySession`。
 
 核心设计原则：控制命令进入 `PlaybackCoordinator`，当前播放内容由 `NowPlayingPresentation` 统一向外发布。歌词、皮肤、主题和频谱消费这个稳定表示，不各自猜测当前播放来源。
 
 ```mermaid
 flowchart TD
-    App["KmgcccPlayerApp"] --> Session["AppSessionHost"]
-    Session --> Library["曲库与搜索"]
+    App["KmgcccPlayerApp"] --> Host["AppSessionHost"]
+    Host --> Registry["MusicLibraryRegistryStore"]
+    Registry --> Controller["LibrarySessionController"]
+    Controller --> Session["Active LibrarySession"]
+    Session --> Library["Repository / Search / History / Cache"]
     Session --> Playback["PlaybackCoordinator"]
     Playback --> Presentation["NowPlayingPresentation"]
     Presentation --> UI["界面与皮肤"]
@@ -19,22 +22,31 @@ flowchart TD
 
 ## 应用启动
 
-`KmgcccPlayerApp` 是进程入口。它先建立保存曲目索引的 SwiftData `ModelContainer`，再创建 `AppSessionHost`。主窗口由 `AppDelegate` 触发，窗口出现前调用 `AppSessionHost.setupIfNeeded()`，该方法只执行一次，恢复上次的暂停状态后由 `AppKitMainSplitWindowController` 显示主窗口。
+`KmgcccPlayerApp` 是进程入口。启动时先读取全局资料库 registry，并从 bookmark 与 `library.json` 解析初始 `LibraryContext`；没有可达资料库时保留 placeholder container，直接进入资料库创建/重连界面。真实 SwiftData `ModelContainer` 由 active `LibrarySession` 按资料库 root 创建，不是进程期固定单例。
 
-`AppSessionHost.setupDependencies()` 是应用级组合根。它在同一处建立并连接所有长期服务：
+`AppSessionHost.setupDependencies()` 是应用级组合根。它建立 registry、session controller 和进程生命周期服务；`LibrarySessionFactory` 为当前 context 建立资料库级 owner：
 
-- `SwiftDataLibraryRepository`、`LocalLibraryService` 和 `LibraryViewModel`：曲库索引、文件监控和导入；
-- `AVAudioPlaybackService` 和 `PlayerViewModel`：本地音频引擎、队列、进度和音量；
+- `SwiftDataLibraryRepository`、`LocalLibraryService`、`LibraryViewModel`、history 和 search index；
+- `FileImportService`、managed/referenced backend、source reconciler 与单一 `LibraryChangeMonitor`；
+- 当前资料库的 cache services、`AVAudioPlaybackService`、`PlayerViewModel` 和 queue；
 - 两个外部播放 provider、`PlaybackCoordinator`、`LyricsViewModel` 和 `LyricsPlaybackPipeline`；
 - `LEDMeterServiceProvider`、`SkinManager`、`FullscreenWindowManager` 以及遥测和生命周期回调。
 
 视图不应自行创建第二套播放、歌词或主题服务——否则窗口和全屏会各自持有一份状态，导致切换时出现不一致。
 
+### 资料库 session
+
+一个资料库由不可变 `LibraryContext` 定位。`library.json` 固定 managed/referenced 模式；全局 registry 只保存入口和 recent 指针，不保存曲目数据。切库先准备候选 session，再 flush、quiesce、解绑并 close 旧 session，最后加载和原子发布新 session。repository、scanner、索引和 cache task 都捕获 generation，过期结果不得跨 root 提交。
+
+托管 backend 把音频提交到资料库；原位 backend 只持久化 `TrackMediaLocator.referenced` 和外部 bookmark。播放及辅助文件读取统一经 locator resolver，不从 UI 或 repository 拼接裸路径。原位 source scanner 生成 diff，reconciler 通过 durable intent 更新 sidecar、runtime、playlist 和派生索引；FSEvents callback 本身不修改 Track。
+
 ## 播放
 
 ### 本地播放
 
-本地播放的命令入口是 `PlaybackCoordinator`。界面调用它的 play、pause、seek、next、previous 等方法，当来源不是本地时，播放某个曲目会先切回 `.local`。协调器把具体操作交给 `PlayerViewModel`，后者持有当前曲目、队列、播放顺序、进度、音量和播放态，并调用 `AVAudioPlaybackService` 驱动 AVAudioEngine。
+本地播放的命令入口是 `PlaybackCoordinator`。界面调用它的 play、pause、seek、next、previous 等方法，当来源不是本地时，播放某个曲目会先切回 `.local`。协调器把具体操作交给 `PlayerViewModel`，后者持有当前曲目、队列、播放顺序、进度、音量和播放态，并调用 `AVAudioPlaybackService` 驱动 AVAudioEngine。managed locator 由 captured `LibraryPaths` 解析；referenced locator 通过 source/file bookmark 和成对的 scope lease 解析。
+
+未来远程 catalog 不复用本地 bookmark/locator 伪装网络流。它应使用独立媒体表示、backend 与 playback adapter；当前 session/backend factory 和统一展示模型是预留边界，不包含未实现的远程 API 或行为承诺。
 
 `PlaybackCoordinator` 不复制播放状态。它在 `refreshPresentation()` 中读取快照，生成新的 `NowPlayingPresentation`，在内容确实变化时通知下游。删除曲目、恢复队列和切换播放顺序也要经过现有 owner——直接从视图修改队列或音频引擎，容易让 Now Playing、歌词和频谱仍停在旧状态。
 
@@ -131,6 +143,8 @@ App 依赖五个外部运行组件，都由 `bootstrap.sh` 构建，产物通过
 - **主题颜色**：`ThemeStore` 是唯一的状态 owner。界面消费 `SemanticPalette`，不要各自执行颜色分析。
 - **频谱**：所有可视化视图共享 `LEDMeterServiceProvider`，不要各自给 AVAudioEngine 安装 tap。
 - **曲库持久化**：Track 和 Playlist 的持久化路径有多个方法（meta only、meta+lyrics、meta+artwork、全部），匹配方法到改动范围，不要为只改元数据而重写封面和歌词 sidecar。
+- **资料库 session**：磁盘服务只使用创建时捕获的 `LibraryContext`。新增长期任务时要在 quiesce/close 取消，并验证旧 generation 不会写入新库。
+- **原位来源**：scanner 只产生 diff；删除、ignore、NCM reservation 和 source removal 通过现有事务服务处理，不从视图或 FSEvents callback 直接改 Track。
 
 ## 相关文档
 

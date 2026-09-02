@@ -47,14 +47,23 @@ protocol LibraryRepositoryProtocol: AnyObject {
     /// Ordinary metadata/artwork/lyrics updates must use the explicit persistence APIs below.
     func addTracks(_ tracks: [Track]) async
 
+    /// Commit import sidecars first and expose only successfully persisted tracks.
+    func commitImportedTracks(_ tracks: [Track]) async -> LibraryTrackPersistenceResult
+
+    /// Persist sidecars, then expose only IDs accepted by the durable visibility gate.
+    func commitImportedTracks(
+        _ tracks: [Track],
+        visibilityGate: @MainActor ([UUID]) async -> Set<UUID>
+    ) async -> LibraryTrackPersistenceResult
+
     /// Add a playlist (used for bootstrap from disk).
     func addPlaylist(_ playlist: Playlist) async
 
     /// Delete a track from the library.
-    func deleteTrack(_ track: Track) async
+    func deleteTrack(_ track: Track) async throws
 
     /// Delete multiple tracks from the library in one pass.
-    func deleteTracks(_ tracks: [Track]) async
+    func deleteTracks(_ tracks: [Track]) async throws
 
     /// Persist track sidecar metadata only, preserving existing artwork/lyrics file references.
     func persistTrackMetaOnly(_ track: Track, reason: String) async
@@ -83,8 +92,19 @@ protocol LibraryRepositoryProtocol: AnyObject {
     /// Reload just the specified tracks from the on-disk library sidecars into repository caches.
     func refreshTracks(ids: [UUID]) async -> [Track]
 
-    /// Check if a track with the given file path already exists.
-    func trackExists(filePath: String) async -> Bool
+    /// Resolve an existing referenced track by physical identity, with fingerprint fallback.
+    func track(matching fingerprint: ReferencedFileFingerprint) async -> Track?
+
+    /// Merge authoritative source memberships into an existing referenced locator.
+    func mergeReferencedLocator(_ locator: ReferencedFileLocator, into track: Track) async throws
+
+    /// Persist all reconcile authority sidecars without exposing runtime changes.
+    func commitReferencedSourceMutations(
+        _ mutations: [ReferencedSourceLocatorMutation]
+    ) async -> LibraryTrackPersistenceResult
+
+    /// Attach mutations whose authority sidecars have already committed.
+    func attachReferencedSourceMutations(_ mutations: [ReferencedSourceLocatorMutation]) async
 
     /// Check if a track with the same title and artist already exists.
     func trackExists(title: String, artist: String) async -> Bool
@@ -98,22 +118,30 @@ protocol LibraryRepositoryProtocol: AnyObject {
     func fetchPlaylists() async -> [Playlist]
 
     /// Create a new playlist.
-    func createPlaylist(name: String) async -> Playlist
+    func createPlaylist(name: String) async throws -> Playlist
 
     /// Rename a playlist.
-    func renamePlaylist(_ playlist: Playlist, name: String) async
+    func renamePlaylist(_ playlist: Playlist, name: String) async throws
 
     /// Persist playlist header metadata in one write path.
-    func updatePlaylistDetails(_ playlist: Playlist, name: String, description: String) async
+    func updatePlaylistDetails(_ playlist: Playlist, name: String, description: String) async throws
 
     /// Delete a playlist.
-    func deletePlaylist(_ playlist: Playlist) async
+    func deletePlaylist(_ playlist: Playlist) async throws
 
     /// Add tracks to a playlist.
-    func addTracks(_ tracks: [Track], to playlist: Playlist) async
+    func addTracks(_ tracks: [Track], to playlist: Playlist) async throws
 
     /// Remove tracks from a playlist.
-    func removeTracks(_ tracks: [Track], from playlist: Playlist) async
+    func removeTracks(_ tracks: [Track], from playlist: Playlist) async throws
+
+    /// Restores an exact playlist snapshot after a related sidecar commit
+    /// fails. Both ordering and original item timestamps are authoritative.
+    func replacePlaylistTracks(
+        _ tracks: [Track],
+        in playlist: Playlist,
+        itemAddedAt: [UUID: Date]
+    ) async throws
 
     // MARK: - Statistics
 
@@ -150,14 +178,14 @@ protocol LibraryRepositoryProtocol: AnyObject {
 
     func fetchArtistEntries() async -> [ArtistEntry]
     func fetchAlbumEntries() async -> [AlbumEntry]
-    func updateArtistEntry(_ entry: ArtistEntry) async
-    func updateAlbumEntry(_ entry: AlbumEntry) async
-    func applyArtistEdits(original: ArtistEntry, updated: ArtistEntry) async
-    func applyAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async
-    func deleteArtist(_ entry: ArtistEntry) async
-    func deleteAlbum(_ entry: AlbumEntry) async
+    func updateArtistEntry(_ entry: ArtistEntry) async throws
+    func updateAlbumEntry(_ entry: AlbumEntry) async throws
+    func applyArtistEdits(original: ArtistEntry, updated: ArtistEntry) async throws
+    func applyAlbumEdits(original: AlbumEntry, updated: AlbumEntry) async throws
+    func deleteArtist(_ entry: ArtistEntry) async throws
+    func deleteAlbum(_ entry: AlbumEntry) async throws
 
     // MARK: - Playlist Description
 
-    func updatePlaylistDescription(_ playlist: Playlist, description: String) async
+    func updatePlaylistDescription(_ playlist: Playlist, description: String) async throws
 }

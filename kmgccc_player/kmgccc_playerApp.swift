@@ -76,15 +76,29 @@ private struct PlaybackOrderMenuContent: View {
 @main
 struct KmgcccPlayerApp: App {
 
+    /// True when the process runs as an XCTest host. Under XCTest the app
+    /// must never boot the user's real session: security-scoped bookmarks
+    /// cannot be authorized in that context (tccd is unavailable), so the
+    /// source scope would mark every real source offline and persist that
+    /// into the user's actual library. Parallel test clones made this
+    /// visibly flap source/track availability.
+    static var isRunningTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
     // MARK: - AppDelegate
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appSession: AppSessionHost
 
-    // MARK: - SwiftData Container
+    // MARK: - Active Library Bootstrap
 
     let sharedModelContainer: ModelContainer
+    let initialLibraryContext: LibraryContext?
 
     init() {
+        UpdatePreferences.migrateIfNeeded()
+
         // Register the bundled Inter family before any settings preview or
         // lyric surface asks CoreText/SwiftUI to resolve it.
         BundledFontRegistrar.register()
@@ -102,28 +116,54 @@ struct KmgcccPlayerApp: App {
         ColorSystemSelfCheck.runIfRequested()
         #endif
 
+        let bootstrap: LegacyLibraryBootstrapResult
+        if Self.isRunningTests {
+            bootstrap = .noLibrary
+        } else {
+            do {
+                bootstrap = try LegacyLibraryBootstrap().run()
+            } catch {
+                // A damaged registry must not be replaced by an empty one. Keep the
+                // existing single-library startup path available until recovery UI loads.
+                Log.error("[LibraryBootstrap] pre-container bootstrap failed: \(error)", category: .library)
+                bootstrap = .noLibrary
+            }
+        }
+        let initialLibraryContext = bootstrap.context
+        if let initialLibraryContext {
+            // Libraries upgraded in place from the pre-manifest layout may be
+            // missing scaffolding that open-time validation requires.
+            do {
+                try LibraryScaffoldingRepair.repairIfNeeded(at: initialLibraryContext.rootURL)
+            } catch {
+                Log.warning("[LibraryBootstrap] scaffolding repair failed: \(error)", category: .library)
+            }
+        }
+
+        // The app shell owns only an in-memory placeholder. A persistent
+        // TrackIndex container is created and released with each LibrarySession.
         let sharedModelContainer: ModelContainer = {
-            let schema = Schema([
-                TrackIndexEntry.self
-            ])
+            let schema = Schema([TrackIndexEntry.self])
             let modelConfiguration = ModelConfiguration(
                 schema: schema,
-                url: TrackIndexStorePaths.storeURL
+                isStoredInMemoryOnly: true
             )
-
             do {
                 return try ModelContainer(for: schema, configurations: [modelConfiguration])
             } catch {
-                fatalError("Could not create ModelContainer: \(error)")
+                fatalError("Could not create placeholder ModelContainer: \(error)")
             }
         }()
 
+        self.initialLibraryContext = initialLibraryContext
         self.sharedModelContainer = sharedModelContainer
         let appSessionHost = AppSessionHost(
-            modelContainer: sharedModelContainer
+            modelContainer: sharedModelContainer,
+            initialLibraryContext: initialLibraryContext
         )
         _appSession = StateObject(wrappedValue: appSessionHost)
         AppDelegate.launchMainWindowHandler = { @MainActor in
+            guard !KmgcccPlayerApp.isRunningTests else { return }
             Log.debug("[AppLaunch] mainWindowHandler.begin", category: .ui)
             Task { @MainActor in
                 await appSessionHost.setupIfNeeded()
@@ -140,6 +180,12 @@ struct KmgcccPlayerApp: App {
         .commands {
             // 0. 移除默认设置菜单
             CommandGroup(replacing: .appSettings) {}
+
+            CommandGroup(after: .appInfo) {
+                Button("检查更新…") {
+                    UpdateCoordinator.shared.checkManually()
+                }
+            }
 
             // 1. 文件菜单
             CommandGroup(replacing: .newItem) {

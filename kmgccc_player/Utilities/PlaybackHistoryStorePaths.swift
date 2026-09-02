@@ -6,89 +6,133 @@
 //
 
 import Foundation
+import SQLite3
 
 enum PlaybackHistoryStorePaths {
-    static let directoryName = "PlaybackHistory"
-    static let storeFileName = "PlaybackHistory.sqlite"
-    private static let legacyMigrationKey = "playbackHistory.libraryStoreMigration.v1"
+    nonisolated static let directoryName = "PlaybackHistory"
+    nonisolated static let storeFileName = "PlaybackHistory.sqlite"
+    private static let legacyMigrationOwnerKey = "playbackHistory.legacyStoreMigration.owner.v3"
 
     /// Playback history is user-owned library data, not a regenerable cache.
-    /// Keeping it beside the library makes a custom library self-contained and
-    /// lets switching libraries switch the history timeline with it.
-    static var directoryURL: URL {
-        LocalLibraryPaths.libraryRootURL
-            .appendingPathComponent(directoryName, isDirectory: true)
+    static func directoryURL(in paths: LibraryPaths) -> URL {
+        paths.playbackHistoryRootURL
     }
 
-    static var storeURL: URL {
-        LocalLibraryPaths.libraryRootURL
-            .appendingPathComponent(directoryName, isDirectory: true)
-            .appendingPathComponent(storeFileName)
+    static func storeURL(in paths: LibraryPaths) -> URL {
+        paths.playbackHistoryStoreURL
     }
 
-    /// The pre-library-location store used by the first playback-history build.
-    /// It is only a migration source; new records never go back here.
-    static var legacyStoreURL: URL {
-        let appSupport =
-            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory())
-        let bundleID = Bundle.main.bundleIdentifier ?? "kmgccc.player"
-        let directory = appSupport
-            .appendingPathComponent(bundleID, isDirectory: true)
-            .appendingPathComponent("PlaybackHistory", isDirectory: true)
-        return directory.appendingPathComponent("PlaybackHistory.sqlite")
-    }
-
-    static func prepareStoreURL(at libraryRootURL: URL = LocalLibraryPaths.libraryRootURL) -> URL {
-        let directory = libraryRootURL.appendingPathComponent(directoryName, isDirectory: true)
-        let fileManager = FileManager.default
+    static func prepareStoreURL(
+        in paths: LibraryPaths,
+        fileManager: FileManager = .default
+    ) -> URL {
+        let directory = directoryURL(in: paths)
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-
-        let destination = directory.appendingPathComponent(storeFileName)
-        migrateLegacyStoreIfNeeded(to: destination, fileManager: fileManager)
-        return destination
+        return storeURL(in: paths)
     }
 
-    private static func migrateLegacyStoreIfNeeded(to destination: URL, fileManager: FileManager) {
-        let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: legacyMigrationKey) else { return }
+    static func migrateLegacyStoreIfNeeded(
+        to context: LibraryContext,
+        legacyStoreURL: URL,
+        upgradedLegacyRootURL: URL,
+        stagingRootURL: URL,
+        fileManager: FileManager = .default,
+        defaults: UserDefaults = .standard
+    ) throws {
+        let existingOwner = defaults.string(forKey: legacyMigrationOwnerKey)
+            .flatMap(UUID.init(uuidString:))
+        guard LegacyLibraryMigrationOwnership(ownerLibraryID: existingOwner).canClaim(
+            libraryID: context.id,
+            destinationRoot: context.rootURL,
+            upgradedLegacyRoot: upgradedLegacyRootURL
+        ) else {
+            return
+        }
 
+        let destination = storeURL(in: context.paths)
         if fileManager.fileExists(atPath: destination.path) {
-            defaults.set(true, forKey: legacyMigrationKey)
+            defaults.set(context.id.uuidString, forKey: legacyMigrationOwnerKey)
+            return
+        }
+        guard fileManager.fileExists(atPath: legacyStoreURL.path) else {
+            defaults.set(context.id.uuidString, forKey: legacyMigrationOwnerKey)
             return
         }
 
-        let legacy = legacyStoreURL
-        guard fileManager.fileExists(atPath: legacy.path) else {
-            defaults.set(true, forKey: legacyMigrationKey)
-            return
-        }
+        let stagingDirectory = stagingRootURL.appendingPathComponent(
+            "LegacyPlaybackHistory",
+            isDirectory: true
+        )
+        try? fileManager.removeItem(at: stagingDirectory)
+        try fileManager.createDirectory(
+            at: stagingDirectory,
+            withIntermediateDirectories: true
+        )
+        defer { try? fileManager.removeItem(at: stagingDirectory) }
 
-        // SQLite may have live WAL/SHM companions. Copy them as a group so a
-        // first launch after the feature upgrade does not lose committed events.
-        var didFail = false
-        for suffix in ["", "-wal", "-shm"] {
-            let sourceURL = URL(fileURLWithPath: legacy.path + suffix)
-            let destinationURL = URL(fileURLWithPath: destination.path + suffix)
-            guard fileManager.fileExists(atPath: sourceURL.path) else { continue }
-            do {
-                try fileManager.copyItem(at: sourceURL, to: destinationURL)
-            } catch {
-                didFail = true
-                let component = suffix.isEmpty ? "sqlite" : suffix
-                Log.warning(
-                    "[PlaybackHistory] legacy store migration failed for \(component): \(error)",
-                    category: .library
-                )
+        let suffixes = ["", "-wal", "-shm"]
+        var stagedFiles: [(source: URL, staged: URL, destination: URL)] = []
+        for suffix in suffixes {
+            let source = URL(fileURLWithPath: legacyStoreURL.path + suffix)
+            guard fileManager.fileExists(atPath: source.path) else { continue }
+            let staged = stagingDirectory.appendingPathComponent(storeFileName + suffix)
+            let destinationFile = URL(fileURLWithPath: destination.path + suffix)
+            guard !fileManager.fileExists(atPath: destinationFile.path) else {
+                throw CocoaError(.fileWriteFileExists)
             }
+            try fileManager.copyItem(at: source, to: staged)
+            let sourceSize = try source.resourceValues(forKeys: [.fileSizeKey]).fileSize
+            let stagedSize = try staged.resourceValues(forKeys: [.fileSizeKey]).fileSize
+            guard sourceSize == stagedSize else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            stagedFiles.append((source, staged, destinationFile))
+        }
+        guard stagedFiles.contains(where: { $0.source == legacyStoreURL }) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        try validateSQLite(at: stagingDirectory.appendingPathComponent(storeFileName))
+
+        try fileManager.createDirectory(
+            at: destination.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        var createdDestinationFiles: [URL] = []
+        do {
+            for file in stagedFiles {
+                try fileManager.copyItem(at: file.staged, to: file.destination)
+                createdDestinationFiles.append(file.destination)
+            }
+        } catch {
+            for url in createdDestinationFiles {
+                try? fileManager.removeItem(at: url)
+            }
+            throw error
         }
 
-        guard !didFail else {
-            for suffix in ["", "-wal", "-shm"] {
-                try? fileManager.removeItem(at: URL(fileURLWithPath: destination.path + suffix))
-            }
-            return
+        defaults.set(context.id.uuidString, forKey: legacyMigrationOwnerKey)
+    }
+
+    private static func validateSQLite(at url: URL) throws {
+        var database: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        guard sqlite3_open_v2(url.path, &database, flags, nil) == SQLITE_OK,
+              let database else {
+            if let database { sqlite3_close_v2(database) }
+            throw LibraryUpgradeValidationError.sqliteIntegrityFailed(url.lastPathComponent)
         }
-        defaults.set(true, forKey: legacyMigrationKey)
+        defer { sqlite3_close_v2(database) }
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA quick_check", -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            throw LibraryUpgradeValidationError.sqliteIntegrityFailed(url.lastPathComponent)
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let raw = sqlite3_column_text(statement, 0),
+              String(cString: raw).lowercased() == "ok" else {
+            throw LibraryUpgradeValidationError.sqliteIntegrityFailed(url.lastPathComponent)
+        }
     }
 }

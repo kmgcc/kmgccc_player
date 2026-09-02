@@ -22,13 +22,16 @@ enum LyricsSearchUpdate: Sendable {
 /// from sources that already completed.
 @MainActor
 final class LyricsSearchCoordinator {
+    private let lddcClient: LDDCClient
+    private let amlldbService: AMLLDBService
 
-    static let shared = LyricsSearchCoordinator()
-
-    private let lddcClient = LDDCClient.shared
-    private let amlldbService = AMLLDBService.shared
-
-    private init() {}
+    init(
+        lddcClient: LDDCClient = .shared,
+        amlldbService: AMLLDBService
+    ) {
+        self.lddcClient = lddcClient
+        self.amlldbService = amlldbService
+    }
 
     func search(
         title: String,

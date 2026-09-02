@@ -19,7 +19,7 @@ enum HomeSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .featured: return "精选"
-        case .artists: return "歌手"
+        case .artists: return "艺人"
         case .albums: return "专辑"
         case .playlists: return "播放列表"
         case .listeningFootprint: return "音乐足迹"

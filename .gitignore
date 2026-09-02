@@ -24,6 +24,7 @@ LDDC-main/
 
 # Local editor and tooling configuration (excluded from the published source).
 skills/
+.claude/
 /ARCHITECTURE.md
 /AGENTS.md
 /CLAUDE.md
@@ -47,6 +48,9 @@ Tools/ColorGoldenMaster/
 .sisyphus/
 .codegraph/
 .codex/
+.playwright-mcp/
+.mnemon/
+.omo/
 
 # macOS
 .DS_Store
@@ -54,6 +58,7 @@ Tools/ColorGoldenMaster/
 # Xcode
 build/
 /.build/
+Dependencies/PlayerAutomation/.build/
 *.project/xcuserdata
 *.project/xcshareddata
 *.project/project.xcworkspace/xcuserdata
@@ -85,6 +90,7 @@ dist/
 
 # Local build outputs
 .derivedDataLocalBuild/
+archive/
 *.flac
 *.bak
 *.profraw

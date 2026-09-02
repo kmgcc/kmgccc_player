@@ -338,13 +338,14 @@ actor PlaylistArtworkGenerator {
 
 @MainActor
 final class DetailHeaderArtworkResolver {
-
-    static let shared = DetailHeaderArtworkResolver()
-
-    private init() {}
-
-    private let libraryService = LocalLibraryService.shared
+    private let libraryService: LocalLibraryService
+    private let paths: LibraryPaths
     private let generator = PlaylistArtworkGenerator.shared
+
+    init(libraryService: LocalLibraryService) {
+        self.libraryService = libraryService
+        self.paths = libraryService.paths
+    }
 
     func resolveImmediately(for request: DetailHeaderArtworkRequest) -> ResolvedHeaderArtwork? {
         switch request {
@@ -382,7 +383,7 @@ final class DetailHeaderArtworkResolver {
                let image = ArtworkLoader.headerPreviewImage(data: data, maxPixelSize: 320)
             {
                 let fileURL = entry.artworkFileName.map {
-                    LocalLibraryPaths.artistFolderURL(for: entry.id).appendingPathComponent($0)
+                    paths.artistFolderURL(for: entry.id).appendingPathComponent($0)
                 }
                 return ResolvedHeaderArtwork(
                     selectionIdentity: selectionIdentity,
@@ -412,7 +413,7 @@ final class DetailHeaderArtworkResolver {
                let data = entry.artworkData,
                let image = ArtworkLoader.squareHeaderPreviewImage(data: data, maxPixelSize: 320)
             {
-                let fileURL = LocalLibraryPaths.albumFolderURL(for: entry.id).appendingPathComponent(fileName)
+                let fileURL = paths.albumFolderURL(for: entry.id).appendingPathComponent(fileName)
                 return ResolvedHeaderArtwork(
                     selectionIdentity: selectionIdentity,
                     selectionType: .album,
@@ -498,7 +499,7 @@ final class DetailHeaderArtworkResolver {
                 signature: signature
             )
 
-            let generatedURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlistID)
+            let generatedURL = paths.playlistGeneratedArtworkURL(for: playlistID)
             return ResolvedHeaderArtwork(
                 selectionIdentity: selectionIdentity,
                 selectionType: .playlist,

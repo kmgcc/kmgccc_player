@@ -53,6 +53,23 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         allTracks.append(contentsOf: tracks)
     }
 
+    func commitImportedTracks(_ tracks: [Track]) async -> LibraryTrackPersistenceResult {
+        await commitImportedTracks(tracks) { Set($0) }
+    }
+
+    func commitImportedTracks(
+        _ tracks: [Track],
+        visibilityGate: @MainActor ([UUID]) async -> Set<UUID>
+    ) async -> LibraryTrackPersistenceResult {
+        let visibleIDs = await visibilityGate(tracks.map(\.id))
+        let visibleTracks = tracks.filter { visibleIDs.contains($0.id) }
+        allTracks.append(contentsOf: visibleTracks)
+        return LibraryTrackPersistenceResult(
+            persistedTrackIDs: visibleTracks.map(\.id),
+            failedTrackIDs: tracks.filter { !visibleIDs.contains($0.id) }.map(\.id)
+        )
+    }
+
     func addPlaylist(_ playlist: Playlist) async {
         playlists.append(playlist)
     }
@@ -65,7 +82,7 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         changeHandler?(.tracksDeleted([track.id]))
     }
 
-    func deleteTracks(_ tracks: [Track]) async {
+    func deleteTracks(_ tracks: [Track]) async throws {
         let trackIDs = Set(tracks.map(\.id))
         allTracks.removeAll { trackIDs.contains($0.id) }
         for playlist in playlists {
@@ -135,8 +152,54 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         return allTracks.filter { idSet.contains($0.id) }
     }
 
-    func trackExists(filePath: String) async -> Bool {
-        allTracks.contains { $0.originalFilePath == filePath }
+    func track(matching fingerprint: ReferencedFileFingerprint) async -> Track? {
+        let key = ReferencedPhysicalIdentityKey(fingerprint)
+        return allTracks.first { track in
+            guard case let .referenced(locator) = track.mediaLocator else { return false }
+            return locator.locations.contains { location in
+                guard let existing = location.fingerprint else { return false }
+                return ReferencedPhysicalIdentityKey(existing) == key
+            }
+        }
+    }
+
+    func mergeReferencedLocator(_ incoming: ReferencedFileLocator, into track: Track) async throws {
+        guard case let .referenced(existing) = track.mediaLocator else {
+            throw LibraryBackendError.modeMismatch(expected: .referenced, actual: .managed)
+        }
+        var merged = incoming
+        for location in existing.locations {
+            merged.mergeLocation(location)
+        }
+        merged.primarySourceID = merged.sourceMemberships.min {
+            if $0.relativePath.count != $1.relativePath.count {
+                return $0.relativePath.count < $1.relativePath.count
+            }
+            return $0.sourceID.uuidString < $1.sourceID.uuidString
+        }?.sourceID
+        track.mediaLocator = .referenced(merged)
+        // The incoming locator was produced from a readable import selection;
+        // a reused track must become playable immediately, even if a previous
+        // failed resolution had left its cached state as `.missing`.
+        track.availability = .available
+    }
+
+    func commitReferencedSourceMutations(
+        _ mutations: [ReferencedSourceLocatorMutation]
+    ) async -> LibraryTrackPersistenceResult {
+        LibraryTrackPersistenceResult(
+            persistedTrackIDs: mutations.map(\.trackID),
+            failedTrackIDs: []
+        )
+    }
+
+    func attachReferencedSourceMutations(_ mutations: [ReferencedSourceLocatorMutation]) async {
+        let byID = Dictionary(uniqueKeysWithValues: mutations.map { ($0.trackID, $0) })
+        for track in allTracks {
+            guard let mutation = byID[track.id] else { continue }
+            track.mediaLocator = .referenced(mutation.locator)
+            track.availability = mutation.availability
+        }
     }
 
     func trackExists(title: String, artist: String) async -> Bool {
@@ -156,32 +219,40 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
         playlists
     }
 
-    func createPlaylist(name: String) async -> Playlist {
+    func createPlaylist(name: String) async throws -> Playlist {
         let playlist = Playlist(name: name)
         playlists.append(playlist)
         return playlist
     }
 
-    func renamePlaylist(_ playlist: Playlist, name: String) async {
+    func renamePlaylist(_ playlist: Playlist, name: String) async throws {
         playlist.name = name
     }
 
-    func updatePlaylistDetails(_ playlist: Playlist, name: String, description: String) async {
+    func updatePlaylistDetails(_ playlist: Playlist, name: String, description: String) async throws {
         playlist.name = name
         playlist.userDescription = description
     }
 
-    func deletePlaylist(_ playlist: Playlist) async {
+    func deletePlaylist(_ playlist: Playlist) async throws {
         playlists.removeAll { $0.id == playlist.id }
     }
 
-    func addTracks(_ tracks: [Track], to playlist: Playlist) async {
+    func addTracks(_ tracks: [Track], to playlist: Playlist) async throws {
         playlist.tracks.append(contentsOf: tracks)
     }
 
-    func removeTracks(_ tracks: [Track], from playlist: Playlist) async {
+    func removeTracks(_ tracks: [Track], from playlist: Playlist) async throws {
         let trackIds = Set(tracks.map { $0.id })
         playlist.tracks.removeAll { trackIds.contains($0.id) }
+    }
+
+    func replacePlaylistTracks(
+        _ tracks: [Track],
+        in playlist: Playlist,
+        itemAddedAt _: [UUID: Date]
+    ) async throws {
+        playlist.tracks = tracks
     }
 
     // MARK: - Statistics
@@ -205,7 +276,7 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
     func fetchArtistSections() async -> [ArtistSection] {
         var buckets: [String: (name: String, tracks: [Track])] = [:]
         for track in allTracks {
-            for component in LibraryNormalization.artistComponents(track.artist) {
+            for component in LibraryNormalization.artistComponents(for: track) {
                 var bucket = buckets[component.canonicalName] ?? (component.displayName, [])
                 bucket.tracks.append(track)
                 buckets[component.canonicalName] = bucket
@@ -251,13 +322,13 @@ final class StubLibraryRepository: LibraryRepositoryProtocol {
 
     func fetchArtistEntries() async -> [ArtistEntry] { [] }
     func fetchAlbumEntries() async -> [AlbumEntry] { [] }
-    func updateArtistEntry(_ entry: ArtistEntry) async {}
-    func updateAlbumEntry(_ entry: AlbumEntry) async {}
-    func applyArtistEdits(original _: ArtistEntry, updated _: ArtistEntry) async {}
-    func applyAlbumEdits(original _: AlbumEntry, updated _: AlbumEntry) async {}
-    func deleteArtist(_ entry: ArtistEntry) async {}
-    func deleteAlbum(_ entry: AlbumEntry) async {}
-    func updatePlaylistDescription(_ playlist: Playlist, description: String) async {}
+    func updateArtistEntry(_ entry: ArtistEntry) async throws {}
+    func updateAlbumEntry(_ entry: AlbumEntry) async throws {}
+    func applyArtistEdits(original _: ArtistEntry, updated _: ArtistEntry) async throws {}
+    func applyAlbumEdits(original _: AlbumEntry, updated _: AlbumEntry) async throws {}
+    func deleteArtist(_ entry: ArtistEntry) async throws {}
+    func deleteAlbum(_ entry: AlbumEntry) async throws {}
+    func updatePlaylistDescription(_ playlist: Playlist, description: String) async throws {}
 
     // MARK: - Fake Data Setup
 

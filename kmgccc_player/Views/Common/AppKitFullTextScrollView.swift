@@ -22,6 +22,7 @@ struct AppKitFullTextScrollView: NSViewRepresentable {
     let textColor: NSColor
     var lineSpacing: CGFloat = 0
     var showsVerticalScroller = false
+    var onClick: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -30,7 +31,8 @@ struct AppKitFullTextScrollView: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView(frame: .zero)
         let textView = NSTextView(frame: .zero)
-        configure(scrollView: scrollView, textView: textView)
+        configure(scrollView: scrollView, textView: textView, coordinator: context.coordinator)
+        context.coordinator.onClick = onClick
         applyTextIfNeeded(to: textView, coordinator: context.coordinator, resetScroll: false)
         return scrollView
     }
@@ -39,6 +41,7 @@ struct AppKitFullTextScrollView: NSViewRepresentable {
         guard let textView = scrollView.documentView as? NSTextView else { return }
 
         scrollView.hasVerticalScroller = showsVerticalScroller
+        context.coordinator.onClick = onClick
 
         let textChanged = context.coordinator.lastText != text
         let styleChanged = !sameFont(context.coordinator.lastFont, font)
@@ -49,14 +52,20 @@ struct AppKitFullTextScrollView: NSViewRepresentable {
         applyTextIfNeeded(to: textView, coordinator: context.coordinator, resetScroll: textChanged)
     }
 
-    final class Coordinator {
+    final class Coordinator: NSObject {
         var lastText: String?
         var lastFont: NSFont?
         var lastTextColor: NSColor?
         var lastLineSpacing: CGFloat?
+        var onClick: (() -> Void)?
+
+        @objc func handleTextClick(_ sender: NSClickGestureRecognizer) {
+            guard sender.state == .ended else { return }
+            onClick?()
+        }
     }
 
-    private func configure(scrollView: NSScrollView, textView: NSTextView) {
+    private func configure(scrollView: NSScrollView, textView: NSTextView, coordinator: Coordinator) {
         scrollView.drawsBackground = false
         scrollView.backgroundColor = .clear
         scrollView.borderType = .noBorder
@@ -90,6 +99,13 @@ struct AppKitFullTextScrollView: NSViewRepresentable {
                 height: CGFloat.greatestFiniteMagnitude
             )
         }
+
+        let clickRecognizer = NSClickGestureRecognizer(
+            target: coordinator,
+            action: #selector(Coordinator.handleTextClick(_:))
+        )
+        clickRecognizer.numberOfClicksRequired = 1
+        textView.addGestureRecognizer(clickRecognizer)
 
         scrollView.documentView = textView
     }

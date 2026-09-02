@@ -15,7 +15,6 @@ import IOKit
 /// specific machine or user.
 struct DeviceTelemetrySnapshot: Equatable, Sendable {
     let deviceFamily: String
-    let chipFamily: String
     let chipTier: String
     let memoryGB: Int?
     let osMajor: String
@@ -27,19 +26,14 @@ enum DeviceTelemetryProvider {
     static func current() -> DeviceTelemetrySnapshot {
         let modelIdentifier = sysctlString("hw.model")
         let brandString = sysctlString("machdep.cpu.brand_string")
-        let isAppleSilicon = sysctlFlag("hw.optional.arm64")
-        let marketingName = ioRegistryProductName()
+        let marketingName = ioRegistryProductString("product-name")
+        let socName = ioRegistryProductString("product-soc-name")
 
         let family = DeviceTelemetryClassifier.deviceFamily(
             fromCandidates: [marketingName, modelIdentifier]
         )
-        let chipFamily = DeviceTelemetryClassifier.chipFamily(
-            isAppleSilicon: isAppleSilicon,
-            brandString: brandString
-        )
         let chipTier = DeviceTelemetryClassifier.chipTier(
-            family: chipFamily,
-            brandString: brandString
+            fromCandidates: [socName, brandString]
         )
         let memoryGB = DeviceTelemetryClassifier.memoryGB(
             fromBytes: ProcessInfo.processInfo.physicalMemory
@@ -50,7 +44,6 @@ enum DeviceTelemetryProvider {
 
         return DeviceTelemetrySnapshot(
             deviceFamily: family,
-            chipFamily: chipFamily,
             chipTier: chipTier,
             memoryGB: memoryGB,
             osMajor: osMajor
@@ -69,22 +62,14 @@ enum DeviceTelemetryProvider {
         return value.isEmpty ? nil : value
     }
 
-    private static func sysctlFlag(_ name: String) -> Bool? {
-        var value: Int32 = 0
-        var size = MemoryLayout<Int32>.size
-        guard sysctlbyname(name, &value, &size, nil, 0) == 0 else { return nil }
-        return value != 0
-    }
-
-    /// On Apple Silicon the device tree exposes a coarse marketing family at
-    /// `IODeviceTree:/product` → `product-name` (NUL-terminated UTF-8 in CFData).
-    /// Returns `nil` when unavailable so the caller falls back to `hw.model`.
-    private static func ioRegistryProductName() -> String? {
+    /// Apple Silicon exposes both a marketing product name and a coarse SoC name
+    /// under `IODeviceTree:/product` (usually NUL-terminated UTF-8 in CFData).
+    private static func ioRegistryProductString(_ key: String) -> String? {
         let entry = IORegistryEntryFromPath(kIOMainPortDefault, "IODeviceTree:/product")
         guard entry != MACH_PORT_NULL else { return nil }
         defer { IOObjectRelease(entry) }
         guard let property = IORegistryEntryCreateCFProperty(
-            entry, "product-name" as CFString, kCFAllocatorDefault, 0
+            entry, key as CFString, kCFAllocatorDefault, 0
         )?.takeRetainedValue() else {
             return nil
         }

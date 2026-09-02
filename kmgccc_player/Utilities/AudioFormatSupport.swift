@@ -51,7 +51,7 @@ nonisolated enum AudioFormatSupport {
     /// Content types offered by the import `NSOpenPanel`. Built from explicit
     /// system types where they exist, with `UTType(filenameExtension:)`
     /// fallbacks so bare extensions (notably `.aac`) are never greyed out.
-    static let openPanelContentTypes: [UTType] = {
+    static let playableOpenPanelContentTypes: [UTType] = {
         var types: [UTType] = [
             .mp3,
             .mpeg4Audio,
@@ -71,7 +71,7 @@ nonisolated enum AudioFormatSupport {
         // important one: it is not a stable built-in preset, so resolving it by
         // extension is what makes it selectable in the panel.
         let extensionFallbacks = [
-            "aac", "flac", "m4a", "alac", "caf", "m4b", "mp4", "aif", "ncm",
+            "aac", "flac", "m4a", "alac", "caf", "m4b", "mp4", "aif",
         ]
         for ext in extensionFallbacks {
             if let type = UTType(filenameExtension: ext) { types.append(type) }
@@ -79,6 +79,13 @@ nonisolated enum AudioFormatSupport {
         // De-duplicate while preserving order.
         var seen = Set<UTType>()
         return types.filter { seen.insert($0).inserted }
+    }()
+
+    static let openPanelContentTypes: [UTType] = {
+        guard let ncm = UTType(filenameExtension: "ncm") else {
+            return playableOpenPanelContentTypes
+        }
+        return playableOpenPanelContentTypes + [ncm]
     }()
 
     /// Whether `url`'s extension is something the importer accepts.

@@ -7,223 +7,71 @@
 //
 
 import AppKit
-import Darwin
-import Dispatch
 import Foundation
-import ImageIO
 
-nonisolated struct TrackSidecar: Codable {
-    let schemaVersion: Int
-    let id: UUID
-    let title: String
-    let artist: String
-    let album: String
-    let albumArtist: String?
-    let description: String?
-    let genreTags: [String]
-    let language: String?
-    let labelOrCompany: String?
-    let releaseDate: Date?
-    let qqMusicSongMid: String?
-    let metadataSource: String?
-    let metadataFetchedAt: Date?
-    let metadataConfidence: Double?
-    let duration: Double
-    let addedAt: Date
-    let importedAt: Date?
-    let lyricsTimeOffsetMs: Double?
-    let originalFilePath: String?
-    let audioFileName: String?
-    let artworkFileName: String?
-    let lyricsFileName: String?
-    let lyricsType: String?
-    let ttmlLyricsFileName: String?
-    let ncmSourcePath: String?
-    let playCount: Int?
-    /// Extended preference statistics (schemaVersion >= 3)
-    let preferenceStats: TrackPreferenceStats?
+nonisolated enum LibraryPlaylistPersistenceError: Error, Equatable, LocalizedError, Sendable {
+    case writeFailed(playlistID: UUID, reason: String)
+    case deleteFailed(playlistID: UUID, reason: String)
 
-    enum CodingKeys: String, CodingKey {
-        case schemaVersion
-        case id
-        case title
-        case artist
-        case album
-        case albumArtist
-        case description
-        case genreTags
-        case language
-        case labelOrCompany
-        case releaseDate
-        case qqMusicSongMid
-        case metadataSource
-        case metadataFetchedAt
-        case metadataConfidence
-        case duration
-        case addedAt
-        case importedAt
-        case lyricsTimeOffsetMs
-        case originalFilePath
-        case audioFileName
-        case artworkFileName
-        case lyricsFileName
-        case lyricsType
-        case ttmlLyricsFileName
-        case ncmSourcePath
-        case playCount
-        case preferenceStats
-    }
-
-    init(
-        schemaVersion: Int = 6,
-        id: UUID,
-        title: String,
-        artist: String,
-        album: String,
-        albumArtist: String? = nil,
-        description: String? = nil,
-        genreTags: [String] = [],
-        language: String? = nil,
-        labelOrCompany: String? = nil,
-        releaseDate: Date? = nil,
-        qqMusicSongMid: String? = nil,
-        metadataSource: String? = nil,
-        metadataFetchedAt: Date? = nil,
-        metadataConfidence: Double? = nil,
-        duration: Double,
-        addedAt: Date,
-        importedAt: Date?,
-        lyricsTimeOffsetMs: Double?,
-        originalFilePath: String?,
-        audioFileName: String?,
-        artworkFileName: String?,
-        lyricsFileName: String?,
-        lyricsType: String?,
-        ttmlLyricsFileName: String?,
-        ncmSourcePath: String?,
-        playCount: Int? = 0,
-        preferenceStats: TrackPreferenceStats? = nil
-    ) {
-        self.schemaVersion = schemaVersion
-        self.id = id
-        self.title = title
-        self.artist = artist
-        self.album = album
-        self.albumArtist = albumArtist
-        self.description = description
-        self.genreTags = genreTags
-        self.language = language
-        self.labelOrCompany = labelOrCompany
-        self.releaseDate = releaseDate
-        self.qqMusicSongMid = qqMusicSongMid
-        self.metadataSource = metadataSource
-        self.metadataFetchedAt = metadataFetchedAt
-        self.metadataConfidence = metadataConfidence
-        self.duration = duration
-        self.addedAt = addedAt
-        self.importedAt = importedAt
-        self.lyricsTimeOffsetMs = lyricsTimeOffsetMs
-        self.originalFilePath = originalFilePath
-        self.audioFileName = audioFileName
-        self.artworkFileName = artworkFileName
-        self.lyricsFileName = lyricsFileName
-        self.lyricsType = lyricsType
-        self.ttmlLyricsFileName = ttmlLyricsFileName
-        self.ncmSourcePath = ncmSourcePath
-        self.playCount = playCount
-        self.preferenceStats = preferenceStats
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-
-        // schemaVersion defaults to 1 for backward compatibility
-        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
-
-        id = try container.decode(UUID.self, forKey: .id)
-        title = try container.decode(String.self, forKey: .title)
-        artist = try container.decode(String.self, forKey: .artist)
-        album = try container.decode(String.self, forKey: .album)
-        albumArtist = try container.decodeIfPresent(String.self, forKey: .albumArtist)
-        description = try container.decodeIfPresent(String.self, forKey: .description)
-        if let decodedTags = try? container.decode([String].self, forKey: .genreTags) {
-            genreTags = decodedTags
-        } else if let decodedTags = try? container.decode(String.self, forKey: .genreTags) {
-            genreTags = decodedTags
-                .split(separator: ",")
-                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-        } else {
-            genreTags = []
+    var errorDescription: String? {
+        switch self {
+        case .writeFailed(let playlistID, let reason):
+            return "歌单 \(playlistID) 无法写入磁盘：\(reason)"
+        case .deleteFailed(let playlistID, let reason):
+            return "歌单 \(playlistID) 无法从磁盘删除：\(reason)"
         }
-        language = try container.decodeIfPresent(String.self, forKey: .language)
-        labelOrCompany = try container.decodeIfPresent(String.self, forKey: .labelOrCompany)
-        releaseDate = try container.decodeIfPresent(Date.self, forKey: .releaseDate)
-        qqMusicSongMid = try container.decodeIfPresent(String.self, forKey: .qqMusicSongMid)
-        metadataSource = try container.decodeIfPresent(String.self, forKey: .metadataSource)
-        metadataFetchedAt = try container.decodeIfPresent(Date.self, forKey: .metadataFetchedAt)
-        metadataConfidence = try container.decodeIfPresent(Double.self, forKey: .metadataConfidence)
-        duration = try container.decode(Double.self, forKey: .duration)
-        addedAt = try container.decode(Date.self, forKey: .addedAt)
-        importedAt = try container.decodeIfPresent(Date.self, forKey: .importedAt)
-        lyricsTimeOffsetMs = try container.decodeIfPresent(Double.self, forKey: .lyricsTimeOffsetMs)
-        originalFilePath = try container.decodeIfPresent(String.self, forKey: .originalFilePath)
-        audioFileName = try container.decodeIfPresent(String.self, forKey: .audioFileName)
-        artworkFileName = try container.decodeIfPresent(String.self, forKey: .artworkFileName)
-        lyricsFileName = try container.decodeIfPresent(String.self, forKey: .lyricsFileName)
-        lyricsType = try container.decodeIfPresent(String.self, forKey: .lyricsType)
-        ttmlLyricsFileName = try container.decodeIfPresent(String.self, forKey: .ttmlLyricsFileName)
-        ncmSourcePath = try container.decodeIfPresent(String.self, forKey: .ncmSourcePath)
-        // playCount defaults to 0 for backward compatibility (schemaVersion 1 doesn't have this field)
-        playCount = try container.decodeIfPresent(Int.self, forKey: .playCount) ?? 0
-
-        // preferenceStats: migrate from legacy playCount if not present
-        if let stats = try container.decodeIfPresent(TrackPreferenceStats.self, forKey: .preferenceStats) {
-            preferenceStats = stats
-        } else if schemaVersion < 3, let legacyPlayCount = playCount, legacyPlayCount > 0 {
-            // Migration: create preferenceStats from legacy playCount
-            preferenceStats = TrackPreferenceStats.fromLegacy(playCount: legacyPlayCount)
-        } else {
-            preferenceStats = nil
-        }
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(6, forKey: .schemaVersion)
-        try container.encode(id, forKey: .id)
-        try container.encode(title, forKey: .title)
-        try container.encode(artist, forKey: .artist)
-        try container.encode(album, forKey: .album)
-        try container.encodeIfPresent(albumArtist, forKey: .albumArtist)
-        try container.encodeIfPresent(description, forKey: .description)
-        if !genreTags.isEmpty {
-            try container.encode(genreTags, forKey: .genreTags)
-        }
-        try container.encodeIfPresent(language, forKey: .language)
-        try container.encodeIfPresent(labelOrCompany, forKey: .labelOrCompany)
-        try container.encodeIfPresent(releaseDate, forKey: .releaseDate)
-        try container.encodeIfPresent(qqMusicSongMid, forKey: .qqMusicSongMid)
-        try container.encodeIfPresent(metadataSource, forKey: .metadataSource)
-        try container.encodeIfPresent(metadataFetchedAt, forKey: .metadataFetchedAt)
-        try container.encodeIfPresent(metadataConfidence, forKey: .metadataConfidence)
-        try container.encode(duration, forKey: .duration)
-        try container.encode(addedAt, forKey: .addedAt)
-        try container.encodeIfPresent(importedAt, forKey: .importedAt)
-        try container.encodeIfPresent(lyricsTimeOffsetMs, forKey: .lyricsTimeOffsetMs)
-        try container.encodeIfPresent(originalFilePath, forKey: .originalFilePath)
-        try container.encodeIfPresent(audioFileName, forKey: .audioFileName)
-        try container.encodeIfPresent(artworkFileName, forKey: .artworkFileName)
-        try container.encodeIfPresent(lyricsFileName, forKey: .lyricsFileName)
-        try container.encodeIfPresent(lyricsType, forKey: .lyricsType)
-        try container.encodeIfPresent(ttmlLyricsFileName, forKey: .ttmlLyricsFileName)
-        try container.encodeIfPresent(ncmSourcePath, forKey: .ncmSourcePath)
-        // NOTE: playCount is deprecated - all stats now live in preferenceStats
-        // We intentionally do NOT write playCount to avoid double-counting
-        // The field is kept in CodingKeys only for backward compatibility during decoding
-        try container.encodeIfPresent(preferenceStats, forKey: .preferenceStats)
     }
 }
+
+nonisolated enum LibraryMetadataPersistenceError: Error, Equatable, LocalizedError, Sendable {
+    case writeArtistFailed(artistID: UUID, reason: String)
+    case writeAlbumFailed(albumID: UUID, reason: String)
+    case deleteArtistFailed(artistID: UUID, reason: String)
+    case deleteAlbumFailed(albumID: UUID, reason: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .writeArtistFailed(let id, let reason):
+            return "艺人资料 \(id) 无法写入磁盘：\(reason)"
+        case .writeAlbumFailed(let id, let reason):
+            return "专辑资料 \(id) 无法写入磁盘：\(reason)"
+        case .deleteArtistFailed(let id, let reason):
+            return "艺人资料 \(id) 无法从磁盘删除：\(reason)"
+        case .deleteAlbumFailed(let id, let reason):
+            return "专辑资料 \(id) 无法从磁盘删除：\(reason)"
+        }
+    }
+}
+
+nonisolated enum LibraryTrackDeletionError: Error, Equatable, LocalizedError, Sendable {
+    case playlistPersistenceFailed(playlistID: UUID, reason: String)
+    case cleanupIncomplete(
+        trackFolderIDs: [UUID],
+        artistEntryIDs: [UUID],
+        albumEntryIDs: [UUID]
+    )
+
+    var errorDescription: String? {
+        switch self {
+        case .playlistPersistenceFailed(let id, let reason):
+            return "删除歌曲时无法保存歌单 \(id)：\(reason)"
+        case .cleanupIncomplete(let tracks, let artists, let albums):
+            return "删除已提交，但仍有清理残留（歌曲文件夹 \(tracks.count) 个，艺人 \(artists.count) 个，专辑 \(albums.count) 个）。"
+        }
+    }
+}
+
+nonisolated enum LibraryBackgroundPersistenceError: Error, Equatable, LocalizedError, Sendable {
+    case failed(trackID: UUID, reason: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .failed(let trackID, let reason):
+            return "歌曲 \(trackID) 的后台资料写入失败（\(reason)）"
+        }
+    }
+}
+import ImageIO
 
 nonisolated struct TrackPersistenceReferences: Sendable {
     let artworkFileName: String?
@@ -255,6 +103,7 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
     let id: UUID
     let title: String
     let artist: String
+    let artistCredits: [TrackCredit]?
     let album: String
     let albumArtist: String?
     let userDescription: String
@@ -266,15 +115,22 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
     let metadataSource: String?
     let metadataFetchedAt: Date?
     let metadataConfidence: Double?
+    let musicBrainzReleaseID: String?
     let duration: Double
     let addedAt: Date
     let importedAt: Date?
     let lyricsTimeOffsetMs: Double
     let originalFilePath: String
-    let libraryRelativePath: String
+    let mediaLocator: TrackMediaLocator
+    let availability: TrackAvailability
+    let embeddedMetadataSnapshot: EmbeddedMetadataSnapshot?
+    let importProvenance: ImportProvenance?
+    let audioProperties: TrackAudioProperties?
+    let enrichmentSuggestions: [EnrichmentSuggestion]?
     let artworkData: Data?
     let ttmlLyricText: String?
     let lyricsText: String?
+    let ncmConversionAssociation: NCMConversionAssociation?
     let preferenceStats: TrackPreferenceStats
 
     @MainActor
@@ -282,6 +138,7 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
         id = track.id
         title = track.title
         artist = track.artist
+        artistCredits = track.artistCredits
         album = track.album
         albumArtist = track.albumArtist
         userDescription = track.userDescription
@@ -293,15 +150,22 @@ nonisolated struct TrackPersistenceSnapshot: Sendable {
         metadataSource = track.metadataSource
         metadataFetchedAt = track.metadataFetchedAt
         metadataConfidence = track.metadataConfidence
+        musicBrainzReleaseID = track.musicBrainzReleaseID
         duration = track.duration
         addedAt = track.addedAt
         importedAt = track.importedAt
         lyricsTimeOffsetMs = track.lyricsTimeOffsetMs
         originalFilePath = track.originalFilePath
-        libraryRelativePath = track.libraryRelativePath
+        mediaLocator = track.mediaLocator
+        availability = track.availability
+        embeddedMetadataSnapshot = track.embeddedMetadataSnapshot
+        importProvenance = track.importProvenance
+        audioProperties = track.audioProperties
+        enrichmentSuggestions = track.enrichmentSuggestions
         artworkData = track.artworkData
         ttmlLyricText = track.ttmlLyricText
         lyricsText = track.lyricsText
+        ncmConversionAssociation = track.ncmConversionAssociation
         self.preferenceStats = preferenceStats
     }
 }
@@ -326,26 +190,30 @@ struct PersistedPlaylistArtworkRecord {
 
 @MainActor
 final class LocalLibraryService {
-
-    static let shared = LocalLibraryService()
-
+    nonisolated let paths: LibraryPaths
+    private let preferenceStatsService: PreferenceStatsService
+    private let mutationCoordinator: LibraryMutationCoordinator?
     private let fileManager = FileManager.default
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private var acceptsBackgroundWrites = true
+    private var backgroundWriteTasks: [UUID: Task<Void, Never>] = [:]
 
-    private var monitors: [String: DispatchSourceFileSystemObject] = [:]
-    private var monitorFDs: [String: Int32] = [:]
-    private var pendingSync: DispatchWorkItem?
-    private nonisolated let monitorSuppressionLock = NSLock()
-    private nonisolated(unsafe) var monitorEventsSuppressedUntil: TimeInterval = 0
-
-    private init() {
+    init(
+        paths: LibraryPaths,
+        preferenceStatsService: PreferenceStatsService,
+        mutationCoordinator: LibraryMutationCoordinator? = nil
+    ) {
+        self.paths = paths
+        self.preferenceStatsService = preferenceStatsService
+        self.mutationCoordinator = mutationCoordinator
         encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
 
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        preferenceStatsService.bindPersistence(to: self)
     }
 
     // MARK: - Library Setup
@@ -363,32 +231,49 @@ final class LocalLibraryService {
         return decoder
     }
 
-    nonisolated func ensureLibraryFolders() {
-        let fileManager = FileManager.default
+    // MARK: - Library-owned ordering
+
+    func loadLibraryOrderingSidecar() -> LibraryOrderingSidecar {
+        guard let data = try? Data(contentsOf: paths.libraryOrderingURL),
+              let sidecar = try? decoder.decode(LibraryOrderingSidecar.self, from: data)
+        else {
+            return LibraryOrderingSidecar()
+        }
+        return sidecar
+    }
+
+    @discardableResult
+    func saveLibraryOrderingSidecar(_ sidecar: LibraryOrderingSidecar) -> Bool {
         do {
             try fileManager.createDirectory(
-                at: LocalLibraryPaths.libraryRootURL,
+                at: paths.settingsRootURL,
                 withIntermediateDirectories: true
             )
-            try fileManager.createDirectory(
-                at: LocalLibraryPaths.tracksRootURL,
-                withIntermediateDirectories: true
-            )
-            try fileManager.createDirectory(
-                at: LocalLibraryPaths.playlistsRootURL,
-                withIntermediateDirectories: true
-            )
-            try fileManager.createDirectory(
-                at: LocalLibraryPaths.artistsRootURL,
-                withIntermediateDirectories: true
-            )
-            try fileManager.createDirectory(
-                at: LocalLibraryPaths.albumsRootURL,
-                withIntermediateDirectories: true
-            )
+            let data = try encoder.encode(sidecar)
+            try data.write(to: paths.libraryOrderingURL, options: .atomic)
+            return true
+        } catch {
+            Log.error("Failed to save library ordering sidecar: \(error)", category: .library)
+            return false
+        }
+    }
+
+    nonisolated func ensureLibraryFolders() {
+        do {
+            try ensureLibraryFoldersThrowing()
         } catch {
             Log.error("Failed to create library folders: \(error)", category: .library)
         }
+    }
+
+    nonisolated private func ensureLibraryFoldersThrowing() throws {
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: paths.rootURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: paths.settingsRootURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: paths.tracksRootURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: paths.playlistsRootURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: paths.artistsRootURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: paths.albumsRootURL, withIntermediateDirectories: true)
     }
 
     // MARK: - Import
@@ -396,7 +281,7 @@ final class LocalLibraryService {
     func importAudioFile(from sourceURL: URL, trackId: UUID) throws -> String {
         ensureLibraryFolders()
 
-        let trackFolder = LocalLibraryPaths.trackFolderURL(for: trackId)
+        let trackFolder = paths.trackFolderURL(for: trackId)
         try fileManager.createDirectory(at: trackFolder, withIntermediateDirectories: true)
 
         let ext = sourceURL.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -418,7 +303,7 @@ final class LocalLibraryService {
     /// Ordinary business updates must use `writeMetaOnly` / `writeTrackMetaAnd...`.
     @discardableResult
     func writeImportedTrackSidecar(for track: Track, reason: String = "importFullTrack") -> Bool {
-        guard !track.libraryRelativePath.isEmpty else { return false }
+        guard Self.isPersistable(track.mediaLocator) else { return false }
 
         do {
             let references = loadTrackPersistenceReferences(for: track.id)
@@ -454,13 +339,24 @@ final class LocalLibraryService {
     }
 
     @discardableResult
-    func writeMetaOnly(for track: Track, reason: String) -> Bool {
-        guard !track.libraryRelativePath.isEmpty else { return false }
+    func writeMetaOnly(
+        for track: Track,
+        reason: String,
+        locatorOverride: TrackMediaLocator? = nil,
+        availabilityOverride: TrackAvailability? = nil
+    ) -> Bool {
+        let locator = locatorOverride ?? track.mediaLocator
+        guard Self.isPersistable(locator) else { return false }
 
         do {
             let references = loadTrackPersistenceReferences(for: track.id)
             logTrackPersistence(track: track, reason: reason, action: "meta-only", artwork: "not-requested")
-            try writeTrackMeta(for: track, references: references)
+            try writeTrackMeta(
+                for: track,
+                references: references,
+                locator: locator,
+                availability: availabilityOverride ?? track.availability
+            )
             return true
         } catch {
             Log.error("Failed to write meta only for \(track.title): \(error)", category: .library)
@@ -469,28 +365,79 @@ final class LocalLibraryService {
     }
 
     func writeMetaOnlyInBackground(for track: Track, reason: String) {
-        guard !track.libraryRelativePath.isEmpty else { return }
+        guard acceptsBackgroundWrites, Self.isPersistable(track.mediaLocator) else { return }
 
         let snapshot = TrackPersistenceSnapshot(
             track: track,
-            preferenceStats: PreferenceStatsService.shared.getStats(for: track.id)
+            preferenceStats: preferenceStatsService.getStats(for: track.id)
         )
-        suppressMonitorEvents(for: 1.5)
+        let capturedPaths = paths
+        let taskID = UUID()
 
-        Task.detached(priority: .utility) { @Sendable in
-            _ = autoreleasepool {
-                LocalLibraryService.persistTrackSnapshotOnBackground(
-                    snapshot,
-                    mode: .metaOnly,
-                    reason: reason
-                )
+        let mutationCoordinator = mutationCoordinator
+        let trackingTask = Task { @MainActor [weak self] in
+            defer { self?.backgroundWriteTasks.removeValue(forKey: taskID) }
+            let persist: @Sendable () async -> TrackPersistenceWriteResult = {
+                await Task.detached(priority: .utility) { @Sendable in
+                    autoreleasepool {
+                        LocalLibraryService.persistTrackSnapshotOnBackground(
+                            snapshot,
+                            paths: capturedPaths,
+                            mode: .metaOnly,
+                            reason: reason
+                        )
+                    }
+                }.value
+            }
+            if let mutationCoordinator {
+                do {
+                    _ = try await mutationCoordinator.run(
+                        kind: .userLibraryMutation,
+                        targetIDs: [snapshot.id.uuidString]
+                    ) {
+                        let result = await persist()
+                        guard result.succeeded else {
+                            throw LibraryBackgroundPersistenceError.failed(
+                                trackID: snapshot.id,
+                                reason: reason
+                            )
+                        }
+                    }
+                } catch {
+                    Log.error(
+                        "[Library] background metadata mutation rejected: \(error)",
+                        category: .library
+                    )
+                }
+            } else {
+                let result = await persist()
+                if !result.succeeded {
+                    Log.error(
+                        "[Library] background metadata write failed for \(snapshot.id) (\(reason))",
+                        category: .library
+                    )
+                }
+            }
+        }
+        backgroundWriteTasks[taskID] = trackingTask
+    }
+
+    /// Stops accepting fire-and-forget metadata writes and waits until every
+    /// write that already captured this library's paths has finished. Session
+    /// shutdown must cross this barrier before releasing or deleting a root.
+    func quiesceAndWaitForBackgroundWrites() async {
+        acceptsBackgroundWrites = false
+        while !backgroundWriteTasks.isEmpty {
+            let tasks = Array(backgroundWriteTasks.values)
+            for task in tasks {
+                await task.value
             }
         }
     }
 
     @discardableResult
     func writeTrackMetaAndLyrics(for track: Track, reason: String) -> Bool {
-        guard !track.libraryRelativePath.isEmpty else { return false }
+        guard Self.isPersistable(track.mediaLocator) else { return false }
 
         do {
             let references = loadTrackPersistenceReferences(for: track.id)
@@ -507,7 +454,7 @@ final class LocalLibraryService {
 
     @discardableResult
     func writeTrackMetaAndArtwork(for track: Track, reason: String) -> Bool {
-        guard !track.libraryRelativePath.isEmpty else { return false }
+        guard Self.isPersistable(track.mediaLocator) else { return false }
 
         do {
             let references = loadTrackPersistenceReferences(for: track.id)
@@ -532,7 +479,7 @@ final class LocalLibraryService {
 
     @discardableResult
     func writeTrackMetaLyricsAndArtwork(for track: Track, reason: String) -> Bool {
-        guard !track.libraryRelativePath.isEmpty else { return false }
+        guard Self.isPersistable(track.mediaLocator) else { return false }
 
         do {
             let references = loadTrackPersistenceReferences(for: track.id)
@@ -559,15 +506,19 @@ final class LocalLibraryService {
 
     nonisolated static func persistTrackSnapshotOnBackground(
         _ snapshot: TrackPersistenceSnapshot,
+        paths: LibraryPaths,
         mode: TrackPersistenceAssetMode,
         reason: String
     ) -> TrackPersistenceWriteResult {
-        guard !snapshot.libraryRelativePath.isEmpty else {
+        guard isPersistable(snapshot.mediaLocator) else {
             return TrackPersistenceWriteResult(trackID: snapshot.id, references: nil, succeeded: false)
         }
 
         do {
-            let existingReferences = loadTrackPersistenceReferencesOnBackground(for: snapshot.id)
+            let existingReferences = loadTrackPersistenceReferencesOnBackground(
+                for: snapshot.id,
+                paths: paths
+            )
             let finalReferences: TrackPersistenceReferences
 
             switch mode {
@@ -580,7 +531,10 @@ final class LocalLibraryService {
                     artwork: "not-requested"
                 )
             case .metaAndLyrics:
-                let trackFolder = try ensureTrackFolderOnBackground(for: snapshot.id)
+                let trackFolder = try ensureTrackFolderOnBackground(
+                    for: snapshot.id,
+                    paths: paths
+                )
                 finalReferences = try writeLyricsAssetsOnBackground(
                     snapshot: snapshot,
                     folder: trackFolder,
@@ -595,6 +549,7 @@ final class LocalLibraryService {
             case .metaAndArtwork:
                 let artworkFileName = try writeArtworkIfChangedOnBackground(
                     snapshot: snapshot,
+                    paths: paths,
                     reason: reason,
                     existingFileName: existingReferences.artworkFileName
                 )
@@ -605,9 +560,13 @@ final class LocalLibraryService {
                     ttmlLyricsFileName: existingReferences.ttmlLyricsFileName
                 )
             case .metaLyricsAndArtwork:
-                let trackFolder = try ensureTrackFolderOnBackground(for: snapshot.id)
+                let trackFolder = try ensureTrackFolderOnBackground(
+                    for: snapshot.id,
+                    paths: paths
+                )
                 let artworkFileName = try writeArtworkIfChangedOnBackground(
                     snapshot: snapshot,
+                    paths: paths,
                     reason: reason,
                     existingFileName: existingReferences.artworkFileName
                 )
@@ -624,7 +583,11 @@ final class LocalLibraryService {
                 )
             }
 
-            try writeTrackMetaOnBackground(snapshot: snapshot, references: finalReferences)
+            try writeTrackMetaOnBackground(
+                snapshot: snapshot,
+                paths: paths,
+                references: finalReferences
+            )
             return TrackPersistenceWriteResult(
                 trackID: snapshot.id,
                 references: finalReferences,
@@ -639,30 +602,42 @@ final class LocalLibraryService {
         }
     }
 
+    private nonisolated static func isPersistable(_ locator: TrackMediaLocator) -> Bool {
+        switch locator {
+        case let .managed(path):
+            return TrackMediaLocator.isSafeRelativePath(path)
+        case let .referenced(locator):
+            return !locator.fileBookmarkData.isEmpty || !locator.sourceMemberships.isEmpty
+        }
+    }
+
     private func ensureTrackFolder(for trackID: UUID) throws -> URL {
         ensureLibraryFolders()
-        let trackFolder = LocalLibraryPaths.trackFolderURL(for: trackID)
+        let trackFolder = paths.trackFolderURL(for: trackID)
         try fileManager.createDirectory(at: trackFolder, withIntermediateDirectories: true)
         return trackFolder
     }
 
-    private nonisolated static func ensureTrackFolderOnBackground(for trackID: UUID) throws -> URL {
+    private nonisolated static func ensureTrackFolderOnBackground(
+        for trackID: UUID,
+        paths: LibraryPaths
+    ) throws -> URL {
         let fileManager = FileManager.default
-        ensureLibraryFoldersOnBackground()
-        let trackFolder = LocalLibraryPaths.trackFolderURL(for: trackID)
+        ensureLibraryFoldersOnBackground(paths: paths)
+        let trackFolder = paths.trackFolderURL(for: trackID)
         try fileManager.createDirectory(at: trackFolder, withIntermediateDirectories: true)
         return trackFolder
     }
 
-    private nonisolated static func ensureLibraryFoldersOnBackground() {
+    private nonisolated static func ensureLibraryFoldersOnBackground(paths: LibraryPaths) {
         let fileManager = FileManager.default
         do {
             try fileManager.createDirectory(
-                at: LocalLibraryPaths.libraryRootURL,
+                at: paths.rootURL,
                 withIntermediateDirectories: true
             )
             try fileManager.createDirectory(
-                at: LocalLibraryPaths.tracksRootURL,
+                at: paths.tracksRootURL,
                 withIntermediateDirectories: true
             )
         } catch {
@@ -671,7 +646,7 @@ final class LocalLibraryService {
     }
 
     private func loadTrackPersistenceReferences(for trackID: UUID) -> TrackPersistenceReferences {
-        let metaURL = LocalLibraryPaths.trackMetaURL(for: trackID)
+        let metaURL = paths.trackMetaURL(for: trackID)
         guard let data = try? Data(contentsOf: metaURL),
               let sidecar = try? decoder.decode(TrackSidecar.self, from: data)
         else {
@@ -692,9 +667,10 @@ final class LocalLibraryService {
     }
 
     private nonisolated static func loadTrackPersistenceReferencesOnBackground(
-        for trackID: UUID
+        for trackID: UUID,
+        paths: LibraryPaths
     ) -> TrackPersistenceReferences {
-        let metaURL = LocalLibraryPaths.trackMetaURL(for: trackID)
+        let metaURL = paths.trackMetaURL(for: trackID)
         let decoder = makeJSONDecoder()
         guard let data = try? Data(contentsOf: metaURL),
               let sidecar = try? decoder.decode(TrackSidecar.self, from: data)
@@ -704,6 +680,7 @@ final class LocalLibraryService {
 
         let resolvedArtworkFileName = resolvedTrackArtworkFileNameOnBackground(
             for: trackID,
+            paths: paths,
             preferredFileName: sidecar.artworkFileName
         )
 
@@ -715,15 +692,24 @@ final class LocalLibraryService {
         )
     }
 
-    private func writeTrackMeta(for track: Track, references: TrackPersistenceReferences) throws {
+    private func writeTrackMeta(
+        for track: Track,
+        references: TrackPersistenceReferences,
+        locator: TrackMediaLocator? = nil,
+        availability: TrackAvailability? = nil
+    ) throws {
         _ = try ensureTrackFolder(for: track.id)
-        let audioFileName = URL(fileURLWithPath: track.libraryRelativePath).lastPathComponent
-        let preferenceStats = PreferenceStatsService.shared.getStats(for: track.id)
+        let effectiveLocator = locator ?? track.mediaLocator
+        let audioFileName = effectiveLocator.managedLibraryRelativePath.map {
+            URL(fileURLWithPath: $0).lastPathComponent
+        }
+        let preferenceStats = preferenceStatsService.getStats(for: track.id)
         let sidecar = TrackSidecar(
-            schemaVersion: 6,
+            schemaVersion: TrackSidecar.currentSchemaVersion,
             id: track.id,
             title: track.title,
             artist: track.artist,
+            artistCredits: track.artistCredits,
             album: track.album,
             albumArtist: {
                 let trimmed = track.albumArtist?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -747,36 +733,49 @@ final class LocalLibraryService {
             metadataSource: track.metadataSource,
             metadataFetchedAt: track.metadataFetchedAt,
             metadataConfidence: track.metadataConfidence,
+            musicBrainzReleaseID: track.musicBrainzReleaseID,
             duration: track.duration,
             addedAt: track.addedAt,
             importedAt: track.importedAt ?? track.addedAt,
             lyricsTimeOffsetMs: track.lyricsTimeOffsetMs,
             originalFilePath: track.originalFilePath.isEmpty ? nil : track.originalFilePath,
-            audioFileName: audioFileName.isEmpty ? nil : audioFileName,
+            audioFileName: audioFileName,
             artworkFileName: references.artworkFileName,
             lyricsFileName: references.lyricsFileName,
             lyricsType: references.lyricsType,
             ttmlLyricsFileName: references.ttmlLyricsFileName,
             ncmSourcePath: nil,
-            preferenceStats: preferenceStats
+            ncmSourceIdentity: effectiveLocator.referencedFile?.ncmSourceIdentity,
+            ncmConversionAssociation: track.ncmConversionAssociation,
+            preferenceStats: preferenceStats,
+            mediaLocator: effectiveLocator,
+            availability: availability ?? track.availability,
+            embeddedMetadataSnapshot: track.embeddedMetadataSnapshot,
+            enrichmentSuggestions: track.enrichmentSuggestions,
+            importProvenance: track.importProvenance,
+            audioProperties: track.audioProperties
         )
 
         let data = try encoder.encode(sidecar)
-        let metaURL = LocalLibraryPaths.trackMetaURL(for: track.id)
+        let metaURL = paths.trackMetaURL(for: track.id)
         try data.write(to: metaURL, options: .atomic)
     }
 
     private nonisolated static func writeTrackMetaOnBackground(
         snapshot: TrackPersistenceSnapshot,
+        paths: LibraryPaths,
         references: TrackPersistenceReferences
     ) throws {
-        _ = try ensureTrackFolderOnBackground(for: snapshot.id)
-        let audioFileName = URL(fileURLWithPath: snapshot.libraryRelativePath).lastPathComponent
+        _ = try ensureTrackFolderOnBackground(for: snapshot.id, paths: paths)
+        let audioFileName = snapshot.mediaLocator.managedLibraryRelativePath.map {
+            URL(fileURLWithPath: $0).lastPathComponent
+        }
         let sidecar = TrackSidecar(
-            schemaVersion: 6,
+            schemaVersion: TrackSidecar.currentSchemaVersion,
             id: snapshot.id,
             title: snapshot.title,
             artist: snapshot.artist,
+            artistCredits: snapshot.artistCredits,
             album: snapshot.album,
             albumArtist: {
                 let trimmed = snapshot.albumArtist?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -800,22 +799,31 @@ final class LocalLibraryService {
             metadataSource: snapshot.metadataSource,
             metadataFetchedAt: snapshot.metadataFetchedAt,
             metadataConfidence: snapshot.metadataConfidence,
+            musicBrainzReleaseID: snapshot.musicBrainzReleaseID,
             duration: snapshot.duration,
             addedAt: snapshot.addedAt,
             importedAt: snapshot.importedAt ?? snapshot.addedAt,
             lyricsTimeOffsetMs: snapshot.lyricsTimeOffsetMs,
             originalFilePath: snapshot.originalFilePath.isEmpty ? nil : snapshot.originalFilePath,
-            audioFileName: audioFileName.isEmpty ? nil : audioFileName,
+            audioFileName: audioFileName,
             artworkFileName: references.artworkFileName,
             lyricsFileName: references.lyricsFileName,
             lyricsType: references.lyricsType,
             ttmlLyricsFileName: references.ttmlLyricsFileName,
             ncmSourcePath: nil,
-            preferenceStats: snapshot.preferenceStats
+            ncmSourceIdentity: snapshot.mediaLocator.referencedFile?.ncmSourceIdentity,
+            ncmConversionAssociation: snapshot.ncmConversionAssociation,
+            preferenceStats: snapshot.preferenceStats,
+            mediaLocator: snapshot.mediaLocator,
+            availability: snapshot.availability,
+            embeddedMetadataSnapshot: snapshot.embeddedMetadataSnapshot,
+            enrichmentSuggestions: snapshot.enrichmentSuggestions,
+            importProvenance: snapshot.importProvenance,
+            audioProperties: snapshot.audioProperties
         )
 
         let data = try makeJSONEncoder().encode(sidecar)
-        let metaURL = LocalLibraryPaths.trackMetaURL(for: snapshot.id)
+        let metaURL = paths.trackMetaURL(for: snapshot.id)
         try data.write(to: metaURL, options: .atomic)
     }
 
@@ -831,15 +839,17 @@ final class LocalLibraryService {
         )
         let existingArtworkURL = existingArtworkFileName.map { trackFolder.appendingPathComponent($0) }
         let existingArtworkData = existingArtworkURL.flatMap { try? Data(contentsOf: $0) }
-        let targetArtworkFileName = LocalLibraryPaths.preferredTrackArtworkFileName
-        let targetArtworkURL = LocalLibraryPaths.trackArtworkURL(
+        let targetArtworkFileName = LibraryPaths.preferredTrackArtworkFileName
+        guard let targetArtworkURL = paths.trackArtworkURL(
             for: track.id,
             fileName: targetArtworkFileName
-        )
+        ) else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
 
         let loadedData = track.loadArtworkDataIfNeeded()
         guard let data = loadedData, !data.isEmpty else {
-            let candidateFileNames = LocalLibraryPaths.trackArtworkCandidateFileNames(
+            let candidateFileNames = paths.trackArtworkCandidateFileNames(
                 preferredFileName: existingArtworkFileName
             )
             var removedAny = false
@@ -900,25 +910,32 @@ final class LocalLibraryService {
 
     private nonisolated static func writeArtworkIfChangedOnBackground(
         snapshot: TrackPersistenceSnapshot,
+        paths: LibraryPaths,
         reason: String,
         existingFileName: String? = nil
     ) throws -> String? {
         let fileManager = FileManager.default
-        let trackFolder = try ensureTrackFolderOnBackground(for: snapshot.id)
+        let trackFolder = try ensureTrackFolderOnBackground(
+            for: snapshot.id,
+            paths: paths
+        )
         let existingArtworkFileName = resolvedTrackArtworkFileNameOnBackground(
             for: snapshot.id,
+            paths: paths,
             preferredFileName: existingFileName
         )
         let existingArtworkURL = existingArtworkFileName.map { trackFolder.appendingPathComponent($0) }
         let existingArtworkData = existingArtworkURL.flatMap { try? Data(contentsOf: $0) }
-        let targetArtworkFileName = LocalLibraryPaths.preferredTrackArtworkFileName
-        let targetArtworkURL = LocalLibraryPaths.trackArtworkURL(
+        let targetArtworkFileName = LibraryPaths.preferredTrackArtworkFileName
+        guard let targetArtworkURL = paths.trackArtworkURL(
             for: snapshot.id,
             fileName: targetArtworkFileName
-        )
+        ) else {
+            throw CocoaError(.fileWriteInvalidFileName)
+        }
 
         guard let data = snapshot.artworkData, !data.isEmpty else {
-            let candidateFileNames = LocalLibraryPaths.trackArtworkCandidateFileNames(
+            let candidateFileNames = paths.trackArtworkCandidateFileNames(
                 preferredFileName: existingArtworkFileName
             )
             var removedAny = false
@@ -1145,20 +1162,25 @@ final class LocalLibraryService {
     }
 
     private func resolvedTrackArtworkFileName(for trackID: UUID, preferredFileName: String?) -> String? {
-        let folder = LocalLibraryPaths.trackFolderURL(for: trackID)
+        let folder = paths.trackFolderURL(for: trackID)
         return resolvedTrackArtworkFileName(in: folder, preferredFileName: preferredFileName)
     }
 
     private nonisolated static func resolvedTrackArtworkFileNameOnBackground(
         for trackID: UUID,
+        paths: LibraryPaths,
         preferredFileName: String?
     ) -> String? {
-        let folder = LocalLibraryPaths.trackFolderURL(for: trackID)
-        return resolvedTrackArtworkFileNameOnBackground(in: folder, preferredFileName: preferredFileName)
+        let folder = paths.trackFolderURL(for: trackID)
+        return resolvedTrackArtworkFileNameOnBackground(
+            in: folder,
+            paths: paths,
+            preferredFileName: preferredFileName
+        )
     }
 
     private func resolvedTrackArtworkFileName(in folder: URL, preferredFileName: String?) -> String? {
-        for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
+        for fileName in paths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
             let candidateURL = folder.appendingPathComponent(fileName)
             if fileManager.fileExists(atPath: candidateURL.path) {
                 return fileName
@@ -1172,10 +1194,11 @@ final class LocalLibraryService {
 
     private nonisolated static func resolvedTrackArtworkFileNameOnBackground(
         in folder: URL,
+        paths: LibraryPaths,
         preferredFileName: String?
     ) -> String? {
         let fileManager = FileManager.default
-        for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
+        for fileName in paths.trackArtworkCandidateFileNames(preferredFileName: preferredFileName) {
             let candidateURL = folder.appendingPathComponent(fileName)
             if fileManager.fileExists(atPath: candidateURL.path) {
                 return fileName
@@ -1218,32 +1241,55 @@ final class LocalLibraryService {
 
     @discardableResult
     nonisolated func deleteTrackFolder(trackID: UUID) -> Bool {
-        let fileManager = FileManager.default
-        let folder = LocalLibraryPaths.trackFolderURL(for: trackID)
-        guard fileManager.fileExists(atPath: folder.path) else { return true }
-
         do {
-            try fileManager.removeItem(at: folder)
+            try deleteTrackFolderOrThrow(trackID: trackID)
             return true
         } catch {
-            // Fallback: remove meta.json so a later full rescan cannot resurrect the deleted track.
-            let metaURL = folder.appendingPathComponent("meta.json")
-            if fileManager.fileExists(atPath: metaURL.path) {
-                try? fileManager.removeItem(at: metaURL)
-            }
             Log.error(
-                "Failed to delete track folder \(folder.lastPathComponent): \(error)",
+                "Failed to delete track folder \(trackID): \(error.localizedDescription)",
                 category: .library
             )
             return false
         }
     }
 
+    /// Deletes a managed track folder and reports a failure even when the
+    /// anti-resurrection meta fallback succeeds. Callers that are committing a
+    /// user deletion must surface the residue instead of treating it as a
+    /// successful cleanup.
+    nonisolated func deleteTrackFolderOrThrow(trackID: UUID) throws {
+        let fileManager = FileManager.default
+        let folder = paths.trackFolderURL(for: trackID)
+        guard fileManager.fileExists(atPath: folder.path) else { return }
+
+        do {
+            try fileManager.removeItem(at: folder)
+        } catch {
+            // Fallback: remove meta.json so a later full rescan cannot resurrect the deleted track.
+            let metaURL = folder.appendingPathComponent("meta.json")
+            if fileManager.fileExists(atPath: metaURL.path) {
+                do {
+                    try fileManager.removeItem(at: metaURL)
+                } catch {
+                    throw LibraryTrackDeletionError.cleanupIncomplete(
+                        trackFolderIDs: [trackID],
+                        artistEntryIDs: [],
+                        albumEntryIDs: []
+                    )
+                }
+            }
+            throw LibraryTrackDeletionError.cleanupIncomplete(
+                trackFolderIDs: [trackID],
+                artistEntryIDs: [],
+                albumEntryIDs: []
+            )
+        }
+    }
+
     // MARK: - Playlist Sidecars
 
-    func writePlaylist(_ playlist: Playlist, itemAddedAt: [UUID: Date]? = nil) {
-        ensureLibraryFolders()
-        writePlaylistSidecar(
+    func writePlaylist(_ playlist: Playlist, itemAddedAt: [UUID: Date]? = nil) throws {
+        try writePlaylistSidecar(
             playlistID: playlist.id,
             name: playlist.name,
             description: playlist.userDescription,
@@ -1259,17 +1305,39 @@ final class LocalLibraryService {
         description: String,
         createdAt: Date,
         trackIDs: [UUID],
-        itemAddedAt: [UUID: Date]
-    ) {
-        ensureLibraryFolders()
-        let items = trackIDs.map { trackID in
+        itemAddedAt: [UUID: Date],
+        customTrackOrder: [UUID]? = nil,
+        trackSortKey: String? = nil,
+        trackSortOrder: String? = nil
+    ) throws {
+        do {
+            try ensureLibraryFoldersThrowing()
+        } catch {
+            throw LibraryPlaylistPersistenceError.writeFailed(
+                playlistID: playlistID,
+                reason: error.localizedDescription
+            )
+        }
+        var seenTrackIDs = Set<UUID>()
+        let normalizedTrackIDs = trackIDs.filter { seenTrackIDs.insert($0).inserted }
+        let existingSidecar = loadPlaylistSidecar(playlistID: playlistID)
+        let existingItemDates = (existingSidecar?.items ?? []).reduce(into: [UUID: Date]()) {
+            $0[$1.trackID] = $1.addedAt
+        }
+        let items = normalizedTrackIDs.map { trackID in
             PlaylistItemSidecar(
                 trackID: trackID,
-                addedAt: itemAddedAt[trackID] ?? Date()
+                addedAt: itemAddedAt[trackID] ?? existingItemDates[trackID] ?? Date()
             )
         }
         let desc = description.isEmpty ? nil : description
-        let existingSidecar = loadPlaylistSidecar(playlistID: playlistID)
+        let effectiveSortKey = trackSortKey ?? existingSidecar?.trackSortKey
+        let effectiveSortOrder = trackSortOrder ?? existingSidecar?.trackSortOrder
+        let requestedCustomOrder = customTrackOrder ?? existingSidecar?.customTrackOrder
+        let effectiveCustomOrder = normalizedOrder(
+            requestedCustomOrder,
+            availableIDs: normalizedTrackIDs
+        )
         let sidecar = PlaylistSidecar(
             id: playlistID,
             name: name,
@@ -1281,43 +1349,58 @@ final class LocalLibraryService {
             headerArtworkSource: existingSidecar?.headerArtworkSource,
             generatedArtworkSignature: existingSidecar?.generatedArtworkSignature,
             artworkRevision: existingSidecar?.artworkRevision,
-            trackSortKey: existingSidecar?.trackSortKey,
-            trackSortOrder: existingSidecar?.trackSortOrder
+            trackSortKey: effectiveSortKey,
+            trackSortOrder: effectiveSortOrder,
+            customTrackOrder: effectiveCustomOrder
         )
 
         do {
             let data = try Self.makeJSONEncoder().encode(sidecar)
-            let url = LocalLibraryPaths.playlistURL(for: playlistID)
+            let url = paths.playlistURL(for: playlistID)
             try data.write(to: url, options: .atomic)
         } catch {
-            Log.error("Failed to write playlist sidecar '\(name)': \(error)", category: .library)
+            throw LibraryPlaylistPersistenceError.writeFailed(
+                playlistID: playlistID,
+                reason: error.localizedDescription
+            )
         }
     }
 
-    func writeAllPlaylists(_ playlists: [Playlist]) {
+    func writeAllPlaylists(_ playlists: [Playlist]) throws {
         for playlist in playlists {
-            writePlaylist(playlist)
+            try writePlaylist(playlist)
         }
     }
 
-    func deletePlaylist(_ playlist: Playlist) {
-        let url = LocalLibraryPaths.playlistURL(for: playlist.id)
+    func deletePlaylist(_ playlist: Playlist) throws {
+        do {
+            try ensureLibraryFoldersThrowing()
+        } catch {
+            throw LibraryPlaylistPersistenceError.deleteFailed(
+                playlistID: playlist.id,
+                reason: error.localizedDescription
+            )
+        }
+        let url = paths.playlistURL(for: playlist.id)
         if fileManager.fileExists(atPath: url.path) {
             do {
                 try fileManager.removeItem(at: url)
             } catch {
-                Log.error("Failed to delete playlist sidecar '\(playlist.name)': \(error)", category: .library)
+                throw LibraryPlaylistPersistenceError.deleteFailed(
+                    playlistID: playlist.id,
+                    reason: error.localizedDescription
+                )
             }
         }
-        let artworkURL = LocalLibraryPaths.legacyPlaylistArtworkURL(for: playlist.id)
+        let artworkURL = paths.legacyPlaylistArtworkURL(for: playlist.id)
         if fileManager.fileExists(atPath: artworkURL.path) {
             try? fileManager.removeItem(at: artworkURL)
         }
-        let customArtworkURL = LocalLibraryPaths.playlistCustomArtworkURL(for: playlist.id)
+        let customArtworkURL = paths.playlistCustomArtworkURL(for: playlist.id)
         if fileManager.fileExists(atPath: customArtworkURL.path) {
             try? fileManager.removeItem(at: customArtworkURL)
         }
-        let generatedArtworkURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlist.id)
+        let generatedArtworkURL = paths.playlistGeneratedArtworkURL(for: playlist.id)
         if fileManager.fileExists(atPath: generatedArtworkURL.path) {
             try? fileManager.removeItem(at: generatedArtworkURL)
         }
@@ -1383,11 +1466,12 @@ final class LocalLibraryService {
             generatedArtworkSignature: sidecar.generatedArtworkSignature,
             artworkRevision: sidecar.artworkRevision,
             trackSortKey: key,
-            trackSortOrder: order
+            trackSortOrder: order,
+            customTrackOrder: sidecar.customTrackOrder
         )
         do {
             let data = try Self.makeJSONEncoder().encode(updated)
-            let url = LocalLibraryPaths.playlistURL(for: playlistID)
+            let url = paths.playlistURL(for: playlistID)
             try data.write(to: url, options: .atomic)
             return true
         } catch {
@@ -1397,21 +1481,33 @@ final class LocalLibraryService {
     }
 
     func savePlaylistCustomArtwork(playlistID: UUID, image: NSImage) {
-        let fileURL = LocalLibraryPaths.playlistCustomArtworkURL(for: playlistID)
+        let fileURL = paths.playlistCustomArtworkURL(for: playlistID)
         guard writePNGArtwork(image, to: fileURL) else { return }
         savePlaylistCustomArtworkMetadata(playlistID: playlistID, fileURL: fileURL)
     }
 
     @discardableResult
     nonisolated func savePlaylistCustomArtworkData(playlistID: UUID, pngData: Data) -> Bool {
-        Self.savePlaylistCustomArtworkDataOnDisk(playlistID: playlistID, pngData: pngData)
+        Self.savePlaylistCustomArtworkDataOnDisk(
+            playlistID: playlistID,
+            pngData: pngData,
+            paths: paths
+        )
     }
 
     @discardableResult
-    nonisolated static func savePlaylistCustomArtworkDataOnDisk(playlistID: UUID, pngData: Data) -> Bool {
-        let fileURL = LocalLibraryPaths.playlistCustomArtworkURL(for: playlistID)
+    nonisolated static func savePlaylistCustomArtworkDataOnDisk(
+        playlistID: UUID,
+        pngData: Data,
+        paths: LibraryPaths
+    ) -> Bool {
+        let fileURL = paths.playlistCustomArtworkURL(for: playlistID)
         guard writeArtworkDataOnDisk(pngData, to: fileURL) else { return false }
-        return savePlaylistCustomArtworkMetadataOnDisk(playlistID: playlistID, fileURL: fileURL)
+        return savePlaylistCustomArtworkMetadataOnDisk(
+            playlistID: playlistID,
+            fileURL: fileURL,
+            paths: paths
+        )
     }
 
     @discardableResult
@@ -1420,7 +1516,7 @@ final class LocalLibraryService {
 
         // Delete old generated artwork file when switching to custom
         if let generatedFileName = existing?.generatedHeaderArtworkFileName {
-            let generatedURL = LocalLibraryPaths.playlistsRootURL
+            let generatedURL = paths.playlistsRootURL
                 .appendingPathComponent(generatedFileName)
             try? FileManager.default.removeItem(at: generatedURL)
         }
@@ -1436,17 +1532,22 @@ final class LocalLibraryService {
     }
 
     @discardableResult
-    private nonisolated static func savePlaylistCustomArtworkMetadataOnDisk(playlistID: UUID, fileURL: URL) -> Bool {
-        let existing = loadPlaylistSidecarFromDisk(playlistID: playlistID)
+    private nonisolated static func savePlaylistCustomArtworkMetadataOnDisk(
+        playlistID: UUID,
+        fileURL: URL,
+        paths: LibraryPaths
+    ) -> Bool {
+        let existing = loadPlaylistSidecarFromDisk(playlistID: playlistID, paths: paths)
 
         if let generatedFileName = existing?.generatedHeaderArtworkFileName {
-            let generatedURL = LocalLibraryPaths.playlistsRootURL
+            let generatedURL = paths.playlistsRootURL
                 .appendingPathComponent(generatedFileName)
             try? FileManager.default.removeItem(at: generatedURL)
         }
 
         return updatePlaylistArtworkMetadataOnDisk(
             playlistID: playlistID,
+            paths: paths,
             customFileName: fileURL.lastPathComponent,
             generatedFileName: nil,
             activeSource: .custom,
@@ -1460,7 +1561,7 @@ final class LocalLibraryService {
         image: NSImage,
         signature: String
     ) {
-        let fileURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlistID)
+        let fileURL = paths.playlistGeneratedArtworkURL(for: playlistID)
         guard writePNGArtwork(image, to: fileURL) else { return }
 
         let existing = loadPlaylistSidecar(playlistID: playlistID)
@@ -1484,27 +1585,33 @@ final class LocalLibraryService {
         playlistID: UUID,
         pngData: Data
     ) -> Bool {
-        Self.savePlaylistGeneratedArtworkDataOnDisk(playlistID: playlistID, pngData: pngData)
+        Self.savePlaylistGeneratedArtworkDataOnDisk(
+            playlistID: playlistID,
+            pngData: pngData,
+            paths: paths
+        )
     }
 
     @discardableResult
     nonisolated static func savePlaylistGeneratedArtworkDataOnDisk(
         playlistID: UUID,
-        pngData: Data
+        pngData: Data,
+        paths: LibraryPaths
     ) -> Bool {
-        let fileURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlistID)
+        let fileURL = paths.playlistGeneratedArtworkURL(for: playlistID)
         guard writeArtworkDataOnDisk(pngData, to: fileURL) else { return false }
 
-        let existing = loadPlaylistSidecarFromDisk(playlistID: playlistID)
+        let existing = loadPlaylistSidecarFromDisk(playlistID: playlistID, paths: paths)
 
         if let customFileName = existing?.customHeaderArtworkFileName {
-            let customURL = LocalLibraryPaths.playlistsRootURL
+            let customURL = paths.playlistsRootURL
                 .appendingPathComponent(customFileName)
             try? FileManager.default.removeItem(at: customURL)
         }
 
         return updatePlaylistArtworkMetadataOnDisk(
             playlistID: playlistID,
+            paths: paths,
             customFileName: nil,
             generatedFileName: fileURL.lastPathComponent,
             activeSource: .generated,
@@ -1520,7 +1627,7 @@ final class LocalLibraryService {
         tracks: [Track],
         image: NSImage
     ) -> Bool {
-        let fileURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlistID)
+        let fileURL = paths.playlistGeneratedArtworkURL(for: playlistID)
         guard writePNGArtwork(image, to: fileURL) else {
             debugArtworkPersistence(
                 "selectionIdentity=\(playlistID) source=generated filePath=\(fileURL.path) phase=regenerate save=failed reason=png-write-failed tracks=\(tracks.count)"
@@ -1532,7 +1639,7 @@ final class LocalLibraryService {
 
         // Delete old custom artwork file when switching to generated
         if let customFileName = existing?.customHeaderArtworkFileName {
-            let customURL = LocalLibraryPaths.playlistsRootURL
+            let customURL = paths.playlistsRootURL
                 .appendingPathComponent(customFileName)
             try? FileManager.default.removeItem(at: customURL)
         }
@@ -1555,15 +1662,60 @@ final class LocalLibraryService {
     }
 
     nonisolated func loadPlaylistSidecar(playlistID: UUID) -> PlaylistSidecar? {
-        Self.loadPlaylistSidecarFromDisk(playlistID: playlistID)
+        Self.loadPlaylistSidecarFromDisk(playlistID: playlistID, paths: paths)
     }
 
-    nonisolated static func loadPlaylistSidecarFromDisk(playlistID: UUID) -> PlaylistSidecar? {
-        let url = LocalLibraryPaths.playlistURL(for: playlistID)
+    @discardableResult
+    func updatePlaylistTrackOrdering(
+        playlistID: UUID,
+        orderedTrackIDs: [UUID],
+        sortOrder: String
+    ) -> Bool {
+        guard let sidecar = loadPlaylistSidecar(playlistID: playlistID) else { return false }
+        do {
+            try writePlaylistSidecar(
+                playlistID: sidecar.id,
+                name: sidecar.name,
+                description: sidecar.description ?? "",
+                createdAt: sidecar.createdAt,
+                trackIDs: sidecar.trackIDs,
+                itemAddedAt: sidecar.items.reduce(into: [UUID: Date]()) {
+                    $0[$1.trackID] = $1.addedAt
+                },
+                customTrackOrder: orderedTrackIDs,
+                trackSortKey: "custom",
+                trackSortOrder: sortOrder
+            )
+            return true
+        } catch {
+            Log.error("Failed to update playlist track ordering: \(error)", category: .library)
+            return false
+        }
+    }
+
+    nonisolated static func loadPlaylistSidecarFromDisk(
+        playlistID: UUID,
+        paths: LibraryPaths
+    ) -> PlaylistSidecar? {
+        let url = paths.playlistURL(for: playlistID)
         guard let data = try? Data(contentsOf: url),
               let sidecar = try? Self.makeJSONDecoder().decode(PlaylistSidecar.self, from: data)
         else { return nil }
         return sidecar
+    }
+
+    private nonisolated func normalizedOrder(
+        _ order: [UUID]?,
+        availableIDs: [UUID]
+    ) -> [UUID]? {
+        guard let order else { return nil }
+        let available = Set(availableIDs)
+        var seen = Set<UUID>()
+        var result = order.filter {
+            available.contains($0) && seen.insert($0).inserted
+        }
+        result.append(contentsOf: availableIDs.filter { seen.insert($0).inserted })
+        return result
     }
 
     @discardableResult
@@ -1589,11 +1741,12 @@ final class LocalLibraryService {
             generatedArtworkSignature: generatedSignature,
             artworkRevision: artworkRevision,
             trackSortKey: sidecar.trackSortKey,
-            trackSortOrder: sidecar.trackSortOrder
+            trackSortOrder: sidecar.trackSortOrder,
+            customTrackOrder: sidecar.customTrackOrder
         )
         do {
             let data = try Self.makeJSONEncoder().encode(updated)
-            let url = LocalLibraryPaths.playlistURL(for: playlistID)
+            let url = paths.playlistURL(for: playlistID)
             try data.write(to: url, options: .atomic)
             Self.postPlaylistArtworkDidChange(playlistID: playlistID)
             return true
@@ -1606,13 +1759,17 @@ final class LocalLibraryService {
     @discardableResult
     private nonisolated static func updatePlaylistArtworkMetadataOnDisk(
         playlistID: UUID,
+        paths: LibraryPaths,
         customFileName: String?,
         generatedFileName: String?,
         activeSource: PlaylistArtworkSource,
         generatedSignature: String?,
         artworkRevision: String?
     ) -> Bool {
-        guard let sidecar = loadPlaylistSidecarFromDisk(playlistID: playlistID) else { return false }
+        guard let sidecar = loadPlaylistSidecarFromDisk(
+            playlistID: playlistID,
+            paths: paths
+        ) else { return false }
         let updated = PlaylistSidecar(
             schemaVersion: sidecar.schemaVersion,
             id: sidecar.id,
@@ -1626,11 +1783,12 @@ final class LocalLibraryService {
             generatedArtworkSignature: generatedSignature,
             artworkRevision: artworkRevision,
             trackSortKey: sidecar.trackSortKey,
-            trackSortOrder: sidecar.trackSortOrder
+            trackSortOrder: sidecar.trackSortOrder,
+            customTrackOrder: sidecar.customTrackOrder
         )
         do {
             let data = try Self.makeJSONEncoder().encode(updated)
-            let url = LocalLibraryPaths.playlistURL(for: playlistID)
+            let url = paths.playlistURL(for: playlistID)
             try data.write(to: url, options: .atomic)
             Self.postPlaylistArtworkDidChange(playlistID: playlistID)
             return true
@@ -1646,7 +1804,7 @@ final class LocalLibraryService {
     ) -> PlaylistSidecar? {
         guard let sidecar else { return nil }
 
-        let legacyURL = LocalLibraryPaths.legacyPlaylistArtworkURL(for: playlistID)
+        let legacyURL = paths.legacyPlaylistArtworkURL(for: playlistID)
         guard fileManager.fileExists(atPath: legacyURL.path) else { return sidecar }
         guard sidecar.customHeaderArtworkFileName == nil, sidecar.generatedHeaderArtworkFileName == nil else {
             return sidecar
@@ -1659,11 +1817,11 @@ final class LocalLibraryService {
 
         switch legacySource {
         case .generated:
-            destinationURL = LocalLibraryPaths.playlistGeneratedArtworkURL(for: playlistID)
+            destinationURL = paths.playlistGeneratedArtworkURL(for: playlistID)
             customFileName = nil
             generatedFileName = destinationURL.lastPathComponent
         case .custom, .none:
-            destinationURL = LocalLibraryPaths.playlistCustomArtworkURL(for: playlistID)
+            destinationURL = paths.playlistCustomArtworkURL(for: playlistID)
             customFileName = destinationURL.lastPathComponent
             generatedFileName = nil
         }
@@ -1696,7 +1854,7 @@ final class LocalLibraryService {
         source: PlaylistArtworkSource
     ) -> PersistedPlaylistArtwork? {
         guard let fileName else { return nil }
-        let fileURL = LocalLibraryPaths.playlistsRootURL.appendingPathComponent(fileName)
+        let fileURL = paths.playlistsRootURL.appendingPathComponent(fileName)
         guard
             fileManager.fileExists(atPath: fileURL.path),
             let image = downsampledArtworkImage(fileURL: fileURL, maxPixelSize: 680)
@@ -1781,7 +1939,7 @@ final class LocalLibraryService {
     // MARK: - Artist/Album Sidecars
 
     func loadArtistSidecarsFromDisk() -> [(sidecar: ArtistSidecar, folderURL: URL)] {
-        let root = LocalLibraryPaths.artistsRootURL
+        let root = paths.artistsRootURL
         guard let entries = try? fileManager.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey],
             options: .skipsHiddenFiles
@@ -1797,8 +1955,16 @@ final class LocalLibraryService {
         }
     }
 
+    func loadArtistSidecar(artistID: UUID) -> ArtistSidecar? {
+        loadArtistSidecarsFromDisk().first { $0.sidecar.id == artistID }?.sidecar
+    }
+
+    func loadArtistSidecar(canonicalName: String) -> ArtistSidecar? {
+        loadArtistSidecarsFromDisk().first { $0.sidecar.canonicalName == canonicalName }?.sidecar
+    }
+
     func loadAlbumSidecarsFromDisk() -> [(sidecar: AlbumSidecar, folderURL: URL)] {
-        let root = LocalLibraryPaths.albumsRootURL
+        let root = paths.albumsRootURL
         guard let entries = try? fileManager.contentsOfDirectory(
             at: root, includingPropertiesForKeys: [.isDirectoryKey],
             options: .skipsHiddenFiles
@@ -1814,60 +1980,177 @@ final class LocalLibraryService {
         }
     }
 
-    func writeArtistSidecar(_ sidecar: ArtistSidecar, artworkData: Data?) {
-        let folder = LocalLibraryPaths.artistFolderURL(for: sidecar.id)
+    func loadAlbumSidecar(albumID: UUID) -> AlbumSidecar? {
+        loadAlbumSidecarsFromDisk().first { $0.sidecar.id == albumID }?.sidecar
+    }
+
+    func loadAlbumSidecar(canonicalKey: String) -> AlbumSidecar? {
+        loadAlbumSidecarsFromDisk().first { $0.sidecar.canonicalKey == canonicalKey }?.sidecar
+    }
+
+    func writeArtistSidecar(_ sidecar: ArtistSidecar, artworkData: Data?) throws {
+        let folder = paths.artistFolderURL(for: sidecar.id)
         do {
             try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
-            let metaURL = LocalLibraryPaths.artistMetaURL(for: sidecar.id)
-            let data = try encoder.encode(sidecar)
+            let existing = loadArtistSidecar(artistID: sidecar.id)
+            var persistedSidecar = sidecar
+            persistedSidecar.trackSortKey = sidecar.trackSortKey ?? existing?.trackSortKey
+            persistedSidecar.trackSortOrder = sidecar.trackSortOrder ?? existing?.trackSortOrder
+            persistedSidecar.customTrackOrder = sidecar.customTrackOrder ?? existing?.customTrackOrder
+            let metaURL = paths.artistMetaURL(for: sidecar.id)
+            let data = try encoder.encode(persistedSidecar)
             try data.write(to: metaURL, options: .atomic)
-            if let artworkData, let fileName = sidecar.artworkFileName {
+            if let artworkData, let fileName = persistedSidecar.artworkFileName {
                 let artworkURL = folder.appendingPathComponent(fileName)
                 try artworkData.write(to: artworkURL, options: .atomic)
             }
         } catch {
-            Log.error("Failed to write artist sidecar '\(sidecar.displayName)': \(error)", category: .library)
+            throw LibraryMetadataPersistenceError.writeArtistFailed(
+                artistID: sidecar.id,
+                reason: error.localizedDescription
+            )
         }
     }
 
-    func writeAlbumSidecar(_ sidecar: AlbumSidecar, artworkData: Data?) {
-        let folder = LocalLibraryPaths.albumFolderURL(for: sidecar.id)
+    func writeAlbumSidecar(_ sidecar: AlbumSidecar, artworkData: Data?) throws {
+        let folder = paths.albumFolderURL(for: sidecar.id)
         do {
             try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
-            let previousArtworkFileName = loadAlbumSidecarsFromDisk()
-                .first(where: { $0.sidecar.id == sidecar.id })?
-                .sidecar
-                .artworkFileName
-            let metaURL = LocalLibraryPaths.albumMetaURL(for: sidecar.id)
-            let data = try encoder.encode(sidecar)
+            let existing = loadAlbumSidecar(albumID: sidecar.id)
+            var persistedSidecar = sidecar
+            persistedSidecar.trackSortKey = sidecar.trackSortKey ?? existing?.trackSortKey
+            persistedSidecar.trackSortOrder = sidecar.trackSortOrder ?? existing?.trackSortOrder
+            persistedSidecar.customTrackOrder = sidecar.customTrackOrder ?? existing?.customTrackOrder
+            let previousArtworkFileName = existing?.artworkFileName
+            let metaURL = paths.albumMetaURL(for: sidecar.id)
+            let data = try encoder.encode(persistedSidecar)
             try data.write(to: metaURL, options: .atomic)
-            if let previousArtworkFileName, previousArtworkFileName != sidecar.artworkFileName {
+            if let previousArtworkFileName, previousArtworkFileName != persistedSidecar.artworkFileName {
                 let previousArtworkURL = folder.appendingPathComponent(previousArtworkFileName)
                 if fileManager.fileExists(atPath: previousArtworkURL.path) {
                     try? fileManager.removeItem(at: previousArtworkURL)
                 }
             }
-            if let artworkData, let fileName = sidecar.artworkFileName {
+            if let artworkData, let fileName = persistedSidecar.artworkFileName {
                 let artworkURL = folder.appendingPathComponent(fileName)
                 try artworkData.write(to: artworkURL, options: .atomic)
             }
         } catch {
-            Log.error("Failed to write album sidecar '\(sidecar.displayTitle)': \(error)", category: .library)
+            throw LibraryMetadataPersistenceError.writeAlbumFailed(
+                albumID: sidecar.id,
+                reason: error.localizedDescription
+            )
         }
     }
 
-    nonisolated func deleteArtistEntry(id: UUID) {
-        let fileManager = FileManager.default
-        let folder = LocalLibraryPaths.artistFolderURL(for: id)
-        guard fileManager.fileExists(atPath: folder.path) else { return }
-        try? fileManager.removeItem(at: folder)
+    @discardableResult
+    func updateArtistSortPreference(
+        artistID: UUID,
+        key: String,
+        order: String
+    ) -> Bool {
+        guard var sidecar = loadArtistSidecar(artistID: artistID) else { return false }
+        sidecar.trackSortKey = key
+        sidecar.trackSortOrder = order
+        do {
+            try writeArtistSidecar(sidecar, artworkData: nil)
+            return true
+        } catch {
+            Log.error("Failed to update artist sort preference: \(error)", category: .library)
+            return false
+        }
     }
 
-    nonisolated func deleteAlbumEntry(id: UUID) {
+    @discardableResult
+    func updateAlbumSortPreference(
+        albumID: UUID,
+        key: String,
+        order: String
+    ) -> Bool {
+        guard var sidecar = loadAlbumSidecar(albumID: albumID) else { return false }
+        sidecar.trackSortKey = key
+        sidecar.trackSortOrder = order
+        do {
+            try writeAlbumSidecar(sidecar, artworkData: nil)
+            return true
+        } catch {
+            Log.error("Failed to update album sort preference: \(error)", category: .library)
+            return false
+        }
+    }
+
+    @discardableResult
+    func updateArtistTrackOrdering(
+        artistID: UUID,
+        orderedTrackIDs: [UUID],
+        sortOrder: String,
+        availableTrackIDs: [UUID]
+    ) -> Bool {
+        guard var sidecar = loadArtistSidecar(artistID: artistID) else { return false }
+        sidecar.trackSortKey = "custom"
+        sidecar.trackSortOrder = sortOrder
+        sidecar.customTrackOrder = normalizedOrder(
+            orderedTrackIDs,
+            availableIDs: availableTrackIDs
+        )
+        do {
+            try writeArtistSidecar(sidecar, artworkData: nil)
+            return true
+        } catch {
+            Log.error("Failed to update artist track ordering: \(error)", category: .library)
+            return false
+        }
+    }
+
+    @discardableResult
+    func updateAlbumTrackOrdering(
+        albumID: UUID,
+        orderedTrackIDs: [UUID],
+        sortOrder: String,
+        availableTrackIDs: [UUID]
+    ) -> Bool {
+        guard var sidecar = loadAlbumSidecar(albumID: albumID) else { return false }
+        sidecar.trackSortKey = "custom"
+        sidecar.trackSortOrder = sortOrder
+        sidecar.customTrackOrder = normalizedOrder(
+            orderedTrackIDs,
+            availableIDs: availableTrackIDs
+        )
+        do {
+            try writeAlbumSidecar(sidecar, artworkData: nil)
+            return true
+        } catch {
+            Log.error("Failed to update album track ordering: \(error)", category: .library)
+            return false
+        }
+    }
+
+    nonisolated func deleteArtistEntry(id: UUID) throws {
         let fileManager = FileManager.default
-        let folder = LocalLibraryPaths.albumFolderURL(for: id)
+        let folder = paths.artistFolderURL(for: id)
         guard fileManager.fileExists(atPath: folder.path) else { return }
-        try? fileManager.removeItem(at: folder)
+        do {
+            try fileManager.removeItem(at: folder)
+        } catch {
+            throw LibraryMetadataPersistenceError.deleteArtistFailed(
+                artistID: id,
+                reason: error.localizedDescription
+            )
+        }
+    }
+
+    nonisolated func deleteAlbumEntry(id: UUID) throws {
+        let fileManager = FileManager.default
+        let folder = paths.albumFolderURL(for: id)
+        guard fileManager.fileExists(atPath: folder.path) else { return }
+        do {
+            try fileManager.removeItem(at: folder)
+        } catch {
+            throw LibraryMetadataPersistenceError.deleteAlbumFailed(
+                albumID: id,
+                reason: error.localizedDescription
+            )
+        }
     }
 
     // MARK: - Bootstrap / Sync
@@ -1897,8 +2180,8 @@ final class LocalLibraryService {
         // 1. Refresh Tracks Availability
         let tracks = await repository.fetchTracks(in: nil)
         for track in tracks {
-            guard !track.libraryRelativePath.isEmpty else { continue }
-            let url = LocalLibraryPaths.libraryURL(from: track.libraryRelativePath)
+            guard case let .managed(libraryRelativePath) = track.mediaLocator else { continue }
+            guard let url = paths.libraryURL(from: libraryRelativePath) else { continue }
             let exists = fileManager.fileExists(atPath: url.path)
 
             let newAvailability: TrackAvailability = exists ? .available : .missing
@@ -1950,7 +2233,14 @@ final class LocalLibraryService {
         // 3. Delete Stale (In DB, not on Disk)
         for playlist in dbPlaylists where !diskIds.contains(playlist.id) {
             Log.debug("Removing stale playlist from DB: \(playlist.name)", category: .library)
-            await repository.deletePlaylist(playlist)
+            do {
+                try await repository.deletePlaylist(playlist)
+            } catch {
+                Log.error(
+                    "Failed to remove stale playlist '\(playlist.name)' during disk refresh: \(error)",
+                    category: .library
+                )
+            }
         }
 
         // 4. Update Existing
@@ -1992,7 +2282,7 @@ final class LocalLibraryService {
 
         let files =
             (try? fileManager.contentsOfDirectory(
-                at: LocalLibraryPaths.playlistsRootURL,
+                at: paths.playlistsRootURL,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             )) ?? []
@@ -2011,18 +2301,23 @@ final class LocalLibraryService {
 
     func migrateLegacyTracksIfNeeded(repository: LibraryRepositoryProtocol) async {
         let tracks = await repository.fetchTracks(in: nil)
-        for track in tracks
-        where track.libraryRelativePath.isEmpty && !track.fileBookmarkData.isEmpty {
+        for track in tracks {
+            guard case let .referenced(locator) = track.mediaLocator,
+                  locator.sourceMemberships.isEmpty,
+                  !locator.fileBookmarkData.isEmpty
+            else { continue }
+
             let result = track.resolveFileURL()
             guard let sourceURL = result.url else {
-                track.availability = .missing
+                track.availability = result.newAvailability
                 await repository.persistTrackMetaOnly(track, reason: "legacyMigration")
                 continue
             }
+            defer { result.lease.release() }
 
             do {
                 let relativePath = try importAudioFile(from: sourceURL, trackId: track.id)
-                track.libraryRelativePath = relativePath
+                track.mediaLocator = .managed(libraryRelativePath: relativePath)
                 if track.originalFilePath.isEmpty {
                     track.originalFilePath = sourceURL.path
                 }
@@ -2031,8 +2326,6 @@ final class LocalLibraryService {
             } catch {
                 Log.error("Failed to migrate track \(track.title): \(error)", category: .library)
             }
-
-            track.stopAccessingFile(url: sourceURL)
         }
     }
 
@@ -2044,7 +2337,7 @@ final class LocalLibraryService {
 
         let trackDirs =
             (try? fileManager.contentsOfDirectory(
-                at: LocalLibraryPaths.tracksRootURL,
+                at: paths.tracksRootURL,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             )) ?? []
@@ -2068,7 +2361,7 @@ final class LocalLibraryService {
             let audioURL =
                 relativePath.isEmpty
                 ? nil
-                : LocalLibraryPaths.libraryURL(from: relativePath)
+                : paths.libraryURL(from: relativePath)
             let isAvailable = audioURL.map { fileManager.fileExists(atPath: $0.path) } ?? false
 
             let resolvedArtworkFileName = resolvedTrackArtworkFileName(
@@ -2104,7 +2397,7 @@ final class LocalLibraryService {
                 lyricsText: nil
             )
 
-            track.libraryRootSnapshot = LocalLibraryPaths.libraryRootURL.path
+            track.libraryRootSnapshot = paths.rootURL.path
             track.audioFileName = audioFileName ?? ""
             track.artworkFileName = resolvedArtworkFileName
             track.lyricsFileName = sidecar.lyricsFileName
@@ -2112,7 +2405,7 @@ final class LocalLibraryService {
 
             // Load preference stats into cache if available.
             // If preferenceStats exists in sidecar, use it; otherwise migration will happen on first write.
-            PreferenceStatsService.shared.loadStats(from: sidecar)
+            preferenceStatsService.loadStats(from: sidecar)
 
             tracks.append(track)
         }
@@ -2126,7 +2419,7 @@ final class LocalLibraryService {
 
         let files =
             (try? fileManager.contentsOfDirectory(
-                at: LocalLibraryPaths.playlistsRootURL,
+                at: paths.playlistsRootURL,
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             )) ?? []
@@ -2172,95 +2465,6 @@ final class LocalLibraryService {
         return nil
     }
 
-    // MARK: - Monitoring (missing/removed files)
-
-    func startMonitoring(repository: LibraryRepositoryProtocol) {
-        stopMonitoring()
-        ensureLibraryFolders()
-
-        let pathsToMonitor = [
-            "tracks": LocalLibraryPaths.tracksRootURL.path,
-            "playlists": LocalLibraryPaths.playlistsRootURL.path,
-        ]
-
-        for (name, path) in pathsToMonitor {
-            let fd = open(path, O_EVTONLY)
-            guard fd >= 0 else {
-                Log.warning("Failed to open \(name) path for monitoring: \(path)", category: .library)
-                continue
-            }
-
-            let source = DispatchSource.makeFileSystemObjectSource(
-                fileDescriptor: fd,
-                eventMask: [.write, .delete, .rename, .extend, .attrib],  // Added .extend/.attrib for better file change detection
-                queue: .main
-            )
-
-            source.setEventHandler { [weak self] in
-                guard let self else { return }
-                if self.shouldIgnoreMonitorEvent() {
-                    Log.debug("Ignored self-induced monitor event in \(name)", category: .library)
-                    return
-                }
-                Log.debug("Detected change in \(name) folder", category: .library)
-                self.scheduleAvailabilitySync(repository: repository)
-            }
-
-            source.setCancelHandler { [fd] in
-                close(fd)
-            }
-
-            source.resume()
-            monitors[name] = source
-            monitorFDs[name] = fd
-            Log.debug("Started monitoring \(name) at \(path)", category: .library)
-        }
-    }
-
-    func stopMonitoring() {
-        pendingSync?.cancel()
-        pendingSync = nil
-
-        for source in monitors.values {
-            source.cancel()
-        }
-        monitors.removeAll()
-
-        // FDs are closed in cancel handler, but we clear our tracking
-        monitorFDs.removeAll()
-    }
-
-    func restartMonitoring(repository: LibraryRepositoryProtocol) {
-        stopMonitoring()
-        startMonitoring(repository: repository)
-    }
-
-    private func scheduleAvailabilitySync(repository: LibraryRepositoryProtocol) {
-        pendingSync?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            Task { @MainActor in
-                await self?.refreshAvailability(repository: repository)
-            }
-        }
-        pendingSync = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
-    }
-
-    nonisolated func suppressMonitorEvents(for duration: TimeInterval = 1.5) {
-        monitorSuppressionLock.lock()
-        monitorEventsSuppressedUntil = max(
-            monitorEventsSuppressedUntil,
-            ProcessInfo.processInfo.systemUptime + duration
-        )
-        monitorSuppressionLock.unlock()
-    }
-
-    private func shouldIgnoreMonitorEvent() -> Bool {
-        monitorSuppressionLock.lock()
-        let ignored = ProcessInfo.processInfo.systemUptime < monitorEventsSuppressedUntil
-        monitorSuppressionLock.unlock()
-        return ignored
-    }
 }
 
 extension NSImage {

@@ -13,6 +13,7 @@
 import Observation
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Sidebar view for navigation and playlists.
 /// IMPORTANT: Do NOT add .background(material) or NSVisualEffectView here!
@@ -25,11 +26,13 @@ struct SidebarView: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LyricsViewModel.self) private var lyricsVM
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(AppSettings.self) private var settings
+    @EnvironmentObject private var appSession: AppSessionHost
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var currentColorScheme
-    @ObservedObject private var updateDownloadManager = UpdatePackageDownloadManager.shared
+    @ObservedObject private var updateCoordinator = UpdateCoordinator.shared
     @ObservedObject private var crashReportService = CrashReportService.shared
 
     @State private var showSettings = false
@@ -37,9 +40,14 @@ struct SidebarView: View {
     @State private var crashReportTipTask: Task<Void, Never>?
     @State private var showingPlaylistSheet = false
     @State private var deletionRequest: SidebarDeletionRequest?
+    @State private var failedEnrichmentEditRequest: FailedEnrichmentEditRequest?
     @State private var editingArtistEntry: ArtistEntry?
     @State private var editingAlbumEntry: AlbumEntry?
     @State private var isHoveringPlaylists = false
+    @State private var dropTargetPlaylistID: UUID?
+    @State private var isPlaylistsExpanded = true
+    @State private var isPlaylistHeaderDropTargeted = false
+    @State private var playlistHeaderExpandTask: Task<Void, Never>?
     @State private var isArtistsExpanded = false
     @State private var isAlbumsExpanded = false
 
@@ -48,6 +56,7 @@ struct SidebarView: View {
     @State private var settingsRotateTrigger = 0
     @State private var appearanceRotateTrigger = 0
     @State private var scrollFadeState = ScrollEdgeFadeState()
+    @State private var showingLibraryImportStatus = false
 
     private let scrollFadeHeight: CGFloat = 28
 
@@ -70,7 +79,8 @@ struct SidebarView: View {
             // Playlists List
             List {
                 Section {
-                    ForEach(libraryVM.sortedPlaylistsForDisplay()) { playlist in
+                    if isPlaylistsExpanded {
+                        ForEach(libraryVM.sortedPlaylistsForDisplay()) { playlist in
                         Button {
                             handleSelection(.playlist(playlist.id))
                         } label: {
@@ -90,12 +100,43 @@ struct SidebarView: View {
                                 selectionFill(
                                     isSelected: currentSelection == .playlist(playlist.id))
                             )
+                            .overlay {
+                                if dropTargetPlaylistID == playlist.id {
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .stroke(themeStore.accentColor, lineWidth: 1.5)
+                                        .opacity(0.9)
+                                }
+                            }
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .onDrop(
+                            of: [UTType.fileURL.identifier, UTType.url.identifier],
+                            isTargeted: dropTargetBinding(for: playlist.id)
+                        ) { providers in
+                            acceptPlaylistDrop(providers, playlistID: playlist.id)
+                        }
                         .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
                         .listRowBackground(Color.clear)
                         .contextMenu {
+                            Button {
+                                play(playlist)
+                            } label: {
+                                Label("播放该播放列表", systemImage: "play.fill")
+                            }
+
+                            Button {
+                                Task { @MainActor in
+                                    let count = await libraryVM.importToPlaylist(playlist)
+                                    guard count > 0 else { return }
+                                    uiState.showSidebarNotice("已导入 \(count) 首歌曲")
+                                }
+                            } label: {
+                                Label("导入到当前播放列表", systemImage: "square.and.arrow.down")
+                            }
+
+                            Divider()
+
                             Button(role: .destructive) {
                                 deletionRequest = .playlist(playlist: playlist)
                             } label: {
@@ -105,12 +146,28 @@ struct SidebarView: View {
                                 )
                             }
                         }
+                        }
                     }
                 } header: {
                     HStack {
-                        Text("sidebar.playlists")
-                            .font(.caption.bold())
-                            .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                        Button {
+                            setPlaylistsExpanded(!isPlaylistsExpanded)
+                        } label: {
+                            HStack(spacing: 5) {
+                                Text("sidebar.playlists")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                                Text("\(libraryVM.playlists.count)")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor.opacity(0.65))
+                                Image(systemName: "chevron.right")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                                    .rotationEffect(.degrees(isPlaylistsExpanded ? 90 : 0))
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                         Spacer()
 
                         Button {
@@ -129,6 +186,13 @@ struct SidebarView: View {
                     }
                     .padding(.horizontal, 4)
                     .padding(.bottom, 4)
+                    .contentShape(Rectangle())
+                    .onDrop(
+                        of: [UTType.fileURL.identifier, UTType.url.identifier],
+                        isTargeted: playlistHeaderDropTarget
+                    ) { providers in
+                        acceptPlaylistHeaderDrop(providers)
+                    }
                 }
 
                 // Artists Section
@@ -359,12 +423,19 @@ struct SidebarView: View {
             uiState.updateSidebarWidth(width)
         }
         .onAppear {
+            loadPlaylistsExpandedForActiveLibrary()
+            ensureSelectedPlaylistGroupExpanded()
             scheduleCrashReportSettingsTipIfNeeded()
+        }
+        .onChange(of: appSession.activeLibraryBinding.context?.id) { _, _ in
+            loadPlaylistsExpandedForActiveLibrary()
+            ensureSelectedPlaylistGroupExpanded()
         }
         .onDisappear {
             crashReportTipTask?.cancel()
             crashReportTipTask = nil
             showCrashReportSettingsTip = false
+            cancelPlaylistHeaderAutoExpand()
         }
         .onChange(of: crashReportService.isPromptFlowActive) { _, isActive in
             if isActive {
@@ -375,14 +446,24 @@ struct SidebarView: View {
             }
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView()
+            SettingsView(hasActiveLibrarySession: true)
                 .environment(settings)
                 .environment(libraryVM)
                 .environment(playerVM)
                 .environment(playbackCoordinator)
                 .environment(lyricsVM)
                 .environment(ledMeterProvider)
+                .environment(cacheServices)
+                .environmentObject(appSession)
                 .environmentObject(themeStore)
+        }
+        .sheet(isPresented: $showingLibraryImportStatus) {
+            LibraryImportStatusDialogView(
+                reports: uiState.libraryImportFailureReports,
+                tasks: appSession.activeLibraryTasks,
+                onClear: { uiState.clearLibraryImportFailureReports() }
+            )
+            .environmentObject(themeStore)
         }
         .sheet(isPresented: $showingPlaylistSheet) {
             PlaylistEditSheet()
@@ -421,6 +502,11 @@ struct SidebarView: View {
         }
         .animation(.snappy(duration: 0.2), value: importEnrichmentService.hasOutstandingWork)
         .animation(.snappy(duration: 0.2), value: uiState.sidebarNotice?.id)
+        .sheet(item: $failedEnrichmentEditRequest) { request in
+            // Reuses the exact multi-track metadata editor from the library
+            // list so failed enrichment items can be fixed by hand.
+            BatchTrackEditSheet(tracks: request.tracks)
+        }
     }
 
     private var legacyAppHeader: some View {
@@ -459,6 +545,17 @@ struct SidebarView: View {
             ) {
                 libraryVM.selectOrResetCurrentSelection(.allSongs)
                 uiState.showLibrary()
+            }
+
+            if appSession.activeLibraryBinding.context?.mode == .referenced {
+                sidebarNavigationRow(
+                    title: "文件夹",
+                    systemImage: "folder",
+                    selection: .folders
+                ) {
+                    libraryVM.selectOrResetCurrentSelection(.folders)
+                    uiState.showLibrary()
+                }
             }
 
             sidebarNavigationRow(
@@ -502,39 +599,192 @@ struct SidebarView: View {
         .padding(.horizontal, 14)
     }
 
+    private var updateSidebarProgress: SidebarTaskProgress? {
+        switch updateCoordinator.state {
+        case .checking(let manual):
+            return SidebarTaskProgress(
+                title: "正在检查更新",
+                detail: manual ? "正在获取最新版本信息" : "后台检查进行中",
+                fractionCompleted: nil,
+                state: .running
+            )
+        case .downloading(let progress):
+            return SidebarTaskProgress(
+                title: "正在下载更新",
+                detail: "下载完成后可重启安装",
+                fractionCompleted: progress,
+                state: .running
+            )
+        case .preparing(let progress):
+            return SidebarTaskProgress(
+                title: "正在准备更新",
+                detail: "正在验证并解压安装包",
+                fractionCompleted: progress,
+                state: .running
+            )
+        case .installReplyPending:
+            return SidebarTaskProgress(
+                title: "正在准备退出",
+                detail: "正在保存播放状态并关闭辅助进程",
+                fractionCompleted: nil,
+                state: .running
+            )
+        case .waitingForTermination(_, let retryInFlight):
+            return SidebarTaskProgress(
+                title: retryInFlight ? "正在再次退出" : "等待应用退出",
+                detail: retryInFlight ? "正在请求安装程序继续更新" : "点击重试以再次退出并完成更新",
+                fractionCompleted: nil,
+                state: .running
+            )
+        case .installing:
+            return SidebarTaskProgress(
+                title: "正在安装更新",
+                detail: "应用将退出并在完成后重新启动",
+                fractionCompleted: nil,
+                state: .running
+            )
+        case .failed(let failure):
+            return SidebarTaskProgress(
+                title: failure.title,
+                detail: failure.message,
+                fractionCompleted: nil,
+                state: .failed
+            )
+        case .idle, .ready, .suppressed:
+            return nil
+        }
+    }
+
+    private var updateProgressDismissAction: (() -> Void)? {
+        switch updateCoordinator.state {
+        case .checking, .downloading:
+            guard updateCoordinator.canCancelCurrentOperation else { return nil }
+            return { updateCoordinator.cancelCurrentOperation() }
+        case .failed:
+            return { updateCoordinator.dismissFailure() }
+        default:
+            return nil
+        }
+    }
+
+    private var updateProgressRetryAction: (() -> Void)? {
+        if case .waitingForTermination(_, let retryInFlight) = updateCoordinator.state {
+            return retryInFlight ? nil : { updateCoordinator.retryTerminatingApplication() }
+        }
+        guard case .failed = updateCoordinator.state else { return nil }
+        return { updateCoordinator.retryFailedUpdate() }
+    }
+
     private var hasSidebarTaskProgress: Bool {
         uiState.sidebarNotice != nil
-            || updateDownloadManager.sidebarProgress != nil
+            || updateSidebarProgress != nil
+            || updateCoordinator.readyUpdate != nil
             || importEnrichmentService.hasOutstandingWork
+            || importEnrichmentService.completionSummary != nil
+            || activeLibraryImportTask != nil
+            || !uiState.libraryImportFailureReports.isEmpty
     }
 
     private var sidebarTaskProgressStack: some View {
         VStack(spacing: 6) {
             if let notice = uiState.sidebarNotice {
-                SidebarNoticeView(notice: notice)
+                SidebarNoticeView(notice: notice) {
+                    if activeLibraryImportTask != nil || !uiState.libraryImportFailureReports.isEmpty {
+                        showingLibraryImportStatus = true
+                    } else {
+                        showSettings = true
+                    }
+                }
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
 
-            if let updateProgress = updateDownloadManager.sidebarProgress {
-                SidebarTaskProgressView(
-                    progress: updateProgress,
-                    onDismiss: updateProgressDismissAction(for: updateProgress)
-                )
+            if let progress = libraryImportSidebarProgress {
+                Button {
+                    showingLibraryImportStatus = true
+                } label: {
+                    SidebarTaskProgressView(progress: progress)
+                }
+                .buttonStyle(.plain)
+                .help("点击查看导入状态")
                 .transition(.opacity)
             }
 
+            if let progress = updateSidebarProgress {
+                SidebarTaskProgressView(
+                    progress: progress,
+                    onDismiss: updateProgressDismissAction,
+                    onRetry: updateProgressRetryAction
+                )
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            if let readyUpdate = updateCoordinator.readyUpdate {
+                SidebarUpdateReadyView(
+                    update: readyUpdate,
+                    onInstall: {
+                        updateCoordinator.restartAndInstall()
+                    },
+                    onDismiss: {
+                        updateCoordinator.dismissReadyUpdate()
+                    }
+                )
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
             if importEnrichmentService.hasOutstandingWork {
-                SidebarTaskProgressView(progress: importEnrichmentSidebarProgress)
-                    .transition(.opacity)
+                Button {
+                    EnrichmentStatusDialogPresenter.present(service: importEnrichmentService)
+                } label: {
+                    SidebarTaskProgressView(progress: importEnrichmentSidebarProgress)
+                }
+                .buttonStyle(.plain)
+                .help("点击查看每首歌曲的补全状态")
+                .transition(.opacity)
+            } else if let summary = importEnrichmentService.completionSummary {
+                SidebarEnrichmentCompletionNotice(
+                    summary: summary,
+                    onShowFailures: { showFailedEnrichmentEditor(failedTrackIDs: summary.failedTrackIDs) },
+                    onDismiss: { importEnrichmentService.dismissCompletionSummary() }
+                )
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
     }
 
-    private func updateProgressDismissAction(for progress: SidebarTaskProgress) -> (() -> Void)? {
-        guard progress.state != .running else { return nil }
-        return {
-            updateDownloadManager.dismissSidebarProgress()
+    private var activeLibraryImportTask: LibraryOperationTaskDescriptor? {
+        appSession.activeLibraryTasks.reversed().first { task in
+            !task.state.isTerminal
+                && [.importFiles, .sourceScan, .ncmConversion, .enrichment].contains(task.kind)
         }
+    }
+
+    private var libraryImportSidebarProgress: SidebarTaskProgress? {
+        if let task = activeLibraryImportTask {
+            let title: String
+            switch task.kind {
+            case .sourceScan: title = "正在扫描来源"
+            case .ncmConversion: title = "正在转换歌曲"
+            case .enrichment: title = "正在补全信息"
+            default: title = "正在导入歌曲"
+            }
+            return SidebarTaskProgress(
+                title: title,
+                detail: task.lastCheckpointLabel ?? "正在处理",
+                fractionCompleted: nil,
+                state: .running
+            )
+        }
+
+        let failureCount = uiState.libraryImportFailureReports
+            .flatMap(\.failures)
+            .count
+        guard failureCount > 0 else { return nil }
+        return SidebarTaskProgress(
+            title: "导入有失败",
+            detail: "\(failureCount) 项需要查看",
+            fractionCompleted: nil,
+            state: .failed
+        )
     }
 
     private var playbackSourceSwitcher: some View {
@@ -620,6 +870,7 @@ struct SidebarView: View {
             showSettings = true
         }
         .symbolEffect(.rotate, value: settingsRotateTrigger)
+        .keyboardShortcut(",", modifiers: .command)
         .popover(isPresented: $showCrashReportSettingsTip, arrowEdge: .bottom) {
             CrashReportSettingsTipView(
                 onOpenSettings: {
@@ -745,6 +996,8 @@ struct SidebarView: View {
             libraryVM.selectOrResetCurrentSelection(.home)
         case .allSongs:
             libraryVM.selectOrResetCurrentSelection(.allSongs)
+        case .folders:
+            libraryVM.selectOrResetCurrentSelection(.folders)
         case .history:
             uiState.showPlaybackHistory()
             return
@@ -767,6 +1020,154 @@ struct SidebarView: View {
         uiState.showLibrary()
     }
 
+    private func dropTargetBinding(for playlistID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { dropTargetPlaylistID == playlistID },
+            set: { isTargeted in
+                if isTargeted {
+                    dropTargetPlaylistID = playlistID
+                } else if dropTargetPlaylistID == playlistID {
+                    dropTargetPlaylistID = nil
+                }
+            }
+        )
+    }
+
+    // MARK: - Playlist Group Collapse (spec 4.2)
+
+    private var playlistsExpandedStorageKey: String {
+        let libraryID = appSession.activeLibraryBinding.context?.id.uuidString ?? "no-library"
+        return "sidebar.playlists.expanded.\(libraryID)"
+    }
+
+    private func loadPlaylistsExpandedForActiveLibrary() {
+        let stored = UserDefaults.standard.object(forKey: playlistsExpandedStorageKey) as? Bool
+        isPlaylistsExpanded = stored ?? true
+    }
+
+    private func setPlaylistsExpanded(_ expanded: Bool) {
+        withAnimation(.snappy(duration: 0.18)) {
+            isPlaylistsExpanded = expanded
+        }
+        UserDefaults.standard.set(expanded, forKey: playlistsExpandedStorageKey)
+    }
+
+    /// Spec 4.2: when window state restores a playlist selection, its group
+    /// must auto-expand so the selection stays visible.
+    private func ensureSelectedPlaylistGroupExpanded() {
+        var restoredPlaylistID: UUID?
+        if case .playlist(let id) = libraryVM.currentSelection {
+            restoredPlaylistID = id
+        }
+        if restoredPlaylistID == nil,
+           let stored = UserDefaults.standard.string(forKey: "lastSelectedPlaylistId"),
+           let id = UUID(uuidString: stored),
+           libraryVM.playlists.contains(where: { $0.id == id }) {
+            restoredPlaylistID = id
+        }
+        guard restoredPlaylistID != nil, !isPlaylistsExpanded else { return }
+        setPlaylistsExpanded(true)
+    }
+
+    private var playlistHeaderDropTarget: Binding<Bool> {
+        Binding(
+            get: { isPlaylistHeaderDropTargeted },
+            set: { targeted in
+                guard targeted != isPlaylistHeaderDropTargeted else { return }
+                isPlaylistHeaderDropTargeted = targeted
+                if targeted {
+                    schedulePlaylistHeaderAutoExpand()
+                } else {
+                    cancelPlaylistHeaderAutoExpand()
+                }
+            }
+        )
+    }
+
+    private func schedulePlaylistHeaderAutoExpand() {
+        guard !isPlaylistsExpanded else { return }
+        playlistHeaderExpandTask?.cancel()
+        playlistHeaderExpandTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(600))
+            guard !Task.isCancelled else { return }
+            setPlaylistsExpanded(true)
+        }
+    }
+
+    private func cancelPlaylistHeaderAutoExpand() {
+        playlistHeaderExpandTask?.cancel()
+        playlistHeaderExpandTask = nil
+    }
+
+    /// Spec 4.2: dropping on the group title never picks a random playlist.
+    /// The header accepts the drop so it cannot fall through to window
+    /// import, then hints toward a concrete playlist row.
+    private func acceptPlaylistHeaderDrop(_ providers: [NSItemProvider]) -> Bool {
+        let hasPayload = providers.contains {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+                || $0.hasItemConformingToTypeIdentifier(UTType.url.identifier)
+        }
+        guard hasPayload else { return false }
+        uiState.showSidebarNotice("请将文件拖到具体的播放列表行以导入", style: .warning)
+        return true
+    }
+
+    /// Finder supplies file URLs for both files and directories. Loading the
+    /// providers before constructing the ImportContext keeps the playlist row
+    /// as the fixed destination even if the user changes selection while the
+    /// provider data is being delivered.
+    private func acceptPlaylistDrop(
+        _ providers: [NSItemProvider],
+        playlistID: UUID
+    ) -> Bool {
+        guard providers.contains(where: {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+                || $0.hasItemConformingToTypeIdentifier(UTType.url.identifier)
+        }) else {
+            return false
+        }
+        Task { @MainActor in
+            let urls = await Self.urls(from: providers)
+            guard !urls.isEmpty else { return }
+            await libraryVM.importDroppedURLsToPlaylist(urls, playlistID: playlistID)
+        }
+        return true
+    }
+
+    private static func urls(from providers: [NSItemProvider]) async -> [URL] {
+        var urls: [URL] = []
+        for provider in providers {
+            let typeIdentifier: String?
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                typeIdentifier = UTType.fileURL.identifier
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+                typeIdentifier = UTType.url.identifier
+            } else {
+                typeIdentifier = nil
+            }
+            guard let typeIdentifier else { continue }
+            // `loadItem` returns `NSSecureCoding?`, which is not Sendable and
+            // cannot safely cross the continuation's async boundary under the
+            // project's strict concurrency settings. A data representation is
+            // sufficient for both file URLs and regular URLs and keeps the
+            // provider callback at a Sendable boundary.
+            let data = await withCheckedContinuation { (continuation: CheckedContinuation<Data?, Never>) in
+                provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in
+                    continuation.resume(returning: data)
+                }
+            }
+            guard let data else { continue }
+            if let url = URL(dataRepresentation: data, relativeTo: nil), url.isFileURL {
+                urls.append(url)
+            } else if let string = String(data: data, encoding: .utf8),
+                      let url = URL(string: string),
+                      url.isFileURL {
+                urls.append(url)
+            }
+        }
+        return Array(Dictionary(uniqueKeysWithValues: urls.map { ($0.standardizedFileURL.path, $0) }).values)
+    }
+
     private var currentSelection: SidebarSelection {
         if uiState.contentMode == .playbackHistory {
             return .history
@@ -784,6 +1185,8 @@ struct SidebarView: View {
             return .allArtists
         case .allSongs:
             return .allSongs
+        case .folders:
+            return .folders
         case .playlist(let id):
             return .playlist(id)
         case .artist(let key):
@@ -795,8 +1198,15 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func selectionFill(isSelected: Bool) -> some View {
-        Capsule(style: .continuous)
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
             .fill(isSelected ? themeStore.selectionFill : Color.clear)
+    }
+
+    private func play(_ playlist: Playlist) {
+        playbackCoordinator.playRandomTracks(
+            playlist.tracks,
+            libraryQueueSource: .librarySelection("sidebar-playlist-\(playlist.id.uuidString)")
+        )
     }
 
     private var importEnrichmentSidebarProgress: SidebarTaskProgress {
@@ -810,6 +1220,13 @@ struct SidebarView: View {
             fractionCompleted: fraction,
             state: .running
         )
+    }
+
+    private func showFailedEnrichmentEditor(failedTrackIDs: [UUID]) {
+        let failedSet = Set(failedTrackIDs)
+        let tracks = libraryVM.allTracks.filter { failedSet.contains($0.id) }
+        guard !tracks.isEmpty else { return }
+        failedEnrichmentEditRequest = FailedEnrichmentEditRequest(tracks: tracks)
     }
 
     private func confirmDeletion(_ request: SidebarDeletionRequest) {
@@ -829,9 +1246,81 @@ struct SidebarView: View {
 
 // MARK: - Sidebar Selection
 
+private struct FailedEnrichmentEditRequest: Identifiable {
+    let id = UUID()
+    let tracks: [Track]
+}
+
+/// Persistent green notice shown after all background enrichment finishes.
+/// Stays until the user dismisses it; taps open the multi-track metadata
+/// editor prefilled with the failed songs when any part failed.
+private struct SidebarEnrichmentCompletionNotice: View {
+    let summary: ImportEnrichmentCompletionSummary
+    let onShowFailures: () -> Void
+    let onDismiss: () -> Void
+
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        // Title row and action row stack vertically — the sidebar is too
+        // narrow to fit icon + title + action + close on one line.
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.green)
+
+                Text("歌曲信息补全完毕")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 0)
+
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 18, height: 18)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                .help("关闭")
+            }
+
+            if summary.failedCount > 0 {
+                Button("查看 \(summary.failedCount) 首失败") {
+                    onShowFailures()
+                }
+                .buttonStyle(.plain)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(themeStore.accentColor)
+                .padding(.leading, 22)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.green.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.green.opacity(0.25), lineWidth: 0.5)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if summary.failedCount > 0 {
+                onShowFailures()
+            }
+        }
+    }
+}
+
 private enum SidebarSelection: Hashable {
     case home
     case allSongs
+    case folders
     case history
     case allPlaylists
     case allAlbums
@@ -847,6 +1336,8 @@ private struct SidebarPlaylistThumbnail: View {
 
     @State private var image: NSImage?
     @State private var artworkChangeNonce = 0
+    @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(LibraryCacheServices.self) private var cacheServices
 
     private let side: CGFloat = 24
     private var pixelSide: CGFloat {
@@ -880,35 +1371,45 @@ private struct SidebarPlaylistThumbnail: View {
     }
 
     private var taskIdentity: String {
-        let revision = Self.currentArtworkRevision(playlistID: playlistID) ?? "none"
+        let revision = libraryVM.playlistArtworkRevision(playlistID: playlistID) ?? "none"
         return "\(playlistID.uuidString)-\(refreshToken)-\(artworkChangeNonce)-\(revision)"
     }
 
     private func loadArtwork() async {
         guard let request = await Self.thumbnailRequest(
             playlistID: playlistID,
-            pixelSide: pixelSide
+            pixelSide: pixelSide,
+            paths: libraryVM.libraryPaths
         ) else {
             image = nil
             return
         }
-        image = await PlaylistArtworkPipeline.shared.load(request)
+        image = await cacheServices.playlistArtworkPipeline.load(request)
     }
 
     private static func thumbnailRequest(
         playlistID: UUID,
-        pixelSide: CGFloat
+        pixelSide: CGFloat,
+        paths: LibraryPaths
     ) async -> PlaylistArtworkRequest? {
         await Task.detached(priority: .utility) {
-            makeThumbnailRequest(playlistID: playlistID, pixelSide: pixelSide)
+            makeThumbnailRequest(
+                playlistID: playlistID,
+                pixelSide: pixelSide,
+                paths: paths
+            )
         }.value
     }
 
     private nonisolated static func makeThumbnailRequest(
         playlistID: UUID,
-        pixelSide: CGFloat
+        pixelSide: CGFloat,
+        paths: LibraryPaths
     ) -> PlaylistArtworkRequest? {
-        guard let sidecar = loadPlaylistSidecar(playlistID: playlistID) else {
+        guard let sidecar = loadPlaylistSidecar(
+            playlistID: playlistID,
+            paths: paths
+        ) else {
             return nil
         }
 
@@ -921,7 +1422,7 @@ private struct SidebarPlaylistThumbnail: View {
         }
         guard let fileName, !fileName.isEmpty else { return nil }
 
-        let fileURL = LocalLibraryPaths.playlistsRootURL.appendingPathComponent(fileName)
+        guard let fileURL = paths.playlistAssetURL(fileName: fileName) else { return nil }
         let revision = sidecar.artworkRevision ?? fileName
         return PlaylistArtworkRequest(
             sourceIdentity: "sidebar-playlist-\(playlistID.uuidString)-\(revision)",
@@ -932,12 +1433,11 @@ private struct SidebarPlaylistThumbnail: View {
         )
     }
 
-    private nonisolated static func currentArtworkRevision(playlistID: UUID) -> String? {
-        loadPlaylistSidecar(playlistID: playlistID)?.artworkRevision
-    }
-
-    private nonisolated static func loadPlaylistSidecar(playlistID: UUID) -> PlaylistSidecar? {
-        let url = LocalLibraryPaths.playlistURL(for: playlistID)
+    private nonisolated static func loadPlaylistSidecar(
+        playlistID: UUID,
+        paths: LibraryPaths
+    ) -> PlaylistSidecar? {
+        let url = paths.playlistURL(for: playlistID)
         guard let data = try? Data(contentsOf: url) else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -947,21 +1447,29 @@ private struct SidebarPlaylistThumbnail: View {
 
 private struct SidebarNoticeView: View {
     let notice: SidebarNotice
+    let onAction: () -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "checkmark.circle.fill")
+            Image(systemName: notice.style == .warning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(themeStore.accentColor)
+                .foregroundStyle(notice.style == .warning ? Color.orange : themeStore.accentColor)
 
             Text(notice.message)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                .lineLimit(1)
+                .fixedSize(horizontal: false, vertical: true)
 
             Spacer(minLength: 0)
+
+            if let actionTitle = notice.actionTitle {
+                Button(actionTitle, action: onAction)
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themeStore.accentColor)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -976,15 +1484,80 @@ private struct SidebarNoticeView: View {
     }
 }
 
-private struct SidebarTaskProgressView: View {
-    let progress: SidebarTaskProgress
-    let onDismiss: (() -> Void)?
+private struct SidebarUpdateReadyView: View {
+    let update: UpdateReadyMetadata
+    let onInstall: () -> Void
+    let onDismiss: () -> Void
 
     @EnvironmentObject private var themeStore: ThemeStore
 
-    init(progress: SidebarTaskProgress, onDismiss: (() -> Void)? = nil) {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.down.app.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(themeStore.accentColor)
+
+                Text("新版本 \(update.version) 已准备好")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 18, height: 18)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                .help("删除并忽略此版本")
+            }
+
+            Text("已在后台安全下载")
+                .font(.caption)
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+
+            Button("重启更新", action: onInstall)
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .tint(themeStore.accentColor)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(themeStore.appForegroundPalette.primaryColor.opacity(0.055))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(
+                    themeStore.appForegroundPalette.secondaryColor.opacity(0.12),
+                    lineWidth: 0.5
+                )
+        )
+    }
+}
+
+private struct SidebarTaskProgressView: View {
+    let progress: SidebarTaskProgress
+    let onDismiss: (() -> Void)?
+    let onRetry: (() -> Void)?
+
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    init(
+        progress: SidebarTaskProgress,
+        onDismiss: (() -> Void)? = nil,
+        onRetry: (() -> Void)? = nil
+    ) {
         self.progress = progress
         self.onDismiss = onDismiss
+        self.onRetry = onRetry
     }
 
     var body: some View {
@@ -1003,6 +1576,18 @@ private struct SidebarTaskProgressView: View {
                     Text(percentageText)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                }
+
+                if let onRetry {
+                    Button(action: onRetry) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(width: 18, height: 18)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(themeStore.accentColor)
+                    .help("重新检查更新")
                 }
 
                 if let onDismiss {
@@ -1050,6 +1635,7 @@ private struct SidebarTaskProgressView: View {
                 ProgressView()
                     .controlSize(.small)
                     .scaleEffect(0.7)
+                    .tint(themeStore.accentColor)
             } else {
                 Image(systemName: "arrow.down.circle")
                     .font(.system(size: 14, weight: .semibold))
@@ -1147,13 +1733,21 @@ private struct SidebarWidthPreferenceKey: PreferenceKey {
 
 #Preview("Sidebar") { @MainActor in
     let repository = StubLibraryRepository()
-    let libraryVM = LibraryViewModel(repository: repository)
+    let libraryVM = LibraryViewModel.preview(repository: repository)
     let uiState = UIStateViewModel()
+    let cacheServices = LibraryCacheServices.preview
 
     NavigationSplitView {
         SidebarView()
             .environment(libraryVM)
-            .environment(ImportEnrichmentService(repository: repository))
+            .environment(ImportEnrichmentService(
+                repository: repository,
+                qqMusicCoverService: cacheServices.qqMusicCoverService,
+                artistArtworkProviderCoordinator: cacheServices.artistArtworkProviderCoordinator,
+                lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
+                amllDBService: cacheServices.amllDBService
+            ))
+            .environment(cacheServices)
             .environment(uiState)
             .environmentObject(ThemeStore.shared)
     } detail: {

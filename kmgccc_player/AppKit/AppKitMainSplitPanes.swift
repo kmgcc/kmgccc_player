@@ -12,6 +12,11 @@ import SwiftUI
 
 struct AppKitMainSidebarPaneRoot: View {
     @ObservedObject var appSession: AppSessionHost
+    // Dedicated instances for views presented from the sidebar (e.g. the
+    // batch track editor opened from the enrichment completion notice);
+    // the content pane keeps its own, mirroring HomeFullWindowRoot.
+    @State private var coverDownloadService = CoverDownloadService()
+    @State private var netEaseCoverService = NetEaseCoverService()
 
     var body: some View {
         if let libraryVM = appSession.libraryVM,
@@ -20,6 +25,7 @@ struct AppKitMainSidebarPaneRoot: View {
            let lyricsVM = appSession.lyricsVM,
            let ledMeterProvider = appSession.ledMeterProvider,
            let importEnrichmentService = appSession.importEnrichmentService,
+           let cacheServices = appSession.cacheServices,
             let skinManager = appSession.skinManager {
             SidebarView()
                 .environment(AppSettings.shared)
@@ -30,16 +36,121 @@ struct AppKitMainSidebarPaneRoot: View {
                .environment(lyricsVM)
                .environment(ledMeterProvider)
                .environment(importEnrichmentService)
+
+               .environment(cacheServices)
                .environment(skinManager)
+               .environment(coverDownloadService)
+               .environment(netEaseCoverService)
+               .environmentObject(appSession)
                .environmentObject(ThemeStore.shared)
                 .environment(\.libraryPresentedAccentColor, ThemeStore.shared.accentColor)
                 .modelContainer(appSession.sharedModelContainer)
                 .tint(ThemeStore.shared.accentColor)
                 .accentColor(ThemeStore.shared.accentColor)
+        } else if appSession.hasCompletedInitialSetup {
+            // Setup finished without an active library: keep the sidebar and
+            // content pane in the same explicit recovery state instead of
+            // leaving one half of the window blank.
+            LibraryStartupRecoverySidebarPane(appSession: appSession)
         } else {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+/// Recovery state shown only while the lifecycle owner is repairing the active
+/// library. A normal empty library is rendered by HomeView and is never
+/// represented as "没有音乐资料库".
+private struct NoLibraryContentPane: View {
+    @ObservedObject var appSession: AppSessionHost
+
+    var body: some View {
+        ZStack {
+            ThemedBaseBackgroundColorView()
+            if appSession.hasCompletedInitialSetup {
+                emptyState
+            } else {
+                ProgressView("正在打开资料库…")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task { appSession.autoPresentLibrarySetupIfNeeded() }
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("资料库暂时无法打开", systemImage: "externaldrive.badge.xmark")
+        } description: {
+            Text("重试，或打开一个已有资料库。")
+        } actions: {
+            HStack(spacing: 12) {
+                if appSession.isRetryingLibraryStartup {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在重试…")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button("重试") {
+                        Task { await appSession.retryLibraryStartup() }
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("打开资料库…") { openLibraryPanel() }
+                        .buttonStyle(.bordered)
+                }
+            }
+        }
+    }
+
+    private func openLibraryPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "打开"
+        panel.begin { result in
+            guard result == .OK, let url = panel.url else { return }
+            let access = LibraryInitialImportSelection(urls: [url])
+            Task { @MainActor in
+                defer { access.release() }
+                do {
+                    _ = try await appSession.openMusicLibrary(at: url)
+                } catch {
+                    appSession.uiState.showSidebarNotice("所选位置不是可用资料库", style: .warning)
+                }
+            }
+        }
+    }
+}
+
+/// Compact companion for the sidebar when the exceptional startup recovery
+/// surface is active. The content pane owns the full open-library action; the
+/// sidebar only needs to make the state legible and offer the safe retry.
+private struct LibraryStartupRecoverySidebarPane: View {
+    @ObservedObject var appSession: AppSessionHost
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "externaldrive.badge.xmark")
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text("资料库暂时无法打开")
+                .font(.callout.weight(.medium))
+                .multilineTextAlignment(.center)
+            if appSession.isRetryingLibraryStartup {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Button("重试") {
+                    Task { await appSession.retryLibraryStartup() }
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -65,6 +176,7 @@ struct AppKitMainContentPaneRoot: View {
            let lyricsVM = appSession.lyricsVM,
            let ledMeterProvider = appSession.ledMeterProvider,
            let importEnrichmentService = appSession.importEnrichmentService,
+           let cacheServices = appSession.cacheServices,
            let skinManager = appSession.skinManager {
             contentView(
                 uiState: uiState,
@@ -74,11 +186,11 @@ struct AppKitMainContentPaneRoot: View {
                 lyricsVM: lyricsVM,
                 ledMeterProvider: ledMeterProvider,
                 importEnrichmentService: importEnrichmentService,
+                cacheServices: cacheServices,
                 skinManager: skinManager
             )
         } else {
-            ProgressView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            NoLibraryContentPane(appSession: appSession)
         }
     }
 
@@ -98,6 +210,7 @@ struct AppKitMainContentPaneRoot: View {
         lyricsVM: LyricsViewModel,
         ledMeterProvider: LEDMeterServiceProvider,
         importEnrichmentService: ImportEnrichmentService,
+        cacheServices: LibraryCacheServices,
         skinManager: SkinManager
     ) -> some View {
         let homeMode = isHomeMode(uiState: uiState, libraryVM: libraryVM)
@@ -155,6 +268,10 @@ struct AppKitMainContentPaneRoot: View {
                         AllArtistsView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .id("appkit-main-all-artists")
+                    case .folders:
+                        ReferencedFolderView(appSession: appSession)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .id("appkit-main-referenced-folders")
                     case .allSongs, .playlist, .artist, .album:
                         PlaylistDetailView(pageController: pageController)
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -212,6 +329,8 @@ struct AppKitMainContentPaneRoot: View {
                 .environment(lyricsVM)
                 .environment(ledMeterProvider)
                 .environment(importEnrichmentService)
+
+                .environment(cacheServices)
                 .environment(skinManager)
                 .environment(coverDownloadService)
                 .environment(netEaseCoverService)
@@ -319,6 +438,8 @@ struct AppKitMainContentPaneRoot: View {
             .environment(lyricsVM)
             .environment(ledMeterProvider)
             .environment(importEnrichmentService)
+
+            .environment(cacheServices)
             .environment(skinManager)
             .environment(coverDownloadService)
             .environment(netEaseCoverService)
@@ -474,6 +595,7 @@ struct AppKitMainLyricsPaneRoot: View {
            let lyricsVM = appSession.lyricsVM,
            let ledMeterProvider = appSession.ledMeterProvider,
            let importEnrichmentService = appSession.importEnrichmentService,
+           let cacheServices = appSession.cacheServices,
            let skinManager = appSession.skinManager {
             LyricsPanelView(hostContainer: .appKitInspector)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -488,6 +610,8 @@ struct AppKitMainLyricsPaneRoot: View {
             .environment(lyricsVM)
             .environment(ledMeterProvider)
             .environment(importEnrichmentService)
+
+            .environment(cacheServices)
             .environment(skinManager)
             .environmentObject(ThemeStore.shared)
             .environment(\.libraryPresentedAccentColor, ThemeStore.shared.accentColor)
@@ -573,7 +697,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         let selection = appSession.libraryVM?.currentSelection ?? .allSongs
         let isPlaylistContext: Bool
         switch selection {
-        case .home, .allPlaylists, .allAlbums, .allArtists:
+        case .home, .folders, .allPlaylists, .allAlbums, .allArtists:
             isPlaylistContext = false
         case .allSongs, .playlist, .artist, .album:
             isPlaylistContext = true

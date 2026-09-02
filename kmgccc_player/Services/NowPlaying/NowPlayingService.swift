@@ -22,6 +22,9 @@ final class NowPlayingService {
     private let progressInterval: TimeInterval = 0.5
     private var cachedArtworkKey: String?
     private var cachedArtwork: MPMediaItemArtwork?
+    private var artworkLoadTask: Task<Void, Never>?
+    private var artworkLoadKey: String?
+    private var failedArtworkLoadKey: String?
     private var isNowPlayingClearedForSystemMode = false
     private static let artworkSignatureSampleBytes = 12
 
@@ -39,6 +42,21 @@ final class NowPlayingService {
         updateNowPlaying(force: true)
     }
 
+    /// Called by the local audio service after an asynchronously prepared
+    /// renderer has actually entered the playing state. Playback commands can
+    /// refresh the coordinator before file preparation finishes, leaving the
+    /// published Now Playing rate at 0 when macOS evaluates AirPods spatial
+    /// eligibility. Refreshing the existing source-aware presentation here
+    /// keeps PlaybackCoordinator as the state owner while making the media
+    /// session transition visible at the renderer start boundary.
+    func syncLocalPlaybackState() {
+        guard coordinator?.activeSource == .local || (coordinator == nil && player != nil) else {
+            return
+        }
+        coordinator?.refreshPresentation()
+        updateNowPlaying(force: true)
+    }
+
     func updateNowPlaying(force: Bool = false) {
         guard coordinator != nil || player != nil else { return }
 
@@ -50,6 +68,7 @@ final class NowPlayingService {
 
         if let coordinator {
             if coordinator.presentation.source == .systemNowPlaying {
+                cancelArtworkLoad()
                 clearNowPlayingInfoForSystemMode()
                 manageProgressTimer(isPlaying: false)
                 return
@@ -62,6 +81,7 @@ final class NowPlayingService {
         }
 
         guard let player, let track = player.currentTrack else {
+            cancelArtworkLoad()
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             if #available(macOS 12.0, *) {
                 MPNowPlayingInfoCenter.default().playbackState = .stopped
@@ -79,7 +99,13 @@ final class NowPlayingService {
         info[MPMediaItemPropertyPlaybackDuration] = player.duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player.currentTime
         info[MPNowPlayingInfoPropertyPlaybackRate] = player.isPlaying ? 1.0 : 0.0
+        applyAudioMetadata(
+            to: &info,
+            trackID: track.id,
+            assetURL: player.nowPlayingAssetURL
+        )
 
+        scheduleArtworkLoadIfNeeded(for: track)
         if let artwork = mediaArtwork(for: track) {
             info[MPMediaItemPropertyArtwork] = artwork
         } else {
@@ -101,12 +127,19 @@ final class NowPlayingService {
         }
 
         guard presentation.hasTrack else {
+            cancelArtworkLoad()
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             if #available(macOS 12.0, *) {
                 MPNowPlayingInfoCenter.default().playbackState = .stopped
             }
             isNowPlayingClearedForSystemMode = false
             return
+        }
+
+        if let localTrack = presentation.localTrack {
+            scheduleArtworkLoadIfNeeded(for: localTrack)
+        } else {
+            cancelArtworkLoad()
         }
 
         var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
@@ -120,6 +153,13 @@ final class NowPlayingService {
         info[MPMediaItemPropertyPlaybackDuration] = presentation.duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = presentation.currentTime
         info[MPNowPlayingInfoPropertyPlaybackRate] = presentation.isPlaying ? 1.0 : 0.0
+        applyAudioMetadata(
+            to: &info,
+            trackID: presentation.localTrack?.id,
+            assetURL: presentation.source == .local
+                ? coordinator?.localNowPlayingAssetURL
+                : nil
+        )
 
         if let artwork = mediaArtwork(for: presentation) {
             info[MPMediaItemPropertyArtwork] = artwork
@@ -132,6 +172,27 @@ final class NowPlayingService {
         if #available(macOS 12.0, *) {
             MPNowPlayingInfoCenter.default().playbackState =
                 presentation.isPlaying ? .playing : .paused
+        }
+    }
+
+    private func applyAudioMetadata(
+        to info: inout [String: Any],
+        trackID: UUID?,
+        assetURL: URL?
+    ) {
+        info[MPNowPlayingInfoPropertyMediaType] = NSNumber(
+            value: MPNowPlayingInfoMediaType.audio.rawValue
+        )
+        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = NSNumber(value: 1.0)
+        if let trackID {
+            info[MPNowPlayingInfoPropertyExternalContentIdentifier] = trackID.uuidString
+        } else {
+            info.removeValue(forKey: MPNowPlayingInfoPropertyExternalContentIdentifier)
+        }
+        if let assetURL {
+            info[MPNowPlayingInfoPropertyAssetURL] = assetURL
+        } else {
+            info.removeValue(forKey: MPNowPlayingInfoPropertyAssetURL)
         }
     }
 
@@ -293,7 +354,7 @@ final class NowPlayingService {
     }
     
     private func mediaArtwork(for track: Track) -> MPMediaItemArtwork? {
-        let artworkData = track.loadArtworkDataIfNeeded()
+        let artworkData = track.artworkData
         let cacheKey = "track-\(track.id.uuidString)-\(artworkSignature(for: artworkData))"
 
         if cachedArtworkKey == cacheKey {
@@ -309,12 +370,13 @@ final class NowPlayingService {
     }
 
     private func mediaArtwork(for presentation: NowPlayingPresentation) -> MPMediaItemArtwork? {
+        let artworkData = presentation.artworkData ?? presentation.localTrack?.artworkData
         let identity = presentation.artworkIdentity
             ?? presentation.lyricsIdentity
             ?? presentation.localTrack?.id.uuidString
             ?? presentation.title
         let cacheKey =
-            "\(presentation.source.rawValue)-\(identity)-\(artworkSignature(for: presentation.artworkData))"
+            "\(presentation.source.rawValue)-\(identity)-\(artworkSignature(for: artworkData))"
 
         if cachedArtworkKey == cacheKey {
             return cachedArtwork
@@ -323,9 +385,46 @@ final class NowPlayingService {
         cachedArtworkKey = cacheKey
         cachedArtwork = nil
 
-        guard let artwork = Self.makeMediaArtwork(from: presentation.artworkData) else { return nil }
+        guard let artwork = Self.makeMediaArtwork(from: artworkData) else { return nil }
         cachedArtwork = artwork
         return artwork
+    }
+
+    private func scheduleArtworkLoadIfNeeded(for track: Track) {
+        if track.artworkData?.isEmpty == false {
+            if artworkLoadKey?.hasPrefix(track.id.uuidString) == true {
+                cancelArtworkLoad()
+            }
+            return
+        }
+
+        let key = "\(track.id.uuidString):\(track.artworkFileName ?? "auto")"
+        guard artworkLoadKey != key, failedArtworkLoadKey != key else { return }
+
+        artworkLoadTask?.cancel()
+        artworkLoadKey = key
+        artworkLoadTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let data = await track.loadArtworkDataOffMainIfNeeded()
+            guard !Task.isCancelled, self.artworkLoadKey == key else { return }
+
+            self.artworkLoadTask = nil
+            self.artworkLoadKey = nil
+            if data?.isEmpty != false {
+                self.failedArtworkLoadKey = key
+                return
+            }
+            self.failedArtworkLoadKey = nil
+            self.cachedArtworkKey = nil
+            self.cachedArtwork = nil
+            self.updateNowPlaying(force: true)
+        }
+    }
+
+    private func cancelArtworkLoad() {
+        artworkLoadTask?.cancel()
+        artworkLoadTask = nil
+        artworkLoadKey = nil
     }
 
     private nonisolated static func makeMediaArtwork(from data: Data?) -> MPMediaItemArtwork? {

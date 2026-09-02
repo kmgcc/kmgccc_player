@@ -164,18 +164,29 @@ struct SettingsSectionTitle: View {
     }
 }
 
-struct SettingsSection<Content: View>: View {
+struct SettingsSection<Content: View, HeaderTrailing: View>: View {
     private let title: LocalizedStringKey?
+    private let headerTrailing: HeaderTrailing
     private let content: Content
     @Environment(\.fullscreenSettingsPresentationStyle) private var presentationStyle
 
-    init(_ title: LocalizedStringKey? = nil, @ViewBuilder content: () -> Content) {
+    init(
+        _ title: LocalizedStringKey? = nil,
+        @ViewBuilder headerTrailing: () -> HeaderTrailing,
+        @ViewBuilder content: () -> Content
+    ) {
         self.title = title
+        self.headerTrailing = headerTrailing()
         self.content = content()
     }
 
-    init(_ title: String, @ViewBuilder content: () -> Content) {
+    init(
+        _ title: String,
+        @ViewBuilder headerTrailing: () -> HeaderTrailing,
+        @ViewBuilder content: () -> Content
+    ) {
         self.title = LocalizedStringKey(title)
+        self.headerTrailing = headerTrailing()
         self.content = content()
     }
 
@@ -189,11 +200,29 @@ struct SettingsSection<Content: View>: View {
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
         } label: {
-            if let title {
-                SettingsSectionTitle(title)
+            if title != nil || HeaderTrailing.self != EmptyView.self {
+                HStack(spacing: presentationStyle.compactInlineSpacing) {
+                    if let title {
+                        SettingsSectionTitle(title)
+                    }
+                    if HeaderTrailing.self != EmptyView.self {
+                        Spacer(minLength: 0)
+                        headerTrailing
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+extension SettingsSection where HeaderTrailing == EmptyView {
+    init(_ title: LocalizedStringKey? = nil, @ViewBuilder content: () -> Content) {
+        self.init(title, headerTrailing: { EmptyView() }, content: content)
+    }
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.init(LocalizedStringKey(title), headerTrailing: { EmptyView() }, content: content)
     }
 }
 

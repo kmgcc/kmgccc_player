@@ -55,6 +55,17 @@ struct MusicPreferenceResetResult: Sendable {
     let failures: [MusicPreferenceResetFailure]
     let updatedTrackIDs: [UUID]
     let didClearPlaybackHistory: Bool
+
+    static func empty(totalCount: Int) -> Self {
+        Self(
+            totalCount: totalCount,
+            successCount: 0,
+            failureCount: 0,
+            failures: [],
+            updatedTrackIDs: [],
+            didClearPlaybackHistory: false
+        )
+    }
 }
 
 private struct PreferenceResetTrackSnapshot: Sendable {
@@ -63,11 +74,11 @@ private struct PreferenceResetTrackSnapshot: Sendable {
     let duration: Double
     let metaURL: URL
 
-    init(track: Track) {
+    init(track: Track, paths: LibraryPaths) {
         self.trackID = track.id
         self.title = track.title
         self.duration = track.duration
-        self.metaURL = LocalLibraryPaths.trackMetaURL(for: track.id)
+        self.metaURL = paths.trackMetaURL(for: track.id)
     }
 }
 
@@ -310,11 +321,20 @@ private actor PreferenceResetFileWorker {
 }
 
 final class PreferenceResetService {
-    static let shared = PreferenceResetService()
-
     private let worker = PreferenceResetFileWorker()
+    private let preferenceStatsService: PreferenceStatsService
+    private let playbackHistoryStore: PlaybackHistoryStore
+    private let paths: LibraryPaths
 
-    private init() {}
+    init(
+        preferenceStatsService: PreferenceStatsService,
+        playbackHistoryStore: PlaybackHistoryStore,
+        paths: LibraryPaths
+    ) {
+        self.preferenceStatsService = preferenceStatsService
+        self.playbackHistoryStore = playbackHistoryStore
+        self.paths = paths
+    }
 
     @MainActor
     func resetLibraryTracks(
@@ -322,14 +342,16 @@ final class PreferenceResetService {
         options: ResetMusicPreferenceOptions,
         progress: @escaping @MainActor (MusicPreferenceResetProgress) -> Void
     ) async -> MusicPreferenceResetResult {
-        let snapshots = Dictionary(uniqueKeysWithValues: tracks.map { ($0.id, PreferenceResetTrackSnapshot(track: $0)) })
+        let snapshots = Dictionary(uniqueKeysWithValues: tracks.map {
+            ($0.id, PreferenceResetTrackSnapshot(track: $0, paths: paths))
+        })
             .values
             .sorted { $0.trackID.uuidString < $1.trackID.uuidString }
 
         let workerResult = await worker.resetTracks(snapshots, options: options, progress: progress)
 
         for updated in workerResult.updatedTracks {
-            PreferenceStatsService.shared.replaceStats(
+            preferenceStatsService.replaceStats(
                 for: updated.trackID,
                 with: updated.updatedStats.asTrackPreferenceStats(),
                 markDirty: false
@@ -341,7 +363,7 @@ final class PreferenceResetService {
             // The timeline is the event-level counterpart of per-track
             // preferenceStats. Reset both in one user-visible operation so a
             // reset cannot leave old history contradicting zeroed counters.
-            didClearPlaybackHistory = PlaybackHistoryStore.shared.clearAll()
+            didClearPlaybackHistory = playbackHistoryStore.clearAll()
         } else {
             didClearPlaybackHistory = false
         }

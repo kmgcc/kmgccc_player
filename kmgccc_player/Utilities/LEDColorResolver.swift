@@ -371,6 +371,7 @@ struct LEDColorResolver {
     let implementation: LEDColorResolverImplementation
     let levelToneVariant: PerceptualToneLadder.LEDToneVariant
     let isEffectivelyMonochrome: Bool
+    let isHDR: Bool
 
     private var accentNS: NSColor {
         NSColor(accentColor)
@@ -394,7 +395,8 @@ struct LEDColorResolver {
         brightnessLevels: Int,
         palette: SemanticPalette? = nil,
         implementation: LEDColorResolverImplementation = .oklch,
-        levelToneVariant: PerceptualToneLadder.LEDToneVariant = .retuned
+        levelToneVariant: PerceptualToneLadder.LEDToneVariant = .retuned,
+        isHDR: Bool = false
     ) {
         self.accentColor = accentColor
         self.colorScheme = colorScheme
@@ -403,6 +405,7 @@ struct LEDColorResolver {
         self.implementation = implementation
         self.levelToneVariant = levelToneVariant
         self.isEffectivelyMonochrome = palette?.analysis.isEffectivelyMonochrome ?? false
+        self.isHDR = isHDR
     }
 
     var oklchSemanticPalette: LEDSemanticPalette {
@@ -575,7 +578,8 @@ struct LEDColorResolver {
             isNearMonochrome: isNearMonochrome,
             isUltraDark: semanticPalette.isUltraDark,
             isStroke: isStroke,
-            variant: levelToneVariant
+            variant: levelToneVariant,
+            isHDR: isHDR
         )
     }
 
