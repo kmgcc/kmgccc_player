@@ -48,9 +48,10 @@ struct AppKitMainSidebarPaneRoot: View {
                 .tint(ThemeStore.shared.accentColor)
                 .accentColor(ThemeStore.shared.accentColor)
         } else if appSession.hasCompletedInitialSetup {
-            // Setup finished without an active library: show a calm empty
-            // sidebar instead of spinning forever.
-            ThemedBaseBackgroundColorView()
+            // Setup finished without an active library: keep the sidebar and
+            // content pane in the same explicit recovery state instead of
+            // leaving one half of the window blank.
+            LibraryStartupRecoverySidebarPane(appSession: appSession)
         } else {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -70,7 +71,7 @@ private struct NoLibraryContentPane: View {
             if appSession.hasCompletedInitialSetup {
                 emptyState
             } else {
-                ProgressView()
+                ProgressView("正在打开资料库…")
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -79,19 +80,25 @@ private struct NoLibraryContentPane: View {
 
     private var emptyState: some View {
         ContentUnavailableView {
-            Label("正在准备音乐资料库", systemImage: "music.note.list")
+            Label("资料库暂时无法打开", systemImage: "externaldrive.badge.xmark")
         } description: {
-            Text("正在打开默认空资料库；完成后这里会显示“没有歌曲待导入”。")
+            Text("重试，或打开一个已有资料库。")
         } actions: {
             HStack(spacing: 12) {
-                Button("新建资料库…") {
-                    appSession.librarySetupFlow.present(.setup(.referenced))
-                    LibrarySetupPanelPresenter.present(appSession: appSession)
-                }
-                .buttonStyle(.borderedProminent)
+                if appSession.isRetryingLibraryStartup {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在重试…")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Button("重试") {
+                        Task { await appSession.retryLibraryStartup() }
+                    }
+                    .buttonStyle(.borderedProminent)
 
-                Button("打开资料库…") { openLibraryPanel() }
-                    .buttonStyle(.bordered)
+                    Button("打开资料库…") { openLibraryPanel() }
+                        .buttonStyle(.bordered)
+                }
             }
         }
     }
@@ -115,6 +122,35 @@ private struct NoLibraryContentPane: View {
                 }
             }
         }
+    }
+}
+
+/// Compact companion for the sidebar when the exceptional startup recovery
+/// surface is active. The content pane owns the full open-library action; the
+/// sidebar only needs to make the state legible and offer the safe retry.
+private struct LibraryStartupRecoverySidebarPane: View {
+    @ObservedObject var appSession: AppSessionHost
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "externaldrive.badge.xmark")
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text("资料库暂时无法打开")
+                .font(.callout.weight(.medium))
+                .multilineTextAlignment(.center)
+            if appSession.isRetryingLibraryStartup {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Button("重试") {
+                    Task { await appSession.retryLibraryStartup() }
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

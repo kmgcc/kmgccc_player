@@ -136,6 +136,30 @@ final class UIStateViewModel {
     /// Compact, transient notice shown in the sidebar bottom status area.
     var sidebarNotice: SidebarNotice?
 
+    /// Import failures outlive the progress window so a background source
+    /// scan can be reviewed from the sidebar instead of sending the user to a
+    /// settings page that has no error details.
+    private(set) var libraryImportFailureReports: [LibraryImportFailureReport] = []
+
+    func recordLibraryImportFailures(
+        _ failures: [ImportInputFailure],
+        origin: LibraryImportOrigin
+    ) {
+        guard !failures.isEmpty else { return }
+        libraryImportFailureReports.append(
+            LibraryImportFailureReport(origin: origin, failures: failures)
+        )
+        // Keep the status surface bounded even when a disconnected source is
+        // retried repeatedly over a long-running session.
+        if libraryImportFailureReports.count > 12 {
+            libraryImportFailureReports.removeFirst(libraryImportFailureReports.count - 12)
+        }
+    }
+
+    func clearLibraryImportFailureReports() {
+        libraryImportFailureReports.removeAll()
+    }
+
     func showSidebarNotice(
         _ message: String,
         style: SidebarNoticeStyle = .success,

@@ -37,7 +37,7 @@ struct LibraryReconnectView: View {
                 primaryButton
             }
         }
-        .frame(width: 500)
+        .frame(minWidth: 460, idealWidth: 500, maxWidth: 560)
         .interactiveDismissDisabled(false)
         .onDisappear {
             if flow.presentation == .none {
@@ -74,10 +74,9 @@ struct LibraryReconnectView: View {
     private var content: some View {
         switch target {
         case let .libraryRoot(_, mode):
-            ContentUnavailableView(
-                mode == .managed ? "找不到资料库" : "资料库已断开",
-                systemImage: "externaldrive.badge.questionmark",
-                description: Text("所选位置必须包含原资料库。")
+            reconnectEmptyState(
+                title: mode == .managed ? "找不到资料库" : "资料库已断开",
+                description: "选择包含原资料库的文件夹。"
             )
         case .sources:
             sourceContent
@@ -102,11 +101,18 @@ struct LibraryReconnectView: View {
                             )
                         }
                     } else {
-                        LabeledContent("候选位置") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("候选位置")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             Text(plan.rootURL.path)
-                                .lineLimit(1)
+                                .lineLimit(2)
                                 .truncationMode(.middle)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                     }
 
                     HStack(spacing: 14) {
@@ -146,7 +152,11 @@ struct LibraryReconnectView: View {
                                 )
                             }
                         }
-                        .padding(.vertical, 4)
+                        .padding(12)
+                        .background(
+                            Color.primary.opacity(0.045),
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        )
                     }
 
                     if case let .failed(message) = flow.operation {
@@ -158,10 +168,9 @@ struct LibraryReconnectView: View {
             }
         } else {
             VStack(alignment: .leading, spacing: 12) {
-                ContentUnavailableView(
-                    "选择候选位置",
-                    systemImage: "folder.badge.plus",
-                    description: Text("可一次选择多个文件夹，歌曲不会按标题或艺人匹配。")
+                reconnectEmptyState(
+                    title: "选择候选位置",
+                    description: "可一次选择多个文件夹。"
                 )
                 if case let .failed(message) = flow.operation {
                     Label(message, systemImage: "exclamationmark.triangle.fill")
@@ -169,6 +178,22 @@ struct LibraryReconnectView: View {
                 }
             }
         }
+    }
+
+    private func reconnectEmptyState(title: String, description: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: "folder.badge.questionmark")
+                .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(themeStore.accentColor)
+            Text(title)
+                .font(.headline)
+            Text(description)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     @ViewBuilder

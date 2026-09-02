@@ -56,6 +56,7 @@ struct SidebarView: View {
     @State private var settingsRotateTrigger = 0
     @State private var appearanceRotateTrigger = 0
     @State private var scrollFadeState = ScrollEdgeFadeState()
+    @State private var showingLibraryImportStatus = false
 
     private let scrollFadeHeight: CGFloat = 28
 
@@ -438,6 +439,14 @@ struct SidebarView: View {
                 .environmentObject(appSession)
                 .environmentObject(themeStore)
         }
+        .sheet(isPresented: $showingLibraryImportStatus) {
+            LibraryImportStatusDialogView(
+                reports: uiState.libraryImportFailureReports,
+                tasks: appSession.activeLibraryTasks,
+                onClear: { uiState.clearLibraryImportFailureReports() }
+            )
+            .environmentObject(themeStore)
+        }
         .sheet(isPresented: $showingPlaylistSheet) {
             PlaylistEditSheet()
         }
@@ -577,15 +586,32 @@ struct SidebarView: View {
             || updateDownloadManager.sidebarProgress != nil
             || importEnrichmentService.hasOutstandingWork
             || importEnrichmentService.completionSummary != nil
+            || activeLibraryImportTask != nil
+            || !uiState.libraryImportFailureReports.isEmpty
     }
 
     private var sidebarTaskProgressStack: some View {
         VStack(spacing: 6) {
             if let notice = uiState.sidebarNotice {
                 SidebarNoticeView(notice: notice) {
-                    showSettings = true
+                    if activeLibraryImportTask != nil || !uiState.libraryImportFailureReports.isEmpty {
+                        showingLibraryImportStatus = true
+                    } else {
+                        showSettings = true
+                    }
                 }
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            if let progress = libraryImportSidebarProgress {
+                Button {
+                    showingLibraryImportStatus = true
+                } label: {
+                    SidebarTaskProgressView(progress: progress)
+                }
+                .buttonStyle(.plain)
+                .help("点击查看导入状态")
+                .transition(.opacity)
             }
 
             if let updateProgress = updateDownloadManager.sidebarProgress {
@@ -621,6 +647,42 @@ struct SidebarView: View {
         return {
             updateDownloadManager.dismissSidebarProgress()
         }
+    }
+
+    private var activeLibraryImportTask: LibraryOperationTaskDescriptor? {
+        appSession.activeLibraryTasks.reversed().first { task in
+            !task.state.isTerminal
+                && [.importFiles, .sourceScan, .ncmConversion, .enrichment].contains(task.kind)
+        }
+    }
+
+    private var libraryImportSidebarProgress: SidebarTaskProgress? {
+        if let task = activeLibraryImportTask {
+            let title: String
+            switch task.kind {
+            case .sourceScan: title = "正在扫描来源"
+            case .ncmConversion: title = "正在转换歌曲"
+            case .enrichment: title = "正在补全信息"
+            default: title = "正在导入歌曲"
+            }
+            return SidebarTaskProgress(
+                title: title,
+                detail: task.lastCheckpointLabel ?? "正在处理",
+                fractionCompleted: nil,
+                state: .running
+            )
+        }
+
+        let failureCount = uiState.libraryImportFailureReports
+            .flatMap(\.failures)
+            .count
+        guard failureCount > 0 else { return nil }
+        return SidebarTaskProgress(
+            title: "导入有失败",
+            detail: "\(failureCount) 项需要查看",
+            fractionCompleted: nil,
+            state: .failed
+        )
     }
 
     private var playbackSourceSwitcher: some View {

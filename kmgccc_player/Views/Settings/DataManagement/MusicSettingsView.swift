@@ -18,6 +18,8 @@ struct MusicSettingsView: View {
     @State private var isSourceListExpanded = false
     @State private var isMissingListExpanded = false
     @State private var isDuplicateReviewPresented = false
+    @State private var trackDeletionRequest: TrackDeletionConfirmationRequest?
+    @State private var deletingTrackIDs: Set<UUID> = []
 
     /// Pushed by AppSessionHost on scan-state transitions; no polling here.
     private var sourceScanStates: [UUID: ReferencedSourceScanState] {
@@ -40,11 +42,14 @@ struct MusicSettingsView: View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection("音乐存储方式") {
                 HStack(spacing: 10) {
-                    Text("当前模式")
-                        .foregroundStyle(.secondary)
-                    Spacer()
                     Text(storageModeDisplayTitle)
                         .font(.callout.weight(.medium))
+                    Spacer()
+                    Text(storageModeDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.trailing)
+                        .lineLimit(2)
                 }
                 .accessibilityElement(children: .combine)
             }
@@ -104,38 +109,52 @@ struct MusicSettingsView: View {
         } message: {
             Text(errorMessage ?? "")
         }
+        .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in
+            deleteUnavailableTracks(tracks)
+        }
     }
 
     private var storageModeDisplayTitle: String {
         activeMode?.dialogDisplayTitle ?? "未打开资料库"
     }
 
+    private var storageModeDescription: String {
+        switch activeMode {
+        case .managed:
+            return "音乐复制到资料库"
+        case .referenced:
+            return "音乐留在原位置，资料库保存索引"
+        case nil:
+            return "打开或新建资料库后可选择"
+        }
+    }
+
     private var librarySection: some View {
-        SettingsSection("资料库") {
-            VStack(spacing: 0) {
+        SettingsSection {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("已添加资料库").font(.callout.weight(.medium))
+                    SettingsSectionTitle("资料库")
                     Spacer()
                     Menu {
                         Button("新建资料库…") { flow.present(.setup(.referenced)) }
                         Button("打开资料库…") { openLibraryPanel() }
                     } label: {
                         Image(systemName: "plus")
-                            .frame(width: 24, height: 24)
+                            .font(.system(size: 13, weight: .semibold))
+                            .frame(width: 28, height: 28)
                     }
                     .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
                     .help("添加资料库")
                     .accessibilityLabel("添加资料库")
                     .disabled(isWorking || isAddingMusic)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-
-                Divider()
-
-                ForEach(Array(registry.libraries.enumerated()), id: \.element.id) { index, library in
-                    libraryRow(library)
-                    if index < registry.libraries.count - 1 { Divider().padding(.leading, 12) }
+                if registry.libraries.isEmpty {
+                    settingsEmptyState("还没有资料库", systemImage: "externaldrive")
+                } else {
+                    ForEach(registry.libraries) { library in
+                        libraryRow(library)
+                    }
                 }
             }
         }
@@ -152,48 +171,38 @@ struct MusicSettingsView: View {
     }
 
     private func libraryRow(_ library: MusicLibraryBookmark) -> some View {
-        HStack(spacing: 10) {
-            Button {
-                open(library)
-            } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(library.displayName).lineLimit(1).truncationMode(.middle)
-                        if library.id == activeContext?.id {
-                            Text("当前").font(.caption2).foregroundStyle(themeStore.accentColor)
-                        }
-                    }
-                    Text(library.lastKnownPath)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(library.lastKnownPath)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
+        MusicLibrarySettingsRow(
+            name: library.displayName,
+            path: library.lastKnownPath,
+            mode: library.modeProjection,
+            isActive: library.id == activeContext?.id,
+            onOpen: { open(library) },
+            onReveal: { revealLibrary(library) },
+            onRemove: { pendingLibraryRemoval = library }
+        )
+        .disabled(isWorking || isAddingMusic)
+        .opacity(isWorking || isAddingMusic ? 0.72 : 1)
+    }
 
-            Menu {
-                Button("在访达中显示") { revealLibrary(library) }
-                Divider()
-                Button("移到废纸篓…", role: .destructive) { pendingLibraryRemoval = library }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-            .menuStyle(.borderlessButton)
-            .help("资料库操作")
+    private func settingsEmptyState(_ title: String, systemImage: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var sourceSection: some View {
-        SettingsSection("音乐来源") {
-            VStack(spacing: 0) {
+        SettingsSection {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("已添加来源")
-                        .font(.callout.weight(.medium))
+                    SettingsSectionTitle("音乐来源")
                     Spacer()
                     if isAddingMusic {
                         ProgressView()
@@ -204,7 +213,7 @@ struct MusicSettingsView: View {
                         refreshSources(sourceID: nil)
                     } label: {
                         Image(systemName: "arrow.triangle.2.circlepath")
-                            .frame(width: 24, height: 24)
+                            .frame(width: 28, height: 28)
                     }
                     .buttonStyle(.plain)
                     .help("完整扫描全部来源")
@@ -214,79 +223,42 @@ struct MusicSettingsView: View {
                         addMusicPanel()
                     } label: {
                         Image(systemName: "plus")
-                            .frame(width: 24, height: 24)
+                            .frame(width: 28, height: 28)
                     }
                     .buttonStyle(.plain)
                     .help("添加音乐")
                     .accessibilityLabel("添加音乐")
                     .disabled(isWorking || isAddingMusic)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-
-                Divider()
 
                 if sources.isEmpty {
-                    Text("尚未添加来源")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                }
-                ForEach(Array(visibleSources.enumerated()), id: \.element.id) { index, source in
-                    HStack(spacing: 10) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 6) {
-                                Text(source.displayName).lineLimit(1).truncationMode(.middle)
-                                if source.mode == .file {
-                                    Text("单文件")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Text(sourceRowStatus(source))
-                                    .font(.caption2)
-                                    .foregroundStyle(
-                                        source.status == .available
-                                            && sourceScanStates[source.id] != .failed
-                                            ? Color.secondary
-                                            : Color.orange
-                                    )
-                            }
-                            Text(source.lastKnownPath).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                        if sourceScanStates[source.id] == .scanning {
-                            ProgressView().controlSize(.small).accessibilityLabel("正在扫描")
-                        } else if sourceScanStates[source.id] == .failed {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange)
-                                .accessibilityLabel("扫描失败")
-                        }
-
-                        Menu {
-                            Button("重新扫描") { refreshSources(sourceID: source.id) }
-                            Button("重新连接…") {
+                    settingsEmptyState("尚未添加来源", systemImage: "folder")
+                } else {
+                    ForEach(visibleSources) { source in
+                        MusicSourceSettingsRow(
+                            name: source.displayName,
+                            path: source.lastKnownPath,
+                            mode: source.mode,
+                            status: source.status,
+                            isScanning: sourceScanStates[source.id] == .scanning,
+                            scanFailed: sourceScanStates[source.id] == .failed,
+                            onRescan: { refreshSources(sourceID: source.id) },
+                            onReconnect: {
                                 guard let libraryID = activeContext?.id else { return }
                                 flow.present(.sourceReconnect(
                                     libraryID: libraryID,
                                     sourceIDs: [source.id]
                                 ))
-                            }
-                            Divider()
-                            Button("移除来源…", role: .destructive) { pendingSourceRemoval = source }
-                        } label: { Image(systemName: "ellipsis.circle") }
-                        .menuStyle(.borderlessButton)
-                        .help("来源操作")
-                        .accessibilityLabel("\(source.displayName)来源操作")
+                            },
+                            onRemove: { pendingSourceRemoval = source }
+                        )
+                        .id(source.id)
+                        .disabled(isWorking || isAddingMusic)
+                        .opacity(isWorking || isAddingMusic ? 0.72 : 1)
                     }
-                    .id(source.id)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    if index < visibleSources.count - 1 { Divider().padding(.leading, 12) }
                 }
 
                 if sources.count > Self.collapsedSourceCount {
-                    Divider().padding(.leading, 12)
                     Button {
                         withAnimation(.easeInOut(duration: 0.18)) {
                             isSourceListExpanded.toggle()
@@ -304,8 +276,8 @@ struct MusicSettingsView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
                     }
                     .buttonStyle(.plain)
                 }
@@ -316,68 +288,99 @@ struct MusicSettingsView: View {
     private var libraryDiagnosticsSection: some View {
         let summary = libraryVM.diagnostics.summary
         return SettingsSection("资料库概览") {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    diagnosticMetric("歌曲", value: "\(summary.totalTracks)", color: themeStore.accentColor)
-                    diagnosticMetric("可播放", value: "\(summary.playableTracks)", color: .green)
-                    diagnosticMetric("总时长", value: formattedDuration(summary.totalDuration), color: .secondary)
+            libraryOverviewContent(summary)
+        }
+    }
+
+    private func libraryOverviewContent(_ summary: LibraryQualitySummary) -> some View {
+        let anomalyCount = summary.missingTracks
+            + summary.offlineTracks
+            + summary.permissionDeniedTracks
+            + summary.staleTracks
+            + summary.checkingTracks
+        let metrics: [(String, String, Color)] = [
+            ("歌曲", "\(summary.totalTracks)", themeStore.accentColor),
+            ("可播放", "\(summary.playableTracks)", .green),
+            ("总时长", formattedDuration(summary.totalDuration), .secondary),
+            ("来源", activeMode == .referenced ? "\(logicalSourceCount)" : "—", .secondary),
+            ("异常", "\(anomalyCount)", anomalyCount == 0 ? .secondary : .orange)
+        ]
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 11) {
+                Image(systemName: activeMode == .referenced ? "folder.fill" : "externaldrive.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(themeStore.accentColor)
+                    .frame(width: 34, height: 34)
+                    .background(themeStore.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(activeContext?.rootURL.lastPathComponent ?? "未打开资料库")
+                        .font(.callout.weight(.medium))
+                        .lineLimit(1)
+                    Text(activeContext?.rootURL.path ?? "")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-                Divider()
-
-                HStack(spacing: 14) {
-                    statusMetric("文件丢失", count: summary.missingTracks, color: .orange)
-                    statusMetric("来源离线", count: summary.offlineTracks, color: .secondary)
-                    statusMetric("无权限", count: summary.permissionDeniedTracks, color: .orange)
-                    statusMetric("待检查", count: summary.checkingTracks, color: .secondary)
+                if let activeMode {
+                        Text(activeMode == .referenced ? "原位" : "收集")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.primary.opacity(0.055), in: Capsule(style: .continuous))
                 }
+            }
 
-                if !summary.topFormats.isEmpty {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("格式")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                        ForEach(Array(summary.topFormats.prefix(4).enumerated()), id: \.offset) { _, item in
-                            HStack(spacing: 8) {
-                                Text(item.format.uppercased())
-                                    .font(.caption.monospaced())
-                                    .frame(width: 54, alignment: .leading)
-                                ProgressView(
-                                    value: Double(item.count),
-                                    total: Double(max(summary.totalTracks, 1))
-                                )
-                                .tint(themeStore.accentColor)
-                                Text("\(item.count)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 34, alignment: .trailing)
-                            }
-                        }
-                    }
+            Divider()
+
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(minimum: 64), spacing: 8), count: 5),
+                alignment: .leading,
+                spacing: 8
+            ) {
+                ForEach(Array(metrics.enumerated()), id: \.offset) { _, metric in
+                    diagnosticMetric(metric.0, value: metric.1, color: metric.2)
                 }
+            }
 
-                if !libraryVM.diagnostics.duplicateGroups.isEmpty {
-                    Divider()
+            if !summary.topFormats.isEmpty {
+                audioFormatBreakdown(summary)
+            }
+
+            if !libraryVM.diagnostics.duplicateGroups.isEmpty {
+                Button {
+                    isDuplicateReviewPresented = true
+                } label: {
                     HStack(spacing: 8) {
                         Image(systemName: "doc.on.doc")
                             .foregroundStyle(.orange)
-                        Text("发现 \(libraryVM.diagnostics.duplicateGroups.count) 组重复候选")
-                            .font(.callout)
+                        Text("重复歌曲")
+                            .font(.callout.weight(.medium))
                         Spacer()
-                        Button("查看") { isDuplicateReviewPresented = true }
-                            .buttonStyle(.borderless)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
                     }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
             }
-            .padding(12)
         }
+        .padding(14)
     }
 
     private func diagnosticMetric(_ title: String, value: String, color: Color) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(value)
-                .font(.title3.weight(.semibold))
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
             Text(title)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -385,53 +388,106 @@ struct MusicSettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func statusMetric(_ title: String, count: Int, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text("\(count)")
-                .font(.callout.weight(.medium))
-                .foregroundStyle(count == 0 ? Color.secondary : color)
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-
     private func formattedDuration(_ seconds: Double) -> String {
         guard seconds.isFinite, seconds > 0 else { return "—" }
         let totalMinutes = Int(seconds / 60)
-        if totalMinutes < 60 { return "\(totalMinutes) 分钟" }
-        return "\(totalMinutes / 60) 小时 \(totalMinutes % 60) 分钟"
+        if totalMinutes < 60 { return "\(totalMinutes)分钟" }
+        return "\(totalMinutes / 60)小时 \(totalMinutes % 60)分"
+    }
+
+    private func audioFormatBreakdown(_ summary: LibraryQualitySummary) -> some View {
+        let entries = Array(summary.topFormats.prefix(6))
+        let total = max(summary.totalTracks, 1)
+        return VStack(alignment: .leading, spacing: 8) {
+            GeometryReader { proxy in
+                HStack(spacing: 1) {
+                    ForEach(Array(entries.enumerated()), id: \.offset) { index, item in
+                        let ratio = CGFloat(item.count) / CGFloat(total)
+                        Rectangle()
+                            .fill(audioFormatColor(index))
+                            .frame(width: max(3, proxy.size.width * ratio))
+                    }
+                    Spacer(minLength: 0)
+                }
+                .clipShape(Capsule(style: .continuous))
+            }
+            .frame(height: 10)
+
+            HStack(spacing: 6) {
+                ForEach(Array(entries.enumerated()), id: \.offset) { index, item in
+                    Text("\(item.format) \(item.count)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(
+                            audioFormatColor(index).opacity(0.12),
+                            in: Capsule(style: .continuous)
+                        )
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
+
+    private func audioFormatColor(_ index: Int) -> Color {
+        [
+            themeStore.accentColor,
+            .blue,
+            .purple,
+            .orange,
+            .green,
+            .pink
+        ][index % 6]
+    }
+
+    private var logicalSourceCount: Int {
+        let directoryCount = sources.reduce(into: 0) { count, source in
+            if source.mode == .directory { count += 1 }
+        }
+        let hasIndividualSources = sources.contains { $0.mode == .file }
+        return directoryCount + (hasIndividualSources ? 1 : 0)
     }
 
     private var deletePolicySection: some View {
-        SettingsSection("删除歌曲时") {
-            Picker("删除歌曲时", selection: Binding(
-                get: { settings.referencedTrackDeletePolicy },
-                set: { policy in
-                    guard let libraryID = activeContext?.id else { return }
-                    let previousPolicy = settings.referencedTrackDeletePolicy
-                    settings.referencedTrackDeletePolicy = policy
-                    Task {
-                        do {
-                            try await appSession.setReferencedTrackDeletePolicy(
-                                policy,
-                                libraryID: libraryID
-                            )
-                        } catch {
-                            guard activeContext?.id == libraryID else { return }
-                            if settings.referencedTrackDeletePolicy == policy {
-                                settings.referencedTrackDeletePolicy = previousPolicy
-                            }
-                            errorMessage = "无法保存删除方式。"
+        SettingsSection("偏好设置") {
+            HStack(spacing: 12) {
+                Text("删除歌曲")
+                    .font(.callout)
+                Spacer(minLength: 8)
+                AppDialogCapsuleSlider(
+                    segments: ReferencedTrackDeletePolicy.allCases,
+                    selection: deletePolicyBinding,
+                    label: { $0.dialogDisplayTitle }
+                )
+            }
+        }
+    }
+
+    private var deletePolicyBinding: Binding<ReferencedTrackDeletePolicy> {
+        Binding(
+            get: { settings.referencedTrackDeletePolicy },
+            set: { policy in
+                guard let libraryID = activeContext?.id else { return }
+                let previousPolicy = settings.referencedTrackDeletePolicy
+                settings.referencedTrackDeletePolicy = policy
+                Task {
+                    do {
+                        try await appSession.setReferencedTrackDeletePolicy(
+                            policy,
+                            libraryID: libraryID
+                        )
+                    } catch {
+                        guard activeContext?.id == libraryID else { return }
+                        if settings.referencedTrackDeletePolicy == policy {
+                            settings.referencedTrackDeletePolicy = previousPolicy
                         }
+                        errorMessage = "无法保存删除方式。"
                     }
                 }
-            )) {
-                Text("仅从资料库移除").tag(ReferencedTrackDeletePolicy.onlyLibrary)
-                Text("将原文件移到废纸篓").tag(ReferencedTrackDeletePolicy.recycleSource)
             }
-            .pickerStyle(.radioGroup)
-        }
+        )
     }
 
     /// Tracks playback cannot reach: source file deleted (.missing), the
@@ -449,52 +505,24 @@ struct MusicSettingsView: View {
         SettingsSection("失效歌曲") {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(unavailableTracks.isEmpty
-                             ? "没有失效歌曲"
-                             : "\(unavailableTracks.count) 首歌曲暂时不可用")
-                            .font(.callout)
-                        Text("失效歌曲在列表中显示为灰色。来源暂时离线或权限失效时，请先重新连接来源；恢复后歌曲会继续保留。")
-                            .settingsDescriptionStyle()
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    Text(unavailableTracks.isEmpty
+                         ? "没有失效歌曲"
+                         : "\(unavailableTracks.count) 首歌曲暂时不可用")
+                        .font(.callout)
 
                     Spacer(minLength: 8)
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.vertical, 12)
 
                 if !unavailableTracks.isEmpty {
-                    Divider()
-
-                    ForEach(Array(visibleUnavailableTracks.enumerated()), id: \.element.id) { index, track in
-                        HStack(spacing: 10) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                                .accessibilityLabel("失效")
-                            VStack(alignment: .leading, spacing: 3) {
-                                HStack(spacing: 6) {
-                                    Text(track.title).lineLimit(1).truncationMode(.middle)
-                                    Text(unavailableReasonLabel(track.availability))
-                                        .font(.caption2)
-                                        .foregroundStyle(.orange)
-                                }
-                                Text(track.artist.isEmpty ? "未知艺术家" : track.artist)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    LazyVStack(spacing: 8) {
+                        ForEach(visibleUnavailableTracks) { track in
+                            unavailableTrackRow(track)
                         }
-                        .id(track.id)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        if index < visibleUnavailableTracks.count - 1 { Divider().padding(.leading, 12) }
                     }
 
                     if unavailableTracks.count > Self.collapsedSourceCount {
-                        Divider().padding(.leading, 12)
                         Button {
                             withAnimation(.easeInOut(duration: 0.18)) {
                                 isMissingListExpanded.toggle()
@@ -513,11 +541,57 @@ struct MusicSettingsView: View {
                         }
                         .buttonStyle(.plain)
                         .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
+                        .padding(.vertical, 10)
                     }
                 }
             }
         }
+    }
+
+    private func unavailableTrackRow(_ track: Track) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .accessibilityLabel("失效")
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(track.title.isEmpty ? "未命名歌曲" : track.title)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(unavailableReasonLabel(track.availability))
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+                Text(track.artist.isEmpty ? "未知艺术家" : track.artist)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button {
+                trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: [track])
+            } label: {
+                Image(systemName: "trash.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .frame(width: 32, height: 32)
+                    .background(Color.red.opacity(0.11), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .help("从资料库删除")
+            .accessibilityLabel("从资料库删除")
+            .disabled(deletingTrackIDs.contains(track.id))
+        }
+        .id(track.id)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(
+            Color.primary.opacity(0.035),
+            in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+        )
     }
 
     private var visibleUnavailableTracks: [Track] {
@@ -530,6 +604,17 @@ struct MusicSettingsView: View {
         case .volumeUnavailable: return "来源离线"
         case .permissionDenied: return "无权限"
         default: return "不可用"
+        }
+    }
+
+    private func deleteUnavailableTracks(_ tracks: [Track]) {
+        guard !tracks.isEmpty else { return }
+        let ids = Set(tracks.map(\.id))
+        deletingTrackIDs.formUnion(ids)
+        Task { @MainActor in
+            await libraryVM.deleteTracks(tracks)
+            deletingTrackIDs.subtract(ids)
+            await reload()
         }
     }
 
@@ -666,7 +751,7 @@ struct MusicSettingsView: View {
                     appSession.uiState.showSidebarNotice(
                         "部分音乐未导入",
                         style: .warning,
-                        actionTitle: "打开设置"
+                        actionTitle: "查看失败"
                     )
                 } else if result.imported > 0 {
                     appSession.uiState.showSidebarNotice("新增 \(result.imported) 首歌曲")
@@ -755,18 +840,6 @@ struct MusicSettingsView: View {
         }
     }
 
-    private func sourceStatus(_ status: ReferencedSourceStatus) -> String {
-        switch status {
-        case .available: return "可用"
-        case .stale: return "需要授权"
-        case .permissionDenied: return "权限失效"
-        case .offline: return "来源不可用"
-        }
-    }
-
-    private func sourceRowStatus(_ source: ReferencedSourceDescriptor) -> String {
-        sourceScanStates[source.id] == .failed ? "扫描失败" : sourceStatus(source.status)
-    }
 }
 
 // Production fixture previews are defined in MusicSettingsContent.swift.

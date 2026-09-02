@@ -52,7 +52,9 @@ nonisolated struct LibraryImportResult: Sendable, Equatable {
     let failures: [ImportInputFailure]
     let wasRejectedAsStale: Bool
     /// Similarity-only duplicate suggestions encountered during this import.
-    /// They are never merged automatically (plan rule 11.5).
+    /// Interactive imports resolve them by storage mode: referenced libraries
+    /// link the existing Track, while managed libraries copy the incoming file.
+    /// Automatic source scans keep the conservative "import as new" policy.
     var possibleDuplicatesCount: Int = 0
     /// NCM files queued for conversion during this import.
     var pendingNCMCount: Int = 0
@@ -105,4 +107,30 @@ nonisolated struct ImportInputPlan: Sendable {
 nonisolated struct ImportInputFailure: Sendable, Equatable {
     let url: URL
     let message: String
+}
+
+/// A compact, user-visible record of one import attempt.  The import dialog is
+/// transient, so the report lives in UI state until the user dismisses it and
+/// can still inspect a source-monitor failure after the background scan ends.
+nonisolated struct LibraryImportFailureReport: Identifiable, Sendable, Equatable {
+    let id: UUID
+    let origin: LibraryImportOrigin
+    let createdAt: Date
+    let failures: [ImportInputFailure]
+
+    init(
+        id: UUID = UUID(),
+        origin: LibraryImportOrigin,
+        failures: [ImportInputFailure],
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.origin = origin
+        self.createdAt = createdAt
+        var seenFailures = Set<String>()
+        self.failures = failures.filter { failure in
+            let key = "\(LibraryImportSourceEntry.canonicalPath(failure.url))|\(failure.message)"
+            return seenFailures.insert(key).inserted
+        }
+    }
 }

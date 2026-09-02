@@ -212,7 +212,7 @@ final class LibrarySession: LibrarySessionLifecycle {
             )
             throw LibraryInitialImportError.initialImportFailed(result)
         }
-        return try await runLibraryOperation { [weak self] in
+        return try await runLibraryOperation(as: .importFiles) { [weak self] in
             guard let self else {
                 throw LibraryInitialImportError.initialImportFailed(
                     LibraryInitialImportResult(
@@ -283,6 +283,13 @@ final class LibrarySession: LibrarySessionLifecycle {
         try await operationCoordinator.run(work)
     }
 
+    func runLibraryOperation<Value: Sendable>(
+        as kind: LibraryTaskKind,
+        _ work: @escaping @MainActor () async throws -> Value
+    ) async throws -> Value {
+        try await operationCoordinator.run(as: kind, work)
+    }
+
     /// Installs a push-based observer for the coordinator's task-state
     /// changes (plan §14). Hosts copy `taskDescriptors` inside the callback
     /// instead of polling task state.
@@ -303,7 +310,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         libraryViewModel.runOwnedImportOperation = { [weak self] work in
             guard let self else { return nil }
             do {
-                return try await self.runLibraryOperation {
+                return try await self.runLibraryOperation(as: .importFiles) {
                     await work()
                 }
             } catch {
@@ -333,7 +340,7 @@ final class LibrarySession: LibrarySessionLifecycle {
     func startBackgroundLibraryOperation(
         _ work: @escaping @MainActor () async -> Void
     ) -> Bool {
-        operationCoordinator.start(work)
+        operationCoordinator.start(work, kind: .importFiles)
     }
 
     private func createAutomaticPlaylists(

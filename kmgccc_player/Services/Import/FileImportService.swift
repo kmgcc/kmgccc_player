@@ -95,7 +95,7 @@ nonisolated struct DuplicatePairRow: Identifiable, Sendable {
 ///
 /// §16: thin orchestrator. Decisions live in `ImportPlanner`, persistence in
 /// `ImportCommitter`; this type owns the slot gate, public API, progress
-/// dialog lifecycle, duplicate-dialog presentation and counters.
+/// dialog lifecycle, duplicate resolution policy and counters.
 @MainActor
 final class FileImportService: FileImportServiceProtocol {
     /// Queue entry for a waiting import slot. Only ever touched on the main
@@ -146,6 +146,10 @@ final class FileImportService: FileImportServiceProtocol {
     private var lastImportPossibleDuplicateCount = 0
     private var lastImportPendingNCMCount = 0
     private var lastImportAlreadyInPlaylistCount = 0
+
+    /// Main-actor UI hook.  The service remains independent of presentation;
+    /// AppSessionHost stores the failures in UI state for the sidebar report.
+    var onImportFailures: (@MainActor ([ImportInputFailure], LibraryImportOrigin) -> Void)?
 
     init(
         repository: LibraryRepositoryProtocol,
@@ -289,7 +293,7 @@ final class FileImportService: FileImportServiceProtocol {
         case .playlist(let playlistID):
             playlist = (await repository.fetchPlaylists()).first { $0.id == playlistID }
             guard playlist != nil else {
-                return LibraryImportResult(
+                let result = LibraryImportResult(
                     importedTrackCount: 0,
                     reusedTrackCount: 0,
                     playlistMembershipAdditions: 0,
@@ -302,6 +306,8 @@ final class FileImportService: FileImportServiceProtocol {
                     ],
                     wasRejectedAsStale: false
                 )
+                publishImportFailuresIfNeeded(result.failures, origin: context.origin)
+                return result
             }
         }
 
@@ -326,7 +332,7 @@ final class FileImportService: FileImportServiceProtocol {
             sourceBindingCount = 0
         }
         let playlistMembershipAdditions = max(0, (playlist?.trackCount ?? beforePlaylistCount) - beforePlaylistCount)
-        return LibraryImportResult(
+        let result = LibraryImportResult(
             importedTrackCount: newTrackCount,
             reusedTrackCount: max(0, tracks.count - newTrackCount),
             playlistMembershipAdditions: playlistMembershipAdditions,
@@ -337,6 +343,8 @@ final class FileImportService: FileImportServiceProtocol {
             pendingNCMCount: lastImportPendingNCMCount,
             alreadyInPlaylistCount: lastImportAlreadyInPlaylistCount
         )
+        publishImportFailuresIfNeeded(result.failures, origin: context.origin)
+        return result
     }
 
     /// Import selected files/folders into a specific playlist.
@@ -346,20 +354,22 @@ final class FileImportService: FileImportServiceProtocol {
         to playlist: Playlist,
         metadataOverride: ImportMetadataOverride? = nil
     ) async -> Int {
-        await importURLs(
+        let tracks = await importURLs(
             selectedURLs,
             to: playlist,
             metadataOverride: metadataOverride,
             presentation: .interactive,
             isManualSelection: true,
             origin: .playlistDrop
-        ).count
+        )
+        publishImportFailuresIfNeeded(lastImportFailures, origin: .playlistDrop)
+        return tracks.count
     }
 
     /// Production entry used by referenced-source reconciliation. It uses the same
     /// metadata, sidecar, and visibility pipeline without presenting AppKit UI.
     func importAutomatically(_ urls: [URL]) async -> [Track] {
-        await importURLs(
+        let tracks = await importURLs(
             urls,
             to: nil,
             metadataOverride: nil,
@@ -367,6 +377,8 @@ final class FileImportService: FileImportServiceProtocol {
             isManualSelection: false,
             origin: .sourceMonitor
         )
+        publishImportFailuresIfNeeded(lastImportFailures, origin: .sourceMonitor)
+        return tracks
     }
 
     /// Setup entry. The caller retains `selection` across this entire call so the
@@ -392,6 +404,7 @@ final class FileImportService: FileImportServiceProtocol {
         failures = failures.filter {
             seenFailurePaths.insert(LibraryImportSourceEntry.canonicalPath($0.url)).inserted
         }
+        publishImportFailuresIfNeeded(failures, origin: .setup)
         let sources = plan?.directorySources.map { prepared in
             LibraryInitialImportSource(
                 id: prepared.source.id,
@@ -583,6 +596,10 @@ final class FileImportService: FileImportServiceProtocol {
                 "[Import] failed to create import session: \(error.localizedDescription)",
                 category: .import
             )
+            lastImportFailures.append(.init(
+                url: selectedURLs[0],
+                message: "无法准备导入：\(error.localizedDescription)"
+            ))
             return []
         }
 
@@ -606,7 +623,14 @@ final class FileImportService: FileImportServiceProtocol {
 
         // The backend captures panel/drag scopes before this suspension returns.
         let inputPlan = await storageBackend.prepareInputs(selectedURLs)
+        lastImportFailures.append(contentsOf: inputPlan.failures)
         defer { storageBackend.finishImportBatch() }
+        // NCM conversion may need write access to the folder containing each
+        // source. Keep one parent authorization per directory for this whole
+        // import, including cancellation and partial-failure paths, instead
+        // of presenting the same panel once per selected file.
+        referencedNCMConversionService?.beginImportBatch()
+        defer { referencedNCMConversionService?.finishImportBatch() }
         await prepareManualRetryIfNeeded(
             inputPlan: inputPlan,
             isManualSelection: isManualSelection
@@ -625,6 +649,8 @@ final class FileImportService: FileImportServiceProtocol {
         )
         var reusedTracks = interpretation.reusedTracks
         var reusedTrackIDs = interpretation.reusedTrackIDs
+        var referencedReuseLocators = interpretation.referencedReuseLocators
+        var referencedReuseNCMOperationIDs: [UUID: Set<UUID>] = [:]
         lastImportPendingNCMCount = interpretation.eligibleNCMFiles.count
         let discoveredFileCount = interpretation.filesToImport.count + interpretation.eligibleNCMFiles.count
         progressController.update(
@@ -644,7 +670,8 @@ final class FileImportService: FileImportServiceProtocol {
             do {
                 try await commitImportEffects(
                     tracks: reusedTracks,
-                    referencedReuseLocators: interpretation.referencedReuseLocators,
+                    referencedReuseLocators: referencedReuseLocators,
+                    referencedNCMOperationIDs: referencedReuseNCMOperationIDs,
                     sourceIDs: interpretation.playlistSourceIDs,
                     to: playlist
                 )
@@ -748,60 +775,45 @@ final class FileImportService: FileImportServiceProtocol {
             )
         }
 
-        // Duplicate policy stays UI-owned: the planner only produced the
-        // decision inputs above.
+        // Similarity-only duplicate candidates never block an interactive
+        // import. The storage mode decides what "import" means:
+        // referenced libraries reuse the existing Track and merge the incoming
+        // location, while managed libraries copy the incoming file into a new
+        // Track. Both paths still report the possible-duplicate count so the
+        // result remains observable without requiring a modal choice.
         var selectedDuplicates: [ImportCandidate] = []
         var policyDecision: ImportExecutionPlan.DuplicatePolicyDecision =
             duplicateRows.isEmpty ? .none : .automaticImportAllAsNew
         if !duplicateRows.isEmpty, presentation == .interactive {
-            Log.debug("Found \(duplicateRows.count) duplicates, presenting dialog...", category: .import)
-            progressController.update(
-                stage: .waitingForDuplicateChoice,
-                progress: Self.progress(for: .waitingForDuplicateChoice, completed: duplicateRows.count, total: duplicateRows.count),
-                detail: "发现 \(duplicateRows.count) 首重复歌曲，等待选择是否继续导入",
-                completedCount: duplicateRows.count,
-                totalCount: duplicateRows.count
-            )
-            if let selectedRows = presentDuplicateSelectionDialog(duplicateRows) {
-                Log.info("Dialog confirmed. Selected duplicates to import: \(selectedRows.count)", category: .import)
-                policyDecision = .userSelected
-                let selectedIDSet = Set(selectedRows.map(\.id))
-                let candidatesByID = Dictionary(
-                    uniqueKeysWithValues: (uniqueCandidates + preparedCandidates.duplicateCandidates).map { ($0.progressID, $0) }
-                )
-                selectedDuplicates = duplicateRows.compactMap { row in
-                    if selectedIDSet.contains(row.id) {
-                        progressController.updateItem(
-                            id: row.id,
-                            title: row.incoming.title,
-                            artist: row.incoming.artist,
-                            stage: .duplicateCheck,
-                            status: .success,
-                            detail: "已选择继续导入重复歌曲"
-                        )
-                        return candidatesByID[row.id]
-                    }
-
-                    progressController.updateItem(
-                        id: row.id,
-                        title: row.incoming.title,
-                        artist: row.incoming.artist,
-                        stage: .duplicateCheck,
-                        status: .skipped,
-                        detail: "检测到重复，已跳过导入"
-                    )
-                    return nil
-                }
-            } else {
-                Log.debug("User cancelled import via duplicate dialog (result was nil)", category: .import)
-                return await committer.finishCancelledImport(
+            switch storageBackend.mode {
+            case .referenced:
+                let reuseResult = await reuseReferencedDuplicateCandidates(
+                    preparedCandidates.duplicateCandidates,
+                    libraryTracks: libraryTracks,
+                    existingLocators: referencedReuseLocators,
                     session: importSession,
-                    importedRecords: [],
-                    createdTrackIDs: [],
-                    to: playlist,
-                    progressController: progressController,
-                    totalCount: discoveredFileCount
+                    progressController: progressController
                 )
+                for track in reuseResult.tracks where reusedTrackIDs.insert(track.id).inserted {
+                    reusedTracks.append(track)
+                }
+                referencedReuseLocators = reuseResult.locators
+                referencedReuseNCMOperationIDs = reuseResult.ncmOperationIDsByTrackID
+                lastImportFailures.append(contentsOf: reuseResult.failures)
+                policyDecision = .automaticReuseExisting
+            case .managed:
+                selectedDuplicates = preparedCandidates.duplicateCandidates
+                policyDecision = .automaticImportAllAsNew
+                for candidate in selectedDuplicates {
+                    progressController.updateItem(
+                        id: candidate.progressID,
+                        title: candidate.metadata.title,
+                        artist: candidate.metadata.artist,
+                        stage: .duplicateCheck,
+                        status: .success,
+                        detail: "发现重复歌曲，已直接复制到资料库"
+                    )
+                }
             }
         }
 
@@ -893,7 +905,7 @@ final class FileImportService: FileImportServiceProtocol {
         }
 
         guard !importedRecords.isEmpty else {
-            print("⚠️ No tracks to import")
+            Log.warning("[Import] no tracks were imported after the commit phase", category: .import)
             if reusedTracks.isEmpty, !finalCandidates.isEmpty {
                 importSession.cleanupStaging()
                 _ = await committer.cleanupFailedImportResidue(reason: "importNoSuccessfulTracks")
@@ -902,7 +914,8 @@ final class FileImportService: FileImportServiceProtocol {
             do {
                 try await commitImportEffects(
                     tracks: reusedTracks,
-                    referencedReuseLocators: interpretation.referencedReuseLocators,
+                    referencedReuseLocators: referencedReuseLocators,
+                    referencedNCMOperationIDs: referencedReuseNCMOperationIDs,
                     sourceIDs: interpretation.playlistSourceIDs,
                     to: playlist
                 )
@@ -1037,7 +1050,8 @@ final class FileImportService: FileImportServiceProtocol {
         do {
             try await commitImportEffects(
                 tracks: persistedTracks + reusedTracks,
-                referencedReuseLocators: interpretation.referencedReuseLocators,
+                referencedReuseLocators: referencedReuseLocators,
+                referencedNCMOperationIDs: referencedReuseNCMOperationIDs,
                 sourceIDs: interpretation.playlistSourceIDs,
                 to: playlist
             )
@@ -1093,7 +1107,7 @@ final class FileImportService: FileImportServiceProtocol {
                 beforePlaylistTrackIDs.contains($0.id)
             }.count
         } ?? 0
-        print("✅ Import complete: \(persistedTracks.count) imported")
+        Log.info("[Import] completed imported=\(persistedTracks.count) reused=\(reusedTracks.count)", category: .import)
         crashBreadcrumbResult = "completed"
         crashBreadcrumbImportedCount = persistedTracks.count + reusedTracks.count
         return persistedTracks + reusedTracks
@@ -1131,6 +1145,7 @@ final class FileImportService: FileImportServiceProtocol {
     private func commitImportEffects(
         tracks: [Track],
         referencedReuseLocators: [UUID: ReferencedFileLocator],
+        referencedNCMOperationIDs: [UUID: Set<UUID>] = [:],
         sourceIDs: Set<UUID>,
         to playlist: Playlist?
     ) async throws {
@@ -1145,6 +1160,7 @@ final class FileImportService: FileImportServiceProtocol {
                 try await self.commitImportEffectsUncoordinated(
                     tracks: tracks,
                     referencedReuseLocators: referencedReuseLocators,
+                    referencedNCMOperationIDs: referencedNCMOperationIDs,
                     sourceIDs: sourceIDs,
                     to: playlist
                 )
@@ -1153,6 +1169,7 @@ final class FileImportService: FileImportServiceProtocol {
         try await commitImportEffectsUncoordinated(
             tracks: tracks,
             referencedReuseLocators: referencedReuseLocators,
+            referencedNCMOperationIDs: referencedNCMOperationIDs,
             sourceIDs: sourceIDs,
             to: playlist
         )
@@ -1161,10 +1178,15 @@ final class FileImportService: FileImportServiceProtocol {
     private func commitImportEffectsUncoordinated(
         tracks: [Track],
         referencedReuseLocators: [UUID: ReferencedFileLocator],
+        referencedNCMOperationIDs: [UUID: Set<UUID>],
         sourceIDs: Set<UUID>,
         to playlist: Playlist?
     ) async throws {
-        var originalLocators: [(track: Track, locator: TrackMediaLocator)] = []
+        var originalLocators: [(
+            track: Track,
+            locator: TrackMediaLocator,
+            availability: TrackAvailability
+        )] = []
         do {
             // Source descriptors created during prepareInputs are provisional;
             // persist them only once the import reaches its final commit.
@@ -1174,26 +1196,52 @@ final class FileImportService: FileImportServiceProtocol {
                       let track = await repository.fetchTracks(ids: [trackID]).first else {
                     throw ImportEffectCommitError.missingReusedTrack(trackID)
                 }
-                originalLocators.append((track, track.mediaLocator))
+                originalLocators.append((track, track.mediaLocator, track.availability))
                 try await repository.mergeReferencedLocator(incoming, into: track)
             }
 
-            guard let playlist else { return }
-            var seenTrackIDs = Set<UUID>()
-            let uniqueTracks = tracks.filter { seenTrackIDs.insert($0.id).inserted }
-            try await storageBackend.commitPlaylistImportSourceEffects(
-                tracks: uniqueTracks,
-                sourceIDs: sourceIDs,
-                playlistID: playlist.id,
-                commitPlaylist: {
-                    guard !uniqueTracks.isEmpty else { return }
-                    try await self.repository.addTracks(uniqueTracks, to: playlist)
+            if let playlist {
+                var seenTrackIDs = Set<UUID>()
+                let uniqueTracks = tracks.filter { seenTrackIDs.insert($0.id).inserted }
+                try await storageBackend.commitPlaylistImportSourceEffects(
+                    tracks: uniqueTracks,
+                    sourceIDs: sourceIDs,
+                    playlistID: playlist.id,
+                    commitPlaylist: {
+                        guard !uniqueTracks.isEmpty else { return }
+                        try await self.repository.addTracks(uniqueTracks, to: playlist)
+                    }
+                )
+            }
+
+            // A referenced NCM output that was linked to an existing Track did
+            // not pass through ImportCommitter.saveImportedTracks, so it must
+            // be marked committed after the locator/playlist transaction has
+            // succeeded.  Keep a failed registry transition observable while
+            // leaving the already-committed library change intact; the next
+            // scan can recover the output-ready record.
+            if let referencedNCMConversionService {
+                for trackID in referencedNCMOperationIDs.keys.sorted(by: { $0.uuidString < $1.uuidString }) {
+                    for operationID in referencedNCMOperationIDs[trackID, default: []].sorted(by: { $0.uuidString < $1.uuidString }) {
+                        do {
+                            try await referencedNCMConversionService.markCommitted(
+                                operationID: operationID,
+                                trackID: trackID
+                            )
+                        } catch {
+                            Log.error(
+                                "[Import] referenced NCM duplicate commit failed operation=\(operationID.uuidString) track=\(trackID.uuidString): \(error.localizedDescription)",
+                                category: .import
+                            )
+                        }
+                    }
                 }
-            )
+            }
         } catch {
             await storageBackend.rollbackPreparedSources()
             for original in originalLocators.reversed() {
                 original.track.mediaLocator = original.locator
+                original.track.availability = original.availability
                 await repository.persistTrackMetaOnly(
                     original.track,
                     reason: "importEffectRollback"
@@ -1256,6 +1304,145 @@ final class FileImportService: FileImportServiceProtocol {
         return await cancellationToken.isCancelled || Task.isCancelled
     }
 
+    private func publishImportFailuresIfNeeded(
+        _ failures: [ImportInputFailure],
+        origin: LibraryImportOrigin
+    ) {
+        guard !failures.isEmpty else { return }
+        onImportFailures?(failures, origin)
+    }
+
+    private struct ReferencedDuplicateReuseResult {
+        let tracks: [Track]
+        let locators: [UUID: ReferencedFileLocator]
+        let ncmOperationIDsByTrackID: [UUID: Set<UUID>]
+        let failures: [ImportInputFailure]
+    }
+
+    /// Resolves metadata-only duplicate suggestions for an interactive
+    /// referenced import. The existing Track remains the logical song; the
+    /// selected file is merged as another physical location so the source and
+    /// playlist projections can index it without creating a second Track.
+    private func reuseReferencedDuplicateCandidates(
+        _ candidates: [ImportCandidate],
+        libraryTracks: [Track],
+        existingLocators: [UUID: ReferencedFileLocator],
+        session: ImportSession,
+        progressController: BatchImportProgressDialogController
+    ) async -> ReferencedDuplicateReuseResult {
+        var tracks: [Track] = []
+        var seenTrackIDs = Set<UUID>()
+        var locators = existingLocators
+        var ncmOperationIDsByTrackID: [UUID: Set<UUID>] = [:]
+        var failures: [ImportInputFailure] = []
+
+        func recordFailure(_ candidate: ImportCandidate, message: String) {
+            failures.append(.init(url: candidate.fileURL, message: message))
+            progressController.updateItem(
+                id: candidate.progressID,
+                title: candidate.metadata.title,
+                artist: candidate.metadata.artist,
+                stage: .duplicateCheck,
+                status: .failed,
+                detail: "重复歌曲未能复用",
+                issueMessage: message
+            )
+        }
+
+        for candidate in candidates {
+            guard let existingTrackID = candidate.existingDuplicateTrackID,
+                  let existingTrack = libraryTracks.first(where: { $0.id == existingTrackID })
+            else {
+                recordFailure(candidate, message: "重复歌曲对应的资料库条目已不存在")
+                continue
+            }
+
+            do {
+                let incomingLocator: ReferencedFileLocator
+                if let ncmLocator = candidate.ncmLocator {
+                    incomingLocator = ncmLocator
+                    if let operationID = candidate.ncmOperationID,
+                       let referencedNCMConversionService
+                    {
+                        try await referencedNCMConversionService.associateTrack(
+                            operationID: operationID,
+                            trackID: existingTrackID
+                        )
+                    }
+                } else {
+                    let placement = try await storageBackend.makePlacement(
+                        for: candidate.discoveredFile,
+                        trackID: existingTrackID,
+                        stagingDirectoryURL: session.stagingDirectoryURL
+                    )
+                    guard case let .referenced(locator) = placement else {
+                        throw LibraryBackendError.modeMismatch(
+                            expected: .referenced,
+                            actual: placement.storageKind
+                        )
+                    }
+                    incomingLocator = locator
+                }
+                try storageBackend.validate(.referenced(incomingLocator))
+
+                guard let previousLocator = locators[existingTrackID]
+                    ?? existingTrack.mediaLocator.referencedFile
+                else {
+                    throw LibraryBackendError.modeMismatch(
+                        expected: .referenced,
+                        actual: .managed
+                    )
+                }
+                // Keep a newly selected file first only after exercising the
+                // same Core Audio decoder that playback uses. Metadata/AVAsset
+                // can succeed for a damaged or unsupported container; putting
+                // such a copy first would make an otherwise playable reused
+                // track appear broken. The incoming physical location is still
+                // retained below as a fallback/repair candidate.
+                let incomingIsPlayable = await AudioFilePreparationActor.canOpenForPlayback(
+                    candidate.fileURL
+                )
+                var mergedLocator = incomingIsPlayable ? incomingLocator : previousLocator
+                let locationsToMerge = incomingIsPlayable
+                    ? previousLocator.locations
+                    : incomingLocator.locations
+                for location in locationsToMerge {
+                    mergedLocator.mergeLocation(location)
+                }
+                if !incomingIsPlayable {
+                    Log.warning(
+                        "[Import] duplicate copy could not be decoded; preserving the existing playable location first track=\(existingTrackID.uuidString)",
+                        category: .import
+                    )
+                }
+                locators[existingTrackID] = mergedLocator
+                if let operationID = candidate.ncmOperationID {
+                    ncmOperationIDsByTrackID[existingTrackID, default: []].insert(operationID)
+                }
+                if seenTrackIDs.insert(existingTrackID).inserted {
+                    tracks.append(existingTrack)
+                }
+                progressController.updateItem(
+                    id: candidate.progressID,
+                    title: candidate.metadata.title,
+                    artist: candidate.metadata.artist,
+                    stage: .duplicateCheck,
+                    status: .success,
+                    detail: "发现重复歌曲，已链接到资料库中的歌曲"
+                )
+            } catch {
+                recordFailure(candidate, message: error.localizedDescription)
+            }
+        }
+
+        return ReferencedDuplicateReuseResult(
+            tracks: tracks,
+            locators: locators,
+            ncmOperationIDsByTrackID: ncmOperationIDsByTrackID,
+            failures: failures
+        )
+    }
+
     nonisolated static func progress(
         for stage: BatchImportStage,
         completed: Int,
@@ -1267,12 +1454,4 @@ final class FileImportService: FileImportServiceProtocol {
         return range.lowerBound + (range.upperBound - range.lowerBound) * ratio
     }
 
-    @MainActor
-    private func presentDuplicateSelectionDialog(_ duplicateRows: [DuplicatePairRow])
-        -> [DuplicatePairRow]?
-    {
-        return DuplicateImportDialogPresenter.present(
-            rows: duplicateRows
-        )
-    }
 }

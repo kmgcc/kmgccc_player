@@ -72,6 +72,15 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
             sharedController = controller
         }
 
+        // The main window is an all-or-nothing surface: do not expose its
+        // placeholder model while the one-time startup transaction is still
+        // resolving or creating the active library. The launch handler calls
+        // this method again after `setupIfNeeded()` completes.
+        guard appSession.hasCompletedInitialSetup else {
+            Log.debug("[AppLaunch] main window deferred until library setup completes", category: .ui)
+            return controller
+        }
+
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -95,16 +104,19 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
     }
 
     static func toggleSidebar(appSession: AppSessionHost) {
+        guard appSession.hasCompletedInitialSetup else { return }
         let controller = reveal(appSession: appSession)
         controller.splitViewController.toggleSidebar(nil)
     }
 
     static func toggleInspector(appSession: AppSessionHost) {
+        guard appSession.hasCompletedInitialSetup else { return }
         let controller = reveal(appSession: appSession)
         controller.splitViewController.toggleInspector(nil)
     }
 
     static func toggleMultiselect(appSession: AppSessionHost) {
+        guard appSession.hasCompletedInitialSetup else { return }
         let controller = reveal(appSession: appSession)
         controller.ensureToolbarController().toggleMultiselectFromCommand()
     }
@@ -348,6 +360,11 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
     @discardableResult
     private func bringToFrontIfPossible() -> Bool {
+        // `reveal()` can be reached from Dock/reopen commands while the
+        // one-time library startup transaction is still running. Keep the
+        // instance-level path behind the same all-or-nothing gate as
+        // `show()` so no caller can expose the placeholder window early.
+        guard appSession.hasCompletedInitialSetup else { return false }
         guard let window else { return false }
         if window.isMiniaturized {
             window.deminiaturize(nil)

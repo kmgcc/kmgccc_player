@@ -67,108 +67,67 @@ private struct EnrichmentStatusDialogView: View {
     private var progress: ImportEnrichmentProgressSnapshot { service.progress }
 
     var body: some View {
-        VStack(spacing: 0) {
-            headerView
-
-            Divider().opacity(0.45)
-
-            if service.enrichmentRows.isEmpty {
-                emptyView
-            } else {
-                rowList
+        SettingsTaskDialog(
+            title: "正在补全导入内容",
+            subtitle: progressSubtitle,
+            systemImage: "arrow.down.circle",
+            iconColor: themeStore.accentColor
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                progressSummary
+                if service.enrichmentRows.isEmpty {
+                    emptyView
+                } else {
+                    rowList
+                }
             }
-
-            Divider().opacity(0.35)
-
-            footerView
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } footer: {
+            HStack {
+                Spacer(minLength: 0)
+                SettingsTaskDialogButton("关闭", kind: .secondary, action: onClose)
+            }
         }
     }
 
-    private var headerView: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Text("正在补全导入内容")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+    private var progressSubtitle: String {
+        guard progress.totalEnqueued > 0 else { return "后台补全" }
+        if progress.failedCount > 0 {
+            return "已补全 \(progress.completedCount)/\(progress.totalEnqueued) · 失败 \(progress.failedCount)"
+        }
+        return "已补全 \(progress.completedCount)/\(progress.totalEnqueued)"
+    }
 
-                Spacer(minLength: 0)
-
-                Text("已补全 \(progress.completedCount)/\(progress.totalEnqueued)")
-                    .font(.subheadline.monospacedDigit())
-                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .bold))
-                        .frame(width: 20, height: 20)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-                .help("关闭")
-            }
-
+    private var progressSummary: some View {
+        Group {
             if progress.totalEnqueued > 0 {
                 ProgressView(value: Double(progress.completedCount) / Double(progress.totalEnqueued))
                     .progressViewStyle(.linear)
                     .controlSize(.small)
                     .tint(themeStore.accentColor)
             }
-
-            if progress.failedCount > 0 {
-                Text("失败 \(progress.failedCount) 首")
-                    .font(.caption)
-                    .foregroundStyle(Color.orange)
-            }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
     }
 
     private var emptyView: some View {
         VStack(spacing: 8) {
-            Spacer()
             Text("暂无补全任务")
                 .font(.callout)
                 .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-            Spacer()
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 180, alignment: .center)
     }
 
     private var rowList: some View {
         ScrollView {
-            LazyVStack(spacing: 0) {
+            LazyVStack(spacing: 8) {
                 ForEach(service.enrichmentRows) { row in
                     EnrichmentStatusRowView(row: row)
                 }
             }
-            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private var footerView: some View {
-        HStack {
-            Text("补全在后台进行，可关闭此窗口")
-                .font(.caption)
-                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-
-            Spacer(minLength: 0)
-
-            Button("关闭", action: onClose)
-                .buttonStyle(.plain)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(themeStore.accentColor)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(themeStore.accentColor.opacity(0.14))
-                )
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
     }
 }
 
@@ -218,7 +177,12 @@ private struct EnrichmentStatusRowView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.vertical, 13)
+        .frame(minHeight: 68)
+        .background(
+            Color.primary.opacity(0.035),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
     }
 
     @ViewBuilder

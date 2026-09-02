@@ -6,8 +6,8 @@
 //  interpretation, identity-reuse orchestration (via TrackIdentityResolver),
 //  NCM conversion dispatch, resolved-file coalescing, dedup snapshots,
 //  candidate preparation and placement resolution. It never presents UI: the
-//  duplicate dialog stays on FileImportService, which feeds the chosen policy
-//  back through resolvePlacements. Planning is side-effect free with respect
+//  import service applies the storage-mode duplicate policy after planning.
+//  Planning is side-effect free with respect
 //  to playlist membership and source bindings; those are committed only after
 //  the track import succeeds.
 //
@@ -130,6 +130,9 @@ struct ImportExecutionPlan {
         case userSelected
         /// Automatic mode: similarity matches imported as new tracks.
         case automaticImportAllAsNew
+        /// Interactive referenced-mode import: similarity matches reuse the
+        /// existing Track and merge the newly selected physical location.
+        case automaticReuseExisting
     }
 
     let reusedTracks: [Track]
@@ -907,6 +910,7 @@ final class ImportPlanner {
         }()
         return TrackAudioProperties(
             format: metadata.format.isEmpty ? nil : metadata.format.uppercased(),
+            codec: metadata.format.isEmpty ? nil : metadata.format.uppercased(),
             bitrateKbps: bitrateKbps,
             sampleRateHz: nil,
             bitDepth: nil,
@@ -1097,10 +1101,10 @@ final class ImportPlanner {
                         ncmOperationID: file.referencedNCMOutput?.operationID,
                         ncmAssociation: file.referencedNCMOutput?.association,
                         ncmLocator: file.referencedNCMOutput?.locator,
-                    recoveryTrackID: file.referencedNCMOutput?.trackID
-                ),
-                duplicateRow: nil
-            )
+                        recoveryTrackID: file.referencedNCMOutput?.trackID
+                    ),
+                    duplicateRow: nil
+                )
         }
 
         // §10.1 projection: the extracted tag values form the 文件标签
@@ -1170,7 +1174,10 @@ final class ImportPlanner {
             ncmOperationID: candidate.ncmOperationID,
             ncmAssociation: candidate.ncmAssociation,
             ncmLocator: candidate.ncmLocator,
-            recoveryTrackID: candidate.recoveryTrackID
+            recoveryTrackID: candidate.recoveryTrackID,
+            embeddedSnapshot: candidate.embeddedSnapshot,
+            audioPropertiesOverride: candidate.audioPropertiesOverride,
+            enrichmentSuggestions: candidate.enrichmentSuggestions
         )
 
         let duplicateRow = DuplicatePairRow(

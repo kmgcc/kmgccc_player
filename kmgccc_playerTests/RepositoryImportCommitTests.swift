@@ -70,6 +70,41 @@ final class RepositoryImportCommitTests: XCTestCase {
         XCTAssertTrue(playlist.tracks.isEmpty)
     }
 
+    func testSuccessfulMembershipMergeClearsStaleMissingAvailability() async throws {
+        let fixture = try RepositoryFixture()
+        defer { fixture.cleanup() }
+        let sourceID = UUID()
+        let original = kmgccc_player.ReferencedFileLocator(
+            fileBookmarkData: Data("old".utf8),
+            sourceMemberships: [],
+            lastKnownPath: "/old",
+            fingerprint: .init(fileSize: 1, modifiedAt: 1)
+        )
+        let track = Track(
+            title: "Existing",
+            fileBookmarkData: original.fileBookmarkData,
+            mediaLocator: .referenced(original),
+            availability: .missing,
+            libraryRootSnapshot: fixture.paths.rootURL.path
+        )
+        let repository = fixture.makeRepository(importWriter: { _, _ in true })
+        _ = await repository.commitImportedTracks([track])
+
+        let incoming = kmgccc_player.ReferencedFileLocator(
+            fileBookmarkData: Data("new".utf8),
+            sourceMemberships: [.init(sourceID: sourceID, relativePath: "song.mp3")],
+            primarySourceID: sourceID,
+            lastKnownPath: "/new",
+            fingerprint: .init(fileSize: 1, modifiedAt: 2)
+        )
+
+        try await repository.mergeReferencedLocator(incoming, into: track)
+
+        XCTAssertEqual(track.availability, .available)
+        XCTAssertTrue(track.isPlayable)
+        XCTAssertEqual(track.mediaLocator.referencedFile?.lastKnownPath, "/new")
+    }
+
     func testPlaylistCreationFailureDoesNotPublishRuntimePlaylist() async throws {
         let fixture = try RepositoryFixture()
         defer { fixture.cleanup() }

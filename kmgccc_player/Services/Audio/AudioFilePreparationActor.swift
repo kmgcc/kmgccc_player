@@ -88,6 +88,26 @@ actor AudioFilePreparationActor {
         case cancelled
     }
 
+    /// Probes a physical file on a background executor before a referenced
+    /// duplicate is promoted to the preferred location. Keep this probe
+    /// separate from `prepare` so the import path never blocks the main actor.
+    /// The synchronous decoder read is deliberately left to the prepare actor:
+    /// malformed containers can block Core Audio while it tries to recover, and
+    /// an import probe must never hold up the rest of a batch.
+    nonisolated static func canOpenForPlayback(_ url: URL) async -> Bool {
+        await Task.detached(priority: .utility) {
+            guard !Task.isCancelled else { return false }
+            guard let file = try? AVAudioFile(forReading: url),
+                  file.length > 0,
+                  file.processingFormat.sampleRate.isFinite,
+                  file.processingFormat.sampleRate > 0,
+                  file.processingFormat.channelCount > 0 else {
+                return false
+            }
+            return true
+        }.value
+    }
+
     /// Resolve the file URL off-main, open the audio file, and extract format
     /// and duration. Throws `PrepError` on any failure.
     ///
@@ -103,30 +123,63 @@ actor AudioFilePreparationActor {
 
         if Task.isCancelled { throw PrepError.cancelled }
 
-        // 1. Resolve to a usable (possibly security-scoped) URL.
-        let resolution = try resolveURL(request)
+        // 1. Resolve every usable (possibly security-scoped) URL. A referenced
+        // duplicate can put a metadata-readable but codec-incompatible copy
+        // first; playback must then fall back to the original location.
+        var resolutions = try resolveURLs(request)
 
         // If cancelled after starting security-scoped access but before opening
-        // the file, release the access so it does not leak.
+        // the file, release every access so it does not leak.
         if Task.isCancelled {
-            resolution.lease.release()
+            resolutions.forEach { $0.lease.release() }
             throw PrepError.cancelled
         }
 
-        // 2. Open the file + extract format/duration.
-        let openToken = FirstUseHitchDiagnostics.begin(
-            "AVAudioFile.open",
-            detail: "track=\(request.trackID.uuidString.prefix(8))"
-        )
-        let file: AVAudioFile
-        do {
-            file = try AVAudioFile(forReading: resolution.url)
-        } catch {
-            FirstUseHitchDiagnostics.end(openToken)
-            resolution.lease.release()
-            throw PrepError.openFailed(underlying: error)
+        // 2. Open the first playable file + extract format/duration. Resolver
+        // failures (missing/permission) are handled before this loop; an
+        // AVAudioFile failure is local to one physical location and should not
+        // discard the remaining fallbacks.
+        var file: AVAudioFile?
+        var selectedResolution: Resolution?
+        var lastOpenError: Error?
+        while !resolutions.isEmpty {
+            let resolution = resolutions.removeFirst()
+            if Task.isCancelled {
+                resolution.lease.release()
+                resolutions.forEach { $0.lease.release() }
+                throw PrepError.cancelled
+            }
+
+            let openToken = FirstUseHitchDiagnostics.begin(
+                "AVAudioFile.open",
+                detail: "track=\(request.trackID.uuidString.prefix(8))"
+            )
+            do {
+                file = try openPlayableFile(at: resolution.url)
+                FirstUseHitchDiagnostics.end(openToken)
+                selectedResolution = resolution
+                break
+            } catch {
+                FirstUseHitchDiagnostics.end(openToken)
+                lastOpenError = error
+                resolution.lease.release()
+            }
         }
-        FirstUseHitchDiagnostics.end(openToken)
+
+        guard let file, let resolution = selectedResolution else {
+            resolutions.forEach { $0.lease.release() }
+            throw PrepError.openFailed(
+                underlying: lastOpenError ?? NSError(
+                    domain: "AudioFilePreparation",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "No playable audio location"]
+                )
+            )
+        }
+
+        // The selected resource owns the only lease needed by the caller; all
+        // later fallback candidates are released now that opening succeeded.
+        resolutions.forEach { $0.lease.release() }
 
         let sampleRate = file.processingFormat.sampleRate
         let frameLength = file.length
@@ -151,6 +204,25 @@ actor AudioFilePreparationActor {
         )
     }
 
+    /// Opens a candidate and validates the format before handing it to the
+    /// playback graph. AVAudioFile can construct a zero-frame resource for a
+    /// damaged container; treating that as a failed candidate lets the caller
+    /// try the next physical copy without retaining an unusable file.
+    private func openPlayableFile(at url: URL) throws -> AVAudioFile {
+        let file = try AVAudioFile(forReading: url)
+        guard file.length > 0,
+              file.processingFormat.sampleRate.isFinite,
+              file.processingFormat.sampleRate > 0,
+              file.processingFormat.channelCount > 0 else {
+            throw NSError(
+                domain: "AudioFilePreparation",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Audio file has no decodable frames"]
+            )
+        }
+        return file
+    }
+
     // MARK: - Resolution (mirrors Track.resolveFileURL semantics, off-main)
 
     private struct Resolution {
@@ -160,7 +232,7 @@ actor AudioFilePreparationActor {
         let newAvailability: TrackAvailability
     }
 
-    private func resolveURL(_ request: AudioPrepRequest) throws -> Resolution {
+    private func resolveURLs(_ request: AudioPrepRequest) throws -> [Resolution] {
         let resolveToken = FirstUseHitchDiagnostics.begin(
             "bookmark.resolve",
             detail: "track=\(request.trackID.uuidString.prefix(8))"
@@ -174,13 +246,14 @@ actor AudioFilePreparationActor {
             requiresSecurityScope: requiresSecurityScope
         )
         do {
-            let result = try resolver.resolve(request.locator)
-            return Resolution(
-                url: result.url,
-                lease: result.lease,
-                refreshedLocator: result.refreshedLocator,
-                newAvailability: result.availability
-            )
+            return try resolver.resolveCandidates(request.locator).map { result in
+                Resolution(
+                    url: result.url,
+                    lease: result.lease,
+                    refreshedLocator: result.refreshedLocator,
+                    newAvailability: result.availability
+                )
+            }
         } catch LocalAudioResolutionError.bookmarkUnresolved {
             throw PrepError.bookmarkUnresolved
         } catch LocalAudioResolutionError.permissionDenied {

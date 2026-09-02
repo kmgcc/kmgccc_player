@@ -330,6 +330,19 @@ final class LibraryViewModel {
             if currentSelection != oldValue {
                 searchResetTrigger += 1
 
+                // The folders page owns its search scope in the library view
+                // model so AppKit's toolbar field and SwiftUI stay in sync.
+                // Leaving that page must not leak a source query into another
+                // library surface.
+                if case .folders = currentSelection, case .folders = oldValue {
+                    // Keep the selected source when the user reselects the
+                    // folders page; it is the natural search scope to restore.
+                } else {
+                    referencedSourceSearchText = ""
+                    referencedSourceSearchScopeID = nil
+                    referencedSourceSearchScopeTitle = nil
+                }
+
                 // Album display names are a separate presentation value and
                 // may be supplied immediately before changing selection.
                 // Keep that value while staying on an album; all other
@@ -357,6 +370,44 @@ final class LibraryViewModel {
 
     /// Trigger to reset search text and focus in the UI (incremented on sidebar selection).
     private(set) var searchResetTrigger: Int = 0
+
+    /// Search state for the referenced-source page. The source view and the
+    /// AppKit toolbar both read/write this single owner, avoiding a second
+    /// hidden TextField that can drift out of sync.
+    var referencedSourceSearchText: String = ""
+    private(set) var referencedSourceSearchScopeID: UUID?
+    private(set) var referencedSourceSearchScopeTitle: String?
+
+    func setReferencedSourceSearchScope(id: UUID, title: String) {
+        setReferencedSourceSearchScope(id: Optional(id), title: title)
+    }
+
+    /// Sets the toolbar search scope for a referenced-library projection that
+    /// is not backed by one physical source, such as the grouped list of
+    /// individually added files. Keeping the title in the same owner lets
+    /// the AppKit toolbar use the same contextual placeholder without
+    /// inventing a sentinel UUID.
+    func setReferencedSourceSearchScope(id: UUID?, title: String) {
+        let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let changed = referencedSourceSearchScopeID != id
+            || referencedSourceSearchScopeTitle != normalizedTitle
+        referencedSourceSearchScopeID = id
+        referencedSourceSearchScopeTitle = normalizedTitle.isEmpty ? nil : normalizedTitle
+        if changed || !referencedSourceSearchText.isEmpty {
+            referencedSourceSearchText = ""
+            searchResetTrigger += 1
+        }
+    }
+
+    func clearReferencedSourceSearch() {
+        let hadState = !referencedSourceSearchText.isEmpty
+            || referencedSourceSearchScopeID != nil
+            || referencedSourceSearchScopeTitle != nil
+        referencedSourceSearchText = ""
+        referencedSourceSearchScopeID = nil
+        referencedSourceSearchScopeTitle = nil
+        if hadState { searchResetTrigger += 1 }
+    }
 
     /// Select a library navigation target. Re-selecting the active target is a
     /// refresh/reset gesture for page-local search state.

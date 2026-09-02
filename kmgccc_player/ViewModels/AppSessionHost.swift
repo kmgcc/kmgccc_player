@@ -24,6 +24,9 @@ final class AppSessionHost: ObservableObject {
     /// distinguish "still loading the initial library" from "no library
     /// configured" instead of showing an indefinite spinner.
     @Published private(set) var hasCompletedInitialSetup = false
+    /// True while a user-initiated retry is trying to establish the startup
+    /// library after an exceptional open failure.
+    @Published private(set) var isRetryingLibraryStartup = false
     /// Pushed referenced-source scan states for the active library (the
     /// library root itself is excluded). Fed by `LibraryChangeMonitor`
     /// transitions and the manual rescan wrappers below so views can read a
@@ -118,6 +121,10 @@ final class AppSessionHost: ObservableObject {
             return nil
         }
     }()
+    /// Coalesces launch/reopen/menu callers while the first library session is
+    /// being opened. The old boolean guard was set before the async work and
+    /// let a second caller show the window with a nil session in between.
+    private var setupTask: Task<Void, Never>?
     private var playbackModeObserver: NSObjectProtocol?
     private var workspaceLibraryObservers: [NSObjectProtocol] = []
     private var appActiveLibraryObserver: NSObjectProtocol?
@@ -199,23 +206,60 @@ final class AppSessionHost: ObservableObject {
                 style: .warning,
                 actionTitle: "打开设置"
             )
-        case .fileFailures(_, let count):
-            uiState.showSidebarNotice(
-                "来源文件夹中有 \(count) 个文件未能导入",
-                style: .warning,
-                actionTitle: "打开设置"
+        case .fileFailures(_, let failures):
+            uiState.recordLibraryImportFailures(
+                failures.map { failure in
+                    ImportInputFailure(
+                        url: URL(fileURLWithPath: failure.relativePath ?? "来源文件"),
+                        message: failure.summary
+                    )
+                },
+                origin: .sourceMonitor
             )
-        case .reconcileFailures(_, let trackIDs):
             uiState.showSidebarNotice(
-                "有 \(trackIDs.count) 首歌曲未能更新",
+                "来源文件夹中有 \(failures.count) 个文件未能导入",
                 style: .warning,
-                actionTitle: "打开设置"
+                actionTitle: "查看失败"
             )
-        case .monitorFailure:
+        case .scanFailures(_, let failures):
+            uiState.recordLibraryImportFailures(
+                failures.map { failure in
+                    ImportInputFailure(
+                        url: URL(fileURLWithPath: failure.relativePath ?? "来源文件"),
+                        message: failure.summary
+                    )
+                },
+                origin: .sourceMonitor
+            )
+            uiState.showSidebarNotice(
+                "来源扫描失败 \(failures.count) 项",
+                style: .warning,
+                actionTitle: "查看失败"
+            )
+        case .reconcileFailures(_, let failures):
+            uiState.recordLibraryImportFailures(
+                failures.map { failure in
+                    ImportInputFailure(
+                        url: URL(fileURLWithPath: failure.relativePath ?? "来源歌曲"),
+                        message: failure.summary
+                    )
+                },
+                origin: .sourceMonitor
+            )
+            uiState.showSidebarNotice(
+                "有 \(failures.count) 首歌曲未能更新",
+                style: .warning,
+                actionTitle: "查看失败"
+            )
+        case .monitorFailure(_, let summary):
+            uiState.recordLibraryImportFailures(
+                [ImportInputFailure(url: URL(fileURLWithPath: "来源扫描"), message: summary)],
+                origin: .sourceMonitor
+            )
             uiState.showSidebarNotice(
                 "来源文件夹扫描失败，请检查来源设置",
                 style: .warning,
-                actionTitle: "打开设置"
+                actionTitle: "查看失败"
             )
         }
     }
@@ -381,7 +425,7 @@ final class AppSessionHost: ObservableObject {
                     self.uiState.showSidebarNotice(
                         "部分音乐未导入",
                         style: .warning,
-                        actionTitle: "打开设置"
+                        actionTitle: "查看失败"
                     )
                 } else if result.imported > 0 {
                     self.uiState.showSidebarNotice("新增 \(result.imported) 首歌曲")
@@ -391,14 +435,14 @@ final class AppSessionHost: ObservableObject {
                 self?.uiState.showSidebarNotice(
                     result.imported > 0 ? "部分音乐未导入" : "初始音乐导入失败",
                     style: .warning,
-                    actionTitle: "打开设置"
+                    actionTitle: "查看失败"
                 )
             } catch {
                 guard !Task.isCancelled else { return }
                 self?.uiState.showSidebarNotice(
                     "初始音乐导入失败",
                     style: .warning,
-                    actionTitle: "打开设置"
+                    actionTitle: "查看失败"
                 )
             }
         }
@@ -701,6 +745,24 @@ final class AppSessionHost: ObservableObject {
     }
 
     func setupIfNeeded() async {
+        if let setupTask {
+            await setupTask.value
+            return
+        }
+        if hasSetupDependencies { return }
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performInitialSetup()
+        }
+        setupTask = task
+        await task.value
+        setupTask = nil
+    }
+
+    /// Performs the one-time launch work. Callers must enter through
+    /// `setupIfNeeded()` so concurrent launch/reopen events share one task.
+    private func performInitialSetup() async {
         guard !hasSetupDependencies else { return }
         hasSetupDependencies = true
 
@@ -784,6 +846,13 @@ final class AppSessionHost: ObservableObject {
             }
         }
 
+        // A normal launch must never publish a completed setup with a nil
+        // session. This bounded retry also covers a short-lived contention
+        // window when a previous instance is still releasing its writer lease.
+        if activeLibraryBinding.activeSession == nil {
+            _ = await ensureFactoryDefaultLibraryWithRetries()
+        }
+
         LegacyCacheCleanupCoordinator.shared.captureBuild7UpgradeEligibilityBeforeLaunchRecord()
         AppVersionGate.shared.recordCurrentAppLaunch()
         let crashReportInstallID = await TelemetryService.shared.prepareAnonymousInstallIDForSignedUpload()
@@ -819,6 +888,35 @@ final class AppSessionHost: ObservableObject {
         // queued); when prompts are crash-gated the drained handler calls
         // this again after What's New appears.
         autoPresentLibrarySetupIfNeeded()
+    }
+
+    /// Re-attempts the factory-default recovery path without repeating all
+    /// process-wide dependency installation. This is used by the exceptional
+    /// recovery surface after startup has finished but no session could be
+    /// published.
+    func retryLibraryStartup() async {
+        guard activeLibraryBinding.activeSession == nil,
+              !isRetryingLibraryStartup else { return }
+        isRetryingLibraryStartup = true
+        defer { isRetryingLibraryStartup = false }
+        if await ensureFactoryDefaultLibraryWithRetries() != nil {
+            await restorePlaybackMemoryIfNeeded()
+            autoPresentLibrarySetupIfNeeded()
+        }
+    }
+
+    private func ensureFactoryDefaultLibraryWithRetries() async -> LibraryContext? {
+        for attempt in 0..<4 {
+            if attempt > 0 {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            if let context = await ensureFactoryDefaultLibraryIfNeeded(
+                allowUnreachableActiveLibrary: true
+            ) {
+                return context
+            }
+        }
+        return nil
     }
 
     /// Restores the startup invariant: when there is no active, reachable
@@ -983,6 +1081,7 @@ final class AppSessionHost: ObservableObject {
     }
 
     private func publishActiveSession(_ session: LibrarySession) async {
+        uiState.clearLibraryImportFailureReports()
         activeLibraryBinding.publish(session)
         await bindReferencedScanStatePush(for: session)
         bindLibraryTaskStatePush(for: session)
@@ -997,6 +1096,9 @@ final class AppSessionHost: ObservableObject {
         let lyricsVM = session.lyricsViewModel
         let ledMeterProvider = session.ledMeterProvider
         let importEnrichmentService = session.importEnrichmentService
+        session.fileImportService.onImportFailures = { [weak uiState] failures, origin in
+            uiState?.recordLibraryImportFailures(failures, origin: origin)
+        }
         libraryVM.onTrackDeletionPreparationFailures = { [weak self] failures in
             guard let self, !failures.isEmpty else { return }
             let message = failures.count == 1
