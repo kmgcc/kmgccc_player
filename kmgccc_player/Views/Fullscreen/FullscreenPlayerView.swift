@@ -883,7 +883,7 @@ struct FullscreenPlayerView: View {
                         await schedulePlaybackModeRetapTipIfNeeded()
                     }
 
-                panoramicArtworkVolumeLayer(viewportSize: proxy.size)
+                panoramicArtworkVolumeLayer(viewportSize: proxy.size, scale: scale)
             } else {
                 Color.clear
             }
@@ -1420,43 +1420,81 @@ struct FullscreenPlayerView: View {
         )
     }
 
+    private var isArtworkVolumeControlEnabled: Bool {
+        playbackCoordinator.presentation.isVolumeControlEnabled
+            && !isQuickAppearancePanelPresented
+            && !isShowingExternalMatchEditor
+            && trackToEdit == nil
+    }
+
     @ViewBuilder
     private func panoramicArtworkVolumeLayer(
-        viewportSize: CGSize
+        viewportSize: CGSize,
+        scale: CGFloat
     ) -> some View {
-        if isCoverBlurFullscreenSkin {
-            let artworkSide = min(viewportSize.width, viewportSize.height)
-            let artworkCenterX = isShowingRightPanel
-                ? artworkSide * 0.5
-                : viewportSize.width * 0.5
-            let artworkScale = artworkSide / Self.baseCanvasHeight
-
-            ZStack {
-                ZStack {
-                    PanoramicArtworkVolumeScrollArea(
-                        volume: volumeBinding,
-                        isEnabled: playbackCoordinator.presentation.isVolumeControlEnabled,
-                        onAdjustment: handlePanoramicArtworkVolumeAdjustment
-                    )
-
-                    if isPanoramicVolumeHUDVisible {
-                        panoramicVolumeHUD(scale: artworkScale)
-                            .transition(
-                                reduceMotion
-                                    ? .opacity
-                                    : .opacity.combined(with: .scale(scale: 0.92))
-                            )
-                    }
-                }
-                .frame(width: artworkSide, height: artworkSide)
-                .position(x: artworkCenterX, y: viewportSize.height * 0.5)
+        let artworkBounds: (size: CGSize, center: CGPoint, scale: CGFloat) = {
+            if isCoverBlurFullscreenSkin {
+                let artworkSide = min(viewportSize.width, viewportSize.height)
+                let artworkCenterX = isShowingRightPanel
+                    ? artworkSide * 0.5
+                    : viewportSize.width * 0.5
+                let artworkScale = artworkSide / Self.baseCanvasHeight
+                return (
+                    size: CGSize(width: artworkSide, height: artworkSide),
+                    center: CGPoint(x: artworkCenterX, y: viewportSize.height * 0.5),
+                    scale: artworkScale
+                )
+            } else {
+                let splitLayout = layoutMetrics
+                let artworkOffsetX =
+                    splitLayout.artworkLeadingX
+                    + splitLayout.artworkWidth * 0.5
+                    - Self.baseCanvasWidth * 0.5
+                let groupLeftShift: CGFloat =
+                    isShowingRightPanel
+                        ? FullscreenCoverHorizontalOffset.groupLeftBias
+                        : 0
+                let coverDropY: CGFloat =
+                    isCoverSkinWithMiniplayerMotion && !isFullscreenBottomControlsVisible
+                        ? 20
+                        : 0
+                let artworkCenterX = viewportSize.width * 0.5 + (artworkOffsetX - groupLeftShift) * scale
+                let artworkCenterY = viewportSize.height * 0.5 + coverDropY * scale
+                let artworkWidth = splitLayout.artworkWidth * scale
+                let artworkHeight = min(viewportSize.height, Self.baseCanvasHeight * scale)
+                return (
+                    size: CGSize(width: artworkWidth, height: artworkHeight),
+                    center: CGPoint(x: artworkCenterX, y: artworkCenterY),
+                    scale: scale
+                )
             }
-            .frame(width: viewportSize.width, height: viewportSize.height)
-            .animation(
-                .easeOut(duration: reduceMotion ? 0.12 : 0.18),
-                value: isPanoramicVolumeHUDVisible
-            )
+        }()
+
+        ZStack {
+            ZStack {
+                PanoramicArtworkVolumeScrollArea(
+                    volume: volumeBinding,
+                    isEnabled: isArtworkVolumeControlEnabled,
+                    onAdjustment: handlePanoramicArtworkVolumeAdjustment
+                )
+
+                if isPanoramicVolumeHUDVisible {
+                    panoramicVolumeHUD(scale: artworkBounds.scale)
+                        .transition(
+                            reduceMotion
+                                ? .opacity
+                                : .opacity.combined(with: .scale(scale: 0.92))
+                        )
+                }
+            }
+            .frame(width: artworkBounds.size.width, height: artworkBounds.size.height)
+            .position(x: artworkBounds.center.x, y: artworkBounds.center.y)
         }
+        .frame(width: viewportSize.width, height: viewportSize.height)
+        .animation(
+            .easeOut(duration: reduceMotion ? 0.12 : 0.18),
+            value: isPanoramicVolumeHUDVisible
+        )
     }
 
     private func panoramicVolumeHUD(scale: CGFloat) -> some View {
