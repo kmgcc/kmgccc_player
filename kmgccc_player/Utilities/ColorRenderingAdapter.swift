@@ -248,7 +248,9 @@ nonisolated enum ColorRenderingAdapter {
     /// We query the potential value rather than the current value because the
     /// current value is allowed to remain at 1.0 until a layer asks for EDR.
     /// A value of 1.0 is the intentional SDR fallback.
+    @MainActor
     static func visualizationHeadroom(for screen: NSScreen?) -> CGFloat {
+        guard AppSettings.shared.audioVisualizationHDREnabled else { return 1.0 }
         guard let screen else { return 1.0 }
         let potential = screen.maximumPotentialExtendedDynamicRangeColorComponentValue
         guard potential.isFinite, potential > 1.0 else { return 1.0 }

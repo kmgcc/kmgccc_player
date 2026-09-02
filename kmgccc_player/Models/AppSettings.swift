@@ -349,6 +349,7 @@ public final class AppSettings {
 
     private enum AppearanceKeys {
         static let globalArtworkTintEnabled = "globalArtworkTintEnabled"
+        static let audioVisualizationHDREnabled = "audioVisualizationHDREnabled"
         static let dockProgressVisible = "dockProgressVisible"
         static let followSystemAppearance = "followSystemAppearance"
         static let manualAppearance = "manualAppearance"
@@ -383,6 +384,25 @@ public final class AppSettings {
                 UserDefaults.standard.set(
                     newValue,
                     forKey: AppearanceKeys.globalArtworkTintEnabled
+                )
+            }
+        }
+    }
+
+    /// Whether audio visualization (spectrum / LED) renders in HDR high dynamic range.
+    var audioVisualizationHDREnabled: Bool {
+        get {
+            access(keyPath: \.audioVisualizationHDREnabled)
+            if UserDefaults.standard.object(forKey: AppearanceKeys.audioVisualizationHDREnabled) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: AppearanceKeys.audioVisualizationHDREnabled)
+        }
+        set {
+            withMutation(keyPath: \.audioVisualizationHDREnabled) {
+                UserDefaults.standard.set(
+                    newValue,
+                    forKey: AppearanceKeys.audioVisualizationHDREnabled
                 )
             }
         }

@@ -374,7 +374,7 @@ struct MiniPlayerProgressSpectrumRow: View {
                 isActive: isSpectrumActive,
                 accentColor: spectrumFallbackColor,
                 artworkColors: spectrumArtworkColors,
-                usesDarkForeground: resolvedSpectrumUsesDarkForeground,
+                usesDarkForeground: resolvedSpectrumUsesDarkForeground && !AppSettings.shared.audioVisualizationHDREnabled,
                 scale: scale,
                 isHovered: false,
                 pausedBehavior: .minimalDots,
@@ -388,10 +388,10 @@ struct MiniPlayerProgressSpectrumRow: View {
                 spacing: 6 * scale,
                 pillTint: nil,
                 isPlaying: isPlaying,
-                forceBrightLEDColors: false,
+                forceBrightLEDColors: AppSettings.shared.audioVisualizationHDREnabled,
                 colorSchemeOverride: ledToneVariant == .appleStyleBright
                     ? .dark
-                    : (resolvedLEDUsesDarkForeground ? .light : .dark),
+                    : (resolvedLEDUsesDarkForeground && !AppSettings.shared.audioVisualizationHDREnabled ? .light : .dark),
                 levelToneVariant: ledToneVariant,
                 ledCountOverride: count,
                 showsStatusLight: true,

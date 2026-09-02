@@ -258,7 +258,10 @@ struct LiveLedMeterView: View {
     }
 
     private var resolvedColorScheme: ColorScheme {
-        colorSchemeOverride ?? (forceBrightLEDColors ? .dark : colorScheme)
+        if AppSettings.shared.audioVisualizationHDREnabled {
+            return colorSchemeOverride ?? .dark
+        }
+        return colorSchemeOverride ?? (forceBrightLEDColors ? .dark : colorScheme)
     }
 
     private var resolver: LEDColorResolver {
@@ -267,7 +270,8 @@ struct LiveLedMeterView: View {
             colorScheme: resolvedColorScheme,
             brightnessLevels: brightnessLevels,
             palette: themeStore.semanticPalette,
-            levelToneVariant: levelToneVariant
+            levelToneVariant: levelToneVariant,
+            isHDR: AppSettings.shared.audioVisualizationHDREnabled
         )
     }
 
