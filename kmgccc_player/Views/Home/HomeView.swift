@@ -89,6 +89,12 @@ struct HomeView: View {
         .onChange(of: libraryVM.trackSortOrder) { _, _ in
             homeVM.refreshArtistAlbumSort(from: libraryVM)
         }
+        .onChange(of: libraryVM.artistSortOrder) { _, _ in
+            homeVM.refreshArtistAlbumSort(from: libraryVM)
+        }
+        .onChange(of: libraryVM.albumSortOrder) { _, _ in
+            homeVM.refreshArtistAlbumSort(from: libraryVM)
+        }
         .onChange(of: libraryVM.state) { old, new in
             if new == .loaded {
                 Task { await prepareStartupGate(resetEntranceAnimation: old == .loading) }

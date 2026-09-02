@@ -1,6 +1,8 @@
 import Foundation
+@testable import kmgccc_player
 import XCTest
 
+@MainActor
 final class LibraryPathsTests: XCTestCase {
     func testAllLibraryOwnedPathsRemainUnderCapturedRoot() throws {
         let root = URL(fileURLWithPath: "/tmp/A/kmgccc_player Library", isDirectory: true)
@@ -92,5 +94,157 @@ final class LibraryPathsTests: XCTestCase {
             XCTAssertTrue(FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory))
             XCTAssertTrue(isDirectory.boolValue)
         }
+    }
+
+    func testLibraryOrderingSidecarIsScopedAndRoundTrips() throws {
+        let firstRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kmgccc-ordering-first-\(UUID().uuidString)", isDirectory: true)
+        let secondRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kmgccc-ordering-second-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: firstRoot)
+            try? FileManager.default.removeItem(at: secondRoot)
+        }
+
+        let firstPaths = kmgccc_player.LibraryPaths(rootURL: firstRoot)
+        let firstService = kmgccc_player.LocalLibraryService(
+            paths: firstPaths,
+            preferenceStatsService: kmgccc_player.PreferenceStatsService()
+        )
+        let playlistID = UUID()
+        let albumID = UUID()
+        let artistID = UUID()
+        let expected = kmgccc_player.LibraryOrderingSidecar(
+            allSongs: kmgccc_player.LibraryTrackSortState(sortKey: "title", sortOrder: "ascending"),
+            allPlaylists: kmgccc_player.LibraryCollectionSortState(
+                sortKey: "custom",
+                sortOrder: "descending",
+                customItemOrder: [playlistID]
+            ),
+            allAlbums: kmgccc_player.LibraryCollectionSortState(
+                sortKey: "updatedAt",
+                sortOrder: "ascending",
+                customItemOrder: [albumID]
+            ),
+            allArtists: kmgccc_player.LibraryCollectionSortState(
+                sortKey: "name",
+                sortOrder: "descending",
+                customItemOrder: [artistID]
+            ),
+            legacyUserDefaultsMigrationCompleted: true
+        )
+
+        XCTAssertTrue(firstService.saveLibraryOrderingSidecar(expected))
+        XCTAssertEqual(firstService.loadLibraryOrderingSidecar(), expected)
+        XCTAssertEqual(
+            firstPaths.libraryOrderingURL.path,
+            firstRoot.appendingPathComponent("Settings/ordering.json").path
+        )
+
+        let secondService = kmgccc_player.LocalLibraryService(
+            paths: kmgccc_player.LibraryPaths(rootURL: secondRoot),
+            preferenceStatsService: kmgccc_player.PreferenceStatsService()
+        )
+        XCTAssertNotEqual(secondService.loadLibraryOrderingSidecar(), expected)
+    }
+
+    func testEntityMetadataWritesPreserveCustomTrackOrdering() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kmgccc-entity-ordering-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let service = kmgccc_player.LocalLibraryService(
+            paths: kmgccc_player.LibraryPaths(rootURL: root),
+            preferenceStatsService: kmgccc_player.PreferenceStatsService()
+        )
+        let trackIDs = [UUID(), UUID(), UUID()]
+        let playlistID = UUID()
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        try service.writePlaylistSidecar(
+            playlistID: playlistID,
+            name: "Playlist",
+            description: "Before",
+            createdAt: now,
+            trackIDs: trackIDs,
+            itemAddedAt: [:],
+            customTrackOrder: [trackIDs[2], trackIDs[0], trackIDs[1]],
+            trackSortKey: "custom",
+            trackSortOrder: "ascending"
+        )
+        try service.writePlaylistSidecar(
+            playlistID: playlistID,
+            name: "Playlist edited",
+            description: "After",
+            createdAt: now,
+            trackIDs: trackIDs,
+            itemAddedAt: [:]
+        )
+        let playlist = try XCTUnwrap(service.loadPlaylistSidecar(playlistID: playlistID))
+        XCTAssertEqual(playlist.trackSortKey, "custom")
+        XCTAssertEqual(playlist.trackSortOrder, "ascending")
+        XCTAssertEqual(playlist.customTrackOrder, [trackIDs[2], trackIDs[0], trackIDs[1]])
+
+        let artistID = UUID()
+        try service.writeArtistSidecar(
+            kmgccc_player.ArtistSidecar(
+                id: artistID,
+                canonicalName: "artist",
+                displayName: "Artist",
+                description: "Artist description",
+                createdAt: now,
+                updatedAt: now,
+                trackSortKey: "custom",
+                trackSortOrder: "descending",
+                customTrackOrder: [trackIDs[1], trackIDs[2], trackIDs[0]]
+            ),
+            artworkData: nil
+        )
+        try service.writeArtistSidecar(
+            kmgccc_player.ArtistSidecar(
+                id: artistID,
+                canonicalName: "artist",
+                displayName: "Artist edited",
+                createdAt: now,
+                updatedAt: now.addingTimeInterval(1)
+            ),
+            artworkData: nil
+        )
+        let artist = try XCTUnwrap(service.loadArtistSidecar(artistID: artistID))
+        XCTAssertEqual(artist.trackSortKey, "custom")
+        XCTAssertEqual(artist.trackSortOrder, "descending")
+        XCTAssertEqual(artist.customTrackOrder, [trackIDs[1], trackIDs[2], trackIDs[0]])
+
+        let albumID = UUID()
+        try service.writeAlbumSidecar(
+            kmgccc_player.AlbumSidecar(
+                id: albumID,
+                canonicalKey: "album|artist",
+                displayTitle: "Album",
+                primaryArtistCanonicalName: "artist",
+                description: "Album description",
+                createdAt: now,
+                updatedAt: now,
+                trackSortKey: "custom",
+                trackSortOrder: "ascending",
+                customTrackOrder: [trackIDs[0], trackIDs[2], trackIDs[1]]
+            ),
+            artworkData: nil
+        )
+        try service.writeAlbumSidecar(
+            kmgccc_player.AlbumSidecar(
+                id: albumID,
+                canonicalKey: "album|artist",
+                displayTitle: "Album edited",
+                primaryArtistCanonicalName: "artist",
+                createdAt: now,
+                updatedAt: now.addingTimeInterval(1)
+            ),
+            artworkData: nil
+        )
+        let album = try XCTUnwrap(service.loadAlbumSidecar(albumID: albumID))
+        XCTAssertEqual(album.trackSortKey, "custom")
+        XCTAssertEqual(album.trackSortOrder, "ascending")
+        XCTAssertEqual(album.customTrackOrder, [trackIDs[0], trackIDs[2], trackIDs[1]])
     }
 }

@@ -142,7 +142,7 @@ private struct ApplicationDataSettingsView: View {
                 resetAppDataExceptMusicLibrary()
             }
         } message: {
-            Text("会清除应用偏好、界面布局、播放状态、排序记忆和自定义资料库位置设置。不会删除默认或自定义位置中的音乐资料库文件。")
+            Text("会清除应用偏好、界面布局、播放状态和自定义资料库位置设置。不会删除音乐资料库文件，也不会清除资料库内的歌曲、播放列表、艺人、专辑、自定义排序或手动编辑内容。")
         }
         .alert("清除索引缓存？", isPresented: $showClearIndexCacheAlert) {
             Button("取消", role: .cancel) {}

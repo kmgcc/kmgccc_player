@@ -410,6 +410,10 @@ final class AppKitMainToolbarController: NSObject,
         switch libraryVM.currentSelection {
         case .allPlaylists:
             libraryVM.playlistSortOrder = order
+        case .allAlbums:
+            libraryVM.albumSortOrder = order
+        case .allArtists:
+            libraryVM.artistSortOrder = order
         default:
             libraryVM.trackSortOrder = order
         }

@@ -18,9 +18,19 @@ struct DetailDescriptionReaderSheet: View {
     var artworkImage: NSImage? = nil
     var artworkData: Data? = nil
     var isCircleArtwork: Bool = false
+    var paletteOverride: AppForegroundPalette? = nil
+    var accentColorOverride: Color? = nil
 
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var themeStore: ThemeStore
+
+    private var foregroundPalette: AppForegroundPalette {
+        paletteOverride ?? themeStore.appForegroundPalette
+    }
+
+    private var accentColor: Color {
+        accentColorOverride ?? themeStore.accentColor
+    }
 
     private var resolvedArtwork: NSImage? {
         if let artworkImage { return artworkImage }
@@ -42,7 +52,7 @@ struct DetailDescriptionReaderSheet: View {
             Divider()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 18) {
                     if hasEntitySummary {
                         minimalEntityHeader
                     }
@@ -50,16 +60,13 @@ struct DetailDescriptionReaderSheet: View {
                     textContentSection
                 }
                 .padding(.horizontal, 32)
-                .padding(.vertical, 22)
+                .padding(.top, 20)
+                .padding(.bottom, 28)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            Divider()
-
-            footerBar
         }
-        .frame(width: 580, height: 600)
-        .tint(themeStore.accentColor)
+        .frame(width: 580, height: 580)
+        .tint(accentColor)
     }
 
     // MARK: - Top Header Bar
@@ -68,7 +75,7 @@ struct DetailDescriptionReaderSheet: View {
         HStack(spacing: 10) {
             Label(title, systemImage: systemImage)
                 .font(.headline)
-                .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                .foregroundStyle(foregroundPalette.primaryColor)
 
             Spacer()
 
@@ -82,6 +89,7 @@ struct DetailDescriptionReaderSheet: View {
             ) {
                 dismiss()
             }
+            .keyboardShortcut(.escape)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 14)
@@ -119,13 +127,13 @@ struct DetailDescriptionReaderSheet: View {
             if let subtitle, !subtitle.isEmpty {
                 Text(subtitle)
                     .font(.title3.weight(.medium))
-                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                    .foregroundStyle(foregroundPalette.primaryColor)
                     .lineLimit(2)
             }
 
             Spacer(minLength: 0)
         }
-        .padding(.bottom, 6)
+        .padding(.bottom, 4)
     }
 
     // MARK: - Text Content
@@ -136,30 +144,11 @@ struct DetailDescriptionReaderSheet: View {
                 Text(paragraph)
                     .font(.system(size: 15, weight: .regular))
                     .lineSpacing(8.5)
-                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor.opacity(0.92))
+                    .foregroundStyle(foregroundPalette.primaryColor.opacity(0.92))
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-    }
-
-    // MARK: - Footer Bar
-
-    private var footerBar: some View {
-        HStack {
-            Spacer()
-
-            Button("关闭") {
-                dismiss()
-            }
-            .buttonStyle(.borderedProminent)
-            .clipShape(Capsule())
-            .keyboardShortcut(.escape)
-            .keyboardShortcut(.return)
-            .controlSize(.regular)
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 12)
     }
 }

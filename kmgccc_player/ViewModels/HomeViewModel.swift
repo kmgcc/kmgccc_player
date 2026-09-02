@@ -442,7 +442,7 @@ final class HomeViewModel {
         if useNaturalDescending {
             return result == .orderedDescending
         }
-        return libraryVM.trackSortOrder == .ascending
+        return libraryVM.artistSortOrder == .ascending
             ? result == .orderedAscending
             : result == .orderedDescending
     }
@@ -493,7 +493,7 @@ final class HomeViewModel {
         if useNaturalDescending {
             return result == .orderedDescending
         }
-        return libraryVM.trackSortOrder == .ascending
+        return libraryVM.albumSortOrder == .ascending
             ? result == .orderedAscending
             : result == .orderedDescending
     }
@@ -924,11 +924,17 @@ private struct HomeRefreshSignature: Equatable {
         hasher.combine(libraryVM.albumSortKey.rawValue)
         hasher.combine(libraryVM.playlistSortKey.rawValue)
         hasher.combine(libraryVM.trackSortOrder.rawValue)
+        hasher.combine(libraryVM.artistSortOrder.rawValue)
+        hasher.combine(libraryVM.albumSortOrder.rawValue)
+        hasher.combine(libraryVM.playlistSortOrder.rawValue)
         hasher.combine(libraryVM.collectionSortRevision)
         stable.combine(libraryVM.artistSortKey.rawValue)
         stable.combine(libraryVM.albumSortKey.rawValue)
         stable.combine(libraryVM.playlistSortKey.rawValue)
         stable.combine(libraryVM.trackSortOrder.rawValue)
+        stable.combine(libraryVM.artistSortOrder.rawValue)
+        stable.combine(libraryVM.albumSortOrder.rawValue)
+        stable.combine(libraryVM.playlistSortOrder.rawValue)
         stable.combine("\(libraryVM.collectionSortRevision)")
 
         for artist in libraryVM.artistEntries {

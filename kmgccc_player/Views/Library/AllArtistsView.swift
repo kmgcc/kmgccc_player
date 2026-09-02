@@ -9,7 +9,7 @@
 //  Search and sort are driven by the existing top toolbar, not by any
 //  page-level controls. Toolbar search writes into
 //  `PlaylistPageController.searchText`; toolbar sort writes into
-//  `LibraryViewModel.artistSortKey` / `trackSortOrder`. This view simply
+//  `LibraryViewModel.artistSortKey` / `artistSortOrder`. This view simply
 //  reads those values to filter and order its rows.
 //
 

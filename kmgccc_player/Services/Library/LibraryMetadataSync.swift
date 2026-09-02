@@ -129,6 +129,9 @@ final class LibraryMetadataSync {
                 || !(sidecar.foreignName ?? "").isEmpty
                 || sidecar.qqMusicSingerMid != nil
                 || sidecar.metadataSource != nil
+                || sidecar.trackSortKey != nil
+                || sidecar.trackSortOrder != nil
+                || sidecar.customTrackOrder != nil
             if hasUserContent {
                 let artworkData = sidecar.artworkFileName.flatMap { fileName in
                     try? Data(contentsOf: folderURL.appendingPathComponent(fileName))
@@ -264,6 +267,9 @@ final class LibraryMetadataSync {
                 || !(sidecar.labelOrCompany ?? "").isEmpty
                 || sidecar.qqMusicAlbumMid != nil
                 || sidecar.metadataSource != nil
+                || sidecar.trackSortKey != nil
+                || sidecar.trackSortOrder != nil
+                || sidecar.customTrackOrder != nil
             if hasUserContent {
                 let artworkData = sidecar.artworkFileName.flatMap { fileName in
                     try? Data(contentsOf: folderURL.appendingPathComponent(fileName))
@@ -467,6 +473,8 @@ final class LibraryMetadataSync {
         if !(candidate.sidecar.foreignName ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 1 }
         if candidate.sidecar.qqMusicSingerMid != nil { score += 2 }
         if candidate.sidecar.metadataSource != nil { score += 1 }
+        if candidate.sidecar.trackSortKey != nil || candidate.sidecar.trackSortOrder != nil { score += 4 }
+        if candidate.sidecar.customTrackOrder != nil { score += 6 }
         return score
     }
 
@@ -481,6 +489,8 @@ final class LibraryMetadataSync {
         if !(candidate.sidecar.labelOrCompany ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { score += 1 }
         if candidate.sidecar.qqMusicAlbumMid != nil { score += 2 }
         if candidate.sidecar.metadataSource != nil { score += 1 }
+        if candidate.sidecar.trackSortKey != nil || candidate.sidecar.trackSortOrder != nil { score += 4 }
+        if candidate.sidecar.customTrackOrder != nil { score += 6 }
         return score
     }
 
@@ -532,7 +542,10 @@ final class LibraryMetadataSync {
             metadataFetchedAt: candidates.compactMap(\.sidecar.metadataFetchedAt).max(),
             metadataConfidence: candidates.compactMap(\.sidecar.metadataConfidence).max(),
             createdAt: candidates.map(\.sidecar.createdAt).min() ?? keeper.sidecar.createdAt,
-            updatedAt: Date()
+            updatedAt: Date(),
+            trackSortKey: firstNonEmpty(candidates.map(\.sidecar.trackSortKey)),
+            trackSortOrder: firstNonEmpty(candidates.map(\.sidecar.trackSortOrder)),
+            customTrackOrder: firstNonEmptyUUIDArray(candidates.map(\.sidecar.customTrackOrder))
         )
     }
 
@@ -562,7 +575,10 @@ final class LibraryMetadataSync {
             metadataFetchedAt: candidates.compactMap(\.sidecar.metadataFetchedAt).max(),
             metadataConfidence: candidates.compactMap(\.sidecar.metadataConfidence).max(),
             createdAt: candidates.map(\.sidecar.createdAt).min() ?? keeper.sidecar.createdAt,
-            updatedAt: Date()
+            updatedAt: Date(),
+            trackSortKey: firstNonEmpty(candidates.map(\.sidecar.trackSortKey)),
+            trackSortOrder: firstNonEmpty(candidates.map(\.sidecar.trackSortOrder)),
+            customTrackOrder: firstNonEmptyUUIDArray(candidates.map(\.sidecar.customTrackOrder))
         )
     }
 
@@ -578,6 +594,15 @@ final class LibraryMetadataSync {
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
         }.first
+    }
+
+    private func firstNonEmptyUUIDArray(_ values: [[UUID]?]) -> [UUID]? {
+        for value in values {
+            if let value, !value.isEmpty {
+                return value
+            }
+        }
+        return nil
     }
 
     private func mergedTags(_ tags: [String]) -> [String] {
@@ -617,6 +642,9 @@ final class LibraryMetadataSync {
                 || !(lhs.sidecar.labelOrCompany ?? "").isEmpty
                 || lhs.sidecar.qqMusicAlbumMid != nil
                 || lhs.sidecar.metadataSource != nil
+                || lhs.sidecar.trackSortKey != nil
+                || lhs.sidecar.trackSortOrder != nil
+                || lhs.sidecar.customTrackOrder != nil
             let rhsHasUserContent =
                 !(rhs.sidecar.description ?? "").isEmpty
                 || rhs.sidecar.artworkFileName != nil
@@ -629,6 +657,9 @@ final class LibraryMetadataSync {
                 || !(rhs.sidecar.labelOrCompany ?? "").isEmpty
                 || rhs.sidecar.qqMusicAlbumMid != nil
                 || rhs.sidecar.metadataSource != nil
+                || rhs.sidecar.trackSortKey != nil
+                || rhs.sidecar.trackSortOrder != nil
+                || rhs.sidecar.customTrackOrder != nil
 
             if lhsHasUserContent != rhsHasUserContent {
                 return lhsHasUserContent && !rhsHasUserContent
@@ -671,6 +702,11 @@ final class LibraryMetadataSync {
         let mergedMetadataSource = sortedCandidates.compactMap { $0.sidecar.metadataSource }.first
         let mergedMetadataFetchedAt = sortedCandidates.compactMap { $0.sidecar.metadataFetchedAt }.first
         let mergedMetadataConfidence = sortedCandidates.compactMap { $0.sidecar.metadataConfidence }.first
+        let mergedTrackSortKey = firstNonEmpty(sortedCandidates.map { $0.sidecar.trackSortKey })
+        let mergedTrackSortOrder = firstNonEmpty(sortedCandidates.map { $0.sidecar.trackSortOrder })
+        let mergedCustomTrackOrder = firstNonEmptyUUIDArray(
+            sortedCandidates.map { $0.sidecar.customTrackOrder }
+        )
 
         let hasMergedCandidates = sortedCandidates.count > 1
         let candidateSidecar = AlbumSidecar(
@@ -692,7 +728,10 @@ final class LibraryMetadataSync {
             metadataFetchedAt: mergedMetadataFetchedAt,
             metadataConfidence: mergedMetadataConfidence,
             createdAt: sortedCandidates.map { $0.sidecar.createdAt }.min() ?? keeper.sidecar.createdAt,
-            updatedAt: keeper.sidecar.updatedAt
+            updatedAt: keeper.sidecar.updatedAt,
+            trackSortKey: mergedTrackSortKey,
+            trackSortOrder: mergedTrackSortOrder,
+            customTrackOrder: mergedCustomTrackOrder
         )
 
         let needsSidecarWrite =
@@ -713,6 +752,9 @@ final class LibraryMetadataSync {
             || keeper.sidecar.metadataSource != candidateSidecar.metadataSource
             || keeper.sidecar.metadataFetchedAt != candidateSidecar.metadataFetchedAt
             || keeper.sidecar.metadataConfidence != candidateSidecar.metadataConfidence
+            || keeper.sidecar.trackSortKey != candidateSidecar.trackSortKey
+            || keeper.sidecar.trackSortOrder != candidateSidecar.trackSortOrder
+            || keeper.sidecar.customTrackOrder != candidateSidecar.customTrackOrder
             || keeper.sidecar.createdAt != candidateSidecar.createdAt
 
         let mergedSidecar: AlbumSidecar
@@ -736,7 +778,10 @@ final class LibraryMetadataSync {
                 metadataFetchedAt: candidateSidecar.metadataFetchedAt,
                 metadataConfidence: candidateSidecar.metadataConfidence,
                 createdAt: candidateSidecar.createdAt,
-                updatedAt: now
+                updatedAt: now,
+                trackSortKey: candidateSidecar.trackSortKey,
+                trackSortOrder: candidateSidecar.trackSortOrder,
+                customTrackOrder: candidateSidecar.customTrackOrder
             )
             try libraryService.writeAlbumSidecar(
                 mergedSidecar,

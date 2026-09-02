@@ -451,10 +451,10 @@ final class LibraryViewModel {
     var playlistSortKey: PlaylistSortKey {
         didSet {
             if playlistSortKey != oldValue {
-                UserDefaults.standard.set(
-                    playlistSortKey.rawValue,
-                    forKey: DefaultsKey.playlistSortKey
-                )
+                var state = libraryOrdering.allPlaylists ?? LibraryCollectionSortState()
+                state.sortKey = playlistSortKey.rawValue
+                libraryOrdering.allPlaylists = state
+                persistLibraryOrdering()
             }
         }
     }
@@ -464,10 +464,10 @@ final class LibraryViewModel {
     var playlistSortOrder: TrackSortOrder {
         didSet {
             if playlistSortOrder != oldValue {
-                UserDefaults.standard.set(
-                    playlistSortOrder.rawValue,
-                    forKey: DefaultsKey.playlistSortOrder
-                )
+                var state = libraryOrdering.allPlaylists ?? LibraryCollectionSortState()
+                state.sortOrder = playlistSortOrder.rawValue
+                libraryOrdering.allPlaylists = state
+                persistLibraryOrdering()
             }
         }
     }
@@ -477,35 +477,59 @@ final class LibraryViewModel {
         switch currentSelection {
         case .allPlaylists:
             return playlistSortOrder
+        case .allAlbums:
+            return albumSortOrder
+        case .allArtists:
+            return artistSortOrder
         default:
             return trackSortOrder
         }
     }
 
-    /// Sort key for the All Albums page. Persists globally (not per-context),
-    /// since the All Albums page is a single shared view rather than a
-    /// per-playlist drilldown. Sort order is shared with `trackSortOrder`.
+    /// Sort key for the All Albums page.
     var albumSortKey: AlbumSortKey {
         didSet {
             if albumSortKey != oldValue {
-                UserDefaults.standard.set(
-                    albumSortKey.rawValue,
-                    forKey: DefaultsKey.albumSortKey
-                )
+                var state = libraryOrdering.allAlbums ?? LibraryCollectionSortState()
+                state.sortKey = albumSortKey.rawValue
+                libraryOrdering.allAlbums = state
+                persistLibraryOrdering()
             }
         }
     }
 
-    /// Sort key for the All Artists page. Persists globally (not per-context),
-    /// since the All Artists page is a single shared view rather than a
-    /// per-playlist drilldown. Sort order is shared with `trackSortOrder`.
+    /// Sort order for the All Albums page.
+    var albumSortOrder: TrackSortOrder {
+        didSet {
+            if albumSortOrder != oldValue {
+                var state = libraryOrdering.allAlbums ?? LibraryCollectionSortState()
+                state.sortOrder = albumSortOrder.rawValue
+                libraryOrdering.allAlbums = state
+                persistLibraryOrdering()
+            }
+        }
+    }
+
+    /// Sort key for the All Artists page.
     var artistSortKey: ArtistSortKey {
         didSet {
             if artistSortKey != oldValue {
-                UserDefaults.standard.set(
-                    artistSortKey.rawValue,
-                    forKey: DefaultsKey.artistSortKey
-                )
+                var state = libraryOrdering.allArtists ?? LibraryCollectionSortState()
+                state.sortKey = artistSortKey.rawValue
+                libraryOrdering.allArtists = state
+                persistLibraryOrdering()
+            }
+        }
+    }
+
+    /// Sort order for the All Artists page.
+    var artistSortOrder: TrackSortOrder {
+        didSet {
+            if artistSortOrder != oldValue {
+                var state = libraryOrdering.allArtists ?? LibraryCollectionSortState()
+                state.sortOrder = artistSortOrder.rawValue
+                libraryOrdering.allArtists = state
+                persistLibraryOrdering()
             }
         }
     }
@@ -563,6 +587,7 @@ final class LibraryViewModel {
     var prepareTrackRelocationAction: ((UUID, URL) async throws -> TrackRelocationProposal)?
     var relocateTrackAction: ((TrackRelocationProposal, Bool) async throws -> Void)?
     private var isApplyingSortPreference = false
+    private var libraryOrdering: LibraryOrderingSidecar
     private var trackUpdateRevision = 0
     private var pendingRepositoryDeletionTrackIDs: Set<UUID> = []
 
@@ -620,42 +645,74 @@ final class LibraryViewModel {
         self.sessionGeneration = sessionGeneration
         self.metadataDetailCoordinator = metadataDetailCoordinator
         self.artistArtworkProviderCoordinator = artistArtworkProviderCoordinator
+        let persistedOrdering = libraryService.loadLibraryOrderingSidecar()
+        self.libraryOrdering = persistedOrdering
+        let defaults = UserDefaults.standard
+        // UserDefaults is only a one-time migration source. Once this
+        // library has completed migration, an incomplete/corrupt ordering
+        // sidecar must fall back to local defaults rather than borrowing
+        // another library's global values.
+        let canReadLegacyDefaults = !persistedOrdering.legacyUserDefaultsMigrationCompleted
+        let legacyTrackSortKey = canReadLegacyDefaults
+            ? defaults.string(forKey: DefaultsKey.trackSortKey)
+            : nil
+        let legacyTrackSortOrder = canReadLegacyDefaults
+            ? defaults.string(forKey: DefaultsKey.trackSortOrder)
+            : nil
+        let legacyPlaylistSortKey = canReadLegacyDefaults
+            ? defaults.string(forKey: DefaultsKey.playlistSortKey)
+            : nil
+        let legacyPlaylistSortOrder = canReadLegacyDefaults
+            ? defaults.string(forKey: DefaultsKey.playlistSortOrder)
+            : nil
+        let legacyAlbumSortKey = canReadLegacyDefaults
+            ? defaults.string(forKey: DefaultsKey.albumSortKey)
+            : nil
+        let legacyArtistSortKey = canReadLegacyDefaults
+            ? defaults.string(forKey: DefaultsKey.artistSortKey)
+            : nil
         self.trackSortKey =
             TrackSortKey(
-                rawValue: UserDefaults.standard.string(
-                    forKey: DefaultsKey.trackSortKey
-                ) ?? ""
+                rawValue: persistedOrdering.allSongs?.sortKey ?? legacyTrackSortKey ?? ""
             ) ?? .importedAt
         self.trackSortOrder =
             TrackSortOrder(
-                rawValue: UserDefaults.standard.string(
-                    forKey: DefaultsKey.trackSortOrder
-                ) ?? ""
+                rawValue: persistedOrdering.allSongs?.sortOrder ?? legacyTrackSortOrder ?? ""
             ) ?? .descending
         let persistedPlaylistSortOrder =
-            UserDefaults.standard.string(forKey: DefaultsKey.playlistSortOrder)
-            ?? UserDefaults.standard.string(forKey: DefaultsKey.trackSortOrder)
+            persistedOrdering.allPlaylists?.sortOrder
+            ?? legacyPlaylistSortOrder
+            ?? legacyTrackSortOrder
         self.playlistSortOrder =
             TrackSortOrder(rawValue: persistedPlaylistSortOrder ?? "") ?? .descending
         self.playlistSortKey =
             PlaylistSortKey(
-                rawValue: UserDefaults.standard.string(
-                    forKey: DefaultsKey.playlistSortKey
-                ) ?? ""
+                rawValue: persistedOrdering.allPlaylists?.sortKey
+                    ?? legacyPlaylistSortKey
+                    ?? ""
             ) ?? .name
         self.albumSortKey =
             AlbumSortKey(
-                rawValue: UserDefaults.standard.string(
-                    forKey: DefaultsKey.albumSortKey
-                ) ?? ""
+                rawValue: persistedOrdering.allAlbums?.sortKey
+                    ?? legacyAlbumSortKey
+                    ?? ""
             ) ?? .title
+        self.albumSortOrder = TrackSortOrder(
+            rawValue: persistedOrdering.allAlbums?.sortOrder
+                ?? legacyTrackSortOrder
+                ?? ""
+        ) ?? .descending
         self.artistSortKey =
             ArtistSortKey(
-                rawValue: UserDefaults.standard.string(
-                    forKey: DefaultsKey.artistSortKey
-                ) ?? ""
+                rawValue: persistedOrdering.allArtists?.sortKey
+                    ?? legacyArtistSortKey
+                    ?? ""
             ) ?? .name
-        migrateLegacySortPreferenceIfNeeded()
+        self.artistSortOrder = TrackSortOrder(
+            rawValue: persistedOrdering.allArtists?.sortOrder
+                ?? legacyTrackSortOrder
+                ?? ""
+        ) ?? .descending
         applySortPreferenceForCurrentSelection()
         self.repository.setChangeHandler { [weak self] change in
             self?.handleRepositoryChange(change)
@@ -1148,6 +1205,8 @@ final class LibraryViewModel {
             artistEntries = await repository.fetchArtistEntries()
             albumEntries = await repository.fetchAlbumEntries()
             reconcileSelectionAfterLoad()
+            migrateLegacySortingToLibraryIfNeeded()
+            applySortPreferenceForCurrentSelection()
 
             // Phase: rebuilding index
             loadingPhase = .rebuildingIndex
@@ -2574,6 +2633,8 @@ final class LibraryViewModel {
         artistEntries = await repository.fetchArtistEntries()
         albumEntries = await repository.fetchAlbumEntries()
         reconcileSelectionAfterLoad()
+        migrateLegacySortingToLibraryIfNeeded()
+        applySortPreferenceForCurrentSelection()
         await invalidateSelectionCaches(invalidatedSelectionIdentities)
         refreshTrigger += 1
         Log.info(
@@ -2588,7 +2649,6 @@ final class LibraryViewModel {
         static let trackSortKey = "trackSortKey"
         static let trackSortOrder = "trackSortOrder"
         static let trackSortPreferencesByPlaylist = "trackSortPreferencesByPlaylist"
-        static let trackSortMigrationDone = "trackSortMigrationDone"
         static let customTrackOrderBySelection = "customTrackOrderBySelection"
         static let customCollectionOrderBySelection = "customCollectionOrderBySelection"
         static let playlistSortKey = "playlistSortKey"
@@ -2597,17 +2657,9 @@ final class LibraryViewModel {
         static let artistSortKey = "artistSortKey"
     }
 
-    private var sortContextKey: String {
-        switch currentSelection {
-        case .playlist(let id):
-            return id.uuidString
-        case .artist(let artistKey):
-            return "ARTIST_\(artistKey)"
-        case .album(let albumKey):
-            return "ALBUM_\(albumKey)"
-        case .home, .allSongs, .folders, .allPlaylists, .allAlbums, .allArtists:
-            return "__all_songs__"
-        }
+    @discardableResult
+    private func persistLibraryOrdering() -> Bool {
+        libraryService.saveLibraryOrderingSidecar(libraryOrdering)
     }
 
     private func persistSortPreferenceForCurrentSelection() {
@@ -2620,25 +2672,42 @@ final class LibraryViewModel {
         case .home, .folders, .allPlaylists, .allAlbums, .allArtists:
             return
         case .playlist(let id):
-            if !libraryService.updatePlaylistSortPreference(
+            guard libraryService.updatePlaylistSortPreference(
                 playlistID: id,
                 key: preference.key,
                 order: preference.order
-            ) {
-                var preferences = loadSortPreferencesMap()
-                preferences[id.uuidString] = preference
-                saveSortPreferencesMap(preferences)
+            ) else {
+                Log.error("Failed to persist playlist sort preference for \(id)", category: .library)
+                return
             }
         case .allSongs:
-            UserDefaults.standard.set(preference.key, forKey: DefaultsKey.trackSortKey)
-            UserDefaults.standard.set(preference.order, forKey: DefaultsKey.trackSortOrder)
-            var preferences = loadSortPreferencesMap()
-            preferences[sortContextKey] = preference
-            saveSortPreferencesMap(preferences)
-        case .artist, .album:
-            var preferences = loadSortPreferencesMap()
-            preferences[sortContextKey] = preference
-            saveSortPreferencesMap(preferences)
+            libraryOrdering.allSongs = LibraryTrackSortState(
+                sortKey: preference.key,
+                sortOrder: preference.order
+            )
+            persistLibraryOrdering()
+        case .artist(let artistKey):
+            guard let sidecar = artistSidecar(for: artistKey),
+                  libraryService.updateArtistSortPreference(
+                      artistID: sidecar.id,
+                      key: preference.key,
+                      order: preference.order
+                  )
+            else {
+                Log.error("Failed to persist artist sort preference for \(artistKey)", category: .library)
+                return
+            }
+        case .album(let albumKey):
+            guard let sidecar = albumSidecar(for: albumKey),
+                  libraryService.updateAlbumSortPreference(
+                      albumID: sidecar.id,
+                      key: preference.key,
+                      order: preference.order
+                  )
+            else {
+                Log.error("Failed to persist album sort preference for \(albumKey)", category: .library)
+                return
+            }
         }
     }
 
@@ -2647,21 +2716,25 @@ final class LibraryViewModel {
         case .home, .folders, .allPlaylists, .allAlbums, .allArtists:
             return
         case .playlist(let id):
-            let preferences = loadSortPreferencesMap()
             let preference =
                 validPlaylistSortPreference(playlistID: id)
-                ?? validSortPreference(preferences[id.uuidString])
                 ?? defaultTrackSortPreference()
             applySortPreference(preference)
         case .allSongs:
-            let preferences = loadSortPreferencesMap()
-            applySortPreference(
-                validSortPreference(preferences[sortContextKey])
-                    ?? defaultTrackSortPreference()
-            )
-        case .artist, .album:
-            let preferences = loadSortPreferencesMap()
-            guard let preference = validSortPreference(preferences[sortContextKey]) else { return }
+            applySortPreference(validSortPreference(defaultTrackSortPreference()) ?? defaultTrackSortPreference())
+        case .artist(let artistKey):
+            let preference = validSortPreference(
+                artistSidecar(for: artistKey).flatMap {
+                    SortPreference(key: $0.trackSortKey ?? "", order: $0.trackSortOrder ?? "")
+                }
+            ) ?? defaultTrackSortPreference()
+            applySortPreference(preference)
+        case .album(let albumKey):
+            let preference = validSortPreference(
+                albumSidecar(for: albumKey).flatMap {
+                    SortPreference(key: $0.trackSortKey ?? "", order: $0.trackSortOrder ?? "")
+                }
+            ) ?? defaultTrackSortPreference()
             applySortPreference(preference)
         }
     }
@@ -2678,6 +2751,22 @@ final class LibraryViewModel {
             return nil
         }
         return validSortPreference(SortPreference(key: persisted.key, order: persisted.order))
+    }
+
+    private func artistSidecar(for canonicalName: String) -> ArtistSidecar? {
+        if let entry = artistEntries.first(where: { $0.canonicalName == canonicalName }),
+           let sidecar = libraryService.loadArtistSidecar(artistID: entry.id) {
+            return sidecar
+        }
+        return libraryService.loadArtistSidecar(canonicalName: canonicalName)
+    }
+
+    private func albumSidecar(for canonicalKey: String) -> AlbumSidecar? {
+        if let entry = albumEntries.first(where: { $0.canonicalKey == canonicalKey }),
+           let sidecar = libraryService.loadAlbumSidecar(albumID: entry.id) {
+            return sidecar
+        }
+        return libraryService.loadAlbumSidecar(canonicalKey: canonicalKey)
     }
 
     private func validSortPreference(_ preference: SortPreference?) -> SortPreference? {
@@ -2698,14 +2787,26 @@ final class LibraryViewModel {
     }
 
     private func defaultTrackSortPreference() -> SortPreference {
-        let defaults = UserDefaults.standard
-        let key = TrackSortKey(
-            rawValue: defaults.string(forKey: DefaultsKey.trackSortKey) ?? ""
-        )?.rawValue ?? TrackSortKey.importedAt.rawValue
-        let order = TrackSortOrder(
-            rawValue: defaults.string(forKey: DefaultsKey.trackSortOrder) ?? ""
-        )?.rawValue ?? TrackSortOrder.descending.rawValue
+        let persistedKey = TrackSortKey(rawValue: libraryOrdering.allSongs?.sortKey ?? "")
+        let key: String
+        if let persistedKey, persistedKey != .custom {
+            key = persistedKey.rawValue
+        } else {
+            key = TrackSortKey.importedAt.rawValue
+        }
+        let order = TrackSortOrder(rawValue: libraryOrdering.allSongs?.sortOrder ?? "")?.rawValue
+            ?? TrackSortOrder.descending.rawValue
         return SortPreference(key: key, order: order)
+    }
+
+    private func normalizedMigratedTrackSortPreference(
+        _ preference: SortPreference
+    ) -> SortPreference {
+        let key = TrackSortKey(rawValue: preference.key)
+        let safeKey = key.flatMap { $0 == .custom ? nil : $0 }
+            ?? .importedAt
+        let safeOrder = TrackSortOrder(rawValue: preference.order) ?? .descending
+        return SortPreference(key: safeKey.rawValue, order: safeOrder.rawValue)
     }
 
     private func loadSortPreferencesMap() -> [String: SortPreference] {
@@ -2718,25 +2819,273 @@ final class LibraryViewModel {
         return (try? JSONDecoder().decode([String: SortPreference].self, from: data)) ?? [:]
     }
 
-    private func saveSortPreferencesMap(_ map: [String: SortPreference]) {
-        guard let data = try? JSONEncoder().encode(map) else { return }
-        UserDefaults.standard.set(data, forKey: DefaultsKey.trackSortPreferencesByPlaylist)
+    private func loadLegacyCustomTrackOrderMap() -> [String: [String]] {
+        guard let data = UserDefaults.standard.data(
+            forKey: DefaultsKey.customTrackOrderBySelection
+        ) else {
+            return [:]
+        }
+        return (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:]
     }
 
-    private func migrateLegacySortPreferenceIfNeeded() {
-        let defaults = UserDefaults.standard
-        if defaults.bool(forKey: DefaultsKey.trackSortMigrationDone) { return }
+    private func loadLegacyCustomCollectionOrderMap() -> [String: [String]] {
+        guard let data = UserDefaults.standard.data(
+            forKey: DefaultsKey.customCollectionOrderBySelection
+        ) else {
+            return [:]
+        }
+        return (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:]
+    }
 
-        var preferences = loadSortPreferencesMap()
-        if preferences["__all_songs__"] == nil {
-            preferences["__all_songs__"] = SortPreference(
-                key: trackSortKey.rawValue,
-                order: trackSortOrder.rawValue
+    private func uuidValues(_ rawIDs: [String]?) -> [UUID]? {
+        guard let rawIDs else { return nil }
+        var seen = Set<UUID>()
+        let ids = rawIDs.compactMap(UUID.init(uuidString:)).filter {
+            seen.insert($0).inserted
+        }
+        return ids.isEmpty ? nil : ids
+    }
+
+    private func firstLegacyCustomOrder(
+        in map: [String: [String]],
+        keys: [String]
+    ) -> [UUID]? {
+        for key in keys where map[key] != nil {
+            if let ids = uuidValues(map[key]) { return ids }
+        }
+        return nil
+    }
+
+    private func currentTrackIDs(for selection: LibrarySelection) -> [UUID] {
+        switch selection {
+        case .playlist(let id):
+            return playlists.first(where: { $0.id == id })?.tracks.map(\.id) ?? []
+        case .artist(let key):
+            return allTracks.filter { LibraryNormalization.containsArtist(key, in: $0) }.map(\.id)
+        case .album(let key):
+            return allTracks.filter { $0.albumGroupKey == key }.map(\.id)
+        case .home, .allSongs, .folders, .allPlaylists, .allAlbums, .allArtists:
+            return []
+        }
+    }
+
+    private func migrateLegacySortingToLibraryIfNeeded() {
+        guard !libraryOrdering.legacyUserDefaultsMigrationCompleted else { return }
+
+        let defaults = UserDefaults.standard
+        let preferences = loadSortPreferencesMap()
+        let legacyTrackOrders = loadLegacyCustomTrackOrderMap()
+        let legacyCollectionOrders = loadLegacyCustomCollectionOrderMap()
+        var succeeded = true
+
+        let legacyAllSongs = preferences["__all_songs__"]
+            ?? SortPreference(
+                key: defaults.string(forKey: DefaultsKey.trackSortKey)
+                    ?? trackSortKey.rawValue,
+                order: defaults.string(forKey: DefaultsKey.trackSortOrder)
+                    ?? trackSortOrder.rawValue
             )
-            saveSortPreferencesMap(preferences)
+        let allSongsSource = SortPreference(
+            key: libraryOrdering.allSongs?.sortKey ?? legacyAllSongs.key,
+            order: libraryOrdering.allSongs?.sortOrder ?? legacyAllSongs.order
+        )
+        let normalizedAllSongs = normalizedMigratedTrackSortPreference(allSongsSource)
+        if libraryOrdering.allSongs?.sortKey != normalizedAllSongs.key
+            || libraryOrdering.allSongs?.sortOrder != normalizedAllSongs.order {
+            libraryOrdering.allSongs = LibraryTrackSortState(
+                sortKey: normalizedAllSongs.key,
+                sortOrder: normalizedAllSongs.order
+            )
         }
 
-        defaults.set(true, forKey: DefaultsKey.trackSortMigrationDone)
+        if libraryOrdering.allPlaylists == nil {
+            libraryOrdering.allPlaylists = LibraryCollectionSortState(
+                sortKey: defaults.string(forKey: DefaultsKey.playlistSortKey)
+                    ?? playlistSortKey.rawValue,
+                sortOrder: defaults.string(forKey: DefaultsKey.playlistSortOrder)
+                    ?? playlistSortOrder.rawValue,
+                customItemOrder: nil
+            )
+        }
+        if libraryOrdering.allAlbums == nil {
+            libraryOrdering.allAlbums = LibraryCollectionSortState(
+                sortKey: defaults.string(forKey: DefaultsKey.albumSortKey)
+                    ?? albumSortKey.rawValue,
+                sortOrder: albumSortOrder.rawValue,
+                customItemOrder: nil
+            )
+        }
+        if libraryOrdering.allArtists == nil {
+            libraryOrdering.allArtists = LibraryCollectionSortState(
+                sortKey: defaults.string(forKey: DefaultsKey.artistSortKey)
+                    ?? artistSortKey.rawValue,
+                sortOrder: artistSortOrder.rawValue,
+                customItemOrder: nil
+            )
+        }
+
+        if var state = libraryOrdering.allPlaylists,
+           state.customItemOrder == nil,
+           let order = uuidValues(legacyCollectionOrders["allPlaylists"]) {
+            state.customItemOrder = order
+            libraryOrdering.allPlaylists = state
+        }
+        if var state = libraryOrdering.allAlbums,
+           state.customItemOrder == nil,
+           let order = uuidValues(legacyCollectionOrders["allAlbums"]) {
+            state.customItemOrder = order
+            libraryOrdering.allAlbums = state
+        }
+        if var state = libraryOrdering.allArtists,
+           state.customItemOrder == nil,
+           let order = uuidValues(legacyCollectionOrders["allArtists"]) {
+            state.customItemOrder = order
+            libraryOrdering.allArtists = state
+        }
+
+        for playlist in playlists {
+            guard let sidecar = libraryService.loadPlaylistSidecar(playlistID: playlist.id) else {
+                if preferences[playlist.id.uuidString] != nil
+                    || legacyTrackOrders["playlist-\(playlist.id.uuidString)"] != nil {
+                    succeeded = false
+                }
+                continue
+            }
+            let legacyOrder = firstLegacyCustomOrder(
+                in: legacyTrackOrders,
+                keys: ["playlist-\(playlist.id.uuidString)"]
+            )
+            let shouldPopulateCustomOrder = sidecar.customTrackOrder == nil
+                && (legacyOrder != nil || sidecar.trackSortKey == TrackSortKey.custom.rawValue)
+            if shouldPopulateCustomOrder {
+                let order = legacyOrder ?? sidecar.trackIDs
+                succeeded = libraryService.updatePlaylistTrackOrdering(
+                    playlistID: playlist.id,
+                    orderedTrackIDs: order,
+                    sortOrder: preferences[playlist.id.uuidString]?.order
+                        ?? sidecar.trackSortOrder
+                        ?? trackSortOrder.rawValue
+                ) && succeeded
+            } else if sidecar.trackSortKey == nil {
+                if let persistedCustomOrder = sidecar.customTrackOrder {
+                    succeeded = libraryService.updatePlaylistTrackOrdering(
+                        playlistID: playlist.id,
+                        orderedTrackIDs: persistedCustomOrder,
+                        sortOrder: sidecar.trackSortOrder ?? trackSortOrder.rawValue
+                    ) && succeeded
+                } else if let legacyPreference = preferences[playlist.id.uuidString] {
+                    succeeded = libraryService.updatePlaylistSortPreference(
+                        playlistID: playlist.id,
+                        key: legacyPreference.key,
+                        order: legacyPreference.order
+                    ) && succeeded
+                }
+            }
+        }
+
+        for entry in artistEntries {
+            guard let sidecar = libraryService.loadArtistSidecar(artistID: entry.id) else {
+                continue
+            }
+            let customOrder = firstLegacyCustomOrder(
+                in: legacyTrackOrders,
+                keys: [
+                    "artist-\(entry.id.uuidString)",
+                    "artist-\(entry.canonicalName)"
+                ]
+            )
+            if sidecar.customTrackOrder == nil, let customOrder {
+                succeeded = libraryService.updateArtistTrackOrdering(
+                    artistID: entry.id,
+                    orderedTrackIDs: customOrder,
+                    sortOrder: preferences["ARTIST_\(entry.canonicalName)"]?.order
+                        ?? sidecar.trackSortOrder
+                        ?? trackSortOrder.rawValue,
+                    availableTrackIDs: currentTrackIDs(for: .artist(entry.canonicalName))
+                ) && succeeded
+            } else if sidecar.trackSortKey == nil {
+                if sidecar.customTrackOrder != nil {
+                    succeeded = libraryService.updateArtistTrackOrdering(
+                        artistID: entry.id,
+                        orderedTrackIDs: sidecar.customTrackOrder ?? [],
+                        sortOrder: sidecar.trackSortOrder ?? trackSortOrder.rawValue,
+                        availableTrackIDs: currentTrackIDs(for: .artist(entry.canonicalName))
+                    ) && succeeded
+                } else if let legacyPreference = preferences["ARTIST_\(entry.canonicalName)"] {
+                    succeeded = libraryService.updateArtistSortPreference(
+                        artistID: entry.id,
+                        key: legacyPreference.key,
+                        order: legacyPreference.order
+                    ) && succeeded
+                }
+            } else if sidecar.trackSortKey == TrackSortKey.custom.rawValue,
+                      sidecar.customTrackOrder == nil {
+                succeeded = libraryService.updateArtistTrackOrdering(
+                    artistID: entry.id,
+                    orderedTrackIDs: currentTrackIDs(for: .artist(entry.canonicalName)),
+                    sortOrder: sidecar.trackSortOrder ?? trackSortOrder.rawValue,
+                    availableTrackIDs: currentTrackIDs(for: .artist(entry.canonicalName))
+                ) && succeeded
+            }
+        }
+
+        for entry in albumEntries {
+            guard let sidecar = libraryService.loadAlbumSidecar(albumID: entry.id) else {
+                continue
+            }
+            let customOrder = firstLegacyCustomOrder(
+                in: legacyTrackOrders,
+                keys: [
+                    "album-\(entry.id.uuidString)",
+                    "album-\(entry.canonicalKey)"
+                ]
+            )
+            if sidecar.customTrackOrder == nil, let customOrder {
+                succeeded = libraryService.updateAlbumTrackOrdering(
+                    albumID: entry.id,
+                    orderedTrackIDs: customOrder,
+                    sortOrder: preferences["ALBUM_\(entry.canonicalKey)"]?.order
+                        ?? sidecar.trackSortOrder
+                        ?? trackSortOrder.rawValue,
+                    availableTrackIDs: currentTrackIDs(for: .album(entry.canonicalKey))
+                ) && succeeded
+            } else if sidecar.trackSortKey == nil {
+                if sidecar.customTrackOrder != nil {
+                    succeeded = libraryService.updateAlbumTrackOrdering(
+                        albumID: entry.id,
+                        orderedTrackIDs: sidecar.customTrackOrder ?? [],
+                        sortOrder: sidecar.trackSortOrder ?? trackSortOrder.rawValue,
+                        availableTrackIDs: currentTrackIDs(for: .album(entry.canonicalKey))
+                    ) && succeeded
+                } else if let legacyPreference = preferences["ALBUM_\(entry.canonicalKey)"] {
+                    succeeded = libraryService.updateAlbumSortPreference(
+                        albumID: entry.id,
+                        key: legacyPreference.key,
+                        order: legacyPreference.order
+                    ) && succeeded
+                }
+            } else if sidecar.trackSortKey == TrackSortKey.custom.rawValue,
+                      sidecar.customTrackOrder == nil {
+                succeeded = libraryService.updateAlbumTrackOrdering(
+                    albumID: entry.id,
+                    orderedTrackIDs: currentTrackIDs(for: .album(entry.canonicalKey)),
+                    sortOrder: sidecar.trackSortOrder ?? trackSortOrder.rawValue,
+                    availableTrackIDs: currentTrackIDs(for: .album(entry.canonicalKey))
+                ) && succeeded
+            }
+        }
+
+        guard succeeded else {
+            Log.error("Legacy sorting migration did not complete; it will retry on the next library load", category: .library)
+            return
+        }
+
+        libraryOrdering.legacyUserDefaultsMigrationCompleted = true
+        guard persistLibraryOrdering() else {
+            libraryOrdering.legacyUserDefaultsMigrationCompleted = false
+            return
+        }
+        Log.info("Migrated legacy sorting state into the music library", category: .library)
     }
 
     private func invalidateSelectionCaches(_ selectionIdentities: Set<String>) async {
@@ -2921,7 +3270,7 @@ final class LibraryViewModel {
             }
             return lhs.id.uuidString < rhs.id.uuidString
         }
-        return trackSortOrder == .ascending
+        return artistSortOrder == .ascending
             ? result == .orderedAscending
             : result == .orderedDescending
     }
@@ -2976,7 +3325,7 @@ final class LibraryViewModel {
         if useNaturalDescending {
             return result == .orderedDescending
         }
-        return trackSortOrder == .ascending
+        return albumSortOrder == .ascending
             ? result == .orderedAscending
             : result == .orderedDescending
     }
@@ -3121,57 +3470,40 @@ final class LibraryViewModel {
         return lhs < rhs ? .orderedAscending : .orderedDescending
     }
 
-    private func customTrackOrderContextKey(for selection: LibrarySelection) -> String? {
-        switch selection {
-        case .playlist, .artist, .album:
-            return selection.selectionIdentity(in: self)
-        case .home, .allSongs, .folders, .allPlaylists, .allAlbums, .allArtists:
-            return nil
-        }
-    }
-
     private func customTrackOrderIDs(
         for selection: LibrarySelection,
         displayedTrackIDs: [UUID]? = nil
     ) -> [UUID]? {
-        guard
-            supportsCustomTrackOrder(for: selection),
-            let key = customTrackOrderContextKey(for: selection),
-            let rawIDs = loadCustomTrackOrderMap()[key]
+        guard supportsCustomTrackOrder(for: selection),
+              let persistedIDs = persistedCustomTrackOrder(for: selection)
         else {
             return nil
         }
 
         var seen = Set<UUID>()
-        let persistedIDs = rawIDs.compactMap(UUID.init(uuidString:)).filter { seen.insert($0).inserted }
-        guard let displayedTrackIDs else { return persistedIDs }
+        let uniquePersistedIDs = persistedIDs.filter { seen.insert($0).inserted }
+        guard let displayedTrackIDs else { return uniquePersistedIDs }
 
         let available = Set(displayedTrackIDs)
-        var merged: [UUID] = []
-        seen.removeAll(keepingCapacity: true)
-
-        for id in persistedIDs where available.contains(id) && seen.insert(id).inserted {
-            merged.append(id)
-        }
-
-        let newIDs = displayedTrackIDs.filter { seen.insert($0).inserted }
-        if trackSortOrder == .descending {
-            merged.insert(contentsOf: newIDs, at: 0)
-        } else {
-            merged.append(contentsOf: newIDs)
-        }
+        var merged = uniquePersistedIDs.filter { available.contains($0) }
+        seen = Set(merged)
+        merged.append(contentsOf: displayedTrackIDs.filter { seen.insert($0).inserted })
         return merged
     }
 
-    private func customCollectionOrderContextKey(for selection: LibrarySelection) -> String? {
+    private func persistedCustomTrackOrder(for selection: LibrarySelection) -> [UUID]? {
         switch selection {
-        case .allPlaylists:
-            return "allPlaylists"
-        case .allAlbums:
-            return "allAlbums"
-        case .allArtists:
-            return "allArtists"
-        case .home, .allSongs, .folders, .playlist, .artist, .album:
+        case .playlist(let id):
+            guard let sidecar = libraryService.loadPlaylistSidecar(playlistID: id) else {
+                return nil
+            }
+            return sidecar.customTrackOrder
+                ?? (sidecar.trackSortKey == TrackSortKey.custom.rawValue ? sidecar.trackIDs : nil)
+        case .artist(let key):
+            return artistSidecar(for: key)?.customTrackOrder
+        case .album(let key):
+            return albumSidecar(for: key)?.customTrackOrder
+        case .home, .allSongs, .folders, .allPlaylists, .allAlbums, .allArtists:
             return nil
         }
     }
@@ -3180,47 +3512,32 @@ final class LibraryViewModel {
         for selection: LibrarySelection,
         displayedItemIDs: [UUID]? = nil
     ) -> [UUID]? {
-        guard
-            supportsCustomCollectionOrder(for: selection),
-            let key = customCollectionOrderContextKey(for: selection),
-            let rawIDs = loadCustomCollectionOrderMap()[key]
+        guard supportsCustomCollectionOrder(for: selection),
+              let persistedIDs: [UUID] = {
+                  switch selection {
+                  case .allPlaylists:
+                      return libraryOrdering.allPlaylists?.customItemOrder
+                  case .allAlbums:
+                      return libraryOrdering.allAlbums?.customItemOrder
+                  case .allArtists:
+                      return libraryOrdering.allArtists?.customItemOrder
+                  case .home, .allSongs, .folders, .playlist, .artist, .album:
+                      return nil
+                  }
+              }()
         else {
             return nil
         }
 
         var seen = Set<UUID>()
-        let persistedIDs = rawIDs.compactMap(UUID.init(uuidString:)).filter {
-            seen.insert($0).inserted
-        }
-        guard let displayedItemIDs else { return persistedIDs }
+        let uniquePersistedIDs = persistedIDs.filter { seen.insert($0).inserted }
+        guard let displayedItemIDs else { return uniquePersistedIDs }
 
         let available = Set(displayedItemIDs)
-        var merged: [UUID] = []
-        seen.removeAll(keepingCapacity: true)
-
-        for id in persistedIDs where available.contains(id) && seen.insert(id).inserted {
-            merged.append(id)
-        }
-        for id in displayedItemIDs where seen.insert(id).inserted {
-            merged.append(id)
-        }
+        var merged = uniquePersistedIDs.filter { available.contains($0) }
+        seen = Set(merged)
+        merged.append(contentsOf: displayedItemIDs.filter { seen.insert($0).inserted })
         return merged
-    }
-
-    private func loadCustomCollectionOrderMap() -> [String: [String]] {
-        guard
-            let data = UserDefaults.standard.data(
-                forKey: DefaultsKey.customCollectionOrderBySelection
-            )
-        else {
-            return [:]
-        }
-        return (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:]
-    }
-
-    private func saveCustomCollectionOrderMap(_ map: [String: [String]]) {
-        guard let data = try? JSONEncoder().encode(map) else { return }
-        UserDefaults.standard.set(data, forKey: DefaultsKey.customCollectionOrderBySelection)
     }
 
     @discardableResult
@@ -3228,57 +3545,104 @@ final class LibraryViewModel {
         for selection: LibrarySelection,
         itemIDs: [UUID]
     ) -> Bool {
-        guard
-            supportsCustomCollectionOrder(for: selection),
-            let key = customCollectionOrderContextKey(for: selection)
-        else {
+        guard supportsCustomCollectionOrder(for: selection) else { return false }
+        var seen = Set<UUID>()
+        let normalized = itemIDs.filter { seen.insert($0).inserted }
+        guard !normalized.isEmpty else { return false }
+
+        switch selection {
+        case .allPlaylists:
+            var state = libraryOrdering.allPlaylists ?? LibraryCollectionSortState()
+            guard state.customItemOrder != normalized else { return false }
+            state.customItemOrder = normalized
+            libraryOrdering.allPlaylists = state
+        case .allAlbums:
+            var state = libraryOrdering.allAlbums ?? LibraryCollectionSortState()
+            guard state.customItemOrder != normalized else { return false }
+            state.customItemOrder = normalized
+            libraryOrdering.allAlbums = state
+        case .allArtists:
+            var state = libraryOrdering.allArtists ?? LibraryCollectionSortState()
+            guard state.customItemOrder != normalized else { return false }
+            state.customItemOrder = normalized
+            libraryOrdering.allArtists = state
+        case .home, .allSongs, .folders, .playlist, .artist, .album:
             return false
         }
 
-        var seen = Set<UUID>()
-        let normalized = itemIDs.filter { seen.insert($0).inserted }.map(\.uuidString)
-        var map = loadCustomCollectionOrderMap()
-        guard map[key] != normalized else { return false }
-        map[key] = normalized
-        saveCustomCollectionOrderMap(map)
+        guard persistLibraryOrdering() else { return false }
         collectionSortRevision += 1
         return true
     }
 
-    private func loadCustomTrackOrderMap() -> [String: [String]] {
-        guard
-            let data = UserDefaults.standard.data(forKey: DefaultsKey.customTrackOrderBySelection)
-        else {
-            return [:]
+    private func normalizedManualTrackOrder(
+        for selection: LibrarySelection,
+        submittedTrackIDs: [UUID]
+    ) -> [UUID] {
+        let availableIDs = currentTrackIDs(for: selection)
+        let available = Set(availableIDs)
+        var submittedSeen = Set<UUID>()
+        let submitted = submittedTrackIDs.filter {
+            available.contains($0) && submittedSeen.insert($0).inserted
         }
-        return (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:]
-    }
+        guard !submitted.isEmpty else { return [] }
 
-    private func saveCustomTrackOrderMap(_ map: [String: [String]]) {
-        guard let data = try? JSONEncoder().encode(map) else { return }
-        UserDefaults.standard.set(data, forKey: DefaultsKey.customTrackOrderBySelection)
+        var base = persistedCustomTrackOrder(for: selection)?.filter { available.contains($0) }
+            ?? availableIDs
+        var baseSeen = Set(base)
+        base.append(contentsOf: availableIDs.filter { baseSeen.insert($0).inserted })
+
+        if submitted.count == available.count {
+            return submitted
+        }
+
+        let submittedSet = Set(submitted)
+        var submittedIndex = 0
+        return base.map { id in
+            guard submittedSet.contains(id), submittedIndex < submitted.count else { return id }
+            defer { submittedIndex += 1 }
+            return submitted[submittedIndex]
+        }
     }
 
     @discardableResult
     private func saveCustomTrackOrder(for selection: LibrarySelection, trackIDs: [UUID]) -> Bool {
-        guard
-            supportsCustomTrackOrder(for: selection),
-            let key = customTrackOrderContextKey(for: selection)
-        else {
+        guard supportsCustomTrackOrder(for: selection) else { return false }
+        let normalized = normalizedManualTrackOrder(
+            for: selection,
+            submittedTrackIDs: trackIDs
+        )
+        guard !normalized.isEmpty else { return false }
+
+        switch selection {
+        case .playlist(let id):
+            return libraryService.updatePlaylistTrackOrdering(
+                playlistID: id,
+                orderedTrackIDs: normalized,
+                sortOrder: trackSortOrder.rawValue
+            )
+        case .artist(let key):
+            guard let sidecar = artistSidecar(for: key) else { return false }
+            return libraryService.updateArtistTrackOrdering(
+                artistID: sidecar.id,
+                orderedTrackIDs: normalized,
+                sortOrder: trackSortOrder.rawValue,
+                availableTrackIDs: currentTrackIDs(for: selection)
+            )
+        case .album(let key):
+            guard let sidecar = albumSidecar(for: key) else { return false }
+            return libraryService.updateAlbumTrackOrdering(
+                albumID: sidecar.id,
+                orderedTrackIDs: normalized,
+                sortOrder: trackSortOrder.rawValue,
+                availableTrackIDs: currentTrackIDs(for: selection)
+            )
+        case .home, .allSongs, .folders, .allPlaylists, .allAlbums, .allArtists:
             return false
         }
-
-        var seen = Set<UUID>()
-        let normalized = trackIDs.filter { seen.insert($0).inserted }.map(\.uuidString)
-        var map = loadCustomTrackOrderMap()
-        guard map[key] != normalized else { return false }
-        map[key] = normalized
-        saveCustomTrackOrderMap(map)
-        return true
     }
 }
 
-#if DEBUG
 extension LibraryViewModel {
     static func preview(repository: LibraryRepositoryProtocol) -> LibraryViewModel {
         let paths = LibraryPaths(
@@ -3316,4 +3680,3 @@ extension LibraryViewModel {
         )
     }
 }
-#endif

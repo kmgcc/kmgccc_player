@@ -231,6 +231,33 @@ final class LocalLibraryService {
         return decoder
     }
 
+    // MARK: - Library-owned ordering
+
+    func loadLibraryOrderingSidecar() -> LibraryOrderingSidecar {
+        guard let data = try? Data(contentsOf: paths.libraryOrderingURL),
+              let sidecar = try? decoder.decode(LibraryOrderingSidecar.self, from: data)
+        else {
+            return LibraryOrderingSidecar()
+        }
+        return sidecar
+    }
+
+    @discardableResult
+    func saveLibraryOrderingSidecar(_ sidecar: LibraryOrderingSidecar) -> Bool {
+        do {
+            try fileManager.createDirectory(
+                at: paths.settingsRootURL,
+                withIntermediateDirectories: true
+            )
+            let data = try encoder.encode(sidecar)
+            try data.write(to: paths.libraryOrderingURL, options: .atomic)
+            return true
+        } catch {
+            Log.error("Failed to save library ordering sidecar: \(error)", category: .library)
+            return false
+        }
+    }
+
     nonisolated func ensureLibraryFolders() {
         do {
             try ensureLibraryFoldersThrowing()
@@ -242,6 +269,7 @@ final class LocalLibraryService {
     nonisolated private func ensureLibraryFoldersThrowing() throws {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: paths.rootURL, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: paths.settingsRootURL, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: paths.tracksRootURL, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: paths.playlistsRootURL, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: paths.artistsRootURL, withIntermediateDirectories: true)
@@ -1277,7 +1305,10 @@ final class LocalLibraryService {
         description: String,
         createdAt: Date,
         trackIDs: [UUID],
-        itemAddedAt: [UUID: Date]
+        itemAddedAt: [UUID: Date],
+        customTrackOrder: [UUID]? = nil,
+        trackSortKey: String? = nil,
+        trackSortOrder: String? = nil
     ) throws {
         do {
             try ensureLibraryFoldersThrowing()
@@ -1287,14 +1318,26 @@ final class LocalLibraryService {
                 reason: error.localizedDescription
             )
         }
-        let items = trackIDs.map { trackID in
+        var seenTrackIDs = Set<UUID>()
+        let normalizedTrackIDs = trackIDs.filter { seenTrackIDs.insert($0).inserted }
+        let existingSidecar = loadPlaylistSidecar(playlistID: playlistID)
+        let existingItemDates = (existingSidecar?.items ?? []).reduce(into: [UUID: Date]()) {
+            $0[$1.trackID] = $1.addedAt
+        }
+        let items = normalizedTrackIDs.map { trackID in
             PlaylistItemSidecar(
                 trackID: trackID,
-                addedAt: itemAddedAt[trackID] ?? Date()
+                addedAt: itemAddedAt[trackID] ?? existingItemDates[trackID] ?? Date()
             )
         }
         let desc = description.isEmpty ? nil : description
-        let existingSidecar = loadPlaylistSidecar(playlistID: playlistID)
+        let effectiveSortKey = trackSortKey ?? existingSidecar?.trackSortKey
+        let effectiveSortOrder = trackSortOrder ?? existingSidecar?.trackSortOrder
+        let requestedCustomOrder = customTrackOrder ?? existingSidecar?.customTrackOrder
+        let effectiveCustomOrder = normalizedOrder(
+            requestedCustomOrder,
+            availableIDs: normalizedTrackIDs
+        )
         let sidecar = PlaylistSidecar(
             id: playlistID,
             name: name,
@@ -1306,8 +1349,9 @@ final class LocalLibraryService {
             headerArtworkSource: existingSidecar?.headerArtworkSource,
             generatedArtworkSignature: existingSidecar?.generatedArtworkSignature,
             artworkRevision: existingSidecar?.artworkRevision,
-            trackSortKey: existingSidecar?.trackSortKey,
-            trackSortOrder: existingSidecar?.trackSortOrder
+            trackSortKey: effectiveSortKey,
+            trackSortOrder: effectiveSortOrder,
+            customTrackOrder: effectiveCustomOrder
         )
 
         do {
@@ -1422,7 +1466,8 @@ final class LocalLibraryService {
             generatedArtworkSignature: sidecar.generatedArtworkSignature,
             artworkRevision: sidecar.artworkRevision,
             trackSortKey: key,
-            trackSortOrder: order
+            trackSortOrder: order,
+            customTrackOrder: sidecar.customTrackOrder
         )
         do {
             let data = try Self.makeJSONEncoder().encode(updated)
@@ -1620,6 +1665,34 @@ final class LocalLibraryService {
         Self.loadPlaylistSidecarFromDisk(playlistID: playlistID, paths: paths)
     }
 
+    @discardableResult
+    func updatePlaylistTrackOrdering(
+        playlistID: UUID,
+        orderedTrackIDs: [UUID],
+        sortOrder: String
+    ) -> Bool {
+        guard let sidecar = loadPlaylistSidecar(playlistID: playlistID) else { return false }
+        do {
+            try writePlaylistSidecar(
+                playlistID: sidecar.id,
+                name: sidecar.name,
+                description: sidecar.description ?? "",
+                createdAt: sidecar.createdAt,
+                trackIDs: sidecar.trackIDs,
+                itemAddedAt: sidecar.items.reduce(into: [UUID: Date]()) {
+                    $0[$1.trackID] = $1.addedAt
+                },
+                customTrackOrder: orderedTrackIDs,
+                trackSortKey: "custom",
+                trackSortOrder: sortOrder
+            )
+            return true
+        } catch {
+            Log.error("Failed to update playlist track ordering: \(error)", category: .library)
+            return false
+        }
+    }
+
     nonisolated static func loadPlaylistSidecarFromDisk(
         playlistID: UUID,
         paths: LibraryPaths
@@ -1629,6 +1702,20 @@ final class LocalLibraryService {
               let sidecar = try? Self.makeJSONDecoder().decode(PlaylistSidecar.self, from: data)
         else { return nil }
         return sidecar
+    }
+
+    private nonisolated func normalizedOrder(
+        _ order: [UUID]?,
+        availableIDs: [UUID]
+    ) -> [UUID]? {
+        guard let order else { return nil }
+        let available = Set(availableIDs)
+        var seen = Set<UUID>()
+        var result = order.filter {
+            available.contains($0) && seen.insert($0).inserted
+        }
+        result.append(contentsOf: availableIDs.filter { seen.insert($0).inserted })
+        return result
     }
 
     @discardableResult
@@ -1654,7 +1741,8 @@ final class LocalLibraryService {
             generatedArtworkSignature: generatedSignature,
             artworkRevision: artworkRevision,
             trackSortKey: sidecar.trackSortKey,
-            trackSortOrder: sidecar.trackSortOrder
+            trackSortOrder: sidecar.trackSortOrder,
+            customTrackOrder: sidecar.customTrackOrder
         )
         do {
             let data = try Self.makeJSONEncoder().encode(updated)
@@ -1695,7 +1783,8 @@ final class LocalLibraryService {
             generatedArtworkSignature: generatedSignature,
             artworkRevision: artworkRevision,
             trackSortKey: sidecar.trackSortKey,
-            trackSortOrder: sidecar.trackSortOrder
+            trackSortOrder: sidecar.trackSortOrder,
+            customTrackOrder: sidecar.customTrackOrder
         )
         do {
             let data = try Self.makeJSONEncoder().encode(updated)
@@ -1866,6 +1955,14 @@ final class LocalLibraryService {
         }
     }
 
+    func loadArtistSidecar(artistID: UUID) -> ArtistSidecar? {
+        loadArtistSidecarsFromDisk().first { $0.sidecar.id == artistID }?.sidecar
+    }
+
+    func loadArtistSidecar(canonicalName: String) -> ArtistSidecar? {
+        loadArtistSidecarsFromDisk().first { $0.sidecar.canonicalName == canonicalName }?.sidecar
+    }
+
     func loadAlbumSidecarsFromDisk() -> [(sidecar: AlbumSidecar, folderURL: URL)] {
         let root = paths.albumsRootURL
         guard let entries = try? fileManager.contentsOfDirectory(
@@ -1883,14 +1980,27 @@ final class LocalLibraryService {
         }
     }
 
+    func loadAlbumSidecar(albumID: UUID) -> AlbumSidecar? {
+        loadAlbumSidecarsFromDisk().first { $0.sidecar.id == albumID }?.sidecar
+    }
+
+    func loadAlbumSidecar(canonicalKey: String) -> AlbumSidecar? {
+        loadAlbumSidecarsFromDisk().first { $0.sidecar.canonicalKey == canonicalKey }?.sidecar
+    }
+
     func writeArtistSidecar(_ sidecar: ArtistSidecar, artworkData: Data?) throws {
         let folder = paths.artistFolderURL(for: sidecar.id)
         do {
             try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+            let existing = loadArtistSidecar(artistID: sidecar.id)
+            var persistedSidecar = sidecar
+            persistedSidecar.trackSortKey = sidecar.trackSortKey ?? existing?.trackSortKey
+            persistedSidecar.trackSortOrder = sidecar.trackSortOrder ?? existing?.trackSortOrder
+            persistedSidecar.customTrackOrder = sidecar.customTrackOrder ?? existing?.customTrackOrder
             let metaURL = paths.artistMetaURL(for: sidecar.id)
-            let data = try encoder.encode(sidecar)
+            let data = try encoder.encode(persistedSidecar)
             try data.write(to: metaURL, options: .atomic)
-            if let artworkData, let fileName = sidecar.artworkFileName {
+            if let artworkData, let fileName = persistedSidecar.artworkFileName {
                 let artworkURL = folder.appendingPathComponent(fileName)
                 try artworkData.write(to: artworkURL, options: .atomic)
             }
@@ -1906,20 +2016,22 @@ final class LocalLibraryService {
         let folder = paths.albumFolderURL(for: sidecar.id)
         do {
             try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
-            let previousArtworkFileName = loadAlbumSidecarsFromDisk()
-                .first(where: { $0.sidecar.id == sidecar.id })?
-                .sidecar
-                .artworkFileName
+            let existing = loadAlbumSidecar(albumID: sidecar.id)
+            var persistedSidecar = sidecar
+            persistedSidecar.trackSortKey = sidecar.trackSortKey ?? existing?.trackSortKey
+            persistedSidecar.trackSortOrder = sidecar.trackSortOrder ?? existing?.trackSortOrder
+            persistedSidecar.customTrackOrder = sidecar.customTrackOrder ?? existing?.customTrackOrder
+            let previousArtworkFileName = existing?.artworkFileName
             let metaURL = paths.albumMetaURL(for: sidecar.id)
-            let data = try encoder.encode(sidecar)
+            let data = try encoder.encode(persistedSidecar)
             try data.write(to: metaURL, options: .atomic)
-            if let previousArtworkFileName, previousArtworkFileName != sidecar.artworkFileName {
+            if let previousArtworkFileName, previousArtworkFileName != persistedSidecar.artworkFileName {
                 let previousArtworkURL = folder.appendingPathComponent(previousArtworkFileName)
                 if fileManager.fileExists(atPath: previousArtworkURL.path) {
                     try? fileManager.removeItem(at: previousArtworkURL)
                 }
             }
-            if let artworkData, let fileName = sidecar.artworkFileName {
+            if let artworkData, let fileName = persistedSidecar.artworkFileName {
                 let artworkURL = folder.appendingPathComponent(fileName)
                 try artworkData.write(to: artworkURL, options: .atomic)
             }
@@ -1928,6 +2040,88 @@ final class LocalLibraryService {
                 albumID: sidecar.id,
                 reason: error.localizedDescription
             )
+        }
+    }
+
+    @discardableResult
+    func updateArtistSortPreference(
+        artistID: UUID,
+        key: String,
+        order: String
+    ) -> Bool {
+        guard var sidecar = loadArtistSidecar(artistID: artistID) else { return false }
+        sidecar.trackSortKey = key
+        sidecar.trackSortOrder = order
+        do {
+            try writeArtistSidecar(sidecar, artworkData: nil)
+            return true
+        } catch {
+            Log.error("Failed to update artist sort preference: \(error)", category: .library)
+            return false
+        }
+    }
+
+    @discardableResult
+    func updateAlbumSortPreference(
+        albumID: UUID,
+        key: String,
+        order: String
+    ) -> Bool {
+        guard var sidecar = loadAlbumSidecar(albumID: albumID) else { return false }
+        sidecar.trackSortKey = key
+        sidecar.trackSortOrder = order
+        do {
+            try writeAlbumSidecar(sidecar, artworkData: nil)
+            return true
+        } catch {
+            Log.error("Failed to update album sort preference: \(error)", category: .library)
+            return false
+        }
+    }
+
+    @discardableResult
+    func updateArtistTrackOrdering(
+        artistID: UUID,
+        orderedTrackIDs: [UUID],
+        sortOrder: String,
+        availableTrackIDs: [UUID]
+    ) -> Bool {
+        guard var sidecar = loadArtistSidecar(artistID: artistID) else { return false }
+        sidecar.trackSortKey = "custom"
+        sidecar.trackSortOrder = sortOrder
+        sidecar.customTrackOrder = normalizedOrder(
+            orderedTrackIDs,
+            availableIDs: availableTrackIDs
+        )
+        do {
+            try writeArtistSidecar(sidecar, artworkData: nil)
+            return true
+        } catch {
+            Log.error("Failed to update artist track ordering: \(error)", category: .library)
+            return false
+        }
+    }
+
+    @discardableResult
+    func updateAlbumTrackOrdering(
+        albumID: UUID,
+        orderedTrackIDs: [UUID],
+        sortOrder: String,
+        availableTrackIDs: [UUID]
+    ) -> Bool {
+        guard var sidecar = loadAlbumSidecar(albumID: albumID) else { return false }
+        sidecar.trackSortKey = "custom"
+        sidecar.trackSortOrder = sortOrder
+        sidecar.customTrackOrder = normalizedOrder(
+            orderedTrackIDs,
+            availableIDs: availableTrackIDs
+        )
+        do {
+            try writeAlbumSidecar(sidecar, artworkData: nil)
+            return true
+        } catch {
+            Log.error("Failed to update album track ordering: \(error)", category: .library)
+            return false
         }
     }
 

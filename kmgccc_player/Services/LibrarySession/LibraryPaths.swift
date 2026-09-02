@@ -22,6 +22,7 @@ nonisolated struct LibraryPaths: Sendable, Equatable {
 
     var settingsRootURL: URL { directory("Settings") }
     var librarySettingsURL: URL { settingsRootURL.appendingPathComponent("library-settings.json") }
+    var libraryOrderingURL: URL { settingsRootURL.appendingPathComponent("ordering.json") }
     var upgradeJournalURL: URL { settingsRootURL.appendingPathComponent("library-upgrade.json") }
     var writerLockURL: URL { settingsRootURL.appendingPathComponent(".writer.lock") }
 

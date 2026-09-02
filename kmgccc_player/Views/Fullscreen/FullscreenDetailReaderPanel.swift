@@ -3,7 +3,7 @@
 //  myPlayer2
 //
 //  kmgccc_player - Fullscreen Detail Reader Panel
-//  Liquid Glass self-drawn panel for viewing track/album description text
+//  Liquid Glass self-drawn panel for viewing track/album/artist description text
 //  in fullscreen mode, adhering to polarity-aware overlay styling.
 //
 
@@ -12,7 +12,7 @@ import SwiftUI
 
 struct FullscreenDetailReaderPanel: View {
     let title: String
-    let subtitle: String?
+    var attributionNote: String? = nil
     let text: String
     let scale: CGFloat
     let foregroundProfile: FullscreenOverlayForegroundProfile
@@ -93,14 +93,15 @@ struct FullscreenDetailReaderPanel: View {
     // MARK: - Header
 
     private var panelHeader: some View {
-        VStack(alignment: .leading, spacing: presentationStyle.scaled(3)) {
-            Label(title, systemImage: "doc.text.fill")
+        VStack(alignment: .leading, spacing: presentationStyle.scaled(4)) {
+            Text(title)
                 .font(.system(size: presentationStyle.scaled(20), weight: .bold))
                 .foregroundStyle(presentationStyle.primaryTextColor)
+                .lineLimit(2)
 
-            if let subtitle, !subtitle.isEmpty {
-                Text(subtitle)
-                    .font(.system(size: presentationStyle.scaled(13), weight: .medium))
+            if let attributionNote, !attributionNote.isEmpty {
+                Text(attributionNote)
+                    .font(.system(size: presentationStyle.scaled(12), weight: .medium))
                     .foregroundStyle(presentationStyle.secondaryTextColor)
                     .lineLimit(1)
             }

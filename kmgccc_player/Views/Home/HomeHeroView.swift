@@ -110,7 +110,6 @@ struct HomeHeroView: View {
 
     @State private var trackToEdit: Track?
     @State private var isShowingDescriptionReader = false
-    @State private var isHoveringDescription = false
 
     init(
         track: Track,
@@ -290,10 +289,12 @@ struct HomeHeroView: View {
             DetailDescriptionReaderSheet(
                 title: "歌曲详情",
                 systemImage: "music.note",
-                subtitle: "\(track.title) · \(track.artist)",
+                subtitle: "\(track.title) - \(track.artist)",
                 text: heroDescription,
                 artworkImage: coverImage,
-                artworkData: track.artworkData
+                artworkData: track.artworkData,
+                paletteOverride: heroPalette.appForeground,
+                accentColorOverride: colorScheme == .dark ? heroPalette.uiAccentOnDarkColor : heroPalette.uiAccentOnLightColor
             )
             .environmentObject(themeStore)
         }
@@ -644,32 +645,16 @@ struct HomeHeroView: View {
     private var descriptionLine: some View {
         let description = heroDescription.trimmingCharacters(in: .whitespacesAndNewlines)
         if !description.isEmpty {
-            Button {
-                isShowingDescriptionReader = true
-            } label: {
-                AppKitFullTextScrollView(
-                    text: description,
-                    font: NSFont.systemFont(ofSize: descriptionFontSize, weight: .ultraLight),
-                    textColor: NSColor(heroPlusBlendTextProfile.secondaryColor),
-                    lineSpacing: 1.5,
-                    showsVerticalScroller: false
-                )
-                .allowsHitTesting(false)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(height: descriptionScrollHeight, alignment: .top)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 2)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(isHoveringDescription ? Color.white.opacity(0.08) : Color.clear)
-                )
-            }
-            .buttonStyle(.plain)
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                isHoveringDescription = hovering
-            }
-            .help("点击查看完整详情")
+            AppKitFullTextScrollView(
+                text: description,
+                font: NSFont.systemFont(ofSize: descriptionFontSize, weight: .ultraLight),
+                textColor: NSColor(heroPlusBlendTextProfile.secondaryColor),
+                lineSpacing: 1.5,
+                showsVerticalScroller: false,
+                onClick: { isShowingDescriptionReader = true }
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: descriptionScrollHeight, alignment: .top)
             .compositingGroup()
             .blendMode(heroPlusBlendTextProfile.blendMode)
             .clipped()

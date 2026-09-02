@@ -575,7 +575,104 @@ nonisolated struct TrackSidecar: Codable, Sendable {
     }
 }
 
+/// Track-level ordering state owned by one music library. The optional raw
+/// values keep this file forward-compatible with libraries created before
+/// sorting became library data.
+nonisolated struct LibraryTrackSortState: Codable, Sendable, Equatable {
+    var sortKey: String?
+    var sortOrder: String?
+
+    init(sortKey: String? = nil, sortOrder: String? = nil) {
+        self.sortKey = sortKey
+        self.sortOrder = sortOrder
+    }
+}
+
+/// Collection-page ordering state owned by one music library.
+nonisolated struct LibraryCollectionSortState: Codable, Sendable, Equatable {
+    var sortKey: String?
+    var sortOrder: String?
+    var customItemOrder: [UUID]?
+
+    init(
+        sortKey: String? = nil,
+        sortOrder: String? = nil,
+        customItemOrder: [UUID]? = nil
+    ) {
+        self.sortKey = sortKey
+        self.sortOrder = sortOrder
+        self.customItemOrder = customItemOrder
+    }
+}
+
+/// Library-scoped sorting defaults and collection ordering. This must live
+/// under the selected library, never in the app-wide UserDefaults domain.
+nonisolated struct LibraryOrderingSidecar: Codable, Sendable, Equatable {
+    static let currentSchemaVersion = 1
+
+    var schemaVersion: Int
+    var allSongs: LibraryTrackSortState?
+    var allPlaylists: LibraryCollectionSortState?
+    var allAlbums: LibraryCollectionSortState?
+    var allArtists: LibraryCollectionSortState?
+    var legacyUserDefaultsMigrationCompleted: Bool
+
+    init(
+        schemaVersion: Int = Self.currentSchemaVersion,
+        allSongs: LibraryTrackSortState? = nil,
+        allPlaylists: LibraryCollectionSortState? = nil,
+        allAlbums: LibraryCollectionSortState? = nil,
+        allArtists: LibraryCollectionSortState? = nil,
+        legacyUserDefaultsMigrationCompleted: Bool = false
+    ) {
+        self.schemaVersion = schemaVersion
+        self.allSongs = allSongs
+        self.allPlaylists = allPlaylists
+        self.allAlbums = allAlbums
+        self.allArtists = allArtists
+        self.legacyUserDefaultsMigrationCompleted = legacyUserDefaultsMigrationCompleted
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case allSongs
+        case allPlaylists
+        case allAlbums
+        case allArtists
+        case legacyUserDefaultsMigrationCompleted
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion)
+            ?? Self.currentSchemaVersion
+        allSongs = try c.decodeIfPresent(LibraryTrackSortState.self, forKey: .allSongs)
+        allPlaylists = try c.decodeIfPresent(LibraryCollectionSortState.self, forKey: .allPlaylists)
+        allAlbums = try c.decodeIfPresent(LibraryCollectionSortState.self, forKey: .allAlbums)
+        allArtists = try c.decodeIfPresent(LibraryCollectionSortState.self, forKey: .allArtists)
+        legacyUserDefaultsMigrationCompleted = try c.decodeIfPresent(
+            Bool.self,
+            forKey: .legacyUserDefaultsMigrationCompleted
+        ) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
+        try c.encodeIfPresent(allSongs, forKey: .allSongs)
+        try c.encodeIfPresent(allPlaylists, forKey: .allPlaylists)
+        try c.encodeIfPresent(allAlbums, forKey: .allAlbums)
+        try c.encodeIfPresent(allArtists, forKey: .allArtists)
+        try c.encode(
+            legacyUserDefaultsMigrationCompleted,
+            forKey: .legacyUserDefaultsMigrationCompleted
+        )
+    }
+}
+
 nonisolated struct PlaylistSidecar: Codable, Sendable {
+    static let currentSchemaVersion = 6
+
     let schemaVersion: Int
     let id: UUID
     let name: String
@@ -590,6 +687,7 @@ nonisolated struct PlaylistSidecar: Codable, Sendable {
     let artworkRevision: String?
     let trackSortKey: String?
     let trackSortOrder: String?
+    let customTrackOrder: [UUID]?
 
     var trackIDs: [UUID] {
         if schemaVersion >= 2 {
@@ -614,11 +712,12 @@ nonisolated struct PlaylistSidecar: Codable, Sendable {
         case artworkRevision
         case trackSortKey
         case trackSortOrder
+        case customTrackOrder
         case legacyHeaderArtworkSignature = "headerArtworkSignature"
     }
 
     init(
-        schemaVersion: Int = 5,
+        schemaVersion: Int = Self.currentSchemaVersion,
         id: UUID,
         name: String,
         description: String? = nil,
@@ -630,7 +729,8 @@ nonisolated struct PlaylistSidecar: Codable, Sendable {
         generatedArtworkSignature: String? = nil,
         artworkRevision: String? = nil,
         trackSortKey: String? = nil,
-        trackSortOrder: String? = nil
+        trackSortOrder: String? = nil,
+        customTrackOrder: [UUID]? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -646,6 +746,7 @@ nonisolated struct PlaylistSidecar: Codable, Sendable {
         self.artworkRevision = artworkRevision
         self.trackSortKey = trackSortKey
         self.trackSortOrder = trackSortOrder
+        self.customTrackOrder = customTrackOrder
     }
 
     init(from decoder: Decoder) throws {
@@ -672,6 +773,7 @@ nonisolated struct PlaylistSidecar: Codable, Sendable {
         artworkRevision = try c.decodeIfPresent(String.self, forKey: .artworkRevision)
         trackSortKey = try c.decodeIfPresent(String.self, forKey: .trackSortKey)
         trackSortOrder = try c.decodeIfPresent(String.self, forKey: .trackSortOrder)
+        customTrackOrder = try c.decodeIfPresent([UUID].self, forKey: .customTrackOrder)
 
         if version >= 2 {
             items = try c.decodeIfPresent([PlaylistItemSidecar].self, forKey: .items) ?? []
@@ -688,7 +790,7 @@ nonisolated struct PlaylistSidecar: Codable, Sendable {
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(5, forKey: .schemaVersion)
+        try c.encode(Self.currentSchemaVersion, forKey: .schemaVersion)
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
         try c.encodeIfPresent(description, forKey: .description)
@@ -701,6 +803,7 @@ nonisolated struct PlaylistSidecar: Codable, Sendable {
         try c.encodeIfPresent(artworkRevision, forKey: .artworkRevision)
         try c.encodeIfPresent(trackSortKey, forKey: .trackSortKey)
         try c.encodeIfPresent(trackSortOrder, forKey: .trackSortOrder)
+        try c.encodeIfPresent(customTrackOrder, forKey: .customTrackOrder)
     }
 }
 
@@ -731,6 +834,9 @@ nonisolated struct ArtistSidecar: Codable, Sendable {
     var metadataConfidence: Double?
     var createdAt: Date
     var updatedAt: Date
+    var trackSortKey: String?
+    var trackSortOrder: String?
+    var customTrackOrder: [UUID]?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion
@@ -748,10 +854,13 @@ nonisolated struct ArtistSidecar: Codable, Sendable {
         case metadataConfidence
         case createdAt
         case updatedAt
+        case trackSortKey
+        case trackSortOrder
+        case customTrackOrder
     }
 
     init(
-        schemaVersion: Int = 2,
+        schemaVersion: Int = 3,
         id: UUID,
         canonicalName: String,
         displayName: String,
@@ -765,7 +874,10 @@ nonisolated struct ArtistSidecar: Codable, Sendable {
         metadataFetchedAt: Date? = nil,
         metadataConfidence: Double? = nil,
         createdAt: Date,
-        updatedAt: Date
+        updatedAt: Date,
+        trackSortKey: String? = nil,
+        trackSortOrder: String? = nil,
+        customTrackOrder: [UUID]? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -782,6 +894,9 @@ nonisolated struct ArtistSidecar: Codable, Sendable {
         self.metadataConfidence = metadataConfidence
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.trackSortKey = trackSortKey
+        self.trackSortOrder = trackSortOrder
+        self.customTrackOrder = customTrackOrder
     }
 
     init(from decoder: Decoder) throws {
@@ -810,11 +925,14 @@ nonisolated struct ArtistSidecar: Codable, Sendable {
         metadataConfidence = try c.decodeIfPresent(Double.self, forKey: .metadataConfidence)
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+        trackSortKey = try c.decodeIfPresent(String.self, forKey: .trackSortKey)
+        trackSortOrder = try c.decodeIfPresent(String.self, forKey: .trackSortOrder)
+        customTrackOrder = try c.decodeIfPresent([UUID].self, forKey: .customTrackOrder)
     }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(2, forKey: .schemaVersion)
+        try c.encode(3, forKey: .schemaVersion)
         try c.encode(id, forKey: .id)
         try c.encode(canonicalName, forKey: .canonicalName)
         try c.encode(displayName, forKey: .displayName)
@@ -831,6 +949,9 @@ nonisolated struct ArtistSidecar: Codable, Sendable {
         try c.encodeIfPresent(metadataConfidence, forKey: .metadataConfidence)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)
+        try c.encodeIfPresent(trackSortKey, forKey: .trackSortKey)
+        try c.encodeIfPresent(trackSortOrder, forKey: .trackSortOrder)
+        try c.encodeIfPresent(customTrackOrder, forKey: .customTrackOrder)
     }
 }
 
@@ -856,6 +977,9 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
     var metadataConfidence: Double?
     var createdAt: Date
     var updatedAt: Date
+    var trackSortKey: String?
+    var trackSortOrder: String?
+    var customTrackOrder: [UUID]?
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion
@@ -879,10 +1003,13 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         case metadataConfidence
         case createdAt
         case updatedAt
+        case trackSortKey
+        case trackSortOrder
+        case customTrackOrder
     }
 
     init(
-        schemaVersion: Int = 2,
+        schemaVersion: Int = 3,
         id: UUID,
         canonicalKey: String,
         displayTitle: String,
@@ -902,7 +1029,10 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         metadataFetchedAt: Date? = nil,
         metadataConfidence: Double? = nil,
         createdAt: Date,
-        updatedAt: Date
+        updatedAt: Date,
+        trackSortKey: String? = nil,
+        trackSortOrder: String? = nil,
+        customTrackOrder: [UUID]? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -925,6 +1055,9 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         self.metadataConfidence = metadataConfidence
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.trackSortKey = trackSortKey
+        self.trackSortOrder = trackSortOrder
+        self.customTrackOrder = customTrackOrder
     }
 
     init(from decoder: Decoder) throws {
@@ -959,11 +1092,14 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         metadataConfidence = try c.decodeIfPresent(Double.self, forKey: .metadataConfidence)
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? createdAt
+        trackSortKey = try c.decodeIfPresent(String.self, forKey: .trackSortKey)
+        trackSortOrder = try c.decodeIfPresent(String.self, forKey: .trackSortOrder)
+        customTrackOrder = try c.decodeIfPresent([UUID].self, forKey: .customTrackOrder)
     }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(2, forKey: .schemaVersion)
+        try c.encode(3, forKey: .schemaVersion)
         try c.encode(id, forKey: .id)
         try c.encode(canonicalKey, forKey: .canonicalKey)
         try c.encode(displayTitle, forKey: .displayTitle)
@@ -986,5 +1122,8 @@ nonisolated struct AlbumSidecar: Codable, Sendable {
         try c.encodeIfPresent(metadataConfidence, forKey: .metadataConfidence)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(updatedAt, forKey: .updatedAt)
+        try c.encodeIfPresent(trackSortKey, forKey: .trackSortKey)
+        try c.encodeIfPresent(trackSortOrder, forKey: .trackSortOrder)
+        try c.encodeIfPresent(customTrackOrder, forKey: .customTrackOrder)
     }
 }

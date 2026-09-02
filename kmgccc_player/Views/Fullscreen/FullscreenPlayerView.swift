@@ -235,6 +235,7 @@ struct FullscreenPlayerView: View {
     @StateObject private var bkController = BKArtBackgroundController()
     @State private var skinRevision = 0
     @State private var rightPanelDisplayState: RightPanelDisplayState = .lyrics
+    @State private var lastRightPanelDisplayStateBeforeQueue: RightPanelDisplayState = .lyrics
     @State private var lockedFullscreenLyricsBackgroundColor: NSColor?
     @State private var lockedFullscreenLyricsUltraDark: Bool = false
     @State private var pendingFullscreenLyricsBackgroundCapture: Bool = false
@@ -752,16 +753,37 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenDetailReaderTitle: String {
-        "歌曲详情"
-    }
-
-    private var fullscreenDetailReaderSubtitle: String? {
         let title = playbackCoordinator.presentation.title
         let artist = playbackCoordinator.presentation.artist
         if !title.isEmpty, !artist.isEmpty {
-            return "\(title) · \(artist)"
+            return "\(title) - \(artist)"
         }
-        return title.isEmpty ? artist : title
+        return title.isEmpty ? (artist.isEmpty ? "歌曲详情" : artist) : title
+    }
+
+    private var fullscreenDetailReaderAttributionNote: String? {
+        if let track = playbackCoordinator.presentation.localTrack {
+            let desc = track.userDescription.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            if !desc.isEmpty {
+                return nil
+            }
+            if let album = libraryVM?.albumEntries.first(where: { $0.canonicalKey == track.albumGroupKey }) {
+                let albumDesc = album.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                if !albumDesc.isEmpty {
+                    return "来自 \(album.displayTitle)"
+                }
+            }
+            let artistKey = LibraryNormalization.artistComponents(for: track).first?.canonicalName
+                ?? LibraryNormalization.artistComponents(track.artist).first?.canonicalName
+                ?? ""
+            if let artistEntry = libraryVM?.artistEntries.first(where: { $0.canonicalName == artistKey }) {
+                let artistDesc = artistEntry.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                if !artistDesc.isEmpty {
+                    return "来自 \(artistEntry.displayName)"
+                }
+            }
+        }
+        return nil
     }
 
     private var fullscreenDetailReaderText: String {
@@ -772,12 +794,28 @@ struct FullscreenPlayerView: View {
                 let albumDesc = album.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                 if !albumDesc.isEmpty { return albumDesc }
             }
+            let artistKey = LibraryNormalization.artistComponents(for: track).first?.canonicalName
+                ?? LibraryNormalization.artistComponents(track.artist).first?.canonicalName
+                ?? ""
+            if let artistEntry = libraryVM?.artistEntries.first(where: { $0.canonicalName == artistKey }) {
+                let artistDesc = artistEntry.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                if !artistDesc.isEmpty { return artistDesc }
+            }
         }
         return ""
     }
 
     private func setDetailReaderPanelPresented(_ presented: Bool) {
         guard isDetailReaderPanelPresented != presented else { return }
+        if presented {
+            if isQuickAppearancePanelPresented {
+                setQuickAppearancePanelPresented(false)
+            }
+            if rightPanelDisplayState == .queue {
+                setRightPanelDisplayState(lastRightPanelDisplayStateBeforeQueue == .hidden ? .hidden : .lyrics)
+            }
+            setFullscreenBottomControlsVisible(true)
+        }
         withAnimation(.easeOut(duration: 0.22)) {
             isDetailReaderPanelPresented = presented
         }
@@ -934,7 +972,7 @@ struct FullscreenPlayerView: View {
 
                     FullscreenDetailReaderPanel(
                         title: fullscreenDetailReaderTitle,
-                        subtitle: fullscreenDetailReaderSubtitle,
+                        attributionNote: fullscreenDetailReaderAttributionNote,
                         text: fullscreenDetailReaderText,
                         scale: scale,
                         foregroundProfile: fullscreenQuickPanelForegroundProfile,
@@ -1488,6 +1526,7 @@ struct FullscreenPlayerView: View {
             && !isQuickAppearancePanelPresented
             && !isShowingExternalMatchEditor
             && trackToEdit == nil
+            && !isDetailReaderPanelPresented
     }
 
     @ViewBuilder
@@ -1691,10 +1730,11 @@ struct FullscreenPlayerView: View {
             || isVolumeExpanded
             || isFullscreenBottomControlsProgressDragging
             || isFullscreenBottomControlsVolumeAdjusting
+            || isDetailReaderPanelPresented
     }
 
     private var shouldKeepFullscreenBottomControlsVisible: Bool {
-        isShowingQueuePanel || isQuickAppearancePanelPresented
+        isShowingQueuePanel || isQuickAppearancePanelPresented || isDetailReaderPanelPresented
     }
 
     private func updateFullscreenMiniPlayerOcclusionRegion(_ region: FullscreenMiniPlayerOcclusionRegion) {
@@ -3404,6 +3444,10 @@ struct FullscreenPlayerView: View {
     }
 
     private func setRightPanelDisplayState(_ newState: RightPanelDisplayState) {
+        if newState == .queue && rightPanelDisplayState != .queue {
+            lastRightPanelDisplayStateBeforeQueue = rightPanelDisplayState
+        }
+
         let needsSystemFullscreenBlendPreflight = newState == .lyrics
             && playbackCoordinator.presentation.hasTrack
             && hostContext == .systemFullscreenSpace

@@ -76,6 +76,7 @@ struct LibraryDetailHeaderView: View {
     private static let visibleDescriptionLineCount = 6
 
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(UIStateViewModel.self) private var uiState: UIStateViewModel?
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.libraryHeaderSemanticPalette) private var headerSemanticPalette
     @Environment(\.libraryHeaderForegroundPalette) private var headerForegroundPaletteOverride
@@ -106,7 +107,6 @@ struct LibraryDetailHeaderView: View {
     @State private var isShowingArtistInfo = false
     @State private var isShowingAlbumInfo = false
     @State private var isShowingDescriptionReader = false
-    @State private var isHoveringDescription = false
 
     var body: some View {
         let _ = LyricsRuntimeProfile.markBody("LibraryDetailHeaderView.body")
@@ -159,7 +159,9 @@ struct LibraryDetailHeaderView: View {
                 subtitle: readerSubtitle,
                 text: headerDescriptionText,
                 artworkImage: currentArtwork,
-                isCircleArtwork: config.isCircle
+                isCircleArtwork: config.isCircle,
+                paletteOverride: headerForegroundPaletteOverride ?? headerSemanticPalette?.appForeground,
+                accentColorOverride: headerSemanticPalette.map { colorScheme == .dark ? $0.uiAccentOnDarkColor : $0.uiAccentOnLightColor }
             )
             .environmentObject(themeStore)
         }
@@ -370,10 +372,35 @@ struct LibraryDetailHeaderView: View {
         }
     }
 
+    @ViewBuilder
     private var subtitleView: some View {
-        Text(subtitleString)
-            .font(.callout)
-            .foregroundStyle(headerSecondaryTextColor)
+        if case .album(let entry, let stats) = config, !stats.artistName.isEmpty {
+            Button {
+                navigateToArtist(entry: entry, artistName: stats.artistName)
+            } label: {
+                Text(stats.artistName)
+                    .font(.callout)
+                    .foregroundStyle(headerSecondaryTextColor)
+            }
+            .buttonStyle(.plain)
+        } else {
+            Text(subtitleString)
+                .font(.callout)
+                .foregroundStyle(headerSecondaryTextColor)
+        }
+    }
+
+    private func navigateToArtist(entry: AlbumEntry, artistName: String) {
+        let artistKey = !entry.primaryArtistCanonicalName.isEmpty
+            ? entry.primaryArtistCanonicalName
+            : (LibraryNormalization.artistComponents(artistName).first?.canonicalName ?? "")
+        guard !artistKey.isEmpty else { return }
+        let target = LibrarySelection.artist(artistKey)
+        if let uiState {
+            uiState.pushSelectionInHomeContext(target, libraryVM: libraryVM)
+        } else {
+            libraryVM.selectOrResetCurrentSelection(target)
+        }
     }
 
     private var subtitleString: String {
@@ -451,32 +478,16 @@ struct LibraryDetailHeaderView: View {
     }
 
     private func descriptionReadView(text: String) -> some View {
-        Button {
-            isShowingDescriptionReader = true
-        } label: {
-            AppKitFullTextScrollView(
-                text: text,
-                font: NSFont.preferredFont(forTextStyle: .callout),
-                textColor: NSColor(headerSecondaryTextColor),
-                lineSpacing: 0,
-                showsVerticalScroller: false
-            )
-            .allowsHitTesting(false)
-            .frame(height: headerDescriptionVisibleHeight, alignment: .top)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 2)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isHoveringDescription ? Color.primary.opacity(0.06) : Color.clear)
-            )
-        }
-        .buttonStyle(.plain)
-        .contentShape(Rectangle())
-        .onHover { hovering in
-            isHoveringDescription = hovering
-        }
-        .help("点击查看完整详情")
+        AppKitFullTextScrollView(
+            text: text,
+            font: NSFont.preferredFont(forTextStyle: .callout),
+            textColor: NSColor(headerSecondaryTextColor),
+            lineSpacing: 0,
+            showsVerticalScroller: false,
+            onClick: { isShowingDescriptionReader = true }
+        )
+        .frame(height: headerDescriptionVisibleHeight, alignment: .top)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var readerTitle: String {
@@ -501,7 +512,7 @@ struct LibraryDetailHeaderView: View {
         case .artist(let e, _): return e.displayName
         case .album(let e, let stats):
             if !stats.artistName.isEmpty {
-                return "\(e.displayTitle) · \(stats.artistName)"
+                return "\(e.displayTitle) - \(stats.artistName)"
             }
             return e.displayTitle
         }
