@@ -18,6 +18,10 @@ final class SmartPlaybackController {
 
     // MARK: - Components
 
+    private let playbackHistoryStore: PlaybackHistoryStore
+    private let preferenceStatsService: PreferenceStatsService
+    private let libraryService: LocalLibraryService
+
     /// The active shuffle session.
     private var shuffleSession: ShuffleSession?
 
@@ -40,7 +44,14 @@ final class SmartPlaybackController {
     /// Last track in the explicit play-next block for sequential queues.
     private var playNextInsertionAnchorID: UUID?
 
-    init() {
+    init(
+        playbackHistoryStore: PlaybackHistoryStore,
+        preferenceStatsService: PreferenceStatsService = .shared,
+        libraryService: LocalLibraryService
+    ) {
+        self.playbackHistoryStore = playbackHistoryStore
+        self.preferenceStatsService = preferenceStatsService
+        self.libraryService = libraryService
         setupNotifications()
     }
 
@@ -83,7 +94,10 @@ final class SmartPlaybackController {
 
         if shuffle {
             // Initialize shuffle session.
-            let session = ShuffleSession(sourceTrackIDs: tracks.map { $0.id })
+            let session = ShuffleSession(
+                sourceTrackIDs: tracks.map { $0.id },
+                preferenceStatsService: preferenceStatsService
+            )
             session.start(from: tracks[index].id, tracks: tracks)
             session.trackLoader = { [weak self] trackID in
                 self?.sourceTracks.first { $0.id == trackID }
@@ -458,7 +472,7 @@ final class SmartPlaybackController {
             // threshold. Merely opening a track or scrubbing briefly is not a
             // playback-history event.
         } else {
-            PlaybackHistoryStore.shared.record(
+            playbackHistoryStore.record(
                 track: track,
                 playedAt: tracker.startedAt,
                 playedSeconds: accumulatedSeconds
@@ -466,18 +480,18 @@ final class SmartPlaybackController {
         }
 
         // Apply to stats
-        let didChangeStats = PreferenceStatsService.shared.applyPlaybackOutcome(
+        let didChangeStats = preferenceStatsService.applyPlaybackOutcome(
             trackID: trackID,
             outcome: outcome,
             trackDuration: track.duration
         )
 
         // Get updated stats for logging
-        let updatedStats = PreferenceStatsService.shared.getStats(for: trackID)
+        let updatedStats = preferenceStatsService.getStats(for: trackID)
 
         if didChangeStats {
             // Write to disk
-            PreferenceStatsService.shared.saveStats(for: track)
+            preferenceStatsService.saveStats(for: track)
         }
 
         if didChangeStats {
@@ -579,6 +593,10 @@ final class SmartPlaybackController {
 
     func prepareForTermination() {
         finalizeCurrentPlaybackSession(reason: .appTermination)
+        // Capture the latest in-memory values before the process termination
+        // deadline. The bound library session will retry the sidecar writes on
+        // its next lifecycle opportunity.
+        preferenceStatsService.checkpointPendingStats()
     }
 
     @objc private func handleSaveRequest(_ notification: Notification) {
@@ -586,7 +604,7 @@ final class SmartPlaybackController {
         if let trackIDs = notification.userInfo?["trackIDs"] as? [UUID] {
             for trackID in trackIDs {
                 if let track = sourceTracks.first(where: { $0.id == trackID }) {
-                    LocalLibraryService.shared.writeMetaOnlyInBackground(for: track, reason: "playbackStats")
+                    libraryService.writeMetaOnlyInBackground(for: track, reason: "playbackStats")
                 }
             }
         }

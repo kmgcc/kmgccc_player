@@ -18,6 +18,7 @@ import SwiftData
 /// - Supports both forward and backward navigation
 @MainActor
 final class ShuffleSession {
+    private let preferenceStatsService: PreferenceStatsService
 
     // MARK: - Configuration
 
@@ -74,8 +75,12 @@ final class ShuffleSession {
     /// Callback for loading track metadata (injected dependency).
     var trackLoader: ((UUID) -> Track?)?
 
-    init(sourceTrackIDs: [UUID]) {
+    init(
+        sourceTrackIDs: [UUID],
+        preferenceStatsService: PreferenceStatsService = .shared
+    ) {
         self.sourceSnapshotTrackIDs = sourceTrackIDs
+        self.preferenceStatsService = preferenceStatsService
     }
 
     // MARK: - Session Lifecycle
@@ -341,7 +346,7 @@ final class ShuffleSession {
         baseWeights.removeAll()
 
         for track in tracks {
-            let stats = PreferenceStatsService.shared.getStats(for: track.id)
+            let stats = preferenceStatsService.getStats(for: track.id)
             let result = PreferenceScorerV2.calculateScore(
                 stats: stats,
                 duration: track.duration,
@@ -380,7 +385,7 @@ final class ShuffleSession {
             )
 
             // Gentle, always-on freshness boost (long-unplayed tracks resurface).
-            let stats = PreferenceStatsService.shared.getStats(for: trackID)
+            let stats = preferenceStatsService.getStats(for: trackID)
             weight *= PreferenceScorerV2.freshnessMultiplier(
                 stats: stats,
                 duration: track.duration,
@@ -400,7 +405,7 @@ final class ShuffleSession {
     }
 
     private func updateBaseWeight(for track: Track) {
-        let stats = PreferenceStatsService.shared.getStats(for: track.id)
+        let stats = preferenceStatsService.getStats(for: track.id)
         let result = PreferenceScorerV2.calculateScore(
             stats: stats,
             duration: track.duration,
@@ -435,7 +440,7 @@ final class ShuffleSession {
         let eligible: [(id: UUID, score: Double)] = weights.keys.compactMap { id in
             guard !recentSet.contains(id), let track = trackCache[id] else { return nil }
             let score = PreferenceScorerV2.rediscoveryEligibility(
-                stats: PreferenceStatsService.shared.getStats(for: id),
+                stats: preferenceStatsService.getStats(for: id),
                 duration: track.duration,
                 now: now
             )

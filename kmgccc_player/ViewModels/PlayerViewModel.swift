@@ -9,15 +9,18 @@
 import Foundation
 import MediaPlayer
 
+/// Origin of a playback queue handed over from the library UI. Kept at file
+/// scope so playback-layer services can reference it without importing the
+/// view model type (§16 inversion).
+enum LibraryQueueSource: Equatable {
+    case librarySelection(String)
+}
+
 /// Observable ViewModel for playback control.
 /// Bridges UI with audio playback and level meter services.
 @Observable
 @MainActor
 final class PlayerViewModel {
-
-    enum LibraryQueueSource: Equatable {
-        case librarySelection(String)
-    }
 
     // MARK: - Dependencies
 

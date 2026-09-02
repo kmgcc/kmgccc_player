@@ -23,8 +23,6 @@ struct PlaybackHistoryItem: Identifiable, Equatable, Sendable {
 @Observable
 @MainActor
 final class PlaybackHistoryStore {
-    static let shared = PlaybackHistoryStore()
-
     /// A bounded event log keeps launch and day queries predictable even for
     /// libraries that have been played for years.
     static let maximumStoredRecords = 10_000
@@ -35,12 +33,21 @@ final class PlaybackHistoryStore {
     @ObservationIgnored private var dailyCountsCache: [Date: Int]?
     private(set) var revision: Int = 0
 
-    init(modelContainer: ModelContainer? = nil) {
-        let storeURL = PlaybackHistoryStorePaths.storeURL
-        let container = modelContainer ?? Self.makeContainer(at: storeURL)
+    init(context: LibraryContext) {
+        let container = Self.makeContainer(context: context)
         self.modelContainer = container
         self.modelContext = ModelContext(container)
-        self.activeStoreURL = storeURL
+        self.activeStoreURL = context.paths.playbackHistoryStoreURL
+    }
+
+    private init(inMemoryContainer: ModelContainer) {
+        self.modelContainer = inMemoryContainer
+        self.modelContext = ModelContext(inMemoryContainer)
+        self.activeStoreURL = URL(fileURLWithPath: "/dev/null/kmgccc-playback-history")
+    }
+
+    static func inMemory() -> PlaybackHistoryStore {
+        PlaybackHistoryStore(inMemoryContainer: makeInMemoryContainer())
     }
 
     func record(
@@ -99,20 +106,11 @@ final class PlaybackHistoryStore {
         fetchRecords(sortAscending: false, limit: limit).map(Self.makeItem)
     }
 
-    /// Rebind the event store after the user switches the active music library.
-    /// The history timeline belongs to the library root, so records from the
-    /// previous library must not leak into the newly selected library.
-    func reconfigureForCurrentLibrary() {
-        let newStoreURL = PlaybackHistoryStorePaths.storeURL
-        guard newStoreURL.standardizedFileURL != activeStoreURL.standardizedFileURL else { return }
-
-        let container = Self.makeContainer(at: newStoreURL)
-        modelContainer = container
-        modelContext = ModelContext(container)
-        activeStoreURL = newStoreURL
-        dailyCountsCache = nil
-        revision &+= 1
-        NotificationCenter.default.post(name: .playbackHistoryDidChange, object: nil)
+    func validateReadableStore(at expectedURL: URL) throws {
+        guard activeStoreURL.standardizedFileURL == expectedURL.standardizedFileURL else {
+            throw LibraryUpgradeValidationError.historyStoreMismatch
+        }
+        _ = try modelContext.fetchCount(FetchDescriptor<PlaybackHistoryRecord>())
     }
 
     func fetchItems(on date: Date) -> [PlaybackHistoryItem] {
@@ -297,10 +295,9 @@ final class PlaybackHistoryStore {
         )
     }
 
-    private static func makeContainer(at storeURL: URL) -> ModelContainer {
+    private static func makeContainer(context: LibraryContext) -> ModelContainer {
         let schema = Schema([PlaybackHistoryRecord.self])
-        let libraryRootURL = storeURL.deletingLastPathComponent().deletingLastPathComponent()
-        let persistentStoreURL = PlaybackHistoryStorePaths.prepareStoreURL(at: libraryRootURL)
+        let persistentStoreURL = PlaybackHistoryStorePaths.prepareStoreURL(in: context.paths)
 
         let initialAttempt = makePersistentContainer(schema: schema, storeURL: persistentStoreURL)
         if let container = initialAttempt.container {
@@ -316,8 +313,24 @@ final class PlaybackHistoryStore {
         }
 
         Log.error("[PlaybackHistory] using an in-memory history store for this launch", category: .library)
+        return makeInMemoryContainer()
+    }
+
+    private static func makeInMemoryContainer() -> ModelContainer {
+        let schema = Schema([PlaybackHistoryRecord.self])
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-        return try! ModelContainer(for: schema, configurations: [configuration])
+        return makeContainer(schema: schema, configuration: configuration)
+    }
+
+    private static func makeContainer(
+        schema: Schema,
+        configuration: ModelConfiguration
+    ) -> ModelContainer {
+        do {
+            return try ModelContainer(for: schema, configurations: [configuration])
+        } catch {
+            fatalError("Could not create PlaybackHistory ModelContainer: \(error)")
+        }
     }
 
     private static func makePersistentContainer(

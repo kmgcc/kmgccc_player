@@ -18,6 +18,7 @@ struct HomeView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
@@ -315,6 +316,8 @@ struct HomeView: View {
                 playlists: homeVM.playlists,
                 preferenceRanking: homeVM.preferenceRanking,
                 libraryVM: libraryVM,
+                playlistArtworkPipeline: cacheServices.playlistArtworkPipeline,
+                artworkDerivativeStore: cacheServices.artworkDerivativeStore,
                 mode: mode,
                 sectionOrder: settings.homeSectionOrder
             )
@@ -432,10 +435,10 @@ struct HomeView: View {
             Image(systemName: "music.note.house")
                 .font(.system(size: 48, weight: .light))
                 .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-            Text("你的音乐库是空的")
+            Text("没有歌曲待导入")
                 .font(.title3)
                 .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-            Text("导入一些音乐来开始吧")
+            Text("从 Finder 拖入音乐，或使用工具栏的导入按钮")
                 .font(.callout)
                 .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
         }

@@ -46,7 +46,14 @@ nonisolated struct NCMConversionResult: Sendable {
     let coverData: Data?
 }
 
-nonisolated enum NCMFormat: String, Sendable {
+/// Metadata needed to identify an already-converted product without decoding
+/// the NCM audio payload again.
+nonisolated struct NCMConversionInspection: Sendable {
+    let format: NCMFormat
+    let metadata: NCMMetadata
+}
+
+nonisolated enum NCMFormat: String, Codable, Sendable {
     case mp3 = "mp3"
     case flac = "flac"
 }

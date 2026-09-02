@@ -32,74 +32,30 @@ struct SettingsTaskDialog<Content: View, Footer: View>: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            SettingsTaskDialogHeader(
-                title: title,
-                subtitle: subtitle,
-                systemImage: systemImage,
-                iconColor: iconColor
-            )
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
-            .padding(.bottom, 12)
-
-            Divider()
-                .opacity(0.25)
-
-            content
-                .padding(.horizontal, 18)
-                .padding(.top, 14)
-                .padding(.bottom, 18)
-
-            Divider()
-                .opacity(0.25)
-
-            footer
-                .padding(.horizontal, 20)
-                .padding(.top, 10)
-                .padding(.bottom, 30)
-        }
-    }
-}
-
-private struct SettingsTaskDialogHeader: View {
-    let title: String
-    let subtitle: String
-    let systemImage: String
-    let iconColor: Color
-
-    @Environment(\.colorScheme) private var colorScheme
-    @EnvironmentObject private var themeStore: ThemeStore
-
-    var body: some View {
-        HStack(spacing: 16) {
-            ZStack {
-                Circle()
-                    .fill(iconColor.opacity(colorScheme == .dark ? 0.18 : 0.12))
-                    .frame(width: 52, height: 52)
-                Image(systemName: systemImage)
-                    .font(.system(size: 21, weight: .semibold))
-                    .foregroundStyle(iconColor)
+        AppDialogFrame(
+            header: {
+                AppDialogHeader(
+                    title: title,
+                    subtitle: subtitle,
+                    systemImage: systemImage,
+                    iconColor: iconColor
+                )
+                .padding(.horizontal, AppDialogTokens.headerHorizontalPadding)
+                .padding(.top, 12)
+                .padding(.bottom, 12)
+            },
+            content: {
+                content
+                    .padding(.horizontal, 18)
+                    .padding(.top, 14)
+                    .padding(.bottom, 18)
+            },
+            footer: {
+                AppDialogFooter {
+                    footer
+                }
             }
-            .liquidGlassCircle(
-                colorScheme: colorScheme,
-                accentColor: iconColor,
-                prominence: .prominent,
-                isFloating: true
-            )
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
-                Text(subtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer()
-        }
+        )
     }
 }
 
@@ -201,30 +157,6 @@ enum SettingsTaskDialogButtonKind: Equatable {
     case secondary
     case primary
     case destructive
-
-    func foregroundColor(primaryColor: Color) -> Color {
-        switch self {
-        case .secondary:
-            return primaryColor
-        case .primary, .destructive:
-            return .white
-        }
-    }
-
-    func fillColor(accentColor: Color, primaryColor: Color) -> Color {
-        switch self {
-        case .secondary:
-            return primaryColor.opacity(0.08)
-        case .primary:
-            return accentColor.opacity(0.88)
-        case .destructive:
-            return Color.red.opacity(0.88)
-        }
-    }
-
-    var isProminent: Bool {
-        self == .primary || self == .destructive
-    }
 }
 
 struct SettingsTaskDialogButton: View {
@@ -232,6 +164,7 @@ struct SettingsTaskDialogButton: View {
     let kind: SettingsTaskDialogButtonKind
     let disabled: Bool
     let action: () -> Void
+
     @EnvironmentObject private var themeStore: ThemeStore
 
     init(
@@ -249,35 +182,21 @@ struct SettingsTaskDialogButton: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 13, weight: kind.isProminent ? .semibold : .medium))
-                .foregroundStyle(
-                    kind.foregroundColor(primaryColor: themeStore.appForegroundPalette.primaryColor)
-                )
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .contentShape(Capsule())
-                .background(
-                    Capsule()
-                        .fill(
-                            kind.fillColor(
-                                accentColor: themeStore.accentColor,
-                                primaryColor: themeStore.appForegroundPalette.primaryColor
-                            )
-                        )
-                )
-                .overlay(
-                    Capsule()
-                        .strokeBorder(GlassStyleTokens.glassBorderColor, lineWidth: GlassStyleTokens.hairlineWidth)
-                )
-                .glassEffect(.clear, in: Capsule())
-                .clipShape(Capsule())
         }
-        .buttonStyle(.plain)
-        .contentShape(Capsule())
+        .buttonStyle(
+            AppDialogGlassButtonStyle(
+                kind: glassKind,
+                tint: themeStore.accentColor
+            )
+        )
         .disabled(disabled)
-        .opacity(disabled ? 0.5 : 1)
-        .if(kind.isProminent) { view in
-            view.subtleFloatingShadow()
+    }
+
+    private var glassKind: AppDialogGlassButtonStyle.Kind {
+        switch kind {
+        case .secondary: return .secondary
+        case .primary: return .primary
+        case .destructive: return .destructive
         }
     }
 }

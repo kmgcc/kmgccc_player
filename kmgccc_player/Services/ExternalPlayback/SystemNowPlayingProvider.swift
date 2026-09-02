@@ -294,9 +294,11 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
     let source: PlaybackSource = .systemNowPlaying
 
-    private let libraryVM: LibraryViewModel
+    private let libraryTracksProvider: @MainActor () -> [Track]
     private let artworkResolver: AppleMusicArtworkResolver
     private let metadataStore: ExternalPlaybackMetadataStore
+    private let lyricsSearchCoordinator: LyricsSearchCoordinator
+    private let amllDBService: AMLLDBService
     private let sourceStore: ExternalPlaybackSourceStore
     private let decoder = JSONDecoder()
     private let streamQueue = DispatchQueue(label: "kmgccc_player.systemNowPlaying.stream", qos: .utility)
@@ -400,14 +402,18 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     var capabilities: ExternalPlaybackCapabilities { currentCapabilities }
 
     init(
-        libraryVM: LibraryViewModel,
+        libraryTracksProvider: @escaping @MainActor () -> [Track],
         artworkResolver: AppleMusicArtworkResolver = AppleMusicArtworkResolver(),
-        metadataStore: ExternalPlaybackMetadataStore? = nil,
+        metadataStore: ExternalPlaybackMetadataStore,
+        lyricsSearchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService,
         sourceStore: ExternalPlaybackSourceStore = .shared
     ) {
-        self.libraryVM = libraryVM
+        self.libraryTracksProvider = libraryTracksProvider
         self.artworkResolver = artworkResolver
-        self.metadataStore = metadataStore ?? .shared
+        self.metadataStore = metadataStore
+        self.lyricsSearchCoordinator = lyricsSearchCoordinator
+        self.amllDBService = amllDBService
         self.sourceStore = sourceStore
         sourcePreferenceTask = Task { @MainActor [weak self] in
             for await _ in NotificationCenter.default.notifications(
@@ -421,6 +427,16 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
     deinit {
         sourcePreferenceTask?.cancel()
+    }
+
+    convenience init(previewLibraryTracksProvider provider: @escaping @MainActor () -> [Track]) {
+        let cacheServices = LibraryCacheServices.preview
+        self.init(
+            libraryTracksProvider: provider,
+            metadataStore: cacheServices.externalPlaybackMetadataStore,
+            lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
+            amllDBService: cacheServices.amllDBService
+        )
     }
 
     func start() {
@@ -619,7 +635,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         isRefetchingLyrics = true
         defer { isRefetchingLyrics = false }
 
-        ExternalPlaybackMetadataStore.shared.clearAutoLyricsCache(for: identity)
+        metadataStore.clearAutoLyricsCache(for: identity)
         invalidateCurrentResolution()
 
         await withTaskCancellationHandler {
@@ -1952,7 +1968,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         guard resolutionTask == nil else { return }
 
         let metadataStore = self.metadataStore
-        let libraryTracks = libraryVM.allTracks
+        let libraryTracks = libraryTracksProvider()
         resolutionTask = Task { [weak self] in
             let resolution = await metadataStore.resolve(raw: raw, libraryTracks: libraryTracks)
             let localLyrics = await resolution.matchedTrack?.loadTTMLLyricsOffMainIfNeeded()
@@ -2483,13 +2499,17 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         lyricsSearchTimestamps[identity] = Date()
 
         let metadataStore = metadataStore
+        let lyricsSearchCoordinator = lyricsSearchCoordinator
+        let amllDBService = amllDBService
         let duration = lastPayload?.duration
         lyricsTask = Task { [weak self] in
             let result = await LyricsSearchHelper.searchAndFetchAutomaticallyMatchedLyrics(
                 title: effective.title,
                 artist: effective.artist,
                 album: effective.album,
-                duration: (duration ?? 0) > 0 ? duration : nil
+                duration: (duration ?? 0) > 0 ? duration : nil,
+                searchCoordinator: lyricsSearchCoordinator,
+                amllDBService: amllDBService
             )
             guard !Task.isCancelled else { return }
             await MainActor.run {

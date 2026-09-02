@@ -7,12 +7,34 @@
 
 import SwiftUI
 
-/// Data management settings: import behavior and cache management.
+/// Data management settings split between music-library controls and app data.
 struct DataManagementSettingsView: View {
+    @State private var selectedTab = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsHeaderLabel("数据", systemImage: "arrow.counterclockwise.circle")
+            SettingsTabSelector(
+                tabs: ["音乐", "应用数据"],
+                selectedTab: $selectedTab,
+                fillsWidth: true
+            )
+
+            if selectedTab == 0 {
+                MusicSettingsView()
+            } else {
+                ApplicationDataSettingsView()
+            }
+        }
+    }
+}
+
+private struct ApplicationDataSettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @AppStorage("telemetry.anonymousUsageEnabled") private var telemetryEnabled: Bool = true
     @AppStorage(CrashReportPreferences.automaticUploadKey) private var automaticCrashReportUploadEnabled = true
 
@@ -24,11 +46,6 @@ struct DataManagementSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            SettingsHeaderLabel("数据", systemImage: "arrow.counterclockwise.circle")
-
-            // Library location
-            LibraryLocationSettingsSection()
-
             // Import settings
             SettingsSection {
                 VStack(alignment: .leading, spacing: 12) {
@@ -47,7 +64,10 @@ struct DataManagementSettingsView: View {
             SettingsSection {
                 VStack(alignment: .leading, spacing: 10) {
                     Button {
-                        LibraryCompletionDialogPresenter.present(libraryVM: libraryVM)
+                        LibraryCompletionDialogPresenter.present(
+                            libraryVM: libraryVM,
+                            cacheServices: cacheServices
+                        )
                     } label: {
                         Text("补全所有歌曲信息")
                     }
@@ -148,7 +168,13 @@ struct DataManagementSettingsView: View {
         guard !isClearingLibraryCaches else { return }
         isClearingLibraryCaches = true
         Task {
-            await CacheManager.clearLibraryCaches()
+            await CacheManager.clearLibraryCaches(
+                storageLocations: cacheServices.storageLocations,
+                trackArtworkCache: cacheServices.trackArtworkCache,
+                artworkDerivativeStore: cacheServices.artworkDerivativeStore,
+                amllDBService: cacheServices.amllDBService,
+                externalPlaybackMetadataStore: cacheServices.externalPlaybackMetadataStore
+            )
             playbackCoordinator.clearExternalPlaybackRuntimeCaches()
             isClearingLibraryCaches = false
         }

@@ -24,6 +24,7 @@ final class PreferenceStatsService {
 
     /// Set of track IDs with unsaved changes.
     private var dirtyTrackIDs: Set<UUID> = []
+    private weak var libraryService: LocalLibraryService?
 
     /// Small crash-safe journal used when the app's three-second termination
     /// deadline expires before sidecar writes finish.
@@ -51,8 +52,13 @@ final class PreferenceStatsService {
         return recentSkipTimestamps.count >= Self.browsingBurstThreshold
     }
 
-    private init() {
+    init() {
         pendingRecoveryStats = Self.loadPendingJournal()
+    }
+
+    func bindPersistence(to libraryService: LocalLibraryService) {
+        precondition(self.libraryService == nil || self.libraryService === libraryService)
+        self.libraryService = libraryService
     }
 
     // MARK: - Stats Access
@@ -253,12 +259,29 @@ final class PreferenceStatsService {
 
     /// Save all dirty stats to their respective sidecars without blocking the main actor.
     /// - Parameter trackProvider: Optional closure to get Track objects for writing sidecars.
-    func saveAllPendingNow(trackProvider: ((UUID) -> Track?)? = nil) {
+    /// - Parameter synchronously: Explicitly perform writes before returning. This is used
+    ///   only after a library session has quiesced; normal lifecycle notifications stay async.
+    func saveAllPendingNow(
+        trackProvider: ((UUID) -> Track?)? = nil,
+        synchronously: Bool = false
+    ) {
         let tracksToSave = Array(dirtyTrackIDs)
 
         guard !tracksToSave.isEmpty else { return }
 
         if let trackProvider {
+            if synchronously {
+                for trackID in tracksToSave {
+                    guard let track = trackProvider(trackID) else { continue }
+                    pendingRecoveryStats[trackID] = getStats(for: trackID)
+                    persistenceService.writeMetaOnly(for: track, reason: "playbackStats")
+                    dirtyTrackIDs.remove(trackID)
+                    pendingRecoveryStats.removeValue(forKey: trackID)
+                }
+                persistPendingJournal()
+                return
+            }
+
             guard backgroundSaveTask == nil else { return }
             backgroundSaveTask = Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -317,7 +340,8 @@ final class PreferenceStatsService {
         }
         persistPendingJournal()
 
-        LocalLibraryService.shared.suppressMonitorEvents(for: 1.5)
+        let libraryService = persistenceService
+        let capturedPaths = libraryService.paths
         let snapshotsToPersist = snapshots
         let successfulTrackIDs = await Task.detached(priority: .utility) { @Sendable in
             var successful: Set<UUID> = []
@@ -325,6 +349,7 @@ final class PreferenceStatsService {
                 let result = autoreleasepool {
                     LocalLibraryService.persistTrackSnapshotOnBackground(
                         snapshot,
+                        paths: capturedPaths,
                         mode: .metaOnly,
                         reason: "playbackStats"
                     )
@@ -403,6 +428,14 @@ final class PreferenceStatsService {
     func clearCache() {
         statsCache.removeAll()
         dirtyTrackIDs.removeAll()
+        recentSkipTimestamps.removeAll()
+    }
+
+    private var persistenceService: LocalLibraryService {
+        guard let libraryService else {
+            preconditionFailure("PreferenceStatsService must be bound to a library service before persistence")
+        }
+        return libraryService
     }
 
     /// Get statistics summary for debugging.

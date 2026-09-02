@@ -50,6 +50,7 @@ Tools/ColorGoldenMaster/
 .codex/
 .playwright-mcp/
 .mnemon/
+.omo/
 
 # macOS
 .DS_Store
@@ -57,6 +58,7 @@ Tools/ColorGoldenMaster/
 # Xcode
 build/
 /.build/
+Dependencies/PlayerAutomation/.build/
 *.project/xcuserdata
 *.project/xcshareddata
 *.project/project.xcworkspace/xcuserdata
@@ -95,4 +97,3 @@ archive/
 .claude/worktrees/
 .worktrees/
 superteam/
-

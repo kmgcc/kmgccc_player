@@ -14,8 +14,36 @@ struct LibraryAlbumGroupingResult {
 
 nonisolated enum LibraryNormalization {
     static let unknownTitle = "未知歌曲"
-    static let unknownArtist = "未知歌手"
+    static let unknownArtist = LibraryTextNormalization.unknownArtist
     static let unknownAlbum = "未知专辑"
+    static let variousArtists = "Various Artists"
+
+    /// §10.4: an explicit COMPILATION flag is authoritative evidence and is
+    /// consulted before any alias-string guessing; `false` is equally
+    /// authoritative because TCMP=0 explicitly marks a non-compilation.
+    static func isCompilationAlbumType(
+        _ value: String?,
+        primaryArtist: String? = nil,
+        explicitCompilation: Bool? = nil
+    ) -> Bool {
+        if let explicitCompilation { return explicitCompilation }
+        let candidates = [value, primaryArtist].compactMap { optional in
+            optional?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let aliases: Set<String> = [
+            "compilation",
+            "various artists",
+            "variousartists",
+            "various artist",
+            "合辑",
+            "合集",
+            "群星",
+            "群星合集",
+            "杂锦"
+        ]
+        return candidates.contains { aliases.contains(comparisonKey($0).replacingOccurrences(of: " ", with: ""))
+            || aliases.contains(comparisonKey($0)) }
+    }
 
     private static let unknownAlbumAliases = [
         "",
@@ -28,11 +56,17 @@ nonisolated enum LibraryNormalization {
     ]
     private static let albumArtistDisambiguationPrefix = "albumartist:"
     private static let artistClusterDisambiguationPrefix = "artistcluster:"
+    private static let musicBrainzDisambiguationPrefix = "mbid:"
+    private static let releaseYearDisambiguationPrefix = "year:"
+    private static let folderHintDisambiguationPrefix = "folder:"
 
     enum AlbumKeyDisambiguation {
         case none
         case albumArtist(String)
         case artistCluster(String)
+        case musicBrainzRelease(String)
+        case releaseYear(Int)
+        case folder(String)
     }
 
     static func normalizeTitle(_ value: String?) -> String {
@@ -94,6 +128,34 @@ nonisolated enum LibraryNormalization {
         artistComponents(value).map { $0.canonicalName }
     }
 
+    /// Uses structured credits when they contain more than the compatibility
+    /// fallback entry. A one-entry fallback deliberately returns to the raw
+    /// parser so old tags such as "A, B" keep their established projection.
+    static func artistComponents(for track: Track) -> [(canonicalName: String, displayName: String)] {
+        let credits = track.artistCredits.filter { $0.role.isArtistContributor }
+        guard credits.count > 1 else {
+            return artistComponents(track.artist)
+        }
+
+        var seen: Set<String> = []
+        return credits.compactMap { credit in
+            let canonicalName = normalizeArtist(credit.canonicalName)
+            guard canonicalName != normalizeArtist(nil), !seen.contains(canonicalName) else {
+                return nil
+            }
+            seen.insert(canonicalName)
+            return (canonicalName: canonicalName, displayName: displayArtist(credit.displayName))
+        }
+    }
+
+    static func artistCanonicalNames(for track: Track) -> [String] {
+        artistComponents(for: track).map(\.canonicalName)
+    }
+
+    static func containsArtist(_ canonicalName: String, in track: Track) -> Bool {
+        artistCanonicalNames(for: track).contains(canonicalName)
+    }
+
     static func containsArtist(_ canonicalName: String, in value: String?) -> Bool {
         artistCanonicalNames(value).contains(canonicalName)
     }
@@ -104,8 +166,8 @@ nonisolated enum LibraryNormalization {
         with replacementDisplayName: String
     ) -> String {
         let replacement = displayArtist(replacementDisplayName)
-        let parts = artistSplitPattern
-            .matches(in: value, range: NSRange(value.startIndex..., in: value))
+        let parts = artistSplitPattern?
+            .matches(in: value, range: NSRange(value.startIndex..., in: value)) ?? []
 
         guard !parts.isEmpty else {
             return containsArtist(canonicalName, in: value) ? replacement : value
@@ -155,18 +217,43 @@ nonisolated enum LibraryNormalization {
         comparisonKey(canonicalAlbumTitle(value)) == comparisonKey(unknownAlbum)
     }
 
+    /// §10.3 evidence-aware album key. Priority: MusicBrainz Release ID wins
+    /// over every hint; the release year disambiguates only when no album
+    /// artist does; the folder hint applies only when MBID, album artist and
+    /// year are all absent — the source folder is the weakest clue and must
+    /// never outrank tag evidence. Default parameters keep legacy callers
+    /// byte-compatible.
     static func composeAlbumKey(
         album: String?,
-        disambiguation: AlbumKeyDisambiguation = .none
+        disambiguation: AlbumKeyDisambiguation = .none,
+        musicBrainzReleaseID: String? = nil,
+        releaseYear: Int? = nil,
+        folderHint: String? = nil
     ) -> String {
         let base = normalizedAlbumKey(album: album)
+        if let trimmedMBID = musicBrainzReleaseID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !trimmedMBID.isEmpty {
+            return "\(base)•\(musicBrainzDisambiguationPrefix)\(trimmedMBID)"
+        }
         switch disambiguation {
         case .none:
+            if let releaseYear {
+                return "\(base)•\(releaseYearDisambiguationPrefix)\(releaseYear)"
+            }
+            if let folderHint, !folderHint.isEmpty {
+                return "\(base)•\(folderHintDisambiguationPrefix)\(comparisonKey(folderHint))"
+            }
             return base
         case .albumArtist(let artistKey):
             return "\(base)•\(albumArtistDisambiguationPrefix)\(artistKey)"
         case .artistCluster(let artistKey):
             return "\(base)•\(artistClusterDisambiguationPrefix)\(artistKey)"
+        case .musicBrainzRelease(let id):
+            return "\(base)•\(musicBrainzDisambiguationPrefix)\(id)"
+        case .releaseYear(let year):
+            return "\(base)•\(releaseYearDisambiguationPrefix)\(year)"
+        case .folder(let hint):
+            return "\(base)•\(folderHintDisambiguationPrefix)\(hint)"
         }
     }
 
@@ -182,7 +269,7 @@ nonisolated enum LibraryNormalization {
                 album: parsed.normalizedAlbumTitle,
                 disambiguation: .artistCluster(newArtistCanonicalName)
             )
-        case .albumArtist, .none:
+        case .albumArtist, .none, .musicBrainzRelease, .releaseYear, .folder:
             return existingKey
         }
     }
@@ -223,27 +310,29 @@ nonisolated enum LibraryNormalization {
     }
 
     private static func normalize(_ value: String?, fallback: String) -> String {
-        comparisonKey(display(value, fallback: fallback))
+        LibraryTextNormalization.normalize(value, fallback: fallback)
     }
 
     private static func display(_ value: String?, fallback: String) -> String {
-        let collapsed = collapsedWhitespace(value)
-        return collapsed.isEmpty ? fallback : collapsed
+        LibraryTextNormalization.display(value, fallback: fallback)
     }
 
     private static func collapsedWhitespace(_ value: String?) -> String {
-        (value ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        LibraryTextNormalization.collapsedWhitespace(value)
     }
 
-    private static var artistSplitPattern: NSRegularExpression {
-        // Common collaboration separators used in local tags, including the
-        // comma/slash/semicolon forms from imported metadata.
-        try! NSRegularExpression(
-            pattern: #"\s*(?:[,;/／、，；×]|\\|\b(?:feat\.?|ft\.?|featuring|with|vs\.?)\b)\s*"#,
-            options: [.caseInsensitive]
-        )
+    private static var artistSplitPattern: NSRegularExpression? {
+        // "&", "+" and "/" are deliberately absent: plan §10.2/§3 forbids
+        // splitting them without explicit user confirmation.
+        do {
+            return try NSRegularExpression(
+                pattern: #"\s*(?:[,;、，；×]|\\|\b(?:feat\.?|ft\.?|featuring|with|vs\.?)\b)\s*"#,
+                options: [.caseInsensitive]
+            )
+        } catch {
+            Log.error("Failed to compile artist split pattern: \(error)", category: .library)
+            return nil
+        }
     }
 
     private static func splitArtistDisplayNames(_ value: String) -> [String] {
@@ -253,10 +342,10 @@ nonisolated enum LibraryNormalization {
                 with: "; ",
                 options: [.regularExpression, .caseInsensitive]
             )
-        let matches = artistSplitPattern.matches(
+        let matches = artistSplitPattern?.matches(
             in: prepared,
             range: NSRange(prepared.startIndex..., in: prepared)
-        )
+        ) ?? []
         guard !matches.isEmpty else { return [collapsedArtistComponent(prepared)].filter { !$0.isEmpty } }
 
         var names: [String] = []
@@ -305,9 +394,7 @@ nonisolated enum LibraryNormalization {
     }
 
     private static func comparisonKey(_ value: String) -> String {
-        value
-            .folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
-            .lowercased()
+        LibraryTextNormalization.comparisonKey(value)
     }
 
     private static func parseAlbumKey(_ key: String) -> (
@@ -325,6 +412,27 @@ nonisolated enum LibraryNormalization {
             let base = String(key[..<range.lowerBound])
             let artistKey = String(key[range.upperBound...])
             return (base, .artistCluster(artistKey))
+        }
+
+        let musicBrainzMarker = "•\(musicBrainzDisambiguationPrefix)"
+        if let range = key.range(of: musicBrainzMarker) {
+            let base = String(key[..<range.lowerBound])
+            let mbid = String(key[range.upperBound...])
+            return (base, .musicBrainzRelease(mbid))
+        }
+
+        let yearMarker = "•\(releaseYearDisambiguationPrefix)"
+        if let range = key.range(of: yearMarker),
+           let year = Int(String(key[range.upperBound...])) {
+            let base = String(key[..<range.lowerBound])
+            return (base, .releaseYear(year))
+        }
+
+        let folderMarker = "•\(folderHintDisambiguationPrefix)"
+        if let range = key.range(of: folderMarker) {
+            let base = String(key[..<range.lowerBound])
+            let hint = String(key[range.upperBound...])
+            return (base, .folder(hint))
         }
 
         return (key, .none)
@@ -370,6 +478,44 @@ nonisolated enum LibraryNormalization {
             )]
         }
 
+        // §10.4: an explicit COMPILATION marker outranks every grouping
+        // heuristic — a compilation stays one bucket and its track artists
+        // remain untouched inside it.
+        if tracks.contains(where: { $0.embeddedCompilation == true }) {
+            return [(
+                key: baseKey,
+                tracks: tracks,
+                preferredArtistCanonicalName: nil,
+                memberArtistCanonicalNames: memberArtistCanonicalNames(for: tracks)
+            )]
+        }
+
+        // §10.3 tier 1: a MusicBrainz Release ID shared by the whole bucket is
+        // stronger than any name-based reasoning. Partial tag coverage keeps
+        // the legacy path so untagged siblings are not orphaned into a split.
+        var trustedMBIDGroups: [String: [Track]] = [:]
+        for track in tracks {
+            guard let mbid = trustedMusicBrainzReleaseID(track) else { continue }
+            trustedMBIDGroups[mbid, default: []].append(track)
+        }
+        if !trustedMBIDGroups.isEmpty,
+           trustedMBIDGroups.values.flatMap({ $0 }).count == tracks.count,
+           trustedMBIDGroups.values.allSatisfy({ $0.count >= 2 }) {
+            return trustedMBIDGroups
+                .sorted { $0.key < $1.key }
+                .map { mbid, groupedTracks in
+                    (
+                        key: composeAlbumKey(
+                            album: groupedTracks.first?.album,
+                            musicBrainzReleaseID: mbid
+                        ),
+                        tracks: groupedTracks,
+                        preferredArtistCanonicalName: nil,
+                        memberArtistCanonicalNames: memberArtistCanonicalNames(for: groupedTracks)
+                    )
+                }
+        }
+
         var trustedAlbumArtistGroups: [String: [Track]] = [:]
         for track in tracks {
             guard let artistKey = normalizedNonUnknownArtist(track.albumArtist) else { continue }
@@ -396,7 +542,7 @@ nonisolated enum LibraryNormalization {
 
         var trustedTrackArtistGroups: [String: [Track]] = [:]
         for track in tracks {
-            guard let artistKey = primaryArtistClusterKey(track.artist) else { continue }
+            guard let artistKey = primaryArtistClusterKey(for: track) else { continue }
             trustedTrackArtistGroups[artistKey, default: []].append(track)
         }
         let canSplitByTrackArtist =
@@ -422,6 +568,29 @@ nonisolated enum LibraryNormalization {
                 }
         }
 
+        // §10.3 tier 2: with no album artist anywhere, differing release
+        // years on fully-tagged tracks disambiguate same-named albums. A
+        // single untagged track keeps the legacy merged bucket because a
+        // partial year tag must never split an album.
+        if trustedAlbumArtistGroups.isEmpty {
+            let yearGroups = Dictionary(grouping: tracks) { $0.embeddedReleaseYear }
+            if yearGroups.count > 1, !yearGroups.keys.contains(nil) {
+                return yearGroups
+                    .sorted { ($0.key ?? 0) < ($1.key ?? 0) }
+                    .map { year, groupedTracks in
+                        (
+                            key: composeAlbumKey(
+                                album: groupedTracks.first?.album,
+                                releaseYear: year
+                            ),
+                            tracks: groupedTracks,
+                            preferredArtistCanonicalName: nil,
+                            memberArtistCanonicalNames: memberArtistCanonicalNames(for: groupedTracks)
+                        )
+                    }
+            }
+        }
+
         return [(
             key: baseKey,
             tracks: tracks,
@@ -430,8 +599,21 @@ nonisolated enum LibraryNormalization {
         )]
     }
 
+    private static func trustedMusicBrainzReleaseID(_ track: Track) -> String? {
+        let trimmed = track.musicBrainzReleaseID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed?.isEmpty ?? true) ? nil : trimmed
+    }
+
     private static func memberArtistCanonicalNames(for tracks: [Track]) -> [String] {
-        Set(tracks.flatMap { artistCanonicalNames($0.artist) }).sorted()
+        Set(tracks.flatMap { artistCanonicalNames(for: $0) }).sorted()
+    }
+
+    private static func primaryArtistClusterKey(for track: Track) -> String? {
+        if let primary = track.artistCredits.first(where: { $0.role == .primary }),
+           track.artistCredits.count > 1 {
+            return normalizedNonUnknownArtist(primary.canonicalName)
+        }
+        return primaryArtistClusterKey(track.artist)
     }
 
     private static func representativeArtist(
@@ -441,7 +623,7 @@ nonisolated enum LibraryNormalization {
         if let preferredKey {
             if let preferredTrack = tracks.first(where: {
                 normalizedNonUnknownArtist($0.albumArtist) == preferredKey
-                    || primaryArtistClusterKey($0.artist) == preferredKey
+                    || primaryArtistClusterKey(for: $0) == preferredKey
                     || normalizeArtist($0.artist) == preferredKey
             }) {
                 let albumArtistDisplay = collapsedWhitespace(preferredTrack.albumArtist)
@@ -452,14 +634,22 @@ nonisolated enum LibraryNormalization {
             }
         }
 
-        let groupedByArtist = Dictionary(grouping: tracks) { normalizeArtist($0.artist) }
+        let groupedByArtist = Dictionary(grouping: tracks) {
+            primaryArtistClusterKey(for: $0) ?? normalizeArtist(nil)
+        }
         if let dominant = groupedByArtist.max(by: { lhs, rhs in
             if lhs.value.count == rhs.value.count {
                 return lhs.key > rhs.key
             }
             return lhs.value.count < rhs.value.count
         }) {
-            return (dominant.key, displayArtist(dominant.value.first?.artist))
+            let representative = dominant.value.first
+            let primary = representative?.artistCredits.first(where: { $0.role == .primary })
+            return (
+                dominant.key,
+                primary.map { displayArtist($0.displayName) }
+                    ?? displayArtist(representative?.artist)
+            )
         }
 
         return (normalizeArtist(nil), displayArtist(nil))

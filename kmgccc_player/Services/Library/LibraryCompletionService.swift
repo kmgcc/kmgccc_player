@@ -313,6 +313,9 @@ final class LibraryCompletionService {
     var progress: LibraryCompletionProgress = .idle
 
     @ObservationIgnored private let libraryVM: LibraryViewModel
+    @ObservationIgnored private let qqMusicCoverService: QQMusicCoverService
+    @ObservationIgnored private let lyricsSearchCoordinator: LyricsSearchCoordinator
+    @ObservationIgnored private let amllDBService: AMLLDBService
     @ObservationIgnored private var processedArtistKeys: Set<String> = []
     @ObservationIgnored private var processedAlbumKeys: Set<String> = []
     @ObservationIgnored private var artistEntryCache: [String: ArtistEntry] = [:]
@@ -320,8 +323,16 @@ final class LibraryCompletionService {
     @ObservationIgnored private var trackCoverCache: [String: LibraryCompletionCachedCover] = [:]
     @ObservationIgnored private var progressEvents: [LibraryCompletionProgressEvent] = []
 
-    init(libraryVM: LibraryViewModel) {
+    init(
+        libraryVM: LibraryViewModel,
+        qqMusicCoverService: QQMusicCoverService,
+        lyricsSearchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService
+    ) {
         self.libraryVM = libraryVM
+        self.qqMusicCoverService = qqMusicCoverService
+        self.lyricsSearchCoordinator = lyricsSearchCoordinator
+        self.amllDBService = amllDBService
     }
 
     func completeLibrary(
@@ -629,7 +640,9 @@ final class LibraryCompletionService {
             title: track.title,
             artist: track.artist,
             album: track.album,
-            duration: track.duration > 0 ? track.duration : nil
+            duration: track.duration > 0 ? track.duration : nil,
+            lyricsSearchCoordinator: lyricsSearchCoordinator,
+            amllDBService: amllDBService
         ) {
         case .completed(let ttml):
             guard !Task.isCancelled else { return LyricsOutcome() }
@@ -802,7 +815,11 @@ final class LibraryCompletionService {
                 taskLabel: "专辑封面",
                 progressHandler
             )
-            switch await MetadataEnrichmentWorker.fetchAlbumArtwork(album: entry.displayTitle, artist: entry.primaryArtistDisplayName) {
+            switch await MetadataEnrichmentWorker.fetchAlbumArtwork(
+                album: entry.displayTitle,
+                artist: entry.primaryArtistDisplayName,
+                qqMusicCoverService: qqMusicCoverService
+            ) {
             case .completed(let data):
                 guard !Task.isCancelled else { return outcome }
                 var latest = albumEntryCache[key] ?? entry
@@ -847,7 +864,8 @@ final class LibraryCompletionService {
             title: track.title,
             artist: track.artist,
             album: track.album,
-            duration: track.duration > 0 ? track.duration : nil
+            duration: track.duration > 0 ? track.duration : nil,
+            qqMusicCoverService: qqMusicCoverService
         ) {
         case .completed(let data):
             result = .found(data)

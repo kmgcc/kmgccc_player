@@ -35,6 +35,40 @@ final class NCMConverter: @unchecked Sendable {
     private var filePath: String = ""
     
     nonisolated init() {}
+
+    /// Reads the NCM header, key and metadata only. This deliberately stops
+    /// before decrypting audio so an existing product can be adopted without
+    /// creating a second MP3/FLAC file.
+    func inspectMetadata(from sourceURL: URL) throws -> NCMConversionInspection {
+        try Task.checkCancellation()
+
+        filePath = sourceURL.path
+        guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+            throw NCMConverterError.invalidFile
+        }
+
+        let fileHandle = try FileHandle(forReadingFrom: sourceURL)
+        self.fileHandle = fileHandle
+        defer {
+            fileHandle.closeFile()
+            self.fileHandle = nil
+        }
+
+        try validateMagicHeader()
+        try Task.checkCancellation()
+
+        let currentOffset = fileHandle.offsetInFile
+        try fileHandle.seek(toOffset: currentOffset + 2)
+        let keyData = try decryptKey()
+        keyBox = buildKeyBox(key: keyData)
+        try decryptMetadata()
+
+        guard let metadata else { throw NCMConverterError.invalidMetadata }
+        let format: NCMFormat = metadata.format.lowercased() == NCMFormat.flac.rawValue
+            ? .flac
+            : .mp3
+        return NCMConversionInspection(format: format, metadata: metadata)
+    }
     
     func convert(
         from sourceURL: URL,

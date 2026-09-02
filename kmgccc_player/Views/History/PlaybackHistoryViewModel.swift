@@ -54,6 +54,12 @@ enum PlaybackHistorySearchRange: String, CaseIterable, Identifiable, Sendable {
 @Observable
 @MainActor
 final class PlaybackHistoryViewModel {
+    private let preferenceStatsService: PreferenceStatsService
+
+    init(preferenceStatsService: PreferenceStatsService = .shared) {
+        self.preferenceStatsService = preferenceStatsService
+    }
+
     var items: [PlaybackHistoryItem] = []
     var olderItemsLoaded = false
     var olderItemCount = 0
@@ -260,7 +266,10 @@ final class PlaybackHistoryViewModel {
         let queue = uniquePlayableTracks(from: visibleItems, tracksByID: tracksByID)
         guard !queue.isEmpty else { return }
 
-        let startTrack = PlaybackCoordinator.smartRandomPick(from: queue) ?? queue[0]
+        let startTrack = PlaybackCoordinator.smartRandomPick(
+            from: queue,
+            preferenceStatsService: preferenceStatsService
+        ) ?? queue[0]
         let startIndex = queue.firstIndex(where: { $0.id == startTrack.id }) ?? 0
         activeEventID = visibleItems.first(where: { $0.trackID == startTrack.id })?.id
         playbackCoordinator.playTracks(

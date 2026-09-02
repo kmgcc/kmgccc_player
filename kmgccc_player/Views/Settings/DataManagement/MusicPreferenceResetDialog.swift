@@ -99,8 +99,8 @@ private final class MusicPreferenceResetDialogViewModel {
         playerVM.discardCurrentPlaybackSessionStatsOnce()
 
         Task {
-            let result = await PreferenceResetService.shared.resetLibraryTracks(
-                tracks,
+            let result = await libraryVM.resetMusicPreferences(
+                tracks: tracks,
                 options: selectedOptions
             ) { [weak self] progress in
                 self?.progress = progress
@@ -161,7 +161,7 @@ private final class MusicPreferenceResetDialogController: NSObject, NSWindowDele
         visualEffect.frame = NSRect(origin: .zero, size: windowSize)
         visualEffect.autoresizingMask = [.width, .height]
         visualEffect.wantsLayer = true
-        visualEffect.layer?.cornerRadius = 28
+        visualEffect.layer?.cornerRadius = AppDialogTokens.windowCornerRadius
         panel.contentView = visualEffect
 
         let rootView = MusicPreferenceResetDialogView(

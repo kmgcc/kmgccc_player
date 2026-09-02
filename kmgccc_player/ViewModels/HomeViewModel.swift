@@ -12,6 +12,16 @@ import SwiftUI
 @Observable
 @MainActor
 final class HomeViewModel {
+    private let preferenceStatsService: PreferenceStatsService
+    private let startupSnapshotStore: HomeStartupSnapshotStore
+
+    init(
+        preferenceStatsService: PreferenceStatsService = .shared,
+        paths: LibraryPaths
+    ) {
+        self.preferenceStatsService = preferenceStatsService
+        self.startupSnapshotStore = HomeStartupSnapshotStore(paths: paths)
+    }
 
     // MARK: - Hero
 
@@ -95,7 +105,7 @@ final class HomeViewModel {
         playlists = topPlaylists(from: libraryVM)
 
         // Stats from PreferenceStatsService
-        let statsService = PreferenceStatsService.shared
+        let statsService = preferenceStatsService
         totalTrackCount = allTracks.count
 
         var totalPlays = 0
@@ -314,7 +324,8 @@ final class HomeViewModel {
         let candidates = preferredPool.filter { $0.id != currentID }
         let fallbackCandidates = allTracks.filter { $0.id != currentID }
         let pick = PlaybackCoordinator.smartRandomPick(
-            from: candidates.isEmpty ? fallbackCandidates : candidates
+            from: candidates.isEmpty ? fallbackCandidates : candidates,
+            preferenceStatsService: preferenceStatsService
         ) ?? fallbackCandidates.first ?? allTracks.first
 
         selectedHeroTrackID = pick?.id
@@ -328,7 +339,7 @@ final class HomeViewModel {
 
     func loadCachedStartupSnapshot() async {
         guard cachedStartupSnapshot == nil else { return }
-        cachedStartupSnapshot = await HomeStartupSnapshotStore.shared.load()
+        cachedStartupSnapshot = await startupSnapshotStore.load()
     }
 
     func invalidatePreparedContentForStartupGate() {
@@ -449,8 +460,8 @@ final class HomeViewModel {
             result = lhs.displayTitle.localizedCaseInsensitiveCompare(rhs.displayTitle)
             useNaturalDescending = false
         case .artist:
-            result = lhs.primaryArtistDisplayName
-                .localizedCaseInsensitiveCompare(rhs.primaryArtistDisplayName)
+            result = lhs.presentationArtistDisplayName
+                .localizedCaseInsensitiveCompare(rhs.presentationArtistDisplayName)
             useNaturalDescending = false
         case .trackCount:
             result = compareInt(lhs.trackCount, rhs.trackCount)
@@ -510,7 +521,7 @@ final class HomeViewModel {
     }
 
     private func refreshStats(from libraryVM: LibraryViewModel, allTracks: [Track]) {
-        let statsService = PreferenceStatsService.shared
+        let statsService = preferenceStatsService
         totalTrackCount = allTracks.count
 
         var totalPlays = 0
@@ -614,7 +625,7 @@ final class HomeViewModel {
         snapshotWriteTask = Task(priority: .utility) {
             try? await Task.sleep(for: .milliseconds(700))
             guard !Task.isCancelled else { return }
-            await HomeStartupSnapshotStore.shared.save(snapshot)
+            await startupSnapshotStore.save(snapshot)
         }
     }
 
@@ -713,7 +724,10 @@ final class HomeViewModel {
 
         let tracksWithArt = allTracks.filter { $0.artworkFileName != nil }
         let preferredPool = tracksWithArt.isEmpty ? allTracks : tracksWithArt
-        let pick = PlaybackCoordinator.smartRandomPick(from: preferredPool)
+        let pick = PlaybackCoordinator.smartRandomPick(
+            from: preferredPool,
+            preferenceStatsService: preferenceStatsService
+        )
         selectedHeroTrackID = pick?.id
         selectedHeroGeneratedAt = pick == nil ? nil : now
         return pick
@@ -761,10 +775,11 @@ nonisolated struct HomeStartupSnapshot: Codable, Equatable, Sendable {
         let artist: String
         let trackCount: Int
 
+        @MainActor
         init(album: AlbumEntry) {
             id = album.id
             title = album.displayTitle
-            artist = album.primaryArtistDisplayName
+            artist = album.presentationArtistDisplayName
             trackCount = album.trackCount
         }
     }
@@ -816,8 +831,7 @@ nonisolated struct HomeStartupSnapshot: Codable, Equatable, Sendable {
 }
 
 private actor HomeStartupSnapshotStore {
-    static let shared = HomeStartupSnapshotStore()
-
+    private let paths: LibraryPaths
     private let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -829,6 +843,10 @@ private actor HomeStartupSnapshotStore {
         decoder.dateDecodingStrategy = .iso8601
         return decoder
     }()
+
+    init(paths: LibraryPaths) {
+        self.paths = paths
+    }
 
     func load() -> HomeStartupSnapshot? {
         let url = cacheURL()
@@ -854,7 +872,7 @@ private actor HomeStartupSnapshotStore {
     }
 
     private func cacheURL() -> URL {
-        StorageLocations.homeCacheURL
+        paths.homeCacheRootURL
             .appendingPathComponent("startup-snapshot-v\(HomeStartupSnapshot.currentSchemaVersion).json")
     }
 }

@@ -13,6 +13,7 @@ import SwiftUI
 struct NowPlayingHostView: View {
 
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @Environment(AppSettings.self) private var settings
@@ -266,7 +267,7 @@ struct NowPlayingHostView: View {
         let snapshot: ArtworkAssetSnapshot?
         if presentation.source == .local,
            let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
-            snapshot = await TrackArtworkCache.shared.snapshot(
+            snapshot = await cacheServices.trackArtworkCache.snapshot(
                 for: source,
                 fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
             )

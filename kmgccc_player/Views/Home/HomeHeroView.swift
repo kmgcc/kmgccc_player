@@ -17,6 +17,7 @@ struct HomeHeroView: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(\.colorScheme) private var colorScheme
     @Environment(AppSettings.self) private var appSettings
     @EnvironmentObject private var themeStore: ThemeStore
@@ -660,7 +661,7 @@ struct HomeHeroView: View {
     private var statsLine: some View {
         HStack(spacing: 0) {
             Text(formattedDuration)
-            let stats = PreferenceStatsService.shared.getStats(for: track.id)
+            let stats = libraryVM.preferenceStats(for: track.id)
             if stats.playCount > 0 {
                 Text(" \u{00B7} ")
                 Text("\(stats.playCount) 次播放")
@@ -822,7 +823,8 @@ struct HomeHeroView: View {
         async let imageTask = ArtworkLoader.loadImage(
             artworkData: data,
             cacheKey: key,
-            targetPixelSize: CGSize(width: 480, height: 480)
+            targetPixelSize: CGSize(width: 480, height: 480),
+            derivativeStore: cacheServices.artworkDerivativeStore
         )
         // Analyze locally so the hero's text/dominant colours track this card's
         // artwork, not the currently-playing track's ThemeStore palette.

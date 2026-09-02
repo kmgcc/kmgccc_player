@@ -429,6 +429,12 @@ final class AppKitMainToolbarController: NSObject,
             validateCurrentToolbarVisibleItems()
             return
         }
+        if currentLibraryVM?.currentSelection == .folders, let libraryVM = currentLibraryVM {
+            libraryVM.referencedSourceSearchText = text
+            syncMultiselectItemPresentation()
+            validateCurrentToolbarVisibleItems()
+            return
+        }
         currentPageController?.prepareForSearchInteraction()
         currentPageController?.searchText = text
         currentPageController?.handleSearchChange()
@@ -442,6 +448,10 @@ final class AppKitMainToolbarController: NSObject,
     ) {
         guard isCurrentAttachment(generation) else { return }
         if isPlaybackHistoryMode {
+            validateCurrentToolbarVisibleItems()
+            return
+        }
+        if currentLibraryVM?.currentSelection == .folders {
             validateCurrentToolbarVisibleItems()
             return
         }
@@ -1008,7 +1018,7 @@ final class AppKitMainToolbarController: NSObject,
         libraryVM: LibraryViewModel
     ) -> Bool {
         switch selection {
-        case .home, .allSongs:
+        case .home, .allSongs, .folders:
             return libraryVM.allTracks.contains { $0.id == track.id }
         case .playlist(let id):
             return libraryVM.playlists
@@ -1016,7 +1026,7 @@ final class AppKitMainToolbarController: NSObject,
                 .tracks
                 .contains { $0.id == track.id } == true
         case .artist(let key):
-            return LibraryNormalization.containsArtist(key, in: track.artist)
+            return LibraryNormalization.containsArtist(key, in: track)
         case .album(let key):
             return track.albumGroupKey == key
         case .allPlaylists, .allAlbums, .allArtists:
@@ -1070,6 +1080,14 @@ final class AppKitMainToolbarController: NSObject,
             )
             return
         }
+        if currentLibraryVM?.currentSelection == .folders {
+            searchBridge.sync(
+                text: currentLibraryVM?.referencedSourceSearchText ?? "",
+                placeholder: searchPlaceholder,
+                historyRange: nil
+            )
+            return
+        }
         guard let pageController = currentPageController else { return }
         searchBridge.sync(
             text: pageController.searchText,
@@ -1089,6 +1107,12 @@ final class AppKitMainToolbarController: NSObject,
         switch currentLibraryVM?.currentSelection {
         case .home, .allSongs:
             return "在所有歌曲中搜索"
+        case .folders:
+            if let title = currentLibraryVM?.referencedSourceSearchScopeTitle,
+               !title.isEmpty {
+                return "在\(title)中搜索"
+            }
+            return "在资料库来源中搜索"
         case .allPlaylists:
             return "在所有播放列表中搜索"
         case .playlist:
@@ -1136,6 +1160,21 @@ final class AppKitMainToolbarController: NSObject,
             let generation = attachmentGeneration
             withObservationTracking {
                 _ = historyVM.searchText
+            } onChange: {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.isCurrentAttachment(generation) else { return }
+                    self.syncSearchFieldFromModel()
+                    self.validateCurrentToolbarVisibleItems()
+                    self.observeSearchText()
+                }
+            }
+            return
+        }
+        if currentLibraryVM?.currentSelection == .folders, let libraryVM = currentLibraryVM {
+            let generation = attachmentGeneration
+            withObservationTracking {
+                _ = libraryVM.referencedSourceSearchText
+                _ = libraryVM.referencedSourceSearchScopeTitle
             } onChange: {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.isCurrentAttachment(generation) else { return }
@@ -1458,6 +1497,17 @@ final class AppKitMainToolbarController: NSObject,
                     self.observeLibrarySearchResetTrigger()
                     return
                 }
+                if libraryVM.currentSelection == .folders {
+                    let hadSearch = !libraryVM.referencedSourceSearchText
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
+                    libraryVM.referencedSourceSearchText = ""
+                    if hadSearch { self.resignSearchFocusIfNeeded() }
+                    self.syncSearchFieldFromModel()
+                    self.syncSearchPlaceholder()
+                    self.observeLibrarySearchResetTrigger()
+                    return
+                }
                 let hadSearch = !(self.currentPageController?.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
                     || !(self.searchBridge.currentText?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
                 self.currentPageController?.clearSearchAndRebuildIfNeeded(reason: "search-reset")
@@ -1480,6 +1530,8 @@ final class AppKitMainToolbarController: NSObject,
             _ = appSession.uiState.homeBackStack.count
             _ = appSession.uiState.homeForwardStack.count
             _ = appSession.libraryVM?.currentSelection
+            _ = appSession.libraryVM?.referencedSourceSearchScopeID
+            _ = appSession.libraryVM?.referencedSourceSearchScopeTitle
         } onChange: {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isCurrentAttachment(generation) else { return }

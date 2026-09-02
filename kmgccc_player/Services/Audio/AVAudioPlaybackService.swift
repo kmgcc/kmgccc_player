@@ -120,6 +120,8 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// Off-main file preparation (bookmark resolve + AVAudioFile open). See
     /// `AudioFilePreparationActor`.
     private let prepActor = AudioFilePreparationActor()
+    private let authorizedSourceRootsProvider: AuthorizedSourceRootsProvider
+    private let libraryPaths: LibraryPaths
     /// Monotonic id for the current play request. Bumped ONLY by
     /// `invalidatePreparation()` (called from `stopPlayback`). A prepared
     /// resource is consumed only if its captured generation still matches —
@@ -206,7 +208,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
     // MARK: - Smart Shuffle Integration
 
-    private let smartController = SmartPlaybackController()
+    private let smartController: SmartPlaybackController
 
     // MARK: - Timer
 
@@ -215,11 +217,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     // MARK: - Current File Access
 
     private var currentFileURL: URL?
-    /// Whether `currentFileURL` holds an active security-scoped access that must
-    /// be released on stop/replace. Mirrors
-    /// `PreparedAudioResource.didStartSecurityScopedAccess` for the
-    /// currently-loaded file. False for library-relative paths.
-    private var currentFileSecurityScoped = false
+    private var currentFileLease: SecurityScopedResourceLease?
+
+    /// Persists refreshed locators and availability through the active repository.
+    var onAudioLocatorResolved: ((UUID, TrackMediaLocator, TrackAvailability) -> Void)?
 
     // MARK: - Level Meter Integration
 
@@ -236,7 +237,14 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         analysisMixerNode
     }
 
-    init() {
+    init(
+        smartController: SmartPlaybackController,
+        libraryPaths: LibraryPaths,
+        authorizedSourceRootsProvider: AuthorizedSourceRootsProvider = AuthorizedSourceRootsProvider()
+    ) {
+        self.smartController = smartController
+        self.libraryPaths = libraryPaths
+        self.authorizedSourceRootsProvider = authorizedSourceRootsProvider
         self.volume = AppSettings.shared.volume
         // Engine is now lazily initialized on first access (see `engine` property)
         setupSmartController()
@@ -615,7 +623,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         guard let resource = prefetchedResource else { return }
         prefetchedResource = nil
         releaseSecurityScope(for: resource)
-        gaplessLog("[Gapless] released prefetched resource track=\(resource.trackID.uuidString.prefix(8)) scoped=\(resource.didStartSecurityScopedAccess) reason=\(reason)")
+        gaplessLog("[Gapless] released prefetched resource track=\(resource.trackID.uuidString.prefix(8)) lease=owned reason=\(reason)")
     }
 
     /// Record the freshly-scheduled current segment into the queue with a node
@@ -783,6 +791,19 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         activePlaybackOrderModeOverride ?? AppSettings.shared.playbackOrderMode
     }
 
+    func makePrepRequest(for track: Track) -> AudioPrepRequest {
+        let root = track.libraryRootSnapshot.isEmpty
+            ? libraryPaths.rootURL
+            : URL(fileURLWithPath: track.libraryRootSnapshot, isDirectory: true)
+        return AudioPrepRequest(
+            trackID: track.id,
+            locator: track.mediaLocator,
+            libraryPaths: LibraryPaths(rootURL: root),
+            authorizedSourceRoots: authorizedSourceRootsProvider.snapshot(),
+            titleForLog: track.title
+        )
+    }
+
     private func playInternal(track: Track) {
         Log.info(
             "[PlaybackPipeline] load item requested track=\(track.id.uuidString) title=\(track.title)",
@@ -810,12 +831,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
 
         // Cheap MainActor snapshot of the @Model fields the actor needs. Only
         // this Sendable value crosses into the actor — never the Track itself.
-        let request = AudioPrepRequest(
-            trackID: track.id,
-            libraryRelativePath: track.libraryRelativePath,
-            fileBookmarkData: track.fileBookmarkData,
-            titleForLog: track.title
-        )
+        let request = makePrepRequest(for: track)
 
         // Task {} (not detached) inherits this @MainActor context: the await
         // suspends and the actor runs the heavy work off-main, then resumes on
@@ -866,9 +882,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     /// Release a prepared resource's security scope, but only if it actually
     /// started one (library-relative paths never do).
     private func releaseSecurityScope(for resource: PreparedAudioResource) {
-        if resource.didStartSecurityScopedAccess {
-            resource.resolvedURL.stopAccessingSecurityScopedResource()
-        }
+        resource.lease.release()
     }
 
     /// MainActor: lightweight engine scheduling for an already-prepared file.
@@ -882,7 +896,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         defer { FirstUseHitchDiagnostics.end(scheduleToken) }
 
         currentFileURL = resource.resolvedURL
-        currentFileSecurityScoped = resource.didStartSecurityScopedAccess
+        currentFileLease = resource.lease
         audioFile = resource.file
         sampleRate = resource.sampleRate
         duration = resource.duration
@@ -890,8 +904,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         startingFramePosition = 0
 
         track.availability = resource.newAvailability
-        if let refreshed = resource.refreshedBookmarkData {
-            track.fileBookmarkData = refreshed
+        if let refreshed = resource.refreshedLocator {
+            track.mediaLocator = refreshed
+            onAudioLocatorResolved?(track.id, refreshed, resource.newAvailability)
         }
 
         let desiredLookahead = desiredLookaheadEnabled
@@ -1350,12 +1365,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
 
         let generation = scheduleGeneration
-        let request = AudioPrepRequest(
-            trackID: nextTrack.id,
-            libraryRelativePath: nextTrack.libraryRelativePath,
-            fileBookmarkData: nextTrack.fileBookmarkData,
-            titleForLog: nextTrack.title
-        )
+        let request = makePrepRequest(for: nextTrack)
 
         gaplessLog("[Gapless] prefetch started track=\(nextTrack.id.uuidString.prefix(8)) title=\(nextTrack.title) generation=\(generation)")
 
@@ -1557,7 +1567,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         // Adopt the prefetched scope owner BEFORE scheduling so there is a single
         // owner to release if anything later discards it.
         prefetchedResource = resource
-        gaplessLog("[Gapless] adopt prefetched resource track=\(resource.trackID.uuidString.prefix(8)) scoped=\(resource.didStartSecurityScopedAccess)")
+        gaplessLog("[Gapless] adopt prefetched resource track=\(resource.trackID.uuidString.prefix(8)) lease=owned")
 
         scheduleQueue.append(item)
 
@@ -1765,7 +1775,7 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         stopAccessingCurrentFile()
         prefetchedResource = nil
         currentFileURL = resource.resolvedURL
-        currentFileSecurityScoped = resource.didStartSecurityScopedAccess
+        currentFileLease = resource.lease
         audioFile = resource.file
         sampleRate = resource.sampleRate
         // Use the scheduled item's duration, which reflects any AAC head/tail trim
@@ -1800,11 +1810,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         // 4. Apply availability / refreshed bookmark to the new track (matches
         //    finishStart). advancedTrack.id == resource.trackID by construction.
         advancedTrack.availability = resource.newAvailability
-        if let refreshed = resource.refreshedBookmarkData {
-            advancedTrack.fileBookmarkData = refreshed
+        if let refreshed = resource.refreshedLocator {
+            advancedTrack.mediaLocator = refreshed
+            onAudioLocatorResolved?(advancedTrack.id, refreshed, resource.newAvailability)
         }
 
-        gaplessLog("[Gapless] adopt current-file from prefetch track=\(advancedTrack.id.uuidString.prefix(8)) scoped=\(currentFileSecurityScoped)")
+        gaplessLog("[Gapless] adopt current-file from prefetch track=\(advancedTrack.id.uuidString.prefix(8)) lease=\(currentFileLease != nil)")
         gaplessLog("[Gapless] boundary committed track=\(advancedTrack.id.uuidString) title=\(advancedTrack.title) duration=\(String(format: "%.1f", duration))")
 
         // 5. Keep playing; the node continues rendering the new item with no stop
@@ -1828,13 +1839,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     // MARK: - File Access
 
     private func stopAccessingCurrentFile() {
-        if let url = currentFileURL {
-            if currentFileSecurityScoped {
-                url.stopAccessingSecurityScopedResource()
-            }
-            currentFileURL = nil
-            currentFileSecurityScoped = false
-        }
+        currentFileLease?.release()
+        currentFileLease = nil
+        currentFileURL = nil
     }
 
     // MARK: - Queue Access for Fullscreen Queue View

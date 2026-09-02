@@ -324,6 +324,7 @@ private struct FullscreenQueueTextPalette {
 // MARK: - Queue Row
 
 private struct QueueRow: View {
+    @Environment(LibraryCacheServices.self) private var cacheServices
     let track: Track
     let isPlaying: Bool
     let textPalette: FullscreenQueueTextPalette
@@ -447,7 +448,7 @@ private struct QueueRow: View {
             return
         }
 
-        let image = await TrackArtworkCache.shared.thumbnail(for: source)
+        let image = await cacheServices.trackArtworkCache.thumbnail(for: source)
         guard !Task.isCancelled else { return }
         await MainActor.run {
             if let image {

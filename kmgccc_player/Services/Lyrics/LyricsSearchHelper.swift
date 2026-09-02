@@ -89,7 +89,8 @@ struct LyricsSearchHelper {
         mode: LDDCMode = .verbatim,
         translation: Bool = true,
         amlldbLimit: Int = 20,
-        lddcLimitPerSource: Int = 5
+        lddcLimitPerSource: Int = 5,
+        searchCoordinator: LyricsSearchCoordinator
     ) async -> SearchResult {
         guard !Task.isCancelled else {
             return SearchResult(
@@ -107,7 +108,7 @@ struct LyricsSearchHelper {
         var amlldbResults: [LDDCCandidate] = []
         var lddcResults: [LDDCCandidate] = []
 
-        let updates = LyricsSearchCoordinator.shared.search(
+        let updates = searchCoordinator.search(
             title: title,
             artist: artist,
             album: album,
@@ -235,7 +236,8 @@ struct LyricsSearchHelper {
         candidate: LDDCCandidate,
         mode: LDDCMode = .verbatim,
         translation: Bool = true,
-        stripMetadata: Bool = true
+        stripMetadata: Bool = true,
+        amllDBService: AMLLDBService
     ) async -> FetchLyricsContentResult {
         guard !Task.isCancelled else { return .failed }
         Self.logger.info("[LyricsSearchHelper] Fetching lyrics for candidate: '\(candidate.title)' source=\(candidate.source)")
@@ -246,7 +248,7 @@ struct LyricsSearchHelper {
                 let rawLyricFile = candidate.songId
                 let ttml: String
                 do {
-                    ttml = try await AMLLDBService.shared.downloadLyricsByRawFile(rawLyricFile)
+                    ttml = try await amllDBService.downloadLyricsByRawFile(rawLyricFile)
                 } catch {
                     throw error
                 }
@@ -363,14 +365,18 @@ struct LyricsSearchHelper {
         title: String,
         artist: String?,
         album: String?,
-        duration: Double?
+        duration: Double?,
+        searchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService
     ) async -> String? {
         let result = await searchAndFetchLyrics(
             title: title,
             artist: artist,
             album: album,
             duration: duration,
-            minimumTopCandidateScore: nil
+            minimumTopCandidateScore: nil,
+            searchCoordinator: searchCoordinator,
+            amllDBService: amllDBService
         )
         return result.ttml
     }
@@ -381,14 +387,18 @@ struct LyricsSearchHelper {
         title: String,
         artist: String?,
         album: String?,
-        duration: Double?
+        duration: Double?,
+        searchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService
     ) async -> AutomaticFetchResult {
         await searchAndFetchLyrics(
             title: title,
             artist: artist,
             album: album,
             duration: duration,
-            minimumTopCandidateScore: automaticMatchMinimumScore
+            minimumTopCandidateScore: automaticMatchMinimumScore,
+            searchCoordinator: searchCoordinator,
+            amllDBService: amllDBService
         )
     }
 
@@ -397,7 +407,9 @@ struct LyricsSearchHelper {
         artist: String?,
         album: String?,
         duration: Double?,
-        minimumTopCandidateScore: Double?
+        minimumTopCandidateScore: Double?,
+        searchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService
     ) async -> AutomaticFetchResult {
         Self.logger.info("[LyricsSearchHelper] searchAndFetchBestLyrics called for: '\(title)' by '\(artist ?? "unknown")'")
         guard !Task.isCancelled else {
@@ -414,7 +426,8 @@ struct LyricsSearchHelper {
             title: title,
             artist: artist,
             album: album,
-            duration: duration
+            duration: duration,
+            searchCoordinator: searchCoordinator
         )
 
         let candidates = searchResult.candidates
@@ -456,7 +469,10 @@ struct LyricsSearchHelper {
                 )
             }
             Self.logger.info("[LyricsSearchHelper] Trying candidate #\(index + 1)/\(candidates.count): '\(candidate.title)' source=\(candidate.source)")
-            let fetchResult = await fetchLyricsContent(candidate: candidate)
+            let fetchResult = await fetchLyricsContent(
+                candidate: candidate,
+                amllDBService: amllDBService
+            )
             if case .success(let ttml) = fetchResult,
                !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Self.logger.info("[LyricsSearchHelper] Candidate #\(index + 1) succeeded: '\(candidate.title)' source=\(candidate.source) length=\(ttml.count)")

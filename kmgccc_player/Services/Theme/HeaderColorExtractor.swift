@@ -58,8 +58,7 @@ private struct CodableColor: Codable {
 /// Results are cached in memory keyed by artwork identity + data checksum.
 @MainActor
 final class HeaderColorExtractor {
-    static let shared = HeaderColorExtractor()
-
+    private let persistentCacheDirectory: URL
     private let cache = NSCache<NSString, HeaderColorCacheEntry>()
     private let latestByIdentityCache = NSCache<NSString, HeaderColorCacheEntry>()
     private let extractionQueue = DispatchQueue(
@@ -67,7 +66,12 @@ final class HeaderColorExtractor {
         qos: .userInitiated
     )
 
-    private init() {
+    convenience init(storage: LibraryStorageLocations) {
+        self.init(cacheDirectory: storage.headerColorCacheURL)
+    }
+
+    private init(cacheDirectory: URL) {
+        self.persistentCacheDirectory = cacheDirectory
         cache.countLimit = 32
         cache.totalCostLimit = 2 * 1024 * 1024
         latestByIdentityCache.countLimit = 32
@@ -138,6 +142,11 @@ final class HeaderColorExtractor {
         )
 
         return (ColorRenderingAdapter.makeSwiftUIColor(accentNS), palette)
+    }
+
+    func clearMemory() {
+        cache.removeAllObjects()
+        latestByIdentityCache.removeAllObjects()
     }
 
     /// Compatibility hook for callers that cancel their own extraction tasks.
@@ -237,10 +246,6 @@ final class HeaderColorExtractor {
         } catch {
             Log.warning("Failed to persist header color cache: \(error.localizedDescription)", category: .theme)
         }
-    }
-
-    private var persistentCacheDirectory: URL {
-        StorageLocations.headerColorCacheURL
     }
 
     private func persistentFileURL(artworkIdentity: String, isDark: Bool) -> URL {

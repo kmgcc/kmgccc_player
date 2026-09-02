@@ -76,13 +76,25 @@ private struct PlaybackOrderMenuContent: View {
 @main
 struct KmgcccPlayerApp: App {
 
+    /// True when the process runs as an XCTest host. Under XCTest the app
+    /// must never boot the user's real session: security-scoped bookmarks
+    /// cannot be authorized in that context (tccd is unavailable), so the
+    /// source scope would mark every real source offline and persist that
+    /// into the user's actual library. Parallel test clones made this
+    /// visibly flap source/track availability.
+    static var isRunningTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
     // MARK: - AppDelegate
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appSession: AppSessionHost
 
-    // MARK: - SwiftData Container
+    // MARK: - Active Library Bootstrap
 
     let sharedModelContainer: ModelContainer
+    let initialLibraryContext: LibraryContext?
 
     init() {
         UpdatePreferences.migrateIfNeeded()
@@ -104,14 +116,54 @@ struct KmgcccPlayerApp: App {
         ColorSystemSelfCheck.runIfRequested()
         #endif
 
-        let sharedModelContainer = Self.makeSharedModelContainer()
+        let bootstrap: LegacyLibraryBootstrapResult
+        if Self.isRunningTests {
+            bootstrap = .noLibrary
+        } else {
+            do {
+                bootstrap = try LegacyLibraryBootstrap().run()
+            } catch {
+                // A damaged registry must not be replaced by an empty one. Keep the
+                // existing single-library startup path available until recovery UI loads.
+                Log.error("[LibraryBootstrap] pre-container bootstrap failed: \(error)", category: .library)
+                bootstrap = .noLibrary
+            }
+        }
+        let initialLibraryContext = bootstrap.context
+        if let initialLibraryContext {
+            // Libraries upgraded in place from the pre-manifest layout may be
+            // missing scaffolding that open-time validation requires.
+            do {
+                try LibraryScaffoldingRepair.repairIfNeeded(at: initialLibraryContext.rootURL)
+            } catch {
+                Log.warning("[LibraryBootstrap] scaffolding repair failed: \(error)", category: .library)
+            }
+        }
 
+        // The app shell owns only an in-memory placeholder. A persistent
+        // TrackIndex container is created and released with each LibrarySession.
+        let sharedModelContainer: ModelContainer = {
+            let schema = Schema([TrackIndexEntry.self])
+            let modelConfiguration = ModelConfiguration(
+                schema: schema,
+                isStoredInMemoryOnly: true
+            )
+            do {
+                return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            } catch {
+                fatalError("Could not create placeholder ModelContainer: \(error)")
+            }
+        }()
+
+        self.initialLibraryContext = initialLibraryContext
         self.sharedModelContainer = sharedModelContainer
         let appSessionHost = AppSessionHost(
-            modelContainer: sharedModelContainer
+            modelContainer: sharedModelContainer,
+            initialLibraryContext: initialLibraryContext
         )
         _appSession = StateObject(wrappedValue: appSessionHost)
         AppDelegate.launchMainWindowHandler = { @MainActor in
+            guard !KmgcccPlayerApp.isRunningTests else { return }
             Log.debug("[AppLaunch] mainWindowHandler.begin", category: .ui)
             Task { @MainActor in
                 await appSessionHost.setupIfNeeded()
@@ -119,99 +171,6 @@ struct KmgcccPlayerApp: App {
                 _ = AppKitMainSplitWindowController.show(appSession: appSessionHost)
             }
         }
-    }
-
-    private static func makeSharedModelContainer() -> ModelContainer {
-        let schema = Schema([TrackIndexEntry.self])
-        let storeURL = TrackIndexStorePaths.storeURL
-
-        let initialAttempt = makePersistentModelContainer(schema: schema, storeURL: storeURL)
-        if let container = initialAttempt.container {
-            return container
-        }
-
-        if let error = initialAttempt.error,
-           isConfirmedStoreCorruption(error),
-           isolateDamagedStore(at: storeURL, label: "TrackIndex"),
-           let container = makePersistentModelContainer(schema: schema, storeURL: storeURL).container {
-            Log.warning("[TrackIndex] recovered by rebuilding a damaged cache store", category: .library)
-            return container
-        }
-
-        Log.error("[TrackIndex] using an in-memory cache for this launch", category: .library)
-        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-        return try! ModelContainer(for: schema, configurations: [configuration])
-    }
-
-    private static func makePersistentModelContainer(
-        schema: Schema,
-        storeURL: URL
-    ) -> (container: ModelContainer?, error: Error?) {
-        let configuration = ModelConfiguration(schema: schema, url: storeURL)
-        do {
-            return (try ModelContainer(for: schema, configurations: [configuration]), nil)
-        } catch {
-            Log.error("[TrackIndex] persistent store unavailable: \(error)", category: .library)
-            return (nil, error)
-        }
-    }
-
-    private static func isConfirmedStoreCorruption(_ error: Error) -> Bool {
-        var pending = [error as NSError]
-        var inspected = 0
-        while let current = pending.popLast(), inspected < 16 {
-            inspected += 1
-            if current.domain == "NSSQLiteErrorDomain",
-               [11, 24, 26].contains(current.code) {
-                return true
-            }
-
-            let description = [
-                current.localizedDescription,
-                current.localizedFailureReason ?? ""
-            ].joined(separator: " ").lowercased()
-            if description.contains("database disk image is malformed")
-                || description.contains("file is not a database")
-                || description.contains("database corruption") {
-                return true
-            }
-
-            if let underlying = current.userInfo[NSUnderlyingErrorKey] as? NSError {
-                pending.append(underlying)
-            }
-            if let detailed = current.userInfo["NSDetailedErrors"] as? [NSError] {
-                pending.append(contentsOf: detailed)
-            }
-        }
-        return false
-    }
-
-    @discardableResult
-    private static func isolateDamagedStore(at storeURL: URL, label: String) -> Bool {
-        let fileManager = FileManager.default
-        let recoveryID = UUID().uuidString.lowercased()
-        var movedStore = false
-        var movedFiles: [(source: URL, isolated: URL)] = []
-
-        for suffix in ["", "-wal", "-shm"] {
-            let sourceURL = URL(fileURLWithPath: storeURL.path + suffix)
-            guard fileManager.fileExists(atPath: sourceURL.path) else { continue }
-
-            let isolatedURL = URL(fileURLWithPath: storeURL.path + ".corrupt-\(recoveryID)\(suffix)")
-            do {
-                try fileManager.moveItem(at: sourceURL, to: isolatedURL)
-                movedStore = true
-                movedFiles.append((sourceURL, isolatedURL))
-            } catch {
-                for movedFile in movedFiles.reversed() {
-                    try? fileManager.moveItem(at: movedFile.isolated, to: movedFile.source)
-                }
-                Log.error("[\(label)] could not isolate \(sourceURL.lastPathComponent): \(error)", category: .library)
-                return false
-            }
-        }
-
-        return movedStore
     }
 
     var body: some Scene {

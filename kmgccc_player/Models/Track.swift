@@ -10,13 +10,7 @@ import AppKit
 import Foundation
 import SwiftData
 
-/// Track availability status based on bookmark resolution.
-/// Using String raw values for SwiftData compatibility.
-enum TrackAvailability: String, Codable {
-    case available = "available"
-    case stale = "stale"  // Bookmark outdated but file still exists
-    case missing = "missing"  // File cannot be located
-}
+// TrackAvailability lives in its own value-type model for resolver reuse.
 
 @Model
 final class Track {
@@ -28,6 +22,30 @@ final class Track {
 
     var title: String
     var artist: String
+    /// JSON-backed structured credits. The raw artist string above is kept
+    /// unchanged so existing displays and metadata round-trips preserve it.
+    var artistCreditsData: Data?
+
+    var artistCredits: [TrackCredit] {
+        get {
+            if let data = artistCreditsData,
+               let credits = try? JSONDecoder().decode([TrackCredit].self, from: data),
+               !credits.isEmpty {
+                return credits
+            }
+            return TrackCredit.fallback(for: artist)
+        }
+        set {
+            let normalized = newValue.filter {
+                !$0.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            artistCreditsData = try? JSONEncoder().encode(normalized)
+        }
+    }
+
+    var artistCreditsDisplayText: String {
+        artistCredits.map(\.displayName).joined(separator: ", ")
+    }
     var album: String
     var albumArtist: String?
     var userDescription: String
@@ -39,6 +57,8 @@ final class Track {
     var metadataSource: String?
     var metadataFetchedAt: Date?
     var metadataConfidence: Double?
+    /// MusicBrainz release identifier mirrored from the sidecar (schema 9).
+    var musicBrainzReleaseID: String?
     var albumGroupKey: String
     var duration: Double  // seconds
     var addedAt: Date
@@ -59,8 +79,55 @@ final class Track {
     /// Empty means the track still relies on a legacy bookmark.
     var libraryRelativePath: String = ""
 
-    /// Availability status (updated on bookmark resolution).
-    /// Stored as String for SwiftData compatibility.
+    /// Stable encoded locator snapshot. Legacy path/bookmark fields remain as compatibility projections.
+    var mediaLocatorData: Data = Data()
+
+    /// Decode cache for `mediaLocator`. Reconcile/reload paths read the
+    /// locator several times per track per pass; decoding JSON on every access
+    /// was a measurable main-thread cost on large referenced libraries.
+    /// Transient: never persisted; a faulted-in model simply re-decodes once.
+    @Transient private var mediaLocatorDecodedFrom: Data?
+    @Transient private var mediaLocatorDecodedValue: TrackMediaLocator?
+
+    var mediaLocator: TrackMediaLocator {
+        get {
+            if let cachedFrom = mediaLocatorDecodedFrom,
+               cachedFrom == mediaLocatorData,
+               let cachedValue = mediaLocatorDecodedValue {
+                return cachedValue
+            }
+            if let decoded = try? JSONDecoder().decode(TrackMediaLocator.self, from: mediaLocatorData) {
+                mediaLocatorDecodedFrom = mediaLocatorData
+                mediaLocatorDecodedValue = decoded
+                return decoded
+            }
+            if !libraryRelativePath.isEmpty {
+                return .managed(libraryRelativePath: libraryRelativePath)
+            }
+            return .referenced(ReferencedFileLocator(
+                fileBookmarkData: fileBookmarkData,
+                lastKnownPath: originalFilePath
+            ))
+        }
+        set {
+            let encoded = (try? JSONEncoder().encode(newValue)) ?? Data()
+            mediaLocatorData = encoded
+            // Keep the decode cache coherent with the freshly written value.
+            mediaLocatorDecodedFrom = encoded
+            mediaLocatorDecodedValue = newValue
+            switch newValue {
+            case let .managed(path):
+                libraryRelativePath = path
+                fileBookmarkData = Data()
+            case let .referenced(locator):
+                libraryRelativePath = ""
+                fileBookmarkData = locator.fileBookmarkData
+                originalFilePath = locator.lastKnownPath
+            }
+        }
+    }
+
+    /// Availability status (updated on locator resolution).
     private var availabilityRaw: String
 
     var availability: TrackAvailability {
@@ -99,20 +166,94 @@ final class Track {
     /// TTML lyrics file name inside the track folder (e.g. "lyrics.ttml").
     var ttmlLyricsFileName: String?
 
-    // MARK: - Playback Stats (Migrated)
-    /// MIGRATED: All playback stats have been migrated to preferenceStats via PreferenceStatsService.
-    /// This property is kept deprecated to avoid breaking legacy references if any.
-    /// Use `PreferenceStatsService.shared.getStats(for: id).playCount` instead.
-    @available(*, deprecated, message: "Use PreferenceStatsService.shared.getStats(for: id).playCount")
-    @MainActor
-    var playCount: Int {
+    /// Durable referenced-NCM transaction association, mirrored into schema 7 sidecars.
+    var ncmConversionAssociationData: Data?
+
+    var ncmConversionAssociation: NCMConversionAssociation? {
         get {
-            PreferenceStatsService.shared.getStats(for: id).playCount
+            guard let data = ncmConversionAssociationData else { return nil }
+            return try? JSONDecoder().decode(NCMConversionAssociation.self, from: data)
         }
         set {
-            // No-op: stats are managed through PreferenceStatsService
-            // This setter exists to prevent breaking old code during migration
+            ncmConversionAssociationData = try? newValue.map { try JSONEncoder().encode($0) }
         }
+    }
+
+    // MARK: - Schema 9 Metadata Layers
+
+    /// JSON-backed embedded-tag snapshot mirrored from the sidecar.
+    var embeddedMetadataSnapshotData: Data?
+
+    var embeddedMetadataSnapshot: EmbeddedMetadataSnapshot? {
+        get {
+            guard let data = embeddedMetadataSnapshotData else { return nil }
+            return try? JSONDecoder().decode(EmbeddedMetadataSnapshot.self, from: data)
+        }
+        set {
+            embeddedMetadataSnapshotData = try? newValue.map { try JSONEncoder().encode($0) }
+        }
+    }
+
+    /// JSON-backed import provenance mirrored from the sidecar (schema 9).
+    /// Captured for managed imports at commit time; the identity resolver
+    /// consults it when a re-import no longer matches by canonical path.
+    var importProvenanceData: Data?
+
+    var importProvenance: ImportProvenance? {
+        get {
+            guard let data = importProvenanceData else { return nil }
+            return try? JSONDecoder().decode(ImportProvenance.self, from: data)
+        }
+        set {
+            importProvenanceData = try? newValue.map { try JSONEncoder().encode($0) }
+        }
+    }
+
+    /// JSON-backed technical audio properties for managed copies (schema 9).
+    /// Referenced tracks carry the same values on their locator instead.
+    var audioPropertiesData: Data?
+
+    var audioProperties: TrackAudioProperties? {
+        get {
+            guard let data = audioPropertiesData else { return nil }
+            return try? JSONDecoder().decode(TrackAudioProperties.self, from: data)
+        }
+        set {
+            audioPropertiesData = try? newValue.map { try JSONEncoder().encode($0) }
+        }
+    }
+
+    /// JSON-backed advisory completion candidates mirrored from the sidecar
+    /// (schema 9). Advisory only: nothing here is written back to files.
+    var enrichmentSuggestionsData: Data?
+
+    var enrichmentSuggestions: [EnrichmentSuggestion]? {
+        get {
+            guard let data = enrichmentSuggestionsData else { return nil }
+            return try? JSONDecoder().decode([EnrichmentSuggestion].self, from: data)
+        }
+        set {
+            enrichmentSuggestionsData = try? newValue.map { try JSONEncoder().encode($0) }
+        }
+    }
+
+    var embeddedReleaseYear: Int? { embeddedMetadataSnapshot?.releaseYear }
+
+    var embeddedCompilation: Bool? { embeddedMetadataSnapshot?.compilation }
+
+    /// Compilation evidence with the §10.1 tier precedence used by
+    /// EffectiveMetadata.project: an explicit tag beats an advisory
+    /// suggestion. Purely advisory input for grouping; never written to files.
+    var effectiveCompilationFlag: Bool? {
+        embeddedMetadataSnapshot?.compilation
+            ?? enrichmentSuggestions?.bestByConfidence?.compilation
+    }
+
+    /// Whether the primary playback location already carries a content
+    /// digest. Managed tracks have no referenced location yet, so they
+    /// report false until managed-digest storage lands.
+    var contentDigestPresent: Bool {
+        mediaLocator.referencedFile?.locations.first?.contentDigest != nil
     }
 
     // MARK: - Lyrics
@@ -128,6 +269,7 @@ final class Track {
         id: UUID = UUID(),
         title: String,
         artist: String = "",
+        artistCredits: [TrackCredit]? = nil,
         album: String = "",
         albumArtist: String? = nil,
         userDescription: String = "",
@@ -139,6 +281,8 @@ final class Track {
         metadataSource: String? = nil,
         metadataFetchedAt: Date? = nil,
         metadataConfidence: Double? = nil,
+        musicBrainzReleaseID: String? = nil,
+        embeddedMetadataSnapshot: EmbeddedMetadataSnapshot? = nil,
         albumGroupKey: String = "",
         duration: Double = 0,
         addedAt: Date = Date(),
@@ -147,6 +291,7 @@ final class Track {
         fileBookmarkData: Data,
         originalFilePath: String = "",
         libraryRelativePath: String = "",
+        mediaLocator: TrackMediaLocator? = nil,
         availability: TrackAvailability = .available,
         artworkData: Data? = nil,
         ttmlLyricText: String? = nil,
@@ -156,11 +301,18 @@ final class Track {
         artworkFileName: String? = nil,
         lyricsFileName: String? = nil,
         ttmlLyricsFileName: String? = nil,
+        ncmConversionAssociation: NCMConversionAssociation? = nil,
+        importProvenance: ImportProvenance? = nil,
+        audioProperties: TrackAudioProperties? = nil,
+        enrichmentSuggestions: [EnrichmentSuggestion]? = nil,
         playCount: Int? = nil  // DEPRECATED: Ignored, use PreferenceStatsService instead
     ) {
         self.id = id
         self.title = title
         self.artist = artist
+        self.artistCreditsData = try? JSONEncoder().encode(
+            artistCredits ?? TrackCredit.fallback(for: artist)
+        )
         self.album = album
         self.albumArtist = albumArtist
         self.userDescription = userDescription
@@ -172,6 +324,11 @@ final class Track {
         self.metadataSource = metadataSource
         self.metadataFetchedAt = metadataFetchedAt
         self.metadataConfidence = metadataConfidence
+        self.musicBrainzReleaseID = musicBrainzReleaseID
+        self.embeddedMetadataSnapshotData = try? embeddedMetadataSnapshot.map { try JSONEncoder().encode($0) }
+        self.importProvenanceData = try? importProvenance.map { try JSONEncoder().encode($0) }
+        self.audioPropertiesData = try? audioProperties.map { try JSONEncoder().encode($0) }
+        self.enrichmentSuggestionsData = try? enrichmentSuggestions.map { try JSONEncoder().encode($0) }
         self.albumGroupKey = albumGroupKey
         self.duration = duration
         self.addedAt = addedAt
@@ -180,7 +337,17 @@ final class Track {
         self.fileBookmarkData = fileBookmarkData
         self.originalFilePath = originalFilePath
         self.libraryRelativePath = libraryRelativePath
+        self.mediaLocatorData = Data()
         self.availabilityRaw = availability.rawValue
+        self.mediaLocator = mediaLocator ?? {
+            if !libraryRelativePath.isEmpty {
+                return .managed(libraryRelativePath: libraryRelativePath)
+            }
+            return .referenced(ReferencedFileLocator(
+                fileBookmarkData: fileBookmarkData,
+                lastKnownPath: originalFilePath
+            ))
+        }()
         self.artworkData = artworkData
         self.ttmlLyricText = ttmlLyricText
         self.lyricsText = lyricsText
@@ -189,6 +356,7 @@ final class Track {
         self.artworkFileName = artworkFileName
         self.lyricsFileName = lyricsFileName
         self.ttmlLyricsFileName = ttmlLyricsFileName
+        self.ncmConversionAssociationData = try? ncmConversionAssociation.map { try JSONEncoder().encode($0) }
         // NOTE: playCount parameter is deprecated. If provided, it's stored in preferenceStats via sidecar.
     }
 
@@ -197,82 +365,47 @@ final class Track {
     /// Resolve result with optional refreshed bookmark data.
     struct ResolveResult {
         let url: URL?
-        let refreshedBookmarkData: Data?
+        let refreshedLocator: TrackMediaLocator?
+        let lease: SecurityScopedResourceLease
         let newAvailability: TrackAvailability
+
+        var refreshedBookmarkData: Data? {
+            refreshedLocator?.referencedFile?.fileBookmarkData
+        }
     }
 
-    /// Resolve the security-scoped bookmark to get a usable file URL.
-    /// - Returns: ResolveResult containing URL (if accessible), refreshed bookmark (if stale), and new availability status.
+    /// Compatibility wrapper. LocalAudioResourceResolver is the only resolution implementation.
     func resolveFileURL() -> ResolveResult {
-        if !libraryRelativePath.isEmpty {
-            let localURL = LocalLibraryPaths.libraryURL(from: libraryRelativePath)
-            if FileManager.default.fileExists(atPath: localURL.path) {
-                return ResolveResult(
-                    url: localURL, refreshedBookmarkData: nil, newAvailability: .available)
-            }
-            return ResolveResult(url: nil, refreshedBookmarkData: nil, newAvailability: .missing)
+        guard let paths = capturedLibraryPaths else {
+            return ResolveResult(url: nil, refreshedLocator: nil, lease: .none, newAvailability: .missing)
         }
-
-        if fileBookmarkData.isEmpty {
-            return ResolveResult(url: nil, refreshedBookmarkData: nil, newAvailability: .missing)
-        }
-
-        var isStale = false
-
         do {
-            let url = try URL(
-                resolvingBookmarkData: fileBookmarkData,
-                options: .withSecurityScope,
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            )
-
-            // Start accessing the security-scoped resource
-            guard url.startAccessingSecurityScopedResource() else {
-                Log.error("Failed to access security-scoped resource: \(title)", category: .file)
-                return ResolveResult(
-                    url: nil, refreshedBookmarkData: nil, newAvailability: .missing)
-            }
-
-            // If stale, try to refresh the bookmark
-            var refreshedData: Data? = nil
-            if isStale {
-                Log.warning("Track bookmark is stale, refreshing: \(title)", category: .file)
-                do {
-                    refreshedData = try url.bookmarkData(
-                        options: .withSecurityScope,
-                        includingResourceValuesForKeys: nil,
-                        relativeTo: nil
-                    )
-                } catch {
-                    Log.warning("Failed to refresh bookmark: \(error)", category: .file)
-                    // File is accessible but bookmark couldn't be refreshed
-                }
-            }
-
+            let result = try LocalAudioResourceResolver(paths: paths).resolve(mediaLocator)
             return ResolveResult(
-                url: url,
-                refreshedBookmarkData: refreshedData,
-                newAvailability: isStale ? .stale : .available
+                url: result.url,
+                refreshedLocator: result.refreshedLocator,
+                lease: result.lease,
+                newAvailability: result.availability
             )
-
+        } catch let error as LocalAudioResolutionError {
+            let availability: TrackAvailability
+            switch error {
+            case .permissionDenied: availability = .permissionDenied
+            case .volumeUnavailable: availability = .volumeUnavailable
+            case .notDownloaded: availability = .notDownloaded
+            default: availability = .missing
+            }
+            return ResolveResult(url: nil, refreshedLocator: nil, lease: .none, newAvailability: availability)
         } catch {
-            Log.error("Failed to resolve bookmark for track \(title): \(error)", category: .file)
-            return ResolveResult(url: nil, refreshedBookmarkData: nil, newAvailability: .missing)
+            return ResolveResult(url: nil, refreshedLocator: nil, lease: .none, newAvailability: .missing)
         }
-    }
-
-    /// Stop accessing the security-scoped resource.
-    /// Call this when done using the file URL.
-    func stopAccessingFile(url: URL) {
-        url.stopAccessingSecurityScopedResource()
     }
 
     // MARK: - Computed Properties
 
     /// Whether the track is currently playable.
     var isPlayable: Bool {
-        availability != .missing
+        availability.isPlayable
     }
 
     /// Drop heavyweight in-memory payloads once a track is removed from the library.
@@ -284,49 +417,47 @@ final class Track {
 
     // MARK: - Persistence URL Resolution (root-snapshot aware)
 
-    /// Resolve the track folder URL using the stored root snapshot.
-    /// Falls back to the current active library root if no snapshot is stored.
+    /// Resolve the track folder URL using the root captured by its session.
     func resolvedTrackFolderURL() -> URL? {
-        let root: URL
-        if !libraryRootSnapshot.isEmpty {
-            root = URL(fileURLWithPath: libraryRootSnapshot)
-        } else {
-            root = LocalLibraryPaths.libraryRootURL
-        }
-        return root.appendingPathComponent("Tracks", isDirectory: true)
-            .appendingPathComponent(id.uuidString, isDirectory: true)
+        capturedLibraryPaths?.trackFolderURL(for: id)
+    }
+
+    private var capturedLibraryPaths: LibraryPaths? {
+        guard !libraryRootSnapshot.isEmpty else { return nil }
+        return LibraryPaths(rootURL: URL(fileURLWithPath: libraryRootSnapshot, isDirectory: true))
     }
 
     func resolvedAudioURL() -> URL? {
+        guard let paths = capturedLibraryPaths else { return nil }
         guard !audioFileName.isEmpty else {
             guard !libraryRelativePath.isEmpty else { return nil }
-            return LocalLibraryPaths.libraryURL(from: libraryRelativePath)
+            return paths.libraryURL(from: libraryRelativePath)
         }
-        return resolvedTrackFolderURL()?.appendingPathComponent(audioFileName)
+        return paths.trackAssetURL(for: id, fileName: audioFileName)
     }
 
     func resolvedArtworkURL() -> URL? {
-        guard let folder = resolvedTrackFolderURL() else { return nil }
+        guard let paths = capturedLibraryPaths else { return nil }
         let fileManager = FileManager.default
-        for fileName in LocalLibraryPaths.trackArtworkCandidateFileNames(preferredFileName: artworkFileName) {
-            let url = folder.appendingPathComponent(fileName)
+        for fileName in paths.trackArtworkCandidateFileNames(preferredFileName: artworkFileName) {
+            guard let url = paths.trackArtworkURL(for: id, fileName: fileName) else { continue }
             if fileManager.fileExists(atPath: url.path) {
                 return url
             }
         }
 
         guard let artworkFileName, !artworkFileName.isEmpty else { return nil }
-        return folder.appendingPathComponent(artworkFileName)
+        return paths.trackArtworkURL(for: id, fileName: artworkFileName)
     }
 
     func resolvedLyricsURL() -> URL? {
-        guard let lyricsFileName else { return nil }
-        return resolvedTrackFolderURL()?.appendingPathComponent(lyricsFileName)
+        guard let lyricsFileName, let paths = capturedLibraryPaths else { return nil }
+        return paths.trackAssetURL(for: id, fileName: lyricsFileName)
     }
 
     func resolvedTTMLURL() -> URL? {
-        guard let ttmlLyricsFileName else { return nil }
-        return resolvedTrackFolderURL()?.appendingPathComponent(ttmlLyricsFileName)
+        guard let ttmlLyricsFileName, let paths = capturedLibraryPaths else { return nil }
+        return paths.trackAssetURL(for: id, fileName: ttmlLyricsFileName)
     }
 
     // MARK: - Lazy Loading
@@ -343,9 +474,11 @@ final class Track {
     /// Read the artwork file off the main actor, then preserve the existing lazy in-memory cache behavior.
     func loadArtworkDataOffMainIfNeeded() async -> Data? {
         if let data = artworkData, !data.isEmpty { return data }
-        guard let folder = resolvedTrackFolderURL() else { return nil }
+        guard let folder = resolvedTrackFolderURL(),
+              let paths = capturedLibraryPaths
+        else { return nil }
         let preferredFileName = artworkFileName
-        let candidateFileNames = LocalLibraryPaths.trackArtworkCandidateFileNames(
+        let candidateFileNames = paths.trackArtworkCandidateFileNames(
             preferredFileName: preferredFileName
         )
         let data = await Task.detached(priority: .utility) { @Sendable () -> Data? in

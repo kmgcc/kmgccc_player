@@ -19,6 +19,7 @@ struct AllPlaylistsView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var deletionRequest: PlaylistDeletionRequest?
@@ -232,6 +233,8 @@ struct AllPlaylistsView: View {
 
 private struct PlaylistListRow: View {
     let playlist: Playlist
+    @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(LibraryCacheServices.self) private var cacheServices
     var titleColor: Color = .primary
     var subtitleColor: Color = .secondary
     var metaColor: Color = Color.secondary.opacity(0.7)
@@ -366,7 +369,7 @@ private struct PlaylistListRow: View {
 
     private var artworkIdentity: String {
         let selectionIdentity = "playlist-\(playlist.id.uuidString)"
-        if let revision = LocalLibraryService.shared.playlistArtworkRevision(playlistID: playlist.id),
+        if let revision = libraryVM.playlistArtworkRevision(playlistID: playlist.id),
            !revision.isEmpty
         {
             return "\(selectionIdentity)-artwork-\(revision)"
@@ -381,12 +384,12 @@ private struct PlaylistListRow: View {
             playlistID: playlist.id,
             tracks: playlist.tracks
         )
-        let immediate = DetailHeaderArtworkResolver.shared.resolveImmediately(for: request)
+        let immediate = libraryVM.detailHeaderArtworkResolver.resolveImmediately(for: request)
         if let image = await loadHeaderImage(from: immediate) {
             self.image = image
         }
 
-        let resolved = await DetailHeaderArtworkResolver.shared.resolveDeferredArtwork(for: request)
+        let resolved = await libraryVM.detailHeaderArtworkResolver.resolveDeferredArtwork(for: request)
         if let image = await loadHeaderImage(from: resolved ?? immediate) {
             self.image = image
         }
@@ -399,7 +402,7 @@ private struct PlaylistListRow: View {
             artworkData: resolved.image?.tiffRepresentation,
             fileURL: resolved.fileURL
         )
-        return await PlaylistArtworkPipeline.shared.load(request) ?? resolved.image
+        return await cacheServices.playlistArtworkPipeline.load(request) ?? resolved.image
     }
 
     private func formattedDuration(_ seconds: Double) -> String {
