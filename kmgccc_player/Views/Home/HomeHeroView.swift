@@ -17,6 +17,7 @@ struct HomeHeroView: View {
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(\.colorScheme) private var colorScheme
     @Environment(AppSettings.self) private var appSettings
     @EnvironmentObject private var themeStore: ThemeStore
@@ -108,6 +109,7 @@ struct HomeHeroView: View {
     }
 
     @State private var trackToEdit: Track?
+    @State private var isShowingDescriptionReader = false
 
     init(
         track: Track,
@@ -282,6 +284,19 @@ struct HomeHeroView: View {
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
                 .environmentObject(themeStore)
+        }
+        .sheet(isPresented: $isShowingDescriptionReader) {
+            DetailDescriptionReaderSheet(
+                title: "歌曲详情",
+                systemImage: "music.note",
+                subtitle: "\(track.title) - \(track.artist)",
+                text: heroDescription,
+                artworkImage: coverImage,
+                artworkData: track.artworkData,
+                paletteOverride: heroPalette.appForeground,
+                accentColorOverride: colorScheme == .dark ? heroPalette.uiAccentOnDarkColor : heroPalette.uiAccentOnLightColor
+            )
+            .environmentObject(themeStore)
         }
         .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in
             Task {
@@ -635,12 +650,13 @@ struct HomeHeroView: View {
                 font: NSFont.systemFont(ofSize: descriptionFontSize, weight: .ultraLight),
                 textColor: NSColor(heroPlusBlendTextProfile.secondaryColor),
                 lineSpacing: 1.5,
-                showsVerticalScroller: true
+                showsVerticalScroller: false,
+                onClick: { isShowingDescriptionReader = true }
             )
             .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: descriptionScrollHeight, alignment: .top)
             .compositingGroup()
             .blendMode(heroPlusBlendTextProfile.blendMode)
-            .frame(height: descriptionScrollHeight, alignment: .top)
             .clipped()
             .layoutPriority(1)
             .padding(.top, 4)
@@ -660,7 +676,7 @@ struct HomeHeroView: View {
     private var statsLine: some View {
         HStack(spacing: 0) {
             Text(formattedDuration)
-            let stats = PreferenceStatsService.shared.getStats(for: track.id)
+            let stats = libraryVM.preferenceStats(for: track.id)
             if stats.playCount > 0 {
                 Text(" \u{00B7} ")
                 Text("\(stats.playCount) 次播放")
@@ -822,7 +838,8 @@ struct HomeHeroView: View {
         async let imageTask = ArtworkLoader.loadImage(
             artworkData: data,
             cacheKey: key,
-            targetPixelSize: CGSize(width: 480, height: 480)
+            targetPixelSize: CGSize(width: 480, height: 480),
+            derivativeStore: cacheServices.artworkDerivativeStore
         )
         // Analyze locally so the hero's text/dominant colours track this card's
         // artwork, not the currently-playing track's ThemeStore palette.

@@ -282,7 +282,7 @@ struct LyricsPanelView: View {
         guard oldId != newId else { return }
         LyricsRuntimeProfile.increment("LyricsPanelView.trackIDChange")
         switch libraryVM.currentSelection {
-        case .home, .allPlaylists, .allAlbums, .allArtists:
+        case .home, .folders, .allPlaylists, .allAlbums, .allArtists:
             LyricsRuntimeProfile.setMetadata("lyrics.selectionKind", value: "home")
         case .allSongs:
             LyricsRuntimeProfile.setMetadata("lyrics.selectionKind", value: "allSongs")
@@ -590,6 +590,7 @@ struct WindowPlaybackQueuePanelView: View {
 }
 
 private struct WindowPlaybackQueueRow: View {
+    @Environment(LibraryCacheServices.self) private var cacheServices
     let track: Track
     let isPlaying: Bool
     let primaryColor: Color
@@ -687,7 +688,7 @@ private struct WindowPlaybackQueueRow: View {
             return
         }
 
-        let image = await TrackArtworkCache.shared.thumbnail(for: source)
+        let image = await cacheServices.trackArtworkCache.thumbnail(for: source)
         guard !Task.isCancelled else { return }
         await MainActor.run {
             artworkImage = image
@@ -708,12 +709,16 @@ private struct WindowPlaybackQueueRow: View {
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
-    let libraryVM = LibraryViewModel(repository: StubLibraryRepository())
-    let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
+    let libraryVM = LibraryViewModel.preview(repository: StubLibraryRepository())
+    let cacheServices = LibraryCacheServices.preview
+    let appleMusicAdapter = AppleMusicPlaybackAdapter(previewLibraryTracksProvider: { [weak libraryVM] in libraryVM?.allTracks ?? [] })
     let playbackCoordinator = PlaybackCoordinator(
-        playerVM: playerVM,
+        localPlayback: playerVM,
         appleMusicAdapter: appleMusicAdapter,
-        systemNowPlayingProvider: SystemNowPlayingProvider(libraryVM: libraryVM)
+        systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryTracksProvider: { [weak libraryVM] in libraryVM?.allTracks ?? [] }),
+        artworkCache: cacheServices.trackArtworkCache,
+        lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
+        amllDBService: cacheServices.amllDBService
     )
     let lyricsVM = LyricsViewModel()
 
@@ -725,6 +730,7 @@ private struct WindowPlaybackQueueRow: View {
             .environment(playerVM)
             .environment(playbackCoordinator)
             .environment(libraryVM)
+            .environment(cacheServices)
             .environment(lyricsVM)
             .environmentObject(ThemeStore.shared)
     }

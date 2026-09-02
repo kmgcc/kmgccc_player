@@ -12,6 +12,7 @@ import SwiftData
 final class TrackIndexEntry {
     @Attribute(.unique) var id: UUID
     var libraryRelativePath: String
+    var locatorKindRaw: String
     var normalizedTitle: String
     var normalizedArtist: String
     var duration: Double
@@ -20,6 +21,7 @@ final class TrackIndexEntry {
     init(
         id: UUID,
         libraryRelativePath: String,
+        locatorKind: LocalTrackStorageKind = .managed,
         normalizedTitle: String,
         normalizedArtist: String,
         duration: Double,
@@ -27,6 +29,7 @@ final class TrackIndexEntry {
     ) {
         self.id = id
         self.libraryRelativePath = libraryRelativePath
+        locatorKindRaw = locatorKind.rawValue
         self.normalizedTitle = normalizedTitle
         self.normalizedArtist = normalizedArtist
         self.duration = duration

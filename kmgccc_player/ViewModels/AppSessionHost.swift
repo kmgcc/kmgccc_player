@@ -9,6 +9,7 @@
 import AppKit
 import AVFoundation
 import Combine
+import Dispatch
 import SwiftData
 
 @MainActor
@@ -20,50 +21,845 @@ final class AppSessionHost: ObservableObject {
     @Published private(set) var ledMeterProvider: LEDMeterServiceProvider?
     @Published private(set) var importEnrichmentService: ImportEnrichmentService?
     @Published private(set) var skinManager: SkinManager?
+    /// True once the first `setupIfNeeded()` pass finished. Lets the window
+    /// distinguish "still loading the initial library" from "no library
+    /// configured" instead of showing an indefinite spinner.
+    @Published private(set) var hasCompletedInitialSetup = false
+    /// True while a user-initiated retry is trying to establish the startup
+    /// library after an exceptional open failure.
+    @Published private(set) var isRetryingLibraryStartup = false
+    /// Pushed referenced-source scan states for the active library (the
+    /// library root itself is excluded). Fed by `LibraryChangeMonitor`
+    /// transitions and the manual rescan wrappers below so views can read a
+    /// published snapshot instead of running their own poll loops.
+    @Published private(set) var referencedSourceScanStatesSnapshot: [UUID: ReferencedSourceScanState] = [:]
+    /// Manual rescans run while the monitor is stopped, so their transient
+    /// states are overlaid here until the operation settles.
+    private var manualScanStateOverrides: [UUID: ReferencedSourceScanState] = [:]
+    /// Live library-task descriptors pushed from the active session's
+    /// operation coordinator (plan §14). Views read this published snapshot
+    /// instead of polling task state.
+    @Published private(set) var activeLibraryTasks: [LibraryOperationTaskDescriptor] = []
+    private var didAutoPresentLibrarySetup = false
+    /// Set when this launch auto-created the factory-default library because
+    /// the machine had no library at all (true fresh install / full reset).
+    /// Drives the first-run setup wizard after What's New is dismissed.
+    private var shouldPresentFirstRunLibrarySetup = false
+    private var whatsNewDismissalCancellable: AnyCancellable?
 
-    let uiState = UIStateViewModel()
-    /// Stable across HomeView lifetime so the random Hero pick survives navigation.
-    let homeVM = HomeViewModel()
-    let playbackHistoryStore: PlaybackHistoryStore
+    let uiState: UIStateViewModel
+    let librarySetupFlow = LibrarySetupViewModel()
+    let activeLibraryBinding: ActiveLibraryBinding
+
+    var cacheServices: LibraryCacheServices? {
+        activeLibraryBinding.activeSession?.cacheServices
+    }
+
+    var homeVM: HomeViewModel {
+        activeLibraryBinding.activeSession?.homeViewModel ?? placeholderHomeViewModel
+    }
+
+    var playbackHistoryStore: PlaybackHistoryStore {
+        activeLibraryBinding.activeSession?.playbackHistoryStore ?? placeholderPlaybackHistoryStore
+    }
+
     /// Shared by the history page and AppKit's main-window toolbar so search,
     /// range, multiselect, and destructive actions have one source of truth.
-    let playbackHistoryViewModel: PlaybackHistoryViewModel
+    var playbackHistoryViewModel: PlaybackHistoryViewModel {
+        activeLibraryBinding.activeSession?.playbackHistoryViewModel
+            ?? placeholderPlaybackHistoryViewModel
+    }
 
-    private let modelContainer: ModelContainer
+    private let placeholderHomeViewModel: HomeViewModel
+    private let placeholderPlaybackHistoryStore: PlaybackHistoryStore
+    private let placeholderPlaybackHistoryViewModel: PlaybackHistoryViewModel
+    private let initialLibraryContext: LibraryContext?
+    private let sessionController: LibrarySessionController
+    private let sessionValidator: LibrarySessionFactoryValidator
+    private let registryStore: MusicLibraryRegistryStore?
+    private let libraryLifecycleGate = LibraryLifecycleTransactionGate()
+
+    private(set) lazy var libraryOpenService: LibraryOpenService? = registryStore.map {
+        LibraryOpenService(
+            registryStore: $0,
+            sessionController: sessionController,
+            gate: libraryLifecycleGate
+        )
+    }
+    private(set) lazy var libraryCreationService: LibraryCreationService? = {
+        guard let registryStore, let libraryOpenService else { return nil }
+        return LibraryCreationService(
+            registryStore: registryStore,
+            openService: libraryOpenService,
+            gate: libraryLifecycleGate
+        )
+    }()
+    private(set) lazy var libraryRelocationService: LibraryRelocationService? = registryStore.map {
+        LibraryRelocationService(
+            registryStore: $0,
+            sessionController: sessionController,
+            sessionValidator: sessionValidator,
+            gate: libraryLifecycleGate
+        )
+    }
+    private(set) lazy var libraryRemovalService: LibraryRemovalService? = registryStore.map {
+        LibraryRemovalService(
+            registryStore: $0,
+            sessionController: sessionController,
+            gate: libraryLifecycleGate
+        )
+    }
+
     private var hasSetupDependencies = false
+    private lazy var automationIPCServer: AutomationIPCServer? = {
+        do {
+            return try AutomationIPCServer(appSession: self)
+        } catch {
+            Log.error(
+                "[Automation] failed to create IPC server: \(error.localizedDescription)",
+                category: .library
+            )
+            return nil
+        }
+    }()
+    /// Coalesces launch/reopen/menu callers while the first library session is
+    /// being opened. The old boolean guard was set before the async work and
+    /// let a second caller show the window with a nil session in between.
+    private var setupTask: Task<Void, Never>?
     private var playbackModeObserver: NSObjectProtocol?
-    private var libraryLocationObserver: NSObjectProtocol?
-    private var libraryService: LocalLibraryService?
-    private var repository: LibraryRepositoryProtocol?
+    private var workspaceLibraryObservers: [NSObjectProtocol] = []
+    private var appActiveLibraryObserver: NSObjectProtocol?
+    private var activeLibraryRescanTask: Task<Void, Never>?
     private var playbackMemoryTimer: Timer?
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
     private let mainThreadStallMonitor = MainThreadStallMonitor()
     private var firstUsePrewarmTask: Task<Void, Never>?
     private var lyricsPlaybackPipeline: LyricsPlaybackPipeline?
     private var didAttemptPlaybackMemoryRestore = false
     private var didScheduleDeferredLaunchPrompts = false
+    private var didPrepareTerminationSynchronously = false
+    private var didFinishTerminationPreparation = false
+    private var terminationPreparationStarted = false
+    private var terminationPreparationGeneration = 0
+    private var terminationCompletions: [@MainActor @Sendable () -> Void] = []
 
     init(
         modelContainer: ModelContainer,
-        playbackHistoryStore: PlaybackHistoryStore = .shared,
+        initialLibraryContext: LibraryContext?,
+        registryStore: MusicLibraryRegistryStore? = nil,
+        sessionFactory: LibrarySessionFactory = LibrarySessionFactory(),
+        playbackHistoryStore: PlaybackHistoryStore? = nil,
         playbackHistoryViewModel: PlaybackHistoryViewModel = PlaybackHistoryViewModel()
     ) {
-        self.modelContainer = modelContainer
-        self.playbackHistoryStore = playbackHistoryStore
-        self.playbackHistoryViewModel = playbackHistoryViewModel
+        let uiState = UIStateViewModel()
+        self.uiState = uiState
+        sessionFactory.referencedSourceNoticePublisher = SidebarReferencedSourceNoticePublisher { [weak uiState] notice in
+            guard let uiState else { return }
+            AppSessionHost.presentReferencedSourceNotice(notice, in: uiState)
+        }
+
+        let activeLibraryBinding = ActiveLibraryBinding(
+            placeholderModelContainer: modelContainer
+        )
+        self.activeLibraryBinding = activeLibraryBinding
+        self.initialLibraryContext = initialLibraryContext
+        self.sessionController = LibrarySessionController(factory: sessionFactory)
+        self.sessionValidator = LibrarySessionFactoryValidator(factory: sessionFactory)
+        self.registryStore = registryStore ?? MusicLibraryRegistryStore.makeApplicationStore()
+        let placeholderPaths = initialLibraryContext?.paths ?? LibraryPaths(
+            rootURL: FileManager.default.temporaryDirectory.appendingPathComponent(
+                "kmgccc-player-placeholder-library",
+                isDirectory: true
+            )
+        )
+        self.placeholderHomeViewModel = HomeViewModel(paths: placeholderPaths)
+        self.placeholderPlaybackHistoryStore = playbackHistoryStore ?? .inMemory()
+        self.placeholderPlaybackHistoryViewModel = playbackHistoryViewModel
+        self.skinManager = SkinManager()
+
+        sessionController.willReleaseActiveSession = { [weak self] in
+            await self?.releaseActiveSessionBindings()
+        }
+        sessionController.didActivateSession = { [weak self] session in
+            guard let self, let session = session as? LibrarySession else { return }
+            await self.publishActiveSession(session)
+            do {
+                try await self.registryStore?.setActiveLibrary(
+                    id: session.context.id,
+                    manifestMode: session.context.mode
+                )
+            } catch {
+                Log.error(
+                    "[LibrarySession] failed to update active registry pointer library=\(session.context.id): \(error)",
+                    category: .library
+                )
+            }
+        }
+    }
+
+    private static func presentReferencedSourceNotice(
+        _ notice: ReferencedSourceNotice,
+        in uiState: UIStateViewModel
+    ) {
+        switch notice {
+        case .filesImported(_, let count):
+            uiState.showSidebarNotice(
+                "来源文件夹新增 \(count) 首歌曲，正在补全信息",
+                duration: 4
+            )
+        case .unavailable(_, _):
+            uiState.showSidebarNotice(
+                "来源文件夹暂时不可用",
+                style: .warning,
+                actionTitle: "打开设置"
+            )
+        case .fileFailures(_, let failures):
+            uiState.recordLibraryImportFailures(
+                failures.map { failure in
+                    ImportInputFailure(
+                        url: URL(fileURLWithPath: failure.relativePath ?? "来源文件"),
+                        message: failure.summary
+                    )
+                },
+                origin: .sourceMonitor
+            )
+            uiState.showSidebarNotice(
+                "来源文件夹中有 \(failures.count) 个文件未能导入",
+                style: .warning,
+                actionTitle: "查看失败"
+            )
+        case .scanFailures(_, let failures):
+            uiState.recordLibraryImportFailures(
+                failures.map { failure in
+                    ImportInputFailure(
+                        url: URL(fileURLWithPath: failure.relativePath ?? "来源文件"),
+                        message: failure.summary
+                    )
+                },
+                origin: .sourceMonitor
+            )
+            uiState.showSidebarNotice(
+                "来源扫描失败 \(failures.count) 项",
+                style: .warning,
+                actionTitle: "查看失败"
+            )
+        case .reconcileFailures(_, let failures):
+            uiState.recordLibraryImportFailures(
+                failures.map { failure in
+                    ImportInputFailure(
+                        url: URL(fileURLWithPath: failure.relativePath ?? "来源歌曲"),
+                        message: failure.summary
+                    )
+                },
+                origin: .sourceMonitor
+            )
+            uiState.showSidebarNotice(
+                "有 \(failures.count) 首歌曲未能更新",
+                style: .warning,
+                actionTitle: "查看失败"
+            )
+        case .monitorFailure(_, let summary):
+            uiState.recordLibraryImportFailures(
+                [ImportInputFailure(url: URL(fileURLWithPath: "来源扫描"), message: summary)],
+                origin: .sourceMonitor
+            )
+            uiState.showSidebarNotice(
+                "来源文件夹扫描失败，请检查来源设置",
+                style: .warning,
+                actionTitle: "查看失败"
+            )
+        }
     }
 
     var sharedModelContainer: ModelContainer {
-        modelContainer
+        activeLibraryBinding.modelContainer
+    }
+
+    func musicLibraryRegistrySnapshot() async -> MusicLibraryRegistry {
+        await registryStore?.snapshot() ?? MusicLibraryRegistry()
+    }
+
+    func openMusicLibrary(at url: URL) async throws -> [UUID] {
+        guard let libraryOpenService else { throw LibraryOpenError.libraryNotFound }
+        let selectedURL = url.standardizedFileURL
+        let defaultRoot = LibraryLocationStore.defaultLibraryRootURL.standardizedFileURL
+        let isDefaultLibrarySelection = selectedURL == defaultRoot
+            || selectedURL.appendingPathComponent(LibraryPaths.rootDirectoryName, isDirectory: true)
+                .standardizedFileURL == defaultRoot
+        _ = try await libraryOpenService.open(
+            selectedURL: selectedURL,
+            allowStalePathConflictRepair: isDefaultLibrarySelection
+        )
+        return try await unavailableReferencedSourceIDs()
+    }
+
+    func openInspectedMusicLibrary(_ context: LibraryContext) async throws -> [UUID] {
+        let lease = try LibraryRootAccessLease(
+            context: context,
+            resolver: SystemBookmarkResolver(),
+            requiresSecurityScope: false
+        )
+        defer { lease.release() }
+        return try await openMusicLibrary(at: context.rootURL)
+    }
+
+    func activateRegisteredLibrary(id: UUID) async throws -> [UUID] {
+        guard let registryStore else { throw RegisteredLibraryActivationError.notRegistered }
+        let context = try await LibraryStartupContextResolver(registryStore: registryStore)
+            .resolveRegistered(libraryID: id, generation: activeLibraryBinding.generation &+ 1)
+        try await sessionController.switchToLibrary(context)
+        return try await unavailableReferencedSourceIDs()
+    }
+
+    func reconnectRegisteredLibrary(id: UUID, at url: URL) async throws -> [UUID] {
+        guard let libraryOpenService else { throw LibraryOpenError.libraryNotFound }
+        _ = try await libraryOpenService.reconnectRegisteredLibrary(id: id, selectedURL: url)
+        return try await unavailableReferencedSourceIDs()
+    }
+
+    func prepareSourceReconnect(
+        sourceID: UUID,
+        candidateRoots: [URL]
+    ) async throws -> SourceReconnectPreparation {
+        guard let session = activeLibraryBinding.activeSession else {
+            throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        return try await session.runLibraryOperation {
+            try await session.prepareSourceReconnect(
+                sourceID: sourceID,
+                candidateRoots: candidateRoots
+            )
+        }
+    }
+
+    func reconnectSource(
+        preparation: SourceReconnectPreparation,
+        planID: String,
+        conflictSelections: [UUID: URL]
+    ) async throws {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.id == activeLibraryBinding.context?.id else {
+            throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        try await session.runLibraryOperation {
+            try await session.reconnectSource(
+                preparation: preparation,
+                planID: planID,
+                conflictSelections: conflictSelections
+            )
+        }
+    }
+
+    func createMusicLibrary(
+        mode: MusicLibraryMode,
+        parentURL: URL,
+        displayName: String,
+        initialImportSelection: LibraryInitialImportSelection?,
+        initialImportPolicy: LibraryInitialImportPolicy = .waitForCompletion,
+        allowAlternateDestinationWhenOccupied: Bool = false
+    ) async throws -> CreateMusicLibraryResult {
+        let selectedMusicURLs = initialImportSelection?.urls ?? []
+        guard let libraryCreationService else { throw LibraryCreationError.stagingFailed }
+        // Creating a library activates it, so it is also a library switch. The
+        // session controller quiesces the previous session before activation.
+        let backgroundSelection: LibraryInitialImportSelection?
+        if initialImportPolicy == .background,
+           let initialImportSelection,
+           !selectedMusicURLs.isEmpty {
+            backgroundSelection = initialImportSelection.retainedCopy()
+        } else {
+            backgroundSelection = nil
+        }
+
+        let result: LibraryCreationResult
+        do {
+            result = try await libraryCreationService.create(
+                mode: mode,
+                parentURL: parentURL,
+                displayName: displayName,
+                initialImport: LibraryInitialImportPayload(selectedURLs: selectedMusicURLs),
+                allowAlternateDestinationWhenOccupied: allowAlternateDestinationWhenOccupied
+            )
+        } catch {
+            backgroundSelection?.release()
+            throw error
+        }
+        switch result {
+        case .created(let context, _):
+            if initialImportPolicy == .background {
+                scheduleBackgroundInitialImport(
+                    context: context,
+                    selection: backgroundSelection
+                )
+                return .created(context, initialImport: nil)
+            }
+            var initialResult: LibraryInitialImportResult?
+            if let initialImportSelection,
+               !initialImportSelection.urls.isEmpty,
+               let session = activeLibraryBinding.activeSession {
+                initialResult = try await session.runLibraryOperation {
+                    try await session.importInitialSelection(initialImportSelection)
+                }
+            }
+            return .created(context, initialImport: initialResult)
+        case .existingLibrary(let context):
+            backgroundSelection?.release()
+            return .existingLibrary(context)
+        case .existingLibraryModeMismatch(let context, let requestedMode):
+            backgroundSelection?.release()
+            return .existingLibraryModeMismatch(context, requestedMode: requestedMode)
+        }
+    }
+
+    private func scheduleBackgroundInitialImport(
+        context: LibraryContext,
+        selection: LibraryInitialImportSelection?
+    ) {
+        guard let selection, !selection.urls.isEmpty,
+              let session = activeLibraryBinding.activeSession,
+              session.context.id == context.id else {
+            selection?.release()
+            return
+        }
+
+        let started = session.startBackgroundLibraryOperation { [weak self, session, selection] in
+            defer { selection.release() }
+            guard !Task.isCancelled else { return }
+            do {
+                let result = try await session.importInitialSelection(selection)
+                guard !Task.isCancelled, let self else { return }
+                if result.isPartial {
+                    self.uiState.showSidebarNotice(
+                        "部分音乐未导入",
+                        style: .warning,
+                        actionTitle: "查看失败"
+                    )
+                } else if result.imported > 0 {
+                    self.uiState.showSidebarNotice("新增 \(result.imported) 首歌曲")
+                }
+            } catch LibraryInitialImportError.initialImportFailed(let result) {
+                guard !Task.isCancelled else { return }
+                self?.uiState.showSidebarNotice(
+                    result.imported > 0 ? "部分音乐未导入" : "初始音乐导入失败",
+                    style: .warning,
+                    actionTitle: "查看失败"
+                )
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.uiState.showSidebarNotice(
+                    "初始音乐导入失败",
+                    style: .warning,
+                    actionTitle: "查看失败"
+                )
+            }
+        }
+        guard started else {
+            selection.release()
+            return
+        }
+    }
+
+    func importMusicSelection(_ selection: LibraryInitialImportSelection) async throws -> LibraryInitialImportResult {
+        guard let session = activeLibraryBinding.activeSession else {
+            let result = LibraryInitialImportResult(
+                requested: selection.urls.count,
+                planned: 0,
+                imported: 0,
+                failures: selection.urls.map {
+                    ImportInputFailure(url: $0, message: "No active library")
+                },
+                sourceIDs: []
+            )
+            throw LibraryInitialImportError.initialImportFailed(result)
+        }
+        return try await session.runLibraryOperation {
+            try await session.importInitialSelection(selection)
+        }
+    }
+
+    func relocateMusicLibrary(id: UUID, to parentURL: URL) async throws {
+        guard let libraryRelocationService else { throw LibraryRelocationError.libraryNotRegistered }
+        _ = try await libraryRelocationService.relocate(libraryID: id, toParent: parentURL)
+    }
+
+    func removeMusicLibrary(id: UUID) async throws {
+        guard let libraryRemovalService else { throw LibraryRemovalError.libraryNotRegistered }
+        do {
+            let nextAction = try await libraryRemovalService.moveToTrash(libraryID: id)
+            if case .chooseLibrary = nextAction {
+                // The removal service has already released its transaction gate by
+                // the time this returns. Re-run the normal successor/default
+                // policy so deletion can never leave the app with an empty shell.
+                _ = await ensureFactoryDefaultLibraryIfNeeded(allowUnreachableActiveLibrary: true)
+            }
+        } catch {
+            // A registry commit can fail after the active session has already
+            // been closed and the recycle intent has been written. The repair
+            // journal will finish the registry cleanup on the next launch, but
+            // the current process still needs a usable session now.
+            if activeLibraryBinding.activeSession == nil {
+                _ = await ensureFactoryDefaultLibraryIfNeeded(allowUnreachableActiveLibrary: true)
+            }
+            throw error
+        }
+    }
+
+    func referencedSourceScanStates() async -> [UUID: ReferencedSourceScanState] {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.mode == .referenced,
+              let monitor = session.libraryChangeMonitor
+        else { return [:] }
+        var states = await monitor.sourceStateSnapshot()
+        states.removeValue(forKey: session.context.id)
+        return states
+    }
+
+    /// One-shot refresh of the published snapshot from the live monitor.
+    func refreshReferencedSourceScanStatesSnapshot() async {
+        applyReferencedScanStates(await referencedSourceScanStates())
+    }
+
+    private func bindReferencedScanStatePush(for session: LibrarySession) async {
+        manualScanStateOverrides.removeAll()
+        guard let monitor = session.libraryChangeMonitor else {
+            referencedSourceScanStatesSnapshot = [:]
+            return
+        }
+        await monitor.setScanStateChangeHandler { [weak self] states in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                var filtered = states
+                filtered.removeValue(forKey: session.context.id)
+                self.applyManualScanOverrides(to: &filtered)
+                if filtered != self.referencedSourceScanStatesSnapshot {
+                    self.referencedSourceScanStatesSnapshot = filtered
+                }
+            }
+        }
+    }
+
+    private func unbindReferencedScanStatePush(of session: LibrarySession?) async {
+        await session?.libraryChangeMonitor?.setScanStateChangeHandler(nil)
+        manualScanStateOverrides.removeAll()
+        referencedSourceScanStatesSnapshot = [:]
+    }
+
+    private func bindLibraryTaskStatePush(for session: LibrarySession) {
+        activeLibraryTasks = session.libraryTaskDescriptorsSnapshot()
+        session.bindLibraryTaskStateObserver { [weak self, weak session] in
+            guard let self, let session else { return }
+            self.activeLibraryTasks = session.libraryTaskDescriptorsSnapshot()
+        }
+    }
+
+    private func unbindLibraryTaskStatePush(of session: LibrarySession?) {
+        session?.bindLibraryTaskStateObserver(nil)
+        activeLibraryTasks = []
+    }
+
+    private func applyReferencedScanStates(_ states: [UUID: ReferencedSourceScanState]) {
+        var merged = states
+        applyManualScanOverrides(to: &merged)
+        if merged != referencedSourceScanStatesSnapshot {
+            referencedSourceScanStatesSnapshot = merged
+        }
+    }
+
+    private func applyManualScanOverrides(to states: inout [UUID: ReferencedSourceScanState]) {
+        let supersededFailureIDs = manualScanStateOverrides
+            .filter { id, override in override == .failed && states[id] != nil }
+            .map(\.key)
+        for id in supersededFailureIDs {
+            // A monitor transition arrived for a source whose failure flag came
+            // from a manual rescan; the automatic state is now authoritative.
+            manualScanStateOverrides.removeValue(forKey: id)
+        }
+        for (id, state) in manualScanStateOverrides {
+            states[id] = state
+        }
+    }
+
+    private func beginManualScanOverride(sourceIDs: [UUID]) {
+        for id in sourceIDs { manualScanStateOverrides[id] = .scanning }
+        Task { @MainActor [weak self] in
+            await self?.refreshReferencedSourceScanStatesSnapshot()
+        }
+    }
+
+    private func endManualScanOverride(sourceIDs: [UUID], markFailed: Bool) {
+        for id in sourceIDs {
+            manualScanStateOverrides.removeValue(forKey: id)
+            if markFailed { manualScanStateOverrides[id] = .failed }
+        }
+        Task { @MainActor [weak self] in
+            await self?.refreshReferencedSourceScanStatesSnapshot()
+        }
+    }
+
+    func referencedSources() async throws -> [ReferencedSourceDescriptor] {
+        guard let store = activeLibraryBinding.activeSession?.referencedSourceStore else { return [] }
+        return try await store.loadAll()
+    }
+
+    func refreshReferencedSource(
+        id: UUID,
+        libraryID: UUID? = nil
+    ) async throws -> [ReferencedSourceScopeIssue] {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.mode == .referenced else { return [] }
+        if let libraryID, session.context.id != libraryID {
+            throw LibraryOperationError.sessionQuiescing
+        }
+        beginManualScanOverride(sourceIDs: [id])
+        do {
+            let issues = try await session.runLibraryOperation {
+                try await session.refreshReferencedSource(id)
+            }
+            endManualScanOverride(sourceIDs: [id], markFailed: false)
+            return issues
+        } catch {
+            endManualScanOverride(sourceIDs: [id], markFailed: true)
+            throw error
+        }
+    }
+
+    /// User-initiated full scan across every referenced source of the active
+    /// library (spec 12.1 / 18.1). Scan progress is published through
+    /// `referencedSourceScanStatesSnapshot`.
+    func refreshAllReferencedSources(libraryID: UUID? = nil) async throws {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.mode == .referenced,
+              let store = session.referencedSourceStore else { return }
+        if let libraryID, session.context.id != libraryID {
+            throw LibraryOperationError.sessionQuiescing
+        }
+        let sourceIDs = try await store.loadAll().map(\.id)
+        guard !sourceIDs.isEmpty else { return }
+        beginManualScanOverride(sourceIDs: sourceIDs)
+        do {
+            _ = try await session.runLibraryOperation {
+                try await session.refreshReferencedSources()
+            }
+            endManualScanOverride(sourceIDs: sourceIDs, markFailed: false)
+        } catch {
+            endManualScanOverride(sourceIDs: sourceIDs, markFailed: true)
+            throw error
+        }
+    }
+
+    func setReferencedSourceExcludedPath(
+        id: UUID,
+        relativePath: String,
+        excluded: Bool,
+        libraryID: UUID? = nil
+    ) async throws {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.mode == .referenced else {
+            throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        if let libraryID, session.context.id != libraryID {
+            throw LibraryOperationError.sessionQuiescing
+        }
+        try await session.runLibraryOperation {
+            try await session.setReferencedSourceExcludedPath(
+                sourceID: id,
+                relativePath: relativePath,
+                excluded: excluded
+            )
+        }
+    }
+
+    func bindReferencedSource(
+        id: UUID,
+        to playlistID: UUID,
+        libraryID: UUID? = nil
+    ) async throws {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.mode == .referenced,
+              let reconciler = session.referencedSourceReconciler else {
+            throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        if let libraryID, session.context.id != libraryID {
+            throw LibraryOperationError.sessionQuiescing
+        }
+        try await session.runLibraryOperation {
+            try await reconciler.bindSourcesToPlaylist([id], playlistID: playlistID)
+        }
+        await session.libraryViewModel.reloadLibrary()
+    }
+
+    @discardableResult
+    func unbindReferencedSource(
+        id: UUID,
+        bindingID: UUID,
+        libraryID: UUID? = nil
+    ) async throws -> Int {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.mode == .referenced,
+              let reconciler = session.referencedSourceReconciler else {
+            throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        if let libraryID, session.context.id != libraryID {
+            throw LibraryOperationError.sessionQuiescing
+        }
+        let removedCount = try await session.runLibraryOperation {
+            try await reconciler.unbindSourceFromPlaylist(
+                sourceID: id,
+                bindingID: bindingID
+            )
+        }
+        await session.libraryViewModel.reloadLibrary()
+        return removedCount
+    }
+
+    func removeReferencedSource(id: UUID) async throws {
+        guard let session = activeLibraryBinding.activeSession else { return }
+        try await session.runLibraryOperation {
+            try await session.removeReferencedSource(id)
+        }
+    }
+
+    private func unavailableReferencedSourceIDs() async throws -> [UUID] {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.mode == .referenced,
+              let store = session.referencedSourceStore else {
+            return []
+        }
+        return try await store.loadAll()
+            .filter { $0.status != .available }
+            .map(\.id)
+            .sorted { $0.uuidString < $1.uuidString }
+    }
+
+    func libraryScopedSettings() async throws -> LibraryScopedSettings {
+        guard let context = activeLibraryBinding.context else { return LibraryScopedSettings() }
+        return try await LibraryScopedSettingsStore(paths: context.paths).load()
+    }
+
+    func setReferencedTrackDeletePolicy(
+        _ policy: ReferencedTrackDeletePolicy,
+        libraryID: UUID
+    ) async throws {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.id == libraryID,
+              session.context.mode == .referenced else {
+            throw LibraryOperationError.sessionQuiescing
+        }
+        let store = LibraryScopedSettingsStore(paths: session.context.paths)
+        let _: Void = try await session.runLibraryOperation {
+            try await store.setReferencedTrackDeletePolicy(policy)
+        }
     }
 
     func setupIfNeeded() async {
+        if let setupTask {
+            await setupTask.value
+            return
+        }
+        if hasSetupDependencies { return }
+
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performInitialSetup()
+        }
+        setupTask = task
+        await task.value
+        setupTask = nil
+    }
+
+    /// Performs the one-time launch work. Callers must enter through
+    /// `setupIfNeeded()` so concurrent launch/reopen events share one task.
+    private func performInitialSetup() async {
         guard !hasSetupDependencies else { return }
         hasSetupDependencies = true
 
         Log.debug("[Lifecycle] AppSessionHost initial setup", category: .ui)
         mainThreadStallMonitor.start()
-        setupDependencies()
-        await restorePlaybackMemoryIfNeeded()
+        startMemoryPressureMonitoring()
+        installProcessLifecycleHandlers()
+        var lifecycleRecoverySucceeded = true
+        var successorModeAfterRemoval: MusicLibraryMode?
+        if let libraryRelocationService {
+            do { _ = try await libraryRelocationService.replayPendingRepair() }
+            catch {
+                lifecycleRecoverySucceeded = false
+                Log.error("[LibraryLifecycle] pending relocation repair failed", category: .library)
+            }
+        }
+        if lifecycleRecoverySucceeded, let libraryRemovalService {
+            do {
+                let replay = try await libraryRemovalService.replayPendingRepair()
+                if case .removed(let mode, didRemoveActive: true) = replay {
+                    successorModeAfterRemoval = mode
+                }
+            } catch {
+                lifecycleRecoverySucceeded = false
+                Log.error("[LibraryLifecycle] pending removal repair failed", category: .library)
+            }
+        }
+        let startupResolution: LibraryStartupResolution
+        if lifecycleRecoverySucceeded, let registryStore {
+            startupResolution = await LibraryStartupContextResolver(registryStore: registryStore)
+                .resolve(allowSuccessorAfterRemoval: successorModeAfterRemoval)
+        } else if lifecycleRecoverySucceeded, let initialLibraryContext {
+            startupResolution = .context(initialLibraryContext)
+        } else if lifecycleRecoverySucceeded {
+            startupResolution = .noActive
+        } else {
+            startupResolution = .unavailable
+        }
+        switch startupResolution {
+        case .context(let startupContext):
+            do {
+                try await sessionController.switchToLibrary(startupContext)
+                await restorePlaybackMemoryIfNeeded()
+            } catch {
+                Log.error(
+                    "[LibrarySession] initial load failed library=\(startupContext.id): \(error)",
+                    category: .library
+                )
+                await releaseActiveSessionBindings()
+                if LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: error) {
+                    if let defaultContext = await ensureFactoryDefaultLibraryIfNeeded(
+                        allowUnreachableActiveLibrary: true
+                    ) {
+                        await restorePlaybackMemoryIfNeeded()
+                        _ = defaultContext
+                    }
+                } else {
+                    Log.warning(
+                        "[LibrarySession] active library writer lease unavailable; default creation suppressed",
+                        category: .library
+                    )
+                }
+            }
+        case .noActive:
+            if let defaultContext = await ensureFactoryDefaultLibraryIfNeeded() {
+                // The default-library path is either opened or created by the
+                // lifecycle service. Both paths activate the session before
+                // returning, so the normal empty-library UI can render.
+                await restorePlaybackMemoryIfNeeded()
+                _ = defaultContext
+            } else {
+                Log.info("[LibrarySession] no active library; waiting for chooser", category: .library)
+            }
+        case .unavailable:
+            if let defaultContext = await ensureFactoryDefaultLibraryIfNeeded(
+                allowUnreachableActiveLibrary: true
+            ) {
+                await restorePlaybackMemoryIfNeeded()
+                _ = defaultContext
+            } else {
+                Log.info("[LibrarySession] active library unavailable; waiting for reconnect", category: .library)
+            }
+        }
+
+        // A normal launch must never publish a completed setup with a nil
+        // session. This bounded retry also covers a short-lived contention
+        // window when a previous instance is still releasing its writer lease.
+        if activeLibraryBinding.activeSession == nil {
+            _ = await ensureFactoryDefaultLibraryWithRetries()
+        }
 
         LegacyCacheCleanupCoordinator.shared.captureBuild7UpgradeEligibilityBeforeLaunchRecord()
         AppVersionGate.shared.recordCurrentAppLaunch()
@@ -82,6 +878,185 @@ final class AppSessionHost: ObservableObject {
         } else {
             scheduleDeferredLaunchPromptsIfNeeded()
         }
+        hasCompletedInitialSetup = true
+        do {
+            try await automationIPCServer?.start()
+        } catch {
+            // Automation is an optional control plane. A stale socket or a
+            // transient listener failure must not prevent normal playback and
+            // library UI startup; the CLI receives a bounded unavailable
+            // result until the next App launch.
+            Log.error(
+                "[Automation] failed to start IPC server: \(error.localizedDescription)",
+                category: .library
+            )
+        }
+        // Covers the path where deferred prompts ran before
+        // `hasCompletedInitialSetup` flipped (no crash-report prompt
+        // queued); when prompts are crash-gated the drained handler calls
+        // this again after What's New appears.
+        autoPresentLibrarySetupIfNeeded()
+    }
+
+    /// Re-attempts the factory-default recovery path without repeating all
+    /// process-wide dependency installation. This is used by the exceptional
+    /// recovery surface after startup has finished but no session could be
+    /// published.
+    func retryLibraryStartup() async {
+        guard activeLibraryBinding.activeSession == nil,
+              !isRetryingLibraryStartup else { return }
+        isRetryingLibraryStartup = true
+        defer { isRetryingLibraryStartup = false }
+        if await ensureFactoryDefaultLibraryWithRetries() != nil {
+            await restorePlaybackMemoryIfNeeded()
+            autoPresentLibrarySetupIfNeeded()
+        }
+    }
+
+    private func ensureFactoryDefaultLibraryWithRetries() async -> LibraryContext? {
+        for attempt in 0..<4 {
+            if attempt > 0 {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            if let context = await ensureFactoryDefaultLibraryIfNeeded(
+                allowUnreachableActiveLibrary: true
+            ) {
+                return context
+            }
+        }
+        return nil
+    }
+
+    /// Restores the startup invariant: when there is no active, reachable
+    /// library, the default empty library is opened or created at
+    /// `~/Music/kmgccc_player Library` before the main window is shown. This
+    /// keeps the normal empty-library shell available while the setup wizard
+    /// floats above it.
+    private func ensureFactoryDefaultLibraryIfNeeded(
+        allowUnreachableActiveLibrary: Bool = false
+    ) async -> LibraryContext? {
+        guard let registryStore,
+              let libraryOpenService,
+              let libraryCreationService else { return nil }
+        let registry = await registryStore.snapshot()
+
+        // A nil active pointer can also be left behind by an interrupted
+        // removal or by an older registry reset. Prefer activating any
+        // reachable registered library before falling back to the default.
+        guard allowUnreachableActiveLibrary || registry.activeLibraryID == nil else { return nil }
+        let resolver = LibraryStartupContextResolver(registryStore: registryStore)
+        var candidateIDs: [UUID] = []
+        if let activeID = registry.activeLibraryID { candidateIDs.append(activeID) }
+        candidateIDs.append(contentsOf: [registry.recentManagedLibraryID, registry.recentReferencedLibraryID].compactMap { $0 })
+        candidateIDs.append(contentsOf: registry.libraries.map(\.id))
+        var seen = Set<UUID>()
+        for candidateID in candidateIDs where seen.insert(candidateID).inserted {
+            guard let context = try? await resolver.resolveRegistered(libraryID: candidateID) else { continue }
+            do {
+                try await sessionController.switchToLibrary(context)
+                try await registryStore.setActiveLibrary(id: context.id, manifestMode: context.mode)
+                return context
+            } catch {
+                guard LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: error) else {
+                    Log.warning(
+                        "[LibrarySession] registered library writer lease unavailable; default creation suppressed",
+                        category: .library
+                    )
+                    return nil
+                }
+                continue
+            }
+        }
+
+        let defaultRoot = LibraryLocationStore.defaultLibraryRootURL
+        if FileManager.default.fileExists(atPath: defaultRoot.path) {
+            do {
+                // This also repairs a stale registry row that still claims
+                // the default path for a different library identifier. The
+                // physical library is never removed by this recovery path.
+                return try await libraryOpenService.open(
+                    selectedURL: defaultRoot,
+                    allowStalePathConflictRepair: true
+                ).context
+            } catch {
+                guard LibraryStartupFailurePolicy.permitsFactoryDefaultFallback(after: error) else {
+                    Log.warning(
+                        "[LibrarySession] default library writer lease unavailable; alternate creation suppressed",
+                        category: .library
+                    )
+                    return nil
+                }
+                Log.debug(
+                    "[LibrarySession] default library is not openable; trying creation: \(error)",
+                    category: .library
+                )
+            }
+        }
+
+        let parentURL = defaultRoot.deletingLastPathComponent()
+        do {
+            let result = try await libraryCreationService.create(
+                mode: .referenced,
+                parentURL: parentURL,
+                displayName: "音乐资料库",
+                allowAlternateDestinationWhenOccupied: true,
+                allowStalePathConflictRepair: true
+            )
+            switch result {
+            case .created(let context, _):
+                shouldPresentFirstRunLibrarySetup = true
+                return context
+            case .existingLibrary(let context):
+                // `create` deliberately leaves an already existing library
+                // unactivated for the setup flow. Startup must explicitly
+                // activate it before returning a context to the window.
+                return try await libraryOpenService.open(
+                    selectedURL: context.rootURL,
+                    allowStalePathConflictRepair: true
+                ).context
+            case .existingLibraryModeMismatch:
+                return nil
+            }
+        } catch {
+            Log.error(
+                "[LibrarySession] factory-default library ensure failed: \(error)",
+                category: .library
+            )
+            return nil
+        }
+    }
+
+    /// First-launch onboarding: after a fresh install the factory-default
+    /// library is already open, so present the setup wizard once the
+    /// What's New window has been dismissed. The panel floats above the
+    /// main window and never blocks its loading or rendering.
+    func autoPresentLibrarySetupIfNeeded() {
+        guard hasCompletedInitialSetup, !didAutoPresentLibrarySetup else { return }
+        didAutoPresentLibrarySetup = true
+        guard shouldPresentFirstRunLibrarySetup,
+              librarySetupFlow.presentation == .none else { return }
+        let whatsNew = WhatsNewWindowManager.shared
+        if whatsNew.isPresented {
+            whatsNewDismissalCancellable = whatsNew.$isPresented
+                .filter { !$0 }
+                .first()
+                .sink { [weak self] _ in
+                    self?.presentFirstRunLibrarySetupPanel()
+                }
+        } else {
+            presentFirstRunLibrarySetupPanel()
+        }
+    }
+
+    private func presentFirstRunLibrarySetupPanel() {
+        Task { @MainActor in
+            // Let the main window finish its first render before floating
+            // the panel above it.
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard librarySetupFlow.presentation == .none else { return }
+            librarySetupFlow.present(.setup(.referenced))
+            LibrarySetupPanelPresenter.present(appSession: self)
+        }
     }
 
     private func scheduleDeferredLaunchPromptsIfNeeded() {
@@ -93,74 +1068,67 @@ final class AppSessionHost: ObservableObject {
         WhatsNewWindowManager.shared.showIfNeeded()
         Log.debug("[Lifecycle] WhatsNew window check completed", category: .ui)
 
-        if UpdateCheckPreferences.checkForUpdatesOnLaunch {
-            Task {
-                await UpdateWindowManager.shared.checkAndShowIfNeeded()
-            }
-        } else {
-            Log.debug("[UpdateWindowManager] Skipping launch update check by user preference", category: .ui)
-        }
+        UpdateCoordinator.shared.startAutomaticUpdatesIfNeeded()
+        // Deferred prompts are settled (What's New is already visible when
+        // applicable); the first-run wizard can queue behind them now.
+        autoPresentLibrarySetupIfNeeded()
     }
 
-    private func setupDependencies() {
-        let libraryService = LocalLibraryService.shared
-        libraryService.ensureLibraryFolders()
-        Task.detached(priority: .utility) {
-            await CacheManager.cleanupStaleImportStaging(reason: "startup")
+    func switchLibrary(to context: LibraryContext) async throws {
+        savePlaybackMemory()
+        try await sessionController.switchToLibrary(context)
+        didAttemptPlaybackMemoryRestore = false
+        await restorePlaybackMemoryIfNeeded()
+    }
+
+    private func publishActiveSession(_ session: LibrarySession) async {
+        uiState.clearLibraryImportFailureReports()
+        activeLibraryBinding.publish(session)
+        await bindReferencedScanStatePush(for: session)
+        bindLibraryTaskStatePush(for: session)
+        CrashReportService.shared.bindLibraryRoot(session.context.rootURL)
+        if session.didCompleteLegacyUpgrade {
+            uiState.showSidebarNotice("资料库已更新")
         }
 
-        let repository = SwiftDataLibraryRepository(
-            modelContext: modelContainer.mainContext,
-            libraryService: libraryService
-        )
+        let libraryVM = session.libraryViewModel
+        let playerVM = session.playerViewModel
+        let playbackCoordinator = session.playbackCoordinator
+        let lyricsVM = session.lyricsViewModel
+        let ledMeterProvider = session.ledMeterProvider
+        let importEnrichmentService = session.importEnrichmentService
+        session.fileImportService.onImportFailures = { [weak uiState] failures, origin in
+            uiState?.recordLibraryImportFailures(failures, origin: origin)
+        }
+        libraryVM.onTrackDeletionPreparationFailures = { [weak self] failures in
+            guard let self, !failures.isEmpty else { return }
+            let message = failures.count == 1
+                ? "原文件未移到废纸篓，歌曲已保留"
+                : "\(failures.count) 首歌曲未删除"
+            self.uiState.showSidebarNotice(
+                message,
+                style: .warning,
+                actionTitle: "打开设置"
+            )
+        }
+        libraryVM.onImportRejectedNotice = { [weak self] message in
+            guard let self else { return }
+            self.uiState.showSidebarNotice(message, style: .warning)
+        }
 
-        let playbackService = AVAudioPlaybackService()
+        self.libraryVM = libraryVM
+        self.playerVM = playerVM
+        self.playbackCoordinator = playbackCoordinator
+        self.lyricsVM = lyricsVM
+        self.ledMeterProvider = ledMeterProvider
+        self.importEnrichmentService = importEnrichmentService
 
-        let ledMeterProvider = LEDMeterServiceProvider(
-            config: LEDMeterConfig(
-                ledCount: AppSettings.shared.ledCount,
-                levels: AppSettings.shared.ledBrightnessLevels,
-                cutoffHz: Float(AppSettings.shared.ledCutoffHz),
-                sensitivity: AppSettings.shared.ledSensitivity,
-                speed: Float(AppSettings.shared.ledSpeed),
-                targetHz: AppSettings.shared.ledTargetHz
-            ),
-            mixerProvider: { [weak playbackService] in
-                playbackService?.analysisMixerNode ?? AVAudioEngine().mainMixerNode
-            }
-        )
-
-        let importEnrichmentService = ImportEnrichmentService(repository: repository)
-        let fileImportService = FileImportService(
-            repository: repository,
-            libraryService: libraryService,
-            importEnrichmentService: importEnrichmentService
-        )
-
-        let playerVM = PlayerViewModel(
-            playbackService: playbackService,
-            levelMeter: ledMeterProvider
-        )
-        let libraryVM = LibraryViewModel(
-            repository: repository,
-            libraryService: libraryService
-        )
-        PreferenceStatsLifecycleHandler.shared.configure { [weak libraryVM] trackID in
+        PreferenceStatsLifecycleHandler.shared.configure(
+            statsService: session.preferenceStatsService
+        ) { [weak libraryVM] trackID in
             libraryVM?.allTracks.first { $0.id == trackID }
         }
-        let appleMusicAdapter = AppleMusicPlaybackAdapter(libraryVM: libraryVM)
-        let systemNowPlayingProvider = SystemNowPlayingProvider(libraryVM: libraryVM)
-        let playbackCoordinator = PlaybackCoordinator(
-            playerVM: playerVM,
-            appleMusicAdapter: appleMusicAdapter,
-            systemNowPlayingProvider: systemNowPlayingProvider,
-            meterProvider: ledMeterProvider
-        )
 
-        let lyricsVM = LyricsViewModel(settings: AppSettings.shared)
-        lyricsVM.setPlaybackSourceProvider { [weak playbackCoordinator] in
-            playbackCoordinator?.activeSource ?? .local
-        }
         let lyricsPlaybackPipeline = LyricsPlaybackPipeline(
             lyricsVM: lyricsVM,
             playbackCoordinator: playbackCoordinator
@@ -186,45 +1154,12 @@ final class AppSessionHost: ObservableObject {
                 source: playbackCoordinator.activeSource
             ).rawValue
             context.isPlaying = playerVM.isPlaying
-            context.lastOperationCategory = "app_startup"
+            context.lastOperationCategory = "library_session_active"
         }
         CrashBreadcrumbRecorder.shared.record(.dependenciesReady)
         ledMeterProvider.playbackSource = playbackCoordinator.activeSource
         AudioVisualizationService.shared.setExternalMode(playbackCoordinator.activeSource.isExternal)
-        libraryVM.setImportService(fileImportService)
-        libraryVM.currentTrackIDProvider = { [weak playerVM] in
-            playerVM?.currentTrack?.id
-        }
-        libraryVM.onTracksDeleted = { [weak playerVM] deletedTrackIDs in
-            guard let playerVM, !deletedTrackIDs.isEmpty else { return }
 
-            if let currentTrackID = playerVM.currentTrack?.id, deletedTrackIDs.contains(currentTrackID) {
-                playerVM.stop()
-                return
-            }
-
-            let remainingQueue = playerVM.currentQueueTracks.filter { !deletedTrackIDs.contains($0.id) }
-            guard remainingQueue.count != playerVM.currentQueueTracks.count else { return }
-
-            if remainingQueue.isEmpty {
-                playerVM.stop()
-            } else {
-                playerVM.updateQueueTracks(remainingQueue)
-            }
-        }
-
-        let skinManager = SkinManager()
-        self.libraryVM = libraryVM
-        self.playerVM = playerVM
-        self.playbackCoordinator = playbackCoordinator
-        self.lyricsVM = lyricsVM
-        self.ledMeterProvider = ledMeterProvider
-        self.importEnrichmentService = importEnrichmentService
-        self.skinManager = skinManager
-        self.libraryService = libraryService
-        self.repository = repository
-
-        // Wire up stall monitor with playback state for enriched diagnostics.
         mainThreadStallMonitor.playbackStateProvider = { [weak playerVM] in
             let isPlaying = playerVM?.isPlaying ?? false
             let trackPrefix = FirstUseHitchDiagnostics.trackIDPrefix(playerVM?.currentTrack?.id)
@@ -232,47 +1167,43 @@ final class AppSessionHost: ObservableObject {
             return (isPlaying, trackPrefix, surface)
         }
 
+        guard let skinManager else { return }
         FullscreenWindowManager.shared.configure(
             libraryVM: libraryVM,
             playerVM: playerVM,
             playbackCoordinator: playbackCoordinator,
             lyricsVM: lyricsVM,
             ledMeterProvider: ledMeterProvider,
+            cacheServices: session.cacheServices,
             skinManager: skinManager,
             uiState: uiState
         )
         AppDelegate.shared?.configureDockPlayback(playbackCoordinator: playbackCoordinator)
+        UpdateCoordinator.shared.terminationPreparationHandler = { [weak self] completion in
+            guard let self else {
+                completion()
+                return
+            }
+            self.prepareForTermination(reason: "update-relaunch", completion: completion)
+        }
+        UpdateCoordinator.shared.installationDidAbortHandler = { [weak self] in
+            self?.resetTerminationPreparationAfterAbortedUpdate()
+        }
+        AppDelegate.shouldCancelTerminationForPendingUpdateHandler = {
+            UpdateCoordinator.shared.isInstallReplyPending
+        }
+        AppDelegate.applicationShouldTerminateHandler = { [weak self] completion in
+            guard let self else {
+                completion()
+                return
+            }
+            self.prepareForTermination(reason: "normal-quit", completion: completion)
+        }
         AppDelegate.applicationWillTerminateHandler = { [weak self] in
-            TelemetryService.shared.endSession(reason: .appTerminated)
-            self?.savePlaybackMemory()
-            if let libraryVM = self?.libraryVM {
-                PreferenceStatsService.shared.saveAllPendingNow(
-                    trackProvider: { trackID in
-                        libraryVM.allTracks.first { $0.id == trackID }
-                    },
-                    synchronously: true
-                )
-            }
-            Task {
-                await QQMusicHelperProcess.shared.terminate()
-            }
+            UpdateCoordinator.shared.handleApplicationWillTerminate()
+            self?.prepareForTermination(reason: "app-termination")
         }
-
-
-        if playbackModeObserver == nil {
-            playbackModeObserver = NotificationCenter.default.addObserver(
-                forName: .playbackModeChanged,
-                object: nil,
-                queue: .main
-            ) { [weak playerVM] _ in
-                let playerViewModel = playerVM
-                Task { @MainActor in
-                    playerViewModel?.syncPlaybackOrderModeFromSettings()
-                }
-            }
-        }
-
-        libraryService.startMonitoring(repository: repository)
+        AppKitMainSplitWindowController.rebuildAfterLibrarySwitchIfNeeded(appSession: self)
         startPlaybackMemoryAutosave()
         scheduleFirstUsePrewarm(
             libraryVM: libraryVM,
@@ -280,30 +1211,11 @@ final class AppSessionHost: ObservableObject {
             playbackCoordinator: playbackCoordinator
         )
 
-        if libraryLocationObserver == nil {
-            libraryLocationObserver = NotificationCenter.default.addObserver(
-                forName: .libraryLocationChanged,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                // NotificationCenter delivers this observer on .main; keep the restart synchronous.
-                MainActor.assumeIsolated {
-                    guard let self, let repository = self.repository else { return }
-                    self.playbackHistoryStore.reconfigureForCurrentLibrary()
-                    self.libraryService?.restartMonitoring(repository: repository)
-                    Log.info(
-                        "[AppSessionHost] Restarted library monitoring after location change",
-                        category: .library
-                    )
-                }
-            }
-        }
-
         if let scenario = DebugLaunchScenario.current {
             Task { @MainActor in
                 await runDebugLaunchScenarioIfNeeded(
                     scenario,
-                    repository: repository,
+                    repository: session.repository,
                     libraryVM: libraryVM,
                     playerVM: playerVM
                 )
@@ -311,18 +1223,219 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
+    private func releaseActiveSessionBindings() async {
+        activeLibraryRescanTask?.cancel()
+        activeLibraryRescanTask = nil
+        playbackMemoryTimer?.invalidate()
+        playbackMemoryTimer = nil
+        firstUsePrewarmTask?.cancel()
+        firstUsePrewarmTask = nil
+        lyricsPlaybackPipeline = nil
+        LyricsSurfaceManager.shared.setMainSurfaceSnapshotRefreshHandler(nil)
+        PreferenceStatsLifecycleHandler.shared.releaseLibrarySession()
+        await FullscreenWindowManager.shared.releaseLibrarySession()
+        AppKitMainSplitWindowController.releaseActiveLibraryReferences()
+        unbindLibraryTaskStatePush(of: activeLibraryBinding.activeSession)
+        await unbindReferencedScanStatePush(of: activeLibraryBinding.releaseActiveSession())
+        CrashReportService.shared.bindLibraryRoot(nil)
+
+        libraryVM = nil
+        playerVM = nil
+        playbackCoordinator = nil
+        lyricsVM = nil
+        ledMeterProvider = nil
+        importEnrichmentService = nil
+        mainThreadStallMonitor.playbackStateProvider = nil
+    }
+
+    private func installProcessLifecycleHandlers() {
+        if playbackModeObserver == nil {
+            playbackModeObserver = NotificationCenter.default.addObserver(
+                forName: .playbackModeChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.playerVM?.syncPlaybackOrderModeFromSettings()
+                }
+            }
+        }
+
+        if workspaceLibraryObservers.isEmpty {
+            let center = NSWorkspace.shared.notificationCenter
+            workspaceLibraryObservers = [
+                NSWorkspace.didMountNotification,
+                NSWorkspace.didUnmountNotification,
+            ].map { name in
+                center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        self?.scheduleActiveLibraryRescan()
+                    }
+                }
+            }
+        }
+
+        if appActiveLibraryObserver == nil {
+            appActiveLibraryObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.scheduleActiveLibraryRescan()
+                }
+            }
+        }
+
+        AppDelegate.applicationWillTerminateHandler = { [weak self] in
+            guard let self else { return }
+            TelemetryService.shared.endSession(reason: .appTerminated)
+            self.savePlaybackMemory()
+            if let session = self.activeLibraryBinding.activeSession {
+                session.preferenceStatsService.saveAllPendingNow(
+                    trackProvider: { trackID in
+                        session.libraryViewModel.allTracks.first { $0.id == trackID }
+                    },
+                    synchronously: true
+                )
+            }
+            Task {
+                await self.automationIPCServer?.stop()
+                if let monitor = self.activeLibraryBinding.activeSession?.libraryChangeMonitor {
+                    await monitor.stopAndWait()
+                }
+                await QQMusicHelperProcess.shared.terminate()
+            }
+        }
+    }
+
+    private func scheduleActiveLibraryRescan() {
+        activeLibraryRescanTask?.cancel()
+        activeLibraryRescanTask = Task { @MainActor [weak self] in
+            guard let self, let session = activeLibraryBinding.activeSession else { return }
+            let libraryID = session.context.id
+            if session.context.mode == .referenced {
+                do {
+                    try await refreshAllReferencedSources()
+                } catch {
+                    Log.warning(
+                        "[LibrarySession] lifecycle source refresh failed library=\(libraryID)",
+                        category: .library
+                    )
+                }
+            } else if let monitor = session.libraryChangeMonitor {
+                await monitor.markDirty(sourceIDs: [libraryID], fullScan: true)
+            }
+        }
+    }
+
+
     deinit {
         MainActor.assumeIsolated {
             if let playbackModeObserver {
                 NotificationCenter.default.removeObserver(playbackModeObserver)
             }
-            if let libraryLocationObserver {
-                NotificationCenter.default.removeObserver(libraryLocationObserver)
+            if let appActiveLibraryObserver {
+                NotificationCenter.default.removeObserver(appActiveLibraryObserver)
+            }
+            let workspaceCenter = NSWorkspace.shared.notificationCenter
+            for observer in workspaceLibraryObservers {
+                workspaceCenter.removeObserver(observer)
             }
             playbackMemoryTimer?.invalidate()
+            memoryPressureSource?.cancel()
             firstUsePrewarmTask?.cancel()
+            activeLibraryRescanTask?.cancel()
             AppDelegate.applicationWillTerminateHandler = nil
+            AppDelegate.shouldCancelTerminationForPendingUpdateHandler = nil
+            UpdateCoordinator.shared.terminationPreparationHandler = nil
+            UpdateCoordinator.shared.installationDidAbortHandler = nil
         }
+    }
+
+    private func startMemoryPressureMonitoring() {
+        guard memoryPressureSource == nil else { return }
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical],
+            queue: .main
+        )
+        source.setEventHandler { [weak self, weak source] in
+            guard self != nil, let event = source?.data else { return }
+            let reason = event.contains(.critical) ? "critical" : "warning"
+            Task { @MainActor in
+                await CacheManager.purgeRebuildableMemoryCaches(
+                    reason: "system-memory-pressure-\(reason)",
+                    cacheServices: self?.activeLibraryBinding.activeSession?.cacheServices
+                )
+            }
+        }
+        source.resume()
+        memoryPressureSource = source
+    }
+
+    private func prepareForTermination(
+        reason: String,
+        completion: (@MainActor @Sendable () -> Void)? = nil
+    ) {
+        if let completion {
+            if didFinishTerminationPreparation {
+                completion()
+                return
+            }
+            terminationCompletions.append(completion)
+        }
+
+        if !didPrepareTerminationSynchronously {
+            didPrepareTerminationSynchronously = true
+            Log.info("[Lifecycle] Preparing for termination reason=\(reason)", category: .ui)
+            TelemetryService.shared.endSession(reason: .appTerminated)
+            playerVM?.prepareForTermination()
+            activeLibraryBinding.activeSession?.preferenceStatsService.checkpointPendingStats()
+            savePlaybackMemory()
+        }
+
+        guard !terminationPreparationStarted else { return }
+        terminationPreparationStarted = true
+        terminationPreparationGeneration += 1
+        let generation = terminationPreparationGeneration
+
+        let libraryVM = self.libraryVM
+        let preferenceStatsService = activeLibraryBinding.activeSession?.preferenceStatsService
+        Task { @MainActor [weak self, weak libraryVM] in
+            async let helperTermination: Void = QQMusicHelperProcess.shared.terminate()
+            if let libraryVM, let preferenceStatsService {
+                let tracksByID = Dictionary(
+                    uniqueKeysWithValues: libraryVM.allTracks.map { ($0.id, $0) }
+                )
+                await preferenceStatsService.saveAllPending { trackID in
+                    tracksByID[trackID]
+                }
+            }
+            await helperTermination
+            self?.finishTerminationPreparation(generation: generation)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            self?.finishTerminationPreparation(generation: generation)
+        }
+    }
+
+    private func finishTerminationPreparation(generation: Int) {
+        guard generation == terminationPreparationGeneration,
+              !didFinishTerminationPreparation else { return }
+        didFinishTerminationPreparation = true
+        let completions = terminationCompletions
+        terminationCompletions.removeAll()
+        completions.forEach { $0() }
+    }
+
+    private func resetTerminationPreparationAfterAbortedUpdate() {
+        terminationPreparationGeneration += 1
+        didPrepareTerminationSynchronously = false
+        didFinishTerminationPreparation = false
+        terminationPreparationStarted = false
+        terminationCompletions.removeAll()
+        Log.info("[Lifecycle] Reset termination preparation after aborted update", category: .ui)
     }
 
     private func scheduleFirstUsePrewarm(
@@ -423,12 +1536,13 @@ final class AppSessionHost: ObservableObject {
     }
 
     private func savePlaybackMemory() {
+        guard let libraryID = activeLibraryBinding.activeSession?.context.id else { return }
         guard playbackCoordinator?.activeSource == .local else {
-            PlaybackMemoryStore.clear()
+            PlaybackMemoryStore.clear(libraryID: libraryID)
             return
         }
         guard let playerVM, let currentTrack = playerVM.currentTrack else {
-            PlaybackMemoryStore.clear()
+            PlaybackMemoryStore.clear(libraryID: libraryID)
             return
         }
 
@@ -447,7 +1561,8 @@ final class AppSessionHost: ObservableObject {
                 duration: duration,
                 queueTrackIDs: queueTrackIDs.isEmpty ? nil : queueTrackIDs,
                 playbackOrderMode: playbackOrderMode.rawValue
-            )
+            ),
+            libraryID: libraryID
         )
     }
 
@@ -468,10 +1583,15 @@ final class AppSessionHost: ObservableObject {
         didAttemptPlaybackMemoryRestore = true
 
         guard DebugLaunchScenario.current == nil else { return }
-        guard let memory = PlaybackMemoryStore.loadValid() else { return }
-        guard let repository, let playerVM else { return }
+        guard let session = activeLibraryBinding.activeSession else { return }
+        guard let memory = PlaybackMemoryStore.loadValid(libraryID: session.context.id) else { return }
+        let repository = session.repository
+        guard let playerVM else { return }
 
-        await repository.reloadFromLibrary()
+        // No `repository.reloadFromLibrary()` here: every call site invokes
+        // this right after the session controller finished `load()`, which
+        // already performed the full disk scan and rebuild. Reloading again
+        // doubled startup/switch cost for large libraries.
 
         let availableTracks = await repository.fetchTracks(in: nil)
             .filter { $0.availability != .missing }
@@ -496,7 +1616,7 @@ final class AppSessionHost: ObservableObject {
 
         guard let startIndex = restoredQueue.firstIndex(where: { $0.id == memory.trackID }) else {
             // The saved track is gone (deleted/unavailable): drop stale memory.
-            PlaybackMemoryStore.clear()
+            PlaybackMemoryStore.clear(libraryID: session.context.id)
             return
         }
 
@@ -701,6 +1821,9 @@ final class AppSessionHost: ObservableObject {
             case .allSongs:
                 selectionLabel = "allSongs"
                 hasHeader = false
+            case .folders:
+                selectionLabel = "folders"
+                hasHeader = false
             case .allPlaylists:
                 selectionLabel = "allPlaylists"
                 hasHeader = false
@@ -765,6 +1888,45 @@ final class AppSessionHost: ObservableObject {
     }
 }
 
+/// Shared "reveal in Finder" validation for settings, the folder view and the
+/// duplicate review (spec 18.1: validate the resolved path before opening).
+nonisolated enum FinderRevealHelper {
+    /// Resolves `path` (optionally through its bookmark data first), checks
+    /// existence, and asks Finder to select it. Returns `false` when the
+    /// target no longer resolves so callers can show gentle feedback instead
+    /// of opening a stale location.
+    @discardableResult
+    static func reveal(path: String, bookmarkData: Data? = nil) -> Bool {
+        guard let url = resolvedURL(path: path, bookmarkData: bookmarkData) else { return false }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        return true
+    }
+
+    static func fileExists(atPath path: String) -> Bool {
+        resolvedURL(path: path, bookmarkData: nil) != nil
+    }
+
+    private static func resolvedURL(path: String, bookmarkData: Data?) -> URL? {
+        var candidate = path
+        if let bookmarkData, !bookmarkData.isEmpty {
+            var bookmarkDataIsStale = false
+            if let resolved = try? URL(
+                resolvingBookmarkData: bookmarkData,
+                options: [],
+                relativeTo: nil,
+                bookmarkDataIsStale: &bookmarkDataIsStale
+            ) {
+                candidate = resolved.path
+            }
+        }
+        let standardized = URL(fileURLWithPath: candidate).standardizedFileURL.path
+        guard !standardized.isEmpty, FileManager.default.fileExists(atPath: standardized) else {
+            return nil
+        }
+        return URL(fileURLWithPath: standardized)
+    }
+}
+
 @MainActor
 private final class MainThreadStallMonitor {
     private var timer: DispatchSourceTimer?
@@ -824,57 +1986,6 @@ private final class MainThreadStallMonitor {
         }
 
         expectedFireTime = DispatchTime(uptimeNanoseconds: now.uptimeNanoseconds + intervalNanoseconds)
-    }
-}
-
-private struct PlaybackMemory: Codable {
-    let savedAt: Date
-    let trackID: UUID
-    let currentTime: Double
-    let duration: Double
-    /// Ordered IDs of the last playback queue. Optional for backward
-    /// compatibility with `v1` payloads that only stored the current track; the
-    /// restore path falls back to the full library when this is empty/missing.
-    var queueTrackIDs: [UUID]?
-    /// Persisted playback order mode (`AppSettings.PlaybackOrderMode.rawValue`).
-    var playbackOrderMode: String?
-}
-
-private enum PlaybackMemoryStore {
-    private static let key = "playback.memory.v1"
-    private static let expirationInterval: TimeInterval = 18 * 60 * 60
-
-    static func save(_ memory: PlaybackMemory) {
-        guard let data = try? JSONEncoder().encode(memory) else { return }
-        UserDefaults.standard.set(data, forKey: key)
-    }
-
-    static func loadValid(now: Date = Date()) -> PlaybackMemory? {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let memory = try? JSONDecoder().decode(PlaybackMemory.self, from: data) else {
-            clear()
-            return nil
-        }
-
-        guard now.timeIntervalSince(memory.savedAt) <= expirationInterval else {
-            clear()
-            return nil
-        }
-
-        return memory
-    }
-
-    static func clear() {
-        UserDefaults.standard.removeObject(forKey: key)
-    }
-
-    static func restorableTime(from memory: PlaybackMemory) -> Double {
-        guard memory.currentTime.isFinite else { return 0 }
-        let lowerBoundedTime = max(0, memory.currentTime)
-        guard memory.duration.isFinite, memory.duration > 1 else {
-            return lowerBoundedTime
-        }
-        return min(lowerBoundedTime, memory.duration - 1)
     }
 }
 

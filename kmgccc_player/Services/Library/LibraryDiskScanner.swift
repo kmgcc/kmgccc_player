@@ -16,8 +16,13 @@ nonisolated struct LibraryDiskSnapshot: Sendable {
 }
 
 nonisolated struct LibraryDiskScanner: Sendable {
-    private static let manifestFileName = ".kmgccc-library-manifest.json"
-    private static let manifestSchemaVersion = 1
+    private let paths: LibraryPaths
+    private static let legacyManifestFileName = ".kmgccc-library-manifest.json"
+    private static let manifestSchemaVersion = 2
+
+    init(paths: LibraryPaths) {
+        self.paths = paths
+    }
 
     func scanAll() -> LibraryDiskSnapshot {
         scanIncremental()
@@ -25,8 +30,8 @@ nonisolated struct LibraryDiskScanner: Sendable {
 
     func scanIncremental() -> LibraryDiskSnapshot {
         let start = Date()
-        let rootURL = LocalLibraryPaths.libraryRootURL
-        let manifestLoad = loadManifest(at: rootURL.appendingPathComponent(Self.manifestFileName))
+        let rootURL = paths.rootURL
+        let manifestLoad = loadPreferredManifest()
         let previousManifest = manifestLoad.manifest
         let now = Date()
 
@@ -50,7 +55,9 @@ nonisolated struct LibraryDiskScanner: Sendable {
             artists: artists.manifestEntries,
             albums: albums.manifestEntries
         )
-        writeManifest(newManifest, at: rootURL.appendingPathComponent(Self.manifestFileName), rootURL: rootURL)
+        if writeManifest(newManifest, at: paths.libraryScanManifestURL) {
+            try? FileManager.default.removeItem(at: legacyManifestURL)
+        }
 
         let elapsed = Date().timeIntervalSince(start)
         let totalRescanned = tracks.stats.rescanned + playlists.stats.rescanned + artists.stats.rescanned + albums.stats.rescanned
@@ -80,7 +87,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
     }
 
     func scanTracksOnly() -> [ScannedTrackMeta] {
-        scanTracks(using: loadManifestForActiveRoot(), rootURL: LocalLibraryPaths.libraryRootURL, now: Date()).values
+        scanTracks(using: loadManifestForActiveRoot(), rootURL: paths.rootURL, now: Date()).values
     }
 
     // MARK: - Tracks
@@ -91,8 +98,8 @@ nonisolated struct LibraryDiskScanner: Sendable {
         now: Date
     ) -> ScanResult<ScannedTrackMeta, ManifestTrackEntry> {
         let fileManager = FileManager()
-        let scanner = MusicLibraryScanner()
-        let folders = directDirectories(at: LocalLibraryPaths.tracksRootURL)
+        let scanner = MusicLibraryScanner(paths: paths)
+        let folders = directDirectories(at: paths.tracksRootURL)
         var values: [ScannedTrackMeta] = []
         var manifestEntries: [String: ManifestTrackEntry] = [:]
         var cached = 0
@@ -157,7 +164,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
     // MARK: - Playlist Sidecars
 
     func loadPlaylistSidecars() -> [PlaylistSidecar] {
-        scanPlaylists(using: loadManifestForActiveRoot(), rootURL: LocalLibraryPaths.libraryRootURL, now: Date()).values
+        scanPlaylists(using: loadManifestForActiveRoot(), rootURL: paths.rootURL, now: Date()).values
     }
 
     private func scanPlaylists(
@@ -166,7 +173,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
         now: Date
     ) -> ScanResult<PlaylistSidecar, ManifestSidecarEntry<PlaylistSidecar>> {
         let decoder = makeDecoder()
-        let files = directFiles(at: LocalLibraryPaths.playlistsRootURL)
+        let files = directFiles(at: paths.playlistsRootURL)
             .filter { $0.pathExtension.lowercased() == "json" }
 
         return scanJSONSidecars(
@@ -186,7 +193,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
     // MARK: - Artist Sidecars
 
     func loadArtistSidecars() -> [(sidecar: ArtistSidecar, folderURL: URL)] {
-        scanArtists(using: loadManifestForActiveRoot(), rootURL: LocalLibraryPaths.libraryRootURL, now: Date()).values
+        scanArtists(using: loadManifestForActiveRoot(), rootURL: paths.rootURL, now: Date()).values
     }
 
     private func scanArtists(
@@ -195,7 +202,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
         now: Date
     ) -> ScanResult<(sidecar: ArtistSidecar, folderURL: URL), ManifestSidecarEntry<ArtistSidecar>> {
         let decoder = makeDecoder()
-        let files = directDirectories(at: LocalLibraryPaths.artistsRootURL)
+        let files = directDirectories(at: paths.artistsRootURL)
             .map { $0.appendingPathComponent("meta.json") }
 
         return scanJSONSidecars(
@@ -215,7 +222,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
     // MARK: - Album Sidecars
 
     func loadAlbumSidecars() -> [(sidecar: AlbumSidecar, folderURL: URL)] {
-        scanAlbums(using: loadManifestForActiveRoot(), rootURL: LocalLibraryPaths.libraryRootURL, now: Date()).values
+        scanAlbums(using: loadManifestForActiveRoot(), rootURL: paths.rootURL, now: Date()).values
     }
 
     private func scanAlbums(
@@ -224,7 +231,7 @@ nonisolated struct LibraryDiskScanner: Sendable {
         now: Date
     ) -> ScanResult<(sidecar: AlbumSidecar, folderURL: URL), ManifestSidecarEntry<AlbumSidecar>> {
         let decoder = makeDecoder()
-        let files = directDirectories(at: LocalLibraryPaths.albumsRootURL)
+        let files = directDirectories(at: paths.albumsRootURL)
             .map { $0.appendingPathComponent("meta.json") }
 
         return scanJSONSidecars(
@@ -304,7 +311,20 @@ nonisolated struct LibraryDiskScanner: Sendable {
     // MARK: - Manifest
 
     private func loadManifestForActiveRoot() -> LibraryManifest? {
-        loadManifest(at: LocalLibraryPaths.libraryRootURL.appendingPathComponent(Self.manifestFileName)).manifest
+        loadPreferredManifest().manifest
+    }
+
+    private var legacyManifestURL: URL {
+        paths.rootURL.appendingPathComponent(Self.legacyManifestFileName)
+    }
+
+    private func loadPreferredManifest() -> ManifestLoad {
+        let current = loadManifest(at: paths.libraryScanManifestURL)
+        guard current.status == "miss" else { return current }
+
+        let legacy = loadManifest(at: legacyManifestURL)
+        guard let manifest = legacy.manifest else { return current }
+        return ManifestLoad(manifest: manifest, status: "legacy-hit")
     }
 
     private func loadManifest(at url: URL) -> ManifestLoad {
@@ -327,19 +347,25 @@ nonisolated struct LibraryDiskScanner: Sendable {
         }
     }
 
-    private func writeManifest(_ manifest: LibraryManifest, at url: URL, rootURL: URL) {
+    @discardableResult
+    private func writeManifest(_ manifest: LibraryManifest, at url: URL) -> Bool {
         do {
-            try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
             let encoder = JSONEncoder()
             encoder.dateEncodingStrategy = .iso8601
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(manifest)
             try data.write(to: url, options: .atomic)
+            return true
         } catch {
             Log.warning(
                 "[LibraryIncrementalScan] failed to write manifest: \(error.localizedDescription)",
                 category: .library
             )
+            return false
         }
     }
 
@@ -503,6 +529,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
     let id: UUID
     let title: String
     let artist: String
+    let artistCredits: [TrackCredit]?
     let album: String
     let albumArtist: String?
     let description: String
@@ -514,15 +541,24 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
     let metadataSource: String?
     let metadataFetchedAt: Date?
     let metadataConfidence: Double?
+    let musicBrainzReleaseID: String?
     let duration: Double
     let addedAt: Date
     let importedAt: Date
     let lyricsTimeOffsetMs: Double
     let originalFilePath: String
+    let mediaLocator: TrackMediaLocator
+    let availability: TrackAvailability
+    let embeddedMetadataSnapshot: EmbeddedMetadataSnapshot?
+    let userMetadataOverride: UserMetadataOverride?
+    let enrichmentSuggestions: [EnrichmentSuggestion]?
+    let importProvenance: ImportProvenance?
+    let audioProperties: TrackAudioProperties?
     let audioFileName: String
     let artworkFileName: String?
     let lyricsFileName: String?
     let ttmlLyricsFileName: String?
+    let ncmConversionAssociation: NCMConversionAssociation?
     let playCount: Int?
     let preferenceStats: TrackPreferenceStats?
     let folderRelativePath: String
@@ -532,6 +568,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         case id
         case title
         case artist
+        case artistCredits
         case album
         case albumArtist
         case description
@@ -543,15 +580,24 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         case metadataSource
         case metadataFetchedAt
         case metadataConfidence
+        case musicBrainzReleaseID
         case duration
         case addedAt
         case importedAt
         case lyricsTimeOffsetMs
         case originalFilePath
+        case mediaLocator
+        case availability
+        case embeddedMetadataSnapshot
+        case userMetadataOverride
+        case enrichmentSuggestions
+        case importProvenance
+        case audioProperties
         case audioFileName
         case artworkFileName
         case lyricsFileName
         case ttmlLyricsFileName
+        case ncmConversionAssociation
         case playCount
         case preferenceStats
         case folderRelativePath
@@ -562,6 +608,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         id = meta.id
         title = meta.title
         artist = meta.artist
+        artistCredits = meta.artistCredits
         album = meta.album
         albumArtist = meta.albumArtist
         description = meta.description
@@ -573,15 +620,24 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         metadataSource = meta.metadataSource
         metadataFetchedAt = meta.metadataFetchedAt
         metadataConfidence = meta.metadataConfidence
+        musicBrainzReleaseID = meta.musicBrainzReleaseID
         duration = meta.duration
         addedAt = meta.addedAt
         importedAt = meta.importedAt
         lyricsTimeOffsetMs = meta.lyricsTimeOffsetMs
         originalFilePath = meta.originalFilePath
+        mediaLocator = meta.mediaLocator
+        availability = meta.availability
+        embeddedMetadataSnapshot = meta.embeddedMetadataSnapshot
+        userMetadataOverride = meta.userMetadataOverride
+        enrichmentSuggestions = meta.enrichmentSuggestions.isEmpty ? nil : meta.enrichmentSuggestions
+        importProvenance = meta.importProvenance
+        audioProperties = meta.audioProperties
         audioFileName = meta.audioFileName
         artworkFileName = meta.artworkFileName
         lyricsFileName = meta.lyricsFileName
         ttmlLyricsFileName = meta.ttmlLyricsFileName
+        ncmConversionAssociation = meta.ncmConversionAssociation
         playCount = meta.playCount
         preferenceStats = meta.preferenceStats
         folderRelativePath = "Tracks/\(meta.id.uuidString)"
@@ -593,6 +649,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         id = try c.decode(UUID.self, forKey: .id)
         title = try c.decode(String.self, forKey: .title)
         artist = try c.decode(String.self, forKey: .artist)
+        artistCredits = try c.decodeIfPresent([TrackCredit].self, forKey: .artistCredits)
         album = try c.decode(String.self, forKey: .album)
         albumArtist = try c.decodeIfPresent(String.self, forKey: .albumArtist)
         description = try c.decode(String.self, forKey: .description)
@@ -604,15 +661,24 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
         metadataSource = try c.decodeIfPresent(String.self, forKey: .metadataSource)
         metadataFetchedAt = try c.decodeIfPresent(Date.self, forKey: .metadataFetchedAt)
         metadataConfidence = try c.decodeIfPresent(Double.self, forKey: .metadataConfidence)
+        musicBrainzReleaseID = try c.decodeIfPresent(String.self, forKey: .musicBrainzReleaseID)
         duration = try c.decode(Double.self, forKey: .duration)
         addedAt = try c.decode(Date.self, forKey: .addedAt)
         importedAt = try c.decode(Date.self, forKey: .importedAt)
         lyricsTimeOffsetMs = try c.decode(Double.self, forKey: .lyricsTimeOffsetMs)
         originalFilePath = try c.decode(String.self, forKey: .originalFilePath)
+        mediaLocator = try c.decode(TrackMediaLocator.self, forKey: .mediaLocator)
+        availability = try c.decode(TrackAvailability.self, forKey: .availability)
+        embeddedMetadataSnapshot = try c.decodeIfPresent(EmbeddedMetadataSnapshot.self, forKey: .embeddedMetadataSnapshot)
+        userMetadataOverride = try c.decodeIfPresent(UserMetadataOverride.self, forKey: .userMetadataOverride)
+        enrichmentSuggestions = try c.decodeIfPresent([EnrichmentSuggestion].self, forKey: .enrichmentSuggestions)
+        importProvenance = try c.decodeIfPresent(ImportProvenance.self, forKey: .importProvenance)
+        audioProperties = try c.decodeIfPresent(TrackAudioProperties.self, forKey: .audioProperties)
         audioFileName = try c.decode(String.self, forKey: .audioFileName)
         artworkFileName = try c.decodeIfPresent(String.self, forKey: .artworkFileName)
         lyricsFileName = try c.decodeIfPresent(String.self, forKey: .lyricsFileName)
         ttmlLyricsFileName = try c.decodeIfPresent(String.self, forKey: .ttmlLyricsFileName)
+        ncmConversionAssociation = try c.decodeIfPresent(NCMConversionAssociation.self, forKey: .ncmConversionAssociation)
         playCount = try c.decodeIfPresent(Int.self, forKey: .playCount)
         preferenceStats = try c.decodeIfPresent(TrackPreferenceStats.self, forKey: .preferenceStats)
         folderRelativePath = try c.decode(String.self, forKey: .folderRelativePath)
@@ -625,6 +691,7 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
             id: id,
             title: title,
             artist: artist,
+            artistCredits: artistCredits,
             album: album,
             albumArtist: albumArtist,
             description: description,
@@ -636,15 +703,24 @@ nonisolated private struct CachedScannedTrackMeta: Codable {
             metadataSource: metadataSource,
             metadataFetchedAt: metadataFetchedAt,
             metadataConfidence: metadataConfidence,
+            musicBrainzReleaseID: musicBrainzReleaseID,
             duration: duration,
             addedAt: addedAt,
             importedAt: importedAt,
             lyricsTimeOffsetMs: lyricsTimeOffsetMs,
             originalFilePath: originalFilePath,
+            mediaLocator: mediaLocator,
+            availability: availability,
+            embeddedMetadataSnapshot: embeddedMetadataSnapshot,
+            userMetadataOverride: userMetadataOverride,
+            enrichmentSuggestions: enrichmentSuggestions ?? [],
+            importProvenance: importProvenance,
+            audioProperties: audioProperties,
             audioFileName: audioFileName,
             artworkFileName: artworkFileName,
             lyricsFileName: lyricsFileName,
             ttmlLyricsFileName: ttmlLyricsFileName,
+            ncmConversionAssociation: ncmConversionAssociation,
             playCount: playCount,
             preferenceStats: preferenceStats,
             folderURL: rootURL.appendingPathComponent(folderRelativePath, isDirectory: true)

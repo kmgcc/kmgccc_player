@@ -12,6 +12,7 @@ import SwiftUI
 /// Settings view with sidebar categories.
 @MainActor
 struct SettingsView: View {
+    var hasActiveLibrarySession = false
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -79,9 +80,17 @@ struct SettingsView: View {
                 case .audio:
                     AudioSettingsView()
                 case .externalPlayback:
-                    ExternalPlaybackSettingsView()
+                    if hasActiveLibrarySession {
+                        ExternalPlaybackSettingsView()
+                    } else {
+                        unavailableLibrarySettings
+                    }
                 case .data:
-                    DataManagementSettingsView()
+                    if hasActiveLibrarySession {
+                        DataManagementSettingsView()
+                    } else {
+                        unavailableLibrarySettings
+                    }
                 case .about:
                     AboutSettingsView()
                 }
@@ -95,6 +104,15 @@ struct SettingsView: View {
         .environment(\.settingsAppForegroundColors, appColors)
         .foregroundStyle(appColors.primary)
         .scrollContentBackground(.hidden)
+    }
+
+    private var unavailableLibrarySettings: some View {
+        ContentUnavailableView(
+            "找不到资料库",
+            systemImage: "externaldrive.badge.exclamationmark",
+            description: Text("请先打开资料库。")
+        )
+        .frame(maxWidth: .infinity, minHeight: 360)
     }
 
     private var appForegroundColors: SettingsAppForegroundColors {

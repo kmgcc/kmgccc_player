@@ -17,6 +17,7 @@ struct HomePlaylistsSection: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @State private var deletionRequest: HomePlaylistDeletionRequest?
 
     private var columnCount: Int {
@@ -498,6 +499,8 @@ private struct HomePlaylistCard: View {
     var subtitleColor: Color = Color.secondary
 
     @State private var coverImage: NSImage?
+    @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(LibraryCacheServices.self) private var cacheServices
 
     init(
         playlist: Playlist,
@@ -524,7 +527,7 @@ private struct HomePlaylistCard: View {
         // featured-card preview thumbs).
         _coverImage = State(
             initialValue: {
-                let identity = Self.headerArtworkIdentity(for: playlist)
+                let identity = Self.unresolvedHeaderArtworkIdentity(for: playlist)
                 return HomePlaylistCardCoverStore.shared.cachedImage(for: identity)
                     ?? HomeArtworkMemoryStore.shared.cachedImage(
                         for: HomeArtworkMemoryStore.playlistHeaderKey(identity: identity)
@@ -612,7 +615,8 @@ private struct HomePlaylistCard: View {
     private var featuredTrackPreviews: [Track] {
         HomePlaylistPreviewCache.shared.previewTracks(
             for: playlist,
-            limit: featuredTrackPreviewLimit
+            limit: featuredTrackPreviewLimit,
+            preferenceStats: { libraryVM.preferenceStats(for: $0) }
         )
     }
 
@@ -824,7 +828,7 @@ private struct HomePlaylistCard: View {
             tracks: playlist.tracks
         )
 
-        let immediate = DetailHeaderArtworkResolver.shared.resolveImmediately(for: request)
+        let immediate = libraryVM.detailHeaderArtworkResolver.resolveImmediately(for: request)
         if let image = await loadHeaderImage(from: immediate) {
             coverImage = image
             HomePlaylistCardCoverStore.shared.store(image, for: identity)
@@ -834,7 +838,7 @@ private struct HomePlaylistCard: View {
             )
         }
 
-        let resolved = await DetailHeaderArtworkResolver.shared.resolveDeferredArtwork(for: request)
+        let resolved = await libraryVM.detailHeaderArtworkResolver.resolveDeferredArtwork(for: request)
         if let image = await loadHeaderImage(from: resolved ?? immediate) {
             coverImage = image
             HomePlaylistCardCoverStore.shared.store(image, for: identity)
@@ -852,22 +856,21 @@ private struct HomePlaylistCard: View {
             artworkData: resolved.image?.tiffRepresentation,
             fileURL: resolved.fileURL
         )
-        return await PlaylistArtworkPipeline.shared.load(request) ?? resolved.image
+        return await cacheServices.playlistArtworkPipeline.load(request) ?? resolved.image
     }
 
     private var headerArtworkIdentity: String {
-        Self.headerArtworkIdentity(for: playlist)
-    }
-
-    fileprivate static func headerArtworkIdentity(for playlist: Playlist) -> String {
         let selectionIdentity = "playlist-\(playlist.id)"
-        if let revision = LocalLibraryService.shared.playlistArtworkRevision(playlistID: playlist.id),
-           !revision.isEmpty
-        {
+        if let revision = libraryVM.playlistArtworkRevision(playlistID: playlist.id),
+           !revision.isEmpty {
             return "\(selectionIdentity)-artwork-\(revision)"
         }
+        return Self.unresolvedHeaderArtworkIdentity(for: playlist)
+    }
+
+    fileprivate static func unresolvedHeaderArtworkIdentity(for playlist: Playlist) -> String {
         let signature = PlaylistArtworkGenerator.contentSignature(tracks: playlist.tracks)
-        return "\(selectionIdentity)-unresolved-\(signature)"
+        return "playlist-\(playlist.id)-unresolved-\(signature)"
     }
 }
 
@@ -881,25 +884,30 @@ private struct HomePlaylistCard: View {
 final class HomePlaylistCardCoverStore {
     static let shared = HomePlaylistCardCoverStore()
 
-    private var images: [String: NSImage] = [:]
-    private var insertionOrder: [String] = []
-    private let capacity = 128
+    private var cache = CostBoundedCache<String, NSImage>(
+        countLimit: 32,
+        totalCostLimit: 48 * 1024 * 1024
+    )
 
     func cachedImage(for identity: String) -> NSImage? {
-        images[identity]
+        cache.value(forKey: identity)
     }
 
     func store(_ image: NSImage, for identity: String) {
-        if images[identity] == nil {
-            insertionOrder.append(identity)
+        cache.insert(image, forKey: identity, cost: Self.estimatedCost(for: image))
+    }
+
+    func clearMemory() {
+        cache.removeAll()
+    }
+
+    private static func estimatedCost(for image: NSImage) -> Int {
+        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            return max(1, cgImage.bytesPerRow * cgImage.height)
         }
-        images[identity] = image
-        if insertionOrder.count > capacity {
-            let oldest = insertionOrder.removeFirst()
-            if oldest != identity {
-                images.removeValue(forKey: oldest)
-            }
-        }
+        let width = max(1, Int(ceil(image.size.width)))
+        let height = max(1, Int(ceil(image.size.height)))
+        return width * height * 4
     }
 }
 
@@ -915,7 +923,11 @@ final class HomePlaylistPreviewCache {
 
     private var cached: [Key: [Track]] = [:]
 
-    func previewTracks(for playlist: Playlist, limit: Int) -> [Track] {
+    func previewTracks(
+        for playlist: Playlist,
+        limit: Int,
+        preferenceStats: (UUID) -> TrackPreferenceStats
+    ) -> [Track] {
         let key = Key(
             playlistID: playlist.id,
             trackSignature: trackSignature(for: playlist),
@@ -930,8 +942,14 @@ final class HomePlaylistPreviewCache {
                 .enumerated()
                 .filter { $0.element.isPlayable && $0.element.hasArtworkSource }
                 .sorted { lhs, rhs in
-                    let lhsScore = preferenceScore(for: lhs.element)
-                    let rhsScore = preferenceScore(for: rhs.element)
+                    let lhsScore = preferenceScore(
+                        for: lhs.element,
+                        stats: preferenceStats(lhs.element.id)
+                    )
+                    let rhsScore = preferenceScore(
+                        for: rhs.element,
+                        stats: preferenceStats(rhs.element.id)
+                    )
                     if lhsScore != rhsScore {
                         return lhsScore > rhsScore
                     }
@@ -958,8 +976,7 @@ final class HomePlaylistPreviewCache {
         return hasher.finalize()
     }
 
-    private func preferenceScore(for track: Track) -> Double {
-        let stats = PreferenceStatsService.shared.getStats(for: track.id)
+    private func preferenceScore(for track: Track, stats: TrackPreferenceStats) -> Double {
         let result = PreferenceScorerV2.calculateScore(
             stats: stats,
             duration: track.duration,
@@ -976,6 +993,7 @@ private struct HomeFeaturedPlaylistTrackArtwork: View {
     let onPlay: () -> Void
 
     @State private var image: NSImage?
+    @Environment(LibraryCacheServices.self) private var cacheServices
 
     init(
         track: Track,
@@ -1060,7 +1078,8 @@ private struct HomeFeaturedPlaylistTrackArtwork: View {
         let loaded = await ArtworkLoader.loadImage(
             artworkData: data,
             cacheKey: key,
-            targetPixelSize: displayedSize
+            targetPixelSize: displayedSize,
+            derivativeStore: cacheServices.artworkDerivativeStore
         )
 
         guard let loaded else { return }
@@ -1080,7 +1099,7 @@ private struct HomeFeaturedPlaylistTrackArtwork: View {
 /// 4–8 covers can survive LazyVStack rematerialization without flashing
 /// the placeholder while the actor cache is hopped to.
 @MainActor
-private final class HomePlaylistPreviewArtworkStore {
+final class HomePlaylistPreviewArtworkStore {
     static let shared = HomePlaylistPreviewArtworkStore()
 
     /// Single bucketed thumbnail pixel size used across all Home layout
@@ -1088,25 +1107,30 @@ private final class HomePlaylistPreviewArtworkStore {
     /// derivative key per track.
     static let previewPixelSide: CGFloat = 96
 
-    private var images: [UUID: NSImage] = [:]
-    private var insertionOrder: [UUID] = []
-    private let capacity = 256
+    private var cache = CostBoundedCache<UUID, NSImage>(
+        countLimit: 256,
+        totalCostLimit: 16 * 1024 * 1024
+    )
 
     func cachedImage(forTrackID trackID: UUID) -> NSImage? {
-        images[trackID]
+        cache.value(forKey: trackID)
     }
 
     func store(_ image: NSImage, forTrackID trackID: UUID) {
-        if images[trackID] == nil {
-            insertionOrder.append(trackID)
+        cache.insert(image, forKey: trackID, cost: Self.estimatedCost(for: image))
+    }
+
+    func clearMemory() {
+        cache.removeAll()
+    }
+
+    private static func estimatedCost(for image: NSImage) -> Int {
+        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            return max(1, cgImage.bytesPerRow * cgImage.height)
         }
-        images[trackID] = image
-        if insertionOrder.count > capacity {
-            let oldest = insertionOrder.removeFirst()
-            if oldest != trackID {
-                images.removeValue(forKey: oldest)
-            }
-        }
+        let width = max(1, Int(ceil(image.size.width)))
+        let height = max(1, Int(ceil(image.size.height)))
+        return width * height * 4
     }
 }
 

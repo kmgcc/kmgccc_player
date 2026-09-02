@@ -40,7 +40,7 @@ final class CoverSearchCoordinator {
     init(
         coverDownloadService: CoverDownloadService,
         netEaseCoverService: NetEaseCoverService,
-        qqMusicCoverService: QQMusicCoverService = .shared
+        qqMusicCoverService: QQMusicCoverService
     ) {
         self.coverDownloadService = coverDownloadService
         self.netEaseCoverService = netEaseCoverService

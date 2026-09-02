@@ -150,6 +150,76 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         var testClient: String?
     }
 
+    nonisolated private struct PerlProcessResult: Sendable {
+        var exitStatus: Int32?
+        var stdout: Data
+        var stderr: Data
+        var timedOut: Bool
+    }
+
+    /// `Process` does not drain pipes while `waitUntilExit()` blocks. Keep both
+    /// descriptors flowing so a noisy adapter cannot block on a full pipe.
+    nonisolated private final class ProcessOutputCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private let maximumBytesPerStream = 2 * 1024 * 1024
+        private var stdout = Data()
+        private var stderr = Data()
+
+        func append(_ data: Data, toStdout: Bool) {
+            lock.lock()
+            if toStdout {
+                append(data, to: &stdout)
+            } else {
+                append(data, to: &stderr)
+            }
+            lock.unlock()
+        }
+
+        private func append(_ data: Data, to buffer: inout Data) {
+            let available = maximumBytesPerStream - buffer.count
+            guard available > 0 else { return }
+            buffer.append(data.prefix(available))
+        }
+
+        func snapshot() -> (stdout: Data, stderr: Data) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (stdout, stderr)
+        }
+    }
+
+    nonisolated private final class ProcessResultState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var result: PerlProcessResult?
+        private var continuation: CheckedContinuation<PerlProcessResult, Never>?
+
+        func wait() async -> PerlProcessResult {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if let result {
+                    lock.unlock()
+                    continuation.resume(returning: result)
+                } else {
+                    self.continuation = continuation
+                    lock.unlock()
+                }
+            }
+        }
+
+        func finish(_ result: PerlProcessResult) {
+            lock.lock()
+            guard self.result == nil else {
+                lock.unlock()
+                return
+            }
+            self.result = result
+            let continuation = self.continuation
+            self.continuation = nil
+            lock.unlock()
+            continuation?.resume(returning: result)
+        }
+    }
+
     private enum ControlAction: Sendable {
         case playPause
         case play
@@ -224,9 +294,11 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
     let source: PlaybackSource = .systemNowPlaying
 
-    private let libraryVM: LibraryViewModel
+    private let libraryTracksProvider: @MainActor () -> [Track]
     private let artworkResolver: AppleMusicArtworkResolver
     private let metadataStore: ExternalPlaybackMetadataStore
+    private let lyricsSearchCoordinator: LyricsSearchCoordinator
+    private let amllDBService: AMLLDBService
     private let sourceStore: ExternalPlaybackSourceStore
     private let decoder = JSONDecoder()
     private let streamQueue = DispatchQueue(label: "kmgccc_player.systemNowPlaying.stream", qos: .utility)
@@ -258,6 +330,8 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     private var resolutionTask: Task<Void, Never>?
     private var controlTask: Task<Void, Never>?
     private var progressPollTask: Task<Void, Never>?
+    private var consecutiveProgressPollFailures = 0
+    private var progressPollingCircuitOpen = false
     private var pendingEmptyPayloadTask: Task<Void, Never>?
     private var streamObservationTask: Task<Void, Never>?
     private var pendingHeavyPresentationTask: Task<Void, Never>?
@@ -328,14 +402,18 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     var capabilities: ExternalPlaybackCapabilities { currentCapabilities }
 
     init(
-        libraryVM: LibraryViewModel,
+        libraryTracksProvider: @escaping @MainActor () -> [Track],
         artworkResolver: AppleMusicArtworkResolver = AppleMusicArtworkResolver(),
-        metadataStore: ExternalPlaybackMetadataStore? = nil,
+        metadataStore: ExternalPlaybackMetadataStore,
+        lyricsSearchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService,
         sourceStore: ExternalPlaybackSourceStore = .shared
     ) {
-        self.libraryVM = libraryVM
+        self.libraryTracksProvider = libraryTracksProvider
         self.artworkResolver = artworkResolver
-        self.metadataStore = metadataStore ?? .shared
+        self.metadataStore = metadataStore
+        self.lyricsSearchCoordinator = lyricsSearchCoordinator
+        self.amllDBService = amllDBService
         self.sourceStore = sourceStore
         sourcePreferenceTask = Task { @MainActor [weak self] in
             for await _ in NotificationCenter.default.notifications(
@@ -349,6 +427,16 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
     deinit {
         sourcePreferenceTask?.cancel()
+    }
+
+    convenience init(previewLibraryTracksProvider provider: @escaping @MainActor () -> [Track]) {
+        let cacheServices = LibraryCacheServices.preview
+        self.init(
+            libraryTracksProvider: provider,
+            metadataStore: cacheServices.externalPlaybackMetadataStore,
+            lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
+            amllDBService: cacheServices.amllDBService
+        )
     }
 
     func start() {
@@ -366,6 +454,8 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         hasReceivedValidPayload = false
         hasLoggedFirstValidPayload = false
         isInEmptyPayloadWindow = false
+        consecutiveProgressPollFailures = 0
+        progressPollingCircuitOpen = false
         latestStableMetadataKey = nil
         progressBaseline = nil
         lastCommittedCore = nil
@@ -449,9 +539,11 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         unidentifiedTrackCandidateTask = nil
         progressPollTask?.cancel()
         progressPollTask = nil
+        consecutiveProgressPollFailures = 0
+        progressPollingCircuitOpen = false
         process?.terminationHandler = nil
-        if process?.isRunning == true {
-            process?.terminate()
+        if let process, process.isRunning {
+            Self.terminateProcess(process)
         }
         process = nil
         closePipes()
@@ -543,7 +635,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         isRefetchingLyrics = true
         defer { isRefetchingLyrics = false }
 
-        ExternalPlaybackMetadataStore.shared.clearAutoLyricsCache(for: identity)
+        metadataStore.clearAutoLyricsCache(for: identity)
         invalidateCurrentResolution()
 
         await withTaskCancellationHandler {
@@ -586,6 +678,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                 let status = process.terminationStatus
                 Log.warning("[SystemNowPlaying] stream exited pid=\(process.processIdentifier) status=\(status) validPayload=\(self.hasReceivedValidPayload)", category: .playback)
                 self.process = nil
+                self.stopProgressPolling(reason: "stream exited")
                 self.closePipes()
                 let key = self.hasReceivedValidPayload ? self.source.disconnectedTitleKey : "system_now_playing.adapter_unavailable"
                 let state: ExternalPlaybackConnectionState = self.hasReceivedValidPayload ? .disconnected : .unavailable
@@ -696,26 +789,39 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
     private func startProgressPolling(generation: UInt64) {
         progressPollTask?.cancel()
+        guard !progressPollingCircuitOpen else { return }
         progressPollTask = Task { [weak self] in
             while !Task.isCancelled {
                 let interval = await MainActor.run { self?.currentPollInterval() ?? 1_000_000_000 }
                 try? await Task.sleep(nanoseconds: interval)
                 if Task.isCancelled { break }
                 guard let self else { break }
-                let (genMatch, paths) = await MainActor.run { () -> (Bool, AdapterPaths?) in
-                    (self.streamGeneration == generation, self.resolveAdapterPaths())
+                let (genMatch, streamRunning, paths) = await MainActor.run { () -> (Bool, Bool, AdapterPaths?) in
+                    (
+                        self.streamGeneration == generation,
+                        self.process?.isRunning == true,
+                        self.resolveAdapterPaths()
+                    )
                 }
-                guard genMatch else { break }
-                guard let paths else { continue }
+                guard genMatch, streamRunning else { break }
+                guard let paths else {
+                    await MainActor.run {
+                        guard self.streamGeneration == generation else { return }
+                        self.recordProgressPollFailure(reason: "adapter paths unavailable")
+                    }
+                    continue
+                }
                 guard let payload = await Self.fetchGetPayload(paths: paths) else {
                     await MainActor.run {
                         guard self.streamGeneration == generation else { return }
+                        self.recordProgressPollFailure(reason: "get command failed or returned no payload")
                         self.handleEmptyPayload(source: .get)
                     }
                     continue
                 }
                 await MainActor.run {
                     guard self.streamGeneration == generation else { return }
+                    self.resetProgressPollFailures()
                     self.handlePayload(payload, source: .get)
                 }
             }
@@ -723,6 +829,10 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     }
 
     private func currentPollInterval() -> UInt64 {
+        if consecutiveProgressPollFailures > 0 {
+            let exponent = min(consecutiveProgressPollFailures - 1, 4)
+            return UInt64(1 << exponent) * 1_000_000_000
+        }
         if isControlCoolingDown {
             return 500_000_000
         }
@@ -730,6 +840,38 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             return 700_000_000
         }
         return 1_000_000_000
+    }
+
+    private func recordProgressPollFailure(reason: String) {
+        consecutiveProgressPollFailures += 1
+        let failures = consecutiveProgressPollFailures
+        if failures >= 5 {
+            progressPollingCircuitOpen = true
+            progressPollTask?.cancel()
+            progressPollTask = nil
+            Log.warning(
+                "[SystemNowPlaying] progress polling circuit opened after \(failures) failures: \(reason)",
+                category: .playback
+            )
+        } else {
+            Log.warning(
+                "[SystemNowPlaying] progress polling failed count=\(failures); backing off: \(reason)",
+                category: .playback
+            )
+        }
+    }
+
+    private func resetProgressPollFailures() {
+        consecutiveProgressPollFailures = 0
+        progressPollingCircuitOpen = false
+    }
+
+    private func stopProgressPolling(reason: String) {
+        progressPollTask?.cancel()
+        progressPollTask = nil
+        consecutiveProgressPollFailures = 0
+        progressPollingCircuitOpen = false
+        Log.info("[SystemNowPlaying] progress polling stopped: \(reason)", category: .playback)
     }
 
     private func handlePayload(_ payload: Payload?, source: PayloadSource) {
@@ -771,6 +913,10 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         pendingEmptyPayloadTask = nil
         streamObservationTask?.cancel()
         streamObservationTask = nil
+        if source == .stream, progressPollingCircuitOpen {
+            resetProgressPollFailures()
+            startProgressPolling(generation: streamGeneration)
+        }
         emptyPayloadCount = 0
         if isInEmptyPayloadWindow {
             isInEmptyPayloadWindow = false
@@ -1822,19 +1968,29 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         guard resolutionTask == nil else { return }
 
         let metadataStore = self.metadataStore
-        let libraryTracks = libraryVM.allTracks
+        let libraryTracks = libraryTracksProvider()
         resolutionTask = Task { [weak self] in
             let resolution = await metadataStore.resolve(raw: raw, libraryTracks: libraryTracks)
+            let localLyrics = await resolution.matchedTrack?.loadTTMLLyricsOffMainIfNeeded()
+            guard !Task.isCancelled else { return }
             await MainActor.run {
                 guard let self else { return }
                 self.resolutionTask = nil
                 guard self.latestIdentity == identity else { return }
-                self.applyResolution(resolution, identity: identity)
+                self.applyResolution(
+                    resolution,
+                    identity: identity,
+                    localLyrics: LyricsFormatSupport.normalizedTTMLText(localLyrics)
+                )
             }
         }
     }
 
-    private func applyResolution(_ resolution: ExternalPlaybackResolution, identity: String) {
+    private func applyResolution(
+        _ resolution: ExternalPlaybackResolution,
+        identity: String,
+        localLyrics: String?
+    ) {
         guard canApplyCurrentResolution(identity: identity) else {
             isInvalidatingCurrentResolution = false
             return
@@ -1846,7 +2002,6 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         latestMatchedTrack = resolution.matchedTrack
 
         let manualLyrics = metadataStore.manualLyrics(for: identity)
-        let localLyrics = preferredLyricsText(for: resolution.matchedTrack)
         let hasManualDecision = metadataStore.hasManualLyricsDecision(for: identity)
         let autoLyrics = (!hasManualDecision && localLyrics == nil)
             ? metadataStore.cachedAutoLyrics(for: identity)
@@ -2113,6 +2268,9 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         cancelPerTrackTasks()
         pendingHeavyPresentationTask?.cancel()
         pendingHeavyPresentationTask = nil
+        if (connectionState == .unavailable || connectionState == .disconnected), progressPollTask != nil {
+            stopProgressPolling(reason: "connection state \(connectionState.rawValue)")
+        }
         if connectionState == .unavailable || connectionState == .disconnected || connectionState == .connectedNoMetadata {
             unlockExternalOwner(reason: "unavailable_presentation state=\(connectionState.rawValue)")
             sourceStore.setCurrentSourceID(nil)
@@ -2221,11 +2379,6 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         let resolver = artworkResolver
         let metadataStore = metadataStore
         let matchedTrackID = matchedTrack?.id
-        // Load the matched track's artwork from disk (mirrors AppleMusicPlaybackAdapter).
-        // Reading `matchedTrack?.artworkData` directly returns nil when the matched
-        // track hasn't been hydrated yet, which silently fell through to network
-        // artwork even though the user owns a correct local cover.
-        let localArtwork = matchedTrack?.loadArtworkDataIfNeeded()
         artworkTask = Task { [weak self] in
             guard let self else { return }
 
@@ -2241,6 +2394,8 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             //    copy is authoritative for their library; auto-fetched network
             //    artwork can be a different crop/release (and was the source of
             //    mismatched cover/color vs. the local track).
+            let localArtwork = await matchedTrack?.loadArtworkDataOffMainIfNeeded()
+            guard !Task.isCancelled else { return }
             if let localArtwork, !localArtwork.isEmpty {
                 let displayTrackID = matchedTrackID ?? NowPlayingPresentation.externalArtworkDisplayUUID(for: identity)
                 await self.prepareAndCommitArtwork(localArtwork, source: .localLibrary, identity: identity, displayTrackID: displayTrackID)
@@ -2344,13 +2499,17 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         lyricsSearchTimestamps[identity] = Date()
 
         let metadataStore = metadataStore
+        let lyricsSearchCoordinator = lyricsSearchCoordinator
+        let amllDBService = amllDBService
         let duration = lastPayload?.duration
         lyricsTask = Task { [weak self] in
             let result = await LyricsSearchHelper.searchAndFetchAutomaticallyMatchedLyrics(
                 title: effective.title,
                 artist: effective.artist,
                 album: effective.album,
-                duration: (duration ?? 0) > 0 ? duration : nil
+                duration: (duration ?? 0) > 0 ? duration : nil,
+                searchCoordinator: lyricsSearchCoordinator,
+                amllDBService: amllDBService
             )
             guard !Task.isCancelled else { return }
             await MainActor.run {
@@ -3048,86 +3207,149 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         Int64((max(0, seconds) * 1_000_000).rounded())
     }
 
-    private static func runHealthTest(paths: AdapterPaths) async -> Int32 {
-        await Task.detached(priority: .utility) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-            var arguments = [paths.script, paths.framework]
-            if let testClient = paths.testClient {
-                arguments.append(testClient)
-            }
-            arguments.append("test")
-            process.arguments = arguments
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
-            do {
-                try process.run()
-                process.waitUntilExit()
-                return process.terminationStatus
-            } catch {
-                return -1
-            }
-        }.value
+    private nonisolated static func runHealthTest(paths: AdapterPaths) async -> Int32 {
+        var arguments = [paths.script, paths.framework]
+        if let testClient = paths.testClient {
+            arguments.append(testClient)
+        }
+        arguments.append("test")
+        let result = await runBoundedPerlProcess(arguments: arguments, timeout: 5)
+        return result?.exitStatus ?? -1
     }
 
-    private static func runAdapterCommand(paths: AdapterPaths, arguments: [String]) async -> Bool {
-        await Task.detached(priority: .utility) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-            let processArguments = [paths.script, paths.framework] + arguments
-            process.arguments = processArguments
-            if arguments.first == "seek" {
-                Log.info("[SystemNowPlaying] seek command args=\(processArguments)", category: .playback)
+    private nonisolated static func runAdapterCommand(paths: AdapterPaths, arguments: [String]) async -> Bool {
+        let processArguments = [paths.script, paths.framework] + arguments
+        if arguments.first == "seek" {
+            Log.info("[SystemNowPlaying] seek command args=\(processArguments)", category: .playback)
+        }
+        let result = await runBoundedPerlProcess(arguments: processArguments, timeout: 4)
+        let success = result?.timedOut == false && result?.exitStatus == 0
+        if !success, arguments.first == "seek" {
+            let stderr = result.map {
+                String(data: $0.stderr, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            } ?? ""
+            Log.warning(
+                "[SystemNowPlaying] seek command failed exit=\(result?.exitStatus ?? -1) stderr=\(stderr)",
+                category: .playback
+            )
+        }
+        return success
+    }
+
+    private nonisolated static func fetchGetPayload(paths: AdapterPaths) async -> Payload? {
+        let result = await runBoundedPerlProcess(
+            arguments: [paths.script, paths.framework, "get", "--no-artwork", "--now"],
+            timeout: 3
+        )
+        guard let result, !result.timedOut, result.exitStatus == 0, !result.stdout.isEmpty else {
+            return nil
+        }
+        // `get` outputs raw JSON (no {type,diff,payload} envelope).
+        return try? JSONDecoder().decode(Payload.self, from: result.stdout)
+    }
+
+    private nonisolated static func runBoundedPerlProcess(
+        arguments: [String],
+        timeout: TimeInterval
+    ) async -> PerlProcessResult? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = arguments
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        let collector = ProcessOutputCollector()
+        let state = ProcessResultState()
+        let stdoutHandle = stdoutPipe.fileHandleForReading
+        let stderrHandle = stderrPipe.fileHandleForReading
+        let stdoutReadLock = NSLock()
+        let stderrReadLock = NSLock()
+        stdoutHandle.readabilityHandler = { handle in
+            stdoutReadLock.lock()
+            let data = handle.availableData
+            stdoutReadLock.unlock()
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+            } else {
+                collector.append(data, toStdout: true)
             }
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-            do {
-                try process.run()
-                process.waitUntilExit()
-                let success = process.terminationStatus == 0
-                if !success, arguments.first == "seek" {
-                    let stderr = String(
-                        data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
-                        encoding: .utf8
-                    )?
-                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    Log.warning(
-                        "[SystemNowPlaying] seek command failed exit=\(process.terminationStatus) stderr=\(stderr)",
-                        category: .playback
+        }
+        stderrHandle.readabilityHandler = { handle in
+            stderrReadLock.lock()
+            let data = handle.availableData
+            stderrReadLock.unlock()
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+            } else {
+                collector.append(data, toStdout: false)
+            }
+        }
+        process.terminationHandler = { process in
+            // Let already-scheduled readability callbacks drain their final data.
+            // Do not call `readDataToEndOfFile()` here: a child retaining the pipe
+            // could otherwise make a completed parent process block forever.
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.05) {
+                stdoutHandle.readabilityHandler = nil
+                stderrHandle.readabilityHandler = nil
+                let output = collector.snapshot()
+                state.finish(
+                    PerlProcessResult(
+                        exitStatus: process.terminationStatus,
+                        stdout: output.stdout,
+                        stderr: output.stderr,
+                        timedOut: false
                     )
-                }
-                return success
-            } catch {
-                if arguments.first == "seek" {
-                    Log.warning("[SystemNowPlaying] seek command launch failed error=\(error.localizedDescription)", category: .playback)
-                }
-                return false
+                )
             }
-        }.value
+        }
+
+        do {
+            try process.run()
+        } catch {
+            stdoutHandle.readabilityHandler = nil
+            stderrHandle.readabilityHandler = nil
+            return nil
+        }
+
+        let timeoutNanoseconds = UInt64(max(0, timeout) * 1_000_000_000)
+        let timeoutTask = Task.detached(priority: .utility) {
+            do {
+                try await Task.sleep(nanoseconds: timeoutNanoseconds)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            guard process.isRunning else { return }
+            Self.terminateProcess(process)
+            let output = collector.snapshot()
+            state.finish(
+                PerlProcessResult(exitStatus: nil, stdout: output.stdout, stderr: output.stderr, timedOut: true)
+            )
+        }
+        let result = await withTaskCancellationHandler {
+            await state.wait()
+        } onCancel: {
+            timeoutTask.cancel()
+            Self.terminateProcess(process)
+            let output = collector.snapshot()
+            state.finish(
+                PerlProcessResult(exitStatus: nil, stdout: output.stdout, stderr: output.stderr, timedOut: true)
+            )
+        }
+        timeoutTask.cancel()
+        return result
     }
 
-    private static func fetchGetPayload(paths: AdapterPaths) async -> Payload? {
-        await Task.detached(priority: .utility) {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-            process.arguments = [paths.script, paths.framework, "get", "--no-artwork", "--now"]
-            let stdoutPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = Pipe()
-            do {
-                try process.run()
-                process.waitUntilExit()
-                guard process.terminationStatus == 0 else { return nil }
-                let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                guard !data.isEmpty else { return nil }
-                // `get` outputs raw JSON (no {type,diff,payload} envelope).
-                return try? JSONDecoder().decode(Payload.self, from: data)
-            } catch {
-                return nil
-            }
-        }.value
+    private nonisolated static func terminateProcess(_ process: Process, grace: TimeInterval = 1) {
+        guard process.isRunning else { return }
+        process.terminate()
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + grace) {
+            guard process.isRunning else { return }
+            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+        }
     }
 
     private func resolveAdapterPaths() -> AdapterPaths? {
@@ -3357,11 +3579,6 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         guard now.timeIntervalSince(lastControlFailureLogAt) > 5 else { return }
         lastControlFailureLogAt = now
         Log.warning("[SystemNowPlaying] control failed: \(String(describing: action))", category: .playback)
-    }
-
-    private func preferredLyricsText(for track: Track?) -> String? {
-        guard let track else { return nil }
-        return LyricsFormatSupport.normalizedTTMLText(track.loadTTMLLyricsIfNeeded())
     }
 
     private func externalLyricsStatusMessage(for lyricsText: String?) -> String? {

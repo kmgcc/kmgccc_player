@@ -36,6 +36,17 @@ struct AlbumEntry: Identifiable {
     var totalDuration: Double
     var isOrphaned: Bool            // runtime-only: true if no matching songs exist
 
+    var isCompilation: Bool {
+        LibraryNormalization.isCompilationAlbumType(
+            albumType,
+            primaryArtist: primaryArtistDisplayName
+        )
+    }
+
+    var presentationArtistDisplayName: String {
+        isCompilation ? LibraryNormalization.variousArtists : primaryArtistDisplayName
+    }
+
     init(
         id: UUID,
         canonicalKey: String,

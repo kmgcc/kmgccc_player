@@ -24,6 +24,7 @@ struct PlaylistDetailView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(UIStateViewModel.self) private var uiState
     @EnvironmentObject private var themeStore: ThemeStore
 
@@ -125,7 +126,12 @@ struct PlaylistDetailView: View {
                     + "playbackCoord=\(ObjectIdentifier(playbackCoordinator).hashValue) "
                     + "uiState=\(ObjectIdentifier(uiState).hashValue)"
             )
-            pageController.bind(libraryVM: libraryVM, playerVM: playerVM, uiState: uiState)
+            pageController.bind(
+                libraryVM: libraryVM,
+                playerVM: playerVM,
+                uiState: uiState,
+                cacheServices: cacheServices
+            )
             pageController.appear(token: lifecycleToken)
             FirstUseHitchDiagnostics.end(token)
         }
@@ -224,7 +230,7 @@ struct PlaylistDetailView: View {
 
     private var playableSourceTrackCount: Int {
         switch libraryVM.currentSelection {
-        case .home, .allSongs:
+        case .home, .allSongs, .folders:
             return libraryVM.allTracks.filter { $0.availability != .missing }.count
         case .playlist(let id):
             return libraryVM.playlists.first(where: { $0.id == id })?.tracks.filter {
@@ -232,7 +238,7 @@ struct PlaylistDetailView: View {
             }.count ?? 0
         case .artist(let key):
             return libraryVM.allTracks.filter {
-                LibraryNormalization.containsArtist(key, in: $0.artist)
+                LibraryNormalization.containsArtist(key, in: $0)
                     && $0.availability != .missing
             }.count
         case .album(let key):
@@ -619,7 +625,7 @@ struct PlaylistDetailView: View {
 
                     Button {
                         processBatchAction(actionName: "batchCreatePlaylistAndAdd") { tracks in
-                            let playlist = await libraryVM.createNewPlaylist()
+                            guard let playlist = await libraryVM.createNewPlaylist() else { return }
                             await libraryVM.addTracksToPlaylist(tracks, playlist: playlist)
                         }
                     } label: {
@@ -686,11 +692,33 @@ struct PlaylistDetailView: View {
                                 await libraryVM.removeTracksFromPlaylist([track], playlist: currentPlaylist)
                             }
                         }
+                    },
+                    onRelinkLocation: { track in
+                        relinkTrackLocation(track)
                     }
                 ))
             }
         } else {
             return AnyView(Text("library.track_unavailable"))
+        }
+    }
+
+    @MainActor
+    private func relinkTrackLocation(_ track: Track) {
+        let panel = NSOpenPanel()
+        panel.title = "选择新的歌曲文件"
+        panel.message = "只替换音频文件，歌曲信息与资料库内容保持不变"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = FileImportService.supportedUTTypes
+        panel.prompt = "连接"
+        panel.begin { result in
+            guard result == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                await libraryVM.relinkTrack(track, to: url)
+                uiState.showSidebarNotice("已重新连接歌曲文件")
+            }
         }
     }
 
@@ -890,19 +918,24 @@ private struct ScrollOffsetSensor: View {
 
 #Preview("Playlist Detail") { @MainActor in
     let repository = StubLibraryRepository()
-    let libraryVM = LibraryViewModel(repository: repository)
+    let libraryVM = LibraryViewModel.preview(repository: repository)
     let playbackService = StubAudioPlaybackService()
     let levelMeter = StubAudioLevelMeter()
     let playerVM = PlayerViewModel(playbackService: playbackService, levelMeter: levelMeter)
+    let cacheServices = LibraryCacheServices.preview
 
     PlaylistDetailView(pageController: PlaylistPageController())
         .environment(libraryVM)
         .environment(playerVM)
         .environment(PlaybackCoordinator(
-            playerVM: playerVM,
-            appleMusicAdapter: AppleMusicPlaybackAdapter(libraryVM: libraryVM),
-            systemNowPlayingProvider: SystemNowPlayingProvider(libraryVM: libraryVM)
+            localPlayback: playerVM,
+            appleMusicAdapter: AppleMusicPlaybackAdapter(previewLibraryTracksProvider: { [weak libraryVM] in libraryVM?.allTracks ?? [] }),
+            systemNowPlayingProvider: SystemNowPlayingProvider(previewLibraryTracksProvider: { [weak libraryVM] in libraryVM?.allTracks ?? [] }),
+            artworkCache: cacheServices.trackArtworkCache,
+            lyricsSearchCoordinator: cacheServices.lyricsSearchCoordinator,
+            amllDBService: cacheServices.amllDBService
         ))
+        .environment(cacheServices)
         .environment(UIStateViewModel())
         .environmentObject(ThemeStore.shared)
         .frame(width: 500, height: 400)

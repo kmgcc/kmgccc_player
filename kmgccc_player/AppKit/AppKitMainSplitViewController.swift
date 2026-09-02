@@ -794,6 +794,7 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
             let lyricsVM = appSession.lyricsVM,
             let ledMeterProvider = appSession.ledMeterProvider,
             let importEnrichmentService = appSession.importEnrichmentService,
+            let cacheServices = appSession.cacheServices,
             let skinManager = appSession.skinManager
         else { return }
 
@@ -806,6 +807,7 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
             .environment(lyricsVM)
             .environment(ledMeterProvider)
             .environment(importEnrichmentService)
+            .environment(cacheServices)
             .environment(skinManager)
             .environmentObject(ThemeStore.shared)
             .environment(\.libraryPresentedAccentColor, ThemeStore.shared.accentColor)

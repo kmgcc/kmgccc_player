@@ -223,7 +223,9 @@ struct FullscreenPlayerView: View {
     }
 
     @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(LibraryViewModel.self) private var libraryVM: LibraryViewModel?
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
@@ -233,6 +235,7 @@ struct FullscreenPlayerView: View {
     @StateObject private var bkController = BKArtBackgroundController()
     @State private var skinRevision = 0
     @State private var rightPanelDisplayState: RightPanelDisplayState = .lyrics
+    @State private var lastRightPanelDisplayStateBeforeQueue: RightPanelDisplayState = .lyrics
     @State private var lockedFullscreenLyricsBackgroundColor: NSColor?
     @State private var lockedFullscreenLyricsUltraDark: Bool = false
     @State private var pendingFullscreenLyricsBackgroundCapture: Bool = false
@@ -266,6 +269,7 @@ struct FullscreenPlayerView: View {
     @State private var fullscreenLyricsHostMounted = false
     @State private var isLeftActionsExpanded = false
     @State private var isQuickAppearancePanelPresented = false
+    @State private var isDetailReaderPanelPresented = false
     /// Cover Blur fullscreen background readability maps, written by the skin
     /// background bridge and read here to resolve the local control polarity.
     @State private var backdropReadabilityState = FullscreenBackdropReadabilityState()
@@ -302,6 +306,9 @@ struct FullscreenPlayerView: View {
     @State private var pendingFullscreenBottomControlsHideTask: Task<Void, Never>?
     @State private var pendingLeftActionsCollapseTask: Task<Void, Never>?
     @State private var pendingVolumeCollapseTask: Task<Void, Never>?
+    @State private var pendingPanoramicVolumeHUDHideTask: Task<Void, Never>?
+    @State private var isPanoramicVolumeHUDVisible = false
+    @State private var panoramicVolumeHUDValue = AppSettings.defaultVolume
     @State private var fullscreenPointerOcclusionMonitor = FullscreenPointerOcclusionMonitor()
     @Namespace private var fullscreenLayoutNamespace
 
@@ -438,6 +445,7 @@ struct FullscreenPlayerView: View {
         GeometryReader { proxy in
             fullscreenContent(for: proxy)
         }
+        .ignoresSafeArea()
         .background(
             WindowToolbarAccessor(
                 configure: { window in
@@ -687,6 +695,9 @@ struct FullscreenPlayerView: View {
         pendingEmbeddedStartupRetry = nil
         localPolarityRecomputeTask?.cancel()
         localPolarityRecomputeTask = nil
+        pendingPanoramicVolumeHUDHideTask?.cancel()
+        pendingPanoramicVolumeHUDHideTask = nil
+        isPanoramicVolumeHUDVisible = false
         embeddedStartupRetryCount = 0
         deferredTrackUpdateDeadline = nil
         suppressFullscreenLyricsViewport = false
@@ -701,6 +712,7 @@ struct FullscreenPlayerView: View {
         pendingFullscreenLyricsAutoRestoreTrackID = nil
         embeddedInitialThemeUnlocked = false
         isQuickAppearancePanelPresented = false
+        isDetailReaderPanelPresented = false
         isFullscreenBottomControlsAppearancePanelHovered = false
         cancelFullscreenBottomControlsAutoHide()
         cancelFullscreenSideControlCollapses()
@@ -722,6 +734,12 @@ struct FullscreenPlayerView: View {
     @ViewBuilder
     private func fullscreenContextMenu() -> some View {
         Button {
+            setDetailReaderPanelPresented(true)
+        } label: {
+            Label("查看详情", systemImage: "doc.text")
+        }
+
+        Button {
             forceRefreshFullscreenLyricsColors(reason: "context-menu-refresh")
         } label: {
             Label(
@@ -734,6 +752,75 @@ struct FullscreenPlayerView: View {
         }
     }
 
+    private var fullscreenDetailReaderTitle: String {
+        let title = playbackCoordinator.presentation.title
+        let artist = playbackCoordinator.presentation.artist
+        if !title.isEmpty, !artist.isEmpty {
+            return "\(title) - \(artist)"
+        }
+        return title.isEmpty ? (artist.isEmpty ? "歌曲详情" : artist) : title
+    }
+
+    private var fullscreenDetailReaderAttributionNote: String? {
+        if let track = playbackCoordinator.presentation.localTrack {
+            let desc = track.userDescription.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            if !desc.isEmpty {
+                return nil
+            }
+            if let album = libraryVM?.albumEntries.first(where: { $0.canonicalKey == track.albumGroupKey }) {
+                let albumDesc = album.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                if !albumDesc.isEmpty {
+                    return "来自 \(album.displayTitle)"
+                }
+            }
+            let artistKey = LibraryNormalization.artistComponents(for: track).first?.canonicalName
+                ?? LibraryNormalization.artistComponents(track.artist).first?.canonicalName
+                ?? ""
+            if let artistEntry = libraryVM?.artistEntries.first(where: { $0.canonicalName == artistKey }) {
+                let artistDesc = artistEntry.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                if !artistDesc.isEmpty {
+                    return "来自 \(artistEntry.displayName)"
+                }
+            }
+        }
+        return nil
+    }
+
+    private var fullscreenDetailReaderText: String {
+        if let track = playbackCoordinator.presentation.localTrack {
+            let desc = track.userDescription.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            if !desc.isEmpty { return desc }
+            if let album = libraryVM?.albumEntries.first(where: { $0.canonicalKey == track.albumGroupKey }) {
+                let albumDesc = album.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                if !albumDesc.isEmpty { return albumDesc }
+            }
+            let artistKey = LibraryNormalization.artistComponents(for: track).first?.canonicalName
+                ?? LibraryNormalization.artistComponents(track.artist).first?.canonicalName
+                ?? ""
+            if let artistEntry = libraryVM?.artistEntries.first(where: { $0.canonicalName == artistKey }) {
+                let artistDesc = artistEntry.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+                if !artistDesc.isEmpty { return artistDesc }
+            }
+        }
+        return ""
+    }
+
+    private func setDetailReaderPanelPresented(_ presented: Bool) {
+        guard isDetailReaderPanelPresented != presented else { return }
+        if presented {
+            if isQuickAppearancePanelPresented {
+                setQuickAppearancePanelPresented(false)
+            }
+            if rightPanelDisplayState == .queue {
+                setRightPanelDisplayState(lastRightPanelDisplayStateBeforeQueue == .hidden ? .hidden : .lyrics)
+            }
+            setFullscreenBottomControlsVisible(true)
+        }
+        withAnimation(.easeOut(duration: 0.22)) {
+            isDetailReaderPanelPresented = presented
+        }
+    }
+
     private func trackEditSheet(for track: Track) -> some View {
         TrackEditSheet(track: track)
             .environmentObject(themeStore)
@@ -742,6 +829,7 @@ struct FullscreenPlayerView: View {
     private func externalMatchEditorSheet() -> some View {
         ExternalPlaybackInfoEditorView(
             presentation: playbackCoordinator.presentation,
+            metadataStore: cacheServices.externalPlaybackMetadataStore,
             onSaved: { onlyOffsetChanged in
                 playbackCoordinator.invalidateExternalPlaybackResolution(onlyOffsetChanged: onlyOffsetChanged)
             }
@@ -828,7 +916,11 @@ struct FullscreenPlayerView: View {
             fullscreenEmbeddedOpaqueBase
 
             if hasRenderableGeometry {
-                fullscreenBackgroundLayer(selectedSkin: selectedSkin, scale: scale)
+                fullscreenBackgroundLayer(
+                    selectedSkin: selectedSkin,
+                    scale: scale,
+                    viewportSize: proxy.size
+                )
                     .id("\(skinIdentity)_bg")
                     .environment(\.fullscreenBackdropReadabilityState, backdropReadabilityState)
                     .onAppear { FSDiagnostics.emit("skinBg onAppear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
@@ -840,13 +932,20 @@ struct FullscreenPlayerView: View {
                 fullscreenLyricsLayer(scale: scale, screenWidth: proxy.size.width)
                     .frame(width: proxy.size.width, height: proxy.size.height)
 
-                // Layer 2: Scaled container for artwork only
-                fullscreenScaledContainer(selectedSkin: selectedSkin, scale: scale)
-                    .frame(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight)
-                    .scaleEffect(scale, anchor: .center)
-                    .id("\(skinIdentity)_scaled")
-                    .onAppear { FSDiagnostics.emit("skinScaled onAppear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
-                    .onDisappear { FSDiagnostics.emit("skinScaled onDisappear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
+                // Layer 2: Scaled container for artwork only. Cover Blur uses
+                // its background as the artwork and returns EmptyView here, so
+                // do not keep a redundant 1470×923 layout surface in embedded
+                // fullscreen. Its unscaled layout footprint can otherwise
+                // resist compression even though scaleEffect looks smaller.
+                if !isCoverBlurFullscreenSkin {
+                    fullscreenScaledContainer(selectedSkin: selectedSkin, scale: scale)
+                        .frame(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight)
+                        .scaleEffect(scale, anchor: .center)
+                        .frame(width: Self.baseCanvasWidth * scale, height: Self.baseCanvasHeight * scale)
+                        .id("\(skinIdentity)_scaled")
+                        .onAppear { FSDiagnostics.emit("skinScaled onAppear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
+                        .onDisappear { FSDiagnostics.emit("skinScaled onDisappear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
+                }
 
                 // Layer 3: Bottom bar at actual resolution - on top
                 fullscreenBottomBarLayer(
@@ -855,16 +954,42 @@ struct FullscreenPlayerView: View {
                     screenHeight: proxy.size.height
                 )
                     .frame(width: proxy.size.width, height: proxy.size.height)
-                    .id("\(skinIdentity)_bottom")
                     .onAppear { FSDiagnostics.emit("skinBottom onAppear skin=\(settings.fullscreen.skinID) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))", category: .fullscreen) }
                     .task(id: playbackModeRetapTipTaskID) {
                         await schedulePlaybackModeRetapTipIfNeeded()
                     }
+
+                panoramicArtworkVolumeLayer(viewportSize: proxy.size, scale: scale)
+
+                if isDetailReaderPanelPresented {
+                    Color.black.opacity(0.001)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            setDetailReaderPanelPresented(false)
+                        }
+                        .transition(.opacity)
+                        .zIndex(10)
+
+                    FullscreenDetailReaderPanel(
+                        title: fullscreenDetailReaderTitle,
+                        attributionNote: fullscreenDetailReaderAttributionNote,
+                        text: fullscreenDetailReaderText,
+                        scale: scale,
+                        foregroundProfile: fullscreenQuickPanelForegroundProfile,
+                        onDismiss: { setDetailReaderPanelPresented(false) }
+                    )
+                    .position(x: proxy.size.width * 0.5, y: proxy.size.height * 0.5)
+                    .transition(
+                        .opacity.combined(with: .offset(x: 0, y: 8))
+                    )
+                    .zIndex(11)
+                }
             } else {
                 Color.clear
             }
         }
         .frame(width: proxy.size.width, height: proxy.size.height)
+        .animation(.easeOut(duration: 0.22), value: isDetailReaderPanelPresented)
         .onAppear {
             currentFullscreenScale = scale
             fullscreenViewportSize = proxy.size
@@ -920,7 +1045,11 @@ struct FullscreenPlayerView: View {
     }
 
     @ViewBuilder
-    private func fullscreenBackgroundLayer(selectedSkin: any NowPlayingSkin, scale: CGFloat) -> some View {
+    private func fullscreenBackgroundLayer(
+        selectedSkin: any NowPlayingSkin,
+        scale: CGFloat,
+        viewportSize: CGSize
+    ) -> some View {
         let context = makeContext(
             windowSize: CGSize(width: Self.baseCanvasWidth, height: Self.baseCanvasHeight),
             artworkColumnWidth: layoutMetrics.artworkWidth,
@@ -928,9 +1057,16 @@ struct FullscreenPlayerView: View {
         )
 
         if fullscreenSkinUsesCustomBackground {
-            selectedSkin.makeBackground(context: context)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
+            if isCoverBlurFullscreenSkin {
+                selectedSkin.makeBackground(context: context)
+                    .frame(width: viewportSize.width, height: viewportSize.height)
+                    .clipped()
+                    .allowsHitTesting(false)
+            } else {
+                selectedSkin.makeBackground(context: context)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
 
             if !isAppleStyleFullscreenSkin {
                 Color.black.opacity(effectiveDimmingIntensity * 0.7)
@@ -1385,6 +1521,164 @@ struct FullscreenPlayerView: View {
         )
     }
 
+    private var isArtworkVolumeControlEnabled: Bool {
+        playbackCoordinator.presentation.isVolumeControlEnabled
+            && !isQuickAppearancePanelPresented
+            && !isShowingExternalMatchEditor
+            && trackToEdit == nil
+            && !isDetailReaderPanelPresented
+    }
+
+    @ViewBuilder
+    private func panoramicArtworkVolumeLayer(
+        viewportSize: CGSize,
+        scale: CGFloat
+    ) -> some View {
+        let artworkBounds: (size: CGSize, center: CGPoint, scale: CGFloat) = {
+            if isCoverBlurFullscreenSkin {
+                let artworkSide = min(viewportSize.width, viewportSize.height)
+                let artworkCenterX = isShowingRightPanel
+                    ? artworkSide * 0.5
+                    : viewportSize.width * 0.5
+                let artworkScale = artworkSide / Self.baseCanvasHeight
+                return (
+                    size: CGSize(width: artworkSide, height: artworkSide),
+                    center: CGPoint(x: artworkCenterX, y: viewportSize.height * 0.5),
+                    scale: artworkScale
+                )
+            } else {
+                let splitLayout = layoutMetrics
+                let artworkOffsetX =
+                    splitLayout.artworkLeadingX
+                    + splitLayout.artworkWidth * 0.5
+                    - Self.baseCanvasWidth * 0.5
+                let groupLeftShift: CGFloat =
+                    isShowingRightPanel
+                        ? FullscreenCoverHorizontalOffset.groupLeftBias
+                        : 0
+                let coverDropY: CGFloat =
+                    isCoverSkinWithMiniplayerMotion && !isFullscreenBottomControlsVisible
+                        ? 20
+                        : 0
+                let artworkCenterX = viewportSize.width * 0.5 + (artworkOffsetX - groupLeftShift) * scale
+                let artworkCenterY = viewportSize.height * 0.5 + coverDropY * scale
+                let artworkWidth = splitLayout.artworkWidth * scale
+                let artworkHeight = min(viewportSize.height, Self.baseCanvasHeight * scale)
+                return (
+                    size: CGSize(width: artworkWidth, height: artworkHeight),
+                    center: CGPoint(x: artworkCenterX, y: artworkCenterY),
+                    scale: scale
+                )
+            }
+        }()
+
+        ZStack {
+            ZStack {
+                PanoramicArtworkVolumeScrollArea(
+                    volume: volumeBinding,
+                    isEnabled: isArtworkVolumeControlEnabled,
+                    onAdjustment: handlePanoramicArtworkVolumeAdjustment
+                )
+
+                if isPanoramicVolumeHUDVisible {
+                    panoramicVolumeHUD(scale: artworkBounds.scale)
+                        .transition(
+                            reduceMotion
+                                ? .opacity
+                                : .opacity.combined(with: .scale(scale: 0.92))
+                        )
+                }
+            }
+            .frame(width: artworkBounds.size.width, height: artworkBounds.size.height)
+            .position(x: artworkBounds.center.x, y: artworkBounds.center.y)
+        }
+        .frame(width: viewportSize.width, height: viewportSize.height)
+        .animation(
+            .easeOut(duration: reduceMotion ? 0.12 : 0.18),
+            value: isPanoramicVolumeHUDVisible
+        )
+    }
+
+    private func panoramicVolumeHUD(scale: CGFloat) -> some View {
+        let percentage = Int((panoramicVolumeHUDValue * 100).rounded())
+
+        return HStack(spacing: 12 * scale) {
+            Image(systemName: panoramicVolumeIcon)
+                .font(.system(size: 22 * scale, weight: .semibold))
+                .frame(width: 32 * scale)
+
+            Text("\(percentage)%")
+                .font(.system(size: 24 * scale, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .contentTransition(.numericText())
+                .animation(
+                    reduceMotion ? nil : .smooth(duration: 0.24),
+                    value: percentage
+                )
+                .frame(width: 86 * scale)
+        }
+        .foregroundStyle(fullscreenMiniPlayerPrimaryColor)
+        .compositingGroup()
+        .blendMode(fullscreenMiniPlayerIconBlendMode)
+        .frame(width: 184 * scale, height: 58 * scale)
+        .contentShape(Capsule())
+        .liquidGlassPill(
+            colorScheme: fullscreenControlsGlassStyle.colorScheme,
+            accentColor: nil as Color?,
+            prominence: .standard,
+            materialStyle: fullscreenControlsGlassStyle.materialStyle,
+            isFloating: true
+        )
+        .environment(\.colorScheme, fullscreenControlsGlassStyle.colorScheme)
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Volume")
+        .accessibilityValue(Text("\(percentage)%"))
+    }
+
+    private var panoramicVolumeIcon: String {
+        switch panoramicVolumeHUDValue {
+        case ...0:
+            return "speaker.slash.fill"
+        case ..<0.34:
+            return "speaker.wave.1.fill"
+        case ..<0.67:
+            return "speaker.wave.2.fill"
+        default:
+            return "speaker.wave.3.fill"
+        }
+    }
+
+    private func handlePanoramicArtworkVolumeAdjustment(_ adjustment: Double) {
+        guard playbackCoordinator.presentation.isVolumeControlEnabled else { return }
+
+        let currentVolume = playbackCoordinator.presentation.volume
+        let newVolume = VolumeControlBehavior.clamped(currentVolume + adjustment)
+        guard abs(newVolume - currentVolume) > 0.0001 else { return }
+
+        panoramicVolumeHUDValue = newVolume
+        playbackCoordinator.setVolume(newVolume)
+
+        pendingPanoramicVolumeHUDHideTask?.cancel()
+        withAnimation(.easeOut(duration: reduceMotion ? 0.12 : 0.18)) {
+            isPanoramicVolumeHUDVisible = true
+        }
+
+        pendingPanoramicVolumeHUDHideTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .milliseconds(900))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeIn(duration: reduceMotion ? 0.12 : 0.20)) {
+                isPanoramicVolumeHUDVisible = false
+            }
+            pendingPanoramicVolumeHUDHideTask = nil
+        }
+    }
+
     private var bottomControlsAnimation: Animation {
         if reduceMotion {
             return .easeInOut(duration: 0.18)
@@ -1436,10 +1730,11 @@ struct FullscreenPlayerView: View {
             || isVolumeExpanded
             || isFullscreenBottomControlsProgressDragging
             || isFullscreenBottomControlsVolumeAdjusting
+            || isDetailReaderPanelPresented
     }
 
     private var shouldKeepFullscreenBottomControlsVisible: Bool {
-        isShowingQueuePanel || isQuickAppearancePanelPresented
+        isShowingQueuePanel || isQuickAppearancePanelPresented || isDetailReaderPanelPresented
     }
 
     private func updateFullscreenMiniPlayerOcclusionRegion(_ region: FullscreenMiniPlayerOcclusionRegion) {
@@ -2049,6 +2344,10 @@ struct FullscreenPlayerView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .offset(x: -groupLeftShift)
+        .contentShape(Rectangle())
+        .contextMenu {
+            fullscreenContextMenu()
+        }
     }
 
     // MARK: - Lyrics Area (No Material Background)
@@ -3145,6 +3444,10 @@ struct FullscreenPlayerView: View {
     }
 
     private func setRightPanelDisplayState(_ newState: RightPanelDisplayState) {
+        if newState == .queue && rightPanelDisplayState != .queue {
+            lastRightPanelDisplayStateBeforeQueue = rightPanelDisplayState
+        }
+
         let needsSystemFullscreenBlendPreflight = newState == .lyrics
             && playbackCoordinator.presentation.hasTrack
             && hostContext == .systemFullscreenSpace
@@ -4859,7 +5162,7 @@ struct FullscreenPlayerView: View {
         let snapshot: ArtworkAssetSnapshot?
         if display.source == .local,
            let source = playbackCoordinator.presentation.localTrack?.trackArtworkSource(fallbackData: display.artworkData) {
-            snapshot = await TrackArtworkCache.shared.snapshot(
+            snapshot = await cacheServices.trackArtworkCache.snapshot(
                 for: source,
                 fullImageMaxPixelSize: preferredArtworkFullImageMaxPixel
             )
@@ -5113,6 +5416,264 @@ private final class FullscreenTTMLTimingParser: NSObject, XMLParserDelegate {
         }
 
         return Double(value)
+    }
+}
+
+// MARK: - Panoramic artwork volume input
+
+/// AppKit bridge for scroll-wheel input that does not become the hit-test target
+/// for clicks. SwiftUI continues to own and render the volume state and HUD.
+private struct PanoramicArtworkVolumeScrollArea: NSViewRepresentable {
+    @Binding var volume: Double
+    let isEnabled: Bool
+    let onAdjustment: (Double) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            volume: $volume,
+            isEnabled: isEnabled,
+            onAdjustment: onAdjustment
+        )
+    }
+
+    func makeNSView(context: Context) -> PassthroughView {
+        let view = PassthroughView()
+        context.coordinator.installMonitor(for: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: PassthroughView, context: Context) {
+        context.coordinator.update(
+            volume: $volume,
+            isEnabled: isEnabled,
+            onAdjustment: onAdjustment
+        )
+    }
+
+    static func dismantleNSView(_ nsView: PassthroughView, coordinator: Coordinator) {
+        coordinator.removeMonitor()
+    }
+
+    final class PassthroughView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
+        }
+    }
+
+    final class Coordinator {
+        private static let preciseDetentDistance: CGFloat = 24
+        private static let preciseVolumeStep = 0.005
+        private static let wheelVolumeStep = 0.005
+        private static let maximumVolumeAdjustmentPerEvent = 0.02
+        private static let maximumAccelerationMultiplier = 2.0
+        private static let preciseAccelerationStartVelocity: CGFloat = 500
+        private static let preciseAccelerationFullVelocity: CGFloat = 2_200
+        private static let wheelAccelerationStartRate = 14.0
+        private static let wheelAccelerationFullRate = 36.0
+
+        private var volume: Binding<Double>
+        private var isEnabled: Bool
+        private var onAdjustment: (Double) -> Void
+        private weak var monitoredView: PassthroughView?
+        private var eventMonitor: Any?
+        private var preciseAccumulator: CGFloat = 0
+        private var smoothedPreciseVelocity: CGFloat = 0
+        private var lastPreciseEventTimestamp: TimeInterval?
+        private var lastWheelEventTimestamp: TimeInterval?
+
+        init(
+            volume: Binding<Double>,
+            isEnabled: Bool,
+            onAdjustment: @escaping (Double) -> Void
+        ) {
+            self.volume = volume
+            self.isEnabled = isEnabled
+            self.onAdjustment = onAdjustment
+        }
+
+        func update(
+            volume: Binding<Double>,
+            isEnabled: Bool,
+            onAdjustment: @escaping (Double) -> Void
+        ) {
+            self.volume = volume
+            self.isEnabled = isEnabled
+            self.onAdjustment = onAdjustment
+        }
+
+        func installMonitor(for view: PassthroughView) {
+            monitoredView = view
+            eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) {
+                [weak self, weak view] event in
+                guard let self, let view else { return event }
+                self.handle(event, in: view)
+                return event
+            }
+        }
+
+        func removeMonitor() {
+            if let eventMonitor {
+                NSEvent.removeMonitor(eventMonitor)
+                self.eventMonitor = nil
+            }
+            resetScrollMotion()
+        }
+
+        private func handle(_ event: NSEvent, in view: PassthroughView) {
+            guard isEnabled,
+                  event.window === view.window,
+                  view.bounds.contains(view.convert(event.locationInWindow, from: nil))
+            else {
+                return
+            }
+
+            let delta = event.scrollingDeltaY
+            guard delta.isFinite, abs(delta) > 0.001 else { return }
+
+            if event.hasPreciseScrollingDeltas {
+                if event.phase == .began {
+                    resetPreciseMotion()
+                }
+                if !event.momentumPhase.isEmpty {
+                    return
+                }
+
+                if preciseAccumulator != 0,
+                   preciseAccumulator.sign != delta.sign
+                {
+                    resetPreciseMotion()
+                }
+
+                let accelerationMultiplier = preciseAccelerationMultiplier(
+                    delta: delta,
+                    timestamp: event.timestamp
+                )
+                preciseAccumulator += delta
+                let detentCount = Int(abs(preciseAccumulator) / Self.preciseDetentDistance)
+                guard detentCount > 0 else { return }
+
+                let inputDirection = preciseAccumulator.sign == .minus ? -1.0 : 1.0
+                let volumeDirection = -inputDirection
+                preciseAccumulator -= CGFloat(detentCount) * Self.preciseDetentDistance
+                    * CGFloat(inputDirection)
+                apply(
+                    adjustment: acceleratedAdjustment(
+                        direction: volumeDirection,
+                        detentCount: min(detentCount, 6),
+                        baseStep: Self.preciseVolumeStep,
+                        multiplier: accelerationMultiplier
+                    ),
+                    performsHapticFeedback: true
+                )
+
+                if event.phase == .ended || event.phase == .cancelled {
+                    resetPreciseMotion()
+                }
+            } else {
+                let volumeDirection = delta.sign == .minus ? 1.0 : -1.0
+                let detentCount = min(3, max(1, Int(abs(delta).rounded(.up))))
+                apply(
+                    adjustment: acceleratedAdjustment(
+                        direction: volumeDirection,
+                        detentCount: detentCount,
+                        baseStep: Self.wheelVolumeStep,
+                        multiplier: wheelAccelerationMultiplier(timestamp: event.timestamp)
+                    ),
+                    performsHapticFeedback: false
+                )
+            }
+        }
+
+        private func preciseAccelerationMultiplier(
+            delta: CGFloat,
+            timestamp: TimeInterval
+        ) -> Double {
+            let elapsed: TimeInterval
+            if let lastPreciseEventTimestamp {
+                elapsed = timestamp - lastPreciseEventTimestamp
+            } else {
+                elapsed = 1.0 / 60.0
+            }
+            lastPreciseEventTimestamp = timestamp
+
+            let clampedElapsed = max(1.0 / 240.0, min(elapsed, 0.12))
+            let instantaneousVelocity = abs(delta) / CGFloat(clampedElapsed)
+            if elapsed <= 0 || elapsed > 0.12 || smoothedPreciseVelocity == 0 {
+                smoothedPreciseVelocity = instantaneousVelocity
+            } else {
+                smoothedPreciseVelocity =
+                    smoothedPreciseVelocity * 0.65
+                    + instantaneousVelocity * 0.35
+            }
+
+            return Self.accelerationMultiplier(
+                value: Double(smoothedPreciseVelocity),
+                start: Double(Self.preciseAccelerationStartVelocity),
+                full: Double(Self.preciseAccelerationFullVelocity)
+            )
+        }
+
+        private func wheelAccelerationMultiplier(timestamp: TimeInterval) -> Double {
+            defer { lastWheelEventTimestamp = timestamp }
+            guard let lastWheelEventTimestamp else { return 1 }
+
+            let elapsed = timestamp - lastWheelEventTimestamp
+            guard elapsed > 0, elapsed < 0.24 else { return 1 }
+
+            return Self.accelerationMultiplier(
+                value: 1.0 / elapsed,
+                start: Self.wheelAccelerationStartRate,
+                full: Self.wheelAccelerationFullRate
+            )
+        }
+
+        private static func accelerationMultiplier(
+            value: Double,
+            start: Double,
+            full: Double
+        ) -> Double {
+            let progress = min(1, max(0, (value - start) / (full - start)))
+            let easedProgress = progress * progress * (3 - 2 * progress)
+            return 1 + easedProgress * (maximumAccelerationMultiplier - 1)
+        }
+
+        private func acceleratedAdjustment(
+            direction: Double,
+            detentCount: Int,
+            baseStep: Double,
+            multiplier: Double
+        ) -> Double {
+            let magnitude = min(
+                Self.maximumVolumeAdjustmentPerEvent,
+                Double(detentCount) * baseStep * multiplier
+            )
+            return direction * magnitude
+        }
+
+        private func resetPreciseMotion() {
+            preciseAccumulator = 0
+            smoothedPreciseVelocity = 0
+            lastPreciseEventTimestamp = nil
+        }
+
+        private func resetScrollMotion() {
+            resetPreciseMotion()
+            lastWheelEventTimestamp = nil
+        }
+
+        private func apply(
+            adjustment: Double,
+            performsHapticFeedback: Bool
+        ) {
+            let currentVolume = volume.wrappedValue
+            let proposedVolume = VolumeControlBehavior.clamped(currentVolume + adjustment)
+            guard abs(proposedVolume - currentVolume) > 0.0001 else { return }
+
+            onAdjustment(proposedVolume - currentVolume)
+            if performsHapticFeedback {
+                VolumeControlBehavior.performDefaultSnapFeedback()
+            }
+        }
     }
 }
 

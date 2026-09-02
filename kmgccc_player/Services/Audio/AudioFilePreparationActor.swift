@@ -14,14 +14,15 @@ import Foundation
 /// Sendable value snapshot captured cheaply on MainActor from a `Track`.
 ///
 /// `Track` is a SwiftData `@Model`; its stored properties are context /
-/// MainActor-bound and cannot be read off-main. This snapshot mirrors exactly
-/// the fields `Track.resolveFileURL()` reads, so resolution can move off-main
-/// with no semantic change. Only this value (never the `Track`) crosses into
+/// MainActor-bound and cannot be read off-main. This snapshot carries the
+/// unified locator inputs needed by `LocalAudioResourceResolver`. Only this
+/// value (never the `Track`) crosses into
 /// `AudioFilePreparationActor`.
 struct AudioPrepRequest: Sendable {
     let trackID: UUID
-    let libraryRelativePath: String
-    let fileBookmarkData: Data
+    let locator: TrackMediaLocator
+    let libraryPaths: LibraryPaths
+    let authorizedSourceRoots: [UUID: AuthorizedSourceRoot]
     let titleForLog: String
 }
 
@@ -46,8 +47,8 @@ struct PreparedAudioResource: @unchecked Sendable {
     let trackID: UUID
     let file: AVAudioFile
     let resolvedURL: URL
-    let didStartSecurityScopedAccess: Bool
-    let refreshedBookmarkData: Data?
+    let lease: SecurityScopedResourceLease
+    let refreshedLocator: TrackMediaLocator?
     let newAvailability: TrackAvailability
     let sampleRate: Double
     let frameLength: AVAudioFramePosition
@@ -62,16 +63,49 @@ struct PreparedAudioResource: @unchecked Sendable {
 /// Prepares audio files off the MainActor. Each `prepare(_:)` call is an
 /// independent unit of work; a failure throws and never blocks other prepares.
 actor AudioFilePreparationActor {
+    private let bookmarkResolver: any BookmarkResolving
+    private let requiresSecurityScope: Bool
+
+    init(
+        bookmarkResolver: any BookmarkResolving = SystemBookmarkResolver(),
+        requiresSecurityScope: Bool = false
+    ) {
+        self.bookmarkResolver = bookmarkResolver
+        self.requiresSecurityScope = requiresSecurityScope
+    }
 
     enum PrepError: Error {
         /// File does not exist / bookmark empty / security scope refused.
         case missingFile
         /// Bookmark data could not be resolved to a URL.
         case bookmarkUnresolved
+        case permissionDenied
+        case volumeUnavailable
+        case notDownloaded
         /// The file resolved but AVAudioFile could not open it.
         case openFailed(underlying: Error)
         /// The prepare was cancelled (superseded by a newer play request).
         case cancelled
+    }
+
+    /// Probes a physical file on a background executor before a referenced
+    /// duplicate is promoted to the preferred location. Keep this probe
+    /// separate from `prepare` so the import path never blocks the main actor.
+    /// The synchronous decoder read is deliberately left to the prepare actor:
+    /// malformed containers can block Core Audio while it tries to recover, and
+    /// an import probe must never hold up the rest of a batch.
+    nonisolated static func canOpenForPlayback(_ url: URL) async -> Bool {
+        await Task.detached(priority: .utility) {
+            guard !Task.isCancelled else { return false }
+            guard let file = try? AVAudioFile(forReading: url),
+                  file.length > 0,
+                  file.processingFormat.sampleRate.isFinite,
+                  file.processingFormat.sampleRate > 0,
+                  file.processingFormat.channelCount > 0 else {
+                return false
+            }
+            return true
+        }.value
     }
 
     /// Resolve the file URL off-main, open the audio file, and extract format
@@ -89,34 +123,63 @@ actor AudioFilePreparationActor {
 
         if Task.isCancelled { throw PrepError.cancelled }
 
-        // 1. Resolve to a usable (possibly security-scoped) URL.
-        let resolution = try resolveURL(request)
+        // 1. Resolve every usable (possibly security-scoped) URL. A referenced
+        // duplicate can put a metadata-readable but codec-incompatible copy
+        // first; playback must then fall back to the original location.
+        var resolutions = try resolveURLs(request)
 
         // If cancelled after starting security-scoped access but before opening
-        // the file, release the access so it does not leak.
+        // the file, release every access so it does not leak.
         if Task.isCancelled {
-            if resolution.didStartSecurityScopedAccess {
-                resolution.url.stopAccessingSecurityScopedResource()
-            }
+            resolutions.forEach { $0.lease.release() }
             throw PrepError.cancelled
         }
 
-        // 2. Open the file + extract format/duration.
-        let openToken = FirstUseHitchDiagnostics.begin(
-            "AVAudioFile.open",
-            detail: "track=\(request.trackID.uuidString.prefix(8))"
-        )
-        let file: AVAudioFile
-        do {
-            file = try AVAudioFile(forReading: resolution.url)
-        } catch {
-            FirstUseHitchDiagnostics.end(openToken)
-            if resolution.didStartSecurityScopedAccess {
-                resolution.url.stopAccessingSecurityScopedResource()
+        // 2. Open the first playable file + extract format/duration. Resolver
+        // failures (missing/permission) are handled before this loop; an
+        // AVAudioFile failure is local to one physical location and should not
+        // discard the remaining fallbacks.
+        var file: AVAudioFile?
+        var selectedResolution: Resolution?
+        var lastOpenError: Error?
+        while !resolutions.isEmpty {
+            let resolution = resolutions.removeFirst()
+            if Task.isCancelled {
+                resolution.lease.release()
+                resolutions.forEach { $0.lease.release() }
+                throw PrepError.cancelled
             }
-            throw PrepError.openFailed(underlying: error)
+
+            let openToken = FirstUseHitchDiagnostics.begin(
+                "AVAudioFile.open",
+                detail: "track=\(request.trackID.uuidString.prefix(8))"
+            )
+            do {
+                file = try openPlayableFile(at: resolution.url)
+                FirstUseHitchDiagnostics.end(openToken)
+                selectedResolution = resolution
+                break
+            } catch {
+                FirstUseHitchDiagnostics.end(openToken)
+                lastOpenError = error
+                resolution.lease.release()
+            }
         }
-        FirstUseHitchDiagnostics.end(openToken)
+
+        guard let file, let resolution = selectedResolution else {
+            resolutions.forEach { $0.lease.release() }
+            throw PrepError.openFailed(
+                underlying: lastOpenError ?? NSError(
+                    domain: "AudioFilePreparation",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "No playable audio location"]
+                )
+            )
+        }
+
+        // The selected resource owns the only lease needed by the caller; all
+        // later fallback candidates are released now that opening succeeded.
+        resolutions.forEach { $0.lease.release() }
 
         let sampleRate = file.processingFormat.sampleRate
         let frameLength = file.length
@@ -131,8 +194,8 @@ actor AudioFilePreparationActor {
             trackID: request.trackID,
             file: file,
             resolvedURL: resolution.url,
-            didStartSecurityScopedAccess: resolution.didStartSecurityScopedAccess,
-            refreshedBookmarkData: resolution.refreshedBookmarkData,
+            lease: resolution.lease,
+            refreshedLocator: resolution.refreshedLocator,
             newAvailability: resolution.newAvailability,
             sampleRate: sampleRate,
             frameLength: frameLength,
@@ -141,71 +204,66 @@ actor AudioFilePreparationActor {
         )
     }
 
+    /// Opens a candidate and validates the format before handing it to the
+    /// playback graph. AVAudioFile can construct a zero-frame resource for a
+    /// damaged container; treating that as a failed candidate lets the caller
+    /// try the next physical copy without retaining an unusable file.
+    private func openPlayableFile(at url: URL) throws -> AVAudioFile {
+        let file = try AVAudioFile(forReading: url)
+        guard file.length > 0,
+              file.processingFormat.sampleRate.isFinite,
+              file.processingFormat.sampleRate > 0,
+              file.processingFormat.channelCount > 0 else {
+            throw NSError(
+                domain: "AudioFilePreparation",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Audio file has no decodable frames"]
+            )
+        }
+        return file
+    }
+
     // MARK: - Resolution (mirrors Track.resolveFileURL semantics, off-main)
 
     private struct Resolution {
         let url: URL
-        let didStartSecurityScopedAccess: Bool
-        let refreshedBookmarkData: Data?
+        let lease: SecurityScopedResourceLease
+        let refreshedLocator: TrackMediaLocator?
         let newAvailability: TrackAvailability
     }
 
-    private func resolveURL(_ request: AudioPrepRequest) throws -> Resolution {
+    private func resolveURLs(_ request: AudioPrepRequest) throws -> [Resolution] {
         let resolveToken = FirstUseHitchDiagnostics.begin(
             "bookmark.resolve",
             detail: "track=\(request.trackID.uuidString.prefix(8))"
         )
         defer { FirstUseHitchDiagnostics.end(resolveToken) }
 
-        // Library-relative path takes priority (no security scope needed).
-        if !request.libraryRelativePath.isEmpty {
-            let localURL = LocalLibraryPaths.libraryURL(from: request.libraryRelativePath)
-            if FileManager.default.fileExists(atPath: localURL.path) {
-                return Resolution(
-                    url: localURL,
-                    didStartSecurityScopedAccess: false,
-                    refreshedBookmarkData: nil,
-                    newAvailability: .available
+        let resolver = LocalAudioResourceResolver(
+            paths: request.libraryPaths,
+            authorizedSourceRoots: request.authorizedSourceRoots,
+            bookmarkResolver: bookmarkResolver,
+            requiresSecurityScope: requiresSecurityScope
+        )
+        do {
+            return try resolver.resolveCandidates(request.locator).map { result in
+                Resolution(
+                    url: result.url,
+                    lease: result.lease,
+                    refreshedLocator: result.refreshedLocator,
+                    newAvailability: result.availability
                 )
             }
-            throw PrepError.missingFile
-        }
-
-        guard !request.fileBookmarkData.isEmpty else {
-            throw PrepError.missingFile
-        }
-
-        var isStale = false
-        let url: URL
-        do {
-            url = try URL(
-                resolvingBookmarkData: request.fileBookmarkData,
-                options: .withSecurityScope,
-                relativeTo: nil,
-                bookmarkDataIsStale: &isStale
-            )
-        } catch {
+        } catch LocalAudioResolutionError.bookmarkUnresolved {
             throw PrepError.bookmarkUnresolved
-        }
-
-        guard url.startAccessingSecurityScopedResource() else {
+        } catch LocalAudioResolutionError.permissionDenied {
+            throw PrepError.permissionDenied
+        } catch LocalAudioResolutionError.volumeUnavailable {
+            throw PrepError.volumeUnavailable
+        } catch LocalAudioResolutionError.notDownloaded {
+            throw PrepError.notDownloaded
+        } catch {
             throw PrepError.missingFile
         }
-
-        var refreshedData: Data? = nil
-        if isStale {
-            refreshedData = try? url.bookmarkData(
-                options: .withSecurityScope,
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
-            )
-        }
-
-        return Resolution(
-            url: url,
-            didStartSecurityScopedAccess: true,
-            refreshedBookmarkData: refreshedData,
-            newAvailability: isStale ? .stale : .available
-        )
     }
 }

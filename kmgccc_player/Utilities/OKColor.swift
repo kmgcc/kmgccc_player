@@ -289,7 +289,8 @@ nonisolated enum PerceptualToneLadder {
         isNearMonochrome: Bool,
         isUltraDark: Bool = false,
         isStroke: Bool = false,
-        variant: LEDToneVariant = .retuned
+        variant: LEDToneVariant = .retuned,
+        isHDR: Bool = false
     ) -> LEDLevelStylePolicy {
         let T = ColorSystemTokens.ToneLadder.self
         let safeMax = max(1, maxLevel)
@@ -335,39 +336,46 @@ nonisolated enum PerceptualToneLadder {
 
         let lowL: CGFloat
         var peakL: CGFloat
-        switch variant {
-        case .appleStyleBright:
-            lowL = T.ledAppleStyleMinL
-            peakL = T.ledAppleStylePeakL
-        case .miniPlayer:
-            // Keep the compact progress visualizer independent from skin-only
-            // dark-foreground tuning. Its light-foreground path deliberately
-            // shares the unchanged night ladder.
-            lowL = isDark ? T.ledDarkMinL : T.ledMiniPlayerLightMinL
+        if isHDR {
+            lowL = isDark ? T.ledHDRDarkMinL : T.ledHDRLightMinL
             peakL = isDark
-                ? (isUltraDark ? T.ledUltraDarkPeakL : T.ledDarkPeakL)
-                : T.ledMiniPlayerLightPeakL
-        case .retuned, .skinLight:
-            lowL = isDark ? T.ledDarkMinL : T.ledLightMinL
-            peakL = isDark
-                ? (isUltraDark ? T.ledUltraDarkPeakL : T.ledDarkPeakL)
-                : T.ledLightPeakL
+                ? (isUltraDark ? T.ledHDRUltraDarkPeakL : T.ledHDRDarkPeakL)
+                : T.ledHDRLightPeakL
+        } else {
+            switch variant {
+            case .appleStyleBright:
+                lowL = T.ledAppleStyleMinL
+                peakL = T.ledAppleStylePeakL
+            case .miniPlayer:
+                // Keep the compact progress visualizer independent from skin-only
+                // dark-foreground tuning. Its light-foreground path deliberately
+                // shares the unchanged night ladder.
+                lowL = isDark ? T.ledDarkMinL : T.ledMiniPlayerLightMinL
+                peakL = isDark
+                    ? (isUltraDark ? T.ledUltraDarkPeakL : T.ledDarkPeakL)
+                    : T.ledMiniPlayerLightPeakL
+            case .retuned, .skinLight:
+                lowL = isDark ? T.ledDarkMinL : T.ledLightMinL
+                peakL = isDark
+                    ? (isUltraDark ? T.ledUltraDarkPeakL : T.ledDarkPeakL)
+                    : T.ledLightPeakL
 #if DEBUG
-        case .migrationReference:
-            // The debug migration branch returns above; keep the switch
-            // exhaustive for DEBUG builds without changing that reference.
-            lowL = isDark ? T.ledDarkMinL : T.ledLightMinL
-            peakL = isDark
-                ? (isUltraDark ? T.ledUltraDarkPeakL : T.ledDarkPeakL)
-                : T.ledLightPeakL
+            case .migrationReference:
+                // The debug migration branch returns above; keep the switch
+                // exhaustive for DEBUG builds without changing that reference.
+                lowL = isDark ? T.ledDarkMinL : T.ledLightMinL
+                peakL = isDark
+                    ? (isUltraDark ? T.ledUltraDarkPeakL : T.ledDarkPeakL)
+                    : T.ledLightPeakL
 #endif
+            }
         }
         if !isNearMonochrome {
             peakL -= ledLevelPeakLightnessTrim(base.h, scheme: scheme)
         }
         let lCurve = pow(t, isDark ? 0.92 : 1.04)
         var lightness = lowL + (peakL - lowL) * lCurve
-        if !isDark && variant == .skinLight {
+        if !isDark && variant == .skinLight && !isHDR {
             // The three in-skin meters need a little more ink at the very
             // top of the light-mode ladder. Keep the low/mid levels nearly
             // identical so only the blackest peak is lifted; MiniPlayer and
@@ -383,15 +391,20 @@ nonisolated enum PerceptualToneLadder {
         // brighter, slightly overexposed version of the same hue family.
         let shadowT = pow(1 - t, T.ledShadowDriftCurveExponent)
         let schemeScale: CGFloat = isDark ? 1.0 : 0.92
+        let driftScale = isHDR ? T.ledHDRShadowDriftScale : T.ledShadowDriftScale
         let rawDrift = ledLevelFamilyStyleDrift(base.h)
-            * T.ledShadowDriftScale
+            * driftScale
             * shadowT
             * schemeScale
             * hueRiskScale
         var hueDrift = isNearMonochrome ? 0 : rawDrift
 
-        let lowScaleBase = isDark ? T.ledDarkLowChromaScale : T.ledLightLowChromaScale
-        let peakScaleBase = isDark ? T.ledDarkPeakChromaScale : T.ledLightPeakChromaScale
+        let lowScaleBase = isHDR
+            ? (isDark ? T.ledHDRDarkLowChromaScale : T.ledHDRLightLowChromaScale)
+            : (isDark ? T.ledDarkLowChromaScale : T.ledLightLowChromaScale)
+        let peakScaleBase = isHDR
+            ? (isDark ? T.ledHDRDarkPeakChromaScale : T.ledHDRLightPeakChromaScale)
+            : (isDark ? T.ledDarkPeakChromaScale : T.ledLightPeakChromaScale)
         let riskLowLift = (1 - hueRiskScale) * 0.12
         // Do not clamp the low-drive scale to the peak scale. That old guard
         // erased the very contrast this ladder is meant to create.
@@ -405,12 +418,15 @@ nonisolated enum PerceptualToneLadder {
             hueDrift *= 0.55
         }
 
+        let baseCap = hueChromaCap(base.h, role: .led, scheme: scheme)
+        let finalCap = isHDR ? baseCap * (T.ledHDRDarkChromaCapScale / T.ledDarkChromaCapScale) : baseCap
+
         return LEDLevelStylePolicy(
             levelProgress: t,
             hueDrift: hueDrift,
             chromaScale: chromaScale,
             lightness: lightness,
-            chromaCap: hueChromaCap(base.h, role: .led, scheme: scheme),
+            chromaCap: finalCap,
             hueRiskAdjustment: hueRiskScale,
             variant: variant
         )
@@ -424,7 +440,8 @@ nonisolated enum PerceptualToneLadder {
         isNearMonochrome: Bool,
         isUltraDark: Bool = false,
         isStroke: Bool = false,
-        variant: LEDToneVariant = .retuned
+        variant: LEDToneVariant = .retuned,
+        isHDR: Bool = false
     ) -> OKColor.OKLCH {
         let T = ColorSystemTokens.ToneLadder.self
         let style = ledLevelStylePolicy(
@@ -435,7 +452,8 @@ nonisolated enum PerceptualToneLadder {
             isNearMonochrome: isNearMonochrome,
             isUltraDark: isUltraDark,
             isStroke: isStroke,
-            variant: variant
+            variant: variant,
+            isHDR: isHDR
         )
         var c: CGFloat = base.c * style.chromaScale
 
@@ -454,7 +472,8 @@ nonisolated enum PerceptualToneLadder {
             let floorProgress = pow(style.levelProgress, T.ledColorfulLevelFloorCurveExponent)
             let floorScale = T.ledColorfulLevelFloorScale
                 + (1 - T.ledColorfulLevelFloorScale) * floorProgress
-            let floor = min(T.ledColorfulMinimumChroma * floorScale, cap)
+            let colorfulFloor = isHDR ? T.ledHDRColorfulMinimumChroma : T.ledColorfulMinimumChroma
+            let floor = min(colorfulFloor * floorScale, cap)
             c = max(c, floor)
             c = min(c, cap)
         }

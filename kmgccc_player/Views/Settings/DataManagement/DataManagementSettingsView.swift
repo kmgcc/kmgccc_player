@@ -7,12 +7,34 @@
 
 import SwiftUI
 
-/// Data management settings: import behavior and cache management.
+/// Data management settings split between music-library controls and app data.
 struct DataManagementSettingsView: View {
+    @State private var selectedTab = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsHeaderLabel("数据", systemImage: "arrow.counterclockwise.circle")
+            SettingsTabSelector(
+                tabs: ["音乐", "应用数据"],
+                selectedTab: $selectedTab,
+                fillsWidth: true
+            )
+
+            if selectedTab == 0 {
+                MusicSettingsView()
+            } else {
+                ApplicationDataSettingsView()
+            }
+        }
+    }
+}
+
+private struct ApplicationDataSettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @AppStorage("telemetry.anonymousUsageEnabled") private var telemetryEnabled: Bool = true
     @AppStorage(CrashReportPreferences.automaticUploadKey) private var automaticCrashReportUploadEnabled = true
 
@@ -24,14 +46,9 @@ struct DataManagementSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            SettingsHeaderLabel("数据", systemImage: "arrow.counterclockwise.circle")
-
-            // Library location
-            LibraryLocationSettingsSection()
-
-            // Import settings
-            SettingsSection {
-                VStack(alignment: .leading, spacing: 12) {
+            // Import and enrichment settings
+            SettingsSection("歌曲信息与补全") {
+                VStack(alignment: .leading, spacing: 14) {
                     SettingsSwitchRow(
                         title: "导入时延后补全歌曲信息",
                         isOn: Binding(
@@ -40,28 +57,30 @@ struct DataManagementSettingsView: View {
                         ),
                         detail: "导入时先完成文件复制，在后台补全歌词和封面"
                     )
-                }
-            }
 
-            // Manual library completion
-            SettingsSection {
-                VStack(alignment: .leading, spacing: 10) {
-                    Button {
-                        LibraryCompletionDialogPresenter.present(libraryVM: libraryVM)
-                    } label: {
-                        Text("补全所有歌曲信息")
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button {
+                            LibraryCompletionDialogPresenter.present(
+                                libraryVM: libraryVM,
+                                cacheServices: cacheServices
+                            )
+                        } label: {
+                            Text("补全所有歌曲信息")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .clipShape(Capsule())
+
+                        Text("自动联网补全本地曲库中缺失的歌曲信息、封面和歌词")
+                            .settingsDescriptionStyle()
                     }
-                    .buttonStyle(.borderedProminent)
-                    .clipShape(Capsule())
-
-                    Text("自动联网补全本地曲库中缺失的歌曲信息、封面和歌词")
-                        .settingsDescriptionStyle()
                 }
             }
 
             // Reset app settings
-            SettingsSection {
-                VStack(alignment: .leading, spacing: 12) {
+            SettingsSection("重置设置") {
+                VStack(alignment: .leading, spacing: 8) {
                     Button("重置应用设置与状态", role: .destructive) {
                         showResetDataAlert = true
                     }
@@ -74,21 +93,31 @@ struct DataManagementSettingsView: View {
             }
 
             // More settings
-            SettingsSection {
-                VStack(alignment: .leading, spacing: 0) {
-                    CollapsibleSectionHeader(
-                        "更多设置",
-                        systemImage: "list.bullet.rectangle",
-                        isExpanded: $isMoreSettingsExpanded
-                    )
-
-                    if isMoreSettingsExpanded {
-                        VStack(alignment: .leading, spacing: 16) {
-                            cacheManagementControls
-                            musicPreferenceResetControl
-                        }
-                        .padding(.top, 12)
+            SettingsSection("更多设置", headerTrailing: {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        isMoreSettingsExpanded.toggle()
                     }
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isMoreSettingsExpanded ? 90 : 0))
+                        .frame(width: 28, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(isMoreSettingsExpanded ? "收起" : "展开")
+                .accessibilityLabel(isMoreSettingsExpanded ? "收起更多设置" : "展开更多设置")
+            }) {
+                if isMoreSettingsExpanded {
+                    VStack(alignment: .leading, spacing: 16) {
+                        cacheManagementControls
+                        musicPreferenceResetControl
+                    }
+                } else {
+                    Text("包含缓存清理与播放统计数据重置")
+                        .settingsDescriptionStyle()
                 }
             }
 
@@ -97,12 +126,12 @@ struct DataManagementSettingsView: View {
                     SettingsSwitchRow(
                         title: "帮助改进 kmgccc_player",
                         isOn: telemetryEnabledBinding,
-                        detail: "开启后会发送匿名使用统计，帮助了解用户数量、播放来源和皮肤使用情况。不会上传歌曲内容、本地文件路径等敏感数据。关闭后仅保留首次启动匿名安装计数。"
+                        detail: "开启后会发送匿名使用统计，帮助了解用户数量、播放来源、皮肤使用情况、性能指标等信息。不会上传播放记录、本地文件路径等敏感数据。"
                     )
                     SettingsSwitchRow(
                         title: "自动发送崩溃报告",
                         isOn: automaticCrashReportUploadBinding,
-                        detail: "App 意外退出后自动发送经过脱敏的技术报告。再次打开 App 时仍会询问你是否愿意补充当时的操作。"
+                        detail: "App 意外退出后自动发送经过脱敏的技术报告，来帮助我们定位错误。意外退出后再次打开 App 时会询问你是否愿意补充当时的操作。"
                     )
                 }
             }
@@ -113,7 +142,7 @@ struct DataManagementSettingsView: View {
                 resetAppDataExceptMusicLibrary()
             }
         } message: {
-            Text("会清除应用偏好、界面布局、播放状态、排序记忆和自定义资料库位置设置。不会删除默认或自定义位置中的音乐资料库文件。")
+            Text("会清除应用偏好、界面布局、播放状态和自定义资料库位置设置。不会删除音乐资料库文件，也不会清除资料库内的歌曲、播放列表、艺人、专辑、自定义排序或手动编辑内容。")
         }
         .alert("清除索引缓存？", isPresented: $showClearIndexCacheAlert) {
             Button("取消", role: .cancel) {}
@@ -148,7 +177,13 @@ struct DataManagementSettingsView: View {
         guard !isClearingLibraryCaches else { return }
         isClearingLibraryCaches = true
         Task {
-            await CacheManager.clearLibraryCaches()
+            await CacheManager.clearLibraryCaches(
+                storageLocations: cacheServices.storageLocations,
+                trackArtworkCache: cacheServices.trackArtworkCache,
+                artworkDerivativeStore: cacheServices.artworkDerivativeStore,
+                amllDBService: cacheServices.amllDBService,
+                externalPlaybackMetadataStore: cacheServices.externalPlaybackMetadataStore
+            )
             playbackCoordinator.clearExternalPlaybackRuntimeCaches()
             isClearingLibraryCaches = false
         }

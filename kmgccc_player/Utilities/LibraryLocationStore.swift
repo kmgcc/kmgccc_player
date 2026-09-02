@@ -7,8 +7,8 @@
 
 import Foundation
 
-/// Lightweight store for the active music library root path.
-/// Uses UserDefaults for persistence. Falls back to the legacy default.
+/// One-time access to the pre-registry music-library location.
+/// Production sessions use `MusicLibraryRegistryStore` and `LibraryContext`.
 nonisolated enum LibraryLocationStore {
     private static let defaultsKey = "kmgccc_player.libraryRootPath"
     private static let defaultLibraryRootName = "kmgccc_player Library"
@@ -20,28 +20,18 @@ nonisolated enum LibraryLocationStore {
             .appendingPathComponent(defaultLibraryRootName, isDirectory: true)
     }
 
-    /// The currently configured library root URL.
-    /// If the user has never changed it, returns `~/Music/kmgccc_player Library`.
-    static var activeLibraryRootURL: URL {
-        if let savedPath = UserDefaults.standard.string(forKey: defaultsKey) {
+    static func legacyLibraryRootURL(defaults: UserDefaults = .standard) -> URL {
+        if let savedPath = defaults.string(forKey: defaultsKey) {
             return URL(fileURLWithPath: savedPath)
         }
         return defaultLibraryRootURL
     }
 
-    /// Persist a new library root URL and notify observers.
-    static func setLibraryRootURL(_ url: URL) {
-        UserDefaults.standard.set(url.path, forKey: defaultsKey)
-        NotificationCenter.default.post(name: .libraryLocationChanged, object: nil)
+    static func hasLegacyLibraryRoot(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: defaultsKey) != nil
     }
 
-    /// Reset to the factory default and notify observers.
-    static func resetToDefault() {
-        UserDefaults.standard.removeObject(forKey: defaultsKey)
-        NotificationCenter.default.post(name: .libraryLocationChanged, object: nil)
+    static func removeLegacyLibraryRoot(defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: defaultsKey)
     }
-}
-
-extension Notification.Name {
-    nonisolated static let libraryLocationChanged = Notification.Name("kmgccc_player.libraryLocationChanged")
 }

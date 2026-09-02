@@ -8,6 +8,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import QuartzCore
 import SwiftUI
 
 nonisolated struct OKLCHColor: Equatable, Sendable {
@@ -55,6 +56,12 @@ nonisolated struct ResolvedRGBColor: Equatable, Sendable {
 nonisolated enum ColorRenderingAdapter {
     static let achromaticChromaEpsilon = 0.0005
     static let gamutMappingTolerance = 0.000001
+
+    /// The visualizers are intentionally allowed to use a large EDR headroom.
+    /// The actual screen capability remains the hard ceiling, so this is
+    /// aggressive on XDR displays while remaining harmless on ordinary SDR
+    /// screens.
+    static let visualizationHDRHeadroom: CGFloat = 6.0
 
     static func resolve(
         _ color: OKLCHColor,
@@ -234,6 +241,123 @@ nonisolated enum ColorRenderingAdapter {
             return color.cgColor
         }
         return makeCGColor(oklch, target: target)
+    }
+
+    /// Returns the screen headroom available to a visualization layer.
+    ///
+    /// We query the potential value rather than the current value because the
+    /// current value is allowed to remain at 1.0 until a layer asks for EDR.
+    /// A value of 1.0 is the intentional SDR fallback.
+    @MainActor
+    static func visualizationHeadroom(for screen: NSScreen?) -> CGFloat {
+        guard AppSettings.shared.audioVisualizationHDREnabled else { return 1.0 }
+        guard let screen else { return 1.0 }
+        let potential = screen.maximumPotentialExtendedDynamicRangeColorComponentValue
+        guard potential.isFinite, potential > 1.0 else { return 1.0 }
+        return min(visualizationHDRHeadroom, potential)
+    }
+
+    /// Applies EDR to an already-resolved Display-P3 color without changing
+    /// its hue or chromaticity.
+    ///
+    /// The existing OKLCH decision and Display-P3 gamut mapping happen before
+    /// this boundary. We then convert the gamma-encoded P3 components to
+    /// linear light and multiply every channel by the same headroom. Scaling
+    /// RGB channels independently (or changing opacity) would wash the LED
+    /// toward white and break the established color science; one linear scalar
+    /// preserves the original color while making it read as emitted light.
+    static func makeExtendedDynamicRangeCGColor(
+        _ color: CGColor,
+        headroom: CGFloat
+    ) -> CGColor {
+        guard headroom > 1.0,
+              let p3 = NSColor(cgColor: color)?.usingColorSpace(.displayP3)
+        else {
+            return color
+        }
+
+        return makeExtendedDynamicRangeCGColor(
+            displayP3Red: p3.redComponent,
+            green: p3.greenComponent,
+            blue: p3.blueComponent,
+            alpha: p3.alphaComponent,
+            headroom: headroom
+        )
+    }
+
+    /// EDR output for a perceptual OKLCH decision. This overload is useful for
+    /// SwiftUI-backed previews that do not already have a CGColor.
+    static func makeExtendedDynamicRangeCGColor(
+        _ color: OKLCHColor,
+        headroom: CGFloat
+    ) -> CGColor {
+        guard headroom > 1.0 else {
+            return makeCGColor(color, target: .displayP3)
+        }
+        let resolved = resolve(color, target: .linearDisplayP3)
+        return makeExtendedDynamicRangeCGColor(
+            linearDisplayP3Red: CGFloat(resolved.red),
+            green: CGFloat(resolved.green),
+            blue: CGFloat(resolved.blue),
+            alpha: CGFloat(resolved.alpha),
+            headroom: headroom
+        )
+    }
+
+    private static func makeExtendedDynamicRangeCGColor(
+        displayP3Red red: CGFloat,
+        green: CGFloat,
+        blue: CGFloat,
+        alpha: CGFloat,
+        headroom: CGFloat
+    ) -> CGColor {
+        makeExtendedDynamicRangeCGColor(
+            linearDisplayP3Red: OKColor.sRGBToLinear(red),
+            green: OKColor.sRGBToLinear(green),
+            blue: OKColor.sRGBToLinear(blue),
+            alpha: alpha,
+            headroom: headroom
+        )
+    }
+
+    private static func makeExtendedDynamicRangeCGColor(
+        linearDisplayP3Red red: CGFloat,
+        green: CGFloat,
+        blue: CGFloat,
+        alpha: CGFloat,
+        headroom: CGFloat
+    ) -> CGColor {
+        let colorSpace = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)
+            ?? CGColorSpaceCreateDeviceRGB()
+        return CGColor(
+            colorSpace: colorSpace,
+            components: [
+                red * headroom,
+                green * headroom,
+                blue * headroom,
+                alpha
+            ]
+        ) ?? CGColor(
+            colorSpace: CGColorSpace(name: CGColorSpace.displayP3)
+                ?? CGColorSpaceCreateDeviceRGB(),
+            components: [red, green, blue, alpha]
+        )!
+    }
+
+    /// Opt a layer into Apple's high dynamic-range compositor only when the
+    /// target screen can actually display it. Keeping the layer standard on
+    /// SDR avoids changing the old appearance there.
+    @MainActor
+    static func configureVisualizationLayer(_ layer: CALayer?, screen: NSScreen?) {
+        guard let layer else { return }
+        let headroom = visualizationHeadroom(for: screen)
+        if headroom > 1.0 {
+            layer.preferredDynamicRange = .high
+            layer.contentsHeadroom = headroom
+        } else {
+            layer.preferredDynamicRange = .standard
+            layer.contentsHeadroom = 0
+        }
     }
 
     static func makeMetalColor(_ color: OKLCHColor) -> SIMD4<Float> {

@@ -14,9 +14,14 @@ import Foundation
 /// owned by `PlaybackCoordinator`.
 @MainActor
 final class PlaybackArtworkWarmer {
+    private let artworkCache: TrackArtworkCache
     private var task: Task<Void, Never>?
     private var signature: String?
     private var presentationSignature: String?
+
+    init(artworkCache: TrackArtworkCache) {
+        self.artworkCache = artworkCache
+    }
 
     func update(
         activeSource: PlaybackSource,
@@ -80,13 +85,13 @@ final class PlaybackArtworkWarmer {
 
         signature = nextSignature
         task?.cancel()
-        task = TrackArtworkCache.shared.preloadPlaybackArtwork(
+        task = artworkCache.preloadPlaybackArtwork(
             for: sources,
             reason: "playback-current-window"
         )
     }
 
-    private func reset() {
+    func reset() {
         task?.cancel()
         task = nil
         signature = nil

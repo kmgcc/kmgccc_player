@@ -45,7 +45,7 @@ nonisolated struct LibraryMaintenanceService {
 
     func classifyTrackDirectory(
         _ folderURL: URL,
-        tracksRootURL: URL = LocalLibraryPaths.tracksRootURL,
+        tracksRootURL: URL,
         referencedTrackIDs: Set<UUID>,
         importActivity: LibraryImportActivitySnapshot
     ) -> TrackDirectoryMaintenanceResult {
@@ -119,11 +119,12 @@ nonisolated struct LibraryMaintenanceService {
     }
 
     func cleanupFailedImportTrackDirectories(
+        tracksRootURL: URL,
         referencedTrackIDs: Set<UUID>,
         importActivity: LibraryImportActivitySnapshot,
         reason: String
     ) -> TrackDirectoryCleanupReport {
-        let trackDirectories = directDirectories(at: LocalLibraryPaths.tracksRootURL)
+        let trackDirectories = directDirectories(at: tracksRootURL)
         var results: [TrackDirectoryMaintenanceResult] = []
         var deletedCount = 0
         var failedDeleteCount = 0
@@ -131,6 +132,7 @@ nonisolated struct LibraryMaintenanceService {
         for folderURL in trackDirectories {
             let result = classifyTrackDirectory(
                 folderURL,
+                tracksRootURL: tracksRootURL,
                 referencedTrackIDs: referencedTrackIDs,
                 importActivity: importActivity
             )

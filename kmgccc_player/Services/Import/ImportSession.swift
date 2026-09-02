@@ -67,9 +67,13 @@ final class ImportSession {
     private(set) var finalizedTrackIDs: Set<UUID> = []
     private(set) var committedTrackIDs: Set<UUID> = []
 
-    init(id: UUID = UUID(), fileManager: FileManager = .default) throws {
+    init(
+        id: UUID = UUID(),
+        paths: LibraryPaths,
+        fileManager: FileManager = .default
+    ) throws {
         self.id = id
-        let root = StorageLocations.importStagingRootURL
+        let root = paths.importStagingRootURL
         self.stagingDirectoryURL = root
             .appendingPathComponent(id.uuidString, isDirectory: true)
         try fileManager.createDirectory(
@@ -134,11 +138,18 @@ struct ImportRollbackService {
         }
 
         if !tracksToDelete.isEmpty {
-            await repository.deleteTracks(tracksToDelete)
-            Log.info(
-                "[ImportRollback] repository rollback reason=\(reason) tracks=\(tracksToDelete.count)",
-                category: .import
-            )
+            do {
+                try await repository.deleteTracks(tracksToDelete)
+                Log.info(
+                    "[ImportRollback] repository rollback reason=\(reason) tracks=\(tracksToDelete.count)",
+                    category: .import
+                )
+            } catch {
+                Log.error(
+                    "[ImportRollback] repository rollback failed reason=\(reason) tracks=\(tracksToDelete.count): \(error.localizedDescription)",
+                    category: .import
+                )
+            }
         }
 
         let fileTrackIDs = createdTrackIDs
@@ -146,12 +157,27 @@ struct ImportRollbackService {
             .union(committedIDs)
         var deletedFolders = 0
         var failedFolders = 0
-        for trackID in fileTrackIDs {
-            if libraryService.deleteTrackFolder(trackID: trackID) {
-                deletedFolders += 1
-            } else {
-                failedFolders += 1
-            }
+        if !fileTrackIDs.isEmpty {
+            // Folder deletion is pure FileManager work; run it off the main
+            // actor so large rollbacks cannot block the UI. `deleteTrackFolder`
+            // is nonisolated and only reads immutable state, so it is safe to
+            // call off main.
+            let deletionService = libraryService
+            let trackIDs = Array(fileTrackIDs)
+            let counters = await Task.detached(priority: .utility) { @Sendable () -> (deleted: Int, failed: Int) in
+                var deleted = 0
+                var failed = 0
+                for trackID in trackIDs {
+                    if deletionService.deleteTrackFolder(trackID: trackID) {
+                        deleted += 1
+                    } else {
+                        failed += 1
+                    }
+                }
+                return (deleted, failed)
+            }.value
+            deletedFolders = counters.deleted
+            failedFolders = counters.failed
         }
 
         session.cleanupStaging()

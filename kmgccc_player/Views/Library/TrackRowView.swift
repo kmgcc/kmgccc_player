@@ -119,6 +119,7 @@ struct TrackRowView<MenuContent: View>: View {
     @State private var revealCurrentAnimation: Animation? = nil
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(LibraryCacheServices.self) private var cacheServices
 
     private var artistColumnWidth: CGFloat { 164 }
     private var playingIndicatorColumnWidth: CGFloat { 20 }
@@ -541,7 +542,8 @@ struct TrackRowView<MenuContent: View>: View {
             scale: scale
         )
 
-        if let cachedHigh = await PlaylistArtworkPipeline.shared.cachedImage(for: highRequest) {
+        let pipeline = cacheServices.playlistArtworkPipeline
+        if let cachedHigh = await pipeline.cachedImage(for: highRequest) {
             artworkImage = cachedHigh
             isArtworkReady = true
             return
@@ -549,7 +551,7 @@ struct TrackRowView<MenuContent: View>: View {
 
         guard !Task.isCancelled else { return }
 
-        if let lowImage = await PlaylistArtworkPipeline.shared.load(lowRequest) {
+        if let lowImage = await pipeline.load(lowRequest) {
             artworkImage = lowImage
             isArtworkReady = true
         }
@@ -559,7 +561,7 @@ struct TrackRowView<MenuContent: View>: View {
         try? await Task.sleep(nanoseconds: 120_000_000)
         guard !Task.isCancelled else { return }
 
-        if let highImage = await PlaylistArtworkPipeline.shared.load(highRequest) {
+        if let highImage = await pipeline.load(highRequest) {
             artworkImage = highImage
             withAnimation(.easeInOut(duration: 0.05)) {
                 isArtworkReady = true

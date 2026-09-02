@@ -170,6 +170,7 @@ struct CoverGradientBlurBackgroundView: View {
     let dominantColor: NSColor?
     let config: CoverGradientBlurConfig
     let preferAdaptiveArtworkSizing: Bool
+    let extendsIntoSafeArea: Bool
     /// When non-nil, the view publishes a readability snapshot (with a
     /// luminance map built from the final render) each time a render completes.
     /// Only the fullscreen Cover Blur bridge sets this.
@@ -191,6 +192,7 @@ struct CoverGradientBlurBackgroundView: View {
         dominantColor: NSColor?,
         config: CoverGradientBlurConfig,
         preferAdaptiveArtworkSizing: Bool = false,
+        extendsIntoSafeArea: Bool = true,
         readabilityPlacement: CoverGradientBlurReadabilityPlacement? = nil,
         onReadabilitySnapshot: (@MainActor (CoverGradientBlurReadabilitySnapshot) -> Void)? = nil,
         onRenderedFrame: (@MainActor (CoverGradientBlurRenderedFrame) -> Void)? = nil
@@ -201,6 +203,7 @@ struct CoverGradientBlurBackgroundView: View {
         self.dominantColor = dominantColor
         self.config = config
         self.preferAdaptiveArtworkSizing = preferAdaptiveArtworkSizing
+        self.extendsIntoSafeArea = extendsIntoSafeArea
         self.readabilityPlacement = readabilityPlacement
         self.onReadabilitySnapshot = onReadabilitySnapshot
         self.onRenderedFrame = onRenderedFrame
@@ -244,7 +247,7 @@ struct CoverGradientBlurBackgroundView: View {
                 updateCurrentSize(newSize)
             }
         }
-        .ignoresSafeArea()
+        .ignoresSafeArea(.all, edges: extendsIntoSafeArea ? .all : [])
         .allowsHitTesting(false)
         .task(id: renderKey) {
             await performRender()

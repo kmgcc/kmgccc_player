@@ -137,8 +137,11 @@ nonisolated private struct ImportEnrichmentItemState: Sendable {
         ImportEnrichmentPart.allCases.allSatisfy { partStates[$0]?.isTerminal ?? false }
     }
 
+    /// Only the two primary parts — lyrics and cover — decide whether a
+    /// track counts as failed. Metadata/artist/album lookups are
+    /// best-effort bonuses and never flip the row to failed.
     var hasTerminalFailure: Bool {
-        ImportEnrichmentPart.allCases.contains { partStates[$0]?.countsAsFailure ?? false }
+        [.lyrics, .cover].contains { partStates[$0]?.countsAsFailure ?? false }
     }
 
     var flushPendingPartCount: Int {
@@ -186,31 +189,52 @@ nonisolated struct ImportEnrichmentProgressSnapshot: Sendable, Equatable {
             || runningCount > 0 || flushPendingCount > 0
     }
 
+    /// Sidebar keeps only the overall completion counter; per-part details
+    /// (lyrics/cover/metadata) live in the click-through status dialog.
     var sidebarText: String {
-        var parts: [String] = [
-            "补全中 \(completedCount)/\(totalEnqueued)"
-        ]
-        if runningCount > 0 {
-            parts.append("进行中 \(runningCount)")
-        }
-        if flushPendingCount > 0 {
-            parts.append("待提交 \(flushPendingCount)")
-        }
-        let pendingMeta = pendingTrackMetadataCount + pendingArtistMetadataCount + pendingAlbumMetadataCount
-        let pendingArt = pendingArtistArtworkCount + pendingAlbumArtworkCount
-        if pendingLyricsCount > 0 || pendingCoverCount > 0 || pendingMeta > 0 || pendingArt > 0 {
-            var detailParts: [String] = []
-            if pendingLyricsCount > 0 { detailParts.append("词\(pendingLyricsCount)") }
-            if pendingCoverCount > 0 { detailParts.append("封\(pendingCoverCount)") }
-            if pendingMeta > 0 { detailParts.append("信息\(pendingMeta)") }
-            if pendingArt > 0 { detailParts.append("图\(pendingArt)") }
-            parts.append(detailParts.joined(separator: " "))
-        }
-        if failedCount > 0 {
-            parts.append("失败 \(failedCount)")
-        }
-        return parts.joined(separator: " · ")
+        "已补全 \(completedCount)/\(totalEnqueued)"
     }
+}
+
+/// Row-level status for the click-through enrichment status dialog.
+nonisolated enum ImportEnrichmentRowStatus: String, Sendable {
+    case waiting
+    case running
+    case flushPending
+    case completed
+    case failed
+
+    var title: String {
+        switch self {
+        case .waiting: return "等待中"
+        case .running: return "补全中"
+        case .flushPending: return "待提交"
+        case .completed: return "已完成"
+        case .failed: return "失败"
+        }
+    }
+}
+
+/// Per-track snapshot consumed by the enrichment status dialog. Published
+/// alongside `progress` so the dialog can observe live updates.
+nonisolated struct ImportEnrichmentRowSnapshot: Identifiable, Sendable, Equatable {
+    let id: UUID
+    let title: String
+    let artist: String
+    let status: ImportEnrichmentRowStatus
+    /// Parts currently being fetched, e.g. ["歌词", "封面"].
+    let activePartLabels: [String]
+    /// Labels of parts that failed or found no results, e.g. "歌词·封面".
+    let failedPartLabels: [String]
+}
+
+/// Terminal summary of a finished enrichment session. Drives the
+/// persistent green sidebar notice shown after all background enrichment
+/// completes; cleared when a new session starts or the user dismisses it.
+nonisolated struct ImportEnrichmentCompletionSummary: Sendable, Equatable {
+    let totalCount: Int
+    let failedCount: Int
+    let failedTrackIDs: [UUID]
 }
 
 nonisolated private struct PendingTrackEnrichmentPatch: Sendable {
@@ -251,6 +275,11 @@ nonisolated private struct PendingTrackEnrichmentPatch: Sendable {
 @Observable
 final class ImportEnrichmentService {
     private let repository: LibraryRepositoryProtocol
+    private let mutationCoordinator: LibraryMutationCoordinator?
+    private let qqMusicCoverService: QQMusicCoverService
+    private let artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator
+    private let lyricsSearchCoordinator: LyricsSearchCoordinator
+    private let amllDBService: AMLLDBService
     private let maxConcurrent: Int
     private let maxAttemptsPerPart = 2
     private let flushBatchSize = 4
@@ -288,10 +317,30 @@ final class ImportEnrichmentService {
         flushPendingCount: 0
     )
 
+    private(set) var enrichmentRows: [ImportEnrichmentRowSnapshot] = []
+    private(set) var completionSummary: ImportEnrichmentCompletionSummary?
+
+    func dismissCompletionSummary() {
+        completionSummary = nil
+    }
+
     var hasOutstandingWork: Bool { progress.hasOutstandingWork }
 
-    init(repository: LibraryRepositoryProtocol, maxConcurrent: Int = 2) {
+    init(
+        repository: LibraryRepositoryProtocol,
+        mutationCoordinator: LibraryMutationCoordinator? = nil,
+        maxConcurrent: Int = 2,
+        qqMusicCoverService: QQMusicCoverService,
+        artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator,
+        lyricsSearchCoordinator: LyricsSearchCoordinator,
+        amllDBService: AMLLDBService
+    ) {
         self.repository = repository
+        self.mutationCoordinator = mutationCoordinator
+        self.qqMusicCoverService = qqMusicCoverService
+        self.artistArtworkProviderCoordinator = artistArtworkProviderCoordinator
+        self.lyricsSearchCoordinator = lyricsSearchCoordinator
+        self.amllDBService = amllDBService
         self.maxConcurrent = max(1, maxConcurrent)
         Log.info("[ImportEnrichment] service init", category: .import)
     }
@@ -303,11 +352,13 @@ final class ImportEnrichmentService {
     func cancelEnrichment(for trackIDs: Set<UUID>) async {
         guard !trackIDs.isEmpty else { return }
 
+        var cancelledTasks: [Task<Void, Never>] = []
         queue.removeAll { trackIDs.contains($0.trackID) }
         queuedRequests = queuedRequests.filter { !trackIDs.contains($0.trackID) }
         runningRequests = runningRequests.filter { !trackIDs.contains($0.trackID) }
         for (request, task) in activeTasks where trackIDs.contains(request.trackID) {
             task.cancel()
+            cancelledTasks.append(task)
             activeTasks[request] = nil
         }
 
@@ -328,6 +379,9 @@ final class ImportEnrichmentService {
         }
 
         refreshProgress()
+        for task in cancelledTasks {
+            await task.value
+        }
         Log.info(
             "[ImportEnrichment] cancelled deleted tracks count=\(trackIDs.count)",
             category: .import
@@ -335,6 +389,7 @@ final class ImportEnrichmentService {
     }
 
     func enqueueTracks(_ tracks: [Track]) async {
+        completionSummary = nil
         if hasOutstandingWork == false {
             resetProgressIfIdle()
         }
@@ -680,8 +735,9 @@ final class ImportEnrichmentService {
         let entry = await latestArtistEntry(canonical: canonical, displayName: artist)
         let result = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: entry)
         guard result.changed else { return false }
-        await repository.updateArtistEntry(result.value)
-        return true
+        return await commitMetadataEntry(id: result.value.id) {
+            try await self.repository.updateArtistEntry(result.value)
+        }
     }
 
     private func applyArtistArtworkDataUnlocked(_ data: Data, artist: String) async -> Bool {
@@ -692,8 +748,9 @@ final class ImportEnrichmentService {
         entry.artworkData = data
         entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
-        await repository.updateArtistEntry(entry)
-        return true
+        return await commitMetadataEntry(id: entry.id) {
+            try await self.repository.updateArtistEntry(entry)
+        }
     }
 
     private func applyAlbumMetadataDetailUnlocked(
@@ -705,8 +762,9 @@ final class ImportEnrichmentService {
         let entry = await latestAlbumEntry(album: album, artist: artist)
         let result = MetadataDetailCoordinator.shared.applyMissingFields(detail, to: entry)
         guard result.changed else { return false }
-        await repository.updateAlbumEntry(result.value)
-        return true
+        return await commitMetadataEntry(id: result.value.id) {
+            try await self.repository.updateAlbumEntry(result.value)
+        }
     }
 
     private func applyAlbumArtworkDataUnlocked(_ data: Data, album: String, artist: String) async -> Bool {
@@ -716,8 +774,34 @@ final class ImportEnrichmentService {
         entry.artworkData = data
         entry.artworkFileName = "artwork.png"
         entry.updatedAt = Date()
-        await repository.updateAlbumEntry(entry)
-        return true
+        return await commitMetadataEntry(id: entry.id) {
+            try await self.repository.updateAlbumEntry(entry)
+        }
+    }
+
+    private func commitMetadataEntry(
+        id: UUID,
+        _ work: @escaping @MainActor () async throws -> Void
+    ) async -> Bool {
+        do {
+            if let mutationCoordinator {
+                return try await mutationCoordinator.run(
+                    kind: .enrichmentCommit,
+                    targetIDs: [id.uuidString]
+                ) {
+                    try await work()
+                    return true
+                }
+            }
+            try await work()
+            return true
+        } catch {
+            Log.error(
+                "[ImportEnrichment] metadata entry commit rejected: \(error)",
+                category: .import
+            )
+            return false
+        }
     }
 
     private func latestArtistEntry(canonical: String, displayName: String) async -> ArtistEntry {
@@ -803,6 +887,39 @@ final class ImportEnrichmentService {
             runningCount: runningRequests.count,
             flushPendingCount: flushPendingCount
         )
+
+        enrichmentRows = values.map { state in
+            let parts = ImportEnrichmentPart.allCases
+            let status: ImportEnrichmentRowStatus
+            if parts.contains(where: { state.state(for: $0) == .running }) {
+                status = .running
+            } else if parts.contains(where: { state.state(for: $0) == .flushPending }) {
+                status = .flushPending
+            } else if parts.contains(where: { state.state(for: $0) == .pending }) {
+                status = .waiting
+            } else if state.hasTerminalFailure {
+                status = .failed
+            } else {
+                status = .completed
+            }
+            let failedPartLabels = parts
+                .filter { [.lyrics, .cover].contains($0) && state.state(for: $0).countsAsFailure }
+                .map(\.label)
+            let activePartLabels = parts
+                .filter { state.state(for: $0) == .running }
+                .map(\.label)
+            return ImportEnrichmentRowSnapshot(
+                id: state.trackID,
+                title: state.title,
+                artist: state.artist,
+                status: status,
+                activePartLabels: activePartLabels,
+                failedPartLabels: failedPartLabels
+            )
+        }
+        .sorted { lhs, rhs in
+            lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending
+        }
     }
 
     private func resetProgressIfIdle() {
@@ -815,6 +932,7 @@ final class ImportEnrichmentService {
         activeTasks.removeAll()
         trackByID.removeAll()
         itemStates.removeAll()
+        enrichmentRows = []
         pendingFlushPatches.removeAll()
         isFlushing = false
         enqueuedArtistMetadata.removeAll()
@@ -923,7 +1041,9 @@ final class ImportEnrichmentService {
                     title: title,
                     artist: artist,
                     album: album,
-                    duration: duration
+                    duration: duration,
+                    lyricsSearchCoordinator: self.lyricsSearchCoordinator,
+                    amllDBService: self.amllDBService
                 )
                 await self.completeLyrics(request: request, outcome: outcome)
             case .cover:
@@ -931,7 +1051,8 @@ final class ImportEnrichmentService {
                     title: title,
                     artist: artist,
                     album: album,
-                    duration: duration
+                    duration: duration,
+                    qqMusicCoverService: self.qqMusicCoverService
                 )
                 await self.completeCover(request: request, outcome: outcome)
             case .trackMetadata:
@@ -949,10 +1070,17 @@ final class ImportEnrichmentService {
                 let outcome = await MetadataEnrichmentWorker.fetchAlbumMetadata(album: album, artist: artist)
                 await self.completeAlbumMetadata(request: request, outcome: outcome)
             case .artistArtwork:
-                let outcome = await MetadataEnrichmentWorker.fetchArtistArtwork(artist: artist)
+                let outcome = await MetadataEnrichmentWorker.fetchArtistArtwork(
+                    artist: artist,
+                    artistArtworkProviderCoordinator: self.artistArtworkProviderCoordinator
+                )
                 await self.completeArtistArtwork(request: request, outcome: outcome)
             case .albumArtwork:
-                let outcome = await MetadataEnrichmentWorker.fetchAlbumArtwork(album: album, artist: artist)
+                let outcome = await MetadataEnrichmentWorker.fetchAlbumArtwork(
+                    album: album,
+                    artist: artist,
+                    qqMusicCoverService: self.qqMusicCoverService
+                )
                 await self.completeAlbumArtwork(request: request, outcome: outcome)
             }
 
@@ -971,6 +1099,10 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportLyricsLookupOutcome
     ) async {
+        guard !isClosed, !Task.isCancelled else {
+            finish(request)
+            return
+        }
         guard let track = trackByID[request.trackID], var state = itemStates[request.trackID] else {
             finish(request)
             return
@@ -1032,6 +1164,10 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportCoverLookupOutcome
     ) async {
+        guard !isClosed, !Task.isCancelled else {
+            finish(request)
+            return
+        }
         guard let track = trackByID[request.trackID], var state = itemStates[request.trackID] else {
             finish(request)
             return
@@ -1062,17 +1198,33 @@ final class ImportEnrichmentService {
                 )
             }
         case .noResults:
-            state.setState(.noResults, for: .cover)
-            Log.warning(
-                "[ImportEnrichment] cover no-results \(state.title) - \(state.artist)",
-                category: .import
-            )
+            if track.artworkData != nil {
+                // The file's embedded cover survived import; an online
+                // miss is not a failure.
+                state.setState(.skipped, for: .cover)
+                Log.info(
+                    "[ImportEnrichment] cover no-results \(state.title) - \(state.artist) | embedded artwork present",
+                    category: .import
+                )
+            } else {
+                state.setState(.noResults, for: .cover)
+                Log.warning(
+                    "[ImportEnrichment] cover no-results \(state.title) - \(state.artist)",
+                    category: .import
+                )
+            }
         case .failed(let message):
             shouldRequeue = shouldRetry(part: .cover, state: state)
             if shouldRequeue {
                 state.setState(.pending, for: .cover)
                 Log.warning(
                     "[ImportEnrichment] cover failed \(state.title) - \(state.artist) | retrying: \(message)",
+                    category: .import
+                )
+            } else if track.artworkData != nil {
+                state.setState(.skipped, for: .cover)
+                Log.info(
+                    "[ImportEnrichment] cover failed \(state.title) - \(state.artist) | embedded artwork present: \(message)",
                     category: .import
                 )
             } else {
@@ -1093,6 +1245,10 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportTrackMetadataOutcome
     ) async {
+        guard !isClosed, !Task.isCancelled else {
+            finish(request)
+            return
+        }
         guard let _ = trackByID[request.trackID], var state = itemStates[request.trackID] else {
             finish(request)
             return
@@ -1202,6 +1358,10 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportArtistMetadataOutcome
     ) async {
+        guard !isClosed, !Task.isCancelled else {
+            finish(request)
+            return
+        }
         guard let _ = trackByID[request.trackID], var state = itemStates[request.trackID] else {
             finish(request)
             return
@@ -1253,6 +1413,10 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportAlbumMetadataOutcome
     ) async {
+        guard !isClosed, !Task.isCancelled else {
+            finish(request)
+            return
+        }
         guard let _ = trackByID[request.trackID], var state = itemStates[request.trackID] else {
             finish(request)
             return
@@ -1304,6 +1468,10 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportArtistArtworkOutcome
     ) async {
+        guard !isClosed, !Task.isCancelled else {
+            finish(request)
+            return
+        }
         guard let _ = trackByID[request.trackID], var state = itemStates[request.trackID] else {
             finish(request)
             return
@@ -1355,6 +1523,10 @@ final class ImportEnrichmentService {
         request: ImportEnrichmentPartRequest,
         outcome: ImportAlbumArtworkOutcome
     ) async {
+        guard !isClosed, !Task.isCancelled else {
+            finish(request)
+            return
+        }
         guard let _ = trackByID[request.trackID], var state = itemStates[request.trackID] else {
             finish(request)
             return
@@ -1421,13 +1593,140 @@ final class ImportEnrichmentService {
         )
     }
 
+    /// Resolves a part whose buffered flush became non-effective because a
+    /// parallel writer (for example playback lyrics loading or legacy LRC
+    /// migration in `LyricsViewModel`) already filled the value. Without
+    /// this the part would stay `.flushPending` forever after its patch is
+    /// dropped, leaving the session stuck with outstanding work.
+    private func markSupersededFlushPart(_ part: ImportEnrichmentPart, for trackID: UUID) {
+        guard var state = itemStates[trackID], state.state(for: part) == .flushPending else { return }
+        state.setState(.skipped, for: part)
+        itemStates[trackID] = state
+        if state.isTerminal {
+            trackByID[trackID] = nil
+        }
+    }
+
+    /// Safety net: while patches wait for a flush, periodically verify that
+    /// a flush is actually scheduled. Any scheduling hole (cancelled task,
+    /// stale flag) is recovered by forcing a flush directly. Also emits
+    /// diagnostics when KMGCCC_ENRICHMENT_DEBUG=1.
+    private var flushWatchdogTask: Task<Void, Never>?
+    private var isClosed = false
+
+    /// Session teardown: cancel and await every enrichment worker and
+    /// persistence task before the ModelContainer is released. SwiftData
+    /// traps — not throws — when a dangling ModelContext is touched.
+    func quiesce() async {
+        isClosed = true
+        flushTask?.cancel()
+        let pendingFlushTask = flushTask
+        flushTask = nil
+        flushWatchdogTask?.cancel()
+        let pendingWatchdogTask = flushWatchdogTask
+        flushWatchdogTask = nil
+
+        let activeTasks = Array(self.activeTasks.values)
+        activeTasks.forEach { $0.cancel() }
+        self.activeTasks.removeAll()
+        queue.removeAll()
+        queuedRequests.removeAll()
+        runningRequests.removeAll()
+        pendingFlushPatches.removeAll()
+        isFlushing = false
+
+        for task in activeTasks {
+            await task.value
+        }
+        await pendingFlushTask?.value
+        await pendingWatchdogTask?.value
+    }
+
+    /// Idempotent compatibility entry point for session teardown callers.
+    func close() async {
+        await quiesce()
+    }
+
+    private func armFlushWatchdogIfNeeded() {
+        guard flushWatchdogTask == nil, !isClosed else { return }
+        flushWatchdogTask = Task { @MainActor in
+            while !Task.isCancelled, !isClosed {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                guard !Task.isCancelled else { break }
+                guard pendingFlushPatches.isEmpty == false else {
+                    // Heal state/patch desync: a part still marked
+                    // flushPending whose patch is already gone would pin
+                    // the session in "待提交" forever. Handlers always
+                    // buffer the patch and set the state atomically on the
+                    // main actor, so flushPending-without-patch is always
+                    // a stale residue.
+                    var healed = 0
+                    for (trackID, state) in itemStates {
+                        var mutableState = state
+                        var touched = false
+                        for part in [ImportEnrichmentPart.lyrics, .cover, .trackMetadata]
+                        where mutableState.state(for: part) == .flushPending {
+                            mutableState.setState(.skipped, for: part)
+                            touched = true
+                        }
+                        if touched {
+                            itemStates[trackID] = mutableState
+                            healed += 1
+                            if mutableState.isTerminal {
+                                trackByID[trackID] = nil
+                            }
+                        }
+                    }
+                    if healed > 0 {
+                        enrichmentDebugLog("watchdog: healed \(healed) track(s) with stale flushPending state and no patch")
+                        Log.warning(
+                            "[ImportEnrichment] watchdog healed \(healed) stale flush-pending track(s)",
+                            category: .import
+                        )
+                        refreshProgress()
+                    }
+                    if hasOutstandingWork == false { break }
+                    continue
+                }
+                if isFlushing == false, flushTask == nil {
+                    enrichmentDebugLog(
+                        "watchdog: no flush scheduled with \(pendingFlushPatches.count) pending patch(es); forcing flush"
+                    )
+                    await flushBufferedUpdates(reason: "watchdog_force")
+                }
+                if hasOutstandingWork == false { break }
+            }
+            flushWatchdogTask = nil
+        }
+    }
+
+    /// Direct file logging that bypasses os_log privacy redaction, for
+    /// field diagnosis of stuck flush states. Enabled only when
+    /// KMGCCC_ENRICHMENT_DEBUG=1 is present at process launch.
+    private nonisolated func enrichmentDebugLog(_ message: String) {
+        guard ProcessInfo.processInfo.environment["KMGCCC_ENRICHMENT_DEBUG"] == "1" else { return }
+        let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
+        let url = URL(fileURLWithPath: "/tmp/kmgccc_enrichment_debug.log")
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? line.write(to: url, atomically: false, encoding: .utf8)
+        }
+    }
+
     private func scheduleFlushIfNeeded(reason: String) {
         guard pendingFlushPatches.isEmpty == false else { return }
+        enrichmentDebugLog(
+            "scheduleFlush reason=\(reason) pending=\(pendingFlushPatches.count) queue=\(queue.count) running=\(runningRequests.count) flushTask=\(flushTask != nil) isFlushing=\(isFlushing)"
+        )
+        armFlushWatchdogIfNeeded()
 
         if pendingFlushPatches.count >= flushBatchSize {
             flushTask?.cancel()
             flushTask = nil
-            Task { @MainActor in
+            flushTask = Task { @MainActor in
                 await flushBufferedUpdates(reason: "threshold:\(reason)")
             }
             return
@@ -1436,7 +1735,7 @@ final class ImportEnrichmentService {
         if queue.isEmpty && runningRequests.isEmpty {
             flushTask?.cancel()
             flushTask = nil
-            Task { @MainActor in
+            flushTask = Task { @MainActor in
                 await flushBufferedUpdates(reason: "idle:\(reason)")
             }
             return
@@ -1450,6 +1749,7 @@ final class ImportEnrichmentService {
     }
 
     private func flushBufferedUpdates(reason: String) async {
+        guard !isClosed else { return }
         guard isFlushing == false else { return }
         guard pendingFlushPatches.isEmpty == false else { return }
 
@@ -1481,7 +1781,22 @@ final class ImportEnrichmentService {
         var effectivePatches: [UUID: PendingTrackEnrichmentPatch] = [:]
 
         for trackID in trackIDs {
-            guard let track = trackByID[trackID], let patch = patches[trackID] else { continue }
+            guard let track = trackByID[trackID], let patch = patches[trackID] else {
+                // The track entry was released while its patch was pending.
+                // Drop the orphaned patch and resolve any flushPending parts
+                // so the session can still reach a terminal state.
+                if patches[trackID] != nil {
+                    pendingFlushPatches.removeValue(forKey: trackID)
+                    if var orphanedState = itemStates[trackID] {
+                        for part in [ImportEnrichmentPart.lyrics, .cover, .trackMetadata]
+                        where orphanedState.state(for: part) == .flushPending {
+                            orphanedState.setState(.skipped, for: part)
+                        }
+                        itemStates[trackID] = orphanedState
+                    }
+                }
+                continue
+            }
             var effectivePatch = patch
             revertByTrackID[trackID] = PendingRevert(
                 lyrics: track.ttmlLyricText,
@@ -1501,6 +1816,7 @@ final class ImportEnrichmentService {
                 } else {
                     effectivePatch.ttmlLyricText = nil
                     effectivePatch.lyricShouldFlush = false
+                    markSupersededFlushPart(.lyrics, for: trackID)
                 }
             }
             if patch.coverShouldFlush {
@@ -1509,6 +1825,7 @@ final class ImportEnrichmentService {
                 } else {
                     effectivePatch.artworkData = nil
                     effectivePatch.coverShouldFlush = false
+                    markSupersededFlushPart(.cover, for: trackID)
                 }
             }
             if patch.trackMetadataShouldFlush {
@@ -1570,6 +1887,9 @@ final class ImportEnrichmentService {
                     }
                 }
                 effectivePatch.trackMetadataShouldFlush = hasMetadataFieldToFlush
+                if !hasMetadataFieldToFlush {
+                    markSupersededFlushPart(.trackMetadata, for: trackID)
+                }
             }
 
             let hasEffectiveFlush = effectivePatch.lyricShouldFlush
@@ -1606,6 +1926,12 @@ final class ImportEnrichmentService {
                 category: .import
             )
             isFlushing = false
+            if pendingFlushPatches.isEmpty == false {
+                Log.warning(
+                    "[ImportEnrichment] flush ended with \(pendingFlushPatches.count) unresolved patch(es)",
+                    category: .import
+                )
+            }
             return
         }
 
@@ -1638,44 +1964,99 @@ final class ImportEnrichmentService {
             return patch.trackMetadataShouldFlush && patch.lyricShouldFlush && patch.coverShouldFlush
         }
 
-        var persistedTrackIDs: Set<UUID> = []
-        var failedTrackIDs: Set<UUID> = []
+        let persistBatches: @MainActor () async -> (persisted: Set<UUID>, failed: Set<UUID>) = {
+            var persistedTrackIDs: Set<UUID> = []
+            var failedTrackIDs: Set<UUID> = []
 
-        if !metaOnlyTracks.isEmpty {
-            let result = await repository.persistTrackMetaOnly(metaOnlyTracks, reason: "importEnrichmentMetadata")
-            persistedTrackIDs.formUnion(result.persistedTrackIDs)
-            failedTrackIDs.formUnion(result.failedTrackIDs)
+            // close() can only interleave at these suspension points; bail out
+            // before touching the repository again once the session is gone.
+            if !metaOnlyTracks.isEmpty {
+                let result = await self.repository.persistTrackMetaOnly(
+                    metaOnlyTracks,
+                    reason: "importEnrichmentMetadata"
+                )
+                persistedTrackIDs.formUnion(result.persistedTrackIDs)
+                failedTrackIDs.formUnion(result.failedTrackIDs)
+            }
+            guard !self.isClosed else { return (persistedTrackIDs, failedTrackIDs) }
+            if !lyricOnlyTracks.isEmpty {
+                let result = await self.repository.persistTrackMetaAndLyrics(
+                    lyricOnlyTracks,
+                    reason: "importEnrichmentLyrics"
+                )
+                persistedTrackIDs.formUnion(result.persistedTrackIDs)
+                failedTrackIDs.formUnion(result.failedTrackIDs)
+            }
+            guard !self.isClosed else { return (persistedTrackIDs, failedTrackIDs) }
+            if !coverOnlyTracks.isEmpty {
+                let result = await self.repository.persistTrackMetaAndArtwork(
+                    coverOnlyTracks,
+                    reason: "importEnrichmentArtwork"
+                )
+                persistedTrackIDs.formUnion(result.persistedTrackIDs)
+                failedTrackIDs.formUnion(result.failedTrackIDs)
+            }
+            guard !self.isClosed else { return (persistedTrackIDs, failedTrackIDs) }
+            if !lyricAndCoverTracks.isEmpty {
+                let result = await self.repository.persistTrackMetaLyricsAndArtwork(
+                    lyricAndCoverTracks,
+                    reason: "importEnrichmentLyricsArtwork"
+                )
+                persistedTrackIDs.formUnion(result.persistedTrackIDs)
+                failedTrackIDs.formUnion(result.failedTrackIDs)
+            }
+            guard !self.isClosed else { return (persistedTrackIDs, failedTrackIDs) }
+            if !metaAndLyricTracks.isEmpty {
+                let result = await self.repository.persistTrackMetaAndLyrics(
+                    metaAndLyricTracks,
+                    reason: "importEnrichmentMetadataLyrics"
+                )
+                persistedTrackIDs.formUnion(result.persistedTrackIDs)
+                failedTrackIDs.formUnion(result.failedTrackIDs)
+            }
+            guard !self.isClosed else { return (persistedTrackIDs, failedTrackIDs) }
+            if !metaAndCoverTracks.isEmpty {
+                let result = await self.repository.persistTrackMetaAndArtwork(
+                    metaAndCoverTracks,
+                    reason: "importEnrichmentMetadataArtwork"
+                )
+                persistedTrackIDs.formUnion(result.persistedTrackIDs)
+                failedTrackIDs.formUnion(result.failedTrackIDs)
+            }
+            guard !self.isClosed else { return (persistedTrackIDs, failedTrackIDs) }
+            if !metaLyricAndCoverTracks.isEmpty {
+                let result = await self.repository.persistTrackMetaLyricsAndArtwork(
+                    metaLyricAndCoverTracks,
+                    reason: "importEnrichmentMetadataLyricsArtwork"
+                )
+                persistedTrackIDs.formUnion(result.persistedTrackIDs)
+                failedTrackIDs.formUnion(result.failedTrackIDs)
+            }
+            return (persistedTrackIDs, failedTrackIDs)
         }
-        if !lyricOnlyTracks.isEmpty {
-            let result = await repository.persistTrackMetaAndLyrics(lyricOnlyTracks, reason: "importEnrichmentLyrics")
-            persistedTrackIDs.formUnion(result.persistedTrackIDs)
-            failedTrackIDs.formUnion(result.failedTrackIDs)
+
+        let commitResult: (persisted: Set<UUID>, failed: Set<UUID>)
+        do {
+            if let mutationCoordinator {
+                commitResult = try await mutationCoordinator.run(
+                    kind: .enrichmentCommit,
+                    targetIDs: trackIDs.map(\.uuidString)
+                ) {
+                    await persistBatches()
+                }
+            } else {
+                commitResult = await persistBatches()
+            }
+        } catch {
+            Log.error(
+                "[ImportEnrichment] batch commit rejected: \(error)",
+                category: .import
+            )
+            commitResult = ([], Set(touchedTracks.map(\.id)))
         }
-        if !coverOnlyTracks.isEmpty {
-            let result = await repository.persistTrackMetaAndArtwork(coverOnlyTracks, reason: "importEnrichmentArtwork")
-            persistedTrackIDs.formUnion(result.persistedTrackIDs)
-            failedTrackIDs.formUnion(result.failedTrackIDs)
-        }
-        if !lyricAndCoverTracks.isEmpty {
-            let result = await repository.persistTrackMetaLyricsAndArtwork(lyricAndCoverTracks, reason: "importEnrichmentLyricsArtwork")
-            persistedTrackIDs.formUnion(result.persistedTrackIDs)
-            failedTrackIDs.formUnion(result.failedTrackIDs)
-        }
-        if !metaAndLyricTracks.isEmpty {
-            let result = await repository.persistTrackMetaAndLyrics(metaAndLyricTracks, reason: "importEnrichmentMetadataLyrics")
-            persistedTrackIDs.formUnion(result.persistedTrackIDs)
-            failedTrackIDs.formUnion(result.failedTrackIDs)
-        }
-        if !metaAndCoverTracks.isEmpty {
-            let result = await repository.persistTrackMetaAndArtwork(metaAndCoverTracks, reason: "importEnrichmentMetadataArtwork")
-            persistedTrackIDs.formUnion(result.persistedTrackIDs)
-            failedTrackIDs.formUnion(result.failedTrackIDs)
-        }
-        if !metaLyricAndCoverTracks.isEmpty {
-            let result = await repository.persistTrackMetaLyricsAndArtwork(metaLyricAndCoverTracks, reason: "importEnrichmentMetadataLyricsArtwork")
-            persistedTrackIDs.formUnion(result.persistedTrackIDs)
-            failedTrackIDs.formUnion(result.failedTrackIDs)
-        }
+        let persistedTrackIDs = commitResult.persisted
+        let failedTrackIDs = commitResult.failed
+        guard !isClosed else { return }
 
         for trackID in persistedTrackIDs {
             guard let patch = effectivePatches[trackID], var state = itemStates[trackID] else { continue }
@@ -1751,6 +2132,18 @@ final class ImportEnrichmentService {
         isFlushing = false
 
         if pendingFlushPatches.isEmpty == false {
+            Log.warning(
+                "[ImportEnrichment] flush ended with \(pendingFlushPatches.count) unresolved patch(es)",
+                category: .import
+            )
+            for (trackID, patch) in pendingFlushPatches {
+                let stateDescription = itemStates[trackID].map {
+                    "lyrics=\($0.state(for: .lyrics)) cover=\($0.state(for: .cover)) meta=\($0.state(for: .trackMetadata))"
+                } ?? "<no state>"
+                enrichmentDebugLog(
+                    "unresolved patch \(trackID.uuidString): lyricShouldFlush=\(patch.lyricShouldFlush) coverShouldFlush=\(patch.coverShouldFlush) metaShouldFlush=\(patch.trackMetadataShouldFlush) | \(stateDescription)"
+                )
+            }
             scheduleFlushIfNeeded(reason: "post_flush")
         } else {
             releaseCompletedSessionIfIdle()
@@ -1766,7 +2159,17 @@ final class ImportEnrichmentService {
         runningRequests.removeAll()
 
         guard itemStates.values.allSatisfy(\.isTerminal) else { return }
+        let finishedStates = Array(itemStates.values)
+        if finishedStates.isEmpty == false {
+            let failedTrackIDs = finishedStates.filter(\.hasTerminalFailure).map(\.trackID)
+            completionSummary = ImportEnrichmentCompletionSummary(
+                totalCount: finishedStates.count,
+                failedCount: failedTrackIDs.count,
+                failedTrackIDs: failedTrackIDs
+            )
+        }
         itemStates.removeAll()
+        enrichmentRows = []
         progress = ImportEnrichmentProgressSnapshot(
             totalEnqueued: 0,
             completedCount: 0,

@@ -16,6 +16,7 @@ struct AppearanceSettingsView: View {
     @Environment(\.settingsAppForegroundColors) private var appColors
 
     @State private var globalArtworkTintEnabled: Bool = AppSettings.shared.globalArtworkTintEnabled
+    @State private var audioVisualizationHDREnabled: Bool = AppSettings.shared.audioVisualizationHDREnabled
     @State private var dockProgressVisible: Bool = AppSettings.shared.dockProgressVisible
     @State private var followSystemAppearance: Bool = AppSettings.shared.followSystemAppearance
     @State private var lyricsBackgroundMode: AppSettings.LyricsBackgroundMode = AppSettings.shared.lyricsBackgroundMode
@@ -58,21 +59,33 @@ struct AppearanceSettingsView: View {
 
             SettingsSection("常规") {
                 VStack(alignment: .leading, spacing: 14) {
-                    SettingsSwitchRow(
-                        title: "全局取色",
-                        isOn: $globalArtworkTintEnabled,
-                        detail: "重点色跟随当前歌曲封面变化"
-                    )
+                    HStack(alignment: .top, spacing: 14) {
+                        SettingsSwitchRow(
+                            title: "全局取色",
+                            isOn: $globalArtworkTintEnabled
+                        )
+                        .frame(maxWidth: .infinity)
+
+                        Divider()
+                            .frame(height: 18)
+                            .padding(.top, 2)
+
+                        SettingsSwitchRow(
+                            title: "HDR 效果",
+                            isOn: $audioVisualizationHDREnabled,
+                            detail: "开启后部分视觉元素会使用 HDR 来增强可读性与视觉效果"
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
 
                     SettingsSwitchRow(
                         title: "托盘播放进度",
-                        isOn: $dockProgressVisible,
-                        detail: "在 Dock 中的 app 图标底部显示当前歌曲进度"
+                        isOn: $dockProgressVisible
                     )
 
                     SettingsSwitchRow(
                         title: "深色/浅色跟随系统",
-                        isOn: $followSystemAppearance,
+                        isOn: $followSystemAppearance
                     )
 
                     Divider()
@@ -89,6 +102,7 @@ struct AppearanceSettingsView: View {
         }
         .onAppear {
             globalArtworkTintEnabled = settings.globalArtworkTintEnabled
+            audioVisualizationHDREnabled = settings.audioVisualizationHDREnabled
             dockProgressVisible = settings.dockProgressVisible
             followSystemAppearance = settings.followSystemAppearance
             lyricsBackgroundMode = settings.lyricsBackgroundMode
@@ -100,6 +114,9 @@ struct AppearanceSettingsView: View {
             Task { @MainActor in
                 await themeStore.refreshPalette(reason: "settings_global_tint_change")
             }
+        }
+        .onChange(of: audioVisualizationHDREnabled) { _, newValue in
+            settings.audioVisualizationHDREnabled = newValue
         }
         .onChange(of: dockProgressVisible) { _, newValue in
             settings.dockProgressVisible = newValue

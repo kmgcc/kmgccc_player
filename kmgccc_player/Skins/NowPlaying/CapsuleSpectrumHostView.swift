@@ -645,6 +645,7 @@ final class CapsuleSpectrumHostView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         installWindowVisibilityObserversIfNeeded()
+        applyColors()
         reconcileVisibleConsumer()
         if window != nil {
             // The display link binds to the view's screen; (re)create it here.
@@ -665,6 +666,9 @@ final class CapsuleSpectrumHostView: NSView {
     }
 
     @objc private func handleWindowVisibilityChanged(_ notification: Notification) {
+        if notification.name == NSWindow.didChangeScreenNotification {
+            applyColors()
+        }
         reconcileVisibleConsumer()
     }
 
@@ -692,6 +696,12 @@ final class CapsuleSpectrumHostView: NSView {
             name: NSWindow.didDeminiaturizeNotification,
             object: window
         )
+        center.addObserver(
+            self,
+            selector: #selector(handleWindowVisibilityChanged(_:)),
+            name: NSWindow.didChangeScreenNotification,
+            object: window
+        )
     }
 
     private func uninstallWindowVisibilityObservers() {
@@ -700,6 +710,7 @@ final class CapsuleSpectrumHostView: NSView {
         center.removeObserver(self, name: NSWindow.didChangeOcclusionStateNotification, object: observedWindow)
         center.removeObserver(self, name: NSWindow.didMiniaturizeNotification, object: observedWindow)
         center.removeObserver(self, name: NSWindow.didDeminiaturizeNotification, object: observedWindow)
+        center.removeObserver(self, name: NSWindow.didChangeScreenNotification, object: observedWindow)
         self.observedWindow = nil
     }
 

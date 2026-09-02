@@ -27,6 +27,7 @@ struct TrackInfoEditorCore: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @Environment(LibraryViewModel.self) private var libraryVM
+    @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(CoverDownloadService.self) private var coverDownloadService
     @Environment(NetEaseCoverService.self) private var netEaseCoverService
     @EnvironmentObject private var themeStore: ThemeStore
@@ -115,7 +116,8 @@ struct TrackInfoEditorCore: View {
             if coverCoordinator == nil {
                 coverCoordinator = CoverSearchCoordinator(
                     coverDownloadService: coverDownloadService,
-                    netEaseCoverService: netEaseCoverService
+                    netEaseCoverService: netEaseCoverService,
+                    qqMusicCoverService: cacheServices.qqMusicCoverService
                 )
             }
             scheduleArtworkPreviewDecode(reason: "onAppear")
