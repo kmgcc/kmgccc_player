@@ -188,15 +188,21 @@ final class UIStateViewModel {
     }
 
     func showWindowPlaybackQueue() {
-        isWindowPlaybackQueueVisible = true
+        withAnimation(.easeInOut(duration: 0.22)) {
+            isWindowPlaybackQueueVisible = true
+        }
     }
 
     func hideWindowPlaybackQueue() {
-        isWindowPlaybackQueueVisible = false
+        withAnimation(.easeInOut(duration: 0.22)) {
+            isWindowPlaybackQueueVisible = false
+        }
     }
 
     func toggleWindowPlaybackQueue() {
-        isWindowPlaybackQueueVisible.toggle()
+        withAnimation(.easeInOut(duration: 0.22)) {
+            isWindowPlaybackQueueVisible.toggle()
+        }
     }
 
     // MARK: - Navigation State

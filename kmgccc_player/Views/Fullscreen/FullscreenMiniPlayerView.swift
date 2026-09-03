@@ -72,6 +72,7 @@ struct FullscreenMiniPlayerView: View {
     var onProgressDraggingChanged: (Bool) -> Void = { _ in }
     var onEditTrackRequested: (Track) -> Void = { _ in }
     var onEditExternalInfoRequested: () -> Void = {}
+    var onShowDetailRequested: ((Track) -> Void)? = nil
     var foregroundProfile: FullscreenMiniPlayerForegroundProfile? = nil
     
     private let fixedBarHeight: CGFloat = 60
@@ -180,6 +181,10 @@ struct FullscreenMiniPlayerView: View {
                     onInteraction()
                     onEditExternalInfoRequested()
                 },
+                onShowDetails: onShowDetailRequested != nil ? { track in
+                    onInteraction()
+                    onShowDetailRequested?(track)
+                } : nil,
                 onInteraction: onInteraction
             )
             .equatable()
@@ -673,6 +678,7 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
     let onEditTrack: (Track) -> Void
     let onDeleteTrack: (Track) -> Void
     let onEditExternalInfo: () -> Void
+    let onShowDetails: ((Track) -> Void)?
     let onInteraction: () -> Void
 
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
@@ -804,6 +810,7 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
                     onEditTrack(t)
                 },
                 onDeleteFromLibraryRequest: onDeleteTrack,
+                onShowDetails: onShowDetails,
                 showsPlay: false,
                 showsNavigation: false,
                 diagnosticSurface: "MiniPlayerContextMenu"

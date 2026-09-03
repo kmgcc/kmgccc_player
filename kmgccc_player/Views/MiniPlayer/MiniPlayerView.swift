@@ -32,6 +32,7 @@ struct MiniPlayerView: View {
     @State private var isDragging = false
     @State private var dragProgress: Double = 0
     @State private var trackToEdit: Track?
+    @State private var trackForDetailReader: Track?
     @State private var trackDeletionRequest: TrackDeletionConfirmationRequest?
     @State private var isProgressHovering = false
     @State private var previousSymbolEffectTrigger = 0
@@ -76,6 +77,7 @@ struct MiniPlayerView: View {
                 isRefetchingLyrics: playbackCoordinator.presentation.isRefetchingLyrics,
                 textForegroundProfile: miniPlayerTextForegroundProfile,
                 trackToEdit: $trackToEdit,
+                trackForDetailReader: $trackForDetailReader,
                 isShowingExternalMatchEditor: $isShowingExternalMatchEditor,
                 onDeleteTrack: { track in
                     trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: [track])
@@ -136,6 +138,10 @@ struct MiniPlayerView: View {
         .animation(layoutAnimation, value: isPlaybackModeExpanded)
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
+                .environmentObject(themeStore)
+        }
+        .sheet(item: $trackForDetailReader) { track in
+            TrackDetailDescriptionSheet(track: track)
                 .environmentObject(themeStore)
         }
         .sheet(isPresented: $isShowingExternalMatchEditor) {
@@ -280,6 +286,11 @@ struct MiniPlayerView: View {
                     onModeChange: { mode in
                         uiState.hideWindowPlaybackQueue()
                         playbackCoordinator.setAppleMusicPlaybackMode(mode)
+                    },
+                    onCurrentModeRetap: { _ in
+                        if uiState.isWindowPlaybackQueueVisible {
+                            uiState.hideWindowPlaybackQueue()
+                        }
                     }
                 )
             }
@@ -590,6 +601,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
     let textForegroundProfile: PlusBlendTextForegroundProfile
 
     @Binding var trackToEdit: Track?
+    @Binding var trackForDetailReader: Track?
     @Binding var isShowingExternalMatchEditor: Bool
 
     let onDeleteTrack: (Track) -> Void
@@ -768,6 +780,9 @@ private struct MiniPlayerLeftSection: View, Equatable {
                     trackToEdit = t
                 },
                 onDeleteFromLibraryRequest: onDeleteTrack,
+                onShowDetails: { t in
+                    trackForDetailReader = t
+                },
                 showsPlay: false,
                 diagnosticSurface: "MiniPlayerContextMenu"
             )
@@ -1118,6 +1133,7 @@ struct AppleMusicPlaybackModeSlider: View {
     let onInteraction: (() -> Void)?
     let scale: CGFloat
     let onModeChange: (AppleMusicPlaybackMode) -> Void
+    let onCurrentModeRetap: ((AppleMusicPlaybackMode) -> Void)?
 
     init(
         mode: AppleMusicPlaybackMode,
@@ -1131,7 +1147,8 @@ struct AppleMusicPlaybackModeSlider: View {
         pillTintBlendMode: BlendMode? = nil,
         onInteraction: (() -> Void)? = nil,
         scale: CGFloat = 1.0,
-        onModeChange: @escaping (AppleMusicPlaybackMode) -> Void
+        onModeChange: @escaping (AppleMusicPlaybackMode) -> Void,
+        onCurrentModeRetap: ((AppleMusicPlaybackMode) -> Void)? = nil
     ) {
         self.mode = mode
         self.isEnabled = isEnabled
@@ -1145,6 +1162,7 @@ struct AppleMusicPlaybackModeSlider: View {
         self.onInteraction = onInteraction
         self.scale = scale
         self.onModeChange = onModeChange
+        self.onCurrentModeRetap = onCurrentModeRetap
     }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -1256,7 +1274,10 @@ struct AppleMusicPlaybackModeSlider: View {
 
     private func handleSegmentTap(_ tappedMode: AppleMusicPlaybackMode, snap: Animation) {
         onInteraction?()
-        guard tappedMode != mode else { return }
+        if tappedMode == mode {
+            onCurrentModeRetap?(tappedMode)
+            return
+        }
         commitModeChange(tappedMode, snap: snap)
     }
 

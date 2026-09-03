@@ -270,6 +270,7 @@ struct FullscreenPlayerView: View {
     @State private var isLeftActionsExpanded = false
     @State private var isQuickAppearancePanelPresented = false
     @State private var isDetailReaderPanelPresented = false
+    @State private var detailReaderTrack: Track? = nil
     /// Cover Blur fullscreen background readability maps, written by the skin
     /// background bridge and read here to resolve the local control polarity.
     @State private var backdropReadabilityState = FullscreenBackdropReadabilityState()
@@ -713,6 +714,7 @@ struct FullscreenPlayerView: View {
         embeddedInitialThemeUnlocked = false
         isQuickAppearancePanelPresented = false
         isDetailReaderPanelPresented = false
+        detailReaderTrack = nil
         isFullscreenBottomControlsAppearancePanelHovered = false
         cancelFullscreenBottomControlsAutoHide()
         cancelFullscreenSideControlCollapses()
@@ -734,7 +736,7 @@ struct FullscreenPlayerView: View {
     @ViewBuilder
     private func fullscreenContextMenu() -> some View {
         Button {
-            setDetailReaderPanelPresented(true)
+            showDetailReader(for: playbackCoordinator.presentation.localTrack)
         } label: {
             Label("查看详情", systemImage: "doc.text")
         }
@@ -752,57 +754,45 @@ struct FullscreenPlayerView: View {
         }
     }
 
-    private var fullscreenDetailReaderTitle: String {
+    private var fullscreenDetailReaderTargetTrack: Track? {
+        detailReaderTrack ?? playbackCoordinator.presentation.localTrack
+    }
+
+    private var fullscreenResolvedDetail: TrackDetailContent {
+        if let track = fullscreenDetailReaderTargetTrack {
+            return TrackDetailResolver.resolve(for: track, libraryVM: libraryVM)
+        }
         let title = playbackCoordinator.presentation.title
         let artist = playbackCoordinator.presentation.artist
+        let subtitle: String
         if !title.isEmpty, !artist.isEmpty {
-            return "\(title) - \(artist)"
+            subtitle = "\(title) - \(artist)"
+        } else {
+            subtitle = title.isEmpty ? (artist.isEmpty ? "歌曲详情" : artist) : title
         }
-        return title.isEmpty ? (artist.isEmpty ? "歌曲详情" : artist) : title
+        return TrackDetailContent(
+            title: "歌曲详情",
+            subtitle: subtitle,
+            attributionNote: nil,
+            text: ""
+        )
+    }
+
+    private var fullscreenDetailReaderTitle: String {
+        fullscreenResolvedDetail.subtitle
     }
 
     private var fullscreenDetailReaderAttributionNote: String? {
-        if let track = playbackCoordinator.presentation.localTrack {
-            let desc = track.userDescription.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-            if !desc.isEmpty {
-                return nil
-            }
-            if let album = libraryVM?.albumEntries.first(where: { $0.canonicalKey == track.albumGroupKey }) {
-                let albumDesc = album.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-                if !albumDesc.isEmpty {
-                    return "来自 \(album.displayTitle)"
-                }
-            }
-            let artistKey = LibraryNormalization.artistComponents(for: track).first?.canonicalName
-                ?? LibraryNormalization.artistComponents(track.artist).first?.canonicalName
-                ?? ""
-            if let artistEntry = libraryVM?.artistEntries.first(where: { $0.canonicalName == artistKey }) {
-                let artistDesc = artistEntry.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-                if !artistDesc.isEmpty {
-                    return "来自 \(artistEntry.displayName)"
-                }
-            }
-        }
-        return nil
+        fullscreenResolvedDetail.attributionNote
     }
 
     private var fullscreenDetailReaderText: String {
-        if let track = playbackCoordinator.presentation.localTrack {
-            let desc = track.userDescription.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-            if !desc.isEmpty { return desc }
-            if let album = libraryVM?.albumEntries.first(where: { $0.canonicalKey == track.albumGroupKey }) {
-                let albumDesc = album.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-                if !albumDesc.isEmpty { return albumDesc }
-            }
-            let artistKey = LibraryNormalization.artistComponents(for: track).first?.canonicalName
-                ?? LibraryNormalization.artistComponents(track.artist).first?.canonicalName
-                ?? ""
-            if let artistEntry = libraryVM?.artistEntries.first(where: { $0.canonicalName == artistKey }) {
-                let artistDesc = artistEntry.description.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-                if !artistDesc.isEmpty { return artistDesc }
-            }
-        }
-        return ""
+        fullscreenResolvedDetail.text
+    }
+
+    private func showDetailReader(for track: Track?) {
+        detailReaderTrack = track
+        setDetailReaderPanelPresented(true)
     }
 
     private func setDetailReaderPanelPresented(_ presented: Bool) {
@@ -815,6 +805,8 @@ struct FullscreenPlayerView: View {
                 setRightPanelDisplayState(lastRightPanelDisplayStateBeforeQueue == .hidden ? .hidden : .lyrics)
             }
             setFullscreenBottomControlsVisible(true)
+        } else {
+            detailReaderTrack = nil
         }
         withAnimation(.easeOut(duration: 0.22)) {
             isDetailReaderPanelPresented = presented
@@ -2160,6 +2152,10 @@ struct FullscreenPlayerView: View {
                         onEditExternalInfoRequested: {
                             registerFullscreenBottomControlsInteraction()
                             isShowingExternalMatchEditor = true
+                        },
+                        onShowDetailRequested: { track in
+                            registerFullscreenBottomControlsInteraction()
+                            showDetailReader(for: track)
                         },
                         foregroundProfile: fullscreenMiniPlayerForegroundProfile
                     )

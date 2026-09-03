@@ -70,6 +70,7 @@ struct TrackActionMenuContent: View {
     let onDeleteFromLibraryRequest: (Track) -> Void
     var onRemoveFromCurrentPlaylist: ((Track) -> Void)?
     var onRelinkLocation: ((Track) -> Void)?
+    var onShowDetails: ((Track) -> Void)?
     var showsPlay: Bool = true
     var showsNavigation: Bool = true
     var showsDeleteFromLibrary: Bool = true
@@ -89,6 +90,7 @@ struct TrackActionMenuContent: View {
         onDeleteFromLibraryRequest: @escaping (Track) -> Void,
         onRemoveFromCurrentPlaylist: ((Track) -> Void)? = nil,
         onRelinkLocation: ((Track) -> Void)? = nil,
+        onShowDetails: ((Track) -> Void)? = nil,
         showsPlay: Bool = true,
         showsNavigation: Bool = true,
         showsDeleteFromLibrary: Bool = true,
@@ -110,6 +112,7 @@ struct TrackActionMenuContent: View {
         self.onDeleteFromLibraryRequest = onDeleteFromLibraryRequest
         self.onRemoveFromCurrentPlaylist = onRemoveFromCurrentPlaylist
         self.onRelinkLocation = onRelinkLocation
+        self.onShowDetails = onShowDetails
         self.showsPlay = showsPlay
         self.showsNavigation = showsNavigation
         self.showsDeleteFromLibrary = showsDeleteFromLibrary
@@ -211,6 +214,16 @@ struct TrackActionMenuContent: View {
         }
 
         Divider()
+
+        if let onShowDetails {
+            Button {
+                invokeAction("showDetails") {
+                    onShowDetails(track)
+                }
+            } label: {
+                Label("查看详情", systemImage: "doc.text")
+            }
+        }
 
         Button {
             invokeAction("editTrack") {

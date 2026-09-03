@@ -162,14 +162,10 @@ struct FullscreenDetailReaderPanel: View {
     private var closeButton: some View {
         Button(action: onDismiss) {
             Image(systemName: "xmark")
-                .font(.system(size: 12 * scale, weight: .semibold))
+                .font(.system(size: 13 * scale, weight: .semibold))
                 .foregroundStyle(presentationStyle.primaryTextColor)
                 .frame(width: closeButtonSize, height: closeButtonSize)
-                .contentShape(Circle())
-                .background(
-                    Circle()
-                        .fill(presentationStyle.primaryTextColor.opacity(0.10))
-                )
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("关闭")
