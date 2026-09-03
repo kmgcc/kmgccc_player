@@ -275,6 +275,8 @@
 "menu.play_pause" = "播放/暂停";
 "menu.next_track" = "下一首";
 "menu.previous_track" = "上一首";
+"menu.seek_backward" = "快退 3 秒";
+"menu.seek_forward" = "快进 3 秒";
 "menu.show_main_window" = "显示主窗口";
 "menu.toggle_queue" = "切换播放队列";
 "menu.playback_order" = "播放顺序";

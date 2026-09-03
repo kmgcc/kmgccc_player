@@ -162,6 +162,12 @@ struct KmgcccPlayerApp: App {
             initialLibraryContext: initialLibraryContext
         )
         _appSession = StateObject(wrappedValue: appSessionHost)
+        AppDelegate.playbackCommandHandler = { [weak appSessionHost] command in
+            guard let appSessionHost else { return }
+            Task { @MainActor in
+                await appSessionHost.performPlaybackCommand(command)
+            }
+        }
         AppDelegate.launchMainWindowHandler = { @MainActor in
             guard !KmgcccPlayerApp.isRunningTests else { return }
             Log.debug("[AppLaunch] mainWindowHandler.begin", category: .ui)
@@ -251,27 +257,38 @@ struct KmgcccPlayerApp: App {
             CommandMenu(NSLocalizedString("menu.playback", comment: "Playback")) {
                 Button(NSLocalizedString("menu.play_pause", comment: "Play/Pause")) {
                     Task { @MainActor in
-                        await appSession.setupIfNeeded()
-                        appSession.playbackCoordinator?.playPause()
+                        await appSession.performPlaybackCommand(.playPause)
                     }
                 }
                 .keyboardShortcut(.space, modifiers: [])
 
                 Button(NSLocalizedString("menu.next_track", comment: "Next Track")) {
                     Task { @MainActor in
-                        await appSession.setupIfNeeded()
-                        appSession.playbackCoordinator?.next()
+                        await appSession.performPlaybackCommand(.next)
                     }
                 }
                 .keyboardShortcut(.rightArrow, modifiers: .command)
 
                 Button(NSLocalizedString("menu.previous_track", comment: "Previous Track")) {
                     Task { @MainActor in
-                        await appSession.setupIfNeeded()
-                        appSession.playbackCoordinator?.previous()
+                        await appSession.performPlaybackCommand(.previous)
                     }
                 }
                 .keyboardShortcut(.leftArrow, modifiers: .command)
+
+                Button(NSLocalizedString("menu.seek_backward", comment: "Seek Backward 3 Seconds")) {
+                    Task { @MainActor in
+                        await appSession.performPlaybackCommand(.seekRelative(-3))
+                    }
+                }
+                .keyboardShortcut(.leftArrow, modifiers: [])
+
+                Button(NSLocalizedString("menu.seek_forward", comment: "Seek Forward 3 Seconds")) {
+                    Task { @MainActor in
+                        await appSession.performPlaybackCommand(.seekRelative(3))
+                    }
+                }
+                .keyboardShortcut(.rightArrow, modifiers: [])
 
                 Divider()
 

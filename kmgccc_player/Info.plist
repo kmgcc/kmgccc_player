@@ -2,28 +2,24 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSAccentColorName</key>
-	<string>AccentColor</string>
-	<key>NSAppleEventsUsageDescription</key>
-	<string>需要控制 Music.app，以便在 Apple Music 模式下读取当前播放、同步歌词并执行播放控制。</string>
-	<key>SUAllowsAutomaticUpdates</key>
-	<true/>
-	<key>SUEnableAutomaticChecks</key>
-	<true/>
-	<key>KMGUpdateFallbackFeedURL</key>
-	<string>$(UPDATE_FALLBACK_FEED_URL)</string>
-	<key>KMGUpdatePrimaryFeedURL</key>
-	<string>$(UPDATE_PRIMARY_FEED_URL)</string>
-	<key>KMGUpdateReleaseChannel</key>
-	<string>$(UPDATE_RELEASE_CHANNEL)</string>
+	<key>KMGProductionUpdatePublicEDKey</key>
+	<string>$(PRODUCTION_UPDATE_PUBLIC_ED_KEY)</string>
 	<key>KMGTestUpdateFallbackFeedURL</key>
 	<string>$(TEST_UPDATE_FALLBACK_FEED_URL)</string>
 	<key>KMGTestUpdatePrimaryFeedURL</key>
 	<string>$(TEST_UPDATE_PRIMARY_FEED_URL)</string>
 	<key>KMGTestUpdatePublicEDKey</key>
 	<string>$(TEST_UPDATE_PUBLIC_ED_KEY)</string>
-	<key>KMGProductionUpdatePublicEDKey</key>
-	<string>$(PRODUCTION_UPDATE_PUBLIC_ED_KEY)</string>
+	<key>KMGUpdateFallbackFeedURL</key>
+	<string>$(UPDATE_FALLBACK_FEED_URL)</string>
+	<key>KMGUpdatePrimaryFeedURL</key>
+	<string>$(UPDATE_PRIMARY_FEED_URL)</string>
+	<key>KMGUpdateReleaseChannel</key>
+	<string>$(UPDATE_RELEASE_CHANNEL)</string>
+	<key>SUAllowsAutomaticUpdates</key>
+	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 	<key>SUFeedURL</key>
 	<string>$(UPDATE_PRIMARY_FEED_URL)</string>
 	<key>SUPublicEDKey</key>

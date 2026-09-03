@@ -244,7 +244,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         var throttleInterval: TimeInterval {
             switch self {
             case .seek:
-                return 0.35
+                return 0.10
             case .playbackMode:
                 return 0.45
             default:
@@ -329,6 +329,8 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     private var artworkTask: Task<Void, Never>?
     private var resolutionTask: Task<Void, Never>?
     private var controlTask: Task<Void, Never>?
+    private var controlVerificationTask: Task<Void, Never>?
+    private var activeControlRollbackState: ControlRollbackState?
     private var progressPollTask: Task<Void, Never>?
     private var consecutiveProgressPollFailures = 0
     private var progressPollingCircuitOpen = false
@@ -441,6 +443,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
     func start() {
         guard process == nil, !isStarting else { return }
+        invalidateControlWork()
         invalidateAdapterPathCache()
         guard let paths = resolveAdapterPaths() else {
             Log.warning("[SystemNowPlaying] adapter paths missing; stream not started", category: .playback)
@@ -519,6 +522,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
 
     func stop() {
         Log.info("[SystemNowPlaying] stopping stream", category: .playback)
+        invalidateControlWork()
         streamGeneration &+= 1
         unlockExternalOwner(reason: "provider_stop")
         sourceStore.setCurrentSourceID(nil)
@@ -576,6 +580,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     }
 
     func seek(to seconds: Double) {
+        guard seconds.isFinite else { return }
         runControl(.seek(seconds))
     }
 
@@ -796,31 +801,37 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                 try? await Task.sleep(nanoseconds: interval)
                 if Task.isCancelled { break }
                 guard let self else { break }
-                let (genMatch, streamRunning, paths) = await MainActor.run { () -> (Bool, Bool, AdapterPaths?) in
+                let (genMatch, streamRunning, paths, controlGenerationAtStart, controlCoolingDown) = await MainActor.run { () -> (Bool, Bool, AdapterPaths?, UInt64, Bool) in
                     (
                         self.streamGeneration == generation,
                         self.process?.isRunning == true,
-                        self.resolveAdapterPaths()
+                        self.resolveAdapterPaths(),
+                        self.controlGeneration,
+                        self.isControlCoolingDown
                     )
                 }
                 guard genMatch, streamRunning else { break }
+                guard !controlCoolingDown else { continue }
                 guard let paths else {
                     await MainActor.run {
-                        guard self.streamGeneration == generation else { return }
+                        guard self.streamGeneration == generation,
+                              self.controlGeneration == controlGenerationAtStart else { return }
                         self.recordProgressPollFailure(reason: "adapter paths unavailable")
                     }
                     continue
                 }
                 guard let payload = await Self.fetchGetPayload(paths: paths) else {
                     await MainActor.run {
-                        guard self.streamGeneration == generation else { return }
+                        guard self.streamGeneration == generation,
+                              self.controlGeneration == controlGenerationAtStart else { return }
                         self.recordProgressPollFailure(reason: "get command failed or returned no payload")
                         self.handleEmptyPayload(source: .get)
                     }
                     continue
                 }
                 await MainActor.run {
-                    guard self.streamGeneration == generation else { return }
+                    guard self.streamGeneration == generation,
+                          self.controlGeneration == controlGenerationAtStart else { return }
                     self.resetProgressPollFailures()
                     self.handlePayload(payload, source: .get)
                 }
@@ -991,6 +1002,9 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         let didChangeTrack = previousStableKey?.trackIdentity != stableKey.trackIdentity
         let didChangeStableMetadata = previousStableKey != stableKey
         if didChangeTrack {
+            lastControlSentAt.removeAll()
+            controlFailureCounts.removeAll()
+            controlDisabledUntil.removeAll()
             retireCommittedCore(previousStableKey?.identifier, replacing: stableKey.identifier)
             clearCoreSuppression(for: stableKey.identifier)
             lastCommittedCore = stableKey.identifier
@@ -2143,7 +2157,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             lyricsIsPlaying: finalLyricsIsPlaying,
             lyricsCurrentTimeOverride: finalLyricsCurrentTimeOverride,
             isControlEnabled: capabilities.canControlPlayback,
-            isSeekEnabled: false,
+            isSeekEnabled: capabilities.canSeek,
             isVolumeControlEnabled: capabilities.canSetVolume,
             isPlaybackModeControlEnabled: capabilities.canSetPlaybackMode,
             emptyTitleKey: source.notPlayingTitleKey
@@ -2162,7 +2176,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         updated.duration = progressBaseline?.duration ?? updated.duration
         updated.externalConnectionState = presentationConnectionState
         updated.isControlEnabled = currentCapabilities.canControlPlayback
-        updated.isSeekEnabled = false
+        updated.isSeekEnabled = currentCapabilities.canSeek
         updated.isVolumeControlEnabled = currentCapabilities.canSetVolume
         updated.isPlaybackModeControlEnabled = currentCapabilities.canSetPlaybackMode
         updatePresentationIfNeeded(updated)
@@ -2236,13 +2250,15 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         let skipDisabled =
             isControlKeyTemporarilyDisabled("next") &&
             isControlKeyTemporarilyDisabled("previous")
+        let duration = payload.duration ?? progressBaseline?.duration ?? 0
+        let canSeek = hasTrack
+            && duration > 0
+            && reliability == .reliable
+            && !isControlKeyTemporarilyDisabled("seek")
         return ExternalPlaybackCapabilities(
             canControlPlayback: hasTrack && !playbackControlDisabled,
             canSkip: hasTrack && !skipDisabled,
-            // mediaremote-adapter seek currently uses global MRMediaRemoteSetElapsedTime
-            // and fails to target the visible Control Center session for some players;
-            // keep disabled until adapter-level seek is fixed.
-            canSeek: false,
+            canSeek: canSeek,
             canSetVolume: false,
             canSetPlaybackMode: false
         )
@@ -2265,6 +2281,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     }
 
     private func updateUnavailablePresentation(titleKey: String, connectionState: ExternalPlaybackConnectionState) {
+        invalidateControlWork()
         cancelPerTrackTasks()
         pendingHeavyPresentationTask?.cancel()
         pendingHeavyPresentationTask = nil
@@ -2308,6 +2325,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     }
 
     private func updateDisconnected(reason: String) {
+        invalidateControlWork()
         pendingEmptyPayloadTask?.cancel()
         pendingEmptyPayloadTask = nil
         streamObservationTask?.cancel()
@@ -2563,12 +2581,18 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             Log.warning("[SystemNowPlaying] control skipped because adapter paths are missing: \(String(describing: action))", category: .playback)
             return
         }
-        let rollbackState = ControlRollbackState(
+        controlTask?.cancel()
+        controlTask = nil
+        controlVerificationTask?.cancel()
+        controlVerificationTask = nil
+        let currentRollbackState = ControlRollbackState(
             payload: lastPayload,
             stableKey: latestStableMetadataKey,
             baseline: progressBaseline,
             presentation: presentation
         )
+        let rollbackState = activeControlRollbackState ?? currentRollbackState
+        activeControlRollbackState = rollbackState
         // Capture pre-command snapshot for later verification.
         let preCore = latestStableMetadataKey?.identifier
         let prePlaying: Bool? = rollbackState.payload.map { isPayloadPlaying($0) }
@@ -2580,13 +2604,14 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         logControlSend(action)
         controlTask = Task { [weak self] in
             let success = await Self.performControl(action, paths: paths)
+            guard !Task.isCancelled else { return }
             await MainActor.run {
-                guard let self else { return }
+                guard let self,
+                      self.controlGeneration == generation else { return }
+                self.controlTask = nil
                 Log.info("[SystemNowPlaying] command process success=\(success) action=\(action)", category: .playback)
                 if !success {
-                    if self.controlGeneration == generation {
-                        self.rollbackOptimisticState(rollbackState)
-                    }
+                    self.rollbackOptimisticState(rollbackState)
                     self.logSeekVerificationUnavailableIfNeeded(action)
                     self.logCommandVerification(
                         action: action,
@@ -2634,7 +2659,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         case .playPause, .play, .pause, .next, .previous, .seek:
             break
         }
-        Task { [weak self] in
+        controlVerificationTask = Task { [weak self] in
             let checkpoints: [UInt64]
             switch action {
             case .next, .previous:
@@ -2649,6 +2674,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                 let delay = checkpoint > elapsed ? checkpoint - elapsed : 0
                 elapsed = checkpoint
                 try? await Task.sleep(nanoseconds: delay)
+                guard !Task.isCancelled else { return }
                 guard let self else { return }
                 let shouldRun = await MainActor.run { self.controlGeneration == generation }
                 guard shouldRun else { return }
@@ -2896,7 +2922,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         case .next, .previous:
             return currentCapabilities.canSkip
         case .seek:
-            return false
+            return currentCapabilities.canSeek
         case .playbackMode:
             return false
         }
@@ -3028,6 +3054,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
                 self.controlCooldownTask = nil
                 self.optimisticPlayingState = nil
                 self.controlCooldownUntil = .distantPast
+                self.activeControlRollbackState = nil
                 self.clearControlExpectation()
                 Log.info("[SystemNowPlaying] control cooldown end action=\(action) reason=timeout", category: .playback)
             }
@@ -3060,8 +3087,11 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
     private func clearControlCooldown(reason: String) {
         controlCooldownTask?.cancel()
         controlCooldownTask = nil
+        controlVerificationTask?.cancel()
+        controlVerificationTask = nil
         optimisticPlayingState = nil
         controlCooldownUntil = .distantPast
+        activeControlRollbackState = nil
         clearControlExpectation()
         Log.info("[SystemNowPlaying] control cooldown end reason=\(reason)", category: .playback)
     }
@@ -3110,6 +3140,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         progressBaseline = rollbackState.baseline
         presentation = rollbackState.presentation
         optimisticPlayingState = nil
+        activeControlRollbackState = nil
         controlCooldownTask?.cancel()
         controlCooldownTask = nil
         controlCooldownUntil = .distantPast
@@ -3194,8 +3225,11 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             return await runAdapterCommand(paths: paths, arguments: ["send", "4"])
         case .previous:
             return await runAdapterCommand(paths: paths, arguments: ["send", "5"])
-        case .seek:
-            return false
+        case .seek(let seconds):
+            return await runAdapterCommand(
+                paths: paths,
+                arguments: ["seek", "\(seekMicros(for: seconds))"]
+            )
         case .playbackMode(let mode):
             let shuffleOK = await runAdapterCommand(paths: paths, arguments: ["shuffle", "\(shuffleModeID(for: mode))"])
             let repeatOK = await runAdapterCommand(paths: paths, arguments: ["repeat", "\(repeatModeID(for: mode))"])
@@ -3503,8 +3537,7 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
         resolutionTask?.cancel()
         resolutionTask = nil
         cancelPerTrackTasks()
-        controlTask?.cancel()
-        controlTask = nil
+        invalidateControlWork()
         pendingEmptyPayloadTask?.cancel()
         pendingEmptyPayloadTask = nil
         streamObservationTask?.cancel()
@@ -3550,6 +3583,18 @@ final class SystemNowPlayingProvider: ExternalPlaybackProvider {
             sourceStore.setCurrentSourceID(nil)
             presentation = .emptySystemNowPlaying
         }
+    }
+
+    private func invalidateControlWork() {
+        controlGeneration &+= 1
+        controlTask?.cancel()
+        controlTask = nil
+        controlVerificationTask?.cancel()
+        controlVerificationTask = nil
+        activeControlRollbackState = nil
+        lastControlSentAt.removeAll()
+        controlFailureCounts.removeAll()
+        controlDisabledUntil.removeAll()
     }
 
     private func cancelPerTrackTasks() {

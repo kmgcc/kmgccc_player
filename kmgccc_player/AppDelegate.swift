@@ -11,6 +11,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var shared: AppDelegate?
     static var launchMainWindowHandler: (@MainActor () -> Void)?
+    static var playbackCommandHandler: (@MainActor (AppPlaybackCommand) -> Void)?
     static var applicationShouldTerminateHandler:
         ((@escaping @MainActor @Sendable () -> Void) -> Void)?
     static var shouldCancelTerminationForPendingUpdateHandler: (@MainActor () -> Bool)?
@@ -24,7 +25,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let dockController = DockController()
     private weak var playbackCoordinator: PlaybackCoordinator?
-    private var spacebarMonitor: Any?
+    private var keyboardPlaybackMonitor: Any?
+    private var seekAcceleration = PlaybackSeekAcceleration()
+    private var seekTarget: Double?
+    private var seekPresentationIdentity: String?
     private var terminationReplyPending = false
 
     override init() {
@@ -36,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Log.debug("[AppDelegate] didFinishLaunching", category: .ui)
         disableWindowTabbing()
         configureMainMenu()
-        installSpacebarPlayPauseMonitor()
+        installKeyboardPlaybackMonitor()
         dockController.installDockTile()
         DispatchQueue.main.async {
             Log.debug("[AppDelegate] launchMainWindowHandler.invoke", category: .ui)
@@ -73,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func configureDockPlayback(playbackCoordinator: PlaybackCoordinator) {
         self.playbackCoordinator = playbackCoordinator
+        resetKeyboardSeekState()
         dockController.configure(playbackCoordinator: playbackCoordinator)
     }
 
@@ -88,34 +93,123 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWindow.allowsAutomaticWindowTabbing = false
     }
 
-    // MARK: - Spacebar play/pause monitor
+    // MARK: - Keyboard playback monitor
 
-    /// Intercepts bare-spacebar keyDown events app-wide so that play/pause
-    /// works even when an `NSTableView` (backing SwiftUI `List`) has keyboard
-    /// focus. Without this, `NSTableView.keyDown` consumes the space key
-    /// for page-scroll before the menu bar shortcut can fire.
-    private func installSpacebarPlayPauseMonitor() {
-        spacebarMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            // Only intercept bare spacebar (keyCode 49, no significant modifiers).
-            guard event.keyCode == 49 else { return event }
+    /// Intercepts bare playback keys app-wide so they work even when an
+    /// `NSTableView` (backing SwiftUI `List`) has keyboard focus. Without this,
+    /// `NSTableView.keyDown` consumes space/arrow keys before the menu bar
+    /// shortcut can fire.
+    private func installKeyboardPlaybackMonitor() {
+        keyboardPlaybackMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let dominated = event.modifierFlags.intersection([.command, .option, .control, .shift])
             guard dominated.isEmpty else { return event }
 
             // Don't intercept when a text input is the first responder — the
-            // user is typing a space character.
-            if let responder = event.window?.firstResponder {
-                if responder is NSTextView || responder is NSTextField {
-                    return event
-                }
-                if String(describing: type(of: responder)).contains("FieldEditor") {
-                    return event
-                }
+            // user is typing or moving the caret in a text field.
+            guard let self, !self.isTextInputFirstResponder(in: event.window) else {
+                return event
             }
 
-            // Forward to playback coordinator.
-            self?.playbackCoordinator?.playPause()
-            return nil // consume the event
+            switch event.keyCode {
+            case 49: // Space
+                return self.dispatchPlaybackCommand(.playPause) ? nil : event
+            case 123: // Left arrow
+                guard !event.isARepeat else {
+                    return self.canHandleSeekKey ? nil : event
+                }
+                return self.handleSeekKey(.backward) ? nil : event
+            case 124: // Right arrow
+                guard !event.isARepeat else {
+                    return self.canHandleSeekKey ? nil : event
+                }
+                return self.handleSeekKey(.forward) ? nil : event
+            default:
+                return event
+            }
         }
+    }
+
+    private func dispatchPlaybackCommand(_ command: AppPlaybackCommand) -> Bool {
+        if let playbackCoordinator {
+            switch command {
+            case .play:
+                playbackCoordinator.resume()
+            case .pause:
+                playbackCoordinator.pause()
+            case .playPause:
+                playbackCoordinator.playPause()
+            case .next:
+                playbackCoordinator.next()
+            case .previous:
+                playbackCoordinator.previous()
+            case .seekRelative(let offset):
+                playbackCoordinator.seek(by: offset)
+            case .seekTo(let position):
+                playbackCoordinator.seek(to: position)
+            }
+            return true
+        }
+
+        guard let handler = Self.playbackCommandHandler else { return false }
+        handler(command)
+        return true
+    }
+
+    private func handleSeekKey(_ direction: PlaybackSeekAcceleration.Direction) -> Bool {
+        guard let playbackCoordinator,
+              playbackCoordinator.presentation.hasTrack,
+              playbackCoordinator.presentation.isSeekEnabled else {
+            resetKeyboardSeekState()
+            return false
+        }
+
+        let identity = seekIdentity(for: playbackCoordinator.presentation)
+        if seekPresentationIdentity != identity {
+            resetKeyboardSeekState()
+            seekPresentationIdentity = identity
+        }
+
+        let step = seekAcceleration.nextStep(
+            direction: direction,
+            at: ProcessInfo.processInfo.systemUptime
+        )
+        let reference = step.continuesFromPreviousTarget
+            ? (seekTarget ?? playbackCoordinator.presentation.currentTime)
+            : playbackCoordinator.presentation.currentTime
+        let signedOffset = direction == .forward ? step.seconds : -step.seconds
+        let duration = playbackCoordinator.presentation.duration
+        let upperBound = duration > 0 ? duration : .greatestFiniteMagnitude
+        let target = min(max(reference + signedOffset, 0), upperBound)
+        seekTarget = target
+        playbackCoordinator.seek(to: target)
+        return true
+    }
+
+    private var canHandleSeekKey: Bool {
+        guard let playbackCoordinator else { return false }
+        return playbackCoordinator.presentation.hasTrack
+            && playbackCoordinator.presentation.isSeekEnabled
+    }
+
+    private func seekIdentity(for presentation: NowPlayingPresentation) -> String {
+        let trackIdentity = presentation.externalStableKey
+            ?? presentation.localTrack?.id.uuidString
+            ?? "\(presentation.title)|\(presentation.artist)|\(presentation.duration)"
+        return "\(presentation.source.rawValue)|\(trackIdentity)"
+    }
+
+    private func resetKeyboardSeekState() {
+        seekAcceleration.reset()
+        seekTarget = nil
+        seekPresentationIdentity = nil
+    }
+
+    private func isTextInputFirstResponder(in window: NSWindow?) -> Bool {
+        guard let responder = window?.firstResponder else { return false }
+        if responder is NSTextView || responder is NSTextField {
+            return true
+        }
+        return String(describing: type(of: responder)).contains("FieldEditor")
     }
 
     private func configureMainMenu() {
