@@ -6,6 +6,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [实现约束与坑](PITFALLS.md) | 只收仍生效的实现约束与坑；**改对应功能代码前先读** |
 | [架构概览](architecture.md) | 应用组合根、资料库 session、本地与外部播放、统一展示模型、歌词、主题和频谱的主链路 |
 | [外部组件与构建依赖](dependencies.md) | AMLL、LDDC、QQ Music Helper、MediaRemoteAdapter、SACAD 与 Swift Package 依赖 |
 | [歌词渲染系统](lyric-rendering.md) | TTML 解析、WebView 生命周期、多 surface 管理、时间偏移和提前切行算法 |
@@ -14,11 +15,18 @@
 | [资料库写入 authority matrix](library-write-authority.md) | Phase 0 的函数级持久化 owner、提交顺序、失败补偿与生命周期合同 |
 | [Automation CLI / 本地 IPC](automation-cli-ipc.md) | Phase 1 的版本化只读协议、AF_UNIX framing、CLI 探针和边界 |
 | [本地音乐资料库重构计划](music-library-rearchitecture-plan.md) | 原位资料库重点重构、托管兼容、文件夹与播放列表关系、领域模型迁移、分阶段实施和验收 |
-| [阶段 0-1 入口审计](music-library-stage0-1-entry-audit.md) | 已冻结入口、生命周期 owner、服务链路和阶段验收基线 |
-| [阶段 8 验收记录](music-library-stage8-acceptance.md) | 诊断投影、重复审查、原位排除目录、搜索扩展、批量写回状态和未完成验收边界 |
+| [阶段 0-1 入口审计](archive/music-library-stage0-1-entry-audit.md) | 时点快照（已归档）：阶段 0-1 已冻结入口、生命周期 owner、服务链路和验收基线 |
+| [阶段 8 验收记录](archive/music-library-stage8-acceptance.md) | 时点快照（已归档）：诊断投影、重复审查、原位排除目录、搜索扩展、批量写回状态和验收边界 |
 | [曲库搜索](search.md) | FTS5、字符 n-gram、TTML 纯文本提取、候选召回与排序 |
 | [偏好随机播放](smart-shuffle.md) | 行为信号、负向衰减、探索与再曝光的权重模型 |
 | [崩溃报告与分析](crash-reporting.md) | 捕获与上报架构、隐私边界、Breadcrumb/会话关联、GitHub Release dSYM、符号化和受控验证 |
+| [代码重构计划](code-refactor-plan.md) | 上帝文件拆分、print 清理与测试保险网的分阶段路线图（含进度表） |
+
+## 文档分区
+
+- 权威文档：上表所列，随代码演进维护。
+- [PITFALLS.md](PITFALLS.md)：只收仍生效的坑，改代码前先读。
+- [archive/](archive/README.md)：不再维护的时点快照，结论已蒸馏进权威文档或 PITFALLS。
 
 ## 术语约定
 
