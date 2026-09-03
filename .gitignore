@@ -98,3 +98,6 @@ archive/
 .claude/worktrees/
 .worktrees/
 superteam/
+
+# Repo-root reference screenshots (kept locally, not published)
+/screenshots/
