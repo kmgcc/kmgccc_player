@@ -8,6 +8,71 @@
 import AppKit
 import SwiftUI
 
+enum AppPlaybackCommand: Sendable {
+    case play
+    case pause
+    case playPause
+    case next
+    case previous
+    case seekRelative(TimeInterval)
+    case seekTo(TimeInterval)
+}
+
+struct PlaybackSeekStep: Equatable, Sendable {
+    let seconds: Double
+    let continuesFromPreviousTarget: Bool
+}
+
+/// Converts rapid discrete arrow-key taps into progressively larger relative
+/// seeks. Key-repeat events are filtered by AppDelegate so holding an arrow
+/// does not create an unbounded stream of helper-process commands.
+struct PlaybackSeekAcceleration {
+    enum Direction: Sendable, Equatable {
+        case backward
+        case forward
+    }
+
+    static let rapidPressWindow: TimeInterval = 0.45
+    private static let stepDurations: [Double] = [3, 6, 10, 15, 20, 30]
+
+    private(set) var pressCount = 0
+    private var lastDirection: Direction?
+    private var lastPressUptime: TimeInterval?
+
+    mutating func nextStep(
+        direction: Direction,
+        at uptime: TimeInterval
+    ) -> PlaybackSeekStep {
+        let isRapidContinuation: Bool
+        if let lastDirection,
+           let lastPressUptime,
+           lastDirection == direction,
+           uptime >= lastPressUptime,
+           uptime - lastPressUptime <= Self.rapidPressWindow {
+            isRapidContinuation = true
+        } else {
+            isRapidContinuation = false
+        }
+
+        pressCount = isRapidContinuation
+            ? min(pressCount + 1, Self.stepDurations.count)
+            : 1
+        lastDirection = direction
+        lastPressUptime = uptime
+
+        return PlaybackSeekStep(
+            seconds: Self.stepDurations[pressCount - 1],
+            continuesFromPreviousTarget: isRapidContinuation
+        )
+    }
+
+    mutating func reset() {
+        pressCount = 0
+        lastDirection = nil
+        lastPressUptime = nil
+    }
+}
+
 @MainActor
 struct PlaybackCommands: Commands {
     let appSession: AppSessionHost

@@ -267,6 +267,7 @@ final class PlaybackCoordinator {
     }
 
     func seek(to seconds: Double) {
+        guard seconds.isFinite else { return }
         recordCrashPlaybackCommand(.seek)
         switch activeSource {
         case .local:
@@ -283,6 +284,20 @@ final class PlaybackCoordinator {
         }
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
+    }
+
+    func seek(by offset: Double) {
+        guard offset.isFinite,
+              presentation.hasTrack,
+              presentation.isSeekEnabled else {
+            Log.debug("[PlaybackCoordinator] relative seek ignored; no seekable presentation", category: .playback)
+            return
+        }
+
+        let current = presentation.currentTime.isFinite ? max(0, presentation.currentTime) : 0
+        let unclampedTarget = current + offset
+        let upperBound = presentation.duration > 0 ? presentation.duration : .greatestFiniteMagnitude
+        seek(to: min(max(unclampedTarget, 0), upperBound))
     }
 
     func setVolume(_ volume: Double) {
