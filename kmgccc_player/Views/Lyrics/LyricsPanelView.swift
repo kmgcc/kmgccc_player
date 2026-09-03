@@ -187,10 +187,7 @@ struct LyricsPanelView: View {
 
     @ViewBuilder
     private var panelContent: some View {
-        if uiState.isWindowPlaybackQueueVisible {
-            WindowPlaybackQueuePanelView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        } else {
+        ZStack {
             ZStack {
                 if !playbackCoordinator.presentation.hasTrack {
                     emptyStateView
@@ -205,7 +202,12 @@ struct LyricsPanelView: View {
                     lyricsUnavailableOverlay(message: message)
                 }
             }
+            .opacity(uiState.isWindowPlaybackQueueVisible ? 0 : 1)
+
+            WindowPlaybackQueuePanelView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
+        .animation(.easeInOut(duration: 0.22), value: uiState.isWindowPlaybackQueueVisible)
     }
 
     // MARK: - Actions
@@ -385,6 +387,7 @@ struct WindowPlaybackQueuePanelView: View {
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var hasPerformedInitialScroll = false
 
@@ -401,29 +404,30 @@ struct WindowPlaybackQueuePanelView: View {
     }
 
     var body: some View {
-        if uiState.isWindowPlaybackQueueVisible {
-            VStack(spacing: 0) {
-                header
-                    .padding(.horizontal, 22)
-                    .padding(.top, 20)
-                    .padding(.bottom, 12)
+        ZStack {
+            if uiState.isWindowPlaybackQueueVisible {
+                VStack(spacing: 0) {
+                    header
+                        .padding(.horizontal, 22)
+                        .padding(.top, 20)
+                        .padding(.bottom, 12)
 
-                if tracks.isEmpty {
-                    emptyQueueView
-                } else {
-                    queueList
-                        .padding(.horizontal, 14)
-                        .padding(.bottom, 18)
+                    if tracks.isEmpty {
+                        emptyQueueView
+                    } else {
+                        queueList
+                            .padding(.horizontal, 14)
+                            .padding(.bottom, 18)
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .contentShape(Rectangle())
+                .onTapGesture {}
+                .transition(.opacity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .contentShape(Rectangle())
-            .onTapGesture {}
-        } else {
-            Color.clear
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .animation(reduceMotion ? .none : .easeInOut(duration: 0.22), value: uiState.isWindowPlaybackQueueVisible)
     }
 
     private var header: some View {

@@ -331,10 +331,32 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
 
         let contentPoint = contentView.convert(event.locationInWindow, from: nil)
         guard !splitViewController.containsWindowContentPointInLyricsPane(contentPoint) else { return }
+        guard !isPointInsideMiniPlayer(contentPoint) else { return }
 
         DispatchQueue.main.async { [weak self] in
             self?.appSession.uiState.hideWindowPlaybackQueue()
         }
+    }
+
+    private func isPointInsideMiniPlayer(_ contentPoint: NSPoint) -> Bool {
+        let layoutState = HomeWindowLayoutState.shared
+        let swiftUIRect = layoutState.miniPlayerFrameInWindow
+        guard swiftUIRect.width > 0.5, swiftUIRect.height > 0.5 else { return false }
+        guard let window, let contentView = window.contentView else { return false }
+
+        let appkitRect: CGRect
+        if contentView.isFlipped {
+            appkitRect = swiftUIRect
+        } else {
+            appkitRect = CGRect(
+                x: swiftUIRect.minX,
+                y: contentView.bounds.height - swiftUIRect.maxY,
+                width: swiftUIRect.width,
+                height: swiftUIRect.height
+            )
+        }
+
+        return appkitRect.insetBy(dx: -6, dy: -6).contains(contentPoint)
     }
 
     func windowDidBecomeMain(_ notification: Notification) {

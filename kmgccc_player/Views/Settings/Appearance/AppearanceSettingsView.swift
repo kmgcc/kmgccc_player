@@ -62,7 +62,8 @@ struct AppearanceSettingsView: View {
                     HStack(alignment: .top, spacing: 14) {
                         SettingsSwitchRow(
                             title: "全局取色",
-                            isOn: $globalArtworkTintEnabled
+                            isOn: $globalArtworkTintEnabled,
+                            detail: "开启后界面配色将跟随当前播放封面的主色调动态变化"
                         )
                         .frame(maxWidth: .infinity)
 

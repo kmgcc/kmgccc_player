@@ -591,7 +591,10 @@ struct SidebarView: View {
             .padding(.horizontal, 16)
             .frame(height: 32, alignment: .center)
             .background(
-                selectionFill(isSelected: currentSelection == selection)
+                selectionFill(
+                    isSelected: currentSelection == selection,
+                    shape: .capsule
+                )
             )
             .contentShape(Rectangle())
         }
@@ -1196,10 +1199,25 @@ struct SidebarView: View {
         }
     }
 
+    private enum SidebarSelectionHighlightShape {
+        case capsule
+        case roundedRectangle
+    }
+
     @ViewBuilder
-    private func selectionFill(isSelected: Bool) -> some View {
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(isSelected ? themeStore.selectionFill : Color.clear)
+    private func selectionFill(
+        isSelected: Bool,
+        shape: SidebarSelectionHighlightShape = .roundedRectangle
+    ) -> some View {
+        let fill = isSelected ? themeStore.selectionFill : Color.clear
+        switch shape {
+        case .capsule:
+            Capsule(style: .continuous)
+                .fill(fill)
+        case .roundedRectangle:
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(fill)
+        }
     }
 
     private func play(_ playlist: Playlist) {
