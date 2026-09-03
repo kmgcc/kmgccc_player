@@ -59,6 +59,7 @@ Tools/ColorGoldenMaster/
 build/
 /.build/
 Dependencies/PlayerAutomation/.build/
+Dependencies/PlayerAutomation/.swiftpm/
 *.project/xcuserdata
 *.project/xcshareddata
 *.project/project.xcworkspace/xcuserdata

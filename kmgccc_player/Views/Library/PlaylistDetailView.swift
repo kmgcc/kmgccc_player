@@ -32,6 +32,7 @@ struct PlaylistDetailView: View {
 
 
     @State private var trackToEdit: Track?
+    @State private var trackForDetailReader: Track?
     @State private var trackDeletionRequest: TrackDeletionConfirmationRequest?
     @State private var batchEditRequest: BatchEditRequest?
     @State private var trackScrollFadeState = ScrollEdgeFadeState()
@@ -101,6 +102,10 @@ struct PlaylistDetailView: View {
         .frame(minWidth: 320)
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
+        }
+        .sheet(item: $trackForDetailReader) { track in
+            TrackDetailDescriptionSheet(track: track)
+                .environmentObject(themeStore)
         }
         .sheet(
             item: $batchEditRequest,
@@ -695,6 +700,9 @@ struct PlaylistDetailView: View {
                     },
                     onRelinkLocation: { track in
                         relinkTrackLocation(track)
+                    },
+                    onShowDetails: { track in
+                        trackForDetailReader = track
                     }
                 ))
             }
