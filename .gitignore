@@ -91,7 +91,7 @@ dist/
 
 # Local build outputs
 .derivedDataLocalBuild/
-archive/
+/archive/
 *.flac
 *.bak
 *.profraw
