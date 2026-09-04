@@ -51,6 +51,7 @@ Tools/ColorGoldenMaster/
 .playwright-mcp/
 .mnemon/
 .omo/
+.dsh-vision-router/
 
 # macOS
 .DS_Store
