@@ -86,9 +86,6 @@ struct FullscreenMiniPlayerView: View {
 
     @State private var isDragging = false
     @State private var dragProgress: Double = 0
-    @State private var previousSymbolEffectTrigger = 0
-    @State private var playPauseSymbolEffectTrigger = 0
-    @State private var nextSymbolEffectTrigger = 0
     @State private var artworkImage: NSImage?
     @State private var isPlaybackModeExpanded = false
     @State private var isMiniPlayerHovering = false
@@ -96,14 +93,10 @@ struct FullscreenMiniPlayerView: View {
 
     // Computed properties based on settings and scale
     private var barHeight: CGFloat { fixedBarHeight * scale }
-    private var artworkSize: CGFloat { barHeight * 0.73 }
-    private var controlSize: CGFloat { barHeight * 0.6 }
-    private var iconSize: CGFloat { barHeight * 0.27 }
-    private var primaryIconSize: CGFloat { barHeight * 0.33 }
     private var layoutMetrics: FullscreenMiniPlayerLayoutMetrics {
         FullscreenMiniPlayerLayoutMetrics(scale: scale)
     }
-    
+
     // Layout constants scaled
     private var trackInfoWidth: CGFloat { layoutMetrics.trackInfoWidth }
     private var controlsWidth: CGFloat { layoutMetrics.controlsWidth }
@@ -253,57 +246,49 @@ struct FullscreenMiniPlayerView: View {
         let presentation = playbackCoordinator.stablePresentation
         let isEnabled = presentation.isControlEnabled
         let isTrackControlEnabled = isEnabled && presentation.hasTrack
+        let metrics = AnimatedMediaControlMetrics.fullscreenMiniPlayer(scale: scale)
         return HStack(spacing: controlsHSpacing) {
             // Previous
-            Button {
-                onInteraction()
-                previousSymbolEffectTrigger += 1
-                playbackCoordinator.previous()
-            } label: {
-                Image(systemName: "backward.fill")
-                    .font(.system(size: iconSize, weight: .semibold))
-                    .foregroundStyle(isTrackControlEnabled ? controlPrimaryColor : controlDisabledColor)
-                    .compositingGroup()
-                    .blendMode(isTrackControlEnabled ? controlBlendMode : .normal)
-                    .symbolEffect(.wiggle, value: previousSymbolEffectTrigger)
-                    .frame(width: controlSize, height: controlSize)
-            }
-            .buttonStyle(.plain)
-            .disabled(!isTrackControlEnabled)
+            AnimatedSkipButton(
+                direction: .previous,
+                enabled: isTrackControlEnabled,
+                metrics: metrics,
+                color: controlPrimaryColor,
+                disabledColor: controlDisabledColor,
+                blendMode: controlBlendMode,
+                action: {
+                    onInteraction()
+                    playbackCoordinator.previous()
+                }
+            )
 
             // Play/Pause
-            Button {
-                onInteraction()
-                playPauseSymbolEffectTrigger += 1
-                playbackCoordinator.playPause()
-            } label: {
-                Image(systemName: presentation.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: primaryIconSize, weight: .semibold))
-                    .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
-                    .compositingGroup()
-                    .blendMode(isEnabled ? controlBlendMode : .normal)
-                    .symbolEffect(.bounce, value: playPauseSymbolEffectTrigger)
-                    .frame(width: controlSize, height: controlSize)
-            }
-            .buttonStyle(.plain)
-            .disabled(!isEnabled)
+            AnimatedPlayPauseButton(
+                isPlaying: presentation.isPlaying,
+                enabled: isEnabled,
+                metrics: metrics,
+                color: controlPrimaryColor,
+                disabledColor: controlDisabledColor,
+                blendMode: controlBlendMode,
+                action: {
+                    onInteraction()
+                    playbackCoordinator.playPause()
+                }
+            )
 
             // Next
-            Button {
-                onInteraction()
-                nextSymbolEffectTrigger += 1
-                playbackCoordinator.next()
-            } label: {
-                Image(systemName: "forward.fill")
-                    .font(.system(size: iconSize, weight: .semibold))
-                    .foregroundStyle(isTrackControlEnabled ? controlPrimaryColor : controlDisabledColor)
-                    .compositingGroup()
-                    .blendMode(isTrackControlEnabled ? controlBlendMode : .normal)
-                    .symbolEffect(.wiggle, value: nextSymbolEffectTrigger)
-                    .frame(width: controlSize, height: controlSize)
-            }
-            .buttonStyle(.plain)
-            .disabled(!isTrackControlEnabled)
+            AnimatedSkipButton(
+                direction: .next,
+                enabled: isTrackControlEnabled,
+                metrics: metrics,
+                color: controlPrimaryColor,
+                disabledColor: controlDisabledColor,
+                blendMode: controlBlendMode,
+                action: {
+                    onInteraction()
+                    playbackCoordinator.next()
+                }
+            )
         }
     }
 
