@@ -178,6 +178,12 @@ final class AppKitMainSplitWindowController: NSWindowController, NSWindowDelegat
         )
     }
 
+    static func synchronizeLyricsSurfaceAfterFullscreenTransition(reason: String) {
+        sharedController?.splitViewController.synchronizeLyricsSurfaceAfterFullscreenTransition(
+            reason: reason
+        )
+    }
+
     static func currentSidebarWidth() -> CGFloat {
         sharedController?.splitViewController.currentSidebarWidth ?? 0
     }

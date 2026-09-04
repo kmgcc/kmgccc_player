@@ -195,6 +195,10 @@ struct BatchTrackEditSheet: View {
             leaveBatchPreviewSession()
             LyricsSurfaceManager.shared.deactivate(role: .batchPreview)
             coverCoordinator?.cancelSearch()
+            // Candidate values include downloaded cover bytes; they are only
+            // needed while this batch sheet is visible.
+            coverCoordinator?.clear()
+            metadataCandidates.removeAll(keepingCapacity: false)
             
             // Print final summary
             let totalCount = tracks.count

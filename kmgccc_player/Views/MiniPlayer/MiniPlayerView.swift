@@ -45,8 +45,8 @@ struct MiniPlayerView: View {
 
     private var playbackModeExpandedWidth: CGFloat { 168 }
     private var playbackModeCollapsedWidth: CGFloat { 44 }
-    private var playbackModeWidth: CGFloat {
-        let expandedWidth = playbackCoordinator.presentation.source.isExternal ? 150 : playbackModeExpandedWidth
+    private func playbackModeWidth(for presentation: NowPlayingPresentation) -> CGFloat {
+        let expandedWidth = presentation.source.isExternal ? 150 : playbackModeExpandedWidth
         return isPlaybackModeExpanded ? expandedWidth : playbackModeCollapsedWidth
     }
     private var layoutAnimation: Animation {
@@ -60,66 +60,93 @@ struct MiniPlayerView: View {
     var body: some View {
         let _ = ContextMenuDiagnostics.markBodyUpdate(
             "contextMenu.miniPlayerBodyUpdate",
-            detail: "surface=MiniPlayerView, track=\(FirstUseHitchDiagnostics.trackIDPrefix(playbackCoordinator.presentation.localTrack?.id)), isPlaying=\(playbackCoordinator.presentation.isPlaying)"
+            detail: "surface=MiniPlayerView"
         )
         return ZStack(alignment: .topLeading) {
             HStack(spacing: 12) {
             // MARK: - Left: Cover enters embedded fullscreen player, text keeps library/now playing toggle
-            MiniPlayerLeftSection(
-                hasTrack: playbackCoordinator.presentation.hasTrack,
-                isArtworkLoading: playbackCoordinator.presentation.isArtworkLoading,
-                displayTitle: playbackCoordinator.presentation.title,
-                displayArtist: playbackCoordinator.presentation.artist,
-                emptyTitleKey: playbackCoordinator.presentation.emptyTitleKey,
-                artworkImage: artworkImage,
-                contextMenuRefreshTrigger: libraryVM.refreshTrigger,
-                isFullscreenPresented: fullscreenWindowManager.isFullscreenPlayerPresented,
-                isRefetchingLyrics: playbackCoordinator.presentation.isRefetchingLyrics,
-                textForegroundProfile: miniPlayerTextForegroundProfile,
-                trackToEdit: $trackToEdit,
-                trackForDetailReader: $trackForDetailReader,
-                isShowingExternalMatchEditor: $isShowingExternalMatchEditor,
-                onDeleteTrack: { track in
-                    trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: [track])
-                },
-                onFullscreen: { fullscreenWindowManager.showFullscreenPlayerInWindow() },
-                onToggleNowPlaying: {
-                    if uiState.contentMode == .nowPlaying {
-                        uiState.returnToLibraryFromNowPlaying()
-                    } else {
-                        uiState.showNowPlaying()
+            MiniPlayerPresentationReader { presentation in
+                MiniPlayerLeftSection(
+                    hasTrack: presentation.hasTrack,
+                    isArtworkLoading: presentation.isArtworkLoading,
+                    displayTitle: presentation.title,
+                    displayArtist: presentation.artist,
+                    emptyTitleKey: presentation.emptyTitleKey,
+                    artworkImage: artworkImage,
+                    isPlaying: presentation.isPlaying,
+                    contextMenuRefreshTrigger: libraryVM.refreshTrigger,
+                    isFullscreenPresented: fullscreenWindowManager.isFullscreenPlayerPresented,
+                    isRefetchingLyrics: presentation.isRefetchingLyrics,
+                    textForegroundProfile: miniPlayerTextForegroundProfile,
+                    trackToEdit: $trackToEdit,
+                    trackForDetailReader: $trackForDetailReader,
+                    isShowingExternalMatchEditor: $isShowingExternalMatchEditor,
+                    onDeleteTrack: { track in
+                        trackDeletionRequest = TrackDeletionConfirmationRequest(tracks: [track])
+                    },
+                    onFullscreen: { fullscreenWindowManager.showFullscreenPlayerInWindow() },
+                    onToggleNowPlaying: {
+                        if uiState.contentMode == .nowPlaying {
+                            uiState.returnToLibraryFromNowPlaying()
+                        } else {
+                            uiState.showNowPlaying()
+                        }
                     }
+                )
+                .equatable()
+                .layoutPriority(1)
+                .task(id: currentArtworkTaskKey(for: presentation)) {
+                    await loadArtworkThumbnail(for: presentation)
                 }
-            )
-            .equatable()
-            .layoutPriority(1)
+                .sheet(isPresented: $isShowingExternalMatchEditor) {
+                    ExternalPlaybackInfoEditorView(
+                        presentation: presentation,
+                        metadataStore: cacheServices.externalPlaybackMetadataStore,
+                        onSaved: { onlyOffsetChanged in
+                            playbackCoordinator.invalidateExternalPlaybackResolution(onlyOffsetChanged: onlyOffsetChanged)
+                        }
+                    )
+                    .environmentObject(themeStore)
+                }
+            }
 
             // MARK: - Controls
-            controlsView
+            MiniPlayerPresentationReader { presentation in
+                controlsView(presentation: presentation)
+            }
                 .layoutPriority(2)
 
             // MARK: - Playback Mode
-            playbackModeView
-                .frame(width: playbackModeWidth, height: 24)
-                .popover(
-                    isPresented: $showPlaybackModeRetapTip,
-                    attachmentAnchor: .rect(.bounds),
-                    arrowEdge: .bottom
-                ) {
-                    PlaybackModeRetapTipView(
-                        onClose: dismissPlaybackModeRetapTip,
-                        usesStandaloneBackground: false
-                    )
-                }
+            MiniPlayerPresentationReader { presentation in
+                playbackModeView(presentation: presentation)
+                    .frame(width: playbackModeWidth(for: presentation), height: 24)
+                    .popover(
+                        isPresented: $showPlaybackModeRetapTip,
+                        attachmentAnchor: .rect(.bounds),
+                        arrowEdge: .bottom
+                    ) {
+                        PlaybackModeRetapTipView(
+                            onClose: dismissPlaybackModeRetapTip,
+                            usesStandaloneBackground: false
+                        )
+                    }
+                    .task(id: playbackModeRetapTipTaskID(for: presentation)) {
+                        await schedulePlaybackModeRetapTipIfNeeded()
+                    }
+            }
                 .layoutPriority(2)
 
             // MARK: - Progress bar (draggable + hover time labels)
-            progressArea
+            MiniPlayerLivePresentationReader { presentation in
+                progressArea(presentation: presentation)
+            }
                 .frame(minWidth: progressAreaMinWidth, maxWidth: .infinity)
                 .layoutPriority(0)
 
             // MARK: - Right: Volume Slider
-            volumeView
+            MiniPlayerPresentationReader { presentation in
+                volumeView(presentation: presentation)
+            }
                 .layoutPriority(2)
         }
             .padding(.horizontal, 20)
@@ -144,26 +171,10 @@ struct MiniPlayerView: View {
             TrackDetailDescriptionSheet(track: track)
                 .environmentObject(themeStore)
         }
-        .sheet(isPresented: $isShowingExternalMatchEditor) {
-            ExternalPlaybackInfoEditorView(
-                presentation: playbackCoordinator.presentation,
-                metadataStore: cacheServices.externalPlaybackMetadataStore,
-                onSaved: { onlyOffsetChanged in
-                    playbackCoordinator.invalidateExternalPlaybackResolution(onlyOffsetChanged: onlyOffsetChanged)
-                }
-            )
-            .environmentObject(themeStore)
-        }
         .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in
             Task {
                 await libraryVM.deleteTracks(tracks)
             }
-        }
-        .task(id: currentArtworkTaskKey) {
-            await loadArtworkThumbnail()
-        }
-        .task(id: playbackModeRetapTipTaskID) {
-            await schedulePlaybackModeRetapTipIfNeeded()
         }
         .onDisappear {
             guard showPlaybackModeRetapTip else { return }
@@ -178,8 +189,7 @@ struct MiniPlayerView: View {
 
     // MARK: - Subviews
 
-    private var controlsView: some View {
-        let presentation = playbackCoordinator.presentation
+    private func controlsView(presentation: NowPlayingPresentation) -> some View {
         let isEnabled = presentation.isControlEnabled
         let isTrackControlEnabled = isEnabled && presentation.hasTrack
         return HStack(spacing: 14) {
@@ -250,18 +260,17 @@ struct MiniPlayerView: View {
 
     private var controlHitSize: CGFloat { 26 }
 
-    private var currentPlaybackMode: PlaybackOrderMode {
-        playbackCoordinator.presentation.localPlaybackOrderMode ?? settings.playbackOrderMode
+    private func currentPlaybackMode(for presentation: NowPlayingPresentation) -> PlaybackOrderMode {
+        presentation.localPlaybackOrderMode ?? settings.playbackOrderMode
     }
 
-    private var playbackModeView: some View {
-        let presentation = playbackCoordinator.presentation
+    private func playbackModeView(presentation: NowPlayingPresentation) -> some View {
         let isEnabled = presentation.isPlaybackModeControlEnabled && presentation.hasTrack
         return Group {
             switch presentation.source {
             case .local:
                 PlaybackModeSlider(
-                    mode: currentPlaybackMode,
+                    mode: currentPlaybackMode(for: presentation),
                     isEnabled: isEnabled,
                     isExpanded: isPlaybackModeExpanded,
                     selectedColor: controlPrimaryColor,
@@ -272,7 +281,9 @@ struct MiniPlayerView: View {
                         uiState.hideWindowPlaybackQueue()
                         playbackCoordinator.setPlaybackOrderMode(mode)
                     },
-                    onCurrentModeRetap: handleCurrentPlaybackModeRetap
+                    onCurrentModeRetap: { mode in
+                        handleCurrentPlaybackModeRetap(mode, presentation: presentation)
+                    }
                 )
             case .appleMusic, .systemNowPlaying:
                 AppleMusicPlaybackModeSlider(
@@ -309,8 +320,11 @@ struct MiniPlayerView: View {
         }
     }
 
-    private func handleCurrentPlaybackModeRetap(_ currentMode: PlaybackOrderMode) {
-        guard currentMode == currentPlaybackMode else { return }
+    private func handleCurrentPlaybackModeRetap(
+        _ currentMode: PlaybackOrderMode,
+        presentation: NowPlayingPresentation
+    ) {
+        guard currentMode == currentPlaybackMode(for: presentation) else { return }
 
         if uiState.isWindowPlaybackQueueVisible {
             uiState.hideWindowPlaybackQueue()
@@ -321,8 +335,7 @@ struct MiniPlayerView: View {
         }
     }
 
-    private var playbackModeRetapTipTaskID: String {
-        let presentation = playbackCoordinator.presentation
+    private func playbackModeRetapTipTaskID(for presentation: NowPlayingPresentation) -> String {
         guard !fullscreenWindowManager.isFullscreenPlayerPresented,
               presentation.source == .local,
               presentation.hasTrack,
@@ -335,14 +348,14 @@ struct MiniPlayerView: View {
 
     @MainActor
     private func schedulePlaybackModeRetapTipIfNeeded() async {
-        guard playbackModeRetapTipTaskID != "inactive" else { return }
+        guard playbackModeRetapTipTaskID(for: playbackCoordinator.presentation) != "inactive" else { return }
         do {
             try await Task.sleep(for: .seconds(FeatureTipCatalog.PlaybackModeRetap.playbackStartDelay))
         } catch {
             return
         }
         guard !Task.isCancelled,
-              playbackModeRetapTipTaskID != "inactive",
+              playbackModeRetapTipTaskID(for: playbackCoordinator.presentation) != "inactive",
               showPlaybackModeRetapTip == false,
               AppVersionGate.shared.claimPlaybackModeRetapFeatureTipDisplay()
         else { return }
@@ -403,11 +416,11 @@ struct MiniPlayerView: View {
         .opacity(playbackCoordinator.presentation.isSeekEnabled ? 1 : 0.55)
     }
 
-    private var progressArea: some View {
+    private func progressArea(presentation: NowPlayingPresentation) -> some View {
         MiniPlayerProgressSpectrumRow(
             scale: 0.66,
             visualization: windowMiniPlayerVisualization,
-            isPlaying: playbackCoordinator.presentation.isPlaying,
+            isPlaying: presentation.isPlaying,
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
             foregroundColor: controlPrimaryColor,
             enforceBrightForeground: false,
@@ -417,9 +430,9 @@ struct MiniPlayerView: View {
                 : .miniPlayer,
             adaptsWideVisualizationSegments: true,
             usesVisualizationAsCompactProgress: true,
-            progress: progressDisplayTime,
-            duration: playbackCoordinator.presentation.duration,
-            isSeekEnabled: playbackCoordinator.presentation.isSeekEnabled,
+            progress: progressDisplayTime(for: presentation),
+            duration: presentation.duration,
+            isSeekEnabled: presentation.isSeekEnabled,
             onSeek: { dragProgress = $0 },
             onDragStart: { isDragging = true },
             onDragEnd: {
@@ -437,12 +450,11 @@ struct MiniPlayerView: View {
         ).miniPlayerKind
     }
 
-    private var progressDisplayTime: Double {
-        isDragging ? dragProgress : playbackCoordinator.presentation.currentTime
+    private func progressDisplayTime(for presentation: NowPlayingPresentation) -> Double {
+        isDragging ? dragProgress : presentation.currentTime
     }
     
-    private var currentArtworkTaskKey: String {
-        let presentation = playbackCoordinator.presentation
+    private func currentArtworkTaskKey(for presentation: NowPlayingPresentation) -> String {
         // Local-track artwork source shortcut is local-playback only; for
         // external playback the provider-resolved `artworkData` is authoritative.
         if presentation.source == .local,
@@ -456,8 +468,7 @@ struct MiniPlayerView: View {
         return "\(identity)-\(ArtworkDataFingerprint.sampledString(for: presentation.artworkData))"
     }
 
-    private func loadArtworkThumbnail() async {
-        let presentation = playbackCoordinator.presentation
+    private func loadArtworkThumbnail(for presentation: NowPlayingPresentation) async {
         if presentation.source == .local,
            let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
             let image = await cacheServices.trackArtworkCache.thumbnail(for: source)
@@ -511,11 +522,11 @@ struct MiniPlayerView: View {
         return totalWidth * CGFloat(max(0, min(1, progress)))
     }
 
-    private var volumeView: some View {
-        let isEnabled = playbackCoordinator.presentation.isVolumeControlEnabled
+    private func volumeView(presentation: NowPlayingPresentation) -> some View {
+        let isEnabled = presentation.isVolumeControlEnabled
         return HStack(spacing: 6) {
-            Button(action: toggleMute) {
-                Image(systemName: volumeIcon)
+            Button { toggleMute(presentation: presentation) } label: {
+                Image(systemName: volumeIcon(for: presentation))
                     .font(.caption)
                     .foregroundStyle(isEnabled ? Color.secondary : Color.secondary.opacity(0.4))
                     .frame(width: 20, height: 20)
@@ -523,11 +534,11 @@ struct MiniPlayerView: View {
             }
             .buttonStyle(.plain)
             .disabled(!isEnabled)
-            .help(volume == 0 ? "Unmute" : "Mute")
+            .help(presentation.volume == 0 ? "Unmute" : "Mute")
 
             VolumeSlider(
                 volume: Binding(
-                    get: { playbackCoordinator.presentation.volume },
+                    get: { presentation.volume },
                     set: { playbackCoordinator.setVolume($0) }
                 ),
                 markerColor: themeStore.accentColor.opacity(0.85),
@@ -541,17 +552,13 @@ struct MiniPlayerView: View {
         }
     }
 
-    private var volume: Double {
-        playbackCoordinator.presentation.volume
+    private func toggleMute(presentation: NowPlayingPresentation) {
+        guard presentation.isVolumeControlEnabled else { return }
+        playbackCoordinator.setVolume(VolumeControlBehavior.volumeAfterMuteToggle(presentation.volume))
     }
 
-    private func toggleMute() {
-        guard playbackCoordinator.presentation.isVolumeControlEnabled else { return }
-        playbackCoordinator.setVolume(VolumeControlBehavior.volumeAfterMuteToggle(volume))
-    }
-
-    private var volumeIcon: String {
-        let volume = playbackCoordinator.presentation.volume
+    private func volumeIcon(for presentation: NowPlayingPresentation) -> String {
+        let volume = presentation.volume
         if volume == 0 {
             return "speaker.slash.fill"
         } else if volume < 0.33 {
@@ -585,6 +592,36 @@ struct MiniPlayerView: View {
     }
 }
 
+/// Reads only the stable presentation projection inside its own observation
+/// scope. Progress is deliberately supplied by the live reader below.
+private struct MiniPlayerPresentationReader<Content: View>: View {
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+
+    private let content: (NowPlayingPresentation) -> Content
+
+    init(@ViewBuilder content: @escaping (NowPlayingPresentation) -> Content) {
+        self.content = content
+    }
+
+    var body: some View {
+        content(playbackCoordinator.stablePresentation)
+    }
+}
+
+private struct MiniPlayerLivePresentationReader<Content: View>: View {
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+
+    private let content: (NowPlayingPresentation) -> Content
+
+    init(@ViewBuilder content: @escaping (NowPlayingPresentation) -> Content) {
+        self.content = content
+    }
+
+    var body: some View {
+        content(playbackCoordinator.presentation)
+    }
+}
+
 // MARK: - Left section (isolated from high-frequency presentation ticks)
 
 private struct MiniPlayerLeftSection: View, Equatable {
@@ -595,6 +632,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
     let displayArtist: String
     let emptyTitleKey: String
     let artworkImage: NSImage?
+    let isPlaying: Bool
     let contextMenuRefreshTrigger: Int
     let isFullscreenPresented: Bool
     let isRefetchingLyrics: Bool
@@ -623,6 +661,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
             && lhs.displayArtist == rhs.displayArtist
             && lhs.emptyTitleKey == rhs.emptyTitleKey
             && lhs.artworkImage === rhs.artworkImage
+            && lhs.isPlaying == rhs.isPlaying
             && lhs.contextMenuRefreshTrigger == rhs.contextMenuRefreshTrigger
             && lhs.isFullscreenPresented == rhs.isFullscreenPresented
             && lhs.isRefetchingLyrics == rhs.isRefetchingLyrics
@@ -720,6 +759,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
                         style: .subheadline,
                         fontWeight: .medium,
                         color: textForegroundProfile.primaryColor,
+                        shouldAnimate: isPlaying,
                         enablesContentTransition: true
                     )
                     .compositingGroup()
@@ -732,6 +772,7 @@ private struct MiniPlayerLeftSection: View, Equatable {
                         style: .caption,
                         fontWeight: .regular,
                         color: textForegroundProfile.secondaryColor,
+                        shouldAnimate: isPlaying,
                         enablesContentTransition: true
                     )
                     .compositingGroup()

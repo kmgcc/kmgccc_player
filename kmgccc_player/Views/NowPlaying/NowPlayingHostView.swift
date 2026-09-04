@@ -65,13 +65,14 @@ struct NowPlayingHostView: View {
         .onChange(of: selectedSkinID) { oldValue, newValue in
             AudioVisualizationPreferences.shared.synchronizeLegacyState(for: newValue, scope: .window)
             skinRevision &+= 1
-            if oldValue == "kmgccc.cassette", newValue != oldValue {
-                Task {
-                    await CassetteArtworkCache.shared.removeAll()
-                }
-            }
             if !isLedEnabledForCurrentSkin() {
                 ledMeterProvider.releaseNowPlayingResources()
+            }
+            Task { @MainActor in
+                await CacheManager.purgePresentationMemoryCaches(
+                    reason: "now-playing-skin-changed-\(oldValue)-to-\(newValue)",
+                    cacheServices: cacheServices
+                )
             }
         }
         .onAppear {
@@ -82,9 +83,11 @@ struct NowPlayingHostView: View {
             TelemetryService.shared.setWindowNowPlayingVisible(false)
             ledMeterProvider.releaseNowPlayingResources()
             artworkSnapshot = nil
-            Task {
-                await ArtworkAssetStore.shared.purgeHydratedImages()
-                await CassetteArtworkCache.shared.removeAll()
+            Task { @MainActor in
+                await CacheManager.purgePresentationMemoryCaches(
+                    reason: "now-playing-disappear",
+                    cacheServices: cacheServices
+                )
             }
         }
         .task(id: currentArtworkTaskKey) {

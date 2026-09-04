@@ -198,41 +198,48 @@ extension NowPlayingPresentation {
     /// Compares fields that affect UI rendering, skipping expensive Data comparison.
     /// Artwork is assumed stable when track identity (lyricsIdentity / localTrack) is unchanged.
     func isEffectivelyEqual(to other: NowPlayingPresentation) -> Bool {
-        source == other.source &&
-        title == other.title &&
-        artist == other.artist &&
-        album == other.album &&
-        localPlaybackOrderMode == other.localPlaybackOrderMode &&
-        artworkIdentity == other.artworkIdentity &&
-        artworkDisplayTrackID == other.artworkDisplayTrackID &&
-        isArtworkLoading == other.isArtworkLoading &&
-        isRefetchingLyrics == other.isRefetchingLyrics &&
-        duration == other.duration &&
         currentTime == other.currentTime &&
-        audioOutputDelay == other.audioOutputDelay &&
-        isPlaying == other.isPlaying &&
-        volume == other.volume &&
-        lyricsIdentity == other.lyricsIdentity &&
-        lyricsText == other.lyricsText &&
-        lyricsIsPlaying == other.lyricsIsPlaying &&
-        lyricsCurrentTimeOverride == other.lyricsCurrentTimeOverride &&
-        appleMusicPlaybackMode == other.appleMusicPlaybackMode &&
-        externalStableKey == other.externalStableKey &&
-        externalRawTitle == other.externalRawTitle &&
-        externalRawArtist == other.externalRawArtist &&
-        externalRawAlbum == other.externalRawAlbum &&
-        externalEffectiveTitle == other.externalEffectiveTitle &&
-        externalEffectiveArtist == other.externalEffectiveArtist &&
-        externalEffectiveAlbum == other.externalEffectiveAlbum &&
-        externalUsesOverride == other.externalUsesOverride &&
-        externalMatchConfidence == other.externalMatchConfidence &&
-        externalLyricsStatusMessage == other.externalLyricsStatusMessage &&
-        externalConnectionState == other.externalConnectionState &&
-        externalLyricsTimeOffsetMs == other.externalLyricsTimeOffsetMs &&
-        isControlEnabled == other.isControlEnabled &&
-        isSeekEnabled == other.isSeekEnabled &&
-        isVolumeControlEnabled == other.isVolumeControlEnabled &&
-        isPlaybackModeControlEnabled == other.isPlaybackModeControlEnabled &&
-        emptyTitleKey == other.emptyTitleKey
+        isEffectivelyEqualIgnoringCurrentTime(to: other)
+    }
+
+    /// Compares the stable presentation projection used by controls and metadata.
+    /// Playback progress is intentionally excluded so a progress tick does not
+    /// invalidate views that do not render elapsed time.
+    func isEffectivelyEqualIgnoringCurrentTime(to other: NowPlayingPresentation) -> Bool {
+        source == other.source &&
+            title == other.title &&
+            artist == other.artist &&
+            album == other.album &&
+            localPlaybackOrderMode == other.localPlaybackOrderMode &&
+            artworkIdentity == other.artworkIdentity &&
+            artworkDisplayTrackID == other.artworkDisplayTrackID &&
+            isArtworkLoading == other.isArtworkLoading &&
+            isRefetchingLyrics == other.isRefetchingLyrics &&
+            duration == other.duration &&
+            audioOutputDelay == other.audioOutputDelay &&
+            isPlaying == other.isPlaying &&
+            volume == other.volume &&
+            lyricsIdentity == other.lyricsIdentity &&
+            lyricsText == other.lyricsText &&
+            lyricsIsPlaying == other.lyricsIsPlaying &&
+            lyricsCurrentTimeOverride == other.lyricsCurrentTimeOverride &&
+            appleMusicPlaybackMode == other.appleMusicPlaybackMode &&
+            externalStableKey == other.externalStableKey &&
+            externalRawTitle == other.externalRawTitle &&
+            externalRawArtist == other.externalRawArtist &&
+            externalRawAlbum == other.externalRawAlbum &&
+            externalEffectiveTitle == other.externalEffectiveTitle &&
+            externalEffectiveArtist == other.externalEffectiveArtist &&
+            externalEffectiveAlbum == other.externalEffectiveAlbum &&
+            externalUsesOverride == other.externalUsesOverride &&
+            externalMatchConfidence == other.externalMatchConfidence &&
+            externalLyricsStatusMessage == other.externalLyricsStatusMessage &&
+            externalConnectionState == other.externalConnectionState &&
+            externalLyricsTimeOffsetMs == other.externalLyricsTimeOffsetMs &&
+            isControlEnabled == other.isControlEnabled &&
+            isSeekEnabled == other.isSeekEnabled &&
+            isVolumeControlEnabled == other.isVolumeControlEnabled &&
+            isPlaybackModeControlEnabled == other.isPlaybackModeControlEnabled &&
+            emptyTitleKey == other.emptyTitleKey
     }
 }

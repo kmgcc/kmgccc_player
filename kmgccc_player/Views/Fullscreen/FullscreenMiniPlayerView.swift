@@ -110,7 +110,7 @@ struct FullscreenMiniPlayerView: View {
     private var playbackModeExpandedWidth: CGFloat { layoutMetrics.playbackModeExpandedWidth }
     private var playbackModeCollapsedWidth: CGFloat { layoutMetrics.playbackModeCollapsedWidth }
     private var playbackModeOccupancyWidth: CGFloat {
-        let expandedWidth = playbackCoordinator.presentation.source.isExternal
+        let expandedWidth = playbackCoordinator.stablePresentation.source.isExternal
             ? layoutMetrics.externalPlaybackModeExpandedWidth
             : playbackModeExpandedWidth
         return isPlaybackModeExpanded ? expandedWidth : playbackModeCollapsedWidth
@@ -138,15 +138,15 @@ struct FullscreenMiniPlayerView: View {
     var body: some View {
         let _ = ContextMenuDiagnostics.markBodyUpdate(
             "contextMenu.miniPlayerBodyUpdate",
-            detail: "surface=FullscreenMiniPlayerView, track=\(FirstUseHitchDiagnostics.trackIDPrefix(playbackCoordinator.presentation.localTrack?.id)), isPlaying=\(playbackCoordinator.presentation.isPlaying)"
+            detail: "surface=FullscreenMiniPlayerView, track=\(FirstUseHitchDiagnostics.trackIDPrefix(playbackCoordinator.stablePresentation.localTrack?.id)), isPlaying=\(playbackCoordinator.stablePresentation.isPlaying)"
         )
 #if DEBUG
         let _ = MiniPlayerFGDiagnostics.logIfChanged(
-            trackID: playbackCoordinator.presentation.localTrack?.id,
+            trackID: playbackCoordinator.stablePresentation.localTrack?.id,
             skinID: settings.fullscreen.skinID,
             materialStyle: glassStyle.materialStyle,
             colorScheme: colorScheme,
-            isPlaying: playbackCoordinator.presentation.isPlaying,
+            isPlaying: playbackCoordinator.stablePresentation.isPlaying,
             isHovering: isMiniPlayerHovering,
             isExpanded: isPlaybackModeExpanded,
             hasArtworkThemeColor: themeStore.hasArtworkThemeColor,
@@ -157,13 +157,14 @@ struct FullscreenMiniPlayerView: View {
         HStack(spacing: hStackSpacing) {
             // Left: Cover + Title/Artist
             FullscreenMiniPlayerLeftSection(
-                hasTrack: playbackCoordinator.presentation.hasTrack,
-                isArtworkLoading: playbackCoordinator.presentation.isArtworkLoading,
-                displayTitle: playbackCoordinator.presentation.title,
-                displayArtist: playbackCoordinator.presentation.artist,
-                emptyTitleKey: playbackCoordinator.presentation.emptyTitleKey,
+                hasTrack: playbackCoordinator.stablePresentation.hasTrack,
+                isArtworkLoading: playbackCoordinator.stablePresentation.isArtworkLoading,
+                displayTitle: playbackCoordinator.stablePresentation.title,
+                displayArtist: playbackCoordinator.stablePresentation.artist,
+                emptyTitleKey: playbackCoordinator.stablePresentation.emptyTitleKey,
                 artworkImage: artworkImage,
-                isRefetchingLyrics: playbackCoordinator.presentation.isRefetchingLyrics,
+                isPlaying: playbackCoordinator.stablePresentation.isPlaying,
+                isRefetchingLyrics: playbackCoordinator.stablePresentation.isRefetchingLyrics,
                 scale: scale,
                 textForegroundProfile: miniPlayerTextForegroundProfile,
                 placeholderColor: lyricsDynamicSecondaryColor,
@@ -205,7 +206,9 @@ struct FullscreenMiniPlayerView: View {
             // The progress/spectrum row is the only flexible section. Its
             // proposal follows the outer pill's animated width on every frame,
             // while the fixed controls keep their positions and dimensions.
-            progressArea
+            FullscreenMiniPlayerLivePresentationReader { presentation in
+                progressArea(presentation: presentation)
+            }
                 .frame(
                     minWidth: minimumProgressAreaWidth,
                     idealWidth: preferredProgressAreaWidth,
@@ -247,7 +250,7 @@ struct FullscreenMiniPlayerView: View {
     // MARK: - Subviews
 
     private var controlsView: some View {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         let isEnabled = presentation.isControlEnabled
         let isTrackControlEnabled = isEnabled && presentation.hasTrack
         return HStack(spacing: controlsHSpacing) {
@@ -305,7 +308,7 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var playbackModeView: some View {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         let isEnabled = presentation.isPlaybackModeControlEnabled && presentation.hasTrack
         return Group {
             switch presentation.source {
@@ -370,11 +373,11 @@ struct FullscreenMiniPlayerView: View {
         }
     }
 
-    private var progressArea: some View {
+    private func progressArea(presentation: NowPlayingPresentation) -> some View {
         MiniPlayerProgressSpectrumRow(
             scale: scale,
             visualization: settings.fullscreen.miniPlayerVisualization,
-            isPlaying: playbackCoordinator.presentation.isPlaying,
+            isPlaying: presentation.isPlaying,
             isSpectrumActive: isSpectrumActive,
             accentColor: themeStore.usesFallbackThemeColor ? nil : themeStore.accentColor,
             foregroundColor: controlPrimaryColor,
@@ -385,9 +388,9 @@ struct FullscreenMiniPlayerView: View {
             ledToneVariant: settings.fullscreen.skinID == AppleStyleSkin.skinID
                 ? .appleStyleBright
                 : .miniPlayer,
-            progress: progressDisplayTime,
-            duration: playbackCoordinator.presentation.duration,
-            isSeekEnabled: playbackCoordinator.presentation.isSeekEnabled,
+            progress: progressDisplayTime(for: presentation),
+            duration: presentation.duration,
+            isSeekEnabled: presentation.isSeekEnabled,
             onSeek: { seekTime in
                 onInteraction()
                 dragProgress = seekTime
@@ -409,7 +412,7 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var currentArtworkTaskKey: String {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
             return "local-\(source.sourceKey)-thumb"
         }
@@ -421,7 +424,7 @@ struct FullscreenMiniPlayerView: View {
     }
     
     private func loadArtworkThumbnail() async {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         if let source = presentation.localTrack?.trackArtworkSource(fallbackData: presentation.artworkData) {
             let image = await cacheServices.trackArtworkCache.thumbnail(for: source)
             guard !Task.isCancelled else { return }
@@ -458,8 +461,8 @@ struct FullscreenMiniPlayerView: View {
         }
     }
 
-    private var progressDisplayTime: Double {
-        isDragging ? dragProgress : playbackCoordinator.presentation.currentTime
+    private func progressDisplayTime(for presentation: NowPlayingPresentation) -> Double {
+        isDragging ? dragProgress : presentation.currentTime
     }
 
     private var progressFillColor: Color {
@@ -479,7 +482,8 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var volumeView: some View {
-        let isEnabled = playbackCoordinator.presentation.isVolumeControlEnabled
+        let presentation = playbackCoordinator.stablePresentation
+        let isEnabled = presentation.isVolumeControlEnabled
         return HStack(spacing: 10) {
             Image(systemName: volumeIcon)
                 .font(.system(size: 16, weight: .medium))
@@ -490,7 +494,7 @@ struct FullscreenMiniPlayerView: View {
 
             Slider(
                 value: Binding(
-                    get: { playbackCoordinator.presentation.volume },
+                    get: { presentation.volume },
                     set: { playbackCoordinator.setVolume($0) }
                 ),
                 in: 0...1
@@ -505,7 +509,7 @@ struct FullscreenMiniPlayerView: View {
     }
 
     private var volumeIcon: String {
-        let volume = playbackCoordinator.presentation.volume
+        let volume = playbackCoordinator.stablePresentation.volume
         if volume == 0 {
             return "speaker.slash.fill"
         } else if volume < 0.33 {
@@ -668,6 +672,7 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
     let displayArtist: String
     let emptyTitleKey: String
     let artworkImage: NSImage?
+    let isPlaying: Bool
     let isRefetchingLyrics: Bool
     let scale: CGFloat
     let textForegroundProfile: PlusBlendTextForegroundProfile
@@ -698,6 +703,7 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
             && lhs.displayArtist == rhs.displayArtist
             && lhs.emptyTitleKey == rhs.emptyTitleKey
             && lhs.artworkImage === rhs.artworkImage
+            && lhs.isPlaying == rhs.isPlaying
             && lhs.isRefetchingLyrics == rhs.isRefetchingLyrics
             && lhs.scale == rhs.scale
             && lhs.textForegroundProfile == rhs.textForegroundProfile
@@ -722,6 +728,7 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
                             fontSize: titleFontSize,
                             fontWeight: .semibold,
                             color: textForegroundProfile.primaryColor,
+                            shouldAnimate: isPlaying,
                             enablesContentTransition: true
                         )
                         .compositingGroup()
@@ -734,6 +741,7 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
                             fontSize: artistFontSize,
                             fontWeight: .medium,
                             color: textForegroundProfile.secondaryColor,
+                            shouldAnimate: isPlaying,
                             enablesContentTransition: true
                         )
                         .compositingGroup()
@@ -794,10 +802,10 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
     private var nowPlayingInfoContextMenu: some View {
         let token = ContextMenuDiagnostics.beginBuild(
             surface: "MiniPlayerContextMenu",
-            detail: "surface=fullscreen, track=\(FirstUseHitchDiagnostics.trackIDPrefix(playbackCoordinator.presentation.localTrack?.id))"
+            detail: "surface=fullscreen, track=\(FirstUseHitchDiagnostics.trackIDPrefix(playbackCoordinator.stablePresentation.localTrack?.id))"
         )
         let _ = ContextMenuDiagnostics.end(token)
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         if let track = presentation.localTrack {
             TrackActionMenuContent(
                 track: track,
@@ -845,6 +853,20 @@ private struct FullscreenMiniPlayerLeftSection: View, Equatable {
                 Label("编辑外部播放覆盖信息", systemImage: "slider.horizontal.3")
             }
         }
+    }
+}
+
+private struct FullscreenMiniPlayerLivePresentationReader<Content: View>: View {
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+
+    private let content: (NowPlayingPresentation) -> Content
+
+    init(@ViewBuilder content: @escaping (NowPlayingPresentation) -> Content) {
+        self.content = content
+    }
+
+    var body: some View {
+        content(playbackCoordinator.presentation)
     }
 }
 

@@ -45,7 +45,9 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     )
 
     static let targetAheadSeconds: Double = 1.5
-    static let chunkFrames: AVAudioFrameCount = 4096
+    // A larger chunk amortizes AVAudioFile/CMBlockBuffer/sample-buffer setup
+    // while the renderer still keeps only the bounded 1.5 s lookahead queued.
+    static let chunkFrames: AVAudioFrameCount = 8192
 
     nonisolated(unsafe) private(set) var renderer = AVSampleBufferAudioRenderer()
     let synchronizer = AVSampleBufferRenderSynchronizer()

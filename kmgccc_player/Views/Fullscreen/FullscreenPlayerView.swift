@@ -380,8 +380,11 @@ struct FullscreenPlayerView: View {
         LyricsSurfaceManager.shared.existingStore(for: .fullscreenCoverBlurHighlight)
     }
 
+    /// Fullscreen artwork/layout only depends on track metadata and play state.
+    /// Keep the 4 Hz playback clock out of this root view; the bottom mini-player
+    /// has its own live presentation reader for the seek/progress row.
     private var currentDisplayContext: NowPlayingDisplayContext {
-        playbackCoordinator.presentation.displayContext
+        playbackCoordinator.stablePresentation.displayContext
     }
 
     private var currentArtworkTrackID: UUID? {
@@ -486,10 +489,11 @@ struct FullscreenPlayerView: View {
                 "onChange(skinID) old=\(oldValue) new=\(newValue) external=\(playbackCoordinator.presentation.source.isExternal) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
                 category: .fullscreen
             )
-            if oldValue == "kmgccc.cassette", newValue != oldValue {
-                Task {
-                    await CassetteArtworkCache.shared.removeAll()
-                }
+            Task { @MainActor in
+                await CacheManager.purgePresentationMemoryCaches(
+                    reason: "fullscreen-skin-changed-\(oldValue)-to-\(newValue)",
+                    cacheServices: cacheServices
+                )
             }
             let coverBlurTransition = oldValue == "fullscreen.coverGradientBlur"
                 || newValue == "fullscreen.coverGradientBlur"
@@ -515,31 +519,11 @@ struct FullscreenPlayerView: View {
             )
             syncFullscreenLedService()
         }
-        .onChange(of: playerVM.currentTime, handleCurrentTimeChange)
-        .onChange(of: playerVM.isPlaying) { _, newValue in
-            guard playbackCoordinator.presentation.source == .local else { return }
-            LyricsSurfaceManager.shared.updatePlayingState(newValue)
-            guard allowsDirectEmbeddedSurfaceUpdates else { return }
-            fullscreenStore.setPlaying(newValue)
-            if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
-                coverBlurHighlightStore.setPlaying(newValue)
-            }
-        }
         .onChange(of: playerVM.currentTrack?.id, handleTrackIdChange)
-        .onChange(of: playbackCoordinator.presentation.currentTime, handlePresentationCurrentTimeChange)
-        .onChange(of: playbackCoordinator.presentation.effectiveLyricsIsPlaying) { _, newValue in
-            guard playbackCoordinator.presentation.source.isExternal else { return }
-            LyricsSurfaceManager.shared.updatePlayingState(newValue)
-            guard allowsDirectEmbeddedSurfaceUpdates else { return }
-            fullscreenStore.setPlaying(newValue)
-            if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
-                coverBlurHighlightStore.setPlaying(newValue)
-            }
-        }
-        .onChange(of: playbackCoordinator.presentation.lyricsIdentity, handlePresentationLyricsIdentityChange)
-        .onChange(of: playbackCoordinator.presentation.lyricsText) { _, _ in
-            guard playbackCoordinator.presentation.hasTrack else { return }
-            let reason = playbackCoordinator.presentation.source.isExternal
+        .onChange(of: playbackCoordinator.stablePresentation.lyricsIdentity, handlePresentationLyricsIdentityChange)
+        .onChange(of: playbackCoordinator.stablePresentation.lyricsText) { _, _ in
+            guard playbackCoordinator.stablePresentation.hasTrack else { return }
+            let reason = playbackCoordinator.stablePresentation.source.isExternal
                 ? "fullscreen external lyrics updated"
                 : "fullscreen local lyrics hydrated"
             reloadLyricsSurface(reason: reason, forceLyricsReload: true)
@@ -655,8 +639,6 @@ struct FullscreenPlayerView: View {
             AppVersionGate.shared.markPlaybackModeRetapFeatureTipDismissed()
             showPlaybackModeRetapTip = false
         }
-        let shouldReportFullscreenHidden =
-            hostContext != .embeddedWindow || embeddedInitialThemeUnlocked
         Log.info(
             "FullscreenPlayerView disappeared context=\(hostContext.rawValue)",
             category: .webview
@@ -722,15 +704,18 @@ struct FullscreenPlayerView: View {
         setVolumeExpanded(false, reason: "fullscreen-disappear")
         deactivateCoverBlurHighlightSurface()
         clearFullscreenLyricsTheme()
-        Task {
-            await ArtworkAssetStore.shared.purgeHydratedImages()
-            await CassetteArtworkCache.shared.removeAll()
+        Task { @MainActor in
+            await CacheManager.purgePresentationMemoryCaches(
+                reason: "fullscreen-disappear",
+                cacheServices: cacheServices
+            )
         }
 
-        if shouldReportFullscreenHidden {
-            // Report visibility to manager - manager will debounce to handle transient disappears
-            LyricsSurfaceManager.shared.reportFullscreenVisible(false)
-        }
+        // Always report disappearance, including an embedded surface that was
+        // removed before its initial geometry/theme gate completed. The
+        // manager debounces this and a later appearance cancels the pending
+        // exit, while a real disappearance can release the old WebView.
+        LyricsSurfaceManager.shared.reportFullscreenVisible(false)
     }
 
     @ViewBuilder
@@ -896,6 +881,18 @@ struct FullscreenPlayerView: View {
         let skinIdentity = "fullscreen_\(settings.fullscreen.skinID)_\(skinRevision)"
 
         ZStack {
+            // Keep the 4 Hz playback clock in a leaf view. AMLL and the
+            // fullscreen lyrics state still receive live time, while the
+            // artwork/background/control tree remains on the stable projection.
+            FullscreenPlaybackSyncView(
+                onLocalTimeChange: handleCurrentTimeChange,
+                onLocalPlayingChange: handleLocalPlayingChange,
+                onExternalTimeChange: handlePresentationCurrentTimeChange,
+                onExternalPlayingChange: handleExternalPlayingChange
+            )
+            .frame(width: 0, height: 0)
+            .allowsHitTesting(false)
+
             // Embedded fullscreen is composited over the live main-window
             // content (no opaque black NSWindow behind it, unlike the system
             // fullscreen space). Without a guaranteed opaque base, any transient
@@ -1508,13 +1505,13 @@ struct FullscreenPlayerView: View {
 
     private var volumeBinding: Binding<Double> {
         Binding(
-            get: { playbackCoordinator.presentation.volume },
+            get: { playbackCoordinator.stablePresentation.volume },
             set: { playbackCoordinator.setVolume($0) }
         )
     }
 
     private var isArtworkVolumeControlEnabled: Bool {
-        playbackCoordinator.presentation.isVolumeControlEnabled
+        playbackCoordinator.stablePresentation.isVolumeControlEnabled
             && !isQuickAppearancePanelPresented
             && !isShowingExternalMatchEditor
             && trackToEdit == nil
@@ -2198,7 +2195,7 @@ struct FullscreenPlayerView: View {
                             }
                         },
                         materialStyle: fullscreenControlsGlassStyle.materialStyle,
-                        isEnabled: playbackCoordinator.presentation.isVolumeControlEnabled,
+                        isEnabled: playbackCoordinator.stablePresentation.isVolumeControlEnabled,
                         usesAdaptiveForeground: isCoverBlurFullscreenSkin,
                         forceDarkForegroundProfile: false,
                         usesInternalHoverExpansion: false,
@@ -2381,10 +2378,10 @@ struct FullscreenPlayerView: View {
     }
 
     private var fullscreenEmptyLyricsMessage: String? {
-        guard playbackCoordinator.presentation.source.isExternal else { return nil }
-        let lyricsText = playbackCoordinator.presentation.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard playbackCoordinator.stablePresentation.source.isExternal else { return nil }
+        let lyricsText = playbackCoordinator.stablePresentation.lyricsText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard lyricsText.isEmpty else { return nil }
-        if let externalMessage = playbackCoordinator.presentation.externalLyricsStatusMessage {
+        if let externalMessage = playbackCoordinator.stablePresentation.externalLyricsStatusMessage {
             return externalMessage
         }
         return NSLocalizedString("lyrics.empty_state", comment: "")
@@ -2567,7 +2564,7 @@ struct FullscreenPlayerView: View {
     }
 
     private var currentPlaybackMode: PlaybackOrderMode {
-        playbackCoordinator.presentation.localPlaybackOrderMode ?? settings.playbackOrderMode
+        playbackCoordinator.stablePresentation.localPlaybackOrderMode ?? settings.playbackOrderMode
     }
 
     private var lyricsLayoutAnimation: Animation {
@@ -3032,12 +3029,29 @@ struct FullscreenPlayerView: View {
     }
 
     private func startFullscreenLyricsSurface(reason: String) {
+        // Publish the concrete playback snapshot before asking the surface
+        // manager to switch modes. A newly prepared fullscreen page can report
+        // `onReady` before this view reaches its reload call; if the manager
+        // still holds its initial empty snapshot, the ready-gated replay would
+        // legitimately clear the page and the queued startup apply would be
+        // discarded as stale. Seeding the shared snapshot first keeps the
+        // switch atomic without creating or retaining another WebView.
+        _ = updateFullscreenPlaybackSnapshot(
+            forceLocalLyricsReload: hostContext == .embeddedWindow
+        )
+
         // Report visibility to manager first so a newly materialized surface can
         // replay the latest snapshot. The reload path still refreshes the
-        // fullscreen payload/theme, but must not force a second AMLL lyric
-        // entrance after the manager has replayed the snapshot.
+        // fullscreen payload/theme. Embedded startup explicitly forces one
+        // concrete track apply below because the manager may have completed
+        // against the pre-startup empty snapshot before the SwiftUI host had a
+        // valid viewport; the store's normal deduplication would otherwise
+        // mistake that state for delivered lyrics.
         LyricsSurfaceManager.shared.reportFullscreenVisible(true)
-        reloadLyricsSurface(reason: reason, forceLyricsReload: false)
+        reloadLyricsSurface(
+            reason: reason,
+            forceLyricsReload: hostContext == .embeddedWindow
+        )
     }
 
     private func revealFullscreenExistingLyrics(reason: String) {
@@ -3491,7 +3505,7 @@ struct FullscreenPlayerView: View {
     }
 
     private var playbackModeRetapTipTaskID: String {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         guard presentation.source == .local,
               presentation.hasTrack,
               presentation.isPlaying
@@ -3531,8 +3545,28 @@ struct FullscreenPlayerView: View {
         playbackCoordinator.playTrackFromQueue(track)
     }
 
+    private func handleLocalPlayingChange(_ newValue: Bool) {
+        guard currentDisplayContext.source == .local else { return }
+        LyricsSurfaceManager.shared.updatePlayingState(newValue)
+        guard allowsDirectEmbeddedSurfaceUpdates else { return }
+        fullscreenStore.setPlaying(newValue)
+        if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
+            coverBlurHighlightStore.setPlaying(newValue)
+        }
+    }
+
+    private func handleExternalPlayingChange(_ newValue: Bool) {
+        guard currentDisplayContext.source.isExternal else { return }
+        LyricsSurfaceManager.shared.updatePlayingState(newValue)
+        guard allowsDirectEmbeddedSurfaceUpdates else { return }
+        fullscreenStore.setPlaying(newValue)
+        if LyricsSurfaceManager.shared.isActive(.fullscreenCoverBlurHighlight) {
+            coverBlurHighlightStore.setPlaying(newValue)
+        }
+    }
+
     private func handleCurrentTimeChange(_ oldTime: Double, _ newTime: Double) {
-        guard playbackCoordinator.presentation.source == .local else { return }
+        guard currentDisplayContext.source == .local else { return }
         let trackID = playerVM.currentTrack?.id
         let rawLyricsTime = playerVM.lyricsCurrentTime
         let lyricsTime = fullscreenLyricsSurfaceTime(rawLyricsTime, trackID: trackID)
@@ -3928,29 +3962,12 @@ struct FullscreenPlayerView: View {
 
 
     private var fullscreenLyricsHostOpacity: Double {
-        guard isShowingLyricsPanel, playbackCoordinator.presentation.hasTrack else { return 0 }
-        guard coverBlurLyricsThemeMatchesCurrentArtwork else { return 0 }
+        guard isShowingLyricsPanel, playbackCoordinator.stablePresentation.hasTrack else { return 0 }
         return 1
     }
 
-    private var coverBlurLyricsThemeMatchesCurrentArtwork: Bool {
-        guard isCoverBlurFullscreenSkin else { return true }
-        // A transient nil artwork identity is not a valid ready state while an
-        // artwork-backed theme is loading. This is common while the true
-        // fullscreen host is being attached and was the hole that allowed one
-        // visible frame with BlendMode.normal. A genuine no-artwork track may
-        // still use the normal fallback lyrics path.
-        let display = currentDisplayContext
-        let expectsArtworkTheme = display.artworkData != nil
-            || display.artworkIdentity != nil
-            || display.isArtworkLoading
-        guard expectsArtworkTheme else { return true }
-        guard let currentArtworkTrackID else { return false }
-        return coverBlurLyricsTheme?.trackID == currentArtworkTrackID
-    }
-
     private var shouldKeepFullscreenLyricsHostMounted: Bool {
-        fullscreenLyricsHostMounted && playbackCoordinator.presentation.hasTrack
+        fullscreenLyricsHostMounted && playbackCoordinator.stablePresentation.hasTrack
     }
 
     private var isFullscreenLyricsHostVisible: Bool {
@@ -4003,7 +4020,6 @@ struct FullscreenPlayerView: View {
 
     private var fullscreenLyricsViewportOpacity: Double {
         guard currentDisplayContext.hasTrack else { return 0 }
-        guard coverBlurLyricsThemeMatchesCurrentArtwork else { return 0 }
         return suppressFullscreenLyricsViewport ? 0 : 1
     }
 
@@ -4156,33 +4172,13 @@ struct FullscreenPlayerView: View {
             ?? makeFullscreenLyricSemanticPalette(forTrackID: displayTrackID)
         let colorSet = semanticPalette.foregroundColorSet
 
-        if isCoverBlurFullscreenSkin, readyCoverBlurTheme == nil {
-            if activeCoverBlurTheme == nil {
-                guard isCurrentFullscreenLyricsThemeIdentity(themeIdentity) else {
-                    Log.debug("FullscreenPlayerView: skipped stale lyrics theme clear reason=\(reason)", category: .webview)
-                    return
-                }
-                LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(
-                    nil,
-                    for: .fullscreen,
-                    trackID: themeIdentity.displayTrackID,
-                    trackGuarded: true
-                )
-                baseStore.setThemePaletteOverride(nil)
-                deactivateCoverBlurHighlightSurface()
-                if let highlightStore = existingCoverBlurHighlightStore {
-                    LyricsSurfaceManager.shared.updateThemeOverrideSnapshot(
-                        nil,
-                        for: .fullscreenCoverBlurHighlight,
-                        trackID: themeIdentity.displayTrackID,
-                        trackGuarded: true
-                    )
-                    highlightStore.setThemePaletteOverride(nil)
-                }
-                return
-            }
-        }
-
+        // The cover artwork palette is an enhancement, not a prerequisite for
+        // showing lyrics. During a fresh fullscreen attach the artwork worker
+        // can legitimately still be pending. Keep the generic semantic
+        // palette below active in that window; once artwork arrives this method
+        // is called again and upgrades the same WebView in place. Hiding the
+        // entire host until the palette is ready made the first fullscreen
+        // frame permanently blank when no later theme callback arrived.
         let activePalette = activeCoverBlurTheme.map { makeCoverBlurLyricsPalette(from: $0) }
             ?? makeFullscreenLyricsPalette(from: colorSet)
         guard isCurrentFullscreenLyricsThemeIdentity(themeIdentity) else {
@@ -5121,7 +5117,7 @@ struct FullscreenPlayerView: View {
         // presentation; using the local track's own source here would disagree
         // with `artworkDisplayTrackID` and get rejected by the snapshot guard.
         if display.source == .local,
-           let source = playbackCoordinator.presentation.localTrack?.trackArtworkSource(fallbackData: display.artworkData) {
+           let source = playbackCoordinator.stablePresentation.localTrack?.trackArtworkSource(fallbackData: display.artworkData) {
             return "\(trackID.uuidString)-local-\(source.sourceKey)-px:\(preferredArtworkFullImageMaxPixel)"
         }
         if ArtworkRenderingFallback.shouldUse(
@@ -5209,6 +5205,36 @@ struct FullscreenPlayerView: View {
         return cgImage.width > 1 && cgImage.height > 1
     }
 
+}
+
+/// Isolates high-frequency playback observation from the fullscreen scene root.
+/// The callbacks update the lyric surface directly; the surrounding artwork,
+/// skin and control hierarchy does not need to be rebuilt for every clock tick.
+@MainActor
+private struct FullscreenPlaybackSyncView: View {
+    @Environment(PlayerViewModel.self) private var playerVM
+    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+
+    let onLocalTimeChange: (Double, Double) -> Void
+    let onLocalPlayingChange: (Bool) -> Void
+    let onExternalTimeChange: (Double, Double) -> Void
+    let onExternalPlayingChange: (Bool) -> Void
+
+    var body: some View {
+        Color.clear
+            .onChange(of: playerVM.currentTime) { oldTime, newTime in
+                onLocalTimeChange(oldTime, newTime)
+            }
+            .onChange(of: playerVM.isPlaying) { _, newValue in
+                onLocalPlayingChange(newValue)
+            }
+            .onChange(of: playbackCoordinator.presentation.currentTime) { oldTime, newTime in
+                onExternalTimeChange(oldTime, newTime)
+            }
+            .onChange(of: playbackCoordinator.presentation.effectiveLyricsIsPlaying) { _, newValue in
+                onExternalPlayingChange(newValue)
+            }
+    }
 }
 
 private struct FullscreenMiniPlayerOcclusionRegion: Equatable {

@@ -307,6 +307,23 @@ final class AppKitMainSplitViewController: NSSplitViewController {
         mirrorSplitStateToUIState(reason: "restoreFullscreenPanes.\(reason)")
     }
 
+    /// Reconcile the main lyrics attachment after an embedded fullscreen
+    /// transition has completed. The pane is restored synchronously, but its
+    /// child controller can receive one more layout callback while the
+    /// fullscreen SwiftUI host is being removed. A final explicit pass keeps
+    /// the single main WebView attached without creating a second one.
+    func synchronizeLyricsSurfaceAfterFullscreenTransition(reason: String) {
+        guard isViewLoaded else { return }
+        forceSynchronousSplitLayout()
+
+        if let lyricsHost = lyricsItem.viewController as? LyricsFlatAppKitHostViewController {
+            lyricsHost.synchronizeAfterFullscreenTransition(reason: reason)
+        } else if lyricsItem.isCollapsed == false, lyricsItem.viewController.isViewLoaded {
+            lyricsItem.viewController.view.needsLayout = true
+            lyricsItem.viewController.view.layoutSubtreeIfNeeded()
+        }
+    }
+
     private func applyInitialLayoutFromMirroredState() {
         let uiState = appSession.uiState
         let targetSidebarVisible = uiState.sidebarVisible
@@ -737,6 +754,24 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         detachWebView()
     }
 
+    /// Runs after the fullscreen manager has returned the main window to its
+    /// normal mode. Keep this idempotent: if AppKit already attached the store,
+    /// the pass only relayouts and confirms the attachment; it never allocates
+    /// another WebView.
+    func synchronizeAfterFullscreenTransition(reason: String) {
+        guard isViewLoaded, view.window != nil else { return }
+        view.needsLayout = true
+        view.layoutSubtreeIfNeeded()
+        syncVisibilityAndAttachment(reason: "\(reason).sync")
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isViewLoaded, self.view.window != nil else { return }
+            self.view.needsLayout = true
+            self.view.layoutSubtreeIfNeeded()
+            self.syncVisibilityAndAttachment(reason: "\(reason).async")
+        }
+    }
+
     override func viewDidLayout() {
         super.viewDidLayout()
         installQueueOverlayIfNeeded()
@@ -889,10 +924,18 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
 
     private func attachWebViewIfNeeded() {
         let store = mainStore
-        if attachmentID == nil || store.activeAttachmentID != attachmentID {
-            attachmentID = store.attach()
+        guard let webView = store.webView else {
+            attachmentID = nil
+            return
         }
-        let webView = store.webView
+        if attachmentID == nil {
+            attachmentID = UUID()
+        }
+        if let attachmentID,
+           store.activeAttachmentID != attachmentID || !store.isAttached
+        {
+            self.attachmentID = store.attach(requestingID: attachmentID)
+        }
         webViewHostView.webViewLayoutScale = CGFloat(AppSettings.shared.amllLyricsRenderQualityScale)
         webViewHostView.onLayout = { [weak store] _ in
             store?.requestLayoutResync(reason: "flatHost.hostLayout")
@@ -902,6 +945,7 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         }
         guard webView.superview !== webViewHostView else {
             store.layoutPreparedWebView(in: webViewHostView.bounds, reason: "flatHost.alreadyAttached")
+            LyricsSurfaceManager.shared.notifyStoreAttached(.main, store: store)
             return
         }
         if let oldHostView = webView.superview as? WebViewHostView {
@@ -913,6 +957,7 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         store.layoutPreparedWebView(in: webViewHostView.bounds, reason: "flatHost.attach")
         webViewHostView.addSubview(webView)
         store.refreshMouseInteractionSuppression(reason: "flatHost.attach")
+        LyricsSurfaceManager.shared.notifyStoreAttached(.main, store: store)
     }
 
     private func schedulePreparedWebViewLayout(reason: String) {
@@ -978,14 +1023,13 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         pendingLayoutSignature = nil
         isApplyingDeferredLayout = false
         guard let store = LyricsSurfaceManager.shared.existingStore(for: .main) else { return }
+        guard store.activeAttachmentID == id else { return }
         if let webView = store.preparedWebView, webView.superview === webViewHostView {
             webView.removeFromSuperview()
         }
         webViewHostView.onLayout = nil
         webViewHostView.onWindowStateChange = nil
         webViewHostView.webViewLayoutScale = 1
-        if store.activeAttachmentID == id {
-            store.detach(requestingID: id)
-        }
+        store.detach(requestingID: id)
     }
 }
