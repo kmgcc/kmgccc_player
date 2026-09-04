@@ -472,11 +472,22 @@ final class SmartPlaybackController {
             // threshold. Merely opening a track or scrubbing briefly is not a
             // playback-history event.
         } else {
-            playbackHistoryStore.record(
-                track: track,
-                playedAt: tracker.startedAt,
-                playedSeconds: accumulatedSeconds
-            )
+            let startedAt = tracker.startedAt
+            let title = track.title
+            let artist = track.artist
+            let album = track.album
+            let duration = track.duration
+            Task(priority: .utility) { [weak self] in
+                self?.playbackHistoryStore.record(
+                    trackID: trackID,
+                    playedAt: startedAt,
+                    title: title,
+                    artist: artist,
+                    album: album,
+                    duration: duration,
+                    playedSeconds: accumulatedSeconds
+                )
+            }
         }
 
         // Apply to stats
