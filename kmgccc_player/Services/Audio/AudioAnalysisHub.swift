@@ -355,10 +355,31 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
                     return
                 }
 
+                if pcm.channelCount == 2 {
+                    var sourcePointer = sourceBase
+                    var destinationIndex = writeIndex
+                    for _ in 0..<pcm.frames {
+                        destination[destinationIndex] = (sourcePointer[0] + sourcePointer[1]) * 0.5
+                        sourcePointer = sourcePointer.advanced(by: 2)
+                        destinationIndex += 1
+                        if destinationIndex >= capacity {
+                            destinationIndex = 0
+                        }
+                    }
+                    writeIndex = destinationIndex
+                    return
+                }
+
                 var sourcePointer = sourceBase
                 var destinationIndex = writeIndex
                 for _ in 0..<pcm.frames {
-                    destination[destinationIndex] = sourcePointer.pointee
+                    let sample: Float
+                    if pcm.channelCount >= 2 {
+                        sample = (sourcePointer[0] + sourcePointer[1]) * 0.5
+                    } else {
+                        sample = sourcePointer.pointee
+                    }
+                    destination[destinationIndex] = sample
                     sourcePointer = sourcePointer.advanced(by: pcm.channelCount)
                     destinationIndex += 1
                     if destinationIndex >= capacity {

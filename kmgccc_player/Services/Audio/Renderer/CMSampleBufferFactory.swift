@@ -33,6 +33,24 @@ nonisolated struct CanonicalPCM: Sendable {
     let data: [Float]
 
     var seconds: Double { Double(frames) / sampleRate }
+
+    /// Returns a sub-slice of this PCM buffer starting at `frameOffset` for `frameCount` frames.
+    /// If the requested range exceeds bounds, it is clamped to available frames.
+    func slice(frameOffset: Int, frameCount: Int) -> CanonicalPCM {
+        guard frameOffset >= 0, frameCount > 0, frameOffset < frames else {
+            return CanonicalPCM(frames: 0, channelCount: channelCount, sampleRate: sampleRate, data: [])
+        }
+        let clampedCount = min(frameCount, frames - frameOffset)
+        let sampleStart = frameOffset * channelCount
+        let sampleEnd = sampleStart + clampedCount * channelCount
+        let sliceData = Array(data[sampleStart..<sampleEnd])
+        return CanonicalPCM(
+            frames: clampedCount,
+            channelCount: channelCount,
+            sampleRate: sampleRate,
+            data: sliceData
+        )
+    }
 }
 
 enum CMSampleBufferFactory {
@@ -156,9 +174,11 @@ enum CMSampleBufferFactory {
                         right = right.advanced(by: 1)
                     }
                 default:
+                    var channelPointers = (0..<channelCount).map { channels[$0] }
                     for _ in 0..<frames {
                         for channel in 0..<channelCount {
-                            dst[channel] = channels[channel].pointee
+                            dst[channel] = channelPointers[channel].pointee
+                            channelPointers[channel] = channelPointers[channel].advanced(by: 1)
                         }
                         dst = dst.advanced(by: channelCount)
                     }

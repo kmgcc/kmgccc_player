@@ -45,9 +45,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     )
 
     static let targetAheadSeconds: Double = 1.5
-    // A larger chunk amortizes AVAudioFile/CMBlockBuffer/sample-buffer setup
-    // while the renderer still keeps only the bounded 1.5 s lookahead queued.
     static let chunkFrames: AVAudioFrameCount = 8192
+    // Visualizer analysis delivers fine-grained slices (≈23ms @ 44.1kHz)
+    // so downstream FFT/LED calculations advance continuously without burstiness.
+    static let analysisChunkFrames: Int = 1024
 
     nonisolated(unsafe) private(set) var renderer = AVSampleBufferAudioRenderer()
     let synchronizer = AVSampleBufferRenderSynchronizer()
@@ -603,9 +604,16 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                     )
                     return false
                 }
-                analysisQueue.append(
-                    AnalysisChunk(presentationTime: ptsSeconds, pcm: pcm)
-                )
+                var sliceOffset = 0
+                while sliceOffset < pcm.frames {
+                    let sliceCount = min(Self.analysisChunkFrames, pcm.frames - sliceOffset)
+                    let slicePTS = ptsSeconds + (Double(sliceOffset) / source.sourceSampleRate)
+                    let slicePCM = pcm.slice(frameOffset: sliceOffset, frameCount: sliceCount)
+                    analysisQueue.append(
+                        AnalysisChunk(presentationTime: slicePTS, pcm: slicePCM)
+                    )
+                    sliceOffset += sliceCount
+                }
                 renderer.enqueue(sampleBuffer)
                 nextPresentationTime += pcm.seconds
                 return true

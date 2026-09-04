@@ -52,6 +52,32 @@ final class RendererSampleBufferTests: XCTestCase {
         XCTAssertEqual(CMSampleBufferGetNumSamples(buffer), 4_410)
         XCTAssertEqual(CMSampleBufferGetTotalSampleSize(buffer), 4_410 * 2 * 4)
     }
+
+    func testCanonicalPCMSlice() {
+        let pcm = CanonicalPCM(
+            frames: 2048,
+            channelCount: 2,
+            sampleRate: 44_100,
+            data: (0..<4096).map { Float($0) }
+        )
+        let slice = pcm.slice(frameOffset: 512, frameCount: 1024)
+        XCTAssertEqual(slice.frames, 1024)
+        XCTAssertEqual(slice.channelCount, 2)
+        XCTAssertEqual(slice.sampleRate, 44_100)
+        XCTAssertEqual(slice.data.count, 2048)
+        XCTAssertEqual(slice.data.first, 1024)
+        XCTAssertEqual(slice.data.last, 3071)
+
+        // Clamped at tail
+        let tailSlice = pcm.slice(frameOffset: 1536, frameCount: 1024)
+        XCTAssertEqual(tailSlice.frames, 512)
+        XCTAssertEqual(tailSlice.data.count, 1024)
+
+        // Out of bounds
+        let emptySlice = pcm.slice(frameOffset: 3000, frameCount: 512)
+        XCTAssertEqual(emptySlice.frames, 0)
+        XCTAssertTrue(emptySlice.data.isEmpty)
+    }
 }
 
 final class RendererTimelineTests: XCTestCase {
@@ -113,6 +139,11 @@ final class RendererTimelineTests: XCTestCase {
         XCTAssertEqual(secondDescriptor.presentationStartSeconds, 31.18, accuracy: 0.000_001)
         XCTAssertEqual(secondDescriptor.presentationEndSeconds, 32.18, accuracy: 0.000_001)
         pipeline.stop()
+    }
+
+    func testAnalysisChunkGranularity() throws {
+        XCTAssertEqual(RendererPlaybackPipeline.analysisChunkFrames, 1024)
+        XCTAssertEqual(RendererPlaybackPipeline.chunkFrames, 8192)
     }
 }
 
