@@ -20,7 +20,6 @@ struct HomeHeroView: View {
     @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(\.colorScheme) private var colorScheme
     @Environment(AppSettings.self) private var appSettings
-    @EnvironmentObject private var themeStore: ThemeStore
 
     @State private var coverImage: NSImage?
     @State private var artworkData: Data?
@@ -283,7 +282,7 @@ struct HomeHeroView: View {
         }
         .sheet(item: $trackToEdit) { track in
             TrackEditSheet(track: track)
-                .environmentObject(themeStore)
+                .environmentObject(ThemeStore.shared)
         }
         .sheet(isPresented: $isShowingDescriptionReader) {
             DetailDescriptionReaderSheet(
@@ -296,7 +295,7 @@ struct HomeHeroView: View {
                 paletteOverride: heroPalette.appForeground,
                 accentColorOverride: colorScheme == .dark ? heroPalette.uiAccentOnDarkColor : heroPalette.uiAccentOnLightColor
             )
-            .environmentObject(themeStore)
+            .environmentObject(ThemeStore.shared)
         }
         .trackDeletionConfirmation(item: $trackDeletionRequest) { tracks in
             Task {
