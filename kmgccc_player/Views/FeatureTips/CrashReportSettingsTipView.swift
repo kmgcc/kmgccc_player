@@ -15,7 +15,7 @@ struct CrashReportSettingsTipView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("自动发送崩溃报告")
                         .font(.headline)
-                    Text("此功能默认开启。报告会经过脱敏，你可以随时在“设置 › 数据管理”中更改选择。")
+                    Text("此功能默认开启。报告会经过脱敏，你可以随时在“设置 › 数据 › 应用数据 › 数据共享”中更改选择。")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

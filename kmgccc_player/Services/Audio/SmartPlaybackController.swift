@@ -16,6 +16,16 @@ import SwiftData
 @MainActor
 final class SmartPlaybackController {
 
+    private struct PendingHistoryRecord: Sendable {
+        let trackID: UUID
+        let playedAt: Date
+        let title: String
+        let artist: String
+        let album: String
+        let duration: Double
+        let playedSeconds: Double
+    }
+
     // MARK: - Components
 
     private let playbackHistoryStore: PlaybackHistoryStore
@@ -40,6 +50,11 @@ final class SmartPlaybackController {
 
     /// Current track index in source array (for non-shuffle mode).
     private var currentSourceIndex: Int = -1
+
+    /// History uses a main-actor SwiftData context. Keep its durable write out
+    /// of the track-switch frame while retaining every event in order.
+    private var pendingHistoryRecords: [PendingHistoryRecord] = []
+    private var historyWriteTask: Task<Void, Never>?
 
     /// Last track in the explicit play-next block for sequential queues.
     private var playNextInsertionAnchorID: UUID?
@@ -477,8 +492,8 @@ final class SmartPlaybackController {
             let artist = track.artist
             let album = track.album
             let duration = track.duration
-            Task(priority: .utility) { [weak self] in
-                self?.playbackHistoryStore.record(
+            enqueuePlaybackHistoryRecord(
+                PendingHistoryRecord(
                     trackID: trackID,
                     playedAt: startedAt,
                     title: title,
@@ -487,7 +502,7 @@ final class SmartPlaybackController {
                     duration: duration,
                     playedSeconds: accumulatedSeconds
                 )
-            }
+            )
         }
 
         // Apply to stats
@@ -576,6 +591,59 @@ final class SmartPlaybackController {
         currentSessionTracker = nil
     }
 
+    private func enqueuePlaybackHistoryRecord(_ record: PendingHistoryRecord) {
+        pendingHistoryRecords.append(record)
+        guard historyWriteTask == nil else { return }
+
+        historyWriteTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                // The control relay animation is 580 ms. Leave a little room
+                // after it before touching the main-actor SwiftData context.
+                try? await Task.sleep(for: .milliseconds(700))
+                guard !Task.isCancelled, let self else { return }
+                guard !self.pendingHistoryRecords.isEmpty else {
+                    self.historyWriteTask = nil
+                    return
+                }
+
+                let record = self.pendingHistoryRecords.removeFirst()
+                self.playbackHistoryStore.record(
+                    trackID: record.trackID,
+                    playedAt: record.playedAt,
+                    title: record.title,
+                    artist: record.artist,
+                    album: record.album,
+                    duration: record.duration,
+                    playedSeconds: record.playedSeconds
+                )
+
+                if self.pendingHistoryRecords.isEmpty {
+                    self.historyWriteTask = nil
+                    return
+                }
+            }
+        }
+    }
+
+    /// Application termination is the one boundary where the durable history
+    /// write must complete before the process exits.
+    private func flushPendingPlaybackHistory() {
+        historyWriteTask?.cancel()
+        historyWriteTask = nil
+        for record in pendingHistoryRecords {
+            playbackHistoryStore.record(
+                trackID: record.trackID,
+                playedAt: record.playedAt,
+                title: record.title,
+                artist: record.artist,
+                album: record.album,
+                duration: record.duration,
+                playedSeconds: record.playedSeconds
+            )
+        }
+        pendingHistoryRecords.removeAll(keepingCapacity: false)
+    }
+
     func finishCurrentTrackForStopAfterTrack() {
         finalizeCurrentPlaybackSession(reason: .stopAfterTrack)
     }
@@ -604,6 +672,7 @@ final class SmartPlaybackController {
 
     func prepareForTermination() {
         finalizeCurrentPlaybackSession(reason: .appTermination)
+        flushPendingPlaybackHistory()
         // Capture the latest in-memory values before the process termination
         // deadline. The bound library session will retry the sidecar writes on
         // its next lifecycle opportunity.

@@ -493,7 +493,11 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     }
 
     func stop() {
-        pipelineQueue.sync {
+        // This is called from the main-actor playback command path. Preserve
+        // ordering with the following load() through the serial queue, but do
+        // not make the UI wait for an in-flight decode or renderer flush.
+        pipelineQueue.async { [weak self] in
+            guard let self else { return }
             self.isLoaded = false
             self.isPlaybackActive = false
             self.pendingAutoFlushResync = false

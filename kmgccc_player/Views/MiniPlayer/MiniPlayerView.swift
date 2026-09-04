@@ -174,13 +174,18 @@ struct MiniPlayerView: View {
             }
         }
         .onDisappear {
+            FeatureTipPresentationCoordinator.shared.cancelPending(
+                key: FeatureTipCatalog.PlaybackModeRetap.key
+            )
             guard showPlaybackModeRetapTip else { return }
             AppVersionGate.shared.markPlaybackModeRetapFeatureTipDismissed()
             showPlaybackModeRetapTip = false
+            finishPlaybackModeRetapTipPresentation()
         }
         .onChange(of: showPlaybackModeRetapTip) { wasPresented, isPresented in
             guard wasPresented, !isPresented else { return }
             AppVersionGate.shared.markPlaybackModeRetapFeatureTipDismissed()
+            finishPlaybackModeRetapTipPresentation()
         }
     }
 
@@ -318,13 +323,32 @@ struct MiniPlayerView: View {
         }
         guard !Task.isCancelled,
               playbackModeRetapTipTaskID(for: playbackCoordinator.presentation) != "inactive",
+              showPlaybackModeRetapTip == false
+        else { return }
+
+        FeatureTipPresentationCoordinator.shared.requestPresentation(
+            key: FeatureTipCatalog.PlaybackModeRetap.key
+        ) { [self] in
+            presentPlaybackModeRetapTipNow()
+        }
+    }
+
+    private func presentPlaybackModeRetapTipNow() -> Bool {
+        guard playbackModeRetapTipTaskID(for: playbackCoordinator.presentation) != "inactive",
               showPlaybackModeRetapTip == false,
               AppVersionGate.shared.claimPlaybackModeRetapFeatureTipDisplay()
-        else { return }
+        else { return false }
 
         withAnimation(layoutAnimation) {
             showPlaybackModeRetapTip = true
         }
+        return true
+    }
+
+    private func finishPlaybackModeRetapTipPresentation() {
+        FeatureTipPresentationCoordinator.shared.endPresentation(
+            key: FeatureTipCatalog.PlaybackModeRetap.key
+        )
     }
 
     private func dismissPlaybackModeRetapTip() {
@@ -332,6 +356,7 @@ struct MiniPlayerView: View {
         withAnimation(layoutAnimation) {
             showPlaybackModeRetapTip = false
         }
+        finishPlaybackModeRetapTipPresentation()
     }
 
     private var progressBar: some View {

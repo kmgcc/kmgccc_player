@@ -16,10 +16,31 @@ enum FeatureTipCatalog {
         static let behaviorRevision = 2
     }
 
+    enum ShiftRangeSelection {
+        static let key = "playlist.shiftRangeSelection"
+        static let introducedBuild = AppBuild(7)
+        static let maxDisplayCount = 2
+    }
+
+    enum AutomaticCrashReports {
+        static let key = "dataSharing.automaticCrashReports"
+        static let introducedBuild = AppBuild(8)
+        static let maxDisplayCount = 2
+        static let presentationDelay: TimeInterval = 3
+    }
+
+    enum ScrollWheelVolume {
+        static let key = "fullscreen.scrollWheelVolume"
+        static let introducedBuild = AppBuild(10)
+        static let maxDisplayCount = 1
+        static let presentationDelay: TimeInterval = 5
+    }
+
     static let enabledFeatureKeys: Set<String> = [
         PlaybackModeRetap.key,
-        "playlist.shiftRangeSelection",
-        "dataSharing.automaticCrashReports"
+        ShiftRangeSelection.key,
+        AutomaticCrashReports.key,
+        ScrollWheelVolume.key
     ]
 
     static func isEnabled(featureKey: String) -> Bool {
