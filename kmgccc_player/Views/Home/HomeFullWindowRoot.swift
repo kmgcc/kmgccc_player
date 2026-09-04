@@ -20,7 +20,6 @@ import SwiftUI
 
 struct HomeFullWindowRoot: View {
     @ObservedObject var appSession: AppSessionHost
-    @StateObject private var themeStore = ThemeStore.shared
     @State private var settings = AppSettings.shared
     @State private var coverDownloadService = CoverDownloadService()
     @State private var netEaseCoverService = NetEaseCoverService()
@@ -54,11 +53,11 @@ struct HomeFullWindowRoot: View {
                         .environment(skinManager)
                         .environment(coverDownloadService)
                         .environment(netEaseCoverService)
-                        .environmentObject(themeStore)
-                        .environment(\.libraryPresentedAccentColor, themeStore.accentColor)
+                        .environmentObject(ThemeStore.shared)
+                        .environment(\.libraryPresentedAccentColor, ThemeStore.shared.accentColor)
                         .modelContainer(appSession.sharedModelContainer)
-                        .tint(themeStore.accentColor)
-                        .accentColor(themeStore.accentColor)
+                        .tint(ThemeStore.shared.accentColor)
+                        .accentColor(ThemeStore.shared.accentColor)
                 }
             } else {
                 Color.clear

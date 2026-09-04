@@ -64,6 +64,7 @@ final class HomeViewModel {
     private var albumSignature = 0
     private var lastAppliedRefreshSignature: HomeRefreshSignature?
     private var snapshotWriteTask: Task<Void, Never>?
+    private var deferredRefreshTask: Task<Void, Never>?
 
     struct PreferenceRankItem: Identifiable {
         let id: UUID
@@ -80,6 +81,7 @@ final class HomeViewModel {
     /// IMPORTANT: Does NOT call loadArtworkDataIfNeeded() in batch.
     /// Artwork loading is deferred to individual card views.
     func refresh(from libraryVM: LibraryViewModel) {
+        cancelDeferredRefresh()
         let allTracks = libraryVM.allTracks
         guard !allTracks.isEmpty else {
             clearAll()
@@ -193,6 +195,48 @@ final class HomeViewModel {
         )
     }
 
+    /// Coalesce visible Home updates behind a short idle window. Library
+    /// mutations and playback-adjacent auxiliary notifications can arrive in
+    /// the same turn as a track switch; rebuilding Home's statistics and
+    /// ranking is lower priority than getting the new audio and transport UI
+    /// on screen. A later notification replaces the pending work, so a rapid
+    /// browsing burst does not repeatedly rebuild Home.
+    func scheduleDeferredRefresh(
+        from libraryVM: LibraryViewModel,
+        trackIDs: [UUID]? = nil,
+        delay: Duration = .milliseconds(700),
+        playbackIsActive: @escaping @MainActor () -> Bool = { false }
+    ) {
+        deferredRefreshTask?.cancel()
+        let changedTrackIDs = trackIDs
+        deferredRefreshTask = Task(priority: .utility) { @MainActor [weak self, weak libraryVM] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            // A fixed delay is not enough when a library notification lands
+            // just before another track switch. Keep the lower-priority Home
+            // work parked until transport is quiet; a new notification still
+            // cancels and replaces this task.
+            while playbackIsActive() {
+                do {
+                    try await Task.sleep(for: .milliseconds(250))
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled, let self, let libraryVM else { return }
+
+            if let changedTrackIDs, !changedTrackIDs.isEmpty {
+                self.applyTrackUpdates(from: libraryVM, trackIDs: changedTrackIDs)
+            } else {
+                self.refreshChangedSections(from: libraryVM)
+            }
+            self.deferredRefreshTask = nil
+        }
+    }
+
     /// Incremental refresh for ordinary visible-state changes. This avoids
     /// reassigning stable Home sections when only playlists or one track's
     /// metadata changed.
@@ -300,6 +344,7 @@ final class HomeViewModel {
     }
 
     func refreshArtistAlbumSort(from libraryVM: LibraryViewModel) {
+        cancelDeferredRefresh()
         artists = topArtists(from: libraryVM)
         albums = topAlbums(from: libraryVM)
         playlists = topPlaylists(from: libraryVM)
@@ -347,6 +392,7 @@ final class HomeViewModel {
     }
 
     private func clearAll() {
+        cancelDeferredRefresh()
         heroTrack = nil
         selectedHeroTrackID = nil
         selectedHeroGeneratedAt = nil
@@ -371,6 +417,11 @@ final class HomeViewModel {
         artistSignature = 0
         albumSignature = 0
         lastAppliedRefreshSignature = nil
+    }
+
+    func cancelDeferredRefresh() {
+        deferredRefreshTask?.cancel()
+        deferredRefreshTask = nil
     }
 
     private func topAlbums(from libraryVM: LibraryViewModel) -> [AlbumEntry] {

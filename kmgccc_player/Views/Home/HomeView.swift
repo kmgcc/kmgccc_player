@@ -20,7 +20,6 @@ struct HomeView: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(AppSettings.self) private var settings
-    @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.colorScheme) private var colorScheme
 
     @Environment(HomeViewModel.self) private var homeVM
@@ -38,13 +37,15 @@ struct HomeView: View {
     private let ambientMotion = HomeAmbientMotionState.shared
 
     var body: some View {
-        Group {
-            if shouldShowStartupLoading {
-                startupLoadingView
-            } else if libraryVM.allTracks.isEmpty {
-                emptyLibraryView
-            } else {
-                scrollContent
+        HomeThemeSnapshotReader { homeTheme in
+            Group {
+                if shouldShowStartupLoading {
+                    startupLoadingView
+                } else if libraryVM.allTracks.isEmpty {
+                    emptyLibraryView(theme: homeTheme)
+                } else {
+                    scrollContent(theme: homeTheme)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -65,14 +66,28 @@ struct HomeView: View {
             await prepareStartupGate()
         }
         .onChange(of: libraryVM.refreshTrigger) { _, _ in
-            homeVM.refreshChangedSections(from: libraryVM)
+            homeVM.scheduleDeferredRefresh(
+                from: libraryVM,
+                playbackIsActive: { playbackIsActive }
+            )
             if !didPassStartupGate {
                 Task { await prepareStartupGate() }
             }
         }
         .onChange(of: libraryVM.trackUpdateEvent) { _, event in
             guard let event else { return }
-            homeVM.applyTrackUpdates(from: libraryVM, trackIDs: [event.trackID])
+            homeVM.scheduleDeferredRefresh(
+                from: libraryVM,
+                trackIDs: [event.trackID],
+                playbackIsActive: { playbackIsActive }
+            )
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
+            // The home artwork preheater only fills caches. Stop it at the
+            // transport boundary so it cannot compete with the new track's
+            // first frames or the fullscreen lyric layer commit.
+            homeVM.cancelDeferredRefresh()
+            HomeArtworkPreheater.shared.cancel()
         }
         .onChange(of: libraryVM.artistSortKey) { _, _ in
             homeVM.refreshArtistAlbumSort(from: libraryVM)
@@ -123,7 +138,7 @@ struct HomeView: View {
         } else {
             phaseToken = "settled"
         }
-        return "\(stateToken)|\(phaseToken)|tracks:\(libraryVM.allTracks.count)|refresh:\(libraryVM.refreshTrigger)"
+        return "\(stateToken)|\(phaseToken)|tracks:\(libraryVM.allTracks.count)"
     }
 
     private func prepareStartupGate(resetEntranceAnimation: Bool = false) async {
@@ -132,7 +147,13 @@ struct HomeView: View {
         }
 
         if libraryVM.state == .loaded || libraryVM.loadingPhase.isFailed {
-            if !libraryVM.allTracks.isEmpty {
+            if !libraryVM.allTracks.isEmpty, !homeVM.hasPreparedContent {
+                // The first Home snapshot is required to render the page at
+                // startup. It is a one-time aggregation, so do not park it
+                // behind active playback; doing that lets the four-second
+                // fallback reveal an empty scrollContent and leaves Home
+                // blank until another view transition happens. Subsequent
+                // library/statistics changes still use the deferred path.
                 homeVM.refresh(from: libraryVM)
             }
 
@@ -148,11 +169,24 @@ struct HomeView: View {
         guard !Task.isCancelled, shouldShowStartupLoading else { return }
 
         if libraryVM.state == .loaded, !libraryVM.allTracks.isEmpty, !homeVM.hasPreparedContent {
+            // Keep the startup gate honest: never reveal the full Home
+            // hierarchy while its required snapshot is still empty.
             homeVM.refresh(from: libraryVM)
+        }
+
+        guard libraryVM.allTracks.isEmpty
+            || homeVM.hasPreparedContent
+            || libraryVM.loadingPhase.isFailed
+        else {
+            return
         }
 
         startupFallbackExpired = true
         revealStartupContent(resetEntranceAnimation: true)
+    }
+
+    private var playbackIsActive: Bool {
+        playerVM.isPlaying || playbackCoordinator.presentation.isPlaying
     }
 
     private func revealStartupContent(resetEntranceAnimation: Bool) {
@@ -200,7 +234,7 @@ struct HomeView: View {
         return miniPlayerHeight > 1 ? miniPlayerHeight + 36 : 120
     }
 
-    private var scrollContent: some View {
+    private func scrollContent(theme: HomeThemeSnapshot) -> some View {
         // Read only the discrete layout snapshot. This intentionally avoids
         // touching `layout.geometry` so sub-pixel resize / divider-drag ticks
         // do NOT invalidate this body. The continuous geometry pipe is read
@@ -225,14 +259,15 @@ struct HomeView: View {
             if snap.hasValidLayout {
                 if !HomeDebugFlags.disableAmbient {
                     HomeAmbientShapesBackground(
-                        sourceColor: themeStore.semanticPalette.ambientSurface,
-                        sourceAnalysis: themeStore.semanticPalette.analysis,
+                        sourceColor: theme.semanticPalette.ambientSurface,
+                        sourceAnalysis: theme.semanticPalette.analysis,
                         colorScheme: colorScheme,
                         reduceMotion: reduceMotion
                     )
                 }
 
                 homeScrollView(
+                    theme: theme,
                     mode: mode,
                     contentWidth: contentWidth,
                     centerLeftPad: centerLeftPad,
@@ -247,6 +282,7 @@ struct HomeView: View {
     }
 
     private func homeScrollView(
+        theme: HomeThemeSnapshot,
         mode: HomeLayoutMode,
         contentWidth: CGFloat,
         centerLeftPad: CGFloat,
@@ -254,16 +290,13 @@ struct HomeView: View {
     ) -> some View {
         // Pre-resolve theme values once at this level so child sections
         // receive them as plain `let` parameters and don't need their own
-        // `@EnvironmentObject ThemeStore` subscriptions. ThemeStore is an
-        // `ObservableObject` with coarse `objectWillChange`, so every
-        // direct subscriber re-evaluates on any of its ~15 `@Published`
-        // properties. HomeView already subscribes, so reading the accent
-        // here is free and lets `HomeInsightsSection` / `HomeRankRow` /
-        // `HomeListeningHeatmapView` opt out of the store entirely.
-        let accentColor = themeStore.accentColor
-        let appFgPrimary   = themeStore.appForegroundPalette.primaryColor
-        let appFgSecondary = themeStore.appForegroundPalette.secondaryColor
-        let appFgTertiary  = themeStore.appForegroundPalette.tertiaryColor
+        // `@EnvironmentObject ThemeStore` subscriptions. The theme snapshot
+        // is intentionally supplied by the small reader wrapper above, so
+        // Home does not observe every coarse ThemeStore publication.
+        let accentColor = theme.accentColor
+        let appFgPrimary   = theme.foregroundPalette.primaryColor
+        let appFgSecondary = theme.foregroundPalette.secondaryColor
+        let appFgTertiary  = theme.foregroundPalette.tertiaryColor
 
         return ScrollView(.vertical, showsIndicators: true) {
             // `LazyVStack` defers body evaluation and layout for sections
@@ -287,7 +320,7 @@ struct HomeView: View {
                     )
                 }
 
-                footer
+                footer(theme: theme)
                     .padding(.leading, centerLeftPad)
                     .padding(.trailing, centerRightPad)
 
@@ -339,7 +372,6 @@ struct HomeView: View {
     ) -> String {
         [
             "mode:\(mode)",
-            "refresh:\(libraryVM.refreshTrigger)",
             "tracks:\(libraryVM.allTracks.count)",
             "hero:\(homeVM.heroTrack?.id.uuidString ?? "none")",
             "albums:\(homeVM.albums.prefix(10).map { $0.id.uuidString }.joined(separator: ","))",
@@ -436,38 +468,92 @@ struct HomeView: View {
         }
     }
 
-    private var emptyLibraryView: some View {
+    private func emptyLibraryView(theme: HomeThemeSnapshot) -> some View {
         VStack(spacing: 12) {
             Image(systemName: "music.note.house")
                 .font(.system(size: 48, weight: .light))
-                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                .foregroundStyle(theme.foregroundPalette.secondaryColor)
             Text("没有歌曲待导入")
                 .font(.title3)
-                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                .foregroundStyle(theme.foregroundPalette.secondaryColor)
             Text("从 Finder 拖入音乐，或使用工具栏的导入按钮")
                 .font(.callout)
-                .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
+                .foregroundStyle(theme.foregroundPalette.tertiaryColor)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var footer: some View {
+    private func footer(theme: HomeThemeSnapshot) -> some View {
         VStack(spacing: 8) {
             Text("\u{201C}Where words fail, music speaks.\u{201D}")
                 .font(.system(size: 20, weight: .ultraLight))
-                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                .foregroundStyle(theme.foregroundPalette.secondaryColor)
             Text("\u{8A00}\u{6240}\u{4E0D}\u{53CA}\u{5904}\u{FF0C}\u{7B19}\u{7BAB}\u{76F8}\u{7EE7}\u{3002}")
                 .font(.system(.callout, weight: .ultraLight))
-                .foregroundStyle(themeStore.appForegroundPalette.tertiaryColor)
+                .foregroundStyle(theme.foregroundPalette.tertiaryColor)
             Text("— Hans Christian Andersen")
                 .font(.system(.caption2, weight: .ultraLight))
                 .textCase(.uppercase)
                 .tracking(0.8)
-                .foregroundStyle(themeStore.appForegroundPalette.quaternaryColor)
+                .foregroundStyle(theme.foregroundPalette.quaternaryColor)
                 .padding(.top, 4)
         }
         .padding(.top, 36)
         .padding(.bottom, 24)
+    }
+}
+
+/// A deliberately low-frequency theme bridge for Home.
+///
+/// ThemeStore is a coarse ObservableObject: artwork extraction publishes
+/// several values while the transport transition is still settling. Home
+/// does not need each intermediate palette, so this reader keeps the last
+/// snapshot for the current switch and adopts the newest one only after a
+/// quiet interval. The observer is a child of HomeView; the scroll/content
+/// root therefore does not get rebuilt for every palette publication.
+private struct HomeThemeSnapshot: Equatable {
+    let semanticPalette: SemanticPalette
+
+    var accentColor: Color {
+        ColorRenderingAdapter.makeSwiftUIColor(semanticPalette.globalAccent)
+    }
+
+    var foregroundPalette: AppForegroundPalette {
+        semanticPalette.appForeground
+    }
+}
+
+@MainActor
+private struct HomeThemeSnapshotReader<Content: View>: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @State private var snapshot: HomeThemeSnapshot
+    private let content: (HomeThemeSnapshot) -> Content
+
+    init(@ViewBuilder content: @escaping (HomeThemeSnapshot) -> Content) {
+        self.content = content
+        _snapshot = State(
+            initialValue: HomeThemeSnapshot(
+                semanticPalette: ThemeStore.shared.semanticPalette
+            )
+        )
+    }
+
+    var body: some View {
+        content(snapshot)
+            .task(id: themeStore.themeGeneration) {
+                do {
+                    try await Task.sleep(for: .milliseconds(700))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+
+                let next = HomeThemeSnapshot(
+                    semanticPalette: themeStore.semanticPalette
+                )
+                guard next != snapshot else { return }
+                snapshot = next
+            }
     }
 }
 

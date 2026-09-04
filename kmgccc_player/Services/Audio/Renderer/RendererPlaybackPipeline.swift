@@ -508,9 +508,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             self.segments.removeAll(keepingCapacity: false)
             self.decodeIndex = nil
             self.nextPresentationTime = 0
-            DispatchQueue.main.async { [weak self] in
-                self?.synchronizer.setRate(0, time: .zero)
-            }
+            // Keep the reset on the same serial queue as flush/load. Posting
+            // this back to main can let a stale stop overwrite the next
+            // track's freshly committed synchronizer anchor.
+            self.synchronizer.setRate(0, time: .zero)
         }
     }
 

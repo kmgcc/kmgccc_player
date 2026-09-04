@@ -3718,7 +3718,14 @@ struct FullscreenPlayerView: View {
                 restoreIfNeeded: false,
                 preserveRestoreEligibility: shouldPreserveFullscreenLyricsEndingAutoHideRestore()
             )
-            reloadLyricsSurface(reason: "fullscreen playback restarted", forceLyricsReload: true)
+            // A manual track switch also resets the playback clock. The
+            // track-id observer will perform the required full reload for the
+            // new song; reloading here as well duplicates the WebKit layer
+            // commit and was the main fullscreen hitch during next/previous.
+            let currentTrackID = playerVM.currentTrack?.id ?? currentDisplayContext.trackID
+            if lastFullscreenLyricsReloadSignature?.trackID == currentTrackID {
+                reloadLyricsSurface(reason: "fullscreen playback restarted", forceLyricsReload: true)
+            }
         }
     }
 
@@ -3756,7 +3763,13 @@ struct FullscreenPlayerView: View {
                 restoreIfNeeded: false,
                 preserveRestoreEligibility: shouldPreserveFullscreenLyricsEndingAutoHideRestore()
             )
-            reloadLyricsSurface(reason: "fullscreen external playback restarted", forceLyricsReload: true)
+            // External track identity changes have their own observer below;
+            // only reload here when the identity is still the one already
+            // delivered to the fullscreen surface (true same-track replay).
+            let currentTrackID = playbackCoordinator.presentation.displayTrackID
+            if lastFullscreenLyricsReloadSignature?.trackID == currentTrackID {
+                reloadLyricsSurface(reason: "fullscreen external playback restarted", forceLyricsReload: true)
+            }
         }
     }
 
