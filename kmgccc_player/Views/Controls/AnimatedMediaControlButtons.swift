@@ -274,8 +274,11 @@ struct AnimatedPlayPauseButton: View {
             }
         }
 
-        // 4) Decouple action dispatch so playback state changes don't stall the animation:
+        // 4) Let the exit transaction reach the render server before the
+        // playback state changes trigger the rest of the UI graph.
         Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(16))
+            guard !Task.isCancelled else { return }
             action()
         }
     }
@@ -322,8 +325,9 @@ struct AnimatedPlayPauseButton: View {
 
 // MARK: - Previous / Next
 
-/// Animated previous/next button with zero-delay dual-channel ping-pong relay.
-/// 100% gap-free arrow contact, zero-delay launch on mouse-up, full 120 FPS.
+/// Animated previous/next button with a dual-channel ping-pong relay.
+/// The command is handed off after one render opportunity so the first relay
+/// frame is not competing with the track-switching state graph.
 struct AnimatedSkipButton: View {
     enum Direction {
         case previous
@@ -460,10 +464,11 @@ struct AnimatedSkipButton: View {
             }
         }
 
-        // 3. Trigger track switch immediately on mouse release:
-        // Dispatched asynchronously on the main queue so the animation transaction
-        // commits cleanly to the render server before the track-switching pipeline executes.
-        DispatchQueue.main.async {
+        // 3. Give the relay one render opportunity before entering the
+        // track-switching pipeline.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(16))
+            guard !Task.isCancelled else { return }
             action()
         }
     }

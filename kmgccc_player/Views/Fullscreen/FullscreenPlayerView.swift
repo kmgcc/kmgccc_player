@@ -304,6 +304,7 @@ struct FullscreenPlayerView: View {
     @State private var trackToEdit: Track?
     @State private var isShowingExternalMatchEditor = false
     @State private var showPlaybackModeRetapTip = false
+    @State private var showScrollWheelVolumeTip = false
     @State private var pendingFullscreenBottomControlsHideTask: Task<Void, Never>?
     @State private var pendingLeftActionsCollapseTask: Task<Void, Never>?
     @State private var pendingVolumeCollapseTask: Task<Void, Never>?
@@ -635,9 +636,20 @@ struct FullscreenPlayerView: View {
     }
 
     private func handleFullscreenDisappear() {
+        FeatureTipPresentationCoordinator.shared.cancelPending(
+            key: FeatureTipCatalog.PlaybackModeRetap.key
+        )
         if showPlaybackModeRetapTip {
             AppVersionGate.shared.markPlaybackModeRetapFeatureTipDismissed()
             showPlaybackModeRetapTip = false
+            finishPlaybackModeRetapTipPresentation()
+        }
+        FeatureTipPresentationCoordinator.shared.cancelPending(
+            key: FeatureTipCatalog.ScrollWheelVolume.key
+        )
+        if showScrollWheelVolumeTip {
+            showScrollWheelVolumeTip = false
+            finishScrollWheelVolumeTipPresentation()
         }
         Log.info(
             "FullscreenPlayerView disappeared context=\(hostContext.rawValue)",
@@ -947,6 +959,9 @@ struct FullscreenPlayerView: View {
                     .task(id: playbackModeRetapTipTaskID) {
                         await schedulePlaybackModeRetapTipIfNeeded()
                     }
+                    .task(id: scrollWheelVolumeTipTaskID) {
+                        await scheduleScrollWheelVolumeTipIfNeeded()
+                    }
 
                 panoramicArtworkVolumeLayer(viewportSize: proxy.size, scale: scale)
 
@@ -1005,6 +1020,16 @@ struct FullscreenPlayerView: View {
         }
         .onChange(of: miniPlayerOcclusionRegion) { _, newRegion in
             updateFullscreenMiniPlayerOcclusionRegion(newRegion)
+        }
+        .onChange(of: showPlaybackModeRetapTip) { _, isPresented in
+            if !isPresented {
+                finishPlaybackModeRetapTipPresentation()
+            }
+        }
+        .onChange(of: showScrollWheelVolumeTip) { _, isPresented in
+            if !isPresented {
+                finishScrollWheelVolumeTipPresentation()
+            }
         }
     }
 
@@ -1577,6 +1602,22 @@ struct FullscreenPlayerView: View {
                                 : .opacity.combined(with: .scale(scale: 0.92))
                         )
                 }
+
+                if showScrollWheelVolumeTip {
+                    ScrollWheelVolumeTipView(
+                        onClose: dismissScrollWheelVolumeTip,
+                        scale: artworkBounds.scale,
+                        glassStyle: fullscreenControlsGlassStyle,
+                        foregroundColor: fullscreenMiniPlayerPrimaryColor,
+                        blendMode: fullscreenMiniPlayerIconBlendMode
+                    )
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .opacity.combined(with: .scale(scale: 0.94))
+                    )
+                    .zIndex(5)
+                }
             }
             .frame(width: artworkBounds.size.width, height: artworkBounds.size.height)
             .position(x: artworkBounds.center.x, y: artworkBounds.center.y)
@@ -1641,6 +1682,13 @@ struct FullscreenPlayerView: View {
 
     private func handlePanoramicArtworkVolumeAdjustment(_ adjustment: Double) {
         guard playbackCoordinator.presentation.isVolumeControlEnabled else { return }
+
+        FeatureTipPresentationCoordinator.shared.cancelPending(
+            key: FeatureTipCatalog.ScrollWheelVolume.key
+        )
+        if showScrollWheelVolumeTip {
+            dismissScrollWheelVolumeTip()
+        }
 
         let currentVolume = playbackCoordinator.presentation.volume
         let newVolume = VolumeControlBehavior.clamped(currentVolume + adjustment)
@@ -3525,13 +3573,32 @@ struct FullscreenPlayerView: View {
         }
         guard !Task.isCancelled,
               playbackModeRetapTipTaskID != "inactive",
+              showPlaybackModeRetapTip == false
+        else { return }
+
+        FeatureTipPresentationCoordinator.shared.requestPresentation(
+            key: FeatureTipCatalog.PlaybackModeRetap.key
+        ) { [self] in
+            presentPlaybackModeRetapTipNow()
+        }
+    }
+
+    private func presentPlaybackModeRetapTipNow() -> Bool {
+        guard playbackModeRetapTipTaskID != "inactive",
               showPlaybackModeRetapTip == false,
               AppVersionGate.shared.claimPlaybackModeRetapFeatureTipDisplay()
-        else { return }
+        else { return false }
 
         withAnimation(bottomControlsAnimation) {
             showPlaybackModeRetapTip = true
         }
+        return true
+    }
+
+    private func finishPlaybackModeRetapTipPresentation() {
+        FeatureTipPresentationCoordinator.shared.endPresentation(
+            key: FeatureTipCatalog.PlaybackModeRetap.key
+        )
     }
 
     private func dismissPlaybackModeRetapTip() {
@@ -3539,6 +3606,70 @@ struct FullscreenPlayerView: View {
         withAnimation(bottomControlsAnimation) {
             showPlaybackModeRetapTip = false
         }
+        finishPlaybackModeRetapTipPresentation()
+    }
+
+    private var scrollWheelVolumeTipTaskID: String {
+        let presentation = playbackCoordinator.stablePresentation
+        guard presentation.hasTrack,
+              presentation.isPlaying
+        else {
+            return "inactive"
+        }
+        return presentation.localTrack?.id.uuidString ?? "active"
+    }
+
+    @MainActor
+    private func scheduleScrollWheelVolumeTipIfNeeded() async {
+        guard scrollWheelVolumeTipTaskID != "inactive" else { return }
+        do {
+            try await Task.sleep(
+                for: .seconds(FeatureTipCatalog.ScrollWheelVolume.presentationDelay)
+            )
+        } catch {
+            return
+        }
+        guard !Task.isCancelled,
+              scrollWheelVolumeTipTaskID != "inactive",
+              showScrollWheelVolumeTip == false
+        else { return }
+
+        FeatureTipPresentationCoordinator.shared.requestPresentation(
+            key: FeatureTipCatalog.ScrollWheelVolume.key
+        ) { [self] in
+            presentScrollWheelVolumeTipNow()
+        }
+    }
+
+    private func presentScrollWheelVolumeTipNow() -> Bool {
+        let key = FeatureTipCatalog.ScrollWheelVolume.key
+        guard scrollWheelVolumeTipTaskID != "inactive",
+              showScrollWheelVolumeTip == false,
+              isArtworkVolumeControlEnabled,
+              AppVersionGate.shared.claimFeatureTipDisplay(
+                featureKey: key,
+                introducedBuild: FeatureTipCatalog.ScrollWheelVolume.introducedBuild,
+                maxDisplayCount: FeatureTipCatalog.ScrollWheelVolume.maxDisplayCount
+              )
+        else { return false }
+
+        withAnimation(bottomControlsAnimation) {
+            showScrollWheelVolumeTip = true
+        }
+        return true
+    }
+
+    private func finishScrollWheelVolumeTipPresentation() {
+        FeatureTipPresentationCoordinator.shared.endPresentation(
+            key: FeatureTipCatalog.ScrollWheelVolume.key
+        )
+    }
+
+    private func dismissScrollWheelVolumeTip() {
+        withAnimation(bottomControlsAnimation) {
+            showScrollWheelVolumeTip = false
+        }
+        finishScrollWheelVolumeTipPresentation()
     }
 
     private func handleQueueTrackTap(_ track: Track) {

@@ -76,6 +76,7 @@ final class PlaybackCoordinator {
     private var lastTelemetryIsPlaying: Bool?
     private var sidecarHydrationTask: Task<Void, Never>?
     private var sidecarHydratingTrackID: UUID?
+    private var deferredNowPlayingUpdateTask: Task<Void, Never>?
     private let artworkWarmer: PlaybackArtworkWarmer
     private let lyricSnippetSeekLeadInSeconds: Double = 0.8
 
@@ -224,6 +225,8 @@ final class PlaybackCoordinator {
         sidecarHydrationTask = nil
         activeLyricsRefetchTask?.cancel()
         activeLyricsRefetchTask = nil
+        deferredNowPlayingUpdateTask?.cancel()
+        deferredNowPlayingUpdateTask = nil
         stopExternalProviders()
         artworkWarmer.reset()
         onActiveSourceChanged = nil
@@ -252,7 +255,7 @@ final class PlaybackCoordinator {
             activeExternalProvider?.next()
         }
         refreshPresentation()
-        NowPlayingService.shared.updateNowPlaying(force: true)
+        scheduleDeferredNowPlayingUpdate()
     }
 
     func previous() {
@@ -264,7 +267,21 @@ final class PlaybackCoordinator {
             activeExternalProvider?.previous()
         }
         refreshPresentation()
-        NowPlayingService.shared.updateNowPlaying(force: true)
+        scheduleDeferredNowPlayingUpdate()
+    }
+
+    /// Publish track metadata after the release transaction has had a chance
+    /// to reach the render server. Updating MediaPlayer is cheap in isolation,
+    /// but its artwork/remote-command bookkeeping is unnecessary work in the
+    /// same main-actor turn as a user-initiated track transition.
+    private func scheduleDeferredNowPlayingUpdate() {
+        deferredNowPlayingUpdateTask?.cancel()
+        deferredNowPlayingUpdateTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled, let self else { return }
+            NowPlayingService.shared.updateNowPlaying(force: true)
+            self.deferredNowPlayingUpdateTask = nil
+        }
     }
 
     func seek(to seconds: Double) {

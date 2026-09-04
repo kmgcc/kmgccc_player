@@ -434,18 +434,33 @@ struct SidebarView: View {
         .onDisappear {
             crashReportTipTask?.cancel()
             crashReportTipTask = nil
+            FeatureTipPresentationCoordinator.shared.cancelPending(
+                key: FeatureTipCatalog.AutomaticCrashReports.key
+            )
             showCrashReportSettingsTip = false
+            finishCrashReportTipPresentation()
             cancelPlaylistHeaderAutoExpand()
         }
         .onChange(of: crashReportService.isPromptFlowActive) { _, isActive in
             if isActive {
                 crashReportTipTask?.cancel()
+                FeatureTipPresentationCoordinator.shared.cancelPending(
+                    key: FeatureTipCatalog.AutomaticCrashReports.key
+                )
                 showCrashReportSettingsTip = false
+                finishCrashReportTipPresentation()
             } else {
                 scheduleCrashReportSettingsTipIfNeeded()
             }
         }
-        .sheet(isPresented: $showSettings) {
+        .onChange(of: showCrashReportSettingsTip) { _, isPresented in
+            if !isPresented {
+                finishCrashReportTipPresentation()
+            }
+        }
+        .sheet(isPresented: $showSettings, onDismiss: {
+            FeatureTipPresentationCoordinator.shared.setSuspended(false)
+        }) {
             SettingsView(hasActiveLibrarySession: true)
                 .environment(settings)
                 .environment(libraryVM)
@@ -695,7 +710,7 @@ struct SidebarView: View {
                     if activeLibraryImportTask != nil || !uiState.libraryImportFailureReports.isEmpty {
                         showingLibraryImportStatus = true
                     } else {
-                        showSettings = true
+                        openSettings()
                     }
                 }
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -869,8 +884,7 @@ struct SidebarView: View {
             help: LocalizedStringKey("sidebar.settings"),
             surfaceVariant: .sidebarBottom
         ) {
-            settingsRotateTrigger += 1
-            showSettings = true
+            openSettings()
         }
         .symbolEffect(.rotate, value: settingsRotateTrigger)
         .keyboardShortcut(",", modifiers: .command)
@@ -879,22 +893,29 @@ struct SidebarView: View {
                 onOpenSettings: {
                     showCrashReportSettingsTip = false
                     AppVersionGate.shared.markFeatureTipDismissed(
-                        featureKey: CrashReportFeatureTip.key
+                        featureKey: FeatureTipCatalog.AutomaticCrashReports.key
                     )
-                    settingsRotateTrigger += 1
-                    showSettings = true
+                    openSettings()
+                    finishCrashReportTipPresentation()
                 },
                 onDismiss: {
                     showCrashReportSettingsTip = false
+                    finishCrashReportTipPresentation()
                 }
             )
         }
     }
 
-    private enum CrashReportFeatureTip {
-        static let key = "dataSharing.automaticCrashReports"
-        static let introducedBuild = AppBuild(8)
-        static let maxDisplayCount = 2
+    private func openSettings() {
+        FeatureTipPresentationCoordinator.shared.setSuspended(true)
+        settingsRotateTrigger += 1
+        showSettings = true
+    }
+
+    private func finishCrashReportTipPresentation() {
+        FeatureTipPresentationCoordinator.shared.endPresentation(
+            key: FeatureTipCatalog.AutomaticCrashReports.key
+        )
     }
 
     private func scheduleCrashReportSettingsTipIfNeeded() {
@@ -902,26 +923,42 @@ struct SidebarView: View {
         guard !crashReportService.isPromptFlowActive,
               !showSettings,
               !showingPlaylistSheet,
-              !showCrashReportSettingsTip,
-              AppVersionGate.shared.shouldShowFeatureTip(
-                featureKey: CrashReportFeatureTip.key,
-                introducedBuild: CrashReportFeatureTip.introducedBuild,
-                maxDisplayCount: CrashReportFeatureTip.maxDisplayCount
-              )
+              !showCrashReportSettingsTip
         else { return }
 
         crashReportTipTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(
+                for: .seconds(FeatureTipCatalog.AutomaticCrashReports.presentationDelay)
+            )
             guard !Task.isCancelled,
                   !crashReportService.isPromptFlowActive,
                   !showSettings,
                   !showingPlaylistSheet
             else { return }
-            showCrashReportSettingsTip = true
-            AppVersionGate.shared.recordFeatureTipDisplayed(
-                featureKey: CrashReportFeatureTip.key
-            )
+
+            FeatureTipPresentationCoordinator.shared.requestPresentation(
+                key: FeatureTipCatalog.AutomaticCrashReports.key
+            ) { [self] in
+                presentCrashReportSettingsTipNow()
+            }
         }
+    }
+
+    private func presentCrashReportSettingsTipNow() -> Bool {
+        let key = FeatureTipCatalog.AutomaticCrashReports.key
+        guard !showCrashReportSettingsTip,
+              !crashReportService.isPromptFlowActive,
+              !showSettings,
+              !showingPlaylistSheet
+        else { return false }
+        guard AppVersionGate.shared.claimFeatureTipDisplay(
+            featureKey: key,
+            introducedBuild: FeatureTipCatalog.AutomaticCrashReports.introducedBuild,
+            maxDisplayCount: FeatureTipCatalog.AutomaticCrashReports.maxDisplayCount
+        ) else { return false }
+
+        showCrashReportSettingsTip = true
+        return true
     }
 
     private var appearanceSwitchButton: some View {
