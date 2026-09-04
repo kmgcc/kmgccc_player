@@ -35,9 +35,6 @@ struct MiniPlayerView: View {
     @State private var trackForDetailReader: Track?
     @State private var trackDeletionRequest: TrackDeletionConfirmationRequest?
     @State private var isProgressHovering = false
-    @State private var previousSymbolEffectTrigger = 0
-    @State private var playPauseSymbolEffectTrigger = 0
-    @State private var nextSymbolEffectTrigger = 0
     @State private var artworkImage: NSImage?
     @State private var isPlaybackModeExpanded = false
     @State private var isShowingExternalMatchEditor = false
@@ -194,71 +191,36 @@ struct MiniPlayerView: View {
         let isTrackControlEnabled = isEnabled && presentation.hasTrack
         return HStack(spacing: 14) {
             // Previous
-            Button {
-                previousSymbolEffectTrigger += 1
-                playbackCoordinator.previous()
-            } label: {
-                ZStack {
-                    Rectangle()
-                        .fill(Color.clear)
-                    Image(systemName: "backward.fill")
-                        .font(.body)
-                        .foregroundStyle(isTrackControlEnabled ? controlPrimaryColor : controlDisabledColor)
-                        .symbolEffect(.wiggle, value: previousSymbolEffectTrigger)
-                }
-                .frame(width: controlHitSize, height: controlHitSize)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .frame(width: controlHitSize, height: controlHitSize)
-            .contentShape(Rectangle())
-            .disabled(!isTrackControlEnabled)
+            AnimatedSkipButton(
+                direction: .previous,
+                enabled: isTrackControlEnabled,
+                metrics: .windowMiniPlayer,
+                color: controlPrimaryColor,
+                disabledColor: controlDisabledColor,
+                action: { playbackCoordinator.previous() }
+            )
 
             // Play/Pause
-            Button {
-                playPauseSymbolEffectTrigger += 1
-                playbackCoordinator.playPause()
-            } label: {
-                ZStack {
-                    Rectangle()
-                        .fill(Color.clear)
-                    Image(systemName: presentation.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.title3)
-                        .foregroundStyle(isEnabled ? controlPrimaryColor : controlDisabledColor)
-                        .symbolEffect(.bounce, value: playPauseSymbolEffectTrigger)
-                }
-                .frame(width: controlHitSize, height: controlHitSize)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .frame(width: controlHitSize, height: controlHitSize)
-            .contentShape(Rectangle())
-            .disabled(!isEnabled)
+            AnimatedPlayPauseButton(
+                isPlaying: presentation.isPlaying,
+                enabled: isEnabled,
+                metrics: .windowMiniPlayer,
+                color: controlPrimaryColor,
+                disabledColor: controlDisabledColor,
+                action: { playbackCoordinator.playPause() }
+            )
 
             // Next
-            Button {
-                nextSymbolEffectTrigger += 1
-                playbackCoordinator.next()
-            } label: {
-                ZStack {
-                    Rectangle()
-                        .fill(Color.clear)
-                    Image(systemName: "forward.fill")
-                        .font(.body)
-                        .foregroundStyle(isTrackControlEnabled ? controlPrimaryColor : controlDisabledColor)
-                        .symbolEffect(.wiggle, value: nextSymbolEffectTrigger)
-                }
-                .frame(width: controlHitSize, height: controlHitSize)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .frame(width: controlHitSize, height: controlHitSize)
-            .contentShape(Rectangle())
-            .disabled(!isTrackControlEnabled)
+            AnimatedSkipButton(
+                direction: .next,
+                enabled: isTrackControlEnabled,
+                metrics: .windowMiniPlayer,
+                color: controlPrimaryColor,
+                disabledColor: controlDisabledColor,
+                action: { playbackCoordinator.next() }
+            )
         }
     }
-
-    private var controlHitSize: CGFloat { 26 }
 
     private func currentPlaybackMode(for presentation: NowPlayingPresentation) -> PlaybackOrderMode {
         presentation.localPlaybackOrderMode ?? settings.playbackOrderMode
