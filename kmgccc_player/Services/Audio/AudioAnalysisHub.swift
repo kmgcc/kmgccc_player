@@ -299,17 +299,73 @@ nonisolated public final class AudioAnalysisHub: @unchecked Sendable {
     /// the renderer's entire prebuffer window.
     nonisolated func enqueueExternalPCM(_ pcm: CanonicalPCM) {
         guard pcm.frames > 0, pcm.channelCount > 0 else { return }
+
+        // The spatial renderer still produces analysis callbacks when the
+        // visualizer is disabled. Do not copy every decoded frame into the
+        // ring buffer when there is no consumer that can observe it.
+        consumerLock.lock()
+        let hasConsumers = !consumers.isEmpty
+        consumerLock.unlock()
+        guard hasConsumers else { return }
+
         guard ringLock.try() else {
             droppedTapBuffers &+= 1
             return
         }
         sampleRate = Float(pcm.sampleRate)
+
         let capacity = ringBuffer.count
-        for frame in 0..<pcm.frames {
-            ringBuffer[writeIndex] = pcm.data[frame * pcm.channelCount]
-            writeIndex += 1
-            if writeIndex >= capacity {
-                writeIndex = 0
+        ringBuffer.withUnsafeMutableBufferPointer { destination in
+            guard let destinationBase = destination.baseAddress else { return }
+            pcm.data.withUnsafeBufferPointer { source in
+                guard let sourceBase = source.baseAddress else { return }
+
+                if pcm.channelCount == 1 {
+                    if pcm.frames > capacity {
+                        let sourceOffset = pcm.frames - capacity
+                        let finalWriteIndex = (writeIndex + pcm.frames) % capacity
+                        let firstCount = min(capacity - finalWriteIndex, capacity)
+                        destinationBase
+                            .advanced(by: finalWriteIndex)
+                            .update(
+                                from: sourceBase.advanced(by: sourceOffset),
+                                count: firstCount
+                            )
+                        if firstCount < capacity {
+                            destinationBase.update(
+                                from: sourceBase.advanced(by: sourceOffset + firstCount),
+                                count: capacity - firstCount
+                            )
+                        }
+                        writeIndex = finalWriteIndex
+                        return
+                    }
+
+                    let firstCount = min(pcm.frames, capacity - writeIndex)
+                    destinationBase
+                        .advanced(by: writeIndex)
+                        .update(from: sourceBase, count: firstCount)
+                    if firstCount < pcm.frames {
+                        destinationBase.update(
+                            from: sourceBase.advanced(by: firstCount),
+                            count: pcm.frames - firstCount
+                        )
+                    }
+                    writeIndex = (writeIndex + pcm.frames) % capacity
+                    return
+                }
+
+                var sourcePointer = sourceBase
+                var destinationIndex = writeIndex
+                for _ in 0..<pcm.frames {
+                    destination[destinationIndex] = sourcePointer.pointee
+                    sourcePointer = sourcePointer.advanced(by: pcm.channelCount)
+                    destinationIndex += 1
+                    if destinationIndex >= capacity {
+                        destinationIndex = 0
+                    }
+                }
+                writeIndex = destinationIndex
             }
         }
         ringLock.unlock()

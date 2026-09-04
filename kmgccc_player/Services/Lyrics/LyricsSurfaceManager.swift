@@ -81,7 +81,9 @@ final class LyricsSurfaceManager {
     /// Pending switch work item (for debouncing/disposal)
     private var pendingSwitchWorkItem: DispatchWorkItem?
     private var pendingRoleTeardownWorkItems: [LyricsSurfaceRole: DispatchWorkItem] = [:]
-    private let deferredRoleTeardownDelay: TimeInterval = 2.0
+    // Keep a short grace period for SwiftUI/AppKit transition churn. An
+    // inactive role must not keep its WKWebView alive for seconds.
+    private let deferredRoleTeardownDelay: TimeInterval = 0.25
 
     /// Callback when a switch completes
     private var onSwitchComplete: ((TargetMode, Int) -> Void)?
@@ -149,7 +151,10 @@ final class LyricsSurfaceManager {
             return
         }
 
-        // Wait for store to become ready
+        // Wait for both the page and its native host attachment. A page can
+        // report onReady before SwiftUI has materialized the representable;
+        // tearing down the old role at that point creates a brief no-surface
+        // state and is especially visible during embedded fullscreen entry.
         switchState = .awaitingReady
         onStoreReadyHandlers[targetRole] = { [weak self] readyStore in
             guard let self else { return }
@@ -179,6 +184,15 @@ final class LyricsSurfaceManager {
     ) {
         guard generation == switchGeneration else {
             Log.warning("LyricsSurfaceManager: stale replay before completeSwitch, gen=\(generation) != current=\(switchGeneration)", category: .webview)
+            return
+        }
+
+        guard store.isReady, store.isAttached else {
+            switchState = .awaitingReady
+            Log.debug(
+                "LyricsSurfaceManager: target not fully attached, waiting for host role=\(targetRole.rawValue), ready=\(store.isReady), attached=\(store.isAttached), gen=\(generation)",
+                category: .webview
+            )
             return
         }
 
@@ -293,10 +307,19 @@ final class LyricsSurfaceManager {
     func reportFullscreenVisible(_ visible: Bool) {
         Log.debug("LyricsSurfaceManager: reportFullscreenVisible=\(visible), targetMode=\(targetMode), currentMode=\(currentMode), state=\(switchState)", category: .webview)
 
-        if visible && currentMode != .fullscreen {
-            // Fullscreen became visible
-            requestMode(.fullscreen)
-        } else if !visible && targetMode == .fullscreen {
+        if visible {
+            // A new appearance cancels the disappearance debounce. This is
+            // important for SwiftUI's transient embedded-window reparenting.
+            pendingSwitchWorkItem?.cancel()
+            pendingSwitchWorkItem = nil
+
+            // Visibility is authoritative: if an exit was already requested
+            // while the surface came back, reverse that request and let the
+            // normal ready-gated path restore fullscreen.
+            if targetMode != .fullscreen || currentMode != .fullscreen {
+                requestMode(.fullscreen)
+            }
+        } else if targetMode == .fullscreen {
             // Fullscreen disappeared but we were targeting it
             // This could be transient - debounce the decision
             handleFullscreenDisappeared()
@@ -311,16 +334,12 @@ final class LyricsSurfaceManager {
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
 
-            // Re-check conditions after delay
-            // Only switch back to main if fullscreen is truly gone
-            if self.targetMode == .fullscreen && self.currentMode == .fullscreen {
-                // Fullscreen window is still active, don't switch
-                Log.debug("LyricsSurfaceManager: fullscreen still active after debounce, keeping fullscreen", category: .webview)
-                return
-            }
-
-            // Actually switch back to main
-            Log.info("LyricsSurfaceManager: fullscreen truly disappeared, switching to main", category: .webview)
+            // A later reportFullscreenVisible(true) cancels this work item.
+            // If it survives the debounce, the fullscreen surface is gone;
+            // switch back through the ready-gated main-surface path. The old
+            // fullscreen store is not torn down until that target is ready.
+            guard self.targetMode == .fullscreen else { return }
+            Log.info("LyricsSurfaceManager: fullscreen disappeared, switching to main", category: .webview)
             self.requestMode(.main)
         }
 
@@ -350,6 +369,26 @@ final class LyricsSurfaceManager {
         return true
     }
 
+    /// Notify the manager after the target WebView has actually been inserted
+    /// into its visible native host. `onReady` alone is insufficient because
+    /// WebKit can finish loading while SwiftUI is still constructing the
+    /// representable. This callback closes that gap without prewarming or
+    /// retaining an inactive surface.
+    func notifyStoreAttached(_ role: LyricsSurfaceRole, store: LyricsWebViewStore) {
+        guard stores[role] === store else { return }
+        guard role == targetSurfaceRole else { return }
+        guard switchState == .awaitingReady, store.isReady else { return }
+
+        let mode: TargetMode = role == .main ? .main : .fullscreen
+        replaySnapshotAndCompleteSwitch(
+            to: mode,
+            generation: switchGeneration,
+            targetRole: role,
+            store: store,
+            reason: "surface attached"
+        )
+    }
+
     func setMainSurfaceSnapshotRefreshHandler(_ handler: ((String) -> Void)?) {
         mainSurfaceSnapshotRefreshHandler = handler
     }
@@ -360,8 +399,17 @@ final class LyricsSurfaceManager {
     }
 
     /// Materialize a lyrics surface before the user opens it.
-    /// The role is not marked active; current snapshots are replayed so attach can be cheap.
+    /// The role is not marked active; current snapshots are replayed so attach
+    /// can be cheap. Never materialize a non-target role in the background.
     func prewarm(role: LyricsSurfaceRole, reason: String) {
+        guard role == targetSurfaceRole else {
+            Log.debug(
+                "Skipping lyrics prewarm for inactive role: role=\(role.rawValue), target=\(targetSurfaceRole.rawValue), reason=\(reason)",
+                category: .webview
+            )
+            return
+        }
+
         let token = FirstUseHitchDiagnostics.begin(
             "LyricsSurfaceManager.prewarm.\(role.rawValue)",
             detail: reason
@@ -381,8 +429,14 @@ final class LyricsSurfaceManager {
 
     /// Internal: get existing store or create new one
     private func getOrCreateStore(for role: LyricsSurfaceRole) -> LyricsWebViewStore {
-        cancelDeferredTeardown(for: role)
         if let existing = stores[role] {
+            // Only the surface that is becoming/remaining visible may cancel
+            // its teardown. Hidden consumers (notably LyricsViewModel's
+            // shared main-store accessor) must not resurrect the opposite
+            // mode's WebView after a switch has been committed.
+            if role == targetSurfaceRole || activeRoles.contains(role) {
+                cancelDeferredTeardown(for: role)
+            }
             return existing
         }
 
@@ -391,6 +445,10 @@ final class LyricsSurfaceManager {
         stores[role] = newStore
         Log.debug("Created store for role: \(role.rawValue)", category: .webview)
         return newStore
+    }
+
+    private var targetSurfaceRole: LyricsSurfaceRole {
+        targetMode == .main ? .main : .fullscreen
     }
 
     /// Return an existing store without creating a new WebView surface.

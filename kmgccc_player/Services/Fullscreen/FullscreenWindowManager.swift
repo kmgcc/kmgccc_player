@@ -349,6 +349,9 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         TelemetryService.shared.updateSkinState()
         removeEscapeMonitor()
         uiState?.clearEmbeddedFullscreenTransientPaneState(reason: "closeFullscreenPlayerInWindow")
+        AppKitMainSplitWindowController.synchronizeLyricsSurfaceAfterFullscreenTransition(
+            reason: "closeEmbedded"
+        )
         PaneLayoutTrace.log("fullscreen.closeEmbedded end")
     }
 
@@ -439,6 +442,9 @@ final class FullscreenWindowManager: NSObject, NSWindowDelegate, ObservableObjec
         cursorAutoHideCoordinator.stop()
         removeEscapeMonitor()
         teardownFullscreenLyricsIfNeeded()
+        AppKitMainSplitWindowController.synchronizeLyricsSurfaceAfterFullscreenTransition(
+            reason: "dismissSystemFullscreen"
+        )
 
         DispatchQueue.main.async {
             if let previousKeyWindow = self.previousKeyWindow, previousKeyWindow.isVisible {

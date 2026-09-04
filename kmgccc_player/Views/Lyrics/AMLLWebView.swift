@@ -138,6 +138,13 @@ struct AMLLWebView: NSViewRepresentable {
         }
 
         let store = coordinator.store
+        guard store.activeAttachmentID == attachmentID else {
+            Log.debug(
+                "dismantleNSView: stale attachment ignored, attachmentID=\(attachmentID.uuidString.prefix(8)), activeID=\(store.activeAttachmentID?.uuidString.prefix(8) ?? "nil"), objectID=\(store.webViewObjectID)",
+                category: .webview
+            )
+            return
+        }
         Log.debug(
             "dismantleNSView: objectID=\(store.webViewObjectID), attachmentID=\(attachmentID.uuidString.prefix(8))",
             category: .webview
@@ -190,8 +197,24 @@ struct AMLLWebView: NSViewRepresentable {
                 )
             }
 
+            // A newer representable may already own this store. Once this
+            // coordinator has attached, it must not steal the WebView back
+            // during a late SwiftUI update from the old host.
+            if hasAttemptedAttach,
+               let attachmentID,
+               let activeAttachmentID = store.activeAttachmentID,
+               activeAttachmentID != attachmentID
+            {
+                Log.debug(
+                    "tryAttach skipped stale coordinator: attachmentID=\(attachmentID.uuidString.prefix(8)), activeID=\(activeAttachmentID.uuidString.prefix(8)), objectID=\(store.webViewObjectID)",
+                    category: .webview
+                )
+                return
+            }
+
             // If already attached to this host, just ensure frame is correct
             if isAttached {
+                guard claimAttachmentOwnership() else { return }
                 if let webView = store.preparedWebView {
                     installHostCallbacks(on: hostView)
                     store.layoutPreparedWebView(in: hostView.bounds, reason: "tryAttach:\(context)")
@@ -202,6 +225,8 @@ struct AMLLWebView: NSViewRepresentable {
                     )
                 }
                 self.hostView = hostView
+                hasAttemptedAttach = true
+                notifySurfaceManagerOfAttachment()
                 return
             }
 
@@ -223,14 +248,16 @@ struct AMLLWebView: NSViewRepresentable {
             // safe.
             store.rebuildIfWebContentTerminated(reason: "attachWebView")
 
-            let shouldAnimateAttachment = animatesAttachment
-                && store.preparedWebView?.superview !== hostView
-            if attachmentID == nil || store.activeAttachmentID != attachmentID {
-                attachmentID = store.attach()
-                Log.debug("Attached store, attachmentID=\(attachmentID?.uuidString.prefix(8) ?? "nil")", category: .webview)
+            guard let webView = store.webView else {
+                Log.debug("attachWebView skipped for shut-down store", category: .webview)
+                return
             }
 
-            let webView = store.webView
+            guard claimAttachmentOwnership() else { return }
+
+            let shouldAnimateAttachment = animatesAttachment
+                && store.preparedWebView?.superview !== hostView
+
             if webView.navigationDelegate !== self {
                 webView.navigationDelegate = self
             }
@@ -246,6 +273,7 @@ struct AMLLWebView: NSViewRepresentable {
                     reason: "attachWebView:alreadyHost"
                 )
                 self.hostView = hostView
+                notifySurfaceManagerOfAttachment()
                 return
             }
 
@@ -283,10 +311,40 @@ struct AMLLWebView: NSViewRepresentable {
             )
             self.hostView = hostView
 
+            notifySurfaceManagerOfAttachment()
+
             Log.debug(
                 "Reparented WebView: objectID=\(store.webViewObjectID), attachmentID=\(attachmentID?.uuidString.prefix(8) ?? "nil"), frame=\(webView.frame), window=\(webView.window != nil)",
                 category: .webview
             )
+        }
+
+        /// Gives this coordinator a unique ownership token. A coordinator
+        /// created during a SwiftUI replacement may take over an existing
+        /// WebView, while a late update from the old coordinator is rejected
+        /// by `tryAttach` and its stale dismantle is ignored.
+        private func claimAttachmentOwnership() -> Bool {
+            if attachmentID == nil {
+                attachmentID = UUID()
+            }
+            guard let attachmentID else { return false }
+
+            if hasAttemptedAttach,
+               let activeAttachmentID = store.activeAttachmentID,
+               activeAttachmentID != attachmentID
+            {
+                return false
+            }
+
+            if store.activeAttachmentID != attachmentID || !store.isAttached {
+                self.attachmentID = store.attach(requestingID: attachmentID)
+            }
+            return store.activeAttachmentID == attachmentID && store.isAttached
+        }
+
+        private func notifySurfaceManagerOfAttachment() {
+            guard let role = LyricsSurfaceRole(rawValue: store.role) else { return }
+            LyricsSurfaceManager.shared.notifyStoreAttached(role, store: store)
         }
 
         private func installHostCallbacks(on hostView: WebViewHostView) {

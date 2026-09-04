@@ -89,6 +89,7 @@ final class PlaybackCoordinator {
 
     private(set) var activeSource: PlaybackSource
     private(set) var presentation: NowPlayingPresentation = .emptyLocal
+    private(set) var stablePresentation: NowPlayingPresentation = .emptyLocal
 
     var localNowPlayingAssetURL: URL? {
         localPlayback?.nowPlayingAssetURL
@@ -654,6 +655,9 @@ final class PlaybackCoordinator {
         )
 
         let previousPresentation = presentation
+        if !newPresentation.isEffectivelyEqualIgnoringCurrentTime(to: stablePresentation) {
+            stablePresentation = newPresentation
+        }
         guard !newPresentation.isEffectivelyEqual(to: previousPresentation) else { return }
         presentation = newPresentation
         onPresentationChanged?(previousPresentation, newPresentation)

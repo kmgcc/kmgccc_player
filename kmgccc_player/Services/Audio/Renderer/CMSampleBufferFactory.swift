@@ -135,15 +135,35 @@ enum CMSampleBufferFactory {
                 }
             }
         } else {
-            // Non-interleaved: planar to interleaved.
-            let planar = UnsafeBufferPointer(start: channels[0], count: frames * channelCount)
-            for c in 0..<channelCount {
-                let plane = UnsafeBufferPointer(start: channels[c], count: frames)
-                for f in 0..<frames {
-                    interleaved[f * channelCount + c] = plane[f]
+            // Non-interleaved: planar to interleaved. Keep the common stereo
+            // path contiguous and pointer-based. The old channel-major loop
+            // performed strided Array writes plus bounds/iterator work for
+            // every decoded sample (the dominant audio-only CPU hotspot).
+            interleaved.withUnsafeMutableBufferPointer { destination in
+                guard var dst = destination.baseAddress else { return }
+
+                switch channelCount {
+                case 1:
+                    dst.update(from: channels[0], count: frames)
+                case 2:
+                    var left = channels[0]
+                    var right = channels[1]
+                    for _ in 0..<frames {
+                        dst[0] = left.pointee
+                        dst[1] = right.pointee
+                        dst = dst.advanced(by: 2)
+                        left = left.advanced(by: 1)
+                        right = right.advanced(by: 1)
+                    }
+                default:
+                    for _ in 0..<frames {
+                        for channel in 0..<channelCount {
+                            dst[channel] = channels[channel].pointee
+                        }
+                        dst = dst.advanced(by: channelCount)
+                    }
                 }
             }
-            _ = planar
         }
 
         return CanonicalPCM(
