@@ -111,6 +111,7 @@ final class AppSessionHost: ObservableObject {
     }
 
     private var hasSetupDependencies = false
+    private var pendingPlaybackCommands: [AppPlaybackCommand] = []
     private lazy var automationIPCServer: AutomationIPCServer? = {
         do {
             return try AutomationIPCServer(appSession: self)
@@ -751,6 +752,63 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
+    /// Routes menu and keyboard playback commands through the active session.
+    /// During a library transaction there is a short interval in which the
+    /// old coordinator has been released and the new one is not published yet;
+    /// keep commands from disappearing in that interval.
+    func performPlaybackCommand(_ command: AppPlaybackCommand) async {
+        await setupIfNeeded()
+
+        if let playbackCoordinator {
+            applyPlaybackCommand(command, to: playbackCoordinator)
+            return
+        }
+
+        guard isPlaybackSessionTransitioning else {
+            Log.debug("[PlaybackCommands] ignored without active session command=\(String(describing: command))", category: .playback)
+            return
+        }
+        pendingPlaybackCommands.append(command)
+        Log.debug("[PlaybackCommands] queued during library transition command=\(String(describing: command))", category: .playback)
+    }
+
+    private var isPlaybackSessionTransitioning: Bool {
+        switch sessionController.state {
+        case .preparing, .quiescing, .loading:
+            return true
+        case .idle, .active, .unavailable:
+            return false
+        }
+    }
+
+    private func applyPlaybackCommand(_ command: AppPlaybackCommand, to coordinator: PlaybackCoordinator) {
+        switch command {
+        case .play:
+            coordinator.resume()
+        case .pause:
+            coordinator.pause()
+        case .playPause:
+            coordinator.playPause()
+        case .next:
+            coordinator.next()
+        case .previous:
+            coordinator.previous()
+        case .seekRelative(let offset):
+            coordinator.seek(by: offset)
+        case .seekTo(let position):
+            coordinator.seek(to: position)
+        }
+    }
+
+    private func flushPendingPlaybackCommands() {
+        guard let playbackCoordinator, !pendingPlaybackCommands.isEmpty else { return }
+        let commands = pendingPlaybackCommands
+        pendingPlaybackCommands.removeAll(keepingCapacity: true)
+        for command in commands {
+            applyPlaybackCommand(command, to: playbackCoordinator)
+        }
+    }
+
     func setupIfNeeded() async {
         if let setupTask {
             await setupTask.value
@@ -1119,6 +1177,7 @@ final class AppSessionHost: ObservableObject {
         self.libraryVM = libraryVM
         self.playerVM = playerVM
         self.playbackCoordinator = playbackCoordinator
+        flushPendingPlaybackCommands()
         self.lyricsVM = lyricsVM
         self.ledMeterProvider = ledMeterProvider
         self.importEnrichmentService = importEnrichmentService

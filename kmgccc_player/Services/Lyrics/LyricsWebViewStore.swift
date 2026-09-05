@@ -62,6 +62,10 @@ final class LyricsWebViewStore: NSObject {
         ProcessInfo.processInfo.environment["KMGCCC_AMLL_VISIBLE_LAYER_PROBE"] == "1"
     private nonisolated static let scrollDiagnosticsEnabled =
         ProcessInfo.processInfo.environment["KMGCCC_AMLL_SCROLL_DIAGNOSTICS"] == "1"
+    // The environment is fixed for the lifetime of the process. Cache this
+    // hot-path flag so AMLL's frequent `log` messages do not repeatedly walk
+    // ProcessInfo's environment dictionary on the main actor.
+    private nonisolated static let webViewDebugEnabled = LogConfig.webViewDebugEnabled
     private nonisolated static let automaticRecycleTrackThreshold: Int = {
         guard
             let rawValue = ProcessInfo.processInfo.environment["KMGCCC_AMLL_WEBVIEW_RECYCLE_TRACKS"],
@@ -83,8 +87,15 @@ final class LyricsWebViewStore: NSObject {
     /// Unique identifier for the WebView instance (for logging).
     private let fallbackObjectID: Int
 
-    var webView: WKWebView {
-        ensureWebView()
+    /// Materializes the store-owned WebView while this store is live.
+    ///
+    /// A SwiftUI representable can deliver one last update after the manager
+    /// has shut a role down. Returning nil in that window is important: a
+    /// closed store must never recreate a detached WebView that cannot accept
+    /// the replayed snapshot or become visible again.
+    var webView: WKWebView? {
+        guard !isShutDown else { return nil }
+        return ensureWebView()
     }
 
     var preparedWebView: WKWebView? {
@@ -710,10 +721,13 @@ final class LyricsWebViewStore: NSObject {
             // Stop any ongoing loading
             webView.stopLoading()
 
-            // Clear the web view content to free memory
-            webView.evaluateJavaScript("window.location.href = 'about:blank'") { _, _ in
-                // Ignore errors
-            }
+            // Do not navigate to about:blank here. The target surface has
+            // already been made ready before the manager calls shutdown, and
+            // AMLL.destroy() has already stopped its renderer in teardown().
+            // An asynchronous blank navigation leaves WebKit with another
+            // live page while the old WKWebView is being released, which can
+            // keep the old WebContent process alive much longer than the
+            // native view itself.
 
             // Remove from view hierarchy
             webView.removeFromSuperview()
@@ -746,12 +760,42 @@ final class LyricsWebViewStore: NSObject {
     // MARK: - Attach/Detach (Instance-Aware + Dedup)
 
     /// Attach a new view to the store. Returns the attachment ID.
-    /// This is idempotent - will return existing ID if already attached.
-    func attach() -> UUID {
+    ///
+    /// A representable coordinator may be replaced while its old coordinator is
+    /// still waiting for `dismantleNSView`. Callers that own a concrete host
+    /// should pass a requester ID so that the new coordinator takes ownership
+    /// without reusing the old coordinator's token. The no-argument form keeps
+    /// the original idempotent behavior for single-owner AppKit callers.
+    func attach(requestingID: UUID? = nil) -> UUID {
         guard !isShutDown else {
-            return UUID()
+            return requestingID ?? UUID()
         }
         _ = ensureWebView()
+
+        if let requestingID {
+            if isAttached, activeAttachmentID == requestingID {
+                Log.debug("Attach (already attached): attachmentID=\(requestingID.uuidString.prefix(8)), objectID=\(webViewObjectID)", category: .webview)
+                scheduleDisplayHealthCheckAfterAttachIfNeeded()
+                AMLLLifecycleDiagnostics.emit(
+                    "store.attach.reused role=\(role) attachment=\(requestingID.uuidString.prefix(8)) \(debugLayerStateSnapshot)"
+                )
+                return requestingID
+            }
+
+            let previousID = activeAttachmentID
+            activeAttachmentID = requestingID
+            isAttached = true
+            Log.debug(
+                "Attach (bound): attachmentID=\(requestingID.uuidString.prefix(8)), previousID=\(previousID?.uuidString.prefix(8) ?? "nil"), objectID=\(webViewObjectID)",
+                category: .webview
+            )
+            AMLLLifecycleDiagnostics.emit(
+                "store.attach.bound role=\(role) attachment=\(requestingID.uuidString.prefix(8)) previous=\(previousID?.uuidString.prefix(8) ?? "nil") \(debugLayerStateSnapshot)"
+            )
+            scheduleDisplayHealthCheckAfterAttachIfNeeded()
+            return requestingID
+        }
+
         if isAttached, let existingID = activeAttachmentID {
             Log.debug("Attach (already attached): attachmentID=\(existingID.uuidString.prefix(8)), objectID=\(webViewObjectID)", category: .webview)
             scheduleDisplayHealthCheckAfterAttachIfNeeded()
@@ -1114,6 +1158,8 @@ final class LyricsWebViewStore: NSObject {
             completion?(result, error)
         }
 
+        guard let webView else { return }
+
         switch pendingCall.call {
         case .script(let script):
             webView.evaluateJavaScript(script) { result, error in
@@ -1174,6 +1220,7 @@ final class LyricsWebViewStore: NSObject {
 
     private func runDebugVisibleLayerProbe(label: String) {
         guard !isShutDown, isReady else { return }
+        guard let webView else { return }
         guard let labelJSON = encodeJSONString(label) else { return }
 
         let js = """
@@ -1338,6 +1385,7 @@ final class LyricsWebViewStore: NSObject {
     /// Replay the last known state after recovery.
     /// Order: Config -> TTML -> Playing -> Time
     private func replayStateSnapshot() {
+        guard !isShutDown, let webView else { return }
         Log.debug("Replay: ttml=\(lastTTML != nil), time=\(lastTime ?? -1), playing=\(lastIsPlaying ?? false), objectID=\(webViewObjectID)", category: .webview)
 
         // Step 1: Config
@@ -1644,7 +1692,7 @@ final class LyricsWebViewStore: NSObject {
             "applyTrack: trackID=\(trackID?.uuidString.prefix(8) ?? "nil"), ttmlLen=\(ttml?.count ?? 0), time=\(currentTime), playing=\(isPlaying), objectID=\(webViewObjectID)",
             category: .webview
         )
-        if LogConfig.webViewDebugEnabled {
+        if Self.webViewDebugEnabled {
             Log.info(
                 "[LyricsWebViewStore] applyTrack role=\(role), trackID=\(trackID?.uuidString.prefix(8) ?? "nil"), ttmlLen=\(ttml?.count ?? 0), ttmlHash=\(ttml?.hashValue ?? 0), time=\(String(format: "%.3f", currentTime)), playing=\(isPlaying), objectID=\(webViewObjectID)",
                 category: .webview
@@ -2419,11 +2467,11 @@ final class LyricsWebViewStore: NSObject {
         let message = "[AMLLWeb:\(role)] \(text)"
 
         if Self.isKnownResizeObserverLoopMessage(text) {
-            if LogConfig.webViewDebugEnabled {
+            if Self.webViewDebugEnabled {
                 Log.debug(message, category: .webview)
             }
         } else if Self.isKnownAMLLDowngradeMessage(text) {
-            if LogConfig.webViewDebugEnabled {
+            if Self.webViewDebugEnabled {
                 Log.debug(message, category: .webview)
             }
         } else if text.contains("[ERROR]")
@@ -2443,11 +2491,11 @@ final class LyricsWebViewStore: NSObject {
             || text.contains("[LyricsRenderer] lineTimingOnlyMode")
             || text.contains("[AMLLScaleMetrics]")
         {
-            if LogConfig.webViewDebugEnabled {
+            if Self.webViewDebugEnabled {
                 Log.info(message, category: .webview)
             }
         } else {
-            if LogConfig.webViewDebugEnabled {
+            if Self.webViewDebugEnabled {
                 Log.trace(message, category: .webview)
             }
         }
@@ -2620,7 +2668,7 @@ final class LyricsWebViewStore: NSObject {
     }
 
     private func dispatchTimeSync(_ seconds: Double, force: Bool = false) {
-        guard isReady else { return }
+        guard isReady, let webView else { return }
         if !force, let lastDeliveredTime, abs(seconds - lastDeliveredTime) < 0.01 {
             return
         }

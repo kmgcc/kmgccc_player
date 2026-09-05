@@ -386,11 +386,6 @@ struct AppKitMainContentPaneRoot: View {
             .onChange(of: swiftUIColorScheme) { (_: ColorScheme, newScheme: ColorScheme) in
                 syncThemeStoreWithSwiftUIColorScheme(newScheme)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
-                Task { @MainActor in
-                    await themeStore.updateTheme(for: playbackCoordinator.presentation)
-                }
-            }
             .onReceive(NotificationCenter.default.publisher(for: .libraryTrackDidUpdate)) { notification in
                 guard let trackID = notification.userInfo?["trackID"] as? UUID else { return }
                 guard let refreshedTrack = libraryVM.allTracks.first(where: { $0.id == trackID }) else {
@@ -569,6 +564,16 @@ private struct PlaybackThemeArtworkWatcher: View {
             .frame(width: 0, height: 0)
             .allowsHitTesting(false)
             .task(id: artworkIdentity) {
+                // Artwork extraction and the resulting ThemeStore publication
+                // are visual follow-up work. Let the transport and lyric
+                // surface commit first, and coalesce intermediate artwork
+                // identities during a rapid track switch.
+                do {
+                    try await Task.sleep(for: .milliseconds(400))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
                 await themeStore.updateTheme(for: playbackCoordinator.presentation)
             }
     }

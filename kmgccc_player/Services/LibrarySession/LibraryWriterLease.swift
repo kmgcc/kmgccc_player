@@ -93,11 +93,11 @@ nonisolated final class LibraryWriterLease: @unchecked Sendable {
             guard Darwin.fchmod(descriptor, mode_t(S_IRUSR | S_IWUSR)) == 0 else {
                 throw LibraryWriterLeaseError.cannotOpenLockFile(path, errno)
             }
+            // The kernel-managed BSD lock is the authoritative single-writer
+            // boundary. Do not fork a probe from this multithreaded app during
+            // startup: Xcode's injected debug runtime can make that probe
+            // fail or hang even when the lock itself works correctly.
             try acquireExclusiveLock(descriptor: descriptor, lockURL: paths.writerLockURL)
-            try verifyExclusiveLockAcrossProcess(
-                descriptor: descriptor,
-                lockURL: paths.writerLockURL
-            )
             activeLockPaths.withLock { _ = $0.insert(registryKey) }
             try writeDiagnostic(
                 descriptor: descriptor,
@@ -148,20 +148,6 @@ nonisolated final class LibraryWriterLease: @unchecked Sendable {
                 throw LibraryWriterLeaseError.writerLeaseUnsupported(lockURL)
             }
             throw LibraryWriterLeaseError.cannotOpenLockFile(lockURL.path, code)
-        }
-    }
-
-    /// A filesystem may accept `flock` while failing to enforce it between
-    /// independent opens. Probe with a child process and a fresh descriptor;
-    /// writable sessions fail closed unless the child observes contention.
-    private static func verifyExclusiveLockAcrossProcess(
-        descriptor: Int32,
-        lockURL: URL
-    ) throws {
-        precondition(descriptor >= 0)
-        let result = lockURL.path.withCString(kmgccc_verify_flock_exclusion)
-        guard result == 0 else {
-            throw LibraryWriterLeaseError.writerLeaseUnsupported(lockURL)
         }
     }
 

@@ -51,6 +51,7 @@ Tools/ColorGoldenMaster/
 .playwright-mcp/
 .mnemon/
 .omo/
+.dsh-vision-router/
 
 # macOS
 .DS_Store
@@ -91,10 +92,13 @@ dist/
 
 # Local build outputs
 .derivedDataLocalBuild/
-archive/
+/archive/
 *.flac
 *.bak
 *.profraw
 .claude/worktrees/
 .worktrees/
 superteam/
+
+# Repo-root reference screenshots (kept locally, not published)
+/screenshots/

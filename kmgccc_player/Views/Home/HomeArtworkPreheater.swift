@@ -110,6 +110,16 @@ final class HomeArtworkPreheater {
         let artworkResolver = libraryVM.detailHeaderArtworkResolver
         task?.cancel()
         task = Task(priority: .utility) {
+            // Home artwork is a cache warm-up, not part of the playback
+            // critical path. Give a just-started track switch a quiet window;
+            // `HomeView` also cancels this task on each track notification.
+            do {
+                try await Task.sleep(for: .milliseconds(500))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+
             let token = FirstUseHitchDiagnostics.begin(
                 "HomeArtworkPreheat",
                 detail: snapshot.diagnosticDetail
@@ -133,6 +143,9 @@ final class HomeArtworkPreheater {
     func cancel() {
         task?.cancel()
         task = nil
+        // A later body pass with the same snapshot is allowed to schedule the
+        // warm-up again after playback becomes quiet.
+        lastSignature = nil
     }
 
     private func makeSnapshot(

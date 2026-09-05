@@ -66,6 +66,33 @@ nonisolated enum CacheManager {
         )
     }
 
+    /// Releases memory owned by the currently visible artwork/skin surfaces.
+    ///
+    /// Skin transitions and window dismissal can leave several independently
+    /// bounded image caches alive at the same time. These values are all
+    /// rebuildable from disk or the current track and are safe to drop without
+    /// touching library/page caches that would make the next navigation cold.
+    @MainActor
+    static func purgePresentationMemoryCaches(
+        reason: String,
+        cacheServices: LibraryCacheServices? = nil
+    ) async {
+        BKThemeAssets.shared.purgeTransientCaches()
+        await ArtworkAssetStore.shared.purgeHydratedImages()
+        if let cacheServices {
+            await cacheServices.trackArtworkCache.clearMemory()
+            await cacheServices.artworkDerivativeStore.clearMemory()
+        }
+        await ArtworkLoader.clearMemoryCache()
+        await CassetteArtworkCache.shared.removeAll()
+        ThemeStore.shared.clearArtworkColorCache()
+
+        Log.info(
+            "[CacheManager] Purged presentation memory caches reason=\(reason)",
+            category: .perf
+        )
+    }
+
     static func clearLibraryCaches(
         storageLocations: LibraryStorageLocations,
         trackArtworkCache: TrackArtworkCache,

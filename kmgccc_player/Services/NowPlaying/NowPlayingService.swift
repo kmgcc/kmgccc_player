@@ -28,6 +28,15 @@ final class NowPlayingService {
     private var isNowPlayingClearedForSystemMode = false
     private static let artworkSignatureSampleBytes = 12
 
+    private enum RemoteCommand: Sendable {
+        case play
+        case pause
+        case playPause
+        case next
+        case previous
+        case seek(Double)
+    }
+
     private init() {}
 
     func register(player: PlayerViewModel) {
@@ -229,90 +238,118 @@ final class NowPlayingService {
         commandCenter.changePlaybackPositionCommand.isEnabled = true
 
         commandCenter.playCommand.addTarget { [weak self] _ in
-            guard let self, self.coordinator != nil || self.player != nil else {
-                return .commandFailed
-            }
-            Task { @MainActor in
-                if let coordinator = self.coordinator {
-                    coordinator.resume()
-                } else {
-                    self.player?.resume()
-                }
-            }
-            return .success
+            self?.enqueueRemoteCommand(.play) ?? .commandFailed
         }
 
         commandCenter.pauseCommand.addTarget { [weak self] _ in
-            guard let self, self.coordinator != nil || self.player != nil else {
-                return .commandFailed
-            }
-            Task { @MainActor in
-                if let coordinator = self.coordinator {
-                    coordinator.pause()
-                } else {
-                    self.player?.pause()
-                }
-            }
-            return .success
+            self?.enqueueRemoteCommand(.pause) ?? .commandFailed
         }
 
         commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
-            guard let self, self.coordinator != nil || self.player != nil else {
-                return .commandFailed
-            }
-            Task { @MainActor in
-                if let coordinator = self.coordinator {
-                    coordinator.playPause()
-                } else {
-                    self.player?.togglePlayPause()
-                }
-            }
-            return .success
+            self?.enqueueRemoteCommand(.playPause) ?? .commandFailed
         }
 
         commandCenter.nextTrackCommand.addTarget { [weak self] _ in
-            guard let self, self.coordinator != nil || self.player != nil else {
-                return .commandFailed
-            }
-            Task { @MainActor in
-                if let coordinator = self.coordinator {
-                    coordinator.next()
-                } else {
-                    self.player?.next()
-                }
-            }
-            return .success
+            self?.enqueueRemoteCommand(.next) ?? .commandFailed
         }
 
         commandCenter.previousTrackCommand.addTarget { [weak self] _ in
-            guard let self, self.coordinator != nil || self.player != nil else {
+            self?.enqueueRemoteCommand(.previous) ?? .commandFailed
+        }
+
+        commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
                 return .commandFailed
             }
-            Task { @MainActor in
-                if let coordinator = self.coordinator {
-                    coordinator.previous()
-                } else {
-                    self.player?.previous()
+            return self?.enqueueRemoteCommand(.seek(positionEvent.positionTime)) ?? .commandFailed
+        }
+    }
+
+    /// Snapshot the current owner before scheduling onto the main actor. A
+    /// library switch can replace the coordinator between the MediaPlayer
+    /// callback and the task's execution; applying the command to the new
+    /// session would look like a delayed or duplicated media-key press.
+    private func enqueueRemoteCommand(_ command: RemoteCommand) -> MPRemoteCommandHandlerStatus {
+        if let coordinator {
+            if Thread.isMainThread {
+                applyRemoteCommand(command, to: coordinator)
+            } else {
+                Task { @MainActor [weak self, weak coordinator] in
+                    guard let self,
+                          let coordinator,
+                          self.coordinator === coordinator else { return }
+                    self.applyRemoteCommand(command, to: coordinator)
                 }
             }
             return .success
         }
 
-        commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
-            guard let self, self.coordinator != nil || self.player != nil else {
-                return .commandFailed
+        if let handler = AppDelegate.playbackCommandHandler {
+            switch command {
+            case .play:
+                handler(.play)
+            case .pause:
+                handler(.pause)
+            case .playPause:
+                handler(.playPause)
+            case .next:
+                handler(.next)
+            case .previous:
+                handler(.previous)
+            case .seek(let position):
+                handler(.seekTo(position))
             }
-            guard let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
-                return .commandFailed
-            }
-            Task { @MainActor in
-                if let coordinator = self.coordinator {
-                    coordinator.seek(to: positionEvent.positionTime)
-                } else {
-                    self.player?.seek(to: positionEvent.positionTime)
+            return .success
+        }
+
+        if let player {
+            if Thread.isMainThread {
+                applyRemoteCommand(command, to: player)
+            } else {
+                Task { @MainActor [weak self, weak player] in
+                    guard let self,
+                          let player,
+                          self.player === player else { return }
+                    self.applyRemoteCommand(command, to: player)
                 }
             }
             return .success
+        }
+
+        return .commandFailed
+    }
+
+    private func applyRemoteCommand(_ command: RemoteCommand, to coordinator: PlaybackCoordinator) {
+        switch command {
+        case .play:
+            coordinator.resume()
+        case .pause:
+            coordinator.pause()
+        case .playPause:
+            coordinator.playPause()
+        case .next:
+            coordinator.next()
+        case .previous:
+            coordinator.previous()
+        case .seek(let position):
+            coordinator.seek(to: position)
+        }
+    }
+
+    private func applyRemoteCommand(_ command: RemoteCommand, to player: PlayerViewModel) {
+        switch command {
+        case .play:
+            player.resume()
+        case .pause:
+            player.pause()
+        case .playPause:
+            player.togglePlayPause()
+        case .next:
+            player.next()
+        case .previous:
+            player.previous()
+        case .seek(let position):
+            player.seek(to: position)
         }
     }
 

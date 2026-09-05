@@ -281,20 +281,21 @@ struct MiniPlayerProgressSpectrumRow: View {
         }
     }
 
+    @ViewBuilder
     private var compactSpectrumTimeLabels: some View {
-        HStack(alignment: .bottom, spacing: 0) {
-            numericTimeLabel(time: progress)
+        if isRowHovered {
+            HStack(alignment: .bottom, spacing: 0) {
+                numericTimeLabel(time: progress)
 
-            Spacer(minLength: 0)
+                Spacer(minLength: 0)
 
-            numericTimeLabel(time: duration)
+                numericTimeLabel(time: duration)
+            }
+            .padding(.horizontal, hPadding)
+            .padding(.bottom, compactSpectrumTimeBottomInset)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .allowsHitTesting(false)
         }
-        .padding(.horizontal, hPadding)
-        .padding(.bottom, compactSpectrumTimeBottomInset)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .opacity(isRowHovered ? 1 : 0)
-        .animation(.easeInOut(duration: 0.2), value: isRowHovered)
-        .allowsHitTesting(false)
     }
 
     @ViewBuilder
@@ -303,7 +304,7 @@ struct MiniPlayerProgressSpectrumRow: View {
             Rectangle()
                 .fill(.white)
 
-            if visualization == .spectrum {
+            if visualization == .spectrum, isRowHovered {
                 HStack(alignment: .bottom, spacing: 0) {
                     spectrumLabelCutout
                         .padding(.leading, hPadding)
@@ -316,7 +317,6 @@ struct MiniPlayerProgressSpectrumRow: View {
                         .padding(.bottom, compactSpectrumTimeBottomInset)
                 }
                 .frame(width: size.width, height: size.height, alignment: .bottom)
-                .opacity(isRowHovered ? 1 : 0)
             }
         }
         .compositingGroup()
@@ -348,19 +348,20 @@ struct MiniPlayerProgressSpectrumRow: View {
         .isolatesFullscreenBottomControlRenderingFromGeometryAnimation()
     }
 
+    @ViewBuilder
     private var timeLabels: some View {
-        HStack(spacing: timeSpacing) {
-            numericTimeLabel(time: progress)
+        if isRowHovered {
+            HStack(spacing: timeSpacing) {
+                numericTimeLabel(time: progress)
 
-            Spacer(minLength: 18 * scale)
+                Spacer(minLength: 18 * scale)
 
-            numericTimeLabel(time: duration)
+                numericTimeLabel(time: duration)
+            }
+            .padding(.horizontal, hPadding)
+            .offset(y: progressYOffset)
+            .allowsHitTesting(false)
         }
-        .padding(.horizontal, hPadding)
-        .offset(y: progressYOffset)
-        .opacity(isRowHovered ? 1 : 0)
-        .animation(.easeInOut(duration: 0.2), value: isRowHovered)
-        .allowsHitTesting(false)
     }
 
     @ViewBuilder
