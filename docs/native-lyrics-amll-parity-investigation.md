@@ -172,6 +172,7 @@ U `LayoutCalculator.beginFrame/commit` 分离：先前缀和、focal top/height�
 | glow | opacity=e×b；shadow blur=min(.3,b×.3)em×radiusScale；半径不是随 e 一起缩放；transform replace，float add | F dom:748–790 |
 | emphasis float | sin(πx)×−.05em，BG×2；duration=1.4du，delay=字delay−400ms；exit同普通float回落 | F dom:769–795 |
 | 连续高亮 | 整行 timed width累计、每词独立裁切可见窗口；停顿保持；首词额外推进1.5fadeWidth、末词.5fadeWidth；fadeWidth=wordHeight×.5（可配置） | F dom:1000–1193 |
+| 原生高亮时钟桥接 | AMLL mask 在 `setCurrentTime` 后以 playbackRate=1 继续由浏览器动画时钟推进；原生 `LyricsClock` 先按 host 单调时间预测 media time，`HighlightSmoother` 只用约10ms时间常数（response=96）补极短采样停顿，正常词进度不再被人为拖慢。暂停和显式 seek 直接 snap，倒退大跳也 snap；停顿补偿限制在 0.35 个 fadeWidth 以内。 | F/U `setCurrentTime` + mask WAAPI；Native `Motion.swift` |
 | Ruby扫光 | 每ruby的UTF16长度分配base词宽；使用ruby自身start/end并clamp在词内，逐段保持停顿 | F dom:1090–1151 |
 | F mask alpha | scale factor=clamp((scale−.97)/.03)；dark=.2+.2factor，bright=.2+.8factor；solid令bright=dark；attack50/release7，`1-exp(-speed*dt)` | F dom:1236–1288 |
 | U mask alpha | solid .2/.2→gradient1/.4；CSS ease-out，亮起.3s、暗下.45s，与scale解耦 | U CSS/property；dom:setRenderMode |
@@ -188,6 +189,8 @@ F Spring 的两个实现细节不应误当物理学：`soft || ζ>=1` 强制临�
 正式加载入口只接受 XML TTML Data/String，不接受 AMLL JSON、LRC、ESLyric 或任意 HTML。文档模型要保存段落、词、Ruby、语言、agent、source timing、空白和 metadata；之后才生成 renderer profile。
 
 **标准与现有素材必须分开处理。** AMLL 的 parser 使用媒体绝对时间，不完整实现 W3C 的嵌套时间容器；音乐库中还存在无默认 TTML namespace 的旧文件。不能声称这些原文件全部是标准 TTML。Demo 的素材准备层允许一次性把这些文件规范化：补正确namespace、将绝对时刻转为标准 parent-relative offset，不改音频和作者文本。引擎本身不内置这种猜测性 fallback。
+
+Demo 对玩家资料库的打开入口也遵守这条边界：`DemoTTMLImporter` 先尝试严格解码，失败或检测到历史导出形态时才在导入层修复结构命名空间，并把 `div → p → span` 上重复的媒体绝对 `begin/end` 转为父节点相对偏移。它同时接受资料库中出现的紧凑 `mm:ss` 和裸十进制秒数，并在序列化后再次经过严格解码；一行歌词也通过重复的两级起点检测，避免把父级时间重复相加。当前资料库批量结果为 397 份中 396 份可导入，唯一失败是截断 XML，不能安全猜测修复。显示标题优先使用歌曲目录旁的播放器元数据，其次才使用 TTML 的 `amll:meta musicName`。
 
 支持的歌词 TTML profile：
 
@@ -240,9 +243,9 @@ CoreText对象在同一工作队列构建/使用；不要在后台布局和主�
 
 独立 package 放在 `Tools/NativeLyrics`，产出 NativeLyrics library、NativeLyricsDemo AppKit `.app`、测试和离线轨迹导出工具；父Xcode app保持原样。正式输入只有规范TTML。
 
-Demo固定本机歌曲《Bet On Me (feat. Tyler Shaw)》/ Walk Off the Earth & Tyler Shaw，时长约172.988s，549个timed spans、18处BG、两agent；可以模拟单调媒体时间，也可选择对应音频播放。素材准备保留原文件hash并生成标准TTML；音频和实际音乐库路径不进入公共提交。项目现有 complex/ruby/duet fixtures及自有边界fixture补足歌曲缺失场景。
+Demo固定本机歌曲《Bet On Me (feat. Tyler Shaw)》/ Walk Off the Earth & Tyler Shaw，时长约172.020s，549个timed spans、18处BG、两agent；可以模拟单调媒体时间，也可选择对应音频播放。素材准备保留原文件hash并生成标准TTML；音频和实际音乐库路径不进入公共提交。Demo 另有 `Library songs` 菜单扫描已登记的资料库 `Tracks` 目录，提供最多 48 首已通过导入验证的歌曲用于切换和人工对照。项目现有 complex/ruby/duet fixtures及自有边界fixture补足歌曲缺失场景。
 
-控制：play/pause、seek slider/数值时间、±5s、点击歌词、手动跟随恢复、font/size、语言、profile、smooth/discrete、emphasis/glow开关、Glow 半径 0.5×–3×、五组标准 TTML 示例（固定歌曲、动态运动、长词 Glow、Duet/Ruby、Chorus/BG）、resize、固定时间截图/轨迹、窗口关闭/重开。Native 的 Glow 以每个字形的 Core Text alpha 位图作为 mask，再用 Core Image 高斯滤镜；不填充带 padding 的 glyph tile，避免出现矩形光团。间奏点使用与歌词行相同的水平 inset，duet 仍按右侧语义对齐。测试工具能以相同事件序列驱动native和独立浏览器reference。reference可用WebKit/Chromium，但不链接进原生引擎或Demo。
+控制：play/pause、seek slider/数值时间、±5s、点击歌词、手动跟随恢复、font/size、语言、profile、smooth/discrete、emphasis/glow开关、Glow 半径 0.5×–3×、五组标准 TTML 示例（固定歌曲、动态运动、长词 Glow、Duet/Ruby、Chorus/BG）、资料库歌曲选择、resize、固定时间截图/轨迹、窗口关闭/重开。Native 的 Glow 以每个字形的 Core Text alpha 位图作为 mask，再用 Core Image 高斯滤镜；不填充带 padding 的 glyph tile，避免出现矩形光团。间奏点使用与歌词行相同的水平 inset，duet 仍按右侧语义对齐。测试工具能以相同事件序列驱动native和独立浏览器reference。reference可用WebKit/Chromium，但不链接进原生引擎或Demo。
 
 迁移阶段：
 

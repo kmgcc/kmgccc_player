@@ -19,6 +19,8 @@ introduced. Artwork blur and ThemeStore color derivation stay with the host.
 
 The package contains a deterministic `LyricsProbe`, an AppKit `NativeLyricsDemo`, standard TTML fixtures, and the [validation record](VALIDATION.md). The demo's `Sample` menu switches between the fixed library song, a motion laboratory, a long-vowel Glow showcase, a duet/Ruby example, and a chorus/background timing example. A Glow radius slider (0.5×–3×) makes the emphasis halo easy to compare without changing the default profile.
 
+The Demo also exposes a `Library songs` menu. It scans the registered player-library `Tracks` folders and offers validated lyric files (up to 48 entries) with their sidecar title/artist/album and adjacent audio when available. This is a Demo import surface only: it repairs the legacy AMLL library export (compact `mm:ss`, bare decimal seconds, repeated absolute descendant times, and old namespace shadows) into standard parent-relative TTML before calling `LyricsView`. The renderer itself still accepts standard TTML only; LRC and other lyric formats remain outside this package.
+
 ```sh
 swift test --package-path Tools/NativeLyrics --quiet
 bash Tools/NativeLyrics/script/build_and_run.sh

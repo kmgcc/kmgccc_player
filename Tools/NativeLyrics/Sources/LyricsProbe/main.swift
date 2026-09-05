@@ -5,6 +5,18 @@ import UniformTypeIdentifiers
 
 @MainActor func run() throws {
     let args = CommandLine.arguments
+    if args.count >= 3, args[1] == "--decode-only" {
+        for path in args.dropFirst(2) {
+            let url = URL(fileURLWithPath: path)
+            do {
+                let document = try TTMLDecoder().decode(Data(contentsOf: url))
+                print("OK\t\(document.groups.count)\t\(String(format: "%.3f", document.duration))\t\(path)")
+            } catch {
+                print("ERR\t\(error.localizedDescription)\t\(path)")
+            }
+        }
+        return
+    }
     guard args.count>=3 else { throw LyricsError.invalidTTML("Usage: LyricsProbe file.ttml output-directory [time=8] [width=760] [height=720]") }
     let url = URL(fileURLWithPath:args[1]), output = URL(fileURLWithPath:args[2],isDirectory:true)
     let time = args.count>3 ? Double(args[3]) ?? 8 : 8

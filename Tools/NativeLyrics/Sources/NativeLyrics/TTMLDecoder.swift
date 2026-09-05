@@ -78,6 +78,7 @@ private final class XMLTree: NSObject, XMLParserDelegate {
     }
     func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) { _ = stack.popLast() }
     func parser(_ parser: XMLParser, foundCharacters string: String) { stack.last?.content.append(.text(string)) }
+    func parser(_ parser: XMLParser, foundIgnorableWhitespace whitespace: String) { stack.last?.content.append(.text(whitespace)) }
     func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) { stack.last?.content.append(.text(String(decoding: CDATABlock, as: UTF8.self))) }
     func parser(_ parser: XMLParser, foundExternalEntityDeclarationWithName name: String, publicID: String?, systemID: String?) { hasDoctype = true }
     func parser(_ parser: XMLParser, resolveExternalEntityName name: String, systemID: String?) -> Data? { nil }
@@ -100,12 +101,27 @@ private final class DocumentBuilder {
             throw LyricsError.invalidTTML("Invalid time: \(s)")
         }
         let p = s.split(separator: ":", omittingEmptySubsequences: false)
-        guard p.count == 3 || p.count == 4,
-              let h = Double(p[0]), let m = Double(p[1]), let sec = Double(p[2]),
-              h >= 0, m >= 0, m < 60, sec >= 0, sec < 60 else {
+        var result: Double
+        switch p.count {
+        case 2:
+            // TTML also permits the compact mm:ss clock form. Apple Music
+            // lyric TTML uses it for most library files (for example
+            // `04:24.615`), so rejecting it would reject otherwise standard
+            // media-time expressions before the lyric model is even built.
+            guard let minutes = Double(p[0]), let sec = Double(p[1]),
+                  minutes >= 0, sec >= 0, sec < 60 else {
+                throw LyricsError.invalidTTML("Invalid standard TTML clock: \(s)")
+            }
+            result = minutes * 60 + sec
+        case 3, 4:
+            guard let h = Double(p[0]), let m = Double(p[1]), let sec = Double(p[2]),
+                  h >= 0, m >= 0, m < 60, sec >= 0, sec < 60 else {
+                throw LyricsError.invalidTTML("Invalid standard TTML clock: \(s)")
+            }
+            result = h * 3600 + m * 60 + sec
+        default:
             throw LyricsError.invalidTTML("Invalid standard TTML clock: \(s)")
         }
-        var result = h*3600 + m*60 + sec
         if p.count == 4 {
             let f = p[3].split(separator: ".")
             guard let frames = Double(f[0]), frames >= 0, frames < frameRate else { throw LyricsError.invalidTTML("Invalid frame time: \(s)") }

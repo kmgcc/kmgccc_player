@@ -41,6 +41,9 @@ import OSLog
     private var mediaURL: URL?
     private var genericCoverButton: NSButton?
     private let samplePopup = NSPopUpButton()
+    private let libraryPopup = NSPopUpButton()
+    private var librarySongs: [DemoLibrarySong] = []
+    private var catalogTask: Task<Void, Never>?
     private var selectedSample: Sample = .motion
     private let logger = Logger(subsystem:"dev.kmgccc.NativeLyricsDemo",category:"demo")
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -83,6 +86,10 @@ import OSLog
         samples.addArrangedSubview(NSTextField(labelWithString:"Sample"))
         samplePopup.addItems(withTitles:Sample.allCases.map(\.title)); samplePopup.target = self; samplePopup.action = #selector(changeSample(_:)); samples.addArrangedSubview(samplePopup)
         controls.insertArrangedSubview(samples,at:3)
+        let library = NSStackView(); library.orientation = .horizontal; library.spacing = 8
+        library.addArrangedSubview(NSTextField(labelWithString:"Library songs"))
+        libraryPopup.addItem(withTitle:"Scanning player library…"); libraryPopup.isEnabled = false; libraryPopup.target = self; libraryPopup.action = #selector(changeLibrarySong(_:)); library.addArrangedSubview(libraryPopup)
+        controls.insertArrangedSubview(library,at:4)
         let advanced = NSStackView(); advanced.orientation = .horizontal; advanced.spacing = 10
         for (tag,title) in [(10,"Hide active"),(11,"Suppress glow"),(12,"Generic cover"),(13,"Lyric dodge")] {
             let button = NSButton(checkboxWithTitle:title,target:self,action:#selector(advancedOption(_:))); button.tag = tag; advanced.addArrangedSubview(button)
@@ -113,11 +120,12 @@ import OSLog
                 selectedSample = .motion; samplePopup.selectItem(at:Sample.motion.rawValue); loadFixture(.motion)
             }
         }
+        refreshLibraryCatalog()
         timer = Timer.scheduledTimer(withTimeInterval:0.1,repeats:true) { [weak self] _ in MainActor.assumeIsolated { self?.updateControls() } }
         RunLoop.main.add(timer!,forMode:.common)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
-    func windowWillClose(_ notification: Notification) { timer?.invalidate(); lyrics.releaseRenderingResources(); player?.stop() }
+    func windowWillClose(_ notification: Notification) { timer?.invalidate(); catalogTask?.cancel(); lyrics.releaseRenderingResources(); player?.stop() }
     private func makeMenu() {
         let menu = NSMenu(), app = NSMenuItem(); menu.addItem(app); let submenu = NSMenu(); app.submenu = submenu
         submenu.addItem(withTitle:"Quit Native Lyrics Demo",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q")
@@ -126,17 +134,26 @@ import OSLog
         let f = actions.addItem(withTitle:"Follow current lyrics",action:#selector(follow),keyEquivalent:"f"); f.target = self
         NSApp.mainMenu = menu
     }
-    private func load(_ url: URL) {
+    private func load(_ url: URL, displayTitle: String? = nil) {
         do {
-            let data = try Data(contentsOf:url); try lyrics.load(ttml:data)
+            let data = try Data(contentsOf:url)
+            let imported = try DemoTTMLImporter.load(data)
+            try lyrics.load(ttml:imported.data)
             mediaURL = url; duration = max(1,lyrics.document?.duration ?? 70); slider.maxValue = duration
             player?.stop(); clock.synchronize(time:0,playing:false,host:CACurrentMediaTime())
-            titleLabel.stringValue = lyrics.document?.title.isEmpty == false ? lyrics.document!.title : url.deletingPathExtension().lastPathComponent
+            let sidecar = sidecarTitle(for: url)
+            let documentTitle = imported.document.title == "TTML Lyrics" ? nil : imported.document.title
+            let title = displayTitle ?? sidecar ?? documentTitle ?? DemoTTMLImporter.metadataTitle(data) ?? url.deletingPathExtension().lastPathComponent
+            titleLabel.stringValue = title
+            if imported.repairedNamespace || imported.normalizedAbsoluteTiming {
+                logger.info("Imported legacy library TTML through Demo adapter namespaceRepair=\(imported.repairedNamespace) absoluteTiming=\(imported.normalizedAbsoluteTiming)")
+            }
             updateControls()
-        } catch { showError(error) }
+        } catch { showError(error, url:url) }
     }
     private func loadFixture(_ fixture: Sample) {
         selectedSample = fixture
+        libraryPopup.selectItem(at:-1)
         player?.stop(); player = nil
         let url = Bundle.main.resourceURL!.appendingPathComponent(fixture.resourceName)
         load(url)
@@ -146,7 +163,7 @@ import OSLog
     }
     private func attachAudio(_ url: URL) {
         do { player = try AVAudioPlayer(contentsOf:url); player?.prepareToPlay(); player?.pause(); player?.currentTime = 0; duration = max(duration,player?.duration ?? 0); slider.maxValue = duration }
-        catch { showError(error) }
+        catch { showError(error, url:url) }
     }
     private var time: Double { player?.currentTime ?? clock.time(at:CACurrentMediaTime()) }
     @objc private func toggle() {
@@ -167,6 +184,15 @@ import OSLog
     @objc private func changeSample(_ sender: NSPopUpButton) {
         guard let fixture = Sample(rawValue:sender.indexOfSelectedItem) else { return }
         loadFixture(fixture)
+    }
+    @objc private func changeLibrarySong(_ sender: NSPopUpButton) {
+        let index = sender.indexOfSelectedItem
+        guard librarySongs.indices.contains(index) else { return }
+        let song = librarySongs[index]
+        samplePopup.selectItem(at:-1)
+        player?.stop(); player = nil
+        load(song.lyricURL, displayTitle: song.title)
+        if let audioURL = song.audioURL { attachAudio(audioURL) }
     }
     @objc private func changeProfile(_ sender: NSPopUpButton) { lyrics.configuration.profile = sender.indexOfSelectedItem == 0 ? .currentPlayer : .upstream }
     @objc private func changeSurface(_ sender: NSPopUpButton) {
@@ -211,8 +237,62 @@ import OSLog
         let enabled = sender.state == .on
         switch sender.tag { case 0: lyrics.configuration.emphasis = enabled; case 1: lyrics.configuration.glow = enabled; case 2: lyrics.configuration.showTranslation = enabled; case 3: lyrics.configuration.showRuby = enabled; default: lyrics.configuration.blur = enabled }
     }
-    @objc private func openTTML() { let panel = NSOpenPanel(); panel.allowsMultipleSelection = false; panel.beginSheetModal(for:window) { [weak self] response in if response == .OK, let url = panel.url { self?.load(url) } } }
+    @objc private func openTTML() { let panel = NSOpenPanel(); panel.allowsMultipleSelection = false; panel.message = "Choose a standard TTML file or an AMLL player-library lyrics.ttml"; panel.beginSheetModal(for:window) { [weak self] response in if response == .OK, let url = panel.url { self?.samplePopup.selectItem(at:-1); self?.libraryPopup.selectItem(at:-1); self?.load(url) } } }
     @objc private func openAudio() { let panel = NSOpenPanel(); panel.allowsMultipleSelection = false; panel.beginSheetModal(for:window) { [weak self] response in if response == .OK, let url = panel.url { self?.attachAudio(url) } } }
+    private func refreshLibraryCatalog() {
+        let bundled = bundledLibrarySong()
+        librarySongs = bundled.map { [$0] } ?? []
+        rebuildLibraryPopup()
+        libraryPopup.toolTip = "Scanning registered player-library Tracks folders…"
+        catalogTask?.cancel()
+        catalogTask = Task { [weak self] in
+            let discovered = await Task.detached(priority: .utility) { DemoLibraryCatalog.discover() }.value
+            // Keep the completed result even if the short-lived refresh task
+            // was marked cancelled while the XML files were being inspected;
+            // windowWillClose still releases the UI and no second refresh can
+            // race this one during the Demo lifetime.
+            guard let self else { return }
+            var merged = bundled.map { [$0] } ?? []
+            let known = Set(merged.map { $0.lyricURL.standardizedFileURL })
+            merged.append(contentsOf: discovered.filter { !known.contains($0.lyricURL.standardizedFileURL) })
+            self.librarySongs = merged
+            self.rebuildLibraryPopup()
+            self.libraryPopup.toolTip = "\(merged.count) selectable player-library songs"
+            self.logger.info("Loaded \(merged.count) selectable library songs")
+        }
+    }
+    private func bundledLibrarySong() -> DemoLibrarySong? {
+        guard let url = Bundle.main.resourceURL?.appendingPathComponent("song.ttml"),
+              FileManager.default.fileExists(atPath:url.path),
+              let data = try? Data(contentsOf:url),
+              let imported = try? DemoTTMLImporter.load(data) else { return nil }
+        let audio = Bundle.main.resourceURL?.appendingPathComponent("audio.m4a")
+        return DemoLibrarySong(title: imported.document.title, subtitle: "Bundled word-timed fixture", lyricURL: url, audioURL: audio, rootLabel: "Demo")
+    }
+    private func sidecarTitle(for url: URL) -> String? {
+        let metadataURL = url.deletingLastPathComponent().appendingPathComponent("meta.json")
+        guard let data = try? Data(contentsOf: metadataURL),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let value = object["title"] as? String else { return nil }
+        let title = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? nil : title
+    }
+    private func rebuildLibraryPopup() {
+        libraryPopup.removeAllItems()
+        guard !librarySongs.isEmpty else {
+            libraryPopup.addItem(withTitle:"No TTML lyrics found — use Open TTML…")
+            libraryPopup.isEnabled = false
+            return
+        }
+        for song in librarySongs {
+            let label = song.subtitle.isEmpty ? song.title : "\(song.title) — \(song.subtitle)"
+            libraryPopup.addItem(withTitle:label)
+        }
+        libraryPopup.isEnabled = true
+        if let current = mediaURL, let index = librarySongs.firstIndex(where: { $0.lyricURL.standardizedFileURL == current.standardizedFileURL }) {
+            libraryPopup.selectItem(at:index)
+        }
+    }
     private func updateControls() {
         var current = time
         if current >= duration && clock.isPlaying { current = duration; player?.pause(); clock.synchronize(time:current,playing:false,host:CACurrentMediaTime()) }
@@ -226,10 +306,37 @@ import OSLog
             status.stringValue = String(format:"%@ · hot %@ · highlight %@ · %@/%@ · %.2f ms/frame · %.1f MB cache · %d layouts",frame.following ? "Following" : "Manual scroll",hot.isEmpty ? "—" : hot,highlighted.isEmpty ? "—" : highlighted,lyrics.configuration.surface.rawValue,lyrics.configuration.effectiveRenderLayer.rawValue,frame.renderMilliseconds,Double(frame.glyphCacheBytes)/1048576,frame.layoutCount)
         }
     }
-    private func showError(_ error: Error) { logger.error("\(error.localizedDescription,privacy:.public)"); NSAlert(error:error).beginSheetModal(for:window) }
+    private func showError(_ error: Error, url: URL? = nil) {
+        logger.error("\(error.localizedDescription,privacy:.public)")
+        let alert = NSAlert(); alert.messageText = "Unable to load lyrics"
+        let location = url.map { "\n\nFile: \($0.path)" } ?? ""
+        alert.informativeText = "\(error.localizedDescription)\(location)\n\nThe native engine accepts standard TTML. The Demo can normalize the player library's AMLL absolute-time export, but it does not convert LRC or other lyric formats."
+        alert.alertStyle = .warning; alert.addButton(withTitle:"OK"); alert.beginSheetModal(for:window)
+    }
 }
 
 MainActor.assumeIsolated {
+    if let index = CommandLine.arguments.firstIndex(of: "--dump-import"), index + 1 < CommandLine.arguments.count {
+        let url = URL(fileURLWithPath: CommandLine.arguments[index + 1])
+        do {
+            let imported = try DemoTTMLImporter.load(Data(contentsOf: url))
+            print("title=\(imported.document.title) duration=\(imported.document.duration) groups=\(imported.document.groups.count) namespaceRepair=\(imported.repairedNamespace) absoluteTiming=\(imported.normalizedAbsoluteTiming)")
+            for group in imported.document.groups.prefix(8) {
+                let words = group.main.words.map { $0.text.replacingOccurrences(of: " ", with: "·") }.joined(separator: "|")
+                print("\(group.main.range.start)-\(group.main.range.end) \(words)")
+            }
+            exit(0)
+        } catch {
+            FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8))
+            exit(1)
+        }
+    }
+    if CommandLine.arguments.contains("--dump-catalog") {
+        let songs = DemoLibraryCatalog.discover()
+        print("songs=\(songs.count)")
+        for song in songs.prefix(12) { print("\(song.title)\t\(song.subtitle)\t\(song.lyricURL.path)") }
+        exit(0)
+    }
     let application = NSApplication.shared
     let delegate = DemoController()
     application.delegate = delegate

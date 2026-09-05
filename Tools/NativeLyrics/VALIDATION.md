@@ -14,9 +14,11 @@ swift run --package-path Tools/NativeLyrics --quiet LyricsProbe \
 bash Tools/NativeLyrics/script/build_and_run.sh
 ```
 
-The current run passes **28 XCTest cases**. The fixed-song probe loads 80 groups and 549 timed spans after the fixture preparation step; the 120 Hz paused replay reports a render p95 of about 0.67 ms/frame and keeps glyph cache usage bounded by the configured budget.
+The current run passes **31 XCTest cases**. The fixed-song probe loads 80 groups and 549 timed spans after the fixture preparation step; the 120 Hz paused replay reports a render p95 of about 0.67 ms/frame and keeps glyph cache usage bounded by the configured budget.
 
 The fixture preparation script is deliberately outside the renderer. It converts the library's legacy absolute-time resource into standard parent-relative TTML, while the public `TTMLDecoder` rejects unnamespaced timed input and accepts only the standard TTML contract.
+
+The Demo's `Library songs` menu uses the same boundary for real player-library files. Its adapter recognizes compact `mm:ss` clocks, bare decimal-second attributes, repeated absolute `begin`/`end` values on `div → p → span`, and explicit empty namespace declarations on timed nodes. It serializes the repaired document with explicit seconds, then runs the strict decoder. A batch pass over the available library material validated **396 of 397** files; the remaining file is truncated XML and is reported as invalid instead of being guessed into a different lyric order. Sidecar metadata supplies the visible track title, while `amll:meta musicName` is used when no sidecar title exists.
 
 ## APP reference comparison
 
@@ -46,6 +48,9 @@ The browser capture is an oracle for geometry and state only. It is not linked i
 - explicit blend opacity/mode, raster scale, and display-link cap are exposed in `LyricsConfiguration` for host-side stress runs;
 - native resize and window occlusion lifecycle;
 - native lyric click and context-menu copy path.
+- the `Library songs` menu, including selecting a real absolute-time library export, title/metadata display, and an adjacent audio file when present;
+- a batch `--dump-import` check over player-library `lyrics.ttml` files, including one-line absolute timing and namespace-shadow cases;
+- prompt smooth-mask tracking during normal playback samples; paused and seeked samples still snap exactly to the requested media time.
 
 ## Remaining acceptance boundary
 

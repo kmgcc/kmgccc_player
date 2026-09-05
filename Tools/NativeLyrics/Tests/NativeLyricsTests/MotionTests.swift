@@ -59,6 +59,13 @@ final class MotionTests: XCTestCase {
         XCTAssertGreaterThan(duringStall,before)
         XCTAssertLessThanOrEqual(duringStall,20+0.8+1e-9)
     }
+    func testHighlightSmootherTracksNormalPlaybackPromptly() {
+        var smoother = HighlightSmoother()
+        _ = smoother.sample(target:0,now:0,playing:false,reset:true,fadeWidth:10)
+        let value = smoother.sample(target:10,now:0.1,playing:true,reset:false,fadeWidth:10)
+        XCTAssertLessThan(abs(value - 10),0.2)
+    }
+
     func testHighlightSmootherSnapsToPausedAndSeekedTargets() {
         var smoother = HighlightSmoother()
         _ = smoother.sample(target:0,now:0,playing:false,reset:true,fadeWidth:10)

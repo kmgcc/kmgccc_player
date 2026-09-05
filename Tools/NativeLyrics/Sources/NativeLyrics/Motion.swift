@@ -129,16 +129,25 @@ struct HighlightSmoother {
         if backwardsSnap {
             value = target
         } else {
-            let response = 1 - exp(-dt * 28)
+            // AMLL advances the Web Animations mask at playbackRate 1 and
+            // only samples the host time on display updates.  The native
+            // LyricsClock already predicts that same media time, so this
+            // bridge must have a very short time constant: it is only here
+            // to hide an occasional host sample gap, not to trail the word.
+            let response = 1 - exp(-dt * 96)
             value += (target - value) * response
 
             // During a very short host/audio stall AMLL's running animation
             // continues by a barely visible amount. Keep that glide bounded so
             // it cannot reveal a future word or survive a pause.
-            let stall = abs(targetDelta) <= max(0.0001, fadeWidth * 0.002)
+            // A normal slow syllable can move by only a few pixels per frame;
+            // do not classify that as a stalled host clock.  The tiny
+            // threshold is reserved for repeated, effectively identical
+            // samples where AMLL's running browser animation remains visible.
+            let stall = abs(targetDelta) <= max(0.0001, fadeWidth * 0.0005)
             if stall && target >= value {
-                let maxLead = max(0.8, fadeWidth * 0.08)
-                let glideRate = max(0.2, fadeWidth * 0.04)
+                let maxLead = max(0.35, fadeWidth * 0.03)
+                let glideRate = max(0.12, fadeWidth * 0.02)
                 value = min(target + maxLead, value + glideRate * dt)
             }
         }

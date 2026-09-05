@@ -8,6 +8,17 @@ final class DecoderTests: XCTestCase {
         XCTAssertEqual(document.groups[0].main.range,LyricRange(9,14))
         XCTAssertEqual(document.groups[0].main.words[0].range,LyricRange(10,12))
     }
+    func testCompactMinuteClockIsAccepted() throws {
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='04:24.615' end='04:28.000'>Compact</p></div></body></tt>".utf8)
+        let line = try TTMLDecoder().decode(data).groups[0].main
+        XCTAssertEqual(line.range, LyricRange(264.615, 268))
+    }
+    func testInlineWhitespaceBetweenTimedSpansIsPreserved() throws {
+        let xml = "<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='1s' end='3s'><span begin='0s' end='1s'>Hello</span> <span begin='1s' end='2s'>world</span></p></div></body></tt>"
+        let line = try TTMLDecoder().decode(Data(xml.utf8)).groups[0].main
+        XCTAssertEqual(line.text,"Hello world")
+        XCTAssertEqual(line.words.map(\.text),["Hello"," ","world"])
+    }
     func testRejectsLegacyNamespace() {
         XCTAssertThrowsError(try TTMLDecoder().decode(Data("<tt><body><div><p begin='1s' end='3s'>hello</p></div></body></tt>".utf8)))
     }
