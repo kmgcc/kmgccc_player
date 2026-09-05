@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tt xmlns="http://www.w3.org/ns/ttml" xmlns:ttm="http://www.w3.org/ns/ttml#metadata" xmlns:tts="http://www.w3.org/ns/ttml#styling" xml:lang="en">
+  <head><metadata><ttm:title>Native Lyrics — motion laboratory</ttm:title><ttm:agent xml:id="voiceA" type="person"/><ttm:agent xml:id="voiceB" type="person"/></metadata></head>
+  <body dur="70s"><div>
+    <p begin="5s" end="11s" ttm:agent="voiceA"><span begin="0s" end="1s">Watch </span><span begin="1s" end="2s">the </span><span begin="2s" end="6s">light</span><span ttm:role="x-translation" xml:lang="zh-Hans">看着光芒</span></p>
+    <p begin="10s" end="17s" ttm:agent="voiceB"><span begin="0s" end="1s">Across </span><span begin="1s" end="2s">the </span><span begin="2s" end="5s">sky </span><span begin="5s" end="7s">tonight</span><span ttm:role="x-bg" begin="2s" end="7s"><span begin="0s" end="2s">(the </span><span begin="2s" end="5s">sky)</span></span><span ttm:role="x-translation" xml:lang="zh-Hans">划过今晚的天空</span></p>
+    <p begin="18s" end="25s" ttm:agent="voiceA"><span begin="0s" end="3s" tts:ruby="container"><span tts:ruby="base">星空</span><span tts:ruby="text" begin="0s" end="1.5s">ほし</span><span tts:ruby="text" begin="1.5s" end="3s">ぞら</span></span><span begin="3s" end="4s">を</span><span begin="4s" end="7s">見上げて</span><span ttm:role="x-translation" xml:lang="zh-Hans">抬头仰望星空</span><span ttm:role="x-roman" xml:lang="ja-Latn">hoshizora o miagete</span></p>
+    <p begin="24s" end="30s" ttm:agent="voiceB"><span ttm:role="x-bg" begin="0s" end="6s"><span begin="0s" end="3s">(come </span><span begin="3s" end="6s">home)</span></span><span begin="2s" end="3s">We </span><span begin="3s" end="6s">belong</span><span ttm:role="x-translation">我们属于这里</span></p>
+    <p begin="36s" end="42s" ttm:agent="voiceA"><span begin="0s" end="1s">A </span><span begin="1s" end="2s">long </span><span begin="2s" end="3s">line </span><span begin="3s" end="4s">of </span><span begin="4s" end="6s">possibilities</span><span ttm:role="x-translation">很长的一行歌词，随着窗口大小连续重新排版。</span></p>
+    <p begin="43s" end="50s" ttm:agent="voiceA">普通逐行歌词 · Latin / CJK · 👩🏽‍🚀</p>
+    <p begin="49s" end="55s" ttm:agent="voiceB"><span begin="0s" end="2s">同时</span><span begin="2s" end="4s">歌唱</span><span begin="4s" end="6s">吧</span></p>
+    <p begin="61s" end="69s" ttm:agent="voiceA"><span begin="0s" end="2s">Carry </span><span begin="2s" end="3s">the </span><span begin="3s" end="8s">glow</span><span ttm:role="x-translation">让光芒继续</span></p>
+  </div></body>
+</tt>

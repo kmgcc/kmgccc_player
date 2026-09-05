@@ -1,0 +1,272 @@
+import AppKit
+import CoreText
+import QuartzCore
+import CoreImage
+
+extension LyricsColor {
+    var cgColor: CGColor {
+        if displayP3 { return NSColor(displayP3Red:red,green:green,blue:blue,alpha:alpha).cgColor }
+        return NSColor(srgbRed:red,green:green,blue:blue,alpha:alpha).cgColor
+    }
+}
+
+/// Bounded, shared glyph bitmap cache. Text is shaped only on layout/cache misses.
+final class GlyphCache {
+    struct Entry { let image: CGImage; let size: CGSize; let padding: Double; let bytes: Int; var stamp: UInt64 }
+    private var entries: [String:Entry] = [:]
+    private var stamp: UInt64 = 0
+    private(set) var bytes = 0
+    private(set) var misses = 0
+    var budget = 64*1024*1024
+    func glyph(_ placement: GlyphPlacement, scale: Double) -> Entry? {
+        let font = placement.font, size = CTFontGetSize(font)
+        let key = "\(CTFontCopyPostScriptName(font))|\(size)|\(scale)|\(placement.text)"
+        stamp &+= 1
+        if var entry = entries[key] { entry.stamp = stamp; entries[key] = entry; return entry }
+        let pad = max(3,size*0.45), height = max(size*1.2,CTFontGetAscent(font)+CTFontGetDescent(font)+CTFontGetLeading(font))
+        let logical = CGSize(width:ceil(placement.width+pad*2),height:ceil(height+pad*2))
+        let w = max(1,Int(ceil(logical.width*scale))), h = max(1,Int(ceil(logical.height*scale)))
+        guard w<32768, h<32768, let context = CGContext(data:nil,width:w,height:h,bitsPerComponent:8,bytesPerRow:w*4,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.scaleBy(x:scale,y:scale)
+        context.setFillColor(NSColor.white.cgColor)
+        context.textPosition = CGPoint(x:pad,y:logical.height-pad-CTFontGetAscent(font))
+        CTLineDraw(TextLayoutEngine.shape(placement.text,font:font),context)
+        guard let image = context.makeImage() else { return nil }
+        let entry = Entry(image:image,size:logical,padding:pad,bytes:w*h*4,stamp:stamp)
+        while bytes+entry.bytes>budget, let oldest = entries.min(by:{$0.value.stamp<$1.value.stamp}) {
+            bytes -= oldest.value.bytes; entries.removeValue(forKey:oldest.key)
+        }
+        if entry.bytes<=budget { entries[key] = entry; bytes += entry.bytes }
+        misses += 1; return entry
+    }
+    func removeAll() { entries.removeAll(); bytes = 0 }
+}
+
+final class GlyphLayers {
+    let root = CALayer(), dark = CALayer(), bright = CALayer(), glow = CALayer()
+    let brightInk = CALayer(), glowInk = CALayer()
+    let gradient = CAGradientLayer()
+    let placement: GlyphPlacement
+    let padding: Double
+    var x: SpringTrack, y: SpringTrack
+    init?(_ placement: GlyphPlacement, cache: GlyphCache, scale: Double, previous: CGPoint?, now: Double) {
+        guard let bitmap = cache.glyph(placement,scale:scale) else { return nil }
+        self.placement = placement; padding = bitmap.padding
+        x = SpringTrack(Double(previous?.x ?? placement.origin.x)); y = SpringTrack(Double(previous?.y ?? placement.origin.y))
+        x.retarget(placement.origin.x,at:now); y.retarget(placement.origin.y,at:now)
+        root.bounds = CGRect(origin:.zero,size:bitmap.size); root.anchorPoint = CGPoint(x:0.5,y:0.5)
+        for layer in [glow,dark,bright] { layer.frame = root.bounds; root.addSublayer(layer) }
+        bright.addSublayer(brightInk); glow.addSublayer(glowInk)
+        for ink in [dark,brightInk,glowInk] {
+            ink.frame = root.bounds; ink.backgroundColor = NSColor.white.cgColor
+            let mask = CALayer(); mask.frame = root.bounds; mask.contents = bitmap.image; mask.contentsScale = scale; ink.mask = mask
+        }
+        glow.shadowColor = NSColor.white.cgColor; glow.shadowOffset = .zero
+        gradient.startPoint = CGPoint(x:0,y:0.5); gradient.endPoint = CGPoint(x:1,y:0.5)
+        gradient.colors = [NSColor.white.cgColor,NSColor.white.cgColor,NSColor.clear.cgColor,NSColor.clear.cgColor]
+        gradient.frame = root.bounds; bright.mask = gradient
+    }
+    func update(now: Double, media: Double, logicalX: Double, cursor: Double, fade: Double, darkAlpha: Double, brightAlpha: Double, emphasis: EmphasisEnvelope?, fontSize: Double, config: LyricsConfiguration, float: Double, background: Bool = false, subline: Bool = false, lifetime: Double = 1, baseVisible: Bool = true, highlightVisible: Bool = true, glowVisible: Bool = true) {
+        x.resolve(now); y.resolve(now)
+        var e = EmphasisSample()
+        if config.emphasis, let emphasis, let character = placement.characterIndex {
+            e = emphasis.sample(media,character:character,fontSize:fontSize,radiusScale:config.glowRadiusScale)
+        }
+        let w = root.bounds.width
+        root.position = CGPoint(x:x.value(now)-padding+w/2+e.x,y:y.value(now)-padding+root.bounds.height/2+e.y+e.floatY+float)
+        root.transform = CATransform3DMakeScale(e.scale,e.scale,1)
+        if config.usesOpaqueCompositing {
+            dark.backgroundColor = (subline ? config.palette.translation : background ? config.palette.backgroundInactive : config.palette.mainInactive).cgColor
+            brightInk.backgroundColor = (background ? config.palette.backgroundKaraoke : config.palette.mainActive).cgColor
+            let darkOpacity = subline ? 1 : background ? config.palette.backgroundBaseOpacity : 1
+            let brightOpacity = subline ? 0 : lifetime*(background ? config.palette.backgroundKaraokeOpacity : 1)
+            dark.opacity = Float(baseVisible ? darkOpacity : 0)
+            bright.opacity = Float(highlightVisible ? brightOpacity : 0)
+        } else {
+            dark.backgroundColor = config.palette.mainActive.cgColor; brightInk.backgroundColor = config.palette.mainActive.cgColor
+            dark.opacity = Float(baseVisible ? darkAlpha : 0)
+            bright.opacity = Float(highlightVisible ? max(0,(brightAlpha-darkAlpha)/max(0.0001,1-darkAlpha)) : 0)
+        }
+        let boundary = cursor-logicalX-placement.origin.x+padding
+        let a = Curves.clamp((boundary-fade/2)/max(1,w)), b = Curves.clamp((boundary+fade/2)/max(1,w))
+        gradient.locations = [0,NSNumber(value:a),NSNumber(value:b),1]
+        if boundary < -fade/2 { bright.opacity = 0 }
+        glow.opacity = config.glow && !config.coverBlurSuppressEmphasisGlow && glowVisible ? Float(e.glowOpacity) : 0
+        glowInk.backgroundColor = config.palette.emphasisGlow.cgColor
+        glow.shadowColor = config.palette.emphasisGlow.cgColor
+        glow.shadowOpacity = 1; glow.shadowRadius = e.glowRadius*(config.surface == .artisticFullscreen || config.fullscreenAppleStyleMode ? 0.6 : 1)
+    }
+    func settled(_ time: Double) -> Bool { x.settled(time) && y.settled(time) }
+}
+
+final class WordLayers {
+    let root = CALayer()
+    let placement: WordPlacement
+    let glyphs: [GlyphLayers]
+    var x: SpringTrack, y: SpringTrack
+    let logicalX: Double
+    init(_ placement: WordPlacement, logicalX: Double, cache: GlyphCache, scale: Double, previous: WordLayers?, now: Double) {
+        self.placement = placement; self.logicalX = logicalX
+        x = SpringTrack(previous.map { $0.x.value(now) } ?? placement.rect.minX)
+        y = SpringTrack(previous.map { $0.y.value(now) } ?? placement.rect.minY)
+        x.retarget(placement.rect.minX,at:now); y.retarget(placement.rect.minY,at:now)
+        glyphs = placement.pieces.enumerated().compactMap { i,piece in
+            let old = previous.flatMap { i<$0.glyphs.count ? $0.glyphs[i] : nil }
+            return GlyphLayers(piece,cache:cache,scale:scale,previous:old.map { CGPoint(x:$0.x.value(now),y:$0.y.value(now)) },now:now)
+        }
+        root.anchorPoint = .zero
+        for glyph in glyphs { root.addSublayer(glyph.root) }
+    }
+    func update(now: Double, media: Double, cursor: Double, fade: Double, dark: Double, bright: Double, config: LyricsConfiguration, floatTime: Double, background: Bool, lifetime: Double, baseVisible: Bool = true, highlightVisible: Bool = true, glowVisible: Bool = true) {
+        x.resolve(now); y.resolve(now); root.position = CGPoint(x:x.value(now),y:y.value(now))
+        let duration = max(1,placement.atom.word.range.duration)
+        let float = -Curves.easeOut.value(at:Curves.clamp((floatTime-placement.atom.word.range.start)/duration))*placement.fontSize*0.05*(placement.atom.emphasis?.isBackground == true ? 2 : 1)
+        for glyph in glyphs {
+            glyph.update(now:now,media:media,logicalX:logicalX,cursor:cursor,fade:fade,darkAlpha:dark,brightAlpha:bright,emphasis:placement.atom.emphasis,fontSize:placement.fontSize,config:config,float:float,background:background,lifetime:lifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible)
+        }
+    }
+    func settled(_ time: Double) -> Bool { x.settled(time) && y.settled(time) && glyphs.allSatisfy { $0.settled(time) } }
+}
+
+final class LineLayers {
+    let root = CALayer()
+    private(set) var words: [WordLayers] = []
+    private(set) var sublines: [GlyphLayers] = []
+    let layout: LineTextLayout
+    let mask: MaskPath
+    let fade: Double
+    private var highlight = Tween(0)
+    private var wasActive = false
+    private var brightAlpha = 1.0, darkAlpha = 0.4
+    private var previousTime: Double?
+    init(_ layout: LineTextLayout, cache: GlyphCache, scale: Double, config: LyricsConfiguration, previous: LineLayers?, now: Double, buildContent: Bool = true) {
+        self.layout = layout; fade = max(0.01,(layout.words.first?.fadeHeight ?? layout.fontSize*1.2)*config.wordFadeWidth)
+        mask = MaskPath(layout.words,fadeWidth:fade)
+        root.anchorPoint = .zero; root.bounds = CGRect(x:0,y:0,width:layout.width,height:layout.height)
+        if let previous { brightAlpha = previous.brightAlpha; darkAlpha = previous.darkAlpha; highlight = previous.highlight; wasActive = previous.wasActive; previousTime = previous.previousTime }
+        if buildContent { build(cache:cache,scale:scale,config:config,previous:previous,now:now) }
+    }
+    func ensureContent(cache: GlyphCache, scale: Double, config: LyricsConfiguration, now: Double) {
+        if words.isEmpty && !layout.words.isEmpty { build(cache:cache,scale:scale,config:config,previous:nil,now:now) }
+    }
+    func discardContent() {
+        words.forEach { $0.root.removeFromSuperlayer() }; sublines.forEach { $0.root.removeFromSuperlayer() }
+        words.removeAll(); sublines.removeAll()
+    }
+    private func build(cache: GlyphCache, scale: Double, config: LyricsConfiguration, previous: LineLayers?, now: Double) {
+        var logical = 0.0
+        words = layout.words.map { word in
+            defer { logical += word.width }
+            return WordLayers(word,logicalX:logical,cache:cache,scale:scale,previous:previous?.words.first { $0.placement.atom.word.id == word.atom.word.id },now:now)
+        }
+        sublines = layout.sublines.compactMap { GlyphLayers($0,cache:cache,scale:scale,previous:nil,now:now) }
+        for word in words { root.addSublayer(word.root) }
+        for subline in sublines { root.addSublayer(subline.root) }
+    }
+    func update(now: Double, media: Double, floatTime: Double, active: Bool, alpha: Double, background: Bool, config: LyricsConfiguration) {
+        if active != wasActive {
+            highlight.set(active ? 1 : 0,at:now,duration:active ? 0.2 : 0.5)
+            if active && config.lineTimingOnly { highlight.start += 0.05 }
+            wasActive = active
+        }
+        let lifetime = highlight.value(now)
+        let smooth = layout.isDynamic && !config.lineTimingOnly && config.highlightMode == .smooth
+        let renderLayer = config.effectiveRenderLayer
+        let highlightOnly = renderLayer == .highlight
+        let baseOnly = renderLayer == .base
+        // The APP can render a cover-blur base and highlight surface
+        // separately. Keep the exit channel alive for the same half-second
+        // line fade that the fork uses, so the highlight surface does not
+        // pop out when a line leaves the hot set.
+        let hasHighlightLifetime = active || lifetime > 0.001
+        let hideActiveMain = !background && config.coverBlurHideActiveMainLine && active
+        let baseVisible = !highlightOnly && !hideActiveMain
+        let highlightVisible = !baseOnly && (!highlightOnly || hasHighlightLifetime) && !hideActiveMain
+        let glowVisible = renderLayer != .base && !config.coverBlurSuppressEmphasisGlow
+        let delta = max(0,now-(previousTime ?? now)); previousTime = now
+        let targetDark = 0.2+0.2*alpha, targetBright = active ? 0.2+0.8*alpha : targetDark
+        brightAlpha += (targetBright-brightAlpha)*(1-exp(-(targetBright>brightAlpha ? 50 : 7)*delta))
+        darkAlpha += (targetDark-darkAlpha)*(1-exp(-(targetDark>darkAlpha ? 50 : 7)*delta))
+        let bright = smooth ? brightAlpha : (active ? 1.0 : (background ? 0.4 : 0.28))
+        let dark = smooth ? darkAlpha : bright
+        let cursor = smooth ? mask.position(at:media) : Double.greatestFiniteMagnitude
+        for word in words {
+            var wordDark = dark, wordBright = bright, wordLifetime = lifetime
+            if layout.isDynamic && !config.lineTimingOnly && config.highlightMode == .discrete {
+                let range = word.placement.atom.word.range
+                let duration = max(0.3,min(2,range.duration))
+                let progress = Curves.sampled((media-range.start)/duration,count:18) { log1p($0*2.2)/log1p(2.2) }
+                let inactive = background ? 0.4 : 0.28
+                wordDark = inactive+(1-inactive)*progress*lifetime; wordBright = wordDark; wordLifetime = progress*lifetime
+            }
+            word.update(now:now,media:media,cursor:cursor,fade:fade,dark:wordDark,bright:wordBright,config:config,floatTime:layout.isDynamic && !config.lineTimingOnly ? floatTime : -1e9,background:background,lifetime:wordLifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible)
+        }
+        for subline in sublines {
+            subline.update(now:now,media:media,logicalX:0,cursor:1e9,fade:1,darkAlpha:0.3,brightAlpha:0.3,emphasis:nil,fontSize:layout.fontSize,config:config,float:0,background:background,subline:true,lifetime:lifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:false)
+        }
+    }
+    func settled(_ time: Double) -> Bool { words.allSatisfy { $0.settled(time) } }
+}
+
+final class GroupLayers {
+    let root = CALayer(), hover = CALayer(), backgroundWrapper = CALayer()
+    var main: LineLayers
+    var background: LineLayers?
+    var layout: GroupTextLayout
+    var y: SpringTrack
+    var scale = SpringTrack(0.97,.scale)
+    var backgroundScale = SpringTrack(0.75,.background)
+    var slide = SpringTrack(80)
+    var opacity = Tween(1), blur = Tween(0)
+    var alpha = 0.0
+    var active = false
+    var exitTime: Double?
+    var exitMedia = 0.0
+    var lastMedia = 0.0
+    var isHovered = false
+    var isVisible = true
+    let index: Int
+    var blurFilter: CIFilter?
+    private var compositorKey = ""
+    private let lighterCompositor = CIFilter(name:"CIAdditionCompositing")
+    private let darkerCompositor = CIFilter(name:"CISubtractBlendMode")
+    init(index: Int, layout: GroupTextLayout, initialY: Double, cache: GlyphCache, scale: Double, config: LyricsConfiguration, now: Double) {
+        self.index = index; self.layout = layout; y = SpringTrack(initialY,.position)
+        main = LineLayers(layout.main,cache:cache,scale:scale,config:config,previous:nil,now:now,buildContent:false)
+        background = layout.background.map { LineLayers($0,cache:cache,scale:scale,config:config,previous:nil,now:now,buildContent:false) }
+        root.anchorPoint = .zero; hover.cornerRadius = 12; hover.backgroundColor = NSColor.white.withAlphaComponent(0.07).cgColor; hover.isHidden = true
+        root.addSublayer(hover); root.addSublayer(main.root); root.addSublayer(backgroundWrapper)
+        if let background { backgroundWrapper.addSublayer(background.root) }
+        backgroundWrapper.anchorPoint = .zero
+    }
+    func updateCompositor(_ config: LyricsConfiguration) {
+        let mode: LyricsBlendMode
+        switch config.blendMode {
+        case .normal: mode = .normal
+        case .plusLighter: mode = .plusLighter
+        case .plusDarker: mode = .plusDarker
+        case .automatic:
+            mode = config.usesCoverBlurCompositing
+                ? (config.effectiveCoverBlurProfile == .darker ? .plusDarker : .plusLighter)
+                : .normal
+        }
+        guard mode.rawValue != compositorKey else { return }
+        compositorKey = mode.rawValue
+        switch mode {
+        case .plusLighter: root.compositingFilter = lighterCompositor
+        case .plusDarker: root.compositingFilter = darkerCompositor
+        case .normal, .automatic: root.compositingFilter = nil
+        }
+    }
+    func reflow(_ layout: GroupTextLayout, cache: GlyphCache, scale: Double, config: LyricsConfiguration, now: Double) {
+        let oldMain = main, oldBG = background
+        main = LineLayers(layout.main,cache:cache,scale:scale,config:config,previous:oldMain,now:now,buildContent:!oldMain.words.isEmpty)
+        background = layout.background.map { LineLayers($0,cache:cache,scale:scale,config:config,previous:oldBG,now:now,buildContent:!(oldBG?.words.isEmpty ?? true)) }
+        oldMain.root.removeFromSuperlayer(); oldBG?.root.removeFromSuperlayer()
+        root.addSublayer(main.root); if let background { backgroundWrapper.addSublayer(background.root) }
+        self.layout = layout
+    }
+    func settled(_ time: Double) -> Bool {
+        y.settled(time) && scale.settled(time) && backgroundScale.settled(time) && slide.settled(time) && opacity.settled(time) && blur.settled(time) && main.settled(time) && (background?.settled(time) ?? true) && (exitTime.map { time-$0>2 } ?? true)
+    }
+}
