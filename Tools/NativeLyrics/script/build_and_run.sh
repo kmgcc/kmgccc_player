@@ -21,9 +21,10 @@ for fixture in song.ttml audio.m4a fixture.json; do
   if [[ -f "$package_dir/.local/$fixture" ]]; then cp -X "$package_dir/.local/$fixture" "$app/Contents/Resources/"; fi
 done
 # Finder/FileProvider metadata can be reattached to nested SwiftPM bundles.
-# Clear each path immediately before signing so a stale resource fork cannot
-# make the ad hoc demo bundle fail to launch.
-find "$app" -exec xattr -c {} \; 2>/dev/null || true
+# Clear the complete bundle recursively immediately before signing; clearing
+# parents and children in a separate find pass can leave FinderInfo on a
+# nested bundle between the two operations.
+xattr -cr "$app" 2>/dev/null || true
 codesign --force --sign - "$app"
 if [[ "${1:-}" != "--build-only" ]]; then /usr/bin/open -n "$app"; fi
 echo "$app"
