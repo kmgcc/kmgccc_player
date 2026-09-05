@@ -57,7 +57,8 @@ struct NumericTimeText: View {
     }
     
     var body: some View {
-        Text(formattedTime)
+        let displayedTime = formattedTime
+        return Text(displayedTime)
             .lineLimit(1)
             .font(.system(size: fontSize, weight: fontWeight, design: .rounded))
             .monospacedDigit()
@@ -68,7 +69,7 @@ struct NumericTimeText: View {
             .if(enableTransition) { view in
                 view
                     .contentTransition(.numericText())
-                    .animation(.smooth(duration: animationDuration), value: time)
+                    .animation(.smooth(duration: animationDuration), value: displayedTime)
             }
     }
     

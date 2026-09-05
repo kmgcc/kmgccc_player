@@ -125,6 +125,11 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     @State private var bokehSourceSets: [BokehTransitionPreparedSourceSet?] = [nil, nil]
     @State private var activeTransitionMode: BokehTransitionMode = .unmaskedFallback(reason: "idle")
     @State private var isTransitionActive = false
+    /// Full-size Core Image source renders are useful only when the next
+    /// Bokeh transition can consume them. Keep them out of the track-switch
+    /// critical path and build them during an idle window instead.
+    @State private var bokehPrewarmEnabled = false
+    @State private var bokehPrewarmTask: Task<Void, Never>?
     @State private var transitionGeneration: UInt64 = 0
     @State private var transitionTask: Task<Void, Never>?
     /// Live track artwork checksum, updated in onChange. The transitionTask
@@ -169,33 +174,43 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     var body: some View {
         GeometryReader { geometry in
             let targetCentered = Self.shouldCenterArtwork(for: context)
+            let shouldMountCenteredBackground = targetCentered
+                || isTransitionActive
+                || centeredLayerOpacity > 0.001
+                || settledCenteredLayerOpacity > 0.001
+                || bokehPrewarmEnabled
+            let shouldMountTransitionBackground = isTransitionActive || bokehPrewarmEnabled
 
             ZStack {
                 staticBackground(size: geometry.size, placement: .leading)
                     .zIndex(0)
 
-                staticBackground(size: geometry.size, placement: .centeredSymmetric)
-                    // Bokeh transition targets move ahead of their rendered
-                    // presentation values. Keep the high-resolution floor at
-                    // the last completed layout until the surface retires.
-                    .opacity(Double(
-                        activeTransitionMode.usesBokeh
-                            ? settledCenteredLayerOpacity
-                            : centeredLayerOpacity
-                    ))
-                    .zIndex(1)
+                if shouldMountCenteredBackground {
+                    staticBackground(size: geometry.size, placement: .centeredSymmetric)
+                        // Bokeh transition targets move ahead of their rendered
+                        // presentation values. Keep the high-resolution floor at
+                        // the last completed layout until the surface retires.
+                        .opacity(Double(
+                            activeTransitionMode.usesBokeh
+                                ? settledCenteredLayerOpacity
+                                : centeredLayerOpacity
+                        ))
+                        .zIndex(1)
+                }
 
-                transitionBackground(size: geometry.size)
-                    .frame(
-                        width: transitionCanvasWidth(for: geometry.size),
-                        height: geometry.size.height
-                    )
-                    .offset(x: transitionCanvasOffset(for: geometry.size))
-                    // Metal already contains this moving source. Showing the
-                    // SwiftUI copy too leaves a stationary translucent ghost
-                    // when an opacity fade is interrupted.
-                    .opacity(activeTransitionMode.usesBokeh ? 0 : Double(transitionLayerOpacity))
-                    .zIndex(2)
+                if shouldMountTransitionBackground {
+                    transitionBackground(size: geometry.size)
+                        .frame(
+                            width: transitionCanvasWidth(for: geometry.size),
+                            height: geometry.size.height
+                        )
+                        .offset(x: transitionCanvasOffset(for: geometry.size))
+                        // Metal already contains this moving source. Showing the
+                        // SwiftUI copy too leaves a stationary translucent ghost
+                        // when an opacity fade is interrupted.
+                        .opacity(activeTransitionMode.usesBokeh ? 0 : Double(transitionLayerOpacity))
+                        .zIndex(2)
+                }
 
                 // Two persistent Bokeh surfaces. They are never removed from
                 // the hierarchy (only paused / alpha-zeroed when dormant) so
@@ -235,7 +250,10 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                 updateBokehViewport(newSize)
             }
         }
-        .onAppear { beginReadabilityArtwork() }
+        .onAppear {
+            beginReadabilityArtwork()
+            scheduleBokehPrewarm()
+        }
         .onChange(of: context.track?.artworkChecksum ?? 0) { _, newValue in
             latestTrackArtworkChecksum = newValue
             beginReadabilityArtwork()
@@ -246,6 +264,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
         }
         .onDisappear {
             transitionTask?.cancel()
+            bokehPrewarmTask?.cancel()
             bokehSourcePreparer.invalidate()
         }
     }
@@ -296,6 +315,12 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     private func handleArtworkChange() {
         let wasBokeh = activeTransitionMode.usesBokeh
 
+        // Do not mount the centered/overscan renderers while the new track is
+        // settling. The leading surface is the only visible SwiftUI render in
+        // this state; Bokeh sources are rebuilt after a quiet period below.
+        bokehPrewarmTask?.cancel()
+        bokehPrewarmEnabled = false
+
         // Invalidate the preparer and clear stale rendered frames / prepared
         // source sets. The new artwork's frames will arrive via
         // acceptRenderedFrame and trigger prepareBokehSourcesIfPossible for
@@ -345,6 +370,10 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                 print("[CoverBlur] artwork changed: already at target pos=\(targetPosition)")
             }
         }
+
+        if !isTransitionActive {
+            scheduleBokehPrewarm()
+        }
     }
 
     private func updateBokehViewport(_ size: CGSize) {
@@ -374,6 +403,8 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
     }
 
     private func prepareBokehSourcesIfPossible() {
+        guard bokehPrewarmEnabled, !isTransitionActive else { return }
+
         let tier = preferredBokehTier()
         let hasAllFrames = leadingRenderedFrame != nil
             && centeredRenderedFrame != nil
@@ -565,6 +596,8 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
 
     private func runLayoutTransition(to targetCentered: Bool) {
         transitionTask?.cancel()
+        bokehPrewarmTask?.cancel()
+        bokehPrewarmEnabled = false
         transitionGeneration &+= 1
         let generation = transitionGeneration
 
@@ -720,6 +753,7 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
                 bokehHandoffOpacity = 0
                 isTransitionActive = false
             }
+            scheduleBokehPrewarm()
             BokehTransitionPerformancePolicy.shared.finish()
             // Sync the base surface to the latest prepared source set for the
             // next transition and clear the overlay. Both optical opacities
@@ -856,6 +890,19 @@ private struct CoverGradientBlurSkinBackgroundBridge: View {
             return !Task.isCancelled
         } catch {
             return false
+        }
+    }
+
+    private func scheduleBokehPrewarm() {
+        bokehPrewarmTask?.cancel()
+        bokehPrewarmTask = Task { @MainActor in
+            let delay: UInt64 = context.theme.reduceMotion
+                ? 420_000_000
+                : 900_000_000
+            guard await waitForTransitionStage(nanoseconds: delay) else { return }
+            guard !Task.isCancelled, !isTransitionActive else { return }
+            bokehPrewarmEnabled = true
+            prepareBokehSourcesIfPossible()
         }
     }
 

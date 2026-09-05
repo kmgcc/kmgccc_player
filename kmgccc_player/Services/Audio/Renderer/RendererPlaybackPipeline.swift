@@ -45,7 +45,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     )
 
     static let targetAheadSeconds: Double = 1.5
-    static let chunkFrames: AVAudioFrameCount = 4096
+    static let chunkFrames: AVAudioFrameCount = 8192
+    // Visualizer analysis delivers fine-grained slices (≈23ms @ 44.1kHz)
+    // so downstream FFT/LED calculations advance continuously without burstiness.
+    static let analysisChunkFrames: Int = 1024
 
     nonisolated(unsafe) private(set) var renderer = AVSampleBufferAudioRenderer()
     let synchronizer = AVSampleBufferRenderSynchronizer()
@@ -491,7 +494,11 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
     }
 
     func stop() {
-        pipelineQueue.sync {
+        // This is called from the main-actor playback command path. Preserve
+        // ordering with the following load() through the serial queue, but do
+        // not make the UI wait for an in-flight decode or renderer flush.
+        pipelineQueue.async { [weak self] in
+            guard let self else { return }
             self.isLoaded = false
             self.isPlaybackActive = false
             self.pendingAutoFlushResync = false
@@ -502,9 +509,10 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
             self.segments.removeAll(keepingCapacity: false)
             self.decodeIndex = nil
             self.nextPresentationTime = 0
-            DispatchQueue.main.async { [weak self] in
-                self?.synchronizer.setRate(0, time: .zero)
-            }
+            // Keep the reset on the same serial queue as flush/load. Posting
+            // this back to main can let a stale stop overwrite the next
+            // track's freshly committed synchronizer anchor.
+            self.synchronizer.setRate(0, time: .zero)
         }
     }
 
@@ -596,9 +604,16 @@ nonisolated final class RendererPlaybackPipeline: @unchecked Sendable {
                     )
                     return false
                 }
-                analysisQueue.append(
-                    AnalysisChunk(presentationTime: ptsSeconds, pcm: pcm)
-                )
+                var sliceOffset = 0
+                while sliceOffset < pcm.frames {
+                    let sliceCount = min(Self.analysisChunkFrames, pcm.frames - sliceOffset)
+                    let slicePTS = ptsSeconds + (Double(sliceOffset) / source.sourceSampleRate)
+                    let slicePCM = pcm.slice(frameOffset: sliceOffset, frameCount: sliceCount)
+                    analysisQueue.append(
+                        AnalysisChunk(presentationTime: slicePTS, pcm: slicePCM)
+                    )
+                    sliceOffset += sliceCount
+                }
                 renderer.enqueue(sampleBuffer)
                 nextPresentationTime += pcm.seconds
                 return true

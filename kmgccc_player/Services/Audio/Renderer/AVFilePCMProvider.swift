@@ -23,6 +23,7 @@ nonisolated final class AVFilePCMProvider: RendererPCMProvider, @unchecked Senda
     private let rangeStart: AVAudioFramePosition
     private let rangeLength: AVAudioFramePosition
     private var currentPosition: AVAudioFramePosition = 0
+    private var decodeBuffer: AVAudioPCMBuffer?
 
     init(
         file: AVAudioFile,
@@ -55,14 +56,26 @@ nonisolated final class AVFilePCMProvider: RendererPCMProvider, @unchecked Senda
 
         let remaining = rangeLength - currentPosition
         let frames = AVAudioFrameCount(min(Int64(maxFrames), remaining))
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: processingFormat, frameCapacity: frames) else {
-            throw RendererPipelineError.sourceError(
-                underlying: NSError(domain: "AVFilePCMProvider", code: 1, userInfo: [
-                    NSLocalizedDescriptionKey: "failed to allocate PCM buffer",
-                ])
-            )
+        guard frames > 0 else { return nil }
+
+        let buffer: AVAudioPCMBuffer
+        if let decodeBuffer, decodeBuffer.frameCapacity >= frames {
+            buffer = decodeBuffer
+        } else {
+            guard let allocated = AVAudioPCMBuffer(
+                pcmFormat: processingFormat,
+                frameCapacity: frames
+            ) else {
+                throw RendererPipelineError.sourceError(
+                    underlying: NSError(domain: "AVFilePCMProvider", code: 1, userInfo: [
+                        NSLocalizedDescriptionKey: "failed to allocate PCM buffer",
+                    ])
+                )
+            }
+            decodeBuffer = allocated
+            buffer = allocated
         }
-        try file.read(into: buffer)
+        try file.read(into: buffer, frameCount: frames)
 
         guard let canonical = CMSampleBufferFactory.canonicalize(
             buffer,

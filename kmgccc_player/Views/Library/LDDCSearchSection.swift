@@ -243,6 +243,15 @@ struct LDDCSearchSection: View {
             forceRetryUnreliableSourcesForNextSearch = false
             isFetchingPreview = false
             isApplying = false
+            // Search results and previews are transient. Release their TTML
+            // strings when the editor leaves instead of keeping the last search
+            // alive in SwiftUI state across repeated sheet presentations.
+            searchResults.removeAll(keepingCapacity: false)
+            amlldbResults.removeAll(keepingCapacity: false)
+            lddcResults.removeAll(keepingCapacity: false)
+            selectedCandidate = nil
+            editableOrig = ""
+            editableTrans = ""
         }
     }
     

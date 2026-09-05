@@ -36,6 +36,8 @@ final class LyricsViewModel {
     /// offset). Local playback reads `currentTrack.lyricsTimeOffsetMs` instead.
     private var externalLyricsTimeOffsetMs: Double = 0
     private var legacyLyricsMigrationTasks: [UUID: Task<Void, Never>] = [:]
+    private var pendingTrackContentTask: Task<Void, Never>?
+    private var pendingTrackContentID: UUID?
 
     /// Whether lyrics are available.
     var hasLyrics: Bool {
@@ -84,6 +86,9 @@ final class LyricsViewModel {
         isPlaying: Bool = false,
         forceLyricsReload: Bool = false
     ) {
+        pendingTrackContentTask?.cancel()
+        pendingTrackContentTask = nil
+        pendingTrackContentID = nil
         rebindSeekCallback()
         currentTrack = track
         lastAppliedTrackId = track?.id
@@ -151,12 +156,23 @@ final class LyricsViewModel {
         rebindSeekCallback()
 
         if shouldApplyTrack(track, forceLyricsReload: forceLyricsReload) {
-            applyTrack(
-                track,
-                currentTime: currentTime,
-                isPlaying: isPlaying,
-                forceLyricsReload: forceLyricsReload
-            )
+            if let track, shouldLoadTrackContent(track) {
+                if forceLyricsReload || pendingTrackContentID != track.id {
+                    scheduleTrackContentLoad(
+                        track,
+                        currentTime: currentTime,
+                        isPlaying: isPlaying,
+                        reason: reason
+                    )
+                }
+            } else {
+                applyTrack(
+                    track,
+                    currentTime: currentTime,
+                    isPlaying: isPlaying,
+                    forceLyricsReload: forceLyricsReload
+                )
+            }
         } else {
             // Re-sync theme even if track hasn't changed (ensure latest palette)
             if let palette = ThemeStore.shared.palette {
@@ -248,16 +264,69 @@ final class LyricsViewModel {
         return lastAppliedTrackId != track?.id
     }
 
+    private func shouldLoadTrackContent(_ track: Track) -> Bool {
+        let hasCachedTTML = track.ttmlLyricText?.isEmpty == false
+        let hasCachedLyrics = track.lyricsText?.isEmpty == false
+        return !hasCachedTTML && !hasCachedLyrics
+    }
+
+    /// Prepare sidecar lyrics away from the main actor before applying a new
+    /// track. A track change can be observed by both the playback pipeline and
+    /// the flat lyrics driver, so this is centralized here to keep either path
+    /// from falling back to synchronous String(contentsOf:) I/O.
+    private func scheduleTrackContentLoad(
+        _ track: Track,
+        currentTime: TimeInterval,
+        isPlaying: Bool,
+        reason: String
+    ) {
+        pendingTrackContentTask?.cancel()
+        pendingTrackContentID = track.id
+        currentTrack = track
+        let trackID = track.id
+
+        pendingTrackContentTask = Task { @MainActor [weak self, weak track] in
+            guard let track else { return }
+
+            _ = await track.loadTTMLLyricsOffMainIfNeeded()
+            _ = await track.loadLyricsOffMainIfNeeded()
+
+            // Give the control release transaction a render opportunity before
+            // AMLL receives a potentially large new lyric document.
+            try? await Task.sleep(for: .milliseconds(40))
+            guard !Task.isCancelled,
+                  let self,
+                  self.currentTrack?.id == trackID
+            else { return }
+
+            self.pendingTrackContentTask = nil
+            self.pendingTrackContentID = nil
+            self.applyTrack(
+                track,
+                currentTime: currentTime,
+                isPlaying: isPlaying,
+                forceLyricsReload: true
+            )
+            Log.debug(
+                "[LyricsVM] applied sidecar lyrics after off-main preparation: reason=\(reason), trackId=\(trackID.uuidString.prefix(8))",
+                category: .lyrics
+            )
+        }
+    }
+
     private func getContentForTrack(_ track: Track?, currentTime: TimeInterval = 0, isPlaying: Bool = false) -> String {
         guard let track = track else { return "" }
         let opToken = FirstUseHitchDiagnostics.begin("LyricsVM.getContent", detail: "track=\(FirstUseHitchDiagnostics.trackIDPrefix(track.id))")
         defer { FirstUseHitchDiagnostics.end(opToken) }
 
-        if let t1 = LyricsFormatSupport.normalizedTTMLText(track.loadTTMLLyricsIfNeeded()) {
+        // Disk-backed content is loaded by scheduleTrackContentLoad(). This
+        // method is also reached from SwiftUI body evaluation, so it must stay
+        // memory-only on the main actor.
+        if let t1 = LyricsFormatSupport.normalizedTTMLText(track.ttmlLyricText) {
             return t1
         }
 
-        if let legacy = nonEmptyLyricsText(track.lyricsText ?? track.loadLyricsIfNeeded()) {
+        if let legacy = nonEmptyLyricsText(track.lyricsText) {
             if let ttml = LyricsFormatSupport.normalizedTTMLText(legacy) {
                 track.ttmlLyricText = ttml
                 track.lyricsText = nil

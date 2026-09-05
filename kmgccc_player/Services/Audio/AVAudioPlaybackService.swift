@@ -1083,11 +1083,18 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             category: .audio
         )
 
+        let isRestoringPaused = (restorePausedGeneration != nil)
+        let shouldKeepPlaying = isPlaying || !isRestoringPaused
+
         // Stop current audio immediately (matches "switch track = stop now").
         // stopPlayback runs invalidatePreparation() — bumping playGeneration and
         // cancelling any in-flight prepare — and clears currentTrack/audioFile +
         // releases the old file's security scope.
-        stopPlayback(clearQueue: false)
+        stopPlayback(clearQueue: false, keepPlayingState: shouldKeepPlaying)
+
+        if shouldKeepPlaying {
+            isPlaying = true
+        }
 
         // Adopt the generation stopPlayback just bumped. There is NO second bump
         // here on purpose (see invalidatePreparation()): this request owns the
@@ -1443,12 +1450,12 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     }
 
     func stop() {
-        stopPlayback(clearQueue: true)
+        stopPlayback(clearQueue: true, keepPlayingState: false)
     }
 
-    private func stopPlayback(clearQueue: Bool) {
+    private func stopPlayback(clearQueue: Bool, keepPlayingState: Bool = false) {
         Log.info(
-            "[PlaybackPipeline] stopPlayback clearQueue=\(clearQueue) currentTrack=\(currentTrack?.id.uuidString ?? "nil") operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
+            "[PlaybackPipeline] stopPlayback clearQueue=\(clearQueue) keepPlaying=\(keepPlayingState) currentTrack=\(currentTrack?.id.uuidString ?? "nil") operation=\(FirstUseHitchDiagnostics.currentOperationStack())",
             category: .audio
         )
         // Drop any armed paused-restore intent: a new load is taking over.
@@ -1474,7 +1481,9 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         stopProgressTimer()
         stopAccessingCurrentFile()
 
-        isPlaying = false
+        if !keepPlayingState {
+            isPlaying = false
+        }
         currentTime = 0
         duration = 0
         currentTrack = nil

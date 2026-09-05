@@ -133,6 +133,13 @@ struct TrackInfoEditorCore: View {
             lyricsValidationTask?.cancel()
             lyricsValidationTask = nil
             coverCoordinator?.cancelSearch()
+            // Search results contain the downloaded cover bytes. They are
+            // transient editor state and must not survive dismissal while the
+            // sheet's SwiftUI state is retained for a later presentation.
+            coverCoordinator?.clear()
+            metadataCandidates.removeAll(keepingCapacity: false)
+            artworkPreviewImage = nil
+            artworkPreviewSourceIdentity = nil
         }
         .onChange(of: coverCoordinator?.selectedForPreview) { _, newValue in
             if let candidate = newValue {
@@ -941,6 +948,7 @@ private nonisolated enum TrackInfoArtworkPreviewDecoder {
     private nonisolated(unsafe) static let previewCache: NSCache<NSString, TrackInfoArtworkPreviewImage> = {
         let cache = NSCache<NSString, TrackInfoArtworkPreviewImage>()
         cache.countLimit = 96
+        cache.totalCostLimit = 32 * 1024 * 1024
         return cache
     }()
 
@@ -1012,7 +1020,11 @@ private nonisolated enum TrackInfoArtworkPreviewDecoder {
                 sourcePixelHeight: sourceHeight
             )
         )
-        previewCache.setObject(result.image, forKey: identity as NSString)
+        previewCache.setObject(
+            result.image,
+            forKey: identity as NSString,
+            cost: cgImage.bytesPerRow * cgImage.height
+        )
         return result
     }
 }

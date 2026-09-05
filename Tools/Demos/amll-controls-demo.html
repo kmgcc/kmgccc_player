@@ -1,0 +1,1059 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Apple Music 复合弹簧物理动画验证 (增强回弹与参数调谐)</title>
+    <style>
+        :root {
+            --anim-speed: 1;
+            --btn-hover: rgba(255, 255, 255, 0.12);
+            --btn-active: rgba(255, 255, 255, 0.22);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", sans-serif;
+            background: #09090e;
+            color: #fff;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* 动态背景光晕 */
+        .ambient-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        .blob {
+            position: absolute;
+            width: 540px;
+            height: 540px;
+            border-radius: 50%;
+            filter: blur(130px);
+            opacity: 0.35;
+            animation: float 16s infinite alternate ease-in-out;
+        }
+
+        .blob-1 { background: #ff2d55; top: 10%; left: 16%; }
+        .blob-2 { background: #5856d6; bottom: 10%; right: 18%; animation-delay: -6s; }
+
+        @keyframes float {
+            0% { transform: translate(0, 0) scale(1); }
+            100% { transform: translate(70px, 45px) scale(1.18); }
+        }
+
+        .container {
+            position: relative;
+            z-index: 1;
+            max-width: 820px;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 24px;
+        }
+
+        .header {
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 26px;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            margin-bottom: 6px;
+        }
+
+        .header p {
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.65);
+        }
+
+        .stage-card {
+            background: rgba(255, 255, 255, 0.08);
+            backdrop-filter: blur(50px) saturate(190%);
+            -webkit-backdrop-filter: blur(50px) saturate(190%);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 28px;
+            padding: 40px 56px;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 28px;
+            box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+        }
+
+        .track-info {
+            text-align: center;
+        }
+
+        .track-title {
+            font-size: 22px;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+
+        .track-status {
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.55);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .status-pill {
+            background: rgba(255, 255, 255, 0.12);
+            padding: 3px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            color: #fff;
+            font-weight: 500;
+        }
+
+        /* 控件行 */
+        .controls-row {
+            display: flex;
+            justify-content: space-evenly;
+            align-items: center;
+            width: 100%;
+            max-width: 440px;
+        }
+
+        /* 圆形媒体按键底座 */
+        .media-btn {
+            width: 76px;
+            height: 76px;
+            aspect-ratio: 1 / 1;
+            border-radius: 50%;
+            border: none;
+            background-color: transparent;
+            color: #ffffff;
+            cursor: pointer;
+            outline: none;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            padding: 0;
+            transition: background-color 0.25s ease;
+        }
+
+        .media-btn:hover {
+            background-color: var(--btn-hover);
+        }
+
+        .media-btn:active {
+            background-color: var(--btn-active);
+        }
+
+        /* 符号容器与图层 */
+        .symbol-stage {
+            position: relative;
+            width: 56px;
+            height: 56px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            pointer-events: none;
+        }
+
+        .symbol-wrapper {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+            transform-origin: center;
+            -webkit-backface-visibility: hidden;
+            backface-visibility: hidden;
+        }
+
+        .symbol-wrapper svg {
+            width: 52px;
+            height: 52px;
+            overflow: visible;
+            pointer-events: none;
+            shape-rendering: geometricPrecision;
+            text-rendering: geometricPrecision;
+            image-rendering: -webkit-optimize-contrast;
+        }
+
+        .symbol-wrapper svg path {
+            shape-rendering: geometricPrecision;
+        }
+
+        /* 上一曲 / 下一曲 */
+        .nav-icon-wrapper {
+            width: 70px;
+            height: 70px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            pointer-events: none;
+            transform-origin: center;
+        }
+
+        .nav-icon {
+            width: 70px;
+            height: 70px;
+            overflow: visible;
+            shape-rendering: geometricPrecision;
+            text-rendering: geometricPrecision;
+            pointer-events: none;
+        }
+
+        .nav-icon path {
+            shape-rendering: geometricPrecision;
+        }
+
+        /* AMLL 原版三箭头接力 */
+        .anim-forward .amll-forward-left-arrow {
+            animation: amll-forward-left-end calc(0.6s * var(--anim-speed)) cubic-bezier(0.4, 1.51, 0.4, 1) forwards;
+        }
+        .anim-forward .amll-forward-right-arrow {
+            animation: amll-forward-right-end calc(0.2s * var(--anim-speed)) ease-out forwards;
+            transform-origin: 81% 50%;
+        }
+        .anim-forward .amll-forward-left-standby {
+            animation: amll-forward-left-new calc(0.6s * var(--anim-speed)) cubic-bezier(0.4, 1.51, 0.4, 1) forwards;
+            transform-origin: 22% 50%;
+        }
+
+        @keyframes amll-forward-left-end { 100% { transform: translateX(40px); } }
+        @keyframes amll-forward-right-end { 100% { transform: scale(0); opacity: 0; } }
+        @keyframes amll-forward-left-new {
+            0% { transform: scale(0) translateX(-15px); opacity: 0; }
+            100% { transform: scale(1) translateX(0px); opacity: 1; }
+        }
+
+        .anim-rewind .amll-rewind-right-arrow {
+            animation: amll-rewind-right-end calc(0.6s * var(--anim-speed)) cubic-bezier(0.4, 1.51, 0.4, 1) forwards;
+        }
+        .anim-rewind .amll-rewind-left-arrow {
+            animation: amll-rewind-left-end calc(0.2s * var(--anim-speed)) ease-out forwards;
+            transform-origin: 19% 50%;
+        }
+        .anim-rewind .amll-rewind-right-standby {
+            animation: amll-rewind-right-new calc(0.6s * var(--anim-speed)) cubic-bezier(0.4, 1.51, 0.4, 1) forwards;
+            transform-origin: 78% 50%;
+        }
+
+        @keyframes amll-rewind-right-end { 100% { transform: translateX(-40px); } }
+        @keyframes amll-rewind-left-end { 100% { transform: scale(0); opacity: 0; } }
+        @keyframes amll-rewind-right-new {
+            0% { transform: scale(0) translateX(15px); opacity: 0; }
+            100% { transform: scale(1) translateX(0px); opacity: 1; }
+        }
+
+        /* 调试与调速面板 */
+        .debug-panel {
+            background: rgba(0, 0, 0, 0.45);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 20px;
+            padding: 24px;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .panel-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: rgba(255, 255, 255, 0.9);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        /* 实时物理曲线监控图 */
+        .canvas-container {
+            width: 100%;
+            height: 95px;
+            background: rgba(0, 0, 0, 0.35);
+            border-radius: 10px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            overflow: hidden;
+            position: relative;
+        }
+
+        .canvas-container canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .canvas-label {
+            position: absolute;
+            top: 6px;
+            left: 10px;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.5);
+            pointer-events: none;
+        }
+
+        .canvas-stats {
+            position: absolute;
+            top: 6px;
+            right: 10px;
+            font-size: 11px;
+            color: #30d158;
+            font-family: "SF Mono", monospace;
+            pointer-events: none;
+        }
+
+        /* 弹簧参数控制器 */
+        .spring-tuner {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 14px;
+            padding: 14px 18px;
+        }
+
+        .tuner-item {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .tuner-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.75);
+        }
+
+        .tuner-val {
+            font-family: "SF Mono", monospace;
+            color: #007aff;
+            font-weight: 600;
+        }
+
+        .tuner-slider {
+            -webkit-appearance: none;
+            width: 100%;
+            height: 4px;
+            border-radius: 2px;
+            background: rgba(255, 255, 255, 0.15);
+            outline: none;
+        }
+
+        .tuner-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #007aff;
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+            transition: transform 0.1s;
+        }
+
+        .tuner-slider::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+        }
+
+        /* 预设档位按钮 */
+        .preset-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .preset-btn {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 8px;
+            color: #fff;
+            padding: 5px 12px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .preset-btn.active {
+            background: #007aff;
+            border-color: #007aff;
+            font-weight: 600;
+        }
+
+        .speed-controller {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 13px;
+            color: rgba(255, 255, 255, 0.7);
+        }
+
+        .speed-buttons {
+            display: flex;
+            gap: 8px;
+        }
+
+        .speed-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 8px;
+            color: #fff;
+            padding: 4px 12px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .speed-btn.active {
+            background: #34c759;
+            border-color: #34c759;
+            font-weight: 600;
+        }
+
+        .explanation {
+            font-size: 13px;
+            line-height: 1.65;
+            color: rgba(255, 255, 255, 0.82);
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 14px;
+            padding: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .explanation code {
+            background: rgba(255, 255, 255, 0.12);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: "SF Mono", monospace;
+            font-size: 12px;
+            color: #ff375f;
+        }
+
+        .badge {
+            background: rgba(52, 199, 89, 0.2);
+            color: #34c759;
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+    </style>
+</head>
+<body>
+    <div class="ambient-bg">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+    </div>
+
+    <div class="container">
+        <div class="header">
+            <h1>Apple Music 复合弹簧物理动画验证 (回弹增强版)</h1>
+            <p>基于 WWDC23 官方二阶常微分方程，已调优回冲回弹与初速度，并提供实时参数滑块</p>
+        </div>
+
+        <div class="stage-card">
+            <div class="track-info">
+                <div class="track-title" id="trackTitle">Apple Music 触感物理测试曲</div>
+                <div class="track-status">
+                    <span>当前状态：</span>
+                    <span class="status-pill" id="statusPill">已暂停 (显示播放三角形)</span>
+                </div>
+            </div>
+
+            <!-- 控制按钮行 -->
+            <div class="controls-row">
+                <!-- 上一曲 -->
+                <button class="media-btn" id="btnPrev" title="上一曲">
+                    <div class="nav-icon-wrapper" id="prevWrapper">
+                        <svg class="nav-icon" id="svgRewind" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 134 134" fill="currentColor">
+                            <path class="amll-rewind-right-arrow"
+                                d="M72 60.0717C68.062 62.3453 66.0931 63.4821 65.4323 64.9662C64.8559 66.2608 64.8559 67.7391 65.4323 69.0336C66.0931 70.5177 68.062 71.6545 72 73.9281L93 86.0525C96.938 88.326 98.9069 89.4628 100.523 89.293C101.932 89.1449 103.212 88.4057 104.045 87.2593C105 85.945 105 83.6714 105 79.1243V54.8755C105 50.3284 105 48.0548 104.045 46.7405C103.212 45.5941 101.932 44.8549 100.523 44.7068C98.9069 44.537 96.938 45.6738 93 47.9473L72 60.0717Z" />
+                            <path class="amll-rewind-right-standby"
+                                d="M72 60.0717C68.062 62.3453 66.0931 63.4821 65.4323 64.9662C64.8559 66.2608 64.8559 67.7391 65.4323 69.0336C66.0931 70.5177 68.062 71.6545 72 73.9281L93 86.0525C96.938 88.326 98.9069 89.4628 100.523 89.293C101.932 89.1449 103.212 88.4057 104.045 87.2593C105 85.945 105 83.6714 105 79.1243V54.8755C105 50.3284 105 48.0548 104.045 46.7405C103.212 45.5941 101.932 44.8549 100.523 44.7068C98.9069 44.537 96.938 45.6738 93 47.9473L72 60.0717Z" />
+                            <path class="amll-rewind-left-arrow"
+                                d="M32 60.0717C28.062 62.3453 26.0931 63.4821 25.4323 64.9662C24.8559 66.2608 24.8559 67.7391 25.4323 69.0336C26.0931 70.5177 28.062 71.6545 32 73.9281L53 86.0525C56.938 88.326 58.9069 89.4628 60.5226 89.293C61.9319 89.1449 63.2122 88.4057 64.0451 87.2593C65 85.945 65 83.6714 65 79.1243V54.8755C65 50.3284 65 48.0548 64.0451 46.7405C63.2122 45.5941 61.9319 44.8549 60.5226 44.7068C58.9069 44.537 56.938 45.6738 53 47.9473L32 60.0717Z" />
+                        </svg>
+                    </div>
+                </button>
+
+                <!-- 核心：播放 / 暂停主按钮 (由物理弹簧引擎直接驱动浮点坐标) -->
+                <button class="media-btn" id="btnPlayPause" title="长按捏紧，移出平滑弹回，松开物理交替">
+                    <div class="symbol-stage">
+                        <!-- 播放符号 -->
+                        <div id="playWrapper" class="symbol-wrapper">
+                            <svg viewBox="0 0 38 38" fill="currentColor">
+                                <path d="M5.80762 32.4896V5.4925C5.80762 4.305 6.12305 3.41438 6.75391 2.82063C7.38477 2.22688 8.13932 1.93 9.01758 1.93C9.78451 1.93 10.5391 2.14029 11.2812 2.56086L33.7324 15.6605C34.5859 16.1553 35.223 16.6562 35.6436 17.1634C36.0641 17.6582 36.2744 18.2705 36.2744 19.0003C36.2744 19.7054 36.0641 20.3177 35.6436 20.8372C35.223 21.3444 34.5859 21.8392 33.7324 22.3216L11.2812 35.4212C10.5391 35.8542 9.78451 36.0706 9.01758 36.0706C8.13932 36.0706 7.38477 35.7676 6.75391 35.1614C6.12305 34.5677 5.80762 33.6771 5.80762 32.4896Z"/>
+                            </svg>
+                        </div>
+
+                        <!-- 暂停符号 -->
+                        <div id="pauseWrapper" class="symbol-wrapper">
+                            <svg viewBox="0 0 38 38" fill="currentColor">
+                                <path d="M8.46953 37C7.37801 37 6.56603 36.7271 6.03359 36.1814C5.51445 35.6489 5.25488 34.8502 5.25488 33.7854V4.21464C5.25488 3.14975 5.52111 2.35108 6.05355 1.81864C6.59931 1.27288 7.40463 1 8.46953 1H13.3813C14.4329 1 15.2249 1.27288 15.7574 1.81864C16.3031 2.35108 16.576 3.14975 16.576 4.21464V33.7854C16.576 34.8502 16.3031 35.6489 15.7574 36.1814C15.2249 36.7271 14.4329 37 13.3813 37H8.46953ZM24.6426 37C23.5644 37 22.759 36.7271 22.2266 36.1814C21.6942 35.6489 21.4279 34.8502 21.4279 33.7854V4.21464C21.4279 3.14975 21.6942 2.35108 22.2266 1.81864C22.7724 1.27288 23.5777 1 24.6426 1H29.5544C30.6193 1 31.4179 1.27288 31.9504 1.81864C32.4828 2.35108 32.7491 3.14975 32.7491 4.21464V33.7854C32.7491 34.8502 32.4828 35.6489 31.9504 36.1814C31.4179 36.7271 30.6193 37 29.5544 37H24.6426Z"/>
+                            </svg>
+                        </div>
+                    </div>
+                </button>
+
+                <!-- 下一曲 -->
+                <button class="media-btn" id="btnNext" title="下一曲">
+                    <div class="nav-icon-wrapper" id="nextWrapper">
+                        <svg class="nav-icon" id="svgForward" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 134 134" fill="currentColor">
+                            <path class="amll-forward-left-arrow"
+                                d="M62 60.0717C65.938 62.3453 67.9069 63.4821 68.5677 64.9662C69.1441 66.2608 69.1441 67.7391 68.5677 69.0336C67.9069 70.5177 65.938 71.6545 62 73.9281L41 86.0525C37.062 88.326 35.0931 89.4628 33.4774 89.293C32.0681 89.1449 30.7878 88.4057 29.9549 87.2593C29 85.945 29 83.6714 29 79.1243V54.8755C29 50.3284 29 48.0548 29.9549 46.7405C30.7878 45.5941 32.0681 44.8549 33.4774 44.7068C35.0931 44.537 37.062 45.6738 41 47.9473L62 60.0717Z" />
+                            <path class="amll-forward-left-standby"
+                                d="M62 60.0717C65.938 62.3453 67.9069 63.4821 68.5677 64.9662C69.1441 66.2608 69.1441 67.7391 68.5677 69.0336C67.9069 70.5177 65.938 71.6545 62 73.9281L41 86.0525C37.062 88.326 35.0931 89.4628 33.4774 89.293C32.0681 89.1449 30.7878 88.4057 29.9549 87.2593C29 85.945 29 83.6714 29 79.1243V54.8755C29 50.3284 29 48.0548 29.9549 46.7405C30.7878 45.5941 32.0681 44.8549 33.4774 44.7068C35.0931 44.537 37.062 45.6738 41 47.9473L62 60.0717Z" />
+                            <path class="amll-forward-right-arrow"
+                                d="M102 60.0717C105.938 62.3453 107.907 63.4821 108.568 64.9662C109.144 66.2608 109.144 67.7391 108.568 69.0336C107.907 70.5177 105.938 71.6545 102 73.9281L81 86.0525C77.062 88.326 75.0931 89.4628 73.4774 89.293C72.0681 89.1449 70.7878 88.4057 69.9549 87.2593C69 85.945 69 83.6714 69 79.1243V54.8755C69 50.3284 69 48.0548 69.9549 46.7405C70.7878 45.5941 72.0681 44.8549 73.4774 44.7068C75.0931 44.537 77.062 45.6738 81 47.9473L102 60.0717Z" />
+                        </svg>
+                    </div>
+                </button>
+            </div>
+        </div>
+
+        <!-- 调速与原理解析面板 -->
+        <div class="debug-panel">
+            <div class="panel-title">
+                <span>WWDC23 弹簧模型实时轨迹监控</span>
+                <span class="badge">二阶常微分方程实时求解</span>
+            </div>
+
+            <!-- 示波器 -->
+            <div class="canvas-container">
+                <div class="canvas-label">Scale 运动轨迹实时示波器 (虚线 = 目标值 1.0)</div>
+                <div class="canvas-stats" id="scopeStats">峰值过冲: +8% (Scale 1.08) &nbsp;|&nbsp; 回冲回踩: -1% (Scale 0.99)</div>
+                <canvas id="springCanvas"></canvas>
+            </div>
+
+            <!-- 弹簧参数实时调节器 -->
+            <div class="spring-tuner">
+                <div class="tuner-item">
+                    <div class="tuner-header">
+                        <span>Bounce 弹性系数 (影响过冲峰值与回弹凹陷幅度)</span>
+                        <span class="tuner-val" id="valBounce">0.32 (最终定案黄金触感)</span>
+                    </div>
+                    <input type="range" class="tuner-slider" id="sliderBounce" min="0.10" max="0.75" step="0.01" value="0.32">
+                </div>
+
+                <div class="tuner-item">
+                    <div class="tuner-header">
+                        <span>Duration 感官周期 (影响动作时长与振荡频率)</span>
+                        <span class="tuner-val" id="valDuration">0.38s</span>
+                    </div>
+                    <input type="range" class="tuner-slider" id="sliderDuration" min="0.25" max="0.80" step="0.01" value="0.38">
+                </div>
+            </div>
+
+            <!-- 快捷预设 -->
+            <div class="preset-row">
+                <span style="font-size: 12px; color: rgba(255,255,255,0.65);">手感预设：</span>
+                <button class="preset-btn" data-b="0.20" data-d="0.35">微弹克制 (Bounce 0.20)</button>
+                <button class="preset-btn active" data-b="0.32" data-d="0.38">Apple 黄金手感 (Bounce 0.32)</button>
+                <button class="preset-btn" data-b="0.45" data-d="0.40">饱满弹性 (Bounce 0.45)</button>
+                <button class="preset-btn" data-b="0.60" data-d="0.44">强劲 Q 弹 (Bounce 0.60)</button>
+            </div>
+
+            <div class="speed-controller">
+                <span>动效播放速度：</span>
+                <div class="speed-buttons">
+                    <button class="speed-btn active" data-speed="1">1.0x 真实手感</button>
+                    <button class="speed-btn" data-speed="2">0.5x 慢速细节</button>
+                    <button class="speed-btn" data-speed="4">0.25x 逐帧观察</button>
+                </div>
+            </div>
+
+            <div class="explanation">
+                <strong>Apple Music 物理动效定案要点：</strong><br>
+                1. <strong>黄金手感参数定案</strong>：<code>Bounce: 0.32, Duration: 0.38s</code>。交接延迟定格在 <code>40ms</code>，整体响应紧凑轻快、手感利落，兼具自然微幅物理过冲（Scale 1.08）与微弹归位；<br>
+                2. <strong>三箭头接力动画</strong>：保留 AMLL 纯净的硬件加速连续贝塞尔曲线 <code>cubic-bezier(0.4, 1.51, 0.4, 1)</code> 与 <code>ease-out</code>，极致平滑毫无卡顿；<br>
+                3. <strong>全平台原生移植基础</strong>：所有弹簧参数完全兼容 Apple WWDC23 官方物理常微分方程模型，可 1:1 无损迁移至原生 SwiftUI <code>.spring(duration: 0.38, bounce: 0.32)</code>！
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // =========================================================================
+        // WWDC23 "Animate with springs" 官方标准弹簧物理求解器
+        // =========================================================================
+        class WWDC23Spring {
+            constructor(duration = 0.44, bounce = 0.32) {
+                this.duration = duration;
+                this.bounce = bounce;
+                this.w0 = (2 * Math.PI) / duration; // 自然角频率
+                this.zeta = Math.max(0, 1 - bounce); // 阻尼比
+                this.gamma = this.zeta * this.w0; // 衰减系数
+                if (this.zeta < 1) {
+                    this.wd = this.w0 * Math.sqrt(1 - this.zeta * this.zeta); // 阻尼角频率
+                } else {
+                    this.wd = 0;
+                }
+            }
+
+            evaluate(t, initial, target, v0 = 0) {
+                if (t <= 0) return initial;
+                const delta = initial - target;
+                const decay = Math.exp(-this.gamma * t);
+
+                if (this.zeta < 1) {
+                    const cos = Math.cos(this.wd * t);
+                    const sin = Math.sin(this.wd * t);
+                    const c2 = (v0 + this.gamma * delta) / this.wd;
+                    return target + decay * (delta * cos + c2 * sin);
+                } else {
+                    return target + decay * (delta + (v0 + this.gamma * delta) * t);
+                }
+            }
+
+            velocity(t, initial, target, v0 = 0) {
+                if (t <= 0) return v0;
+                const delta = initial - target;
+                const decay = Math.exp(-this.gamma * t);
+
+                if (this.zeta < 1) {
+                    const cos = Math.cos(this.wd * t);
+                    const sin = Math.sin(this.wd * t);
+                    const c2 = (v0 + this.gamma * delta) / this.wd;
+                    return decay * (
+                        (-this.gamma * (delta * cos + c2 * sin)) +
+                        (-delta * this.wd * sin + c2 * this.wd * cos)
+                    );
+                } else {
+                    const c2 = v0 + this.gamma * delta;
+                    return decay * (c2 - this.gamma * (delta + c2 * t));
+                }
+            }
+        }
+
+        // =========================================================================
+        // 状态与全局参数
+        // =========================================================================
+        let isPlaying = false;
+        let animSpeed = 1;
+
+        // 用户可调参数（最终定案参数 Bounce: 0.32, Duration: 0.38s）
+        let userBounce = 0.32;
+        let userDuration = 0.38;
+
+        const btnPlayPause = document.getElementById("btnPlayPause");
+        const playWrapper = document.getElementById("playWrapper");
+        const pauseWrapper = document.getElementById("pauseWrapper");
+        const statusPill = document.getElementById("statusPill");
+
+        const btnPrev = document.getElementById("btnPrev");
+        const btnNext = document.getElementById("btnNext");
+        const prevWrapper = document.getElementById("prevWrapper");
+        const nextWrapper = document.getElementById("nextWrapper");
+
+        const sliderBounce = document.getElementById("sliderBounce");
+        const sliderDuration = document.getElementById("sliderDuration");
+        const valBounce = document.getElementById("valBounce");
+        const valDuration = document.getElementById("valDuration");
+        const scopeStats = document.getElementById("scopeStats");
+
+        // 示波器画布
+        const canvas = document.getElementById("springCanvas");
+        const ctx = canvas.getContext("2d");
+        let chartData = [];
+        let maxRecorded = 1.0;
+        let minRecorded = 1.0;
+
+        function resizeCanvas() {
+            canvas.width = canvas.parentElement.clientWidth * window.devicePixelRatio;
+            canvas.height = canvas.parentElement.clientHeight * window.devicePixelRatio;
+        }
+        window.addEventListener("resize", resizeCanvas);
+        resizeCanvas();
+
+        function resetScope() {
+            chartData = [];
+            maxRecorded = 1.0;
+            minRecorded = 1.0;
+        }
+
+        function drawScope(currentVal) {
+            chartData.push(currentVal);
+            if (currentVal > maxRecorded) {
+                maxRecorded = currentVal;
+            }
+            if (maxRecorded > 1.03 && currentVal < minRecorded) {
+                minRecorded = currentVal;
+            }
+            if (chartData.length > 280) chartData.shift();
+
+            const overPct = Math.round((maxRecorded - 1) * 100);
+            const dipPct = Math.round((1 - minRecorded) * 100);
+            let statsHtml = `峰值过冲: <span style="color:#34c759;font-weight:700;">+${overPct}% (Scale ${maxRecorded.toFixed(2)})</span>`;
+            if (dipPct > 0) {
+                statsHtml += ` &nbsp;|&nbsp; 回冲回踩: <span style="color:#ff9500;font-weight:700;">-${dipPct}% (Scale ${minRecorded.toFixed(2)})</span>`;
+            }
+            scopeStats.innerHTML = statsHtml;
+
+            const w = canvas.width;
+            const h = canvas.height;
+            ctx.clearRect(0, 0, w, h);
+
+            // 目标基准线 1.0
+            const targetY = h * 0.52;
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
+            ctx.lineWidth = 1 * window.devicePixelRatio;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            ctx.moveTo(0, targetY);
+            ctx.lineTo(w, targetY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            ctx.fillStyle = "rgba(255, 255, 255, 0.4)";
+            ctx.font = `${10 * window.devicePixelRatio}px -apple-system, sans-serif`;
+            ctx.fillText("1.00 标称基准", 6 * window.devicePixelRatio, targetY - 4 * window.devicePixelRatio);
+
+            // 过冲峰值辅助线
+            if (maxRecorded > 1.03) {
+                const peakY = targetY - (maxRecorded - 1.0) * (h * 0.52);
+                ctx.strokeStyle = "rgba(52, 199, 89, 0.35)";
+                ctx.setLineDash([2, 3]);
+                ctx.beginPath();
+                ctx.moveTo(0, peakY);
+                ctx.lineTo(w, peakY);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.fillStyle = "rgba(52, 199, 89, 0.85)";
+                ctx.fillText(`+${overPct}% 峰值过冲`, w - 95 * window.devicePixelRatio, peakY - 3 * window.devicePixelRatio);
+            }
+
+            // 回踩波谷辅助线
+            if (minRecorded < 0.98) {
+                const dipY = targetY - (minRecorded - 1.0) * (h * 0.52);
+                ctx.strokeStyle = "rgba(255, 149, 0, 0.35)";
+                ctx.setLineDash([2, 3]);
+                ctx.beginPath();
+                ctx.moveTo(0, dipY);
+                ctx.lineTo(w, dipY);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.fillStyle = "rgba(255, 149, 0, 0.85)";
+                ctx.fillText(`-${dipPct}% 回弹波谷`, w - 95 * window.devicePixelRatio, dipY + 12 * window.devicePixelRatio);
+            }
+
+            // 弹簧轨迹
+            if (chartData.length < 2) return;
+            const grad = ctx.createLinearGradient(0, 0, w, 0);
+            grad.addColorStop(0, "#007aff");
+            grad.addColorStop(1, "#5ac8fa");
+            ctx.strokeStyle = grad;
+            ctx.lineWidth = 2.5 * window.devicePixelRatio;
+            ctx.beginPath();
+            const step = w / 280;
+            for (let i = 0; i < chartData.length; i++) {
+                const y = targetY - (chartData[i] - 1.0) * (h * 0.52);
+                const x = i * step;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+
+        // =========================================================================
+        // 单符号弹簧状态机驱动器 (修复初速度初值缓存 bug)
+        // =========================================================================
+        class SpringPropertyAnimator {
+            constructor(element) {
+                this.el = element;
+                this.scale = 1.0;
+                this.opacity = 1.0;
+                this.currentVelocity = 0.0;
+                this.animId = null;
+                this.startTime = 0;
+                this.initialScale = 1.0;
+                this.targetScale = 1.0;
+                this.initialVelocity = 0.0;
+                this.spring = null;
+                this.initialOpacity = 1.0;
+                this.targetOpacity = 1.0;
+                this.onFinish = null;
+            }
+
+            setImmediate(scale, opacity) {
+                if (this.animId) cancelAnimationFrame(this.animId);
+                this.scale = scale;
+                this.opacity = opacity;
+                this.currentVelocity = 0;
+                this.initialVelocity = 0;
+                this.apply();
+            }
+
+            animateTo(targetScale, targetOpacity, spring, initialVel = null, onFinish = null) {
+                if (this.animId) cancelAnimationFrame(this.animId);
+                this.initialScale = this.scale;
+                this.targetScale = targetScale;
+                this.initialOpacity = this.opacity;
+                this.targetOpacity = targetOpacity;
+                this.spring = spring;
+                this.initialVelocity = (initialVel !== null) ? initialVel : this.currentVelocity;
+                this.onFinish = onFinish;
+                this.startTime = performance.now();
+
+                const loop = (now) => {
+                    const elapsed = ((now - this.startTime) / 1000) / animSpeed;
+                    
+                    // 严格使用动画启动瞬间捕获的固定 initialVelocity 进行二阶微分求解
+                    this.scale = this.spring.evaluate(elapsed, this.initialScale, this.targetScale, this.initialVelocity);
+                    this.currentVelocity = this.spring.velocity(elapsed, this.initialScale, this.targetScale, this.initialVelocity);
+
+                    // 不透明度平滑过渡
+                    const progress = Math.min(elapsed / (this.spring.duration * 0.6), 1);
+                    this.opacity = this.initialOpacity + (this.targetOpacity - this.initialOpacity) * progress;
+
+                    this.apply();
+                    drawScope(this.scale);
+
+                    // 稳定条件判定: 依据阻尼包络线振幅或时间
+                    const delta = this.initialScale - this.targetScale;
+                    const c2 = (this.initialVelocity + this.spring.gamma * delta) / (this.spring.wd || 1);
+                    const envelope = (this.spring.zeta < 1)
+                        ? Math.exp(-this.spring.gamma * elapsed) * Math.sqrt(delta * delta + c2 * c2)
+                        : Math.abs(this.scale - this.targetScale);
+
+                    if ((envelope < 0.002 && elapsed > this.spring.duration * 0.8) || elapsed > this.spring.duration * 3.0) {
+                        this.scale = this.targetScale;
+                        this.opacity = this.targetOpacity;
+                        this.currentVelocity = 0;
+                        this.apply();
+                        if (this.onFinish) this.onFinish();
+                        return;
+                    }
+
+                    this.animId = requestAnimationFrame(loop);
+                };
+
+                this.animId = requestAnimationFrame(loop);
+            }
+
+            apply() {
+                this.el.style.transform = `scale(${Math.max(0, this.scale)}) translateZ(0)`;
+                this.el.style.opacity = Math.max(0, Math.min(1, this.opacity));
+                this.el.style.visibility = (this.scale > 0.001 && this.opacity > 0.001) ? "visible" : "hidden";
+            }
+        }
+
+        const playAnimator = new SpringPropertyAnimator(playWrapper);
+        const pauseAnimator = new SpringPropertyAnimator(pauseWrapper);
+
+        playAnimator.setImmediate(1.0, 1.0);
+        pauseAnimator.setImmediate(0.0, 0.0);
+
+        function getActiveAndNextAnimators() {
+            return isPlaying
+                ? { current: pauseAnimator, next: playAnimator }
+                : { current: playAnimator, next: pauseAnimator };
+        }
+
+        function updateStatusUI() {
+            statusPill.textContent = isPlaying ? "正在播放 (显示暂停双竖杠)" : "已暂停 (显示播放三角形)";
+        }
+
+        // =========================================================================
+        // 播放 / 暂停手势交互
+        // =========================================================================
+        let isHoldingPlay = false;
+
+        // 1. 鼠标按下: 深度捏紧缩小到 0.48 (收缩感更强)
+        btnPlayPause.addEventListener("mousedown", (e) => {
+            if (e.button !== 0) return;
+            isHoldingPlay = true;
+            resetScope();
+            const { current, next } = getActiveAndNextAnimators();
+
+            // 快速平滑捏紧: duration 0.22s, bounce 0
+            const pressSpring = new WWDC23Spring(0.22, 0.0);
+            current.animateTo(0.48, 0.88, pressSpring);
+            next.setImmediate(0.0, 0.0);
+        });
+
+        // 2. 鼠标移开: 从离开时的实时状态平滑微弹回 1.0
+        btnPlayPause.addEventListener("mouseleave", () => {
+            if (!isHoldingPlay) return;
+            isHoldingPlay = false;
+            const { current } = getActiveAndNextAnimators();
+
+            // 柔和微弹归位
+            const cancelSpring = new WWDC23Spring(0.35, 0.16);
+            current.animateTo(1.0, 1.0, cancelSpring);
+        });
+
+        // 3. 鼠标松开: 执行旧符号缩零与新符号弹簧大回冲
+        btnPlayPause.addEventListener("mouseup", (e) => {
+            if (!isHoldingPlay || e.button !== 0) return;
+            isHoldingPlay = false;
+            const { current, next } = getActiveAndNextAnimators();
+
+            // 重置示波器
+            resetScope();
+
+            // 旧符号极速平滑收缩入 0 (110ms)
+            const exitSpring = new WWDC23Spring(0.11, 0.0);
+            current.animateTo(0.0, 0.0, exitSpring, 0, () => {
+                current.setImmediate(0.0, 0.0);
+            });
+
+            // 翻转状态
+            isPlaying = !isPlaying;
+            updateStatusUI();
+
+            // 紧凑衔接：旧符号缩到极小 (约 40ms) 时，新符号立即无缝开始放大绽放！
+            // 绝不拖沓出现空白期，同时旧符号已经缩得足够小
+            setTimeout(() => {
+                next.setImmediate(0.05, 0.0);
+                
+                // 使用用户调优的 bounce 与 duration 参数构建复合弹簧
+                const enterSpring = new WWDC23Spring(userDuration, userBounce);
+                next.animateTo(1.0, 1.0, enterSpring, 0);
+            }, 40 * animSpeed);
+        });
+
+        // 移动端 Touch
+        btnPlayPause.addEventListener("touchstart", (e) => {
+            isHoldingPlay = true;
+            resetScope();
+            const { current, next } = getActiveAndNextAnimators();
+            const pressSpring = new WWDC23Spring(0.22, 0.0);
+            current.animateTo(0.48, 0.88, pressSpring);
+            next.setImmediate(0.0, 0.0);
+        }, { passive: true });
+
+        btnPlayPause.addEventListener("touchend", (e) => {
+            if (!isHoldingPlay) return;
+            isHoldingPlay = false;
+            const { current, next } = getActiveAndNextAnimators();
+            resetScope();
+            const exitSpring = new WWDC23Spring(0.11, 0.0);
+            current.animateTo(0.0, 0.0, exitSpring);
+            isPlaying = !isPlaying;
+            updateStatusUI();
+            setTimeout(() => {
+                next.setImmediate(0.05, 0.0);
+                const enterSpring = new WWDC23Spring(userDuration, userBounce);
+                next.animateTo(1.0, 1.0, enterSpring, 0);
+            }, 40 * animSpeed);
+        });
+
+        // =========================================================================
+        // 上一曲 / 下一曲弹簧交互
+        // =========================================================================
+        const prevAnimator = new SpringPropertyAnimator(prevWrapper);
+        const nextAnimator = new SpringPropertyAnimator(nextWrapper);
+        prevAnimator.setImmediate(1.0, 1.0);
+        nextAnimator.setImmediate(1.0, 1.0);
+
+        let isHoldingNext = false;
+        btnNext.addEventListener("mousedown", (e) => {
+            if (e.button !== 0) return;
+            isHoldingNext = true;
+            nextAnimator.animateTo(0.62, 0.88, new WWDC23Spring(0.2, 0.0));
+        });
+
+        btnNext.addEventListener("mouseleave", () => {
+            if (!isHoldingNext) return;
+            isHoldingNext = false;
+            nextAnimator.animateTo(1.0, 1.0, new WWDC23Spring(0.35, 0.16));
+        });
+
+        btnNext.addEventListener("mouseup", (e) => {
+            if (!isHoldingNext || e.button !== 0) return;
+            isHoldingNext = false;
+            nextAnimator.animateTo(1.0, 1.0, new WWDC23Spring(userDuration, userBounce), 1.8);
+
+            btnNext.classList.remove("anim-forward");
+            void btnNext.offsetWidth;
+            btnNext.classList.add("anim-forward");
+        });
+
+        let isHoldingPrev = false;
+        btnPrev.addEventListener("mousedown", (e) => {
+            if (e.button !== 0) return;
+            isHoldingPrev = true;
+            prevAnimator.animateTo(0.62, 0.88, new WWDC23Spring(0.2, 0.0));
+        });
+
+        btnPrev.addEventListener("mouseleave", () => {
+            if (!isHoldingPrev) return;
+            isHoldingPrev = false;
+            prevAnimator.animateTo(1.0, 1.0, new WWDC23Spring(0.35, 0.16));
+        });
+
+        btnPrev.addEventListener("mouseup", (e) => {
+            if (!isHoldingPrev || e.button !== 0) return;
+            isHoldingPrev = false;
+            prevAnimator.animateTo(1.0, 1.0, new WWDC23Spring(userDuration, userBounce), 1.8);
+
+            btnPrev.classList.remove("anim-rewind");
+            void btnPrev.offsetWidth;
+            btnPrev.classList.add("anim-rewind");
+        });
+
+        // =========================================================================
+        // 参数调节滑块与预设按钮
+        // =========================================================================
+        sliderBounce.addEventListener("input", (e) => {
+            userBounce = parseFloat(e.target.value);
+            valBounce.textContent = userBounce.toFixed(2);
+            document.querySelectorAll(".preset-btn").forEach(b => b.classList.remove("active"));
+        });
+
+        sliderDuration.addEventListener("input", (e) => {
+            userDuration = parseFloat(e.target.value);
+            valDuration.textContent = userDuration.toFixed(2) + "s";
+            document.querySelectorAll(".preset-btn").forEach(b => b.classList.remove("active"));
+        });
+
+        document.querySelectorAll(".preset-btn").forEach(btn => {
+            btn.addEventListener("click", () => {
+                document.querySelectorAll(".preset-btn").forEach(b => b.classList.remove("active"));
+                btn.classList.add("active");
+                userBounce = parseFloat(btn.getAttribute("data-b"));
+                userDuration = parseFloat(btn.getAttribute("data-d"));
+                sliderBounce.value = userBounce;
+                sliderDuration.value = userDuration;
+                valBounce.textContent = userBounce.toFixed(2);
+                valDuration.textContent = userDuration.toFixed(2) + "s";
+            });
+        });
+
+        // 调速控制
+        document.querySelectorAll(".speed-btn").forEach(btn => {
+            btn.addEventListener("click", () => {
+                document.querySelectorAll(".speed-btn").forEach(b => b.classList.remove("active"));
+                btn.classList.add("active");
+                animSpeed = parseFloat(btn.getAttribute("data-speed"));
+            });
+        });
+    </script>
+</body>
+</html>

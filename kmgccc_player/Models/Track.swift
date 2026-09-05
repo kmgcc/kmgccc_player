@@ -505,6 +505,29 @@ final class Track {
         return text
     }
 
+    /// Read plain lyrics without performing file I/O on the caller's actor.
+    ///
+    /// The playback-to-lyrics pipeline runs on the main actor, but the legacy
+    /// LRC fallback is still stored in the track sidecar. Keep the cache write
+    /// on the caller after the detached read so the next synchronous content
+    /// lookup is memory-only.
+    func loadLyricsOffMainIfNeeded() async -> String? {
+        if let text = lyricsText, !text.isEmpty { return text }
+        guard let folder = resolvedTrackFolderURL(),
+              let lyricsFileName,
+              !lyricsFileName.isEmpty
+        else { return nil }
+
+        let text = await Task.detached(priority: .utility) { @Sendable in
+            try? String(
+                contentsOf: folder.appendingPathComponent(lyricsFileName),
+                encoding: .utf8
+            )
+        }.value
+        lyricsText = text
+        return text
+    }
+
     /// Load TTML lyrics from disk if not already in memory.
     func loadTTMLLyricsIfNeeded() -> String? {
         if let text = ttmlLyricText, !text.isEmpty { return text }

@@ -1095,47 +1095,54 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
 
         // "Mid-peak" silhouette: Mid is the highest, LMid is the waist (low
         // sensitivity), a small left hump at Bass, a second hump at LTreb,
-        // gradual fall to Air. High+ (sibilance) kept visible. Tuned via the
-        // harness so Mid peaks in both equal-band and pink-spectrum cases.
+        // gradual fall to Air. High+ (sibilance) kept visible.
+        // Base is lowered significantly to keep steady height clean and give room for dynamic punch.
         static let baseShapeWeight: [Float] = [
-            0.70,  // 0: Sub
-            0.78,  // 1: Bass   (left hump)
-            0.38,  // 2: LMid   (waist - low sensitivity)
-            1.00,  // 3: Mid    (main peak)
-            0.88,  // 4: LTreb  (second hump)
-            0.78,  // 5: MTreb
-            0.68,  // 6: HTreb
-            0.66,  // 7: High+  (sibilance)
-            0.45,  // 8: Air    (ultra-high, single bar)
+            0.40,  // 0: Sub    (was 0.70)
+            0.48,  // 1: Bass   (was 0.78)
+            0.32,  // 2: LMid   (was 0.38)
+            0.65,  // 3: Mid    (was 1.00)
+            0.58,  // 4: LTreb  (was 0.88)
+            0.52,  // 5: MTreb  (was 0.78)
+            0.46,  // 6: HTreb  (was 0.68)
+            0.46,  // 7: High+  (was 0.66)
+            0.35,  // 8: Air    (was 0.45)
         ]
-        // Motion silhouette: low-freq extra-restrained, High+ (sibilance) kept
-        // responsive so 呲呲 lifts band 7. v6: low-freq more sensitive (Sub/Bass
-        // up), mid jumps less but stays tall (Mid/LTreb/MTreb motion weight down;
-        // base weight unchanged so mid height holds).
+        // Motion silhouette: Sub/Bass punch for kicks without overshooting on sustained bass,
+        // while mid/high stay balanced without overpowering.
         static let motionShapeWeight: [Float] = [
-            0.55, 0.68, 0.50, 0.75, 0.76, 0.72, 0.74, 0.78, 0.50
+            0.85,  // 0: Sub    (was 0.95)
+            0.88,  // 1: Bass   (was 1.00)
+            0.55,  // 2: LMid   (was 0.50)
+            0.70,  // 3: Mid    (was 0.75)
+            0.72,  // 4: LTreb  (was 0.76)
+            0.70,  // 5: MTreb  (was 0.72)
+            0.72,  // 6: HTreb  (was 0.74)
+            0.75,  // 7: High+  (was 0.78)
+            0.50,  // 8: Air    (was 0.50)
         ]
 
         // --- Absolute loudness (time-domain RMS, volume-compensated) ---
-        // These are TRUE dBFS values (20*log10(rms)) of the pre-volume signal.
-        // Calibrate via KMGCCC_DEBUG_SPECTRUM=1 (watch rms=/state=).
-        static let loudnessTau: Float = 0.60       // slow; modes must not flip per beat
+        // Asymmetric fast-attack / smooth-release tracking:
+        // When volume jumps (bursts, drops, startup), reacts in ≈35ms (1-2 frames);
+        // when volume drops, decays smoothly over ≈800ms to prevent pumping.
+        static let loudnessAttackTau: Float = 0.035
+        static let loudnessReleaseTau: Float = 0.80
         static let quietFloorDbFS: Float = -38     // below = pure quiet
         static let quietToNormalDbFS: Float = -30  // quiet -> normal transition
         static let normalToLoudDbFS: Float = -20   // normal -> loud transition
         static let loudFloorDbFS: Float = -14      // above = pure loud
 
-        // Three-segment display budgets. v5: quiet is much shorter (was 0.24)
-        // so quiet music reads as genuinely low bars, not lifted by the mapping.
-        // v6: quiet lowered further (0.12 -> 0.09).
-        static let baseScaleQuiet: Float = 0.09
-        static let baseScaleNormal: Float = 0.39
-        static let baseScaleLoud: Float = 0.33
-        static let motionScaleQuiet: Float = 0.04
-        static let motionScaleNormal: Float = 0.28
-        static let motionScaleLoud: Float = 0.50
+        // Three-segment display budgets.
+        // Base scales significantly reduced to lower normal height and eliminate small-volume wall effect.
+        static let baseScaleQuiet: Float = 0.06    // was 0.14
+        static let baseScaleNormal: Float = 0.22   // was 0.39
+        static let baseScaleLoud: Float = 0.26     // was 0.33
+        static let motionScaleQuiet: Float = 0.12
+        static let motionScaleNormal: Float = 0.35 // was 0.28, more dynamic headroom
+        static let motionScaleLoud: Float = 0.58   // was 0.50
         // Fraction of motion retained at quiet (15-35% per spec).
-        static let quietMotionGateFloor: Float = 0.20
+        static let quietMotionGateFloor: Float = 0.20 // was 0.35, quieter at low volumes
 
         // Crest-factor compression boost: engages only when LOUD and LOW-crest
         // (heavily compressed master). Dynamic music is unaffected. Boosts motion
@@ -1147,28 +1154,21 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
 
         // --- Base layer ---
         // Band dB relative to the global mean band power (volume-invariant: both
-        // come from the same FFT tap). The offset is deliberately large/negative
-        // so the reference sits below most bands; the shape weight then becomes
-        // the dominant contour factor (Mid weight 1.0 wins) and the tilt can
-        // lift highs without exceeding Mid. Tuned via the harness.
-        static let fftMeanPowerTau: Float = 0.50
-        static let baseReferenceOffsetDb: Float = -16.0
-        static let baseRangeDb: Float = 26.0
+        // come from the same FFT tap).
+        static let fftMeanPowerAttackTau: Float = 0.05
+        static let fftMeanPowerReleaseTau: Float = 0.60
+        static let baseReferenceOffsetDb: Float = -8.0 // was -16.0, cuts off low-level noise base
+        static let baseRangeDb: Float = 24.0          // was 26.0
 
         // --- Low-frequency prominence gate (motion) ---
         // Low-freq motion is only allowed when the Sub/Bass energy actually
-        // exceeds the vocal-body bands (LMid/Mid) by a clear margin. Without
-        // this, vocal fundamentals, spectral leakage, and broadband common-mode
-        // changes flap the left side. Real kicks/bass still rise because their
-        // energy dominates. v6: thresholds raised (+3/+10) and floors lowered
-        // (0.10/0.15) so small/quiet low-freq energy barely moves but big
-        // obvious kicks still punch (ceil 0.85/0.92).
-        static let lowProminenceStartDb: Float = 3.0    // below = minimal low motion
-        static let lowProminenceFullDb: Float = 10.0    // above = full low motion
-        static let subMotionFloor: Float = 0.10         // retained when not prominent
-        static let subMotionCeil: Float = 0.85          // v6: was 0.65, boost real kicks
-        static let bassMotionFloor: Float = 0.15        // v6: was 0.30
-        static let bassMotionCeil: Float = 0.92         // v6: was 0.78, boost real kicks
+        // exceeds the vocal-body bands (LMid/Mid) by a clear margin.
+        static let lowProminenceStartDb: Float = 3.0
+        static let lowProminenceFullDb: Float = 10.0
+        static let subMotionFloor: Float = 0.10
+        static let subMotionCeil: Float = 0.85
+        static let bassMotionFloor: Float = 0.15
+        static let bassMotionCeil: Float = 0.92
 
         // --- High-frequency visibility (base + motion) ---
         // Highs need a noise gate (no fake floor when silent) plus a one-shot soft
@@ -1179,13 +1179,50 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         static let highBandGamma: Float = 0.88          // one-shot soft shaping (>= 1 would crush)
 
         // --- Motion extraction (relative dB, volume-invariant) ---
-        static let fluxWeight: Float = 0.45
-        static let excursionWeight: Float = 0.25
-        static let contrastWeight: Float = 0.30
+        // Per-band motion source weights:
+        // Sub/Bass rely exclusively on positive flux (90%) so kicks punch sharply,
+        // while steady/rolling basslines don't sustain continuous jitter.
+        static let fluxWeight: [Float] =      [0.90, 0.90, 0.40, 0.40, 0.40, 0.40, 0.50, 0.50, 0.50]
+        static let excursionWeight: [Float] = [0.00, 0.00, 0.30, 0.30, 0.30, 0.30, 0.20, 0.20, 0.20]
+        static let contrastWeight: [Float] =  [0.10, 0.10, 0.30, 0.30, 0.30, 0.30, 0.30, 0.30, 0.30]
+
+        // Per-band flux deadband (dB):
+        // Low frequencies have highest threshold (3.0dB, 2.5dB) to completely eliminate
+        // continuous bass hum/sliding jitter while letting kicks (>6dB flux) pop cleanly.
+        // Upper bands use 1.8dB to kill FFT bin noise.
+        static let bandFluxDeadbandDb: [Float] = [
+            3.0,  // 0: Sub
+            2.5,  // 1: Bass
+            1.5,  // 2: LMid
+            1.2,  // 3: Mid
+            1.0,  // 4: LTreb
+            1.0,  // 5: MTreb
+            1.8,  // 6: HTreb
+            1.8,  // 7: High+
+            1.8,  // 8: Air
+        ]
+
+        // Level-dependent dynamic expansion power per band:
+        // Moderated expansion power (1.7, 1.8) preserves visible low-frequency presence in quiet passages,
+        // while still expanding dynamic contrast on big beats.
+        static let levelExpansionPower: [Float] = [
+            1.7,  // 0: Sub    (was 2.4)
+            1.8,  // 1: Bass   (was 2.2)
+            1.7,  // 2: LMid
+            1.6,  // 3: Mid
+            1.5,  // 4: LTreb
+            1.5,  // 5: MTreb
+            1.5,  // 6: HTreb
+            1.4,  // 7: High+
+            1.4,  // 8: Air
+        ]
+        static let levelFloorDb: Float = -54.0
+        static let levelCeilDb: Float = -6.0
+
         static let bandMeanTau: Float = 2.0       // slow baseline (excursion)
         static let localMeanTau: Float = 0.08     // fast local mean (contrast)
-        static let motionSoftKneeDb: Float = 4.0
-        static let motionMaxDb: Float = 20.0
+        static let motionSoftKneeDb: Float = 5.0  // was 4.0, slightly more linear headroom before soft knee
+        static let motionMaxDb: Float = 22.0      // was 20.0, more ceiling for explosive kicks
 
         // Per-band energy gate: a band far below the mix average is near-silent
         // and must not produce motion even if it fluctuates in relative dB.
@@ -1219,15 +1256,17 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         static let globalPulseGain: Float = 0.12
         static let globalPulseCapDb: Float = 2.0
 
-        // Separate base / motion envelopes (frame-rate-independent). v5 shortens
-        // release so peaks fall more crisply; attack is barely changed.
-        static let baseAttackTau: Float = 0.095
+        // Separate base / motion envelopes (frame-rate-independent).
+        // Tightened baseAttackTau (40ms) allows sudden musical bursts to lift the base without lag.
+        static let baseAttackTau: Float = 0.040
         static let baseReleaseTau: Float = 0.165
-        // v5: per-band motion taus. Low (Sub/Bass) faster so kicks punch and
-        // release quickly; Mid (LMid..MTreb) slower so the body doesn't flicker;
-        // High medium. v6: low-freq attack snappier (0.018) for more sensitivity.
-        static let motionAttackTau: [Float] =  [0.018, 0.018, 0.030, 0.030, 0.030, 0.030, 0.026, 0.026, 0.026]
-        static let motionReleaseTau: [Float] = [0.050, 0.050, 0.090, 0.090, 0.090, 0.090, 0.065, 0.065, 0.065]
+        // Per-band motion taus:
+        // Sub/Bass attack at 0.026s provides organic spring damping without feeling steep/digital,
+        // and release at 0.085s gives smooth, bouncy rebound instead of cliff-dropping.
+        // Mid (LMid..MTreb) slower so the body doesn't flicker;
+        // High release extended to 110ms to give silky decay rather than nervous shaking.
+        static let motionAttackTau: [Float] =  [0.026, 0.026, 0.030, 0.030, 0.030, 0.030, 0.026, 0.026, 0.026]
+        static let motionReleaseTau: [Float] = [0.085, 0.085, 0.090, 0.090, 0.090, 0.090, 0.110, 0.110, 0.110]
         // Slow fade when the stream stalls (no input): a brief glitch doesn't
         // freeze bars, but a dead stream still fades.
         static let stallDecayTau: Float = 0.35
@@ -1435,20 +1474,31 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
             let instantRmsDb = 20 * log10(compRms + Constants.epsilon)
             let instantPeakDb = 20 * log10(compPeak + Constants.epsilon)
 
-            let alpha = 1 - exp(-dt / Constants.loudnessTau)
+            let rmsTau: Float = instantRmsDb > shortTermRmsDbFS
+                ? Constants.loudnessAttackTau
+                : Constants.loudnessReleaseTau
+            let alpha = 1 - exp(-dt / rmsTau)
             shortTermRmsDbFS += alpha * (instantRmsDb - shortTermRmsDbFS)
-            shortTermPeakDbFS += alpha * (instantPeakDb - shortTermPeakDbFS)
+
+            let peakTau: Float = instantPeakDb > shortTermPeakDbFS
+                ? Constants.loudnessAttackTau
+                : Constants.loudnessReleaseTau
+            let peakAlpha = 1 - exp(-dt / peakTau)
+            shortTermPeakDbFS += peakAlpha * (instantPeakDb - shortTermPeakDbFS)
 
             let instantCrest = instantPeakDb - instantRmsDb
             let crestAlpha = 1 - exp(-dt / Constants.crestTau)
             crestDb += crestAlpha * (instantCrest - crestDb)
         }
 
-        // FFT mean power: volume-invariant reference for the base layer. Both
-        // this and bandDb come from the same tap, so bandDb - fftMeanPowerDb is
-        // independent of the volume slider.
+        // FFT mean power: volume-invariant reference for the base layer.
+        // Uses asymmetric tracking so sudden chords lift the reference immediately
+        // while decays settle smoothly.
         let meanPower = magnitudes.reduce(Float.zero) { $0 + $1 } / Float(magnitudes.count)
-        let powerAlpha = 1 - exp(-dt / Constants.fftMeanPowerTau)
+        let powerTau: Float = meanPower > fftMeanPower
+            ? Constants.fftMeanPowerAttackTau
+            : Constants.fftMeanPowerReleaseTau
+        let powerAlpha = 1 - exp(-dt / powerTau)
         fftMeanPower += powerAlpha * (meanPower - fftMeanPower)
         fftMeanPowerDb = 10 * log10(fftMeanPower + Constants.epsilon)
     }
@@ -1567,13 +1617,29 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
     private func computeMotion() {
         // 3a. Raw motion dB per band: positive flux + slow excursion + contrast.
         for i in 0..<Constants.bandCount {
-            let fluxDb = max(0, bandDb[i] - previousBandDb[i])
+            var fluxDb = max(0, bandDb[i] - previousBandDb[i])
+            // Deadband per band: low bands ignore <2.5-3.0dB bassline flutter,
+            // high bands ignore <1.8dB FFT noise jitter
+            fluxDb = max(0, fluxDb - Constants.bandFluxDeadbandDb[i])
+
+            // Progressive transient impact curve for Sub/Bass (bands 0 & 1):
+            // Non-percussive instruments (e.g. guitar/bass slide/sustain) produce moderate flux (2-5 dB).
+            // A progressive curve damps moderate flux (keeping non-kick jumps under control at 30-45%),
+            // while explosive kick drums (>6-8 dB flux) break into 100% full-power burst punch.
+            if i < 2, fluxDb > 0 {
+                let kickThresholdDb: Float = 6.0
+                let ratio = min(fluxDb / kickThresholdDb, 1.0)
+                // Smooth progressive factor: quadratic easing from 0.40 up to 1.0
+                let impactFactor = 0.40 + 0.60 * (ratio * ratio)
+                fluxDb *= impactFactor
+            }
+
             let excursionDb = max(0, bandDb[i] - bandMeanDb[i])
             let contrastDb = max(0, bandDb[i] - localMeanDb[i])
             var m =
-                Constants.fluxWeight * fluxDb +
-                Constants.excursionWeight * excursionDb +
-                Constants.contrastWeight * contrastDb
+                Constants.fluxWeight[i] * fluxDb +
+                Constants.excursionWeight[i] * excursionDb +
+                Constants.contrastWeight[i] * contrastDb
             // Soft knee to keep extreme onsets from saturating a single band.
             if m > Constants.motionSoftKneeDb {
                 let excess = m - Constants.motionSoftKneeDb
@@ -1584,16 +1650,12 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
             rawMotionDbBuffer[i] = m
         }
 
-        // 3b. Common-mode removal (per-band factor; Sub/Bass stronger so a
-        //     broadband vocal onset doesn't average into low-freq pulses). A
-        //     small residual global pulse is kept so the spectrum breathes.
-        let commonMotionDb = median(rawMotionDbBuffer)
-        lastCommonMotionDb = commonMotionDb
-        let globalPulseDb = min(commonMotionDb * Constants.globalPulseGain, Constants.globalPulseCapDb)
+        // 3b. Direct band motion without common-mode median subtraction or global pulse,
+        // so each band faithfully follows its own rhythm and instruments without cross-bleed.
         for i in 0..<Constants.bandCount {
-            let specific = max(0, rawMotionDbBuffer[i] - commonMotionDb * Constants.commonModeRemoval[i])
-            motionDbBuffer[i] = specific + globalPulseDb
+            motionDbBuffer[i] = rawMotionDbBuffer[i]
         }
+        lastCommonMotionDb = 0
 
         // 3c. Shared motion scale (ALL bands share ONE; no per-band AGC). Track
         //     a high percentile slowly, clamped to a sane range. During the
@@ -1608,32 +1670,33 @@ nonisolated final class SpectrumProcessor: @unchecked Sendable {
         sharedMotionScaleDb += scaleAlpha * (targetScale - sharedMotionScaleDb)
         sharedMotionScaleDb = clamp(sharedMotionScaleDb, min: Constants.sharedMotionMinDb, max: Constants.sharedMotionMaxDb)
 
-        // 3d. Low-frequency prominence gate: only let Sub/Bass move when their
-        //     energy actually exceeds the vocal-body bands (LMid/Mid). Vocal
-        //     fundamentals, leakage, and broadband common-mode then can't flap
-        //     the left side; real kicks/bass still rise.
-        let lowEnergy = max(bandDb[0], bandDb[1])
-        let neighborEnergy = (bandDb[2] + bandDb[3]) * 0.5
-        let lowProminenceDb = lowEnergy - neighborEnergy
-        lastLowProminenceGate = smoothstep(
-            Constants.lowProminenceStartDb, Constants.lowProminenceFullDb, lowProminenceDb
-        )
+        // 3d. Low prominence gate removed so Sub/Bass respond cleanly to kicks/basslines
+        //     without vocal cancellation.
+        lastLowProminenceGate = 1.0
 
-        // 3e. Normalize, then apply: per-band energy gate (absolute silence),
-        //     global quiet gate, compression boost, low-prominence restraint
-        //     (Sub/Bass), and high-band noise gate. Shape weight is applied last.
+        // 3e. Normalize, then apply:
+        //     - level-dependent dynamic expansion (small energy -> minimal motion, big energy -> full dynamic range)
+        //     - per-band energy gate (absolute silence)
+        //     - global quiet gate, compression boost, and high-band noise gate.
         for i in 0..<Constants.bandCount {
             var norm = clamp(motionDbBuffer[i] / sharedMotionScaleDb, min: 0, max: 1)
+
+            // Dynamic expansion based on absolute band level:
+            // Normalize band level from [levelFloorDb, levelCeilDb] to [0, 1]
+            let bandLevel = clamp(
+                (calibratedBandDbBuffer[i] - Constants.levelFloorDb) / (Constants.levelCeilDb - Constants.levelFloorDb),
+                min: 0,
+                max: 1
+            )
+            // Power curve expands dynamic contrast: quiet bands get crushed, loud bands preserve 100%
+            let levelExpansion = pow(bandLevel, Constants.levelExpansionPower[i])
+            norm *= levelExpansion
+
             let relRaw = bandDb[i] - fftMeanPowerDb
             let energyGate = smoothstep(Constants.bandEnergyGateFloorDb, Constants.bandEnergyGateCeilDb, relRaw)
             norm *= energyGate
             norm *= lastGlobalMotionGate
             norm *= lastCompressionBoost
-            if i == 0 {
-                norm *= lerp(Constants.subMotionFloor, Constants.subMotionCeil, t: lastLowProminenceGate)
-            } else if i == 1 {
-                norm *= lerp(Constants.bassMotionFloor, Constants.bassMotionCeil, t: lastLowProminenceGate)
-            }
             if i >= Constants.highBandStartIndex {
                 let relCal = calibratedBandDbBuffer[i] - fftMeanPowerDb
                 let highGate = smoothstep(Constants.highBandNoiseFloorDb, Constants.highBandVisibleDb, relCal)
