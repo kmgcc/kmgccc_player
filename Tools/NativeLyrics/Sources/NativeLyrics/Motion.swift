@@ -96,7 +96,55 @@ struct Tween {
         guard self.target != target else { return }
         from = value(time); self.target = target; start = time; self.duration = duration
     }
+    mutating func snap(_ value: Double) {
+        from = value; target = value; start = 0; duration = 0
+    }
     func settled(_ time: Double) -> Bool { time >= start+duration || from == target }
+}
+
+/// Keeps a lyric mask moving through short timing stalls while preserving an
+/// exact paused/seeked position. AMLL's browser mask is driven by an animation
+/// clock between host samples; this small stateful track provides the same
+/// continuity without advancing a paused lyric into the future.
+struct HighlightSmoother {
+    private(set) var value = 0.0
+    private var lastTarget = 0.0
+    private var lastHost: Double?
+    private var initialized = false
+
+    mutating func reset(_ target: Double) {
+        value = target; lastTarget = target; lastHost = nil; initialized = true
+    }
+
+    mutating func sample(target: Double, now: Double, playing: Bool, reset: Bool, fadeWidth: Double) -> Double {
+        guard target.isFinite else { return value }
+        if reset || !playing || !initialized || lastHost == nil {
+            value = target; lastTarget = target; lastHost = now; initialized = true
+            return value
+        }
+
+        let dt = min(0.08, max(0, now - (lastHost ?? now)))
+        let targetDelta = target - lastTarget
+        let backwardsSnap = target < value - max(1, fadeWidth * 4)
+        if backwardsSnap {
+            value = target
+        } else {
+            let response = 1 - exp(-dt * 28)
+            value += (target - value) * response
+
+            // During a very short host/audio stall AMLL's running animation
+            // continues by a barely visible amount. Keep that glide bounded so
+            // it cannot reveal a future word or survive a pause.
+            let stall = abs(targetDelta) <= max(0.0001, fadeWidth * 0.002)
+            if stall && target >= value {
+                let maxLead = max(0.8, fadeWidth * 0.08)
+                let glideRate = max(0.2, fadeWidth * 0.04)
+                value = min(target + maxLead, value + glideRate * dt)
+            }
+        }
+        lastTarget = target; lastHost = now
+        return value
+    }
 }
 
 public struct EmphasisSample: Codable, Sendable {

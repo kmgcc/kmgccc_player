@@ -44,8 +44,9 @@ final class GlyphCache {
 
 final class GlyphLayers {
     let root = CALayer(), dark = CALayer(), bright = CALayer(), glow = CALayer()
-    let brightInk = CALayer(), glowInk = CALayer()
+    let brightInk = CALayer()
     let gradient = CAGradientLayer()
+    let glowBlur = CIFilter(name:"CIGaussianBlur")
     let placement: GlyphPlacement
     let padding: Double
     var x: SpringTrack, y: SpringTrack
@@ -56,12 +57,21 @@ final class GlyphLayers {
         x.retarget(placement.origin.x,at:now); y.retarget(placement.origin.y,at:now)
         root.bounds = CGRect(origin:.zero,size:bitmap.size); root.anchorPoint = CGPoint(x:0.5,y:0.5)
         for layer in [glow,dark,bright] { layer.frame = root.bounds; root.addSublayer(layer) }
-        bright.addSublayer(brightInk); glow.addSublayer(glowInk)
-        for ink in [dark,brightInk,glowInk] {
+        bright.addSublayer(brightInk)
+        for ink in [dark,brightInk] {
             ink.frame = root.bounds; ink.backgroundColor = NSColor.white.cgColor
             let mask = CALayer(); mask.frame = root.bounds; mask.contents = bitmap.image; mask.contentsScale = scale; ink.mask = mask
         }
-        glow.shadowColor = NSColor.white.cgColor; glow.shadowOffset = .zero
+        // A real image-backed layer is used for the halo.  A masked empty
+        // container does not produce a shadow consistently on AppKit's
+        // layer-backed surfaces, while this path remains GPU composited.
+        glow.contents = bitmap.image; glow.contentsScale = scale; glow.contentsGravity = .resize
+        glow.filters = glowBlur.map { [$0] }
+        // Keep the layer transparent outside the glyph bitmap.  Filling this
+        // layer used to turn the whole padded glyph tile into a blurred
+        // rectangle, which is much larger than AMLL's per-character
+        // text-shadow halo.
+        glow.backgroundColor = nil
         gradient.startPoint = CGPoint(x:0,y:0.5); gradient.endPoint = CGPoint(x:1,y:0.5)
         gradient.colors = [NSColor.white.cgColor,NSColor.white.cgColor,NSColor.clear.cgColor,NSColor.clear.cgColor]
         gradient.frame = root.bounds; bright.mask = gradient
@@ -92,9 +102,10 @@ final class GlyphLayers {
         gradient.locations = [0,NSNumber(value:a),NSNumber(value:b),1]
         if boundary < -fade/2 { bright.opacity = 0 }
         glow.opacity = config.glow && !config.coverBlurSuppressEmphasisGlow && glowVisible ? Float(e.glowOpacity) : 0
-        glowInk.backgroundColor = config.palette.emphasisGlow.cgColor
-        glow.shadowColor = config.palette.emphasisGlow.cgColor
-        glow.shadowOpacity = 1; glow.shadowRadius = e.glowRadius*(config.surface == .artisticFullscreen || config.fullscreenAppleStyleMode ? 0.6 : 1)
+        // The image alpha is the glow mask.  Do not paint the padded layer
+        // bounds: only the glyph silhouette should be blurred.
+        glow.backgroundColor = nil
+        glowBlur?.setValue(e.glowRadius*0.45,forKey:kCIInputRadiusKey)
     }
     func settled(_ time: Double) -> Bool { x.settled(time) && y.settled(time) }
 }
@@ -139,11 +150,16 @@ final class LineLayers {
     private var wasActive = false
     private var brightAlpha = 1.0, darkAlpha = 0.4
     private var previousTime: Double?
+    private var cursor = HighlightSmoother()
     init(_ layout: LineTextLayout, cache: GlyphCache, scale: Double, config: LyricsConfiguration, previous: LineLayers?, now: Double, buildContent: Bool = true) {
         self.layout = layout; fade = max(0.01,(layout.words.first?.fadeHeight ?? layout.fontSize*1.2)*config.wordFadeWidth)
         mask = MaskPath(layout.words,fadeWidth:fade)
         root.anchorPoint = .zero; root.bounds = CGRect(x:0,y:0,width:layout.width,height:layout.height)
-        if let previous { brightAlpha = previous.brightAlpha; darkAlpha = previous.darkAlpha; highlight = previous.highlight; wasActive = previous.wasActive; previousTime = previous.previousTime }
+        if let previous {
+            brightAlpha = previous.brightAlpha; darkAlpha = previous.darkAlpha
+            highlight = previous.highlight; wasActive = previous.wasActive
+            previousTime = previous.previousTime; cursor = previous.cursor
+        }
         if buildContent { build(cache:cache,scale:scale,config:config,previous:previous,now:now) }
     }
     func ensureContent(cache: GlyphCache, scale: Double, config: LyricsConfiguration, now: Double) {
@@ -163,13 +179,21 @@ final class LineLayers {
         for word in words { root.addSublayer(word.root) }
         for subline in sublines { root.addSublayer(subline.root) }
     }
-    func update(now: Double, media: Double, floatTime: Double, active: Bool, alpha: Double, background: Bool, config: LyricsConfiguration) {
-        if active != wasActive {
+    func update(now: Double, media: Double, floatTime: Double, active: Bool, alpha: Double, background: Bool, config: LyricsConfiguration, playing: Bool = true, seek: Bool = false, highlightHold: Bool = false) {
+        if seek {
+            highlight.snap(active ? 1 : 0)
+            wasActive = active
+            brightAlpha = active ? 1 : 0.2+0.2*alpha
+            darkAlpha = 0.2+0.2*alpha
+            cursor.reset(mask.position(at:media))
+        } else if active != wasActive {
             highlight.set(active ? 1 : 0,at:now,duration:active ? 0.2 : 0.5)
             if active && config.lineTimingOnly { highlight.start += 0.05 }
             wasActive = active
         }
         let lifetime = highlight.value(now)
+        let visualActive = active || highlightHold
+        let highlightLifetime = highlightHold ? 1 : lifetime
         let smooth = layout.isDynamic && !config.lineTimingOnly && config.highlightMode == .smooth
         let renderLayer = config.effectiveRenderLayer
         let highlightOnly = renderLayer == .highlight
@@ -178,31 +202,31 @@ final class LineLayers {
         // separately. Keep the exit channel alive for the same half-second
         // line fade that the fork uses, so the highlight surface does not
         // pop out when a line leaves the hot set.
-        let hasHighlightLifetime = active || lifetime > 0.001
+        let hasHighlightLifetime = visualActive || highlightLifetime > 0.001
         let hideActiveMain = !background && config.coverBlurHideActiveMainLine && active
         let baseVisible = !highlightOnly && !hideActiveMain
         let highlightVisible = !baseOnly && (!highlightOnly || hasHighlightLifetime) && !hideActiveMain
         let glowVisible = renderLayer != .base && !config.coverBlurSuppressEmphasisGlow
         let delta = max(0,now-(previousTime ?? now)); previousTime = now
-        let targetDark = 0.2+0.2*alpha, targetBright = active ? 0.2+0.8*alpha : targetDark
+        let targetDark = 0.2+0.2*alpha, targetBright = visualActive ? 0.2+0.8*alpha : targetDark
         brightAlpha += (targetBright-brightAlpha)*(1-exp(-(targetBright>brightAlpha ? 50 : 7)*delta))
         darkAlpha += (targetDark-darkAlpha)*(1-exp(-(targetDark>darkAlpha ? 50 : 7)*delta))
-        let bright = smooth ? brightAlpha : (active ? 1.0 : (background ? 0.4 : 0.28))
+        let bright = smooth ? brightAlpha : (visualActive ? 1.0 : (background ? 0.4 : 0.28))
         let dark = smooth ? darkAlpha : bright
-        let cursor = smooth ? mask.position(at:media) : Double.greatestFiniteMagnitude
+        let maskCursor = smooth ? cursor.sample(target:mask.position(at:media),now:now,playing:playing,reset:seek,fadeWidth:fade) : Double.greatestFiniteMagnitude
         for word in words {
-            var wordDark = dark, wordBright = bright, wordLifetime = lifetime
+            var wordDark = dark, wordBright = bright, wordLifetime = highlightLifetime
             if layout.isDynamic && !config.lineTimingOnly && config.highlightMode == .discrete {
                 let range = word.placement.atom.word.range
                 let duration = max(0.3,min(2,range.duration))
                 let progress = Curves.sampled((media-range.start)/duration,count:18) { log1p($0*2.2)/log1p(2.2) }
                 let inactive = background ? 0.4 : 0.28
-                wordDark = inactive+(1-inactive)*progress*lifetime; wordBright = wordDark; wordLifetime = progress*lifetime
+                wordDark = inactive+(1-inactive)*progress*highlightLifetime; wordBright = wordDark; wordLifetime = progress*highlightLifetime
             }
-            word.update(now:now,media:media,cursor:cursor,fade:fade,dark:wordDark,bright:wordBright,config:config,floatTime:layout.isDynamic && !config.lineTimingOnly ? floatTime : -1e9,background:background,lifetime:wordLifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible)
+            word.update(now:now,media:media,cursor:maskCursor,fade:fade,dark:wordDark,bright:wordBright,config:config,floatTime:layout.isDynamic && !config.lineTimingOnly ? floatTime : -1e9,background:background,lifetime:wordLifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible)
         }
         for subline in sublines {
-            subline.update(now:now,media:media,logicalX:0,cursor:1e9,fade:1,darkAlpha:0.3,brightAlpha:0.3,emphasis:nil,fontSize:layout.fontSize,config:config,float:0,background:background,subline:true,lifetime:lifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:false)
+            subline.update(now:now,media:media,logicalX:0,cursor:1e9,fade:1,darkAlpha:0.3,brightAlpha:0.3,emphasis:nil,fontSize:layout.fontSize,config:config,float:0,background:background,subline:true,lifetime:highlightLifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:false)
         }
     }
     func settled(_ time: Double) -> Bool { words.allSatisfy { $0.settled(time) } }

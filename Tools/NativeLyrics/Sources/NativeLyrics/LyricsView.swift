@@ -81,6 +81,7 @@ public struct LyricsFrame: Codable, Sendable {
     public required init?(coder: NSCoder) { super.init(coder:coder); setUp() }
     private func setUp() {
         wantsLayer = true
+        layerUsesCoreImageFilters = true
         layer?.masksToBounds = true; layer?.addSublayer(content)
         content.anchorPoint = .zero; content.addSublayer(dots); content.addSublayer(bottom)
         dots.anchorPoint = .zero
@@ -232,17 +233,25 @@ public struct LyricsFrame: Codable, Sendable {
         let alignOffset = configuration.alignOffset.isFinite ? configuration.alignOffset : 0
         origin -= interaction.offset + alignOffset
         let position = configuration.positionSpring ?? currentPositionSpring
-        var stagger = 0.0, baseDelay = reflowed || seek ? 0 : 0.05
+        // A user seek is a deliberate focus jump.  Keep the clicked group as
+        // the first spring and let neighbouring groups follow by distance,
+        // while ordinary playback focus changes retain AMLL's top-to-bottom
+        // stagger.  Initial layout/reflow still snaps to avoid a launch cascade.
+        let seekCascade = seek && !reflowed && configuration.spring
+        var stagger = 0.0, baseDelay = reflowed ? 0 : 0.05
         var frames: [LyricsGroupFrame] = []
         for (i,group) in groups.enumerated() {
             let target = origin+offsets[i]
             if configuration.spring {
-                let delay = focusChanged ? stagger : 0
+                let distance = abs(i-focus)
+                let delay = seekCascade
+                    ? min(0.38,Double(distance)*0.055+(i<focus ? 0.012 : 0))
+                    : (focusChanged ? stagger : 0)
                 group.y.retarget(target,at:now,delay:delay,parameters:position)
             } else { group.y.snap(target,at:now) }
             group.y.resolve(now)
             let y = group.y.value(now)
-            let distance = i<snapshot.focus ? 2+abs(Double(snapshot.focus-i)) : 1+abs(Double(i-max(snapshot.focus,latestHighlighted)))
+            let distance = i<focus ? 2+abs(Double(focus-i)) : 1+abs(Double(i-max(focus,latestHighlighted)))
             group.blur.set(configuration.blur && !hoverInside && !group.active ? min(5,distance*(bounds.width<=1024 ? 0.8 : 1)) : 0,at:now)
             let passed = configuration.hidePassedLines && i<(gap.map { $0.anchor+1 } ?? snapshot.focus) && clock.isPlaying
             let groupAlpha = snapshot.highlighted.contains(i) ? 0.85 : (document?.isWordTimed == false ? 0.2 : 1)
@@ -262,18 +271,21 @@ public struct LyricsFrame: Codable, Sendable {
             let x = duet ? bounds.width-pad-group.layout.main.width : pad
             let bgFirst = prepared[i].backgroundFirst && !configuration.alwaysPostpositionBackground
             let reveal = Curves.clamp(1-abs(group.slide.value(now))/80)
-            let bgHeight = (group.layout.background?.height ?? 0)+group.layout.gap
-            let mainY = group.layout.padding+(bgFirst ? bgHeight*reveal : 0)
+            let bgHeight = group.layout.background?.height ?? 0
+            let bgFlowHeight = bgHeight+group.layout.gap
+            let bs = group.layout.background == nil ? 1 : (configuration.usesOpaqueCompositing ? 1 : group.backgroundScale.value(now))*(0.8+0.2*reveal)
+            let mainY = group.layout.padding+(bgFirst ? bgFlowHeight*reveal : 0)
             let ms = group.scale.value(now)
             group.main.root.anchorPoint = CGPoint(x:duet ? 1 : 0,y:0.5)
             group.main.root.position = CGPoint(x:x+(duet ? group.layout.main.width : 0),y:mainY+group.layout.main.height/2)
             group.main.root.transform = CATransform3DMakeScale(ms,ms,1)
             let alphaTarget = Curves.clamp((ms-0.97)/0.03)
             group.alpha = alphaTarget
-            var animationTime = media, floatTime = media
+            var animationTime = media, floatTime = media, highlightHold = false
             if !group.active, let exit = group.exitTime {
                 let remaining = max(0,prepared[i].range.end-group.exitMedia)
                 let duration = max(0.12,min(0.28,remaining))
+                highlightHold = remaining > 0.016 && now-exit < duration
                 animationTime = configuration.profile == .currentPlayer && clock.isPlaying && !seek ? min(prepared[i].range.end,group.exitMedia+(now-exit)*max(1,remaining/duration)) : group.exitMedia
                 floatTime = group.exitMedia-(now-exit)
             }
@@ -283,21 +295,28 @@ public struct LyricsFrame: Codable, Sendable {
             if group.isVisible {
                 group.main.ensureContent(cache:cache,scale:scale,config:configuration,now:now)
                 group.background?.ensureContent(cache:cache,scale:scale,config:configuration,now:now)
-                group.main.update(now:now,media:animationTime,floatTime:floatTime,active:group.active,alpha:group.alpha,background:false,config:configuration)
+                group.main.update(now:now,media:animationTime,floatTime:floatTime,active:group.active,alpha:group.alpha,background:false,config:configuration,playing:clock.isPlaying,seek:seek,highlightHold:highlightHold)
                 if let background = group.background {
-                    let by = bgFirst ? group.layout.padding : group.layout.padding+group.layout.main.height+group.layout.gap
-                    group.backgroundWrapper.position = CGPoint(x:x,y:by+group.slide.value(now)/100*background.layout.height)
+                    let slideOffset = group.slide.value(now)/100*background.layout.height
+                    // For a background-first group, AMLL's negative margin
+                    // keeps the visual bottom of the chorus attached to the
+                    // main line while it is scaled and revealed.  Recreate
+                    // that relation in points instead of letting the two
+                    // layers drift independently.
+                    let by = bgFirst
+                        ? mainY-group.layout.gap-background.layout.height*bs-slideOffset
+                        : group.layout.padding+group.layout.main.height+group.layout.gap+slideOffset
+                    group.backgroundWrapper.position = CGPoint(x:x,y:by)
                     group.backgroundWrapper.opacity = Float(reveal)
-                    let bs = (configuration.usesOpaqueCompositing ? 1 : group.backgroundScale.value(now))*(0.8+0.2*reveal)
                     background.root.anchorPoint = CGPoint(x:duet ? 1 : 0,y:0)
                     background.root.position = CGPoint(x:duet ? background.layout.width : 0,y:0)
                     background.root.transform = CATransform3DMakeScale(bs,bs,1)
                     background.root.opacity = configuration.usesOpaqueCompositing ? 1 : 0.4
-                    background.update(now:now,media:animationTime,floatTime:floatTime,active:group.active,alpha:Curves.clamp((group.backgroundScale.value(now)-0.97)/0.03),background:true,config:configuration)
+                    background.update(now:now,media:animationTime,floatTime:floatTime,active:group.active,alpha:Curves.clamp((group.backgroundScale.value(now)-0.97)/0.03),background:true,config:configuration,playing:clock.isPlaying,seek:seek,highlightHold:highlightHold)
                 }
             } else { group.main.discardContent(); group.background?.discardContent() }
             frames.append(.init(index:i,y:y,height:heights[i],scale:ms,backgroundScale:group.backgroundScale.value(now),backgroundSlide:group.slide.value(now),opacity:group.opacity.value(now),blur:blur,active:group.active,maskPosition:group.main.mask.position(at:animationTime)))
-            if target+heights[i]>=0 && !seek { stagger += baseDelay; if i>=snapshot.focus { baseDelay /= 1.05 } }
+            if target+heights[i]>=0 && !seekCascade { stagger += baseDelay; if i>=focus { baseDelay /= 1.05 } }
         }
         updateDots(snapshot,media:media,now:now,origin:origin,offsets:offsets)
         bottom.string = configuration.bottomText; bottom.fontSize = max(10,configuration.fontSize*0.5); bottom.contentsScale = scale
@@ -327,7 +346,12 @@ public struct LyricsFrame: Codable, Sendable {
         dots.isHidden = false
         dots.opacity = Float(coverBlurDots ? 1 : sample.opacity)
         let duet = prepared.indices.contains(gap.anchor+1) && prepared[gap.anchor+1].main.isDuet
-        dots.frame = CGRect(x:duet ? bounds.width-step*3 : 0,y:origin+offsets[min(offsets.count-1,max(0,gap.anchor+1))]-configuration.fontSize*0.7,width:step*3,height:configuration.fontSize)
+        // Groups reserve the same horizontal inset for every lyric row.  The
+        // previous x=0 placed interlude dots against the window edge while
+        // the following line started at `pad` points in from it.
+        let pad = bounds.width <= 500 ? 20.0 : configuration.fontSize
+        let dotX = duet ? bounds.width-pad-step*3 : pad
+        dots.frame = CGRect(x:dotX,y:origin+offsets[min(offsets.count-1,max(0,gap.anchor+1))]-configuration.fontSize*0.7,width:step*3,height:configuration.fontSize)
         dots.transform = CATransform3DMakeScale(sample.scale,sample.scale,1)
         for i in 0..<3 {
             dotLayers[i].frame = CGRect(x:Double(i)*step,y:0,width:size,height:size)

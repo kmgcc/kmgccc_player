@@ -242,7 +242,7 @@ CoreText对象在同一工作队列构建/使用；不要在后台布局和主�
 
 Demo固定本机歌曲《Bet On Me (feat. Tyler Shaw)》/ Walk Off the Earth & Tyler Shaw，时长约172.988s，549个timed spans、18处BG、两agent；可以模拟单调媒体时间，也可选择对应音频播放。素材准备保留原文件hash并生成标准TTML；音频和实际音乐库路径不进入公共提交。项目现有 complex/ruby/duet fixtures及自有边界fixture补足歌曲缺失场景。
 
-控制：play/pause、seek slider/数值时间、±5s、点击歌词、手动跟随恢复、font/size、语言、profile、smooth/discrete、emphasis/glow开关、resize、固定时间截图/轨迹、窗口关闭/重开。测试工具能以相同事件序列驱动native和独立浏览器reference。reference可用WebKit/Chromium，但不链接进原生引擎或Demo。
+控制：play/pause、seek slider/数值时间、±5s、点击歌词、手动跟随恢复、font/size、语言、profile、smooth/discrete、emphasis/glow开关、Glow 半径 0.5×–3×、五组标准 TTML 示例（固定歌曲、动态运动、长词 Glow、Duet/Ruby、Chorus/BG）、resize、固定时间截图/轨迹、窗口关闭/重开。Native 的 Glow 以每个字形的 Core Text alpha 位图作为 mask，再用 Core Image 高斯滤镜；不填充带 padding 的 glyph tile，避免出现矩形光团。间奏点使用与歌词行相同的水平 inset，duet 仍按右侧语义对齐。测试工具能以相同事件序列驱动native和独立浏览器reference。reference可用WebKit/Chromium，但不链接进原生引擎或Demo。
 
 迁移阶段：
 
