@@ -5,6 +5,29 @@ import QuartzCore
 import OSLog
 
 @MainActor final class DemoController: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private enum Sample: Int, CaseIterable {
+        case library, motion, glow, duetRuby, chorus
+        var title: String {
+            switch self {
+            case .library: return "Library song"
+            case .motion: return "Motion laboratory"
+            case .glow: return "Glow showcase"
+            case .duetRuby: return "Duet + Ruby"
+            case .chorus: return "Chorus / background"
+            }
+        }
+        var resourceName: String {
+            switch self {
+            case .library: return "song.ttml"
+            case .motion: return "complex.ttml"
+            case .glow: return "glow-showcase.ttml"
+            case .duetRuby: return "duet-ruby.ttml"
+            case .chorus: return "chorus-background.ttml"
+            }
+        }
+        var usesAudio: Bool { self == .library }
+    }
+
     private var window: NSWindow!
     private let lyrics = LyricsView(frame:.zero)
     private let play = NSButton(title:"Play",target:nil,action:nil)
@@ -17,6 +40,8 @@ import OSLog
     private var duration = 70.0
     private var mediaURL: URL?
     private var genericCoverButton: NSButton?
+    private let samplePopup = NSPopUpButton()
+    private var selectedSample: Sample = .motion
     private let logger = Logger(subsystem:"dev.kmgccc.NativeLyricsDemo",category:"demo")
     func applicationDidFinishLaunching(_ notification: Notification) {
         makeMenu()
@@ -41,7 +66,12 @@ import OSLog
             let button = NSButton(checkboxWithTitle:name,target:self,action:#selector(option(_:))); button.tag = i; button.state = .on; options.addArrangedSubview(button)
         }
         let font = NSSlider(value:38,minValue:20,maxValue:70,target:self,action:#selector(fontSize(_:))); font.toolTip = "Font size"; options.addArrangedSubview(font)
-        controls.addArrangedSubview(options); controls.addArrangedSubview(status)
+        controls.addArrangedSubview(options)
+        let glowRow = NSStackView(); glowRow.orientation = .horizontal; glowRow.spacing = 8
+        glowRow.addArrangedSubview(NSTextField(labelWithString:"Glow radius"))
+        let glowSlider = NSSlider(value:1,minValue:0.5,maxValue:3,target:self,action:#selector(glowRadius(_:))); glowSlider.toolTip = "AMLL glow radius scale"; glowSlider.widthAnchor.constraint(equalToConstant:190).isActive = true; glowRow.addArrangedSubview(glowSlider)
+        glowRow.addArrangedSubview(NSTextField(labelWithString:"0.5×  —  3×"))
+        controls.addArrangedSubview(glowRow); controls.addArrangedSubview(status)
         let styles = NSStackView(); styles.orientation = .horizontal; styles.spacing = 10
         let style = NSPopUpButton(); style.addItems(withTitles:LyricsSurfaceStyle.allCases.map(\.rawValue)); style.target = self; style.action = #selector(changeSurface(_:)); styles.addArrangedSubview(style)
         let mode = NSPopUpButton(); mode.addItems(withTitles:["Smooth words","Discrete words","Line timing only"]); mode.target = self; mode.action = #selector(changeMode(_:)); styles.addArrangedSubview(mode)
@@ -49,12 +79,16 @@ import OSLog
         let coverLayer = NSPopUpButton(); coverLayer.addItems(withTitles:["Cover full","Cover base","Cover highlight"]); coverLayer.target = self; coverLayer.action = #selector(changeCoverLayer(_:)); coverLayer.toolTip = "Render one cover-blur channel"; styles.addArrangedSubview(coverLayer)
         let fixtureButton = NSButton(title:"Complex fixture",target:self,action:#selector(loadComplex)); styles.addArrangedSubview(fixtureButton)
         controls.insertArrangedSubview(styles,at:3)
+        let samples = NSStackView(); samples.orientation = .horizontal; samples.spacing = 8
+        samples.addArrangedSubview(NSTextField(labelWithString:"Sample"))
+        samplePopup.addItems(withTitles:Sample.allCases.map(\.title)); samplePopup.target = self; samplePopup.action = #selector(changeSample(_:)); samples.addArrangedSubview(samplePopup)
+        controls.insertArrangedSubview(samples,at:3)
         let advanced = NSStackView(); advanced.orientation = .horizontal; advanced.spacing = 10
         for (tag,title) in [(10,"Hide active"),(11,"Suppress glow"),(12,"Generic cover"),(13,"Lyric dodge")] {
             let button = NSButton(checkboxWithTitle:title,target:self,action:#selector(advancedOption(_:))); button.tag = tag; advanced.addArrangedSubview(button)
             if tag == 12 { genericCoverButton = button }
         }
-        controls.insertArrangedSubview(advanced,at:4)
+        controls.insertArrangedSubview(advanced,at:6)
         for view in [titleLabel,lyrics,controls] { view.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(view) }
         titleLabel.font = .systemFont(ofSize:14,weight:.semibold); titleLabel.lineBreakMode = .byTruncatingTail
         status.font = .monospacedSystemFont(ofSize:10,weight:.regular); status.textColor = .secondaryLabelColor
@@ -69,10 +103,16 @@ import OSLog
         window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true)
         let args = CommandLine.arguments
         let supplied = args.firstIndex(of:"--ttml").flatMap { $0+1<args.count ? URL(fileURLWithPath:args[$0+1]) : nil }
-        let local = Bundle.main.resourceURL?.appendingPathComponent("song.ttml")
-        let fixture = Bundle.main.resourceURL!.appendingPathComponent("complex.ttml")
-        load(supplied ?? (local.flatMap { FileManager.default.fileExists(atPath:$0.path) ? $0 : nil }) ?? fixture)
-        if let audio = Bundle.main.resourceURL?.appendingPathComponent("audio.m4a"), FileManager.default.fileExists(atPath:audio.path) { attachAudio(audio) }
+        if let supplied {
+            samplePopup.selectItem(at:-1); load(supplied)
+        } else {
+            let local = Bundle.main.resourceURL?.appendingPathComponent("song.ttml")
+            if let local, FileManager.default.fileExists(atPath:local.path) {
+                selectedSample = .library; samplePopup.selectItem(at:Sample.library.rawValue); loadFixture(.library)
+            } else {
+                selectedSample = .motion; samplePopup.selectItem(at:Sample.motion.rawValue); loadFixture(.motion)
+            }
+        }
         timer = Timer.scheduledTimer(withTimeInterval:0.1,repeats:true) { [weak self] _ in MainActor.assumeIsolated { self?.updateControls() } }
         RunLoop.main.add(timer!,forMode:.common)
     }
@@ -95,6 +135,15 @@ import OSLog
             updateControls()
         } catch { showError(error) }
     }
+    private func loadFixture(_ fixture: Sample) {
+        selectedSample = fixture
+        player?.stop(); player = nil
+        let url = Bundle.main.resourceURL!.appendingPathComponent(fixture.resourceName)
+        load(url)
+        if fixture.usesAudio, let audio = Bundle.main.resourceURL?.appendingPathComponent("audio.m4a"), FileManager.default.fileExists(atPath:audio.path) {
+            attachAudio(audio)
+        }
+    }
     private func attachAudio(_ url: URL) {
         do { player = try AVAudioPlayer(contentsOf:url); player?.prepareToPlay(); player?.pause(); player?.currentTime = 0; duration = max(duration,player?.duration ?? 0); slider.maxValue = duration }
         catch { showError(error) }
@@ -115,6 +164,10 @@ import OSLog
     @objc private func back() { seek(time-5) }
     @objc private func forward() { seek(time+5) }
     @objc private func follow() { lyrics.followCurrentLyrics() }
+    @objc private func changeSample(_ sender: NSPopUpButton) {
+        guard let fixture = Sample(rawValue:sender.indexOfSelectedItem) else { return }
+        loadFixture(fixture)
+    }
     @objc private func changeProfile(_ sender: NSPopUpButton) { lyrics.configuration.profile = sender.indexOfSelectedItem == 0 ? .currentPlayer : .upstream }
     @objc private func changeSurface(_ sender: NSPopUpButton) {
         lyrics.configuration.surface = LyricsSurfaceStyle.allCases[sender.indexOfSelectedItem]
@@ -151,8 +204,9 @@ import OSLog
         }
     }
     @objc private func changeMode(_ sender: NSPopUpButton) { lyrics.configuration.lineTimingOnly = sender.indexOfSelectedItem == 2; lyrics.configuration.highlightMode = sender.indexOfSelectedItem == 1 ? .discrete : .smooth }
-    @objc private func loadComplex() { player?.stop(); player = nil; load(Bundle.main.resourceURL!.appendingPathComponent("complex.ttml")) }
+    @objc private func loadComplex() { samplePopup.selectItem(at:Sample.motion.rawValue); loadFixture(.motion) }
     @objc private func fontSize(_ sender: NSSlider) { lyrics.configuration.fontSize = sender.doubleValue }
+    @objc private func glowRadius(_ sender: NSSlider) { lyrics.configuration.glowRadiusScale = sender.doubleValue }
     @objc private func option(_ sender: NSButton) {
         let enabled = sender.state == .on
         switch sender.tag { case 0: lyrics.configuration.emphasis = enabled; case 1: lyrics.configuration.glow = enabled; case 2: lyrics.configuration.showTranslation = enabled; case 3: lyrics.configuration.showRuby = enabled; default: lyrics.configuration.blur = enabled }

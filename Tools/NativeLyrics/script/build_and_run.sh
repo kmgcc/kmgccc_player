@@ -11,14 +11,19 @@ if [[ -d "$app" ]]; then
   if [[ -n "$running_pid" ]]; then kill $running_pid; fi
 fi
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$binary_dir/NativeLyricsDemo" "$app/Contents/MacOS/"
-cp "$package_dir/script/Info.plist" "$app/Contents/Info.plist"
-cp "$package_dir/Sources/NativeLyricsDemo/Resources/complex.ttml" "$app/Contents/Resources/"
-for bundle in "$binary_dir"/*.bundle; do [[ ! -d "$bundle" ]] || cp -R "$bundle" "$app/Contents/Resources/"; done
-for fixture in song.ttml audio.m4a fixture.json; do
-  if [[ -f "$package_dir/.local/$fixture" ]]; then cp "$package_dir/.local/$fixture" "$app/Contents/Resources/"; fi
+cp -X "$binary_dir/NativeLyricsDemo" "$app/Contents/MacOS/"
+cp -X "$package_dir/script/Info.plist" "$app/Contents/Info.plist"
+for resource in "$package_dir/Sources/NativeLyricsDemo/Resources"/*.ttml; do
+  [[ ! -f "$resource" ]] || cp -X "$resource" "$app/Contents/Resources/"
 done
-xattr -cr "$app"
+for bundle in "$binary_dir"/*.bundle; do [[ ! -d "$bundle" ]] || cp -RX "$bundle" "$app/Contents/Resources/"; done
+for fixture in song.ttml audio.m4a fixture.json; do
+  if [[ -f "$package_dir/.local/$fixture" ]]; then cp -X "$package_dir/.local/$fixture" "$app/Contents/Resources/"; fi
+done
+# Finder/FileProvider metadata can be reattached to nested SwiftPM bundles.
+# Clear each path immediately before signing so a stale resource fork cannot
+# make the ad hoc demo bundle fail to launch.
+find "$app" -exec xattr -c {} \; 2>/dev/null || true
 codesign --force --sign - "$app"
 if [[ "${1:-}" != "--build-only" ]]; then /usr/bin/open -n "$app"; fi
 echo "$app"

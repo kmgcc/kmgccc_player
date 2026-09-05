@@ -17,7 +17,7 @@ of leaking DOM details: `coverBlurProfile`, `coverBlurRenderLayer`,
 visual/click timing offsets are all available before a production adapter is
 introduced. Artwork blur and ThemeStore color derivation stay with the host.
 
-The package contains a deterministic `LyricsProbe`, an AppKit `NativeLyricsDemo`, standard TTML fixtures, and the [validation record](VALIDATION.md). The demo stages the fixed local song fixture when it is available and falls back to `complex.ttml` otherwise.
+The package contains a deterministic `LyricsProbe`, an AppKit `NativeLyricsDemo`, standard TTML fixtures, and the [validation record](VALIDATION.md). The demo's `Sample` menu switches between the fixed library song, a motion laboratory, a long-vowel Glow showcase, a duet/Ruby example, and a chorus/background timing example. A Glow radius slider (0.5×–3×) makes the emphasis halo easy to compare without changing the default profile.
 
 ```sh
 swift test --package-path Tools/NativeLyrics --quiet

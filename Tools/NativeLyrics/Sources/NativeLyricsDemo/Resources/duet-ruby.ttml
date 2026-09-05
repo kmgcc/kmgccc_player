@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tt xmlns="http://www.w3.org/ns/ttml"
+    xmlns:ttm="http://www.w3.org/ns/ttml#metadata"
+    xmlns:tts="http://www.w3.org/ns/ttml#styling"
+    xml:lang="ja">
+  <head>
+    <metadata>
+      <ttm:title>Duet &amp; Ruby — native lyric layers</ttm:title>
+      <ttm:agent xml:id="a" type="person"/>
+      <ttm:agent xml:id="b" type="person"/>
+    </metadata>
+  </head>
+  <body dur="42s"><div>
+    <p begin="0s" end="8s" ttm:agent="a">
+      <span begin="0s" end="2.2s" tts:ruby="container"><span tts:ruby="base">星空</span><span tts:ruby="text" begin="0s" end="1.1s">ほし</span><span tts:ruby="text" begin="1.1s" end="2.2s">ぞら</span></span>
+      <span begin="2.2s" end="4.2s">を </span><span begin="4.2s" end="8s">見上げて</span>
+      <span ttm:role="x-translation" xml:lang="zh-Hans">抬头仰望星空</span>
+    </p>
+    <p begin="7s" end="16s" ttm:agent="b">
+      <span begin="0s" end="2.2s">Across </span><span begin="2.2s" end="4.4s">the </span><span begin="4.4s" end="7s">sky</span>
+      <span ttm:role="x-bg" begin="1s" end="8.7s"><span begin="0s" end="2.2s">The </span><span begin="2.2s" end="4.4s">sky </span><span begin="4.4s" end="7.7s">answers</span></span>
+      <span ttm:role="x-translation" xml:lang="zh-Hans">划过今晚的天空</span>
+    </p>
+    <p begin="17s" end="26s" ttm:agent="a">
+      <span begin="0s" end="2.2s" tts:ruby="container"><span tts:ruby="base">光</span><span tts:ruby="text" begin="0s" end="2.2s">ひかり</span></span>
+      <span begin="2.2s" end="4.6s">の </span><span begin="4.6s" end="9s">中で</span>
+      <span ttm:role="x-translation" xml:lang="zh-Hans">在光芒之中</span>
+    </p>
+    <p begin="25s" end="36s" ttm:agent="b">
+      <span begin="0s" end="2.3s">Hold </span><span begin="2.3s" end="4.8s">on </span><span begin="4.8s" end="8s">to </span><span begin="8s" end="11s">me</span>
+      <span ttm:role="x-translation" xml:lang="zh-Hans">请紧紧抓住我</span>
+    </p>
+  </div></body>
+</tt>

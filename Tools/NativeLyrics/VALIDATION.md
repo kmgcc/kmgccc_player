@@ -14,7 +14,7 @@ swift run --package-path Tools/NativeLyrics --quiet LyricsProbe \
 bash Tools/NativeLyrics/script/build_and_run.sh
 ```
 
-The current run passes **26 XCTest cases**. The fixed-song probe loads 80 groups and 549 timed spans after the fixture preparation step; the 120 Hz paused replay reports a render p95 of about 0.67 ms/frame and keeps glyph cache usage bounded by the configured budget.
+The current run passes **28 XCTest cases**. The fixed-song probe loads 80 groups and 549 timed spans after the fixture preparation step; the 120 Hz paused replay reports a render p95 of about 0.67 ms/frame and keeps glyph cache usage bounded by the configured budget.
 
 The fixture preparation script is deliberately outside the renderer. It converts the library's legacy absolute-time resource into standard parent-relative TTML, while the public `TTMLDecoder` rejects unnamespaced timed input and accepts only the standard TTML contract.
 
@@ -36,6 +36,10 @@ The browser capture is an oracle for geometry and state only. It is not linked i
 - follow after manual scroll;
 - smooth words, discrete words, and line-timing-only modes;
 - Emphasis, Glow, Translation, Ruby, and Blur toggles;
+- Sample menu: fixed library song, motion laboratory, long-vowel Glow showcase, duet/Ruby, and chorus/background fixtures;
+- Glow radius sweep from 0.5× through 3×; the halo follows the per-character glyph alpha and remains clipped to the glyph silhouette;
+- interlude dots aligned to the same horizontal inset as the following lyric row;
+- seek while paused, playback-stall highlight smoothing, and exit-time highlight catch-up;
 - Lighter/Darker cover profile;
 - Full/Base/Highlight cover render layers;
 - Hide active, Suppress glow, Generic cover, and Lyric dodge flags;
