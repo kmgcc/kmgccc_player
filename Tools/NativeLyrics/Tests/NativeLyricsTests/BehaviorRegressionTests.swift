@@ -25,6 +25,23 @@ final class BehaviorRegressionTests: XCTestCase {
         XCTAssertGreaterThan(view.render(at:4.8).groups[0].blur,2)
     }
 
+    @MainActor func testOnlyFocusedRowStaysSharpWhenTTMLRangesOverlap() throws {
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='4s'><span begin='0s' end='4s'>Main</span></p><p begin='2s' end='6s'><span begin='0s' end='4s'>Background</span></p><p begin='4.5s' end='7.5s'><span begin='0s' end='3s'>Next</span></p></div></body></tt>".utf8)
+        let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
+        view.configuration.timing.enabled = false
+        try view.load(ttml:data,playing:true,hostTime:0)
+        let frame = view.render(at:3)
+        XCTAssertEqual(frame.timeline.focus,0)
+        XCTAssertEqual(frame.groups[0].blur,0,accuracy:0.001)
+        XCTAssertGreaterThan(frame.groups[1].blur,2)
+        view.render(at:4)
+        view.render(at:5.8)
+        let next = view.render(at:6.4)
+        XCTAssertEqual(next.timeline.focus,1)
+        XCTAssertGreaterThan(next.groups[0].blur,0)
+        XCTAssertEqual(next.groups[1].blur,0,accuracy:0.001)
+    }
+
     @MainActor func testScrubCancelsCascadeAndMovesStackImmediately() throws {
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
         view.configuration.timing.enabled = false

@@ -297,7 +297,13 @@ public struct LyricsFrame: Codable, Sendable {
             let y = group.y.value(now)
             let distance = abs(Double(i-focus))
             let clear = hoverInside || now < clearUntil
-            group.blur.set(configuration.blur && !clear && !group.active ? min(configuration.motion.maximumBlurRadius,configuration.motion.blurRadius+distance*0.6) : 0,at:now,duration:configuration.motion.blurTransition)
+            // AMLL keeps one focused row crisp even when several lyric groups
+            // are simultaneously hot (background vocal, duet, or overlapping
+            // TTML ranges).  Blur is a focus treatment, so an overlapping
+            // active group that is not the focus must still transition into
+            // the inactive blur state.
+            let isFocus = i == focus
+            group.blur.set(configuration.blur && !clear && !isFocus ? min(configuration.motion.maximumBlurRadius,configuration.motion.blurRadius+distance*0.6) : 0,at:now,duration:configuration.motion.blurTransition)
             let passed = configuration.hidePassedLines && i<(gap.map { $0.anchor+1 } ?? snapshot.focus) && clock.isPlaying
             let groupAlpha = snapshot.highlighted.contains(i) ? 0.85 : (document?.isWordTimed == false ? 0.2 : 1)
             group.opacity.set(passed ? 0 : groupAlpha,at:now)
