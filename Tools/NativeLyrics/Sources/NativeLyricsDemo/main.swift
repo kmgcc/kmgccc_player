@@ -78,6 +78,12 @@ import OSLog
         let glowSlider = NSSlider(value:1,minValue:0.5,maxValue:3,target:self,action:#selector(glowRadius(_:))); glowSlider.toolTip = "AMLL glow radius scale"; glowSlider.widthAnchor.constraint(equalToConstant:190).isActive = true; glowRow.addArrangedSubview(glowSlider)
         glowRow.addArrangedSubview(NSTextField(labelWithString:"0.5×  —  3×"))
         controls.addArrangedSubview(glowRow); controls.addArrangedSubview(status)
+        let interludeRow = NSStackView(); interludeRow.orientation = .horizontal; interludeRow.spacing = 8
+        interludeRow.addArrangedSubview(NSTextField(labelWithString:"Interlude dots"))
+        let interludeSlider = NSSlider(value:1,minValue:0.5,maxValue:2.5,target:self,action:#selector(interludeDotScale(_:)))
+        interludeSlider.toolTip = "Interlude dot size"; interludeSlider.widthAnchor.constraint(equalToConstant:190).isActive = true
+        interludeRow.addArrangedSubview(interludeSlider); interludeRow.addArrangedSubview(NSTextField(labelWithString:"0.5×  —  2.5×"))
+        controls.addArrangedSubview(interludeRow)
         let styles = NSStackView(); styles.orientation = .horizontal; styles.spacing = 10
         let style = NSPopUpButton(); style.addItems(withTitles:LyricsSurfaceStyle.allCases.map(\.rawValue)); style.target = self; style.action = #selector(changeSurface(_:)); styles.addArrangedSubview(style)
         let mode = NSPopUpButton(); mode.addItems(withTitles:["Smooth words","Discrete words","Line timing only"]); mode.target = self; mode.action = #selector(changeMode(_:)); styles.addArrangedSubview(mode)
@@ -122,10 +128,13 @@ import OSLog
             samplePopup.selectItem(at:-1); load(supplied)
         } else {
             let local = Bundle.main.resourceURL?.appendingPathComponent("song.ttml")
-            if let local, FileManager.default.fileExists(atPath:local.path) {
+            if let local, FileManager.default.fileExists(atPath:local.path), bundledLibrarySong() != nil {
                 selectedSample = .library; samplePopup.selectItem(at:Sample.library.rawValue); loadFixture(.library)
             } else {
-                selectedSample = .motion; samplePopup.selectItem(at:Sample.motion.rawValue); loadFixture(.motion)
+                // Motion starts with a five-second lead-in. Keep the first
+                // launch visibly populated on machines without the optional
+                // local library fixture; Motion remains selectable below.
+                selectedSample = .glow; samplePopup.selectItem(at:Sample.glow.rawValue); loadFixture(.glow)
             }
         }
         func argument(_ name: String) -> String? { args.firstIndex(of:name).flatMap { $0+1<args.count ? args[$0+1] : nil } }
@@ -251,6 +260,7 @@ import OSLog
     @objc private func changeMode(_ sender: NSPopUpButton) { lyrics.configuration.lineTimingOnly = sender.indexOfSelectedItem == 2; lyrics.configuration.highlightMode = sender.indexOfSelectedItem == 1 ? .discrete : .smooth }
     @objc private func fontSize(_ sender: NSSlider) { lyrics.configuration.fontSize = sender.doubleValue }
     @objc private func glowRadius(_ sender: NSSlider) { lyrics.configuration.glowRadiusScale = sender.doubleValue }
+    @objc private func interludeDotScale(_ sender: NSSlider) { lyrics.configuration.interludeDotScale = sender.doubleValue }
     @objc private func option(_ sender: NSButton) {
         let enabled = sender.state == .on
         switch sender.tag { case 0: lyrics.configuration.emphasis = enabled; case 1: lyrics.configuration.glow = enabled; case 2: lyrics.configuration.showTranslation = enabled; case 3: lyrics.configuration.showRuby = enabled; default: lyrics.configuration.blur = enabled }

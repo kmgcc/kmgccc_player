@@ -1,6 +1,6 @@
 # Native Lyrics / AMLL Parity Investigation
 
-2026-09-06 的状态与交互修正见 [Native behavior regressions](../Tools/NativeLyrics/BEHAVIOR-REGRESSIONS.md)：更新模糊生命周期、从上到下的点击级联、无弹簧 scrub、空格与异常词时间、高亮退出和公开 motion/channelBlend 接口。原生 gap anticipation 与稳定 BG reveal 是明确的产品差异，不能等同于逐项复制 upstream。
+2026-09-06 的状态与交互修正见 [Native behavior regressions](../Tools/NativeLyrics/BEHAVIOR-REGRESSIONS.md)：更新模糊生命周期、从上到下的点击级联、无弹簧 scrub、空格与异常词时间、高亮退出、收敛的 resize reflow、中心锚点间奏点和公开 motion/channelBlend 接口。原生 gap anticipation 与稳定 BG reveal 是明确的产品差异，不能等同于逐项复制 upstream。
 
 调查日期：2026-09-05。范围：可复用 macOS 原生歌词引擎及独立 Demo；不改变正式播放器现有渲染路径。本文件先于原生实现建立，作为实现和验收的规格。完成度和实测结果见 Demo 的 `VALIDATION.md`，不能从本文的设计目标推断已经达到 90%。
 
@@ -123,7 +123,7 @@ Swift 设置：单曲偏移默认 0、范围 ±15000ms；全局 advance 默认 0
 | resize | ResizeObserver→重测→同步 relayout；mask 重建按媒体时间恢复 | heights/prefix sums，先 bounds 再 commit | 新 layout 原子提交，保留 presentation pose/velocity |
 | pause/resume | word/mask 暂停，BG 展开，行 scale=1，布局仍 settle | 同类职责 | 媒体时钟与 UI 时钟分离，不能冻结所有层时间 |
 | seek | 显式 seek 清 buffer，间隙选择下一组；F 无 catch-up | 重复/倒退也判 jump，gap 回填上一并行组 | profile 明确区别，seek 必须可重复、无旧 mask |
-| interlude | >=4s（扣 next-start 250ms），+20ms 检测；无尾间奏 | 使用前缀最大 end 的区间并集，gap>=4s 不扣250 | intro/中间/重叠/seek/resize/pause/duet 点位 |
+| interlude | >=4s（扣 next-start 250ms），+20ms 检测；无尾间奏 | 使用前缀最大 end 的区间并集，gap>=4s 不扣250；原生三点以 following row inset 对齐、中心锚点缩放，尺寸由 `interludeDotScale` 控制 | intro/中间/重叠/seek/resize/pause/duet 点位 |
 | mouse | hover 全视图去 blur；group hover/pressed 底色；click/contextmenu | bottom wrapper 不 hover | 点击 main/BG 回同主行，命中实际动画位置 |
 | bottom | 外部 bottom 内容，可获得末尾焦点 | 独立 renderer，与主行共享 layout | 元数据/credits 显示和结束焦点 |
 | obscenity | full/partial + mask char，词长影响显示 | 转移到 data manager | 可选、默认关；保留作者 flag |
@@ -153,7 +153,7 @@ U `FocusController`：手动滚动挂起自动对齐时冻结上一 focus；若�
 
 F 累计 group 高度，默认 anchor=center、alignPosition=0.35。base Y=`H*alignPosition - selectedHeight/2 - prefixHeight - userOffset`；间奏插入 dotsHeight+2×0.4em，duet dots 靠右。初测 fallback=H/5。播放中的 stagger 从0.05s开始，越过 focus 后每组除1.05；sync/seek 不 stagger。F 用累计行底>=0，U 用 `top+height>=0` 决定延迟开始。
 
-U `LayoutCalculator.beginFrame/commit` 分离：先前缀和、focal top/height、scroll bounds，再 clamp user offset，最后生成 Y/visibility；对象池复用。新增 layout reason：playback、interaction end 保留 stagger；resize/config/seek/rebuild/discrete scroll 无 stagger；continuous touch scroll snap Y。新歌词 rebuild 仍从下方 spring 入场。
+U `LayoutCalculator.beginFrame/commit` 分离：先前缀和、focal top/height、scroll bounds，再 clamp user offset，最后生成 Y/visibility；对象池复用。新增 layout reason：playback、interaction end 保留 stagger；resize/config/seek/rebuild/discrete scroll 无 stagger；continuous touch scroll snap Y。新歌词 rebuild 仍从下方 spring 入场。原生在已有内容的 resize/config reflow 中使用可配置的临界阻尼 `motion.resizeSpring`，丢弃旧速度以避免长行换行时的过度弹性，同时保留旧 presentation pose。
 
 原生重排不能销毁 timeline/word clocks。布局缓存 key 包含 TTML identity、font descriptor、font size、width、language selection、duet padding、backing scale。width 改变时按现有 glyph identity 保存 pose，重测后从旧 presentation 位置到新目标，携带速度；尺寸为0时延后，不产出 NaN。自动 focus 与用户滚动 anchor 分开保存。不要在 render frame 里反复 CTFramesetter 重排。
 
@@ -247,7 +247,7 @@ CoreText对象在同一工作队列构建/使用；不要在后台布局和主�
 
 Demo固定本机歌曲《Bet On Me (feat. Tyler Shaw)》/ Walk Off the Earth & Tyler Shaw，时长约172.020s，549个timed spans、18处BG、两agent；可以模拟单调媒体时间，也可选择对应音频播放。素材准备保留原文件hash并生成标准TTML；音频和实际音乐库路径不进入公共提交。Demo 另有 `Library songs` 菜单扫描已登记的资料库 `Tracks` 目录，提供最多 48 首已通过导入验证的歌曲用于切换和人工对照。项目现有 complex/ruby/duet fixtures及自有边界fixture补足歌曲缺失场景。
 
-控制：play/pause、seek slider/数值时间、±5s、点击歌词、手动跟随恢复、font/size、语言、profile、smooth/discrete、emphasis/glow开关、Glow 半径 0.5×–3×、五组标准 TTML 示例（固定歌曲、动态运动、长词 Glow、Duet/Ruby、Chorus/BG）、资料库歌曲选择、resize、固定时间截图/轨迹、窗口关闭/重开。Native 的 Glow 以每个字形的 Core Text alpha 位图作为 mask，再用 Core Image 高斯滤镜；不填充带 padding 的 glyph tile，避免出现矩形光团。间奏点使用与歌词行相同的水平 inset，duet 仍按右侧语义对齐。测试工具能以相同事件序列驱动native和独立浏览器reference。reference可用WebKit/Chromium，但不链接进原生引擎或Demo。
+控制：play/pause、seek slider/数值时间、±5s、点击歌词、手动跟随恢复、font/size、语言、profile、smooth/discrete、emphasis/glow开关、Glow 半径 0.5×–3×、间奏点尺寸 0.5×–2.5×、五组标准 TTML 示例（固定歌曲、动态运动、长词 Glow、Duet/Ruby、Chorus/BG）、资料库歌曲选择、resize、固定时间截图/轨迹、窗口关闭/重开。Native 的 Glow 以每个字形的 Core Text alpha 位图作为 mask，再用 Core Image 高斯滤镜；不填充带 padding 的 glyph tile，避免出现矩形光团。间奏点使用与歌词行相同的水平 inset、中心 transform anchor，duet 仍按右侧语义对齐。测试工具能以相同事件序列驱动native和独立浏览器reference。reference可用WebKit/Chromium，但不链接进原生引擎或Demo。
 
 迁移阶段：
 
@@ -316,3 +316,25 @@ Core Image filter，避免每帧创建 filter；最终 plus-lighter/plus-darker
 cover-blur 的背景图、blur radius、主题取色和全屏容器属于宿主渲染责任，不能塞进 TTML 或让歌词 view 读取音频/封面服务。Demo 现在保留可实际验证的窗口、采样、歌词样式、字体、glow、暂停/播放、seek、TTML/音频导入和三条独立混合通道；cover-blur 的 full/base/highlight、隐藏 active、抑制 glow、generic cover 与 lyric dodge 仍由公开 `LyricsConfiguration` 接口提供，生产接入时由 `LyricsSurfaceManager` 将 ThemeStore 的 Display P3/sRGB 语义颜色和宿主的背景 compositor 映射到同一配置。
 
 当前 Demo 对 APP fork 的几何实测也已固定为验收基线：760pt 宽、主字号 38、翻译 28.5、主行 line-height 1.42em、line wrapper 前后留白抵消 `.lyricLine` 的负 margin；固定歌曲前 9 个可见组的 DOM/native 高度误差约 0.1pt、位置误差约 0.3pt。这个结果只代表当前字体和 viewport，不替代后续不同字体、resize、全屏和实机合成验收。
+
+## 15. 当前可配置接口清单与评估
+
+正式接入时，宿主只需要维护一个 `LyricsConfiguration`，再通过 `LyricsView` 的时钟和交互入口驱动渲染。当前接口已经覆盖 Demo 与 APP fork 的主要视觉、时序和交互差异：
+
+| 类别 | 已开放接口 | 当前评估 |
+|---|---|---|
+| 字体与排版 | `fontName/fontSize/fontWeight`、翻译字体、`translationLanguage/romanizationLanguage`、`showTranslation/showRomanization/showRuby`、`alignPosition/alignAnchor/alignOffset`、`obscenity/maskCharacter` | 已足够覆盖 CJK/Latin、翻译、音译、Ruby、左右对唱和窄宽度换行；region 的动态 TTML 样式仍按 AMLL profile 诊断，不把任意 TTML2 region 当作歌词布局 |
+| 基础颜色 | `palette.mainActive/mainInactive/translation/background* /emphasisGlow` 及两个 BG opacity | 已覆盖 window、AppleStyle、cover-blur 明暗皮肤；ThemeStore/P3 取色由宿主注入 |
+| 合成 | `channelBlend.inactive/current/highlight`、`blendMode`、`blendOpacity`、`backdropColor`、`coverBlurRenderLayer` | highlight 在单字形 alpha mask 内合成；inactive/current 才可选整层 compositor，避免把高亮模式错误作用到背景 |
+| 运动参数 | `motion.blurRadius/maximumBlurRadius/blurTransition/pointerExitDelay/clickStagger/backgroundTransition/resizeSpring/exitFade/catchUpMinimum/catchUpMaximum/highlightAnticipation`、`positionSpring` | 已将 resize 与 focus spring 分开；默认 resize 为临界阻尼并清除旧速度，避免半句换行时过度弹性。逐参数暴露便于皮肤调校，但不应由 UI 把 duration 伪装成 spring |
+| 歌词行为 | `profile`、`highlightMode`、`lineTimingOnly`、`preserveCompletedHighlight`、`hidePassedLines`、`alwaysPostpositionBackground`、`emphasis`、`glow`、`glowRadiusScale`、`blur`、`scale`、`spring`、`hoverBackground`、`bottomText`、`interludeDotScale` | 已覆盖当前 fork/upstream、连续/离散高亮、退出追赶、并行歌词、BG 顺序、间奏、暂停、点击和滚轮。间奏点尺寸已开放，位置和缩放锚点由引擎固定为行内 inset + 中心 anchor |
+| Cover-blur / fullscreen | `surface`、`coverBlurProfile`、`coverBlurGenericMode`、`coverBlurHideActiveMainLine`、`coverBlurSuppressEmphasisGlow`、`fullscreenAppleStyleMode`、`fullscreenLyricDodgeMode`、`coverBlurThemeColor` | 保留 APP 的语义开关；封面图模糊、背景 shader、surface 生命周期仍属于 `LyricsSurfaceManager`/宿主 |
+| 时间与质量 | `timing.enabled/trackOffset/globalAdvance/leadIn/nearSwitchGap/seekOffset`、`renderScale`、`fpsCap`、`cacheBudgetBytes`、`overscan` | 输入仍严格是标准 TTML；offset 与点击 seek 分开，质量/缓存设置不会改歌词时间 |
+| 驱动与交互 | `load(ttml:)`、`synchronize(time:playing:seek:motion:)`、`onSeek`、`onFrame`、`scroll(by:)`、`followCurrentLyrics()`、`setPointerInside`、`snapshotImage`、`automaticDisplayUpdates` | 足够接入播放器、拖拽 seek、点击跳转、滚轮回位、性能采样和窗口/全屏；宿主不需要触碰 layer tree |
+
+仍建议在正式接入前补充，但不应阻塞当前原生 Demo 的项目：
+
+- 如果产品皮肤需要，补充 `interludeDotColor`、`interludeDotSpacing` 和 hover/pressed 颜色；目前颜色继承主行 active，间距继承 AMLL 固定比例。
+- 如果一首歌需要多条翻译同时显示，补充翻译层的选择策略和每层字体/颜色；当前接口明确选择一种语言，避免把 TTML 关联层静默叠加。
+- 如果外部 accessibility 或测试工具需要逐行标识，补充稳定的 group/word accessibility element；现阶段 NSView 已有整体 Lyrics 语义和复制菜单。
+- 任意 TTML2 region、图像/音频嵌入、wallclock/SMPTE、垂直书写和宿主背景 shader 不属于歌词引擎配置，应继续由输入适配器或宿主负责，不通过“万能 style”接口扩大职责。

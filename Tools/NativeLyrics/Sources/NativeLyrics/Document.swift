@@ -153,6 +153,9 @@ public struct LyricsConfiguration: Equatable, Sendable {
     public var alignAnchor: LyricAlignment = .center
     public var highlightMode: HighlightMode = .smooth
     public var wordFadeWidth: Double = 0.5
+    /// Relative diameter of the three-dot interlude indicator. The indicator
+    /// keeps a centered transform anchor while this value changes its size.
+    public var interludeDotScale: Double = 1
     public var emphasis = true
     public var glow = true
     public var glowRadiusScale: Double = 1
@@ -208,6 +211,10 @@ public struct LyricsMotionConfiguration: Equatable, Sendable {
     public var pointerExitDelay: Double = 0
     public var clickStagger: Double = 0.055
     public var backgroundTransition: Double = 0.35
+    /// Resize/configuration reflow uses a critically damped track by default.
+    /// This keeps newly wrapped half-lines continuous without the large bounce
+    /// that is useful for a focus change but distracting during window resize.
+    public var resizeSpring = SpringParameters(mass: 1, damping: 22, stiffness: 120, soft: true)
     public var exitFade: Double = 0.28
     public var catchUpMinimum: Double = 0.12
     public var catchUpMaximum: Double = 0.28

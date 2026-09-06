@@ -27,6 +27,19 @@ final class MotionTests: XCTestCase {
         XCTAssertEqual(spring.value(0.14),x,accuracy:1e-9); XCTAssertEqual(spring.velocity(0.14),v,accuracy:1e-9)
         XCTAssertEqual(spring.value(6),-20,accuracy:0.01)
     }
+    func testResizeRetargetCanDropInheritedVelocity() {
+        var spring = SpringTrack(0)
+        spring.retarget(300,at:0)
+        let before = spring.value(0.18)
+        let resize = SpringParameters(mass:1,damping:22,stiffness:120,soft:true)
+        spring.retarget(-120,at:0.18,parameters:resize,preserveVelocity:false)
+        XCTAssertEqual(spring.value(0.18),before,accuracy:1e-9)
+        XCTAssertEqual(spring.velocity(0.18),0,accuracy:1e-9)
+        let first = spring.value(0.24), second = spring.value(0.32), settled = spring.value(2)
+        XCTAssertLessThan(first,before)
+        XCTAssertLessThan(second,first)
+        XCTAssertGreaterThanOrEqual(settled,-120.01)
+    }
     func testDelayedRetargetKeepsMovingBeforeDeadline() {
         var spring = SpringTrack(0); spring.retarget(300,at:0)
         var uninterrupted = spring

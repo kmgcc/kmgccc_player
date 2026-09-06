@@ -52,13 +52,13 @@ struct SpringTrack {
         if origin == target && initialVelocity == 0 { return 0 }
         return solver.velocity(target:target-origin,initialVelocity:initialVelocity,time:max(0,time-start))
     }
-    mutating func retarget(_ value: Double, at time: Double, delay: Double = 0, parameters: SpringParameters? = nil) {
+    mutating func retarget(_ value: Double, at time: Double, delay: Double = 0, parameters: SpringParameters? = nil, preserveVelocity: Bool = true) {
         resolve(time)
         let p = parameters ?? params
         if let q = pending, abs(q.target-value)<0.00001, q.params == p { return }
         if pending == nil && abs(target-value)<0.00001 && p == params { return }
         if delay > 0 { pending = (time+delay,value,p); return }
-        let v = velocity(time), x = self.value(time)
+        let v = preserveVelocity ? velocity(time) : 0, x = self.value(time)
         origin = x; initialVelocity = v; start = time; target = value; params = p; solver = p.system; pending = nil
     }
     mutating func snap(_ value: Double, at time: Double) {

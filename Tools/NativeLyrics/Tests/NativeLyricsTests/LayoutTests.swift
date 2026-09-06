@@ -30,6 +30,27 @@ final class LayoutTests: XCTestCase {
         XCTAssertGreaterThan(after.layoutCount,before.layoutCount)
         let steady = view.render(at:5.1); XCTAssertEqual(steady.layoutCount,after.layoutCount)
     }
+    @MainActor func testResizeUsesGentleReflowForWrappedLine() throws {
+        let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
+        try view.load(ttml:Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='1s' end='12s'><span begin='0s' end='11s'>Watch the stars moving across the sky tonight</span></p><p begin='12s' end='20s'>Next line</p></div></body></tt>".utf8),playing:true,hostTime:0)
+        for i in 0...600 { _ = view.render(at:Double(i)/120) }
+        let before = view.render(at:5)
+        view.setFrameSize(NSSize(width:390,height:600))
+        let atResize = view.render(at:5)
+        let first = view.render(at:5.08)
+        let second = view.render(at:5.18)
+        let target = view.render(at:7).groups[0].y
+        XCTAssertEqual(atResize.groups[0].y,before.groups[0].y,accuracy:0.001)
+        if target < atResize.groups[0].y {
+            XCTAssertLessThan(first.groups[0].y,atResize.groups[0].y)
+            XCTAssertLessThan(second.groups[0].y,first.groups[0].y)
+            XCTAssertGreaterThanOrEqual(second.groups[0].y,target-0.01)
+        } else {
+            XCTAssertGreaterThan(first.groups[0].y,atResize.groups[0].y)
+            XCTAssertGreaterThan(second.groups[0].y,first.groups[0].y)
+            XCTAssertLessThanOrEqual(second.groups[0].y,target+0.01)
+        }
+    }
     @MainActor func testInvalidReloadPreservesSurface() throws {
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
         let valid = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='1s' end='3s'>Keep me</p></div></body></tt>".utf8)

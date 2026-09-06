@@ -8,6 +8,7 @@ The public surface is intentionally small:
 - `LyricsView.synchronize(time:playing:seek:)` receives host media state;
 - `LyricsView.onSeek` returns the source click target;
 - `LyricsConfiguration` selects the current-player/upstream timing profile, typography, language layers, emphasis, cover-blur channels, compositing opacity/blend mode, raster scale, frame-rate cap, and interaction behavior.
+- Resize reflow is separately tunable through `configuration.motion.resizeSpring`; the interlude indicator uses a centered transform anchor and its diameter is controlled by `configuration.interludeDotScale`.
 
 The APP-only adapter switches are represented as semantic configuration instead
 of leaking DOM details: `coverBlurProfile`, `coverBlurRenderLayer`,
@@ -17,7 +18,7 @@ of leaking DOM details: `coverBlurProfile`, `coverBlurRenderLayer`,
 visual/click timing offsets are all available before a production adapter is
 introduced. Artwork blur and ThemeStore color derivation stay with the host.
 
-The package contains a deterministic `LyricsProbe`, an AppKit `NativeLyricsDemo`, standard TTML fixtures, and the [validation record](VALIDATION.md). The demo's `Sample` menu switches between the fixed library song, a motion laboratory, a long-vowel Glow showcase, a duet/Ruby example, and a chorus/background timing example. A Glow radius slider (0.5×–3×) makes the emphasis halo easy to compare without changing the default profile.
+The package contains a deterministic `LyricsProbe`, an AppKit `NativeLyricsDemo`, standard TTML fixtures, and the [validation record](VALIDATION.md). The demo's `Sample` menu switches between the fixed library song, a motion laboratory, a long-vowel Glow showcase, a duet/Ruby example, and a chorus/background timing example. A Glow radius slider (0.5×–3×) and an interlude-dot size slider (0.5×–2.5×) make those effects easy to compare without changing the default profile. If the optional local library fixture is unavailable or invalid, the Demo starts on the Glow sample so the initial paused window contains visible lyric content instead of only blurred future rows.
 
 The Demo also exposes a `Library songs` menu. It scans the registered player-library `Tracks` folders and offers validated lyric files (up to 48 entries) with their sidecar title/artist/album and adjacent audio when available. This is a Demo import surface only: it repairs the legacy AMLL library export (compact `mm:ss`, bare decimal seconds, repeated absolute descendant times, and old namespace shadows) into standard parent-relative TTML before calling `LyricsView`. The renderer itself still accepts standard TTML only; LRC and other lyric formats remain outside this package.
 

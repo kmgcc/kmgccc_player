@@ -22,12 +22,14 @@ The forward gap anticipation is an intentional native product extension. The for
 
 ## Host API
 
-`LyricsConfiguration` remains the single configuration value. `motion` exposes blur radius/cap/transition, pointer exit delay, click stagger, BG reveal duration, exit fade, catch-up bounds and highlight anticipation. Existing typography, palette, alignment, timing, spring, quality and surface controls remain available. These are renderer-owned semantics, not host mutations of internal layers.
+`LyricsConfiguration` remains the single configuration value. `motion` exposes blur radius/cap/transition, pointer exit delay, click stagger, BG reveal duration, resize spring, exit fade, catch-up bounds and highlight anticipation. The top-level configuration also exposes interlude-dot scale. Existing typography, palette, alignment, timing, spring, quality and surface controls remain available. These are renderer-owned semantics, not host mutations of internal layers.
 
 ```swift
 var configuration = LyricsConfiguration()
 configuration.motion.pointerExitDelay = 0 // blur begins immediately on exit
 configuration.motion.blurTransition = 0.45
+configuration.motion.resizeSpring = SpringParameters(mass: 1, damping: 22, stiffness: 120, soft: true)
+configuration.interludeDotScale = 1
 configuration.channelBlend = .init(
     inactive: .normal,
     current: .normal,
@@ -43,6 +45,6 @@ All-nil channel modes preserve the surface preset. Setting any channel enables e
 
 `BehaviorRegressionTests` covers blur transition and pointer deadline, top-to-bottom click startup, scrub cancellation, malformed/whitespace mask continuity, forward gap anticipation, catch-up past truncated group end, and emphasis teardown with independent blend channels. Existing decoder, timing, layout, cache and spring tests remain required.
 
-The completed regression run passes 44 tests. A background reveal test also checks continuous entry/exit height and bounded scale with no independent slide. Pointer enter/move/exit events are handled by an always-active tracking area; pointer exit starts the blur tween immediately by default. Manual browsing resumes after the next focus transition or the profile timeout, using the same ordered spring cascade rather than a hard reset.
+The completed regression run passes 46 tests. A background reveal test also checks continuous entry/exit height and bounded scale with no independent slide. Pointer enter/move/exit events are handled by an always-active tracking area; pointer exit starts the blur tween immediately by default. Resize reflow uses a critically damped, zero-initial-velocity track so a newly wrapped half-line follows the new geometry without focus-change bounce. The three interlude dots use a centered transform anchor and expose their diameter through `interludeDotScale`. Manual browsing resumes after the next focus transition or the profile timeout, using the same ordered spring cascade rather than a hard reset.
 
 Live window checks cover visible blur on non-current rows, sharp current text, library selection of 3 Strikes, playback, and clear manual browsing. Screenshot observations do not establish a numerical visual-parity score or a complete performance benchmark. Complex overlapping voices, different skins/backdrops and long resize/seek sequences remain part of the broader parity acceptance matrix.

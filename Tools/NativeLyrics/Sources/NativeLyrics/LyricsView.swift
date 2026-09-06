@@ -96,7 +96,9 @@ public struct LyricsFrame: Codable, Sendable {
         layerUsesCoreImageFilters = true
         layer?.masksToBounds = true; layer?.addSublayer(content)
         content.anchorPoint = .zero; content.addSublayer(dots); content.addSublayer(bottom)
-        dots.anchorPoint = .zero
+        // Keep the interlude indicator's transform centered so its entrance,
+        // breathing and exit scaling never pull it toward the leading edge.
+        dots.anchorPoint = CGPoint(x:0.5,y:0.5)
         for _ in 0..<3 { let dot = CALayer(); dot.backgroundColor = NSColor.white.cgColor; dots.addSublayer(dot); dotLayers.append(dot) }
         bottom.alignmentMode = .center; bottom.foregroundColor = NSColor.white.withAlphaComponent(0.3).cgColor
         displayTarget.view = self
@@ -112,7 +114,11 @@ public struct LyricsFrame: Codable, Sendable {
         rebuildTimeline(); interaction.resume(); gapIdentity = nil; lastFocus = -1
         clock.synchronize(time:time,playing:playing,host:hostTime)
         previousHost = nil; layoutDirty = true; seekPending = true
-        render(at:hostTime); wake()
+        // A view can be loaded before Auto Layout has assigned its final
+        // bounds. Do not commit a zero-sized presentation; the first valid
+        // window layout below will perform the initial render.
+        if bounds.width > 0 && bounds.height > 0 { render(at:hostTime) }
+        wake()
     }
     public func synchronize(time: Double, playing: Bool, seek: Bool = false, motion: LyricsSeekMotion = .immediate, hostTime: Double = CACurrentMediaTime()) {
         guard time.isFinite else { return }
@@ -143,6 +149,13 @@ public struct LyricsFrame: Codable, Sendable {
                 observations.append(NotificationCenter.default.addObserver(forName:name,object:window,queue:.main) { [weak self] _ in
                     MainActor.assumeIsolated { self?.wake() }
                 })
+            }
+            // `load` may have happened before constraints were resolved. Force
+            // one valid-size commit when the view enters a window so the Demo
+            // cannot open with only the pre-layout blurred layer state.
+            layoutSubtreeIfNeeded()
+            if bounds.width > 0 && bounds.height > 0 && document != nil {
+                render(at:CACurrentMediaTime())
             }
             wake()
         }
@@ -219,6 +232,7 @@ public struct LyricsFrame: Codable, Sendable {
             let active = snapshot.playing.contains(i)
             if seek {
                 group.exitTime = nil; group.lastMedia = media; group.exitMedia = media
+                group.isReflowing = false
             } else if group.active && !active { group.exitTime = now; group.exitMedia = media }
             else if !group.active && active { group.exitTime = nil }
             group.active = active
@@ -263,7 +277,10 @@ public struct LyricsFrame: Codable, Sendable {
         var frames: [LyricsGroupFrame] = []
         for (i,group) in groups.enumerated() {
             let target = origin+offsets[i]
-            if configuration.spring && !immediateSeek && !interaction.suspended {
+            if group.isReflowing && !seek && configuration.spring {
+                group.y.retarget(target,at:now,parameters:configuration.motion.resizeSpring,preserveVelocity:!reflowed)
+                if group.y.settled(now) { group.isReflowing = false }
+            } else if configuration.spring && !immediateSeek && !interaction.suspended {
                 let delay = seekCascade
                     ? min(0.6,Double(max(0,i-firstVisible))*configuration.motion.clickStagger)
                     : (focusChanged ? stagger : 0)
@@ -272,7 +289,10 @@ public struct LyricsFrame: Codable, Sendable {
                 group.y.retarget(target,at:now,delay:remainingDelay,parameters:position)
             } else if interaction.suspended && configuration.spring && !immediateSeek {
                 group.y.retarget(target,at:now,parameters:position)
-            } else { group.y.snap(target,at:now) }
+            } else {
+                group.isReflowing = false
+                group.y.snap(target,at:now)
+            }
             group.y.resolve(now)
             let y = group.y.value(now)
             let distance = abs(Double(i-focus))
@@ -369,7 +389,8 @@ public struct LyricsFrame: Codable, Sendable {
         guard let gap = snapshot.interlude, configuration.effectiveRenderLayer != .highlight, !interaction.dotsHidden(now) else { dots.isHidden = true; return }
         if gap != gapIdentity { gapIdentity = gap; gapEntrance = configuration.profile == .upstream ? media : gap.range.start }
         let sample = interludeSample(elapsed:media-gapEntrance,duration:gap.range.end-gapEntrance,profile:configuration.profile)
-        let size = configuration.fontSize*0.3, step = size*1.7
+        let dotScale = configuration.interludeDotScale.isFinite ? min(4,max(0.25,configuration.interludeDotScale)) : 1
+        let size = max(1,configuration.fontSize*0.3*dotScale), step = size*1.7
         let artisticDots = configuration.surface == .artisticFullscreen || configuration.fullscreenLyricDodgeMode
         let coverBlurDots = configuration.usesCoverBlurCompositing
         dots.isHidden = false
@@ -380,10 +401,12 @@ public struct LyricsFrame: Codable, Sendable {
         // the following line started at `pad` points in from it.
         let pad = bounds.width <= 500 ? 20.0 : configuration.fontSize
         let dotX = duet ? bounds.width-pad-step*3 : pad
-        dots.frame = CGRect(x:dotX,y:origin+offsets[min(offsets.count-1,max(0,gap.anchor+1))]-configuration.fontSize*0.7,width:step*3,height:configuration.fontSize)
+        let dotWidth = step*3, dotHeight = configuration.fontSize
+        dots.bounds = CGRect(x:0,y:0,width:dotWidth,height:dotHeight)
+        dots.position = CGPoint(x:dotX+dotWidth/2,y:origin+offsets[min(offsets.count-1,max(0,gap.anchor+1))]-configuration.fontSize*0.7+dotHeight/2)
         dots.transform = CATransform3DMakeScale(sample.scale,sample.scale,1)
         for i in 0..<3 {
-            dotLayers[i].frame = CGRect(x:Double(i)*step,y:0,width:size,height:size)
+            dotLayers[i].frame = CGRect(x:Double(i)*step,y:(dotHeight-size)/2,width:size,height:size)
             dotLayers[i].cornerRadius = size/2
             if coverBlurDots {
                 dotLayers[i].opacity = 1

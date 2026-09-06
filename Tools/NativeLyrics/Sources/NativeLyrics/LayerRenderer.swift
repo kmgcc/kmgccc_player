@@ -310,6 +310,10 @@ final class GroupLayers {
     var exitTime: Double?
     var exitMedia = 0.0
     var lastMedia = 0.0
+    /// Set for an existing group after width/font reflow. LyricsView keeps the
+    /// resize spring until this track settles instead of switching back to
+    /// the more lively focus spring on the very next display tick.
+    var isReflowing = false
     var isHovered = false
     var isVisible = true
     let index: Int
@@ -353,7 +357,7 @@ final class GroupLayers {
         background = layout.background.map { LineLayers($0,cache:cache,scale:scale,config:config,previous:oldBG,now:now,buildContent:!(oldBG?.words.isEmpty ?? true)) }
         oldMain.root.removeFromSuperlayer(); oldBG?.root.removeFromSuperlayer()
         root.addSublayer(main.root); if let background { backgroundWrapper.addSublayer(background.root) }
-        self.layout = layout
+        self.layout = layout; isReflowing = true
     }
     func settled(_ time: Double) -> Bool {
         y.settled(time) && scale.settled(time) && reveal.settled(time) && opacity.settled(time) && blur.settled(time) && main.settled(time) && (background?.settled(time) ?? true) && (exitTime.map { time-$0>2 } ?? true)
