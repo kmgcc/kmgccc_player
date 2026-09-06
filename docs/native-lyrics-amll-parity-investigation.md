@@ -120,7 +120,7 @@ Swift 设置：单曲偏移默认 0、范围 ±15000ms；全局 advance 默认 0
 | enter/exit | Y spring、scale、blur、alpha；F exit catch-up | UI dirty/commit 解耦 | 保留位置速度，seek 取消 catch-up |
 | scroll | wheel 50px/line；5s 回归；wheel 不设 touch flag | interaction idle150ms +5s；focus 冻结 | AppKit 事件坐标、momentum、回归，避免双重惯性 |
 | focus | scrollToIndex 同时间线 | 独立 line/interlude/bottom 焦点 | 手动滚动期间冻结 focus，歌词时间继续 |
-| resize | ResizeObserver→重测→同步 relayout；mask 重建按媒体时间恢复 | heights/prefix sums，先 bounds 再 commit | 新 layout 原子提交，保留 presentation pose/velocity |
+| resize | ResizeObserver→重测→同步 relayout；mask 重建按媒体时间恢复 | heights/prefix sums，先 bounds 再 commit | 新 layout 原子提交；保留 presentation pose，focus 变化保留速度，纯 resize 使用临界阻尼并清除旧速度 |
 | pause/resume | word/mask 暂停，BG 展开，行 scale=1，布局仍 settle | 同类职责 | 媒体时钟与 UI 时钟分离，不能冻结所有层时间 |
 | seek | 显式 seek 清 buffer，间隙选择下一组；F 无 catch-up | 重复/倒退也判 jump，gap 回填上一并行组 | profile 明确区别，seek 必须可重复、无旧 mask |
 | interlude | >=4s（扣 next-start 250ms），+20ms 检测；无尾间奏 | 使用前缀最大 end 的区间并集，gap>=4s 不扣250；原生三点以 following row inset 对齐、中心锚点缩放，尺寸由 `interludeDotScale` 控制 | intro/中间/重叠/seek/resize/pause/duet 点位 |
@@ -245,7 +245,7 @@ CoreText对象在同一工作队列构建/使用；不要在后台布局和主�
 
 独立 package 放在 `Tools/NativeLyrics`，产出 NativeLyrics library、NativeLyricsDemo AppKit `.app`、测试和离线轨迹导出工具；父Xcode app保持原样。正式输入只有规范TTML。
 
-Demo固定本机歌曲《Bet On Me (feat. Tyler Shaw)》/ Walk Off the Earth & Tyler Shaw，时长约172.020s，549个timed spans、18处BG、两agent；可以模拟单调媒体时间，也可选择对应音频播放。素材准备保留原文件hash并生成标准TTML；音频和实际音乐库路径不进入公共提交。Demo 另有 `Library songs` 菜单扫描已登记的资料库 `Tracks` 目录，提供最多 48 首已通过导入验证的歌曲用于切换和人工对照。项目现有 complex/ruby/duet fixtures及自有边界fixture补足歌曲缺失场景。
+Demo固定本机歌曲《Bet On Me (feat. Tyler Shaw)》/ Walk Off the Earth & Tyler Shaw，时长约172.020s，549个timed spans、18处BG、两agent；可以模拟单调媒体时间，也可选择对应音频播放。素材准备保留原文件hash并生成标准TTML；音频和实际音乐库路径不进入公共提交。Demo启动时预览第一条有时间的歌词词；`--start 0` 可回到精确前奏时间。若本地固定歌曲缺失或无效，则回退到从0秒有歌词的 Glow fixture。Demo 另有 `Library songs` 菜单扫描已登记的资料库 `Tracks` 目录，提供最多 48 首已通过导入验证的歌曲用于切换和人工对照。项目现有 complex/ruby/duet fixtures及自有边界fixture补足歌曲缺失场景。
 
 控制：play/pause、seek slider/数值时间、±5s、点击歌词、手动跟随恢复、font/size、语言、profile、smooth/discrete、emphasis/glow开关、Glow 半径 0.5×–3×、间奏点尺寸 0.5×–2.5×、五组标准 TTML 示例（固定歌曲、动态运动、长词 Glow、Duet/Ruby、Chorus/BG）、资料库歌曲选择、resize、固定时间截图/轨迹、窗口关闭/重开。Native 的 Glow 以每个字形的 Core Text alpha 位图作为 mask，再用 Core Image 高斯滤镜；不填充带 padding 的 glyph tile，避免出现矩形光团。间奏点使用与歌词行相同的水平 inset、中心 transform anchor，duet 仍按右侧语义对齐。测试工具能以相同事件序列驱动native和独立浏览器reference。reference可用WebKit/Chromium，但不链接进原生引擎或Demo。
 

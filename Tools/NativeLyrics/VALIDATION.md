@@ -32,7 +32,7 @@ The browser capture is an oracle for geometry and state only. It is not linked i
 
 ## Manual Demo paths exercised
 
-- launch at time 0 with the fixed TTML/audio fixture;
+- launch at the first timed word with the fixed TTML/audio fixture (use `--start 0` to inspect the exact pre-roll);
 - play/pause and media clock progression;
 - seek slider and ±5s controls;
 - follow after manual scroll;
@@ -50,7 +50,7 @@ The browser capture is an oracle for geometry and state only. It is not linked i
 - the `Library songs` menu, including selecting a real absolute-time library export, title/metadata display, and an adjacent audio file when present;
 - a batch `--dump-import` check over player-library `lyrics.ttml` files, including one-line absolute timing and namespace-shadow cases;
 - prompt smooth-mask tracking during normal playback samples; paused and seeked samples still snap exactly to the requested media time.
-- launch without the optional local fixture, where the Demo falls back to the visible Glow sample instead of opening on an all-future blurred Motion lead-in.
+- launch without the optional local fixture, where the Demo falls back to the visible Glow sample instead of opening on an all-future blurred Motion lead-in; invalid local fixtures follow the same fallback.
 
 ## Remaining acceptance boundary
 

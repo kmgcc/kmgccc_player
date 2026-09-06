@@ -32,7 +32,7 @@ import OSLog
     private let lyrics = LyricsView(frame:.zero)
     private let play = NSButton(title:"Play",target:nil,action:nil)
     private let slider = NSSlider(value:0,minValue:0,maxValue:70,target:nil,action:nil)
-    private let status = NSTextField(labelWithString:""), clockLabel = NSTextField(labelWithString:"0:00 / 1:10")
+    private let status = NSTextField(labelWithString:""), clockLabel = NSTextField(labelWithString:"0:00.0 / 1:10.0")
     private let titleLabel = NSTextField(labelWithString:"Native Lyrics")
     private var player: AVAudioPlayer?
     private var clock = LyricsClock()
@@ -161,10 +161,24 @@ import OSLog
         do {
             let data = try Data(contentsOf:url)
             let imported = try DemoTTMLImporter.load(data)
-            try lyrics.load(ttml:imported.data)
+            // A number of valid library exports contain an instrumental lead-in
+            // before the first timed word. Starting the paused Demo at media
+            // zero would make every visible row a blurred future row. Preview
+            // the first timed word when no explicit start was requested;
+            // the slider still allows returning to zero for timing checks.
+            try lyrics.load(ttml:imported.data,time:0,playing:false)
+            let firstLine = lyrics.diagnosticTimings.first?.main
+            let firstWord = firstLine?.words.first { !$0.text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty }
+            let firstWordStart = firstWord?.range.start ?? firstLine?.range.start ?? 0
+            // Advance a small, bounded fraction into the first word so the
+            // initial paused frame is visibly readable rather than sitting on
+            // the mask's all-inactive leading edge.
+            let previewNudge = firstWord.map { min(0.15,max(0.06,$0.range.duration*0.5)) } ?? 0
+            let previewTime = max(0,firstWordStart+previewNudge)
             frameCosts.removeAll(); frameIntervals.removeAll(); lastFrameHost = nil; measurementStart = nil
             mediaURL = url; duration = max(1,lyrics.document?.duration ?? 70); slider.maxValue = duration
-            player?.stop(); player = nil; clock.synchronize(time:0,playing:false,host:CACurrentMediaTime())
+            player?.stop(); player = nil; clock.synchronize(time:previewTime,playing:false,host:CACurrentMediaTime())
+            if previewTime > 0.001 { lyrics.synchronize(time:previewTime,playing:false,seek:true) }
             let sidecar = sidecarTitle(for: url)
             let documentTitle = imported.document.title == "TTML Lyrics" ? nil : imported.document.title
             let title = displayTitle ?? sidecar ?? documentTitle ?? DemoTTMLImporter.metadataTitle(data) ?? url.deletingPathExtension().lastPathComponent
@@ -187,12 +201,13 @@ import OSLog
     }
     private func attachAudio(_ url: URL) {
         let wasPlaying = clock.isPlaying
+        let current = max(0,clock.time(at:CACurrentMediaTime()))
         player?.stop()
         do {
             let next = try AVAudioPlayer(contentsOf:url)
-            next.prepareToPlay(); next.currentTime = 0; player = next
+            next.prepareToPlay(); next.currentTime = min(current,next.duration); player = next
             duration = max(duration,next.duration); slider.maxValue = duration
-            seek(0,playAfter:wasPlaying)
+            seek(min(current,next.duration),playAfter:wasPlaying)
         }
         catch { showError(error, url:url) }
     }
@@ -358,7 +373,10 @@ import OSLog
         if current >= duration && clock.isPlaying { current = duration; player?.pause(); clock.synchronize(time:current,playing:false,host:CACurrentMediaTime()) }
         if player != nil && clock.isPlaying { lyrics.synchronize(time:current,playing:true) }
         slider.doubleValue = current; play.title = clock.isPlaying ? "Pause" : "Play"
-        func format(_ t: Double) -> String { String(format:"%d:%02d",Int(t)/60,Int(t)%60) }
+        func format(_ t: Double) -> String {
+            let seconds = t.truncatingRemainder(dividingBy:60)
+            return String(format:"%d:%04.1f",Int(t)/60,seconds)
+        }
         clockLabel.stringValue = "\(format(current)) / \(format(duration))"
         if let frame = lyrics.lastFrame {
             let intervals = Array(frameIntervals.suffix(240)), costs = Array(frameCosts.suffix(240))
