@@ -2,9 +2,9 @@
 //  AMLLWebView.swift
 //  myPlayer2
 //
-//  kmgccc_player - AMLL WKWebView Wrapper
-//  NSViewRepresentable wrapper that hosts a store-owned WebView inside per-view containers.
-//  The WebView is NEVER recreated - only reparented between containers.
+//  kmgccc_player - AMLL WKWebView Compatibility Wrapper
+//  Retained for rollback and migration diagnostics. Production lyrics surfaces
+//  use NativeLyricsViewRepresentable and never instantiate this type.
 //
 
 import AppKit
@@ -12,8 +12,8 @@ import QuartzCore
 import SwiftUI
 import WebKit
 
-/// SwiftUI wrapper for AMLL lyrics WKWebView.
-/// Uses a LyricsWebViewStore to prevent WebView recreation.
+/// Compatibility wrapper for the former AMLL lyrics WKWebView.
+/// The production renderer is selected by `LyricsSurfaceManager.rendererBackend`.
 struct AMLLWebView: NSViewRepresentable {
 
     let store: LyricsWebViewStore
@@ -552,12 +552,4 @@ final class WebViewHostView: NSView {
         LyricsRuntimeProfile.increment("WebViewHostView.viewDidChangeBackingProperties")
         onWindowStateChange?("hostBackingPropertiesChanged")
     }
-}
-
-// MARK: - Preview
-
-#Preview("AMLL WebView") {
-    AMLLWebView(store: LyricsWebViewStore())
-        .frame(width: 400, height: 500)
-        .background(Color.black.opacity(0.8))
 }

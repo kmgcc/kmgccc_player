@@ -7,13 +7,21 @@
 
 import Foundation
 
-/// Identifies the role of a lyrics surface for proper WebView lifecycle management.
-/// Each role may have different lifecycle requirements and configuration.
+/// Selects the renderer implementation used by the app's lyrics surface
+/// adapter. The production choice is explicit and can be changed in one place
+/// when a compatibility renderer is needed during development.
+enum LyricsRendererBackend: Sendable {
+    case native
+    case webView
+}
+
+/// Identifies the role of a lyrics surface for lifecycle and configuration.
+/// Each role may have different rendering requirements.
 enum LyricsSurfaceRole: String, CaseIterable, Sendable {
     static let amllMediumResolutionScale: Double = 0.75
     static let amllLowResolutionScale: Double = 0.5
 
-    /// Main sidebar lyrics panel - shared with batch editing preview.
+    /// Main sidebar lyrics panel.
     case main = "main"
     
     /// Fullscreen-player UI lyrics surface, shared by both system fullscreen-space
@@ -31,7 +39,7 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
     
     // MARK: - Configuration
     
-    /// Whether this role should use a separate WebView instance.
+    /// Whether this role owns an independent renderer surface.
     var requiresSeparateInstance: Bool {
         switch self {
         case .main:
@@ -210,12 +218,12 @@ extension LyricsSurfaceRole: Comparable {
 // MARK: - Collection Helpers
 
 extension LyricsSurfaceRole {
-    /// All roles that should have their own WebView instance.
+    /// All roles that own an independent renderer surface.
     static var independentRoles: [LyricsSurfaceRole] {
         allCases.filter { $0.requiresSeparateInstance }
     }
     
-    /// All roles that share the main WebView instance.
+    /// All roles that share the main renderer state.
     static var sharedRoles: [LyricsSurfaceRole] {
         allCases.filter { !$0.requiresSeparateInstance }
     }

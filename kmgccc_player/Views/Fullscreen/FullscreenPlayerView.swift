@@ -1292,9 +1292,8 @@ struct FullscreenPlayerView: View {
                         blendMode: coverBlurBaseBlendMode,
                         useCompositingGroup: false
                     ) {
-                        AMLLWebView(
-                            store: fullscreenStore,
-                            forcedAppearanceMode: .dark
+                        NativeLyricsViewRepresentable(
+                            surface: NativeLyricsSurfaceManager.shared.surface(for: .fullscreen)
                         )
                     }
 
@@ -1308,9 +1307,8 @@ struct FullscreenPlayerView: View {
                         blendMode: coverBlurHighlightBlendMode,
                         useCompositingGroup: false
                     ) {
-                        AMLLWebView(
-                            store: coverBlurHighlightStore,
-                            forcedAppearanceMode: .dark
+                        NativeLyricsViewRepresentable(
+                            surface: NativeLyricsSurfaceManager.shared.surface(for: .fullscreenCoverBlurHighlight)
                         )
                     }
                     .allowsHitTesting(false)
@@ -1325,7 +1323,9 @@ struct FullscreenPlayerView: View {
                         blendMode: usesCoverBlurLyricsRenderingPath ? coverBlurBaseBlendMode : .normal,
                         useCompositingGroup: !usesCoverBlurLyricsRenderingPath
                     ) {
-                        AMLLWebView(store: fullscreenStore, forcedAppearanceMode: .dark)
+                        NativeLyricsViewRepresentable(
+                            surface: NativeLyricsSurfaceManager.shared.surface(for: .fullscreen)
+                        )
                     }
                 }
             }
@@ -2445,7 +2445,9 @@ struct FullscreenPlayerView: View {
             // DEBUG A/B (KMGCCC_AMLL_FULLSCREEN_NO_WRAPPER): drop the
             // .mask/.opacity/.offset wrapper to mirror the window flat host.
             if LyricsDebugFlags.fullscreenDisableSwiftUIWrapper {
-                AMLLWebView(store: fullscreenStore, forcedAppearanceMode: .dark)
+                    NativeLyricsViewRepresentable(
+                        surface: NativeLyricsSurfaceManager.shared.surface(for: .fullscreen)
+                    )
                     .frame(
                         width: max(0, proxy.size.width - horizontalInset * 2),
                         height: expandedHeight
@@ -2453,7 +2455,9 @@ struct FullscreenPlayerView: View {
                     .environment(\.colorScheme, .dark)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else {
-                AMLLWebView(store: fullscreenStore, forcedAppearanceMode: .dark)
+                NativeLyricsViewRepresentable(
+                    surface: NativeLyricsSurfaceManager.shared.surface(for: .fullscreen)
+                )
                     .frame(
                         width: max(0, proxy.size.width - horizontalInset * 2),
                         height: expandedHeight

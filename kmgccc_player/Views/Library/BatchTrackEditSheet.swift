@@ -1681,43 +1681,15 @@ private struct BatchAMLLPreviewWebView: View, Equatable {
     let store: LyricsWebViewStore
     let reloadToken: Int
 
-    @State private var didTimeout = false
-
     static func == (lhs: BatchAMLLPreviewWebView, rhs: BatchAMLLPreviewWebView) -> Bool {
         lhs.store === rhs.store && lhs.reloadToken == rhs.reloadToken
     }
 
     var body: some View {
-        Group {
-            if store.hasPreparedWebView || store.isReady {
-                AMLLWebView(store: store, animatesAttachment: false)
-                    .clipped()
-            } else if didTimeout {
-                VStack(spacing: 8) {
-                    Text("歌词预览暂不可用")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("WebView 初始化失败不会影响批量编辑和保存。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                VStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("歌词预览加载中")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .task(id: reloadToken) {
-                    didTimeout = false
-                    _ = store.webView
-                    try? await Task.sleep(for: .seconds(3))
-                    guard !Task.isCancelled else { return }
-                    didTimeout = !store.isReady
-                }
-            }
-        }
+        NativeLyricsViewRepresentable(
+            surface: NativeLyricsSurfaceManager.shared.surface(for: .batchPreview)
+        )
+        .clipped()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

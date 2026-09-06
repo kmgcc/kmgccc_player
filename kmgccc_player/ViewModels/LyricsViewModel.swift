@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import NativeLyrics
 import SwiftUI
 
 /// Observable ViewModel for lyrics display.
@@ -24,6 +25,10 @@ final class LyricsViewModel {
     // This ensures we always use the current active store after surface switches
     private var store: LyricsWebViewStore {
         LyricsSurfaceManager.shared.mainStore
+    }
+
+    private var nativeSurface: NativeLyricsSurface {
+        NativeLyricsSurfaceManager.shared.surface(for: .main)
     }
 
     /// Current track (source of lyrics).
@@ -47,7 +52,7 @@ final class LyricsViewModel {
 
     /// Whether the WebView is ready.
     var isReady: Bool {
-        store.isReady
+        nativeSurface.isReady
     }
 
     var webViewStore: LyricsWebViewStore {
@@ -101,7 +106,6 @@ final class LyricsViewModel {
             currentTime: currentTime,
             isPlaying: isPlaying
         )
-
         // 使用统一日志系统，LyricsWebViewStore 也会打印 applyTrack 日志
         Log.debug("[LyricsVM] applyTrack: \(track?.title ?? "nil"), lyricsLen: \(lyricsText.count), webViewObjectID=\(store.webViewObjectID)", category: .lyrics)
 
@@ -213,7 +217,6 @@ final class LyricsViewModel {
             currentTime: lyricsCurrentTime,
             isPlaying: lyricsIsPlaying
         )
-
         Log.debug(
             "[LyricsVM] ensureExternalAMLLLoaded: reason=\(reason), identity=\(identity.prefix(16)), lyricsLen=\(lyricsText.count), webViewObjectID=\(store.webViewObjectID)",
             category: .lyrics
@@ -440,6 +443,7 @@ final class LyricsViewModel {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
             targetStore.revealExistingLyrics(reason: reason)
         }
+        NativeLyricsSurfaceManager.shared.followCurrentLyrics(for: .main)
     }
 
     /// Set playback state.
@@ -451,6 +455,7 @@ final class LyricsViewModel {
 
     private func rebindSeekCallback() {
         store.onUserSeek = onSeekRequest
+        nativeSurface.onSeek = onSeekRequest
     }
 
     // MARK: - Configuration
@@ -537,6 +542,16 @@ final class LyricsViewModel {
                 store.scheduleDebugVisibleLayerProbe(label: "main-config", delay: 0.75)
             }
         }
+
+        let nativeConfiguration = NativeLyricsConfigurationMapper.makeWindowConfiguration(
+            settings: settings,
+            palette: paletteMatchesScheme ? palette : nil,
+            playbackSource: playbackSource,
+            currentTrack: currentTrack,
+            lyricsTimeOffsetMs: rawTrackOffsetMs,
+            role: .main
+        )
+        NativeLyricsSurfaceManager.shared.applyConfiguration(nativeConfiguration, for: .main)
     }
 
     // MARK: - Dynamic Color (Moved to ThemeStore)
