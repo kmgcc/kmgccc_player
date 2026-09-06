@@ -42,6 +42,19 @@ final class BehaviorRegressionTests: XCTestCase {
         XCTAssertEqual(next.groups[1].blur,0,accuracy:0.001)
     }
 
+    @MainActor func testExpiredFocusBlursDuringAnInterlude() throws {
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='2s'><span begin='0s' end='2s'>First</span></p><p begin='4s' end='6s'><span begin='0s' end='2s'>Second</span></p></div></body></tt>".utf8)
+        let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
+        view.configuration.timing.enabled = false
+        try view.load(ttml:data,playing:true,hostTime:0)
+        view.render(at:1)
+        view.render(at:2.5)
+        let gap = view.render(at:3.1)
+        XCTAssertTrue(gap.timeline.playing.isEmpty)
+        XCTAssertGreaterThan(gap.groups[0].blur,2)
+        XCTAssertGreaterThan(gap.groups[1].blur,2)
+    }
+
     @MainActor func testScrubCancelsCascadeAndMovesStackImmediately() throws {
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
         view.configuration.timing.enabled = false
