@@ -313,6 +313,6 @@ blend mode 会在 cover-blur surface 选择 lighter/darker 合成提示，并缓
 Core Image filter，避免每帧创建 filter；最终 plus-lighter/plus-darker
 仍允许宿主以 Metal 或自己的 layer compositor 替换。
 
-cover-blur 的背景图、blur radius、主题取色和全屏容器属于宿主渲染责任，不能塞进 TTML 或让歌词 view 读取音频/封面服务。原生 Demo 的 `Lighter/Darker`、`Full/Base/Highlight`、`Hide active`、`Suppress glow`、`Generic cover`、`Lyric dodge` 控件用于直接验证这些通道；生产接入时由 `LyricsSurfaceManager` 将 ThemeStore 的 Display P3/sRGB 语义颜色和宿主的背景 compositor 映射到同一配置。
+cover-blur 的背景图、blur radius、主题取色和全屏容器属于宿主渲染责任，不能塞进 TTML 或让歌词 view 读取音频/封面服务。Demo 现在保留可实际验证的窗口、采样、歌词样式、字体、glow、暂停/播放、seek、TTML/音频导入和三条独立混合通道；cover-blur 的 full/base/highlight、隐藏 active、抑制 glow、generic cover 与 lyric dodge 仍由公开 `LyricsConfiguration` 接口提供，生产接入时由 `LyricsSurfaceManager` 将 ThemeStore 的 Display P3/sRGB 语义颜色和宿主的背景 compositor 映射到同一配置。
 
 当前 Demo 对 APP fork 的几何实测也已固定为验收基线：760pt 宽、主字号 38、翻译 28.5、主行 line-height 1.42em、line wrapper 前后留白抵消 `.lyricLine` 的负 margin；固定歌曲前 9 个可见组的 DOM/native 高度误差约 0.1pt、位置误差约 0.3pt。这个结果只代表当前字体和 viewport，不替代后续不同字体、resize、全屏和实机合成验收。

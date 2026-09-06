@@ -63,7 +63,7 @@ final class LayoutTests: XCTestCase {
             lines.update(now:0,media:0,floatTime:0,active:true,alpha:1,background:false,config:config)
             lines.update(now:now,media:1.5,floatTime:1.5,active:true,alpha:1,background:false,config:config)
             let glyph = lines.words.first!.glyphs.first!
-            return (glyph.dark.opacity,glyph.bright.opacity)
+            return (Float(glyph.baseOpacity),Float(glyph.highlightOpacity))
         }
 
         let full = opacities(.full)

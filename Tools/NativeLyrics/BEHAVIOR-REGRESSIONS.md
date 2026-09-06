@@ -8,7 +8,7 @@ This supersedes the Demo's earlier center-out click cascade and trailing highlig
 |---|---|---|
 | Historical rows stay sharp | `highlighted` is a retained timeline set, not the live singing set | Blur and entry/exit use `snapshot.playing`; simultaneous voices remain supported |
 | Blur jumps / appears absent | Reassigning the same mutable CI filter could retain the compositor's old radius | Publish a copied filter state on every changed frame; tween radius over 450 ms, default 3–6 pt |
-| Hover behavior differs by playback state | No pointer-exit deadline; paused display link could stop before a deferred transition | Pointer inside and manual browsing clear all rows; after pointer exit keep clear for 3 s, then tween back; pending deadlines keep paused updates alive |
+| Hover behavior differs by playback state | Pointer state was not reconciled reliably and paused display links could stop before a deferred transition | Pointer inside and manual browsing clear all rows; the default starts blur immediately on pointer exit, while hosts can opt into a delay; pending deadlines keep paused updates alive |
 | Click causes overlap | Delay was proportional to distance from clicked row | Cascade from first visible row down at 55 ms per row, including rows above the clicked row; preserve each scheduled start while layout targets change |
 | Slider seek produces scattered motion | Every discontinuity used the same spring cascade | `synchronize(... seek: true, motion: .immediate)` snaps the entire stack and cancels queued springs; clicks explicitly request `.cascade` |
 | English/BG highlight stalls or jumps | Untimed spaces inherited the whole paragraph range; sorting mask points by time reordered spatial positions | Whitespace occupies adjacent word gaps; mask boundaries retain text order and clamp backwards times |
@@ -16,7 +16,7 @@ This supersedes the Demo's earlier center-out click cascade and trailing highlig
 | Highlight smoothing lags | Exponential filter trailed an already predicted clock; forward glide stopped as soon as it led | Apply ordinary progress immediately; bounded forward anticipation through authored gaps; paused/seek position remains exact |
 | Background floats around main | Independent slide, scale and discontinuous flow-height changes | One non-overshooting reveal tween owns flow height and BG scale; BG edge is attached to main's transformed edge with a fixed gap |
 | Emphasis/glow remain after exit | Media sample froze at the emphasis peak | Multiply emphasis displacement, scale delta and glow by the finite exit lifetime; zero lifetime restores identity |
-| Exit highlight never finishes | Catch-up used a visually truncated group end | Use actual word-mask end, including BG words; fork's 16 ms threshold and 120–280 ms catch-up duration; fade concurrently over 500 ms |
+| Exit highlight never finishes | Catch-up used a visually truncated group end | Use actual word-mask end, including BG words; fork's 16 ms threshold and 120–280 ms catch-up duration; native default exit fade is 280 ms and begins immediately |
 
 The forward gap anticipation is an intentional native product extension. The fork's `lyric-line.ts` explicitly emits static mask keyframes during authored gaps and avoids additional easing to protect word timing. It is not accurate to describe perpetual movement through every authored gap as exact upstream behavior. The native anticipation is bounded (default up to 1.44 pt and 8% of the next segment), and never trails the authored sweep.
 
@@ -26,7 +26,7 @@ The forward gap anticipation is an intentional native product extension. The for
 
 ```swift
 var configuration = LyricsConfiguration()
-configuration.motion.pointerExitDelay = 3
+configuration.motion.pointerExitDelay = 0 // blur begins immediately on exit
 configuration.motion.blurTransition = 0.45
 configuration.channelBlend = .init(
     inactive: .normal,
@@ -37,12 +37,12 @@ lyrics.configuration = configuration
 lyrics.synchronize(time: time, playing: playing, seek: true, motion: .immediate)
 ```
 
-All-nil channel modes preserve the surface preset. Setting any channel enables explicit ink composition, with remaining nil channels using normal. The base ink mode switches between inactive/current; the masked bright ink uses highlight independently. Filter objects are cached by mode. Motion and channel-only configuration changes do not reshape text. The Demo exposes all three blend selectors. A lyric click requests seek and starts playback; slider/back/forward retain playback state and use immediate motion.
+All-nil channel modes preserve the surface preset. Setting any channel enables explicit ink composition, with remaining nil channels using normal. The base ink mode switches between inactive/current; the highlight mode is composed into the glyph's premultiplied ink gradient before the single glyph alpha mask, so it never blends with the window or cover backdrop. Inactive/current modes may still select a host compositor for the complete lyric surface. Filter objects are cached by mode. Motion and channel-only configuration changes do not reshape text. The Demo exposes all three blend selectors plus a colored backdrop test that makes the internal-only highlight path observable. A lyric click requests seek and starts playback; slider/back/forward retain playback state and use immediate motion.
 
 ## Verification
 
 `BehaviorRegressionTests` covers blur transition and pointer deadline, top-to-bottom click startup, scrub cancellation, malformed/whitespace mask continuity, forward gap anticipation, catch-up past truncated group end, and emphasis teardown with independent blend channels. Existing decoder, timing, layout, cache and spring tests remain required.
 
-The completed regression run passes 38 tests. A background reveal test also checks continuous entry/exit height and bounded scale with no independent slide. Live pointer state is reconciled against the window on display ticks, so missed tracking-area enter/exit events cannot leave an entire song permanently sharp.
+The completed regression run passes 44 tests. A background reveal test also checks continuous entry/exit height and bounded scale with no independent slide. Pointer enter/move/exit events are handled by an always-active tracking area; pointer exit starts the blur tween immediately by default. Manual browsing resumes after the next focus transition or the profile timeout, using the same ordered spring cascade rather than a hard reset.
 
 Live window checks cover visible blur on non-current rows, sharp current text, library selection of 3 Strikes, playback, and clear manual browsing. Screenshot observations do not establish a numerical visual-parity score or a complete performance benchmark. Complex overlapping voices, different skins/backdrops and long resize/seek sequences remain part of the broader parity acceptance matrix.

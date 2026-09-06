@@ -314,6 +314,7 @@ func balancedBreaks(widths: [Double], texts: [String], width: Double) -> Set<Int
 struct MaskPath {
     struct Point { var time: Double; var position: Double }
     var points: [Point] = []
+    private var anticipation: [Point] = []
     init(_ words: [WordPlacement], fadeWidth: Double) {
         var x = -2*fadeWidth
         points = [Point(time:words.first?.atom.word.range.start ?? 0,position:x)]
@@ -344,26 +345,33 @@ struct MaskPath {
         // A malformed overlapping word must not reorder the spatial sweep.
         // Keep document order and clamp backwards timestamps to the last boundary.
         for i in points.indices.dropFirst() { points[i].time = max(points[i-1].time,points[i].time) }
-    }
-    func anticipatedPosition(at time: Double, amount: Double) -> Double {
-        let exact = position(at:time)
-        guard amount > 0, let first = points.first, time >= first.time else { return exact }
-        for i in points.indices.dropFirst() {
-            let a = points[i-1], b = points[i]
-            if time >= a.time && time < b.time && a.position == b.position,
-               let next = points.dropFirst(i+1).first(where: { $0.position > b.position }) {
-                let lead = min((next.position-b.position)*0.08,amount*12)
-                return exact + lead * (time-a.time)/max(0.001,b.time-a.time)
-            }
-            if time >= a.time && time < b.time && b.position > a.position && i >= 2 {
-                let previous = points[i-2]
-                if previous.position == a.position && previous.time < a.time {
-                    let lead = min((b.position-a.position)*0.08,amount*12)
-                    return exact + lead * (1-(time-a.time)/max(0.001,b.time-a.time))
+        // Collapse duplicate time boundaries before constructing a continuous
+        // forward corridor. Low-distance spans include timed whitespace: moving
+        // only across a space looks frozen even though the cursor is advancing.
+        var knots: [Point] = []
+        for point in points {
+            if knots.last?.time == point.time { knots[knots.count-1] = point }
+            else { knots.append(point) }
+        }
+        anticipation = knots.map { Point(time:$0.time,position:0) }
+        if knots.count > 2 {
+            for i in 1..<(knots.count-1) {
+                let a = knots[i-1], b = knots[i], next = knots[i+1]
+                if b.time-a.time > 0.03 && b.position-a.position <= fadeWidth*0.7 {
+                    anticipation[i].position = min(max(0,next.position-b.position)*0.12,fadeWidth*0.6)
                 }
             }
         }
-        return exact
+    }
+    func anticipatedPosition(at time: Double, amount: Double) -> Double {
+        let exact = position(at:time)
+        guard amount > 0, let first = anticipation.first, time >= first.time else { return exact }
+        var lo = 0, hi = anticipation.count
+        while lo < hi { let m = (lo+hi)/2; if anticipation[m].time <= time { lo = m+1 } else { hi = m } }
+        guard lo < anticipation.count else { return exact }
+        let a = anticipation[max(0,lo-1)], b = anticipation[lo]
+        let lead = a.position+(b.position-a.position)*Curves.clamp((time-a.time)/max(0.000001,b.time-a.time))
+        return exact+lead*min(1,amount/0.12)
     }
     func position(at time: Double) -> Double {
         guard let first = points.first else { return 0 }

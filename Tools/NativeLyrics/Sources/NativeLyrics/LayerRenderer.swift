@@ -42,21 +42,38 @@ final class GlyphCache {
     func removeAll() { entries.removeAll(); bytes = 0 }
 }
 
+/// Premultiplied ink composition, independent of the surface backdrop.
+func compositeInk(base: LyricsColor, highlight: LyricsColor, baseAlpha: Double, highlightAlpha: Double, mode: LyricsBlendMode) -> LyricsColor {
+    let da = Curves.clamp(baseAlpha*base.alpha), sa = Curves.clamp(highlightAlpha*highlight.alpha)
+    let alpha = mode == .plusLighter ? min(1,sa+da) : sa+da*(1-sa)
+    func channel(_ d: Double, _ s: Double) -> Double {
+        guard alpha > 0 else { return 0 }
+        if mode == .plusLighter { return min(alpha,s*sa+d*da)/alpha }
+        if mode == .plusDarker { return (max(0,s+d-1)*sa*da+s*sa*(1-da)+d*da*(1-sa))/alpha }
+        return (s*sa+d*da*(1-sa))/alpha
+    }
+    return LyricsColor(channel(base.red,highlight.red),channel(base.green,highlight.green),channel(base.blue,highlight.blue),alpha:alpha,displayP3:base.displayP3 || highlight.displayP3)
+}
+
 final class GlyphLayers {
-    let root = CALayer(), dark = CALayer(), bright = CALayer(), glow = CALayer()
-    let brightInk = CALayer()
+    let root = CALayer(), glow = CALayer()
+    private(set) var baseOpacity = 0.0, highlightOpacity = 0.0
+    private var inkColors: [LyricsColor] = []
+    private var inkKey: InkKey?
+    private struct InkKey: Equatable { var base: LyricsColor; var high: LyricsColor; var baseAlpha: Double; var highAlpha: Double; var mode: LyricsBlendMode }
     let gradient = CAGradientLayer()
     let glowBlur = CIFilter(name:"CIGaussianBlur")
     let placement: GlyphPlacement
     let padding: Double
+    private var appliedGlowRadius = -1.0
+    private var appliedGlowColor: LyricsColor?
     private var blendKey = ""
     func updateBlend(active: Bool, config: LyricsConfiguration) {
         let base = config.channelBlend.isExplicit ? (active ? config.channelBlend.current : config.channelBlend.inactive) : nil
         let highlight = config.channelBlend.isExplicit ? config.channelBlend.highlight : nil
         let key = "\(base?.rawValue ?? "normal")/\(highlight?.rawValue ?? "normal")"
         guard key != blendKey else { return }; blendKey = key
-        dark.compositingFilter = blendFilter(base)
-        bright.compositingFilter = blendFilter(highlight)
+        root.compositingFilter = blendFilter(base)
     }
     var x: SpringTrack, y: SpringTrack
     init?(_ placement: GlyphPlacement, cache: GlyphCache, scale: Double, previous: CGPoint?, now: Double) {
@@ -65,25 +82,19 @@ final class GlyphLayers {
         x = SpringTrack(Double(previous?.x ?? placement.origin.x)); y = SpringTrack(Double(previous?.y ?? placement.origin.y))
         x.retarget(placement.origin.x,at:now); y.retarget(placement.origin.y,at:now)
         root.bounds = CGRect(origin:.zero,size:bitmap.size); root.anchorPoint = CGPoint(x:0.5,y:0.5)
-        for layer in [glow,dark,bright] { layer.frame = root.bounds; root.addSublayer(layer) }
-        bright.addSublayer(brightInk)
-        for ink in [dark,brightInk] {
-            ink.frame = root.bounds; ink.backgroundColor = NSColor.white.cgColor
-            let mask = CALayer(); mask.frame = root.bounds; mask.contents = bitmap.image; mask.contentsScale = scale; ink.mask = mask
-        }
-        // A real image-backed layer is used for the halo.  A masked empty
-        // container does not produce a shadow consistently on AppKit's
-        // layer-backed surfaces, while this path remains GPU composited.
+        glow.frame = root.bounds; root.addSublayer(glow)
+        gradient.frame = root.bounds; root.addSublayer(gradient)
+        let mask = CALayer(); mask.frame = root.bounds; mask.contents = bitmap.image; mask.contentsScale = scale
+        gradient.mask = mask
+        // Keep the glyph bitmap as the source for the halo. Applying a second
+        // mask after the blur would clip the halo back to the glyph silhouette;
+        // the bitmap's padding provides the bounded expansion area instead.
         glow.contents = bitmap.image; glow.contentsScale = scale; glow.contentsGravity = .resize
         glow.filters = glowBlur.map { [$0] }
-        // Keep the layer transparent outside the glyph bitmap.  Filling this
-        // layer used to turn the whole padded glyph tile into a blurred
-        // rectangle, which is much larger than AMLL's per-character
-        // text-shadow halo.
         glow.backgroundColor = nil
+        appliedGlowColor = nil
         gradient.startPoint = CGPoint(x:0,y:0.5); gradient.endPoint = CGPoint(x:1,y:0.5)
         gradient.colors = [NSColor.white.cgColor,NSColor.white.cgColor,NSColor.clear.cgColor,NSColor.clear.cgColor]
-        gradient.frame = root.bounds; bright.mask = gradient
     }
     func update(now: Double, media: Double, logicalX: Double, cursor: Double, fade: Double, darkAlpha: Double, brightAlpha: Double, emphasis: EmphasisEnvelope?, fontSize: Double, config: LyricsConfiguration, float: Double, background: Bool = false, subline: Bool = false, lifetime: Double = 1, baseVisible: Bool = true, highlightVisible: Bool = true, glowVisible: Bool = true) {
         x.resolve(now); y.resolve(now)
@@ -96,28 +107,55 @@ final class GlyphLayers {
         let w = root.bounds.width
         root.position = CGPoint(x:x.value(now)-padding+w/2+e.x,y:y.value(now)-padding+root.bounds.height/2+e.y+e.floatY+float*lifetime)
         root.transform = CATransform3DMakeScale(e.scale,e.scale,1)
+        let baseColor: LyricsColor, highColor: LyricsColor
         if config.usesOpaqueCompositing {
-            dark.backgroundColor = (subline ? config.palette.translation : background ? config.palette.backgroundInactive : config.palette.mainInactive).cgColor
-            brightInk.backgroundColor = (background ? config.palette.backgroundKaraoke : config.palette.mainActive).cgColor
-            let darkOpacity = subline ? 1 : background ? config.palette.backgroundBaseOpacity : 1
-            let brightOpacity = subline ? 0 : lifetime*(background ? config.palette.backgroundKaraokeOpacity : 1)
-            dark.opacity = Float(baseVisible ? darkOpacity : 0)
-            bright.opacity = Float(highlightVisible ? brightOpacity : 0)
+            baseColor = subline ? config.palette.translation : background ? config.palette.backgroundInactive : config.palette.mainInactive
+            highColor = background ? config.palette.backgroundKaraoke : config.palette.mainActive
+            baseOpacity = baseVisible ? (subline ? 1 : background ? config.palette.backgroundBaseOpacity : 1) : 0
+            highlightOpacity = highlightVisible && !subline ? lifetime*(background ? config.palette.backgroundKaraokeOpacity : 1) : 0
         } else {
-            dark.backgroundColor = config.palette.mainActive.cgColor; brightInk.backgroundColor = config.palette.mainActive.cgColor
-            dark.opacity = Float(baseVisible ? darkAlpha : 0)
-            bright.opacity = Float(highlightVisible ? max(0,(brightAlpha-darkAlpha)/max(0.0001,1-darkAlpha)) : 0)
+            baseColor = config.palette.mainActive; highColor = config.palette.mainActive
+            baseOpacity = baseVisible ? darkAlpha : 0
+            highlightOpacity = highlightVisible ? max(0,(brightAlpha-darkAlpha)/max(0.0001,1-darkAlpha)) : 0
         }
-        let boundary = cursor-logicalX-placement.origin.x+padding
-        let a = Curves.clamp((boundary-fade/2)/max(1,w)), b = Curves.clamp((boundary+fade/2)/max(1,w))
-        gradient.locations = [0,NSNumber(value:a),NSNumber(value:b),1]
-        if boundary < -fade/2 { bright.opacity = 0 }
+        // Compose ink before applying the glyph silhouette. Highlight never
+        // samples the window backdrop, and glyph edges are masked only once.
+        let mode = config.channelBlend.highlight ?? .normal
+        let key = InkKey(base:baseColor,high:highColor,baseAlpha:baseOpacity,highAlpha:highlightOpacity,mode:mode)
+        if key != inkKey {
+            inkKey = key
+            let colors = (0...8).map { i in
+                compositeInk(base:baseColor,highlight:highColor,baseAlpha:baseOpacity,highlightAlpha:highlightOpacity*Double(8-i)/8,mode:mode)
+            }
+            if colors != inkColors { inkColors = colors; gradient.colors = colors.map(\.cgColor) }
+        }
+        let boundary = min(root.bounds.width+fade,max(-fade,cursor-logicalX-placement.origin.x+padding))
+        gradient.startPoint = CGPoint(x:(boundary-fade/2)/max(1,w),y:0.5)
+        gradient.endPoint = CGPoint(x:(boundary+fade/2)/max(1,w),y:0.5)
         glow.opacity = config.glow && !config.coverBlurSuppressEmphasisGlow && glowVisible ? Float(e.glowOpacity) : 0
-        // The image alpha is the glow mask.  Do not paint the padded layer
-        // bounds: only the glyph silhouette should be blurred.
-        glow.backgroundColor = nil
-        glowBlur?.setValue(e.glowRadius*0.45,forKey:kCIInputRadiusKey)
-        glow.filters = glowBlur.map { [$0.copy() as! CIFilter] }
+        // The image alpha is the glow source. Its transparent padding bounds
+        // the blur expansion while keeping the glyph silhouette as the only
+        // painted source; the tile itself is never filled as a rectangle.
+        let glowRadius = e.glowRadius
+        let glowColorChanged = appliedGlowColor != config.palette.emphasisGlow
+        if glowColorChanged {
+            appliedGlowColor = config.palette.emphasisGlow
+            if let color = CIFilter(name:"CIColorMonochrome") {
+                color.setValue(CIColor(cgColor:config.palette.emphasisGlow.cgColor),forKey:kCIInputColorKey)
+                color.setValue(1,forKey:kCIInputIntensityKey)
+                glowBlur?.setValue(appliedGlowRadius >= 0 ? appliedGlowRadius : glowRadius,forKey:kCIInputRadiusKey)
+                glow.filters = [color,glowBlur].compactMap { $0?.copy() as? CIFilter }
+            }
+        }
+        if glow.opacity > 0 && abs(appliedGlowRadius-glowRadius)>0.001 {
+            appliedGlowRadius = glowRadius
+            glowBlur?.setValue(appliedGlowRadius,forKey:kCIInputRadiusKey)
+            if let color = CIFilter(name:"CIColorMonochrome") {
+                color.setValue(CIColor(cgColor:config.palette.emphasisGlow.cgColor),forKey:kCIInputColorKey)
+                color.setValue(1,forKey:kCIInputIntensityKey)
+                glow.filters = [color,glowBlur].compactMap { $0?.copy() as? CIFilter }
+            }
+        }
     }
     func settled(_ time: Double) -> Bool { x.settled(time) && y.settled(time) }
 }
@@ -143,7 +181,7 @@ final class WordLayers {
     func update(now: Double, media: Double, cursor: Double, fade: Double, dark: Double, bright: Double, config: LyricsConfiguration, floatTime: Double, background: Bool, lifetime: Double, baseVisible: Bool = true, highlightVisible: Bool = true, glowVisible: Bool = true) {
         x.resolve(now); y.resolve(now); root.position = CGPoint(x:x.value(now),y:y.value(now))
         let duration = max(1,placement.atom.word.range.duration)
-        let float = -Curves.easeOut.value(at:Curves.clamp((floatTime-placement.atom.word.range.start)/duration))*placement.fontSize*0.05*(placement.atom.emphasis?.isBackground == true ? 2 : 1)
+        let float = -Curves.easeOut.value(at:Curves.clamp((floatTime-placement.atom.word.range.start)/duration))*placement.fontSize*0.05*(background ? 2 : 1)
         for glyph in glyphs {
             glyph.update(now:now,media:media,logicalX:logicalX,cursor:cursor,fade:fade,darkAlpha:dark,brightAlpha:bright,emphasis:placement.atom.emphasis,fontSize:placement.fontSize,config:config,float:float,background:background,lifetime:lifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible)
         }
@@ -222,13 +260,13 @@ final class LineLayers {
         let glowVisible = renderLayer != .base && !config.coverBlurSuppressEmphasisGlow
         let delta = max(0,now-(previousTime ?? now)); previousTime = now
         let targetDark = 0.2+0.2*alpha, targetBright = active ? 1 : targetDark+(1-targetDark)*lifetime
-        brightAlpha += (targetBright-brightAlpha)*(1-exp(-(targetBright>brightAlpha ? 50 : 7)*delta))
+        brightAlpha = active ? brightAlpha+(targetBright-brightAlpha)*(1-exp(-50*delta)) : targetBright
         darkAlpha += (targetDark-darkAlpha)*(1-exp(-(targetDark>darkAlpha ? 50 : 7)*delta))
-        let bright = smooth ? brightAlpha : (visualActive ? 1.0 : (background ? 0.4 : 0.28))
+        let bright = smooth ? (active ? brightAlpha : darkAlpha+(1-darkAlpha)*lifetime) : ((background ? 0.4 : 0.28)+(background ? 0.6 : 0.72)*lifetime)
         let dark = smooth ? darkAlpha : bright
         let target = playing && active ? mask.anticipatedPosition(at:media,amount:config.motion.highlightAnticipation) : mask.position(at:media)
         let maskCursor = smooth ? cursor.sample(target:target,now:now,playing:playing && visualActive,reset:seek,fadeWidth:fade) : Double.greatestFiniteMagnitude
-        renderedCursor = maskCursor
+        renderedCursor = smooth ? maskCursor : mask.position(at:media)
         for word in words {
             var wordDark = dark, wordBright = bright, wordLifetime = highlightLifetime
             if layout.isDynamic && !config.lineTimingOnly && config.highlightMode == .discrete {
@@ -252,7 +290,7 @@ final class LineLayers {
 private func blendFilter(_ mode: LyricsBlendMode?) -> CIFilter? {
     switch mode {
     case .plusLighter: return CIFilter(name:"CIAdditionCompositing")
-    case .plusDarker: return CIFilter(name:"CISubtractBlendMode")
+    case .plusDarker: return CIFilter(name:"CILinearBurnBlendMode")
     default: return nil
     }
 }
@@ -276,9 +314,10 @@ final class GroupLayers {
     var isVisible = true
     let index: Int
     var blurFilter: CIFilter?
+    var appliedBlur = 0.0
     private var compositorKey = ""
     private let lighterCompositor = CIFilter(name:"CIAdditionCompositing")
-    private let darkerCompositor = CIFilter(name:"CISubtractBlendMode")
+    private let darkerCompositor = CIFilter(name:"CILinearBurnBlendMode")
     init(index: Int, layout: GroupTextLayout, initialY: Double, cache: GlyphCache, scale: Double, config: LyricsConfiguration, now: Double) {
         self.index = index; self.layout = layout; y = SpringTrack(initialY,.position)
         main = LineLayers(layout.main,cache:cache,scale:scale,config:config,previous:nil,now:now,buildContent:false)

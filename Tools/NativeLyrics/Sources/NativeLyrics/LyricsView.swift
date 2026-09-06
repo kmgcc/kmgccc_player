@@ -36,9 +36,14 @@ public struct LyricsFrame: Codable, Sendable {
         didSet {
             guard configuration != oldValue else { return }
             if configuration.timing != oldValue.timing || configuration.profile != oldValue.profile || configuration.preserveCompletedHighlight != oldValue.preserveCompletedHighlight { rebuildTimeline() }
-            var geometry = configuration
-            geometry.motion = oldValue.motion; geometry.channelBlend = oldValue.channelBlend
-            if geometry != oldValue { layoutDirty = true }
+            let c = configuration, o = oldValue
+            if c.fontName != o.fontName || c.fontSize != o.fontSize || c.fontWeight != o.fontWeight
+                || c.translationFontName != o.translationFontName || c.translationFontSize != o.translationFontSize
+                || c.translationFontWeight != o.translationFontWeight || c.showTranslation != o.showTranslation
+                || c.showRuby != o.showRuby || c.showRomanization != o.showRomanization
+                || c.translationLanguage != o.translationLanguage || c.romanizationLanguage != o.romanizationLanguage
+                || c.surface != o.surface || c.emphasis != o.emphasis || c.obscenity != o.obscenity
+                || c.maskCharacter != o.maskCharacter || c.wordFadeWidth != o.wordFadeWidth { layoutDirty = true }
             wake()
         }
     }
@@ -71,6 +76,7 @@ public struct LyricsFrame: Codable, Sendable {
     private var seekPending = true
     private var pendingSeekMotion: LyricsSeekMotion = .immediate
     private var cascadeUntil = 0.0
+    private var followPending = false
     private var hoverInside = false
     private var clearUntil = -Double.infinity
     private var hoveredIndex: Int?
@@ -115,7 +121,7 @@ public struct LyricsFrame: Codable, Sendable {
         if seek || discontinuity { seekPending = true; pendingSeekMotion = motion; interaction.resume() }
         wake()
     }
-    public func followCurrentLyrics() { interaction.resume(); wake() }
+    public func followCurrentLyrics() { followPending = interaction.suspended; interaction.resume(); wake() }
     public func releaseRenderingResources() {
         displayLink?.invalidate(); displayLink = nil
         groups.forEach { $0.root.removeFromSuperlayer() }; groups.removeAll(); cache.removeAll(); layoutDirty = true
@@ -132,6 +138,7 @@ public struct LyricsFrame: Codable, Sendable {
         displayLink?.invalidate(); displayLink = nil
         observations.forEach(NotificationCenter.default.removeObserver); observations.removeAll()
         if let window {
+            window.acceptsMouseMovedEvents = true
             for name in [NSWindow.didChangeOcclusionStateNotification,NSWindow.didMiniaturizeNotification,NSWindow.didDeminiaturizeNotification,NSWindow.didChangeBackingPropertiesNotification] {
                 observations.append(NotificationCenter.default.addObserver(forName:name,object:window,queue:.main) { [weak self] _ in
                     MainActor.assumeIsolated { self?.wake() }
@@ -159,15 +166,12 @@ public struct LyricsFrame: Codable, Sendable {
             let rate = Float(min(120,max(1,cap)))
             link.preferredFrameRateRange = CAFrameRateRange(minimum:1,maximum:rate,preferred:rate)
         } else {
-            link.preferredFrameRateRange = CAFrameRateRange.default
+            let rate = Float(window?.screen?.maximumFramesPerSecond ?? 60)
+            link.preferredFrameRateRange = CAFrameRateRange(minimum:min(60,rate),maximum:rate,preferred:rate)
         }
     }
     fileprivate func displayTick() {
         let now = CACurrentMediaTime()
-        if let window {
-            let inside = window.isKeyWindow && bounds.contains(convert(window.mouseLocationOutsideOfEventStream,from:nil))
-            if inside != hoverInside { setPointerInside(inside,hostTime:now) }
-        }
         render(at:now)
         if !clock.isPlaying && !interaction.suspended && now >= clearUntil && groups.allSatisfy({$0.settled(now)}) { stopDisplayLink() }
     }
@@ -177,12 +181,17 @@ public struct LyricsFrame: Codable, Sendable {
         let started = CACurrentMediaTime()
         if rendering, let lastFrame { return lastFrame }
         rendering = true; defer { rendering = false }
-        CATransaction.begin(); CATransaction.setDisableActions(true); defer { CATransaction.commit() }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
         previousHost = now
         let media = clock.time(at:now), seek = seekPending; seekPending = false
         if seek { gapIdentity = nil }
+        if interaction.update(now:now,profile:configuration.profile) { followPending = true }
         let snapshot = timeline.update(media,seek:seek,hasBottom:!configuration.bottomText.isEmpty)
-        _ = interaction.update(now:now,profile:configuration.profile)
+        // Manual browsing lasts until the next sung focus transition. Keep the
+        // displayed stack anchored while its playback clock continues normally.
+        let returning = followPending || (interaction.suspended && clock.isPlaying && snapshot.focus != interaction.frozenFocus)
+        followPending = false
+        if returning { interaction.resume() }
         let backingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         let requestedRenderScale = configuration.renderScale.isFinite ? configuration.renderScale : 1
         let renderScale = min(1,max(0.35,requestedRenderScale))
@@ -192,10 +201,11 @@ public struct LyricsFrame: Codable, Sendable {
             reflow(now:now,scale:scale); lastSize = bounds.size; lastScale = scale; layoutDirty = false
         }
         content.frame = bounds
+        content.backgroundColor = configuration.backdropColor?.cgColor
         let blendOpacity = configuration.blendOpacity.isFinite ? Curves.clamp(configuration.blendOpacity) : 1
         content.opacity = Float(blendOpacity)
         var focus = snapshot.focus
-        if interaction.suspended && configuration.profile == .upstream { focus = interaction.frozenFocus }
+        if interaction.suspended { focus = interaction.frozenFocus }
         let focusChanged = focus != lastFocus
         if focusChanged || seek || snapshot.interlude != gapIdentity {
             focusInterval = focus>0 && focus<prepared.count ? prepared[focus].range.start-prepared[focus-1].range.start : nil
@@ -209,7 +219,7 @@ public struct LyricsFrame: Codable, Sendable {
             let active = snapshot.playing.contains(i)
             if seek {
                 group.exitTime = nil; group.lastMedia = media; group.exitMedia = media
-            } else if group.active && !active { group.exitTime = now; group.exitMedia = group.lastMedia }
+            } else if group.active && !active { group.exitTime = now; group.exitMedia = media }
             else if !group.active && active { group.exitTime = nil }
             group.active = active
             group.scale.retarget(configuration.scale && clock.isPlaying && !active ? 0.97 : 1,at:now)
@@ -244,7 +254,7 @@ public struct LyricsFrame: Codable, Sendable {
         let position = configuration.positionSpring ?? currentPositionSpring
         // Clicks cascade in visual reading order. Scrubbing moves the stack
         // directly, and cannot leave delayed springs from a previous click.
-        let seekCascade = seek && pendingSeekMotion == .cascade && !reflowed && configuration.spring
+        let seekCascade = ((seek && pendingSeekMotion == .cascade) || returning) && !reflowed && configuration.spring
         let immediateSeek = seek && !seekCascade
         if seekCascade { cascadeUntil = now+0.7 }
         if immediateSeek { cascadeUntil = 0 }
@@ -260,11 +270,13 @@ public struct LyricsFrame: Codable, Sendable {
                 if seekCascade { group.cascadeStart = now+delay }
                 let remainingDelay = now < cascadeUntil ? max(0,group.cascadeStart-now) : delay
                 group.y.retarget(target,at:now,delay:remainingDelay,parameters:position)
+            } else if interaction.suspended && configuration.spring && !immediateSeek {
+                group.y.retarget(target,at:now,parameters:position)
             } else { group.y.snap(target,at:now) }
             group.y.resolve(now)
             let y = group.y.value(now)
             let distance = abs(Double(i-focus))
-            let clear = hoverInside || now < clearUntil || (interaction.suspended && now-interaction.lastWheel < configuration.motion.pointerExitDelay)
+            let clear = hoverInside || now < clearUntil
             group.blur.set(configuration.blur && !clear && !group.active ? min(configuration.motion.maximumBlurRadius,configuration.motion.blurRadius+distance*0.6) : 0,at:now,duration:configuration.motion.blurTransition)
             let passed = configuration.hidePassedLines && i<(gap.map { $0.anchor+1 } ?? snapshot.focus) && clock.isPlaying
             let groupAlpha = snapshot.highlighted.contains(i) ? 0.85 : (document?.isWordTimed == false ? 0.2 : 1)
@@ -274,13 +286,14 @@ public struct LyricsFrame: Codable, Sendable {
             group.hover.frame = group.root.bounds.insetBy(dx:8,dy:1); group.hover.isHidden = hoveredIndex != i || !configuration.hoverBackground
             group.updateCompositor(configuration)
             let blur = group.blur.value(now)
-            if blur>0.01 {
+            if blur>0.01 && abs(blur-group.appliedBlur)>0.001 {
                 if group.blurFilter == nil { group.blurFilter = CIFilter(name:"CIGaussianBlur") }
                 group.blurFilter?.setValue(blur,forKey:kCIInputRadiusKey)
                 // CA copies filter state at assignment. Mutating the same filter
                 // instance can leave the compositor with its first radius.
                 group.root.filters = group.blurFilter.map { [$0.copy() as! CIFilter] }
-            } else { group.root.filters = nil }
+                group.appliedBlur = blur
+            } else if blur<=0.01 && group.appliedBlur != 0 { group.root.filters = nil; group.appliedBlur = 0 }
             let pad = bounds.width<=500 ? 20.0 : configuration.fontSize
             let duet = prepared[i].main.isDuet
             let x = duet ? bounds.width-pad-group.layout.main.width : pad
@@ -302,7 +315,7 @@ public struct LyricsFrame: Codable, Sendable {
                 let remaining = max(0,wordEnd-group.exitMedia)
                 let duration = max(configuration.motion.catchUpMinimum,min(configuration.motion.catchUpMaximum,remaining))
                 highlightHold = remaining > 0.016 && now-exit < duration
-                animationTime = configuration.profile == .currentPlayer && clock.isPlaying && !seek ? min(wordEnd,group.exitMedia+(now-exit)*max(1,remaining/duration)) : group.exitMedia
+                animationTime = configuration.profile == .currentPlayer && clock.isPlaying && !seek ? exitCatchUpTime(start:group.exitMedia,end:wordEnd,elapsed:now-exit,duration:duration) : group.exitMedia
                 floatTime = group.exitMedia-(now-exit)
             }
             group.lastMedia = media
@@ -330,12 +343,13 @@ public struct LyricsFrame: Codable, Sendable {
                     background.update(now:now,media:animationTime,floatTime:floatTime,active:group.active,alpha:group.alpha,background:true,config:configuration,playing:clock.isPlaying,seek:seek,highlightHold:highlightHold)
                 }
             } else { group.main.discardContent(); group.background?.discardContent() }
-            frames.append(.init(index:i,y:y,height:heights[i],scale:ms,backgroundScale:bs,backgroundSlide:0,opacity:group.opacity.value(now),blur:blur,active:group.active,maskPosition:group.main.mask.position(at:animationTime)))
+            frames.append(.init(index:i,y:y,height:heights[i],scale:ms,backgroundScale:bs,backgroundSlide:0,opacity:group.opacity.value(now),blur:blur,active:group.active,maskPosition:group.main.renderedCursor))
             if target+heights[i]>=0 && !seekCascade { stagger += baseDelay; if i>=focus { baseDelay /= 1.05 } }
         }
         updateDots(snapshot,media:media,now:now,origin:origin,offsets:offsets)
         bottom.string = configuration.bottomText; bottom.fontSize = max(10,configuration.fontSize*0.5); bottom.contentsScale = scale
         bottom.frame = CGRect(x:20,y:origin+(offsets.last ?? 0)+configuration.fontSize,width:max(0,bounds.width-40),height:configuration.fontSize*2)
+        CATransaction.commit()
         let result = LyricsFrame(timeline:snapshot,groups:frames,following:!interaction.suspended,glyphCacheBytes:cache.bytes,glyphCacheMisses:cache.misses,layoutCount:layoutEngine.layoutCount,renderMilliseconds:(CACurrentMediaTime()-started)*1000)
         lastFrame = result; onFrame?(result); return result
     }
@@ -401,13 +415,18 @@ public struct LyricsFrame: Codable, Sendable {
     }
     public func scroll(by delta: Double, hostTime: Double = CACurrentMediaTime()) {
         guard delta.isFinite else { return }
+        setPointerInside(true,hostTime:hostTime)
+        let oldOffset = interaction.offset
         interaction.scroll(delta,now:hostTime,timeline:timeline.snapshot)
         clearUntil = hostTime+configuration.motion.pointerExitDelay
-        interaction.offset = max(scrollBoundary.min,min(scrollBoundary.max,interaction.offset)); wake()
+        interaction.offset = max(scrollBoundary.min,min(scrollBoundary.max,interaction.offset))
+        let translation = oldOffset-interaction.offset
+        for group in groups { group.y.translate(translation) }
+        wake()
     }
     public override func updateTrackingAreas() {
         super.updateTrackingAreas(); trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect:.zero,options:[.activeInKeyWindow,.inVisibleRect,.mouseEnteredAndExited,.mouseMoved],owner:self))
+        addTrackingArea(NSTrackingArea(rect:.zero,options:[.activeAlways,.inVisibleRect,.mouseEnteredAndExited,.mouseMoved],owner:self))
     }
     public func setPointerInside(_ inside: Bool, hostTime: Double = CACurrentMediaTime()) {
         hoverInside = inside
@@ -431,7 +450,8 @@ public struct LyricsFrame: Codable, Sendable {
         let w = max(1,Int(bounds.width*scale)), h = max(1,Int(bounds.height*scale))
         guard let context = CGContext(data:nil,width:w,height:h,bitsPerComponent:8,bytesPerRow:w*4,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         let pixelBounds = CGRect(x:0,y:0,width:w,height:h)
-        context.setFillColor(NSColor(srgbRed:0.055,green:0.075,blue:0.12,alpha:1).cgColor); context.fill(pixelBounds)
+        let backdrop = configuration.backdropColor ?? LyricsColor(0.055,0.075,0.12)
+        context.setFillColor(backdrop.cgColor); context.fill(pixelBounds)
         // CALayer.render(in:) deliberately omits compositor filters. Apply the same public
         // Gaussian filter in Core Image for exports, rather than claiming a sharp export is parity.
         let visible = groups.filter { !$0.root.isHidden }

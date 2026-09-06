@@ -129,6 +129,8 @@ public struct LyricsConfiguration: Equatable, Sendable {
     public var translationFontSize: Double? = nil
     public var surface: LyricsSurfaceStyle = .window
     public var palette = LyricsPalette()
+    /// Optional host backdrop, composed behind both ink channels.
+    public var backdropColor: LyricsColor? = nil
     /// Additional host opacity applied after the lyric channels are composed.
     /// This mirrors the adapter's `blendOpacity` without changing mask alpha.
     public var blendOpacity: Double = 1
@@ -201,10 +203,12 @@ public struct LyricsMotionConfiguration: Equatable, Sendable {
     public var blurRadius: Double = 3
     public var maximumBlurRadius: Double = 6
     public var blurTransition: Double = 0.45
-    public var pointerExitDelay: Double = 3
+    /// Delay before blur returns after pointer exit. The Demo and native
+    /// default are zero: blur starts immediately; hosts may opt into a delay.
+    public var pointerExitDelay: Double = 0
     public var clickStagger: Double = 0.055
     public var backgroundTransition: Double = 0.35
-    public var exitFade: Double = 0.5
+    public var exitFade: Double = 0.28
     public var catchUpMinimum: Double = 0.12
     public var catchUpMaximum: Double = 0.28
     /// Bounded anticipation through authored word gaps, never a trailing filter.

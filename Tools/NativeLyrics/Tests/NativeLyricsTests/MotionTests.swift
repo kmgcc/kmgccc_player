@@ -50,29 +50,6 @@ final class MotionTests: XCTestCase {
         XCTAssertEqual(e.sample(9,character:4,fontSize:40,radiusScale:1).scale,1)
         XCTAssertEqual(e.sample(4,character:1,fontSize:40,radiusScale:0.6).glowRadius,e.sample(4,character:1,fontSize:40,radiusScale:1).glowRadius*0.6,accuracy:1e-10)
     }
-    func testHighlightSmootherKeepsAPlaybackStallContinuousButBounded() {
-        var smoother = HighlightSmoother()
-        XCTAssertEqual(smoother.sample(target:0,now:0,playing:false,reset:true,fadeWidth:10),0)
-        _ = smoother.sample(target:20,now:0.1,playing:true,reset:false,fadeWidth:10)
-        let before = smoother.value
-        let duringStall = smoother.sample(target:20,now:0.2,playing:true,reset:false,fadeWidth:10)
-        XCTAssertGreaterThan(duringStall,before)
-        XCTAssertLessThanOrEqual(duringStall,20+0.8+1e-9)
-    }
-    func testHighlightSmootherTracksNormalPlaybackPromptly() {
-        var smoother = HighlightSmoother()
-        _ = smoother.sample(target:0,now:0,playing:false,reset:true,fadeWidth:10)
-        let value = smoother.sample(target:10,now:0.1,playing:true,reset:false,fadeWidth:10)
-        XCTAssertLessThan(abs(value - 10),0.2)
-    }
-
-    func testHighlightSmootherSnapsToPausedAndSeekedTargets() {
-        var smoother = HighlightSmoother()
-        _ = smoother.sample(target:0,now:0,playing:false,reset:true,fadeWidth:10)
-        _ = smoother.sample(target:20,now:0.1,playing:true,reset:false,fadeWidth:10)
-        XCTAssertEqual(smoother.sample(target:36,now:0.2,playing:false,reset:false,fadeWidth:10),36)
-        XCTAssertEqual(smoother.sample(target:4,now:0.3,playing:true,reset:true,fadeWidth:10),4)
-    }
     func testMediaClockDoesNotIntegrateFrameDeltas() {
         var clock = LyricsClock(); clock.synchronize(time:15,playing:true,host:100)
         XCTAssertEqual(clock.time(at:105.125),20.125)

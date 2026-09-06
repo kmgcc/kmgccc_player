@@ -2,8 +2,10 @@
 set -euo pipefail
 package_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$package_dir"
-swift build --quiet
-binary_dir="$(swift build --show-bin-path)"
+build_configuration=debug
+if [[ "${1:-}" == "--release" ]]; then build_configuration=release; shift; fi
+swift build --quiet -c "$build_configuration"
+binary_dir="$(swift build -c "$build_configuration" --show-bin-path)"
 dist_dir="$package_dir/dist"
 app="$dist_dir/Native Lyrics Demo.app"
 stage_root="$(mktemp -d "${TMPDIR:-/tmp}/kmgccc-native-lyrics.XXXXXX")"
@@ -11,11 +13,11 @@ staged="$stage_root/Native Lyrics Demo.app"
 trap 'rm -rf "$stage_root"' EXIT
 if [[ -d "$app" ]]; then
   # Only stop this exact development executable, never a same-named player.
-  running_pid="$(pgrep -f "^${app}/Contents/MacOS/NativeLyricsDemo$" || true)"
+  running_pid="$(pgrep -f "^${app}/Contents/MacOS/NativeLyricsDemo( |$)" || true)"
   if [[ -n "$running_pid" ]]; then
     kill $running_pid
     for _ in {1..20}; do
-      pgrep -f "^${app}/Contents/MacOS/NativeLyricsDemo$" >/dev/null || break
+      pgrep -f "^${app}/Contents/MacOS/NativeLyricsDemo( |$)" >/dev/null || break
       sleep 0.05
     done
   fi
@@ -52,5 +54,5 @@ codesign --verify --deep --strict "$staged"
 rm -rf "$app"
 mv "$staged" "$app"
 codesign --verify --deep --strict "$app"
-if [[ "${1:-}" != "--build-only" ]]; then /usr/bin/open -n "$app"; fi
+if [[ "${1:-}" != "--build-only" ]]; then /usr/bin/open -n "$app" --args "$@"; fi
 echo "$app"

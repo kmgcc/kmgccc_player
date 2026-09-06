@@ -37,9 +37,12 @@ import OSLog
     private var player: AVAudioPlayer?
     private var clock = LyricsClock()
     private var timer: Timer?
+    private var frameCosts: [Double] = [], frameIntervals: [Double] = []
+    private var lastFrameHost: Double?, measurementStart: Double?
+    private var performanceOutput: String?
+    private var measurementDuration = 12.0
     private var duration = 70.0
     private var mediaURL: URL?
-    private var genericCoverButton: NSButton?
     private let samplePopup = NSPopUpButton()
     private let libraryPopup = NSPopUpButton()
     private var librarySongs: [DemoLibrarySong] = []
@@ -78,9 +81,6 @@ import OSLog
         let styles = NSStackView(); styles.orientation = .horizontal; styles.spacing = 10
         let style = NSPopUpButton(); style.addItems(withTitles:LyricsSurfaceStyle.allCases.map(\.rawValue)); style.target = self; style.action = #selector(changeSurface(_:)); styles.addArrangedSubview(style)
         let mode = NSPopUpButton(); mode.addItems(withTitles:["Smooth words","Discrete words","Line timing only"]); mode.target = self; mode.action = #selector(changeMode(_:)); styles.addArrangedSubview(mode)
-        let coverProfile = NSPopUpButton(); coverProfile.addItems(withTitles:["Lighter cover","Darker cover"]); coverProfile.target = self; coverProfile.action = #selector(changeCoverProfile(_:)); coverProfile.toolTip = "Cover-blur semantic profile"; styles.addArrangedSubview(coverProfile)
-        let coverLayer = NSPopUpButton(); coverLayer.addItems(withTitles:["Cover full","Cover base","Cover highlight"]); coverLayer.target = self; coverLayer.action = #selector(changeCoverLayer(_:)); coverLayer.toolTip = "Render one cover-blur channel"; styles.addArrangedSubview(coverLayer)
-        let fixtureButton = NSButton(title:"Complex fixture",target:self,action:#selector(loadComplex)); styles.addArrangedSubview(fixtureButton)
         controls.insertArrangedSubview(styles,at:3)
         let samples = NSStackView(); samples.orientation = .horizontal; samples.spacing = 8
         samples.addArrangedSubview(NSTextField(labelWithString:"Sample"))
@@ -90,12 +90,6 @@ import OSLog
         library.addArrangedSubview(NSTextField(labelWithString:"Library songs"))
         libraryPopup.addItem(withTitle:"Scanning player library…"); libraryPopup.isEnabled = false; libraryPopup.target = self; libraryPopup.action = #selector(changeLibrarySong(_:)); library.addArrangedSubview(libraryPopup)
         controls.insertArrangedSubview(library,at:4)
-        let advanced = NSStackView(); advanced.orientation = .horizontal; advanced.spacing = 10
-        for (tag,title) in [(10,"Hide active"),(11,"Suppress glow"),(12,"Generic cover"),(13,"Lyric dodge")] {
-            let button = NSButton(checkboxWithTitle:title,target:self,action:#selector(advancedOption(_:))); button.tag = tag; advanced.addArrangedSubview(button)
-            if tag == 12 { genericCoverButton = button }
-        }
-        controls.insertArrangedSubview(advanced,at:6)
         let blends = NSStackView(); blends.orientation = .horizontal; blends.spacing = 8
         for (tag,title) in ["Inactive", "Current", "Highlight"].enumerated() {
             blends.addArrangedSubview(NSTextField(labelWithString:title))
@@ -106,6 +100,10 @@ import OSLog
         }
         lyrics.configuration.channelBlend = .init(inactive:.normal,current:.normal,highlight:.normal)
         controls.addArrangedSubview(blends)
+        let blendTest = NSButton(checkboxWithTitle:"Colored blend test",target:self,action:#selector(toggleBlendTest(_:)))
+        controls.addArrangedSubview(blendTest)
+        lyrics.configuration.backdropColor = LyricsColor(0.055,0.075,0.12)
+
         for view in [titleLabel,lyrics,controls] { view.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(view) }
         titleLabel.font = .systemFont(ofSize:14,weight:.semibold); titleLabel.lineBreakMode = .byTruncatingTail
         status.font = .monospacedSystemFont(ofSize:10,weight:.regular); status.textColor = .secondaryLabelColor
@@ -130,6 +128,12 @@ import OSLog
                 selectedSample = .motion; samplePopup.selectItem(at:Sample.motion.rawValue); loadFixture(.motion)
             }
         }
+        func argument(_ name: String) -> String? { args.firstIndex(of:name).flatMap { $0+1<args.count ? args[$0+1] : nil } }
+        performanceOutput = argument("--performance-output")
+        measurementDuration = argument("--measure-seconds").flatMap(Double.init) ?? 12
+        if let start = argument("--start").flatMap(Double.init) { seek(start) }
+        lyrics.onFrame = { [weak self] frame in self?.recordFrame(frame) }
+        if args.contains("--autoplay") { toggle() }
         refreshLibraryCatalog()
         timer = Timer.scheduledTimer(withTimeInterval:0.1,repeats:true) { [weak self] _ in MainActor.assumeIsolated { self?.updateControls() } }
         RunLoop.main.add(timer!,forMode:.common)
@@ -149,8 +153,9 @@ import OSLog
             let data = try Data(contentsOf:url)
             let imported = try DemoTTMLImporter.load(data)
             try lyrics.load(ttml:imported.data)
+            frameCosts.removeAll(); frameIntervals.removeAll(); lastFrameHost = nil; measurementStart = nil
             mediaURL = url; duration = max(1,lyrics.document?.duration ?? 70); slider.maxValue = duration
-            player?.stop(); clock.synchronize(time:0,playing:false,host:CACurrentMediaTime())
+            player?.stop(); player = nil; clock.synchronize(time:0,playing:false,host:CACurrentMediaTime())
             let sidecar = sidecarTitle(for: url)
             let documentTitle = imported.document.title == "TTML Lyrics" ? nil : imported.document.title
             let title = displayTitle ?? sidecar ?? documentTitle ?? DemoTTMLImporter.metadataTitle(data) ?? url.deletingPathExtension().lastPathComponent
@@ -172,11 +177,19 @@ import OSLog
         }
     }
     private func attachAudio(_ url: URL) {
-        do { player = try AVAudioPlayer(contentsOf:url); player?.prepareToPlay(); player?.pause(); player?.currentTime = 0; duration = max(duration,player?.duration ?? 0); slider.maxValue = duration }
+        let wasPlaying = clock.isPlaying
+        player?.stop()
+        do {
+            let next = try AVAudioPlayer(contentsOf:url)
+            next.prepareToPlay(); next.currentTime = 0; player = next
+            duration = max(duration,next.duration); slider.maxValue = duration
+            seek(0,playAfter:wasPlaying)
+        }
         catch { showError(error, url:url) }
     }
     private var time: Double { player?.currentTime ?? clock.time(at:CACurrentMediaTime()) }
     @objc private func toggle() {
+        if !clock.isPlaying { lyrics.layoutSubtreeIfNeeded(); lyrics.render(at:CACurrentMediaTime()) }
         let now = CACurrentMediaTime(), current = time, playing = !clock.isPlaying
         clock.synchronize(time:current,playing:playing,host:now)
         if playing { player?.play() } else { player?.pause() }
@@ -227,29 +240,15 @@ import OSLog
             window.backgroundColor = NSColor(srgbRed:0.87,green:0.84,blue:0.80,alpha:1)
         } else { window.backgroundColor = NSColor(srgbRed:0.055,green:0.075,blue:0.12,alpha:1) }
         lyrics.configuration.palette = palette
+        let bg = window.backgroundColor.usingColorSpace(.sRGB)!
+        lyrics.configuration.backdropColor = LyricsColor(bg.redComponent,bg.greenComponent,bg.blueComponent)
     }
-    @objc private func changeCoverProfile(_ sender: NSPopUpButton) {
-        lyrics.configuration.coverBlurProfile = sender.indexOfSelectedItem == 1 ? .darker : .lighter
-    }
-    @objc private func changeCoverLayer(_ sender: NSPopUpButton) {
-        lyrics.configuration.coverBlurRenderLayer = LyricsRenderLayer.allCases[sender.indexOfSelectedItem]
-        if lyrics.configuration.coverBlurRenderLayer != .full {
-            lyrics.configuration.coverBlurGenericMode = true
-            genericCoverButton?.state = .on
-        }
-    }
-    @objc private func advancedOption(_ sender: NSButton) {
+    @objc private func toggleBlendTest(_ sender: NSButton) {
         let enabled = sender.state == .on
-        switch sender.tag {
-        case 10: lyrics.configuration.coverBlurHideActiveMainLine = enabled
-        case 11: lyrics.configuration.coverBlurSuppressEmphasisGlow = enabled
-        case 12: lyrics.configuration.coverBlurGenericMode = enabled
-        case 13: lyrics.configuration.fullscreenLyricDodgeMode = enabled
-        default: break
-        }
+        lyrics.configuration.backdropColor = enabled ? LyricsColor(0.36,0.2,0.3) : LyricsColor(0.055,0.075,0.12)
+        lyrics.configuration.palette.mainActive = enabled ? LyricsColor(0.25,0.7,0.6) : .white
     }
     @objc private func changeMode(_ sender: NSPopUpButton) { lyrics.configuration.lineTimingOnly = sender.indexOfSelectedItem == 2; lyrics.configuration.highlightMode = sender.indexOfSelectedItem == 1 ? .discrete : .smooth }
-    @objc private func loadComplex() { samplePopup.selectItem(at:Sample.motion.rawValue); loadFixture(.motion) }
     @objc private func fontSize(_ sender: NSSlider) { lyrics.configuration.fontSize = sender.doubleValue }
     @objc private func glowRadius(_ sender: NSSlider) { lyrics.configuration.glowRadiusScale = sender.doubleValue }
     @objc private func option(_ sender: NSButton) {
@@ -312,6 +311,38 @@ import OSLog
             libraryPopup.selectItem(at:index)
         }
     }
+    private func recordFrame(_ frame: LyricsFrame) {
+        guard clock.isPlaying else { lastFrameHost = nil; return }
+        let now = CACurrentMediaTime()
+        if measurementStart == nil { measurementStart = now }
+        if frame.renderMilliseconds.isFinite { frameCosts.append(frame.renderMilliseconds) }
+        if let lastFrameHost {
+            let interval = (now-lastFrameHost)*1000
+            if interval.isFinite && interval >= 0 { frameIntervals.append(interval) }
+        }
+        lastFrameHost = now
+        if frameCosts.count > 7200 { frameCosts.removeFirst(120); frameIntervals.removeFirst(min(120,frameIntervals.count)) }
+        if let path = performanceOutput, now-(measurementStart ?? now) >= measurementDuration {
+            performanceOutput = nil
+            let callbackMean = frameIntervals.isEmpty ? 0 : frameIntervals.reduce(0,+)/Double(frameIntervals.count)
+            let callbackHz = callbackMean > 0 && callbackMean.isFinite ? 1000/callbackMean : 0
+            let jsonNumber: (Double) -> Double = { $0.isFinite ? $0 : 0 }
+            let report: [String:Any] = ["renderMedianMS":percentile(frameCosts,0.5),"renderP95MS":percentile(frameCosts,0.95),"renderMaxMS":frameCosts.max() ?? 0,
+                "callbackIntervalP95MS":percentile(frameIntervals,0.95),"callbackHz":callbackHz,
+                "screenMaxHz":window.screen?.maximumFramesPerSecond ?? 0,"frames":frameCosts.count,"duration":jsonNumber(now-(measurementStart ?? now)),"cacheBytes":frame.glyphCacheBytes,
+                "width":jsonNumber(lyrics.bounds.width),"height":jsonNumber(lyrics.bounds.height),"renderCostsMS":frameCosts.map(jsonNumber),"callbackIntervalsMS":frameIntervals.map(jsonNumber)]
+            do {
+                let outputURL = URL(fileURLWithPath:path)
+                try FileManager.default.createDirectory(at:outputURL.deletingLastPathComponent(),withIntermediateDirectories:true)
+                try JSONSerialization.data(withJSONObject:report,options:[.sortedKeys]).write(to:outputURL,options:.atomic)
+            }
+            catch { logger.error("Performance report failed: \(error.localizedDescription, privacy: .public)") }
+        }
+    }
+    private func percentile(_ values: [Double], _ fraction: Double) -> Double {
+        guard !values.isEmpty else { return 0 }; let sorted = values.sorted()
+        return sorted[min(sorted.count-1,Int(Double(sorted.count-1)*fraction))]
+    }
     private func updateControls() {
         var current = time
         if current >= duration && clock.isPlaying { current = duration; player?.pause(); clock.synchronize(time:current,playing:false,host:CACurrentMediaTime()) }
@@ -320,9 +351,10 @@ import OSLog
         func format(_ t: Double) -> String { String(format:"%d:%02d",Int(t)/60,Int(t)%60) }
         clockLabel.stringValue = "\(format(current)) / \(format(duration))"
         if let frame = lyrics.lastFrame {
-            let hot = frame.timeline.playing.sorted().map(String.init).joined(separator:",")
-            let highlighted = frame.timeline.highlighted.sorted().map(String.init).joined(separator:",")
-            status.stringValue = String(format:"%@ · hot %@ · highlight %@ · %@/%@ · %.2f ms/frame · %.1f MB cache · %d layouts",frame.following ? "Following" : "Manual scroll",hot.isEmpty ? "—" : hot,highlighted.isEmpty ? "—" : highlighted,lyrics.configuration.surface.rawValue,lyrics.configuration.effectiveRenderLayer.rawValue,frame.renderMilliseconds,Double(frame.glyphCacheBytes)/1048576,frame.layoutCount)
+            let intervals = Array(frameIntervals.suffix(240)), costs = Array(frameCosts.suffix(240))
+            let hz = intervals.isEmpty ? 0 : 1000/(intervals.reduce(0,+)/Double(intervals.count))
+            status.stringValue = String(format:"%@ · %.0f Hz callbacks · render p95 %.2f ms · %.1f MB glyph cache",frame.following ? "Following" : "Manual scroll",hz,percentile(costs,0.95),Double(frame.glyphCacheBytes)/1048576)
+
         }
     }
     private func showError(_ error: Error, url: URL? = nil) {

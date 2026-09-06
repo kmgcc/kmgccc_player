@@ -32,22 +32,25 @@ struct SpringTrack {
     private var start = 0.0
     private(set) var target: Double
     private var params: SpringParameters
+    private var solver: Spring
     private var pending: (time:Double,target:Double,params:SpringParameters)?
     init(_ position: Double, _ params: SpringParameters = .init()) {
-        origin = position; target = position; self.params = params
+        origin = position; target = position; self.params = params; solver = params.system
     }
     mutating func resolve(_ time: Double) {
         if let q = pending, time >= q.time {
             pending = nil
             let v = velocity(q.time), x = value(q.time)
-            origin = x; initialVelocity = v; start = q.time; target = q.target; params = q.params
+            origin = x; initialVelocity = v; start = q.time; target = q.target; params = q.params; solver = q.params.system
         }
     }
     func value(_ time: Double) -> Double {
-        origin + params.system.value(target:target-origin,initialVelocity:initialVelocity,time:max(0,time-start))
+        if origin == target && initialVelocity == 0 { return origin }
+        return origin + solver.value(target:target-origin,initialVelocity:initialVelocity,time:max(0,time-start))
     }
     func velocity(_ time: Double) -> Double {
-        params.system.velocity(target:target-origin,initialVelocity:initialVelocity,time:max(0,time-start))
+        if origin == target && initialVelocity == 0 { return 0 }
+        return solver.velocity(target:target-origin,initialVelocity:initialVelocity,time:max(0,time-start))
     }
     mutating func retarget(_ value: Double, at time: Double, delay: Double = 0, parameters: SpringParameters? = nil) {
         resolve(time)
@@ -56,7 +59,7 @@ struct SpringTrack {
         if pending == nil && abs(target-value)<0.00001 && p == params { return }
         if delay > 0 { pending = (time+delay,value,p); return }
         let v = velocity(time), x = self.value(time)
-        origin = x; initialVelocity = v; start = time; target = value; params = p; pending = nil
+        origin = x; initialVelocity = v; start = time; target = value; params = p; solver = p.system; pending = nil
     }
     mutating func snap(_ value: Double, at time: Double) {
         origin = value; target = value; initialVelocity = 0; start = time; pending = nil
@@ -102,10 +105,19 @@ struct Tween {
     func settled(_ time: Double) -> Bool { time >= start+duration || from == target }
 }
 
-/// Keeps a lyric mask moving through short timing stalls while preserving an
-/// exact paused/seeked position. AMLL's browser mask is driven by an animation
-/// clock between host samples; this small stateful track provides the same
-/// continuity without advancing a paused lyric into the future.
+/// Exit-only time warp: initial derivative is the normal playback rate, then
+/// acceleration increases continuously. The live media clock is never changed.
+func exitCatchUpTime(start: Double, end: Double, elapsed: Double, duration: Double) -> Double {
+    let remaining = max(0,end-start), d = max(0.001,min(duration,remaining))
+    let t = min(d,max(0,elapsed))
+    return min(end,start+t+max(0,remaining-d)*pow(t/d,2))
+}
+
+/// Keeps a running karaoke mask alive through very short identical host
+/// samples. Normal media movement is applied immediately; only a bounded
+/// forward glide is synthesized while the target is effectively unchanged.
+/// This is deliberately not a trailing low-pass filter, so a real word
+/// boundary never waits for the smoother to catch up.
 struct HighlightSmoother {
     private(set) var value = 0.0
     private var lastTarget = 0.0
@@ -122,32 +134,19 @@ struct HighlightSmoother {
             value = target; lastTarget = target; lastHost = now; initialized = true
             return value
         }
-
         let dt = min(0.08, max(0, now - (lastHost ?? now)))
         let targetDelta = target - lastTarget
-        let backwardsSnap = target < value - max(1, fadeWidth * 4)
-        if backwardsSnap {
+        if target < value - max(1, fadeWidth * 4) {
             value = target
         } else {
-            // AMLL advances the Web Animations mask at playbackRate 1 and
-            // only samples the host time on display updates.  The native
-            // LyricsClock already predicts that same media time, so this
-            // bridge must never trail the word. Only the small forward lead
-            // is stateful; normal target motion is applied immediately.
+            // Never trail a target that is already moving. This also makes a
+            // malformed overlapping word (for example 3 Strikes' "got") safe
+            // after MaskPath has clamped its document-order boundary.
             value = max(value, target)
-
-            // During a very short host/audio stall AMLL's running animation
-            // continues by a barely visible amount. Keep that glide bounded so
-            // it cannot reveal a future word or survive a pause.
-            // A normal slow syllable can move by only a few pixels per frame;
-            // do not classify that as a stalled host clock.  The tiny
-            // threshold is reserved for repeated, effectively identical
-            // samples where AMLL's running browser animation remains visible.
-            let stall = abs(targetDelta) <= max(0.0001, fadeWidth * 0.0005)
-            if stall {
+            if abs(targetDelta) <= max(0.0001, fadeWidth * 0.0005) {
                 let maxLead = max(0.35, fadeWidth * 0.03)
                 let glideRate = max(0.12, fadeWidth * 0.02)
-                value += max(0,target + maxLead - value) * (1-exp(-glideRate*dt/maxLead))
+                value += max(0, target + maxLead - value) * (1-exp(-glideRate*dt/maxLead))
             }
         }
         lastTarget = target; lastHost = now
