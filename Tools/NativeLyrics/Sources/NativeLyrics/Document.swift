@@ -117,6 +117,9 @@ public struct LyricsPalette: Equatable, Sendable {
 }
 
 public struct LyricsConfiguration: Equatable, Sendable {
+    /// Native behavior and channel controls; hosts need no layer-tree patches.
+    public var motion = LyricsMotionConfiguration()
+    public var channelBlend = LyricsChannelBlendConfiguration()
     public var profile: LyricsProfile = .currentPlayer
     public var fontName = "Helvetica Neue"
     public var fontSize: Double = 38
@@ -193,6 +196,35 @@ public struct LyricsConfiguration: Equatable, Sendable {
         usesCoverBlurCompositing ? coverBlurRenderLayer : .full
     }
 }
+
+public struct LyricsMotionConfiguration: Equatable, Sendable {
+    public var blurRadius: Double = 3
+    public var maximumBlurRadius: Double = 6
+    public var blurTransition: Double = 0.45
+    public var pointerExitDelay: Double = 3
+    public var clickStagger: Double = 0.055
+    public var backgroundTransition: Double = 0.35
+    public var exitFade: Double = 0.5
+    public var catchUpMinimum: Double = 0.12
+    public var catchUpMaximum: Double = 0.28
+    /// Bounded anticipation through authored word gaps, never a trailing filter.
+    public var highlightAnticipation: Double = 0.12
+    public init() {}
+}
+
+public struct LyricsChannelBlendConfiguration: Equatable, Sendable {
+    /// All nil inherits the surface preset. When any mode is set, remaining
+    /// nil channels use normal blending. Modes compose individual ink channels.
+    public var inactive: LyricsBlendMode?
+    public var current: LyricsBlendMode?
+    public var highlight: LyricsBlendMode?
+    public init(inactive: LyricsBlendMode? = nil, current: LyricsBlendMode? = nil, highlight: LyricsBlendMode? = nil) {
+        self.inactive = inactive; self.current = current; self.highlight = highlight
+    }
+    var isExplicit: Bool { inactive != nil || current != nil || highlight != nil }
+}
+
+public enum LyricsSeekMotion: Sendable { case immediate, cascade }
 
 public struct LyricsTimingConfiguration: Equatable, Sendable {
     public var enabled = true

@@ -49,6 +49,15 @@ final class GlyphLayers {
     let glowBlur = CIFilter(name:"CIGaussianBlur")
     let placement: GlyphPlacement
     let padding: Double
+    private var blendKey = ""
+    func updateBlend(active: Bool, config: LyricsConfiguration) {
+        let base = config.channelBlend.isExplicit ? (active ? config.channelBlend.current : config.channelBlend.inactive) : nil
+        let highlight = config.channelBlend.isExplicit ? config.channelBlend.highlight : nil
+        let key = "\(base?.rawValue ?? "normal")/\(highlight?.rawValue ?? "normal")"
+        guard key != blendKey else { return }; blendKey = key
+        dark.compositingFilter = blendFilter(base)
+        bright.compositingFilter = blendFilter(highlight)
+    }
     var x: SpringTrack, y: SpringTrack
     init?(_ placement: GlyphPlacement, cache: GlyphCache, scale: Double, previous: CGPoint?, now: Double) {
         guard let bitmap = cache.glyph(placement,scale:scale) else { return nil }
@@ -82,8 +91,10 @@ final class GlyphLayers {
         if config.emphasis, let emphasis, let character = placement.characterIndex {
             e = emphasis.sample(media,character:character,fontSize:fontSize,radiusScale:config.glowRadiusScale)
         }
+        e.scale = 1+(e.scale-1)*lifetime
+        e.x *= lifetime; e.y *= lifetime; e.floatY *= lifetime; e.glowOpacity *= lifetime
         let w = root.bounds.width
-        root.position = CGPoint(x:x.value(now)-padding+w/2+e.x,y:y.value(now)-padding+root.bounds.height/2+e.y+e.floatY+float)
+        root.position = CGPoint(x:x.value(now)-padding+w/2+e.x,y:y.value(now)-padding+root.bounds.height/2+e.y+e.floatY+float*lifetime)
         root.transform = CATransform3DMakeScale(e.scale,e.scale,1)
         if config.usesOpaqueCompositing {
             dark.backgroundColor = (subline ? config.palette.translation : background ? config.palette.backgroundInactive : config.palette.mainInactive).cgColor
@@ -106,6 +117,7 @@ final class GlyphLayers {
         // bounds: only the glyph silhouette should be blurred.
         glow.backgroundColor = nil
         glowBlur?.setValue(e.glowRadius*0.45,forKey:kCIInputRadiusKey)
+        glow.filters = glowBlur.map { [$0.copy() as! CIFilter] }
     }
     func settled(_ time: Double) -> Bool { x.settled(time) && y.settled(time) }
 }
@@ -151,6 +163,7 @@ final class LineLayers {
     private var brightAlpha = 1.0, darkAlpha = 0.4
     private var previousTime: Double?
     private var cursor = HighlightSmoother()
+    private(set) var renderedCursor = 0.0
     init(_ layout: LineTextLayout, cache: GlyphCache, scale: Double, config: LyricsConfiguration, previous: LineLayers?, now: Double, buildContent: Bool = true) {
         self.layout = layout; fade = max(0.01,(layout.words.first?.fadeHeight ?? layout.fontSize*1.2)*config.wordFadeWidth)
         mask = MaskPath(layout.words,fadeWidth:fade)
@@ -187,13 +200,13 @@ final class LineLayers {
             darkAlpha = 0.2+0.2*alpha
             cursor.reset(mask.position(at:media))
         } else if active != wasActive {
-            highlight.set(active ? 1 : 0,at:now,duration:active ? 0.2 : 0.5)
+            highlight.set(active ? 1 : 0,at:now,duration:active ? 0.2 : config.motion.exitFade)
             if active && config.lineTimingOnly { highlight.start += 0.05 }
             wasActive = active
         }
         let lifetime = highlight.value(now)
         let visualActive = active || highlightHold
-        let highlightLifetime = highlightHold ? 1 : lifetime
+        let highlightLifetime = lifetime
         let smooth = layout.isDynamic && !config.lineTimingOnly && config.highlightMode == .smooth
         let renderLayer = config.effectiveRenderLayer
         let highlightOnly = renderLayer == .highlight
@@ -208,12 +221,14 @@ final class LineLayers {
         let highlightVisible = !baseOnly && (!highlightOnly || hasHighlightLifetime) && !hideActiveMain
         let glowVisible = renderLayer != .base && !config.coverBlurSuppressEmphasisGlow
         let delta = max(0,now-(previousTime ?? now)); previousTime = now
-        let targetDark = 0.2+0.2*alpha, targetBright = visualActive ? 0.2+0.8*alpha : targetDark
+        let targetDark = 0.2+0.2*alpha, targetBright = active ? 1 : targetDark+(1-targetDark)*lifetime
         brightAlpha += (targetBright-brightAlpha)*(1-exp(-(targetBright>brightAlpha ? 50 : 7)*delta))
         darkAlpha += (targetDark-darkAlpha)*(1-exp(-(targetDark>darkAlpha ? 50 : 7)*delta))
         let bright = smooth ? brightAlpha : (visualActive ? 1.0 : (background ? 0.4 : 0.28))
         let dark = smooth ? darkAlpha : bright
-        let maskCursor = smooth ? cursor.sample(target:mask.position(at:media),now:now,playing:playing,reset:seek,fadeWidth:fade) : Double.greatestFiniteMagnitude
+        let target = playing && active ? mask.anticipatedPosition(at:media,amount:config.motion.highlightAnticipation) : mask.position(at:media)
+        let maskCursor = smooth ? cursor.sample(target:target,now:now,playing:playing && visualActive,reset:seek,fadeWidth:fade) : Double.greatestFiniteMagnitude
+        renderedCursor = maskCursor
         for word in words {
             var wordDark = dark, wordBright = bright, wordLifetime = highlightLifetime
             if layout.isDynamic && !config.lineTimingOnly && config.highlightMode == .discrete {
@@ -224,12 +239,22 @@ final class LineLayers {
                 wordDark = inactive+(1-inactive)*progress*highlightLifetime; wordBright = wordDark; wordLifetime = progress*highlightLifetime
             }
             word.update(now:now,media:media,cursor:maskCursor,fade:fade,dark:wordDark,bright:wordBright,config:config,floatTime:layout.isDynamic && !config.lineTimingOnly ? floatTime : -1e9,background:background,lifetime:wordLifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible)
+            for glyph in word.glyphs { glyph.updateBlend(active:active,config:config) }
         }
         for subline in sublines {
             subline.update(now:now,media:media,logicalX:0,cursor:1e9,fade:1,darkAlpha:0.3,brightAlpha:0.3,emphasis:nil,fontSize:layout.fontSize,config:config,float:0,background:background,subline:true,lifetime:highlightLifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:false)
+            subline.updateBlend(active:active,config:config)
         }
     }
-    func settled(_ time: Double) -> Bool { words.allSatisfy { $0.settled(time) } }
+    func settled(_ time: Double) -> Bool { highlight.settled(time) && words.allSatisfy { $0.settled(time) } }
+}
+
+private func blendFilter(_ mode: LyricsBlendMode?) -> CIFilter? {
+    switch mode {
+    case .plusLighter: return CIFilter(name:"CIAdditionCompositing")
+    case .plusDarker: return CIFilter(name:"CISubtractBlendMode")
+    default: return nil
+    }
 }
 
 final class GroupLayers {
@@ -239,8 +264,8 @@ final class GroupLayers {
     var layout: GroupTextLayout
     var y: SpringTrack
     var scale = SpringTrack(0.97,.scale)
-    var backgroundScale = SpringTrack(0.75,.background)
-    var slide = SpringTrack(80)
+    var reveal = Tween(0)
+    var cascadeStart = 0.0
     var opacity = Tween(1), blur = Tween(0)
     var alpha = 0.0
     var active = false
@@ -264,6 +289,7 @@ final class GroupLayers {
         backgroundWrapper.anchorPoint = .zero
     }
     func updateCompositor(_ config: LyricsConfiguration) {
+        if config.channelBlend.isExplicit { root.compositingFilter = nil; compositorKey = ""; return }
         let mode: LyricsBlendMode
         switch config.blendMode {
         case .normal: mode = .normal
@@ -291,6 +317,6 @@ final class GroupLayers {
         self.layout = layout
     }
     func settled(_ time: Double) -> Bool {
-        y.settled(time) && scale.settled(time) && backgroundScale.settled(time) && slide.settled(time) && opacity.settled(time) && blur.settled(time) && main.settled(time) && (background?.settled(time) ?? true) && (exitTime.map { time-$0>2 } ?? true)
+        y.settled(time) && scale.settled(time) && reveal.settled(time) && opacity.settled(time) && blur.settled(time) && main.settled(time) && (background?.settled(time) ?? true) && (exitTime.map { time-$0>2 } ?? true)
     }
 }

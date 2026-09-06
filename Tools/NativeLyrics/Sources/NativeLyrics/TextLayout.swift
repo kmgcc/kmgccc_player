@@ -318,7 +318,13 @@ struct MaskPath {
         var x = -2*fadeWidth
         points = [Point(time:words.first?.atom.word.range.start ?? 0,position:x)]
         for (i,placement) in words.enumerated() {
-            let word = placement.atom.word
+            var word = placement.atom.word
+            if word.text.allSatisfy(\.isWhitespace) {
+                let before = words.prefix(i).last(where: { !$0.atom.word.text.allSatisfy(\.isWhitespace) })?.atom.word.range.end
+                let after = words.dropFirst(i+1).first(where: { !$0.atom.word.text.allSatisfy(\.isWhitespace) })?.atom.word.range.start
+                let start = before ?? after ?? word.range.start
+                word.range = LyricRange(start,max(start,after ?? start))
+            }
             points.append(.init(time:word.range.start,position:x))
             let ruby = word.ruby.filter { !$0.text.isEmpty }
             if !ruby.isEmpty {
@@ -335,7 +341,29 @@ struct MaskPath {
                 points.append(.init(time:word.range.end,position:x))
             }
         }
-        points = points.enumerated().sorted { a,b in a.element.time == b.element.time ? a.offset<b.offset : a.element.time<b.element.time }.map(\.element)
+        // A malformed overlapping word must not reorder the spatial sweep.
+        // Keep document order and clamp backwards timestamps to the last boundary.
+        for i in points.indices.dropFirst() { points[i].time = max(points[i-1].time,points[i].time) }
+    }
+    func anticipatedPosition(at time: Double, amount: Double) -> Double {
+        let exact = position(at:time)
+        guard amount > 0, let first = points.first, time >= first.time else { return exact }
+        for i in points.indices.dropFirst() {
+            let a = points[i-1], b = points[i]
+            if time >= a.time && time < b.time && a.position == b.position,
+               let next = points.dropFirst(i+1).first(where: { $0.position > b.position }) {
+                let lead = min((next.position-b.position)*0.08,amount*12)
+                return exact + lead * (time-a.time)/max(0.001,b.time-a.time)
+            }
+            if time >= a.time && time < b.time && b.position > a.position && i >= 2 {
+                let previous = points[i-2]
+                if previous.position == a.position && previous.time < a.time {
+                    let lead = min((b.position-a.position)*0.08,amount*12)
+                    return exact + lead * (1-(time-a.time)/max(0.001,b.time-a.time))
+                }
+            }
+        }
+        return exact
     }
     func position(at time: Double) -> Double {
         guard let first = points.first else { return 0 }

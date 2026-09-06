@@ -96,6 +96,16 @@ import OSLog
             if tag == 12 { genericCoverButton = button }
         }
         controls.insertArrangedSubview(advanced,at:6)
+        let blends = NSStackView(); blends.orientation = .horizontal; blends.spacing = 8
+        for (tag,title) in ["Inactive", "Current", "Highlight"].enumerated() {
+            blends.addArrangedSubview(NSTextField(labelWithString:title))
+            let popup = NSPopUpButton(); popup.tag = tag
+            popup.addItems(withTitles:["normal","plusLighter","plusDarker"])
+            popup.target = self; popup.action = #selector(changeChannelBlend(_:))
+            blends.addArrangedSubview(popup)
+        }
+        lyrics.configuration.channelBlend = .init(inactive:.normal,current:.normal,highlight:.normal)
+        controls.addArrangedSubview(blends)
         for view in [titleLabel,lyrics,controls] { view.translatesAutoresizingMaskIntoConstraints = false; root.addSubview(view) }
         titleLabel.font = .systemFont(ofSize:14,weight:.semibold); titleLabel.lineBreakMode = .byTruncatingTail
         status.font = .monospacedSystemFont(ofSize:10,weight:.regular); status.textColor = .secondaryLabelColor
@@ -106,7 +116,7 @@ import OSLog
             controls.leadingAnchor.constraint(equalTo:root.leadingAnchor,constant:18),controls.trailingAnchor.constraint(equalTo:root.trailingAnchor,constant:-18),controls.bottomAnchor.constraint(equalTo:root.bottomAnchor,constant:-18),
             timing.widthAnchor.constraint(equalTo:controls.widthAnchor),slider.widthAnchor.constraint(greaterThanOrEqualToConstant:120)
         ])
-        lyrics.onSeek = { [weak self] in self?.seek($0) }
+        lyrics.onSeek = { [weak self] in self?.seek($0,motion:.cascade,playAfter:true) }
         window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps:true)
         let args = CommandLine.arguments
         let supplied = args.firstIndex(of:"--ttml").flatMap { $0+1<args.count ? URL(fileURLWithPath:args[$0+1]) : nil }
@@ -172,12 +182,21 @@ import OSLog
         if playing { player?.play() } else { player?.pause() }
         lyrics.synchronize(time:current,playing:playing,hostTime:now); updateControls()
     }
-    private func seek(_ time: Double) {
+    private func seek(_ time: Double, motion: LyricsSeekMotion = .immediate, playAfter: Bool = false) {
         let value = max(0,min(duration,time)), now = CACurrentMediaTime()
-        player?.currentTime = value; clock.synchronize(time:value,playing:clock.isPlaying,host:now)
-        lyrics.synchronize(time:value,playing:clock.isPlaying,seek:true,hostTime:now); updateControls()
+        player?.currentTime = value; clock.synchronize(time:value,playing:playAfter || clock.isPlaying,host:now)
+        if playAfter { player?.play() }
+        lyrics.synchronize(time:value,playing:clock.isPlaying,seek:true,motion:motion,hostTime:now); updateControls()
     }
     @objc private func scrub() { seek(slider.doubleValue) }
+    @objc private func changeChannelBlend(_ sender: NSPopUpButton) {
+        let mode: LyricsBlendMode = [.normal,.plusLighter,.plusDarker][sender.indexOfSelectedItem]
+        switch sender.tag {
+        case 0: lyrics.configuration.channelBlend.inactive = mode
+        case 1: lyrics.configuration.channelBlend.current = mode
+        default: lyrics.configuration.channelBlend.highlight = mode
+        }
+    }
     @objc private func back() { seek(time-5) }
     @objc private func forward() { seek(time+5) }
     @objc private func follow() { lyrics.followCurrentLyrics() }

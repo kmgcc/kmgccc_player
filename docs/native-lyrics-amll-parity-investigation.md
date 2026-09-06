@@ -1,5 +1,7 @@
 # Native Lyrics / AMLL Parity Investigation
 
+2026-09-06 的状态与交互修正见 [Native behavior regressions](../Tools/NativeLyrics/BEHAVIOR-REGRESSIONS.md)：更新模糊生命周期、从上到下的点击级联、无弹簧 scrub、空格与异常词时间、高亮退出和公开 motion/channelBlend 接口。原生 gap anticipation 与稳定 BG reveal 是明确的产品差异，不能等同于逐项复制 upstream。
+
 调查日期：2026-09-05。范围：可复用 macOS 原生歌词引擎及独立 Demo；不改变正式播放器现有渲染路径。本文件先于原生实现建立，作为实现和验收的规格。完成度和实测结果见 Demo 的 `VALIDATION.md`，不能从本文的设计目标推断已经达到 90%。
 
 ## 1. 源码基准与可复现性
@@ -172,7 +174,7 @@ U `LayoutCalculator.beginFrame/commit` 分离：先前缀和、focal top/height�
 | glow | opacity=e×b；shadow blur=min(.3,b×.3)em×radiusScale；半径不是随 e 一起缩放；transform replace，float add | F dom:748–790 |
 | emphasis float | sin(πx)×−.05em，BG×2；duration=1.4du，delay=字delay−400ms；exit同普通float回落 | F dom:769–795 |
 | 连续高亮 | 整行 timed width累计、每词独立裁切可见窗口；停顿保持；首词额外推进1.5fadeWidth、末词.5fadeWidth；fadeWidth=wordHeight×.5（可配置） | F dom:1000–1193 |
-| 原生高亮时钟桥接 | AMLL mask 在 `setCurrentTime` 后以 playbackRate=1 继续由浏览器动画时钟推进；原生 `LyricsClock` 先按 host 单调时间预测 media time，`HighlightSmoother` 只用约10ms时间常数（response=96）补极短采样停顿，正常词进度不再被人为拖慢。暂停和显式 seek 直接 snap，倒退大跳也 snap；停顿补偿限制在 0.35 个 fadeWidth 以内。 | F/U `setCurrentTime` + mask WAAPI；Native `Motion.swift` |
+| 原生高亮时钟桥接 | `LyricsClock` 预测 media time，正常 mask 进度立即应用，不再使用拖尾滤波。暂停/seek 精确采样。词间空隙的小幅向前预走是原生产品扩展：AMLL 源码本身保留静止 keyframe；默认预走最多1.44pt且不超过下一段8%，不延迟正常词时序。 | F dom mask keyframes；Native `Motion.swift` / `TextLayout.swift` |
 | Ruby扫光 | 每ruby的UTF16长度分配base词宽；使用ruby自身start/end并clamp在词内，逐段保持停顿 | F dom:1090–1151 |
 | F mask alpha | scale factor=clamp((scale−.97)/.03)；dark=.2+.2factor，bright=.2+.8factor；solid令bright=dark；attack50/release7，`1-exp(-speed*dt)` | F dom:1236–1288 |
 | U mask alpha | solid .2/.2→gradient1/.4；CSS ease-out，亮起.3s、暗下.45s，与scale解耦 | U CSS/property；dom:setRenderMode |
