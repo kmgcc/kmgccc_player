@@ -13,7 +13,15 @@
 | [色彩系统](color-system.md) | 封面分析、OKLCH 语义色、Display P3 输出和局部可读性判断 |
 | [资料库存储](library-storage.md) | 托管/原位模式、registry、目录、source、缓存、索引、播放历史和删除边界 |
 | [资料库写入 authority matrix](library-write-authority.md) | Phase 0 的函数级持久化 owner、提交顺序、失败补偿与生命周期合同 |
-| [Automation CLI / 本地 IPC](automation-cli-ipc.md) | Phase 1 的版本化只读协议、AF_UNIX framing、CLI 探针和边界 |
+| [Automation CLI / 本地 IPC / MCP](automation-cli-ipc.md) | 共享 Automation contract、CLI、AF_UNIX IPC、MCP stdio 和安全边界 |
+| [AI Agent Automation 实施计划](ai-agent-automation-plan.md) | 面向外部 Agent 的持续实施计划、阶段状态和验收矩阵 |
+| [Automation Capability Reference](automation-capability-reference.md) | 当前可用的领域能力、组合查询、风险、scope、revision 和 Jobs |
+| [Agent Behavior Guide](agent-behavior-guide.md) | Agent 的领域语义、安全规则、推荐 workflow 和 Storage fallback |
+| [Automation CLI Reference](automation-cli-reference.md) | 人、脚本和 Agent 可用的命令、JSON、exit code 和 batch 约定 |
+| [Automation MCP Setup / Reference](automation-mcp.md) | MCP lifecycle、Resources、stdio transport 和 App boundary |
+| [`scripts/automation_mcp_smoke.sh`](../scripts/automation_mcp_smoke.sh) | 对运行中 App 执行现代/兼容 MCP handshake、Tools、Resources 和 tool call smoke |
+| [Automation Troubleshooting](automation-troubleshooting.md) | App、权限、MCP handshake、watcher、Jobs、bootstrap 和 Storage 排障 |
+| [kmgccc-player-automation Skill](skills/kmgccc-player-automation/SKILL.md) | 可加载/适配的 Agent 行为 Skill |
 | [本地音乐资料库重构计划](music-library-rearchitecture-plan.md) | 原位资料库重点重构、托管兼容、文件夹与播放列表关系、领域模型迁移、分阶段实施和验收 |
 | [阶段 0-1 入口审计](archive/music-library-stage0-1-entry-audit.md) | 时点快照（已归档）：阶段 0-1 已冻结入口、生命周期 owner、服务链路和验收基线 |
 | [阶段 8 验收记录](archive/music-library-stage8-acceptance.md) | 时点快照（已归档）：诊断投影、重复审查、原位排除目录、搜索扩展、批量写回状态和验收边界 |

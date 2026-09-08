@@ -24,6 +24,9 @@ LDDC-main/
 
 # Local editor and tooling configuration (excluded from the published source).
 skills/
+!docs/skills/
+!docs/skills/kmgccc-player-automation/
+!docs/skills/kmgccc-player-automation/SKILL.md
 .claude/
 /ARCHITECTURE.md
 /AGENTS.md
