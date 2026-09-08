@@ -66,6 +66,108 @@ func responseFactoriesKeepRequestID() {
 }
 
 @Test
+func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
+    let names = AutomationToolCatalog.all.map(\.name)
+    #expect(names == names.sorted())
+    #expect(Set(names).count == names.count)
+    #expect(names.contains(AutomationMethod.libraryTracks))
+    #expect(names.contains(AutomationMethod.playlistAddTracks))
+    #expect(names.contains(AutomationMethod.sourceList))
+    #expect(names.contains(AutomationMethod.sourceRefresh))
+
+    let readOnly = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.libraryTracks)
+    )
+    #expect(readOnly.readOnly)
+    #expect(!readOnly.requiresConfirmation)
+
+    let mutation = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.playlistAddTracks)
+    )
+    #expect(!mutation.readOnly)
+    #expect(!mutation.requiresConfirmation)
+    guard case .object(let schema) = mutation.inputSchema else {
+        Issue.record("mutation input schema must be an object")
+        return
+    }
+    guard case .array(let required) = schema["required"] else {
+        Issue.record("mutation schema must declare required IDs")
+        return
+    }
+    #expect(required.contains(.string("playlistID")))
+    #expect(required.contains(.string("trackIDs")))
+
+    let sourceRefresh = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.sourceRefresh)
+    )
+    #expect(!sourceRefresh.requiresConfirmation)
+    #expect(sourceRefresh.supportsJobs)
+    #expect(!sourceRefresh.supportsTasks)
+
+    for method in [
+        AutomationMethod.sourceSetExcludedPath,
+        AutomationMethod.sourceSetMonitorPolicy,
+        AutomationMethod.settingsGet,
+        AutomationMethod.settingsPatch,
+        AutomationMethod.storageInspect,
+        AutomationMethod.storageValidate,
+        AutomationMethod.storageRepair
+    ] {
+        let descriptor = try #require(AutomationToolCatalog.descriptor(for: method))
+        guard case .object(let schema) = descriptor.inputSchema,
+              case .string("object") = schema["type"] else {
+            Issue.record("\(method) must expose an object input schema")
+            continue
+        }
+        #expect(!descriptor.scopes.isEmpty || method == AutomationMethod.settingsGet)
+    }
+}
+
+@Test
+func sourceSummaryRemainsBackwardCompatibleWithoutExclusionField() throws {
+    let id = UUID()
+    let data = Data("""
+    {"id":"\(id.uuidString)","mode":"directory","displayName":"Music","path":"/tmp/Music","status":"available","lastScan":null,"playlistIDs":[]}
+    """.utf8)
+    let summary = try AutomationWireCoding.decoder().decode(
+        AutomationSourceSummary.self,
+        from: data
+    )
+    #expect(summary.id == id)
+    #expect(summary.excludedRelativePaths.isEmpty)
+}
+
+@Test
+func playlistMutationResultRoundTripsOpaqueRevision() throws {
+    let playlist = AutomationPlaylistSummary(
+        id: UUID(),
+        name: "Agent target",
+        description: "Test",
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+        trackCount: 2,
+        totalDuration: 321.5,
+        revision: "v1-abc"
+    )
+    let result = AutomationPlaylistMutationResult(
+        operation: AutomationMethod.playlistAddTracks,
+        applied: false,
+        dryRun: true,
+        playlist: playlist,
+        requestedTrackIDs: [UUID()],
+        changedTrackIDs: [UUID()],
+        skippedTrackIDs: [],
+        message: "preview"
+    )
+    let data = try AutomationWireCoding.encoder().encode(result)
+    let decoded = try AutomationWireCoding.decoder().decode(
+        AutomationPlaylistMutationResult.self,
+        from: data
+    )
+    #expect(decoded == result)
+    #expect(decoded.playlist?.revision == "v1-abc")
+}
+
+@Test
 func unixSocketListenerRoundTripsARequest() async throws {
     let socketURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("player-automation-\(UUID().uuidString)", isDirectory: false)

@@ -138,6 +138,26 @@ final class ReferencedSourceReconciler {
         sourceScope.authorizedRoots.mapValues(\.url)
     }
 
+    /// Returns the currently authorized roots that opt into automatic
+    /// filesystem reconciliation. Explicit `refreshSource` calls continue to
+    /// work for a manual-only Source.
+    func monitoredSourceRoots() async throws -> [UUID: URL] {
+        let automaticIDs = Set(
+            try await sourceStore.loadAll()
+                .filter { $0.monitorPolicy != .off }
+                .map(\.id)
+        )
+        return sourceRoots.filter { automaticIDs.contains($0.key) }
+    }
+
+    func automaticSourceIDs() async throws -> Set<UUID> {
+        Set(
+            try await sourceStore.loadAll()
+                .filter { $0.monitorPolicy != .off }
+                .map(\.id)
+        )
+    }
+
     func allSourceIDs() async throws -> Set<UUID> {
         Set(try await sourceStore.loadAll().map(\.id))
     }
@@ -161,7 +181,11 @@ final class ReferencedSourceReconciler {
     /// Adds explicit source-to-playlist edges for a playlist that already
     /// exists (for example the setup wizard's “selected files” grouping).
     /// Directory sources and single-file sources use the same edge model.
-    func bindSourcesToPlaylist(_ sourceIDs: Set<UUID>, playlistID: UUID) async throws {
+    func bindSourcesToPlaylist(
+        _ sourceIDs: Set<UUID>,
+        playlistID: UUID,
+        relativePath: String? = nil
+    ) async throws {
         let orderedSourceIDs = sourceIDs.sorted { $0.uuidString < $1.uuidString }
         try await runShortMutation(
             kind: .sourceReconcileCommit,
@@ -172,7 +196,8 @@ final class ReferencedSourceReconciler {
                 for sourceID in orderedSourceIDs {
                     let ensured = try await self.sourceStore.ensurePlaylistBindingWithCreation(
                         sourceID: sourceID,
-                        playlistID: playlistID
+                        playlistID: playlistID,
+                        relativePath: relativePath
                     )
                     if ensured.didCreate {
                         createdBindings.append((sourceID: sourceID, bindingID: ensured.binding.id))

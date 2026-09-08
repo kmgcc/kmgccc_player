@@ -129,7 +129,7 @@ final class LibrarySession: LibrarySessionLifecycle {
             try await startReferencedSourceMonitor(
                 libraryChangeMonitor,
                 reconciler: referencedSourceReconciler,
-                roots: referencedSourceReconciler.sourceRoots
+                roots: try await referencedSourceReconciler.monitoredSourceRoots()
             )
         } else if context.mode == .managed, let libraryChangeMonitor {
             try await startManagedLibraryMonitor(libraryChangeMonitor)
@@ -171,7 +171,7 @@ final class LibrarySession: LibrarySessionLifecycle {
 
         let ledger = try await operationCoordinator.run(as: .sourceScan) { () -> AttemptLedger in
             var ledger = AttemptLedger()
-            let sourceIDs = try await reconciler.allSourceIDs()
+            let sourceIDs = try await reconciler.automaticSourceIDs()
             for sourceID in sourceIDs.sorted(by: { $0.uuidString < $1.uuidString }) {
                 operationCoordinator.recordCheckpoint("来源扫描 \(sourceID.uuidString.prefix(8))")
                 do {
@@ -303,6 +303,120 @@ final class LibrarySession: LibrarySessionLifecycle {
         operationCoordinator.taskDescriptors
     }
 
+    /// Returns live and recently completed operation snapshots for the
+    /// automation Job surface. The recent portion is launch-scoped diagnostic
+    /// state; domain data remains durable in the library's own stores.
+    func libraryJobDescriptorsSnapshot() -> [LibraryOperationTaskDescriptor] {
+        let live = operationCoordinator.taskDescriptors
+        let recent = operationCoordinator.recentTaskDescriptors.filter { recent in
+            !live.contains(where: { $0.id == recent.id })
+        }
+        return (live + recent).sorted {
+            if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
+    @discardableResult
+    func cancelLibraryJob(id: UUID) -> Bool {
+        operationCoordinator.cancel(operationID: id)
+    }
+
+    /// Starts the provider-backed lyrics maintenance workflow without making
+    /// the IPC request wait for a whole library. The operation is owned by the
+    /// session coordinator, so progress/cancellation remain valid across CLI,
+    /// MCP and UI observers during the current App launch.
+    func startAutomationLyricsRefresh(
+        trackIDs: [UUID],
+        force: Bool
+    ) -> LibraryOperationTaskDescriptor? {
+        let uniqueIDs = Array(Set(trackIDs)).sorted { $0.uuidString < $1.uuidString }
+        guard !isClosed, !uniqueIDs.isEmpty else { return nil }
+        let started = operationCoordinator.start({ [weak self] in
+            guard let self else { return }
+            await self.runAutomationLyricsRefresh(trackIDs: uniqueIDs, force: force)
+        }, kind: .enrichment)
+        guard started else { return nil }
+        return operationCoordinator.taskDescriptors.last
+    }
+
+    private func runAutomationLyricsRefresh(trackIDs: [UUID], force: Bool) async {
+        let tracksByID = Dictionary(
+            uniqueKeysWithValues: libraryViewModel.allTracks.map { ($0.id, $0) }
+        )
+        let total = trackIDs.count
+        var completed = 0
+        for trackID in trackIDs {
+            if Task.isCancelled { return }
+            defer {
+                completed += 1
+                operationCoordinator.recordProgress(
+                    completedCount: completed,
+                    totalCount: total,
+                    phase: "lyrics"
+                )
+            }
+            guard let track = tracksByID[trackID] else {
+                operationCoordinator.recordPartialFailure("\(trackID.uuidString): Track not found")
+                continue
+            }
+            if !force, automationLyricsQuality(track) > 0 {
+                operationCoordinator.recordCheckpoint("skipped existing lyrics \(trackID.uuidString)")
+                continue
+            }
+            let title = track.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else {
+                operationCoordinator.recordPartialFailure("\(trackID.uuidString): missing title")
+                continue
+            }
+            let result = await LyricsSearchHelper.searchAndFetchAutomaticallyMatchedLyrics(
+                title: title,
+                artist: track.artist.isEmpty ? nil : track.artist,
+                album: track.album.isEmpty ? nil : track.album,
+                duration: track.duration > 0 ? track.duration : nil,
+                searchCoordinator: cacheServices.lyricsSearchCoordinator,
+                amllDBService: cacheServices.amllDBService
+            )
+            guard !Task.isCancelled else { return }
+            guard let ttml = result.ttml,
+                  !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                operationCoordinator.recordPartialFailure("\(trackID.uuidString): \(result.status.rawValue)")
+                continue
+            }
+            let newQuality = ttml.localizedCaseInsensitiveContains("<span") ? 2 : 1
+            guard newQuality > automationLyricsQuality(track) else {
+                operationCoordinator.recordCheckpoint("kept current lyrics \(trackID.uuidString)")
+                continue
+            }
+            track.ttmlLyricText = ttml
+            track.lyricsText = nil
+            track.lyricsFileName = nil
+            let persistence = await libraryViewModel.saveTrackEdits(
+                track,
+                mode: .metaAndLyrics,
+                reason: "automationLyricsRefresh"
+            )
+            guard persistence.persistedTrackIDs.contains(trackID) else {
+                operationCoordinator.recordPartialFailure("\(trackID.uuidString): persistence failed")
+                continue
+            }
+            operationCoordinator.recordCheckpoint("applied lyrics \(trackID.uuidString)")
+        }
+    }
+
+    private func automationLyricsQuality(_ track: Track) -> Int {
+        if let ttml = track.ttmlLyricText,
+           !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return ttml.localizedCaseInsensitiveContains("<span") ? 2 : 1
+        }
+        if track.ttmlLyricsFileName != nil { return 1 }
+        if let plain = track.lyricsText,
+           !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return LyricsFormatSupport.looksLikeLRC(plain) ? 1 : 0
+        }
+        return 0
+    }
+
     /// Installs the session lifetime gate used by UI-owned imports. Keeping the
     /// closure on the view model avoids a second coordinator in the UI while
     /// preserving one owner for session quiescence.
@@ -341,6 +455,122 @@ final class LibrarySession: LibrarySessionLifecycle {
         _ work: @escaping @MainActor () async -> Void
     ) -> Bool {
         operationCoordinator.start(work, kind: .importFiles)
+    }
+
+    /// Starts an automation-owned referenced Source import without keeping the
+    /// IPC request blocked on file scanning, duplicate resolution, enrichment
+    /// or index writes. The picker selection is retained until the operation
+    /// reaches a terminal state, while the caller receives the Job descriptor
+    /// immediately after authorization succeeds.
+    @discardableResult
+    func startAutomationInitialImport(
+        selection: LibraryInitialImportSelection,
+        playlistID: UUID? = nil
+    ) -> LibraryOperationTaskDescriptor? {
+        guard !isClosed, context.mode == .referenced else { return nil }
+        let ownedSelection = selection.retainedCopy()
+        let started = operationCoordinator.start({ [weak self] in
+            defer { ownedSelection.release() }
+            guard let self else { return }
+
+            let result: LibraryInitialImportResult
+            do {
+                result = try await self.importInitialSelection(ownedSelection)
+            } catch LibraryInitialImportError.initialImportFailed(let partialResult) {
+                await self.finishAutomationInitialImport(
+                    partialResult,
+                    playlistID: playlistID
+                )
+                return
+            } catch {
+                self.operationCoordinator.recordPartialFailure(
+                    "Source import failed: \(String(describing: error))"
+                )
+                return
+            }
+
+            await self.finishAutomationInitialImport(
+                result,
+                playlistID: playlistID
+            )
+        }, kind: .importFiles)
+        guard started else {
+            ownedSelection.release()
+            return nil
+        }
+        return operationCoordinator.taskDescriptors.last
+    }
+
+    private func finishAutomationInitialImport(
+        _ result: LibraryInitialImportResult,
+        playlistID: UUID?
+    ) async {
+        operationCoordinator.recordProgress(
+            completedCount: result.imported,
+            totalCount: max(result.planned, result.requested),
+            phase: "source import"
+        )
+        for failure in result.failures.prefix(50) {
+            operationCoordinator.recordPartialFailure(
+                "\(failure.url.path): \(failure.message)"
+            )
+        }
+        if result.failures.count > 50 {
+            operationCoordinator.recordPartialFailure(
+                "\(result.failures.count - 50) additional Source import failures"
+            )
+        }
+
+        guard let playlistID, !result.sourceIDs.isEmpty,
+              let referencedSourceReconciler else { return }
+        do {
+            try await referencedSourceReconciler.bindSourcesToPlaylist(
+                Set(result.sourceIDs),
+                playlistID: playlistID,
+                relativePath: nil
+            )
+            await libraryViewModel.reloadLibrary()
+            operationCoordinator.recordCheckpoint("Source Playlist binding complete")
+        } catch {
+            operationCoordinator.recordPartialFailure(
+                "Source Playlist binding failed: \(String(describing: error))"
+            )
+        }
+    }
+
+    /// Starts an automation-owned Source scan as a Job. Source scans can
+    /// touch every file in a referenced directory, so they must not inherit
+    /// the request lifetime of CLI/MCP callers.
+    @discardableResult
+    func startAutomationSourceRefresh(
+        sourceID: UUID
+    ) -> LibraryOperationTaskDescriptor? {
+        guard !isClosed, context.mode == .referenced else { return nil }
+        let started = operationCoordinator.start({ [weak self] in
+            guard let self else { return }
+            do {
+                let issues = try await self.refreshReferencedSource(sourceID)
+                self.operationCoordinator.recordProgress(
+                    completedCount: 1,
+                    totalCount: 1,
+                    phase: "source scan"
+                )
+                for issue in issues {
+                    self.operationCoordinator.recordPartialFailure(
+                        "\(sourceID.uuidString): \(String(describing: issue))"
+                    )
+                }
+                self.operationCoordinator.recordCheckpoint("Source scan complete")
+            } catch is CancellationError {
+                return
+            } catch {
+                self.operationCoordinator.recordPartialFailure(
+                    "\(sourceID.uuidString): \(String(describing: error))"
+                )
+            }
+        }, kind: .sourceScan)
+        guard started else { return nil }
+        return operationCoordinator.taskDescriptors.last
     }
 
     private func createAutomaticPlaylists(
@@ -492,14 +722,14 @@ final class LibrarySession: LibrarySessionLifecycle {
             try await startReferencedSourceMonitor(
                 libraryChangeMonitor,
                 reconciler: referencedSourceReconciler,
-                roots: referencedSourceReconciler.sourceRoots
+                roots: try await referencedSourceReconciler.monitoredSourceRoots()
             )
             return issues
         } catch {
             try? await startReferencedSourceMonitor(
                 libraryChangeMonitor,
                 reconciler: referencedSourceReconciler,
-                roots: referencedSourceReconciler.sourceRoots
+                roots: try await referencedSourceReconciler.monitoredSourceRoots()
             )
             throw error
         }
@@ -509,14 +739,14 @@ final class LibrarySession: LibrarySessionLifecycle {
         guard !isClosed,
               let referencedSourceReconciler,
               let libraryChangeMonitor else { return [] }
-        let originalRoots = referencedSourceReconciler.sourceRoots
+        let originalRoots = try await referencedSourceReconciler.monitoredSourceRoots()
         await libraryChangeMonitor.stopAndWait()
         do {
             let issues = try await referencedSourceReconciler.refreshSource(sourceID)
             try await startReferencedSourceMonitor(
                 libraryChangeMonitor,
                 reconciler: referencedSourceReconciler,
-                roots: referencedSourceReconciler.sourceRoots
+                roots: try await referencedSourceReconciler.monitoredSourceRoots()
             )
             await libraryViewModel.reloadLibrary()
             return issues
@@ -538,7 +768,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         guard !isClosed,
               let referencedSourceReconciler,
               let libraryChangeMonitor else { return }
-        let originalRoots = referencedSourceReconciler.sourceRoots
+        let originalRoots = try await referencedSourceReconciler.monitoredSourceRoots()
         await libraryChangeMonitor.stopAndWait()
         do {
             try await referencedSourceReconciler.setExcludedRelativePath(
@@ -549,10 +779,48 @@ final class LibrarySession: LibrarySessionLifecycle {
             try await startReferencedSourceMonitor(
                 libraryChangeMonitor,
                 reconciler: referencedSourceReconciler,
-                roots: referencedSourceReconciler.sourceRoots
+                roots: try await referencedSourceReconciler.monitoredSourceRoots()
             )
             await libraryViewModel.reloadLibrary()
         } catch {
+            try? await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: referencedSourceReconciler,
+                roots: originalRoots
+            )
+            throw error
+        }
+    }
+
+    /// Changes whether filesystem events automatically reconcile one Source.
+    /// Manual refresh remains available for `.off`; changing this policy only
+    /// restarts the monitor and does not remove Track authority.
+    func setReferencedSourceMonitorPolicy(
+        sourceID: UUID,
+        policy: ReferencedSourceMonitorPolicy
+    ) async throws {
+        guard !isClosed,
+              let referencedSourceReconciler,
+              let libraryChangeMonitor,
+              let referencedSourceStore else { return }
+        let originalRoots = try await referencedSourceReconciler.monitoredSourceRoots()
+        let originalPolicy = try await referencedSourceStore.load(id: sourceID).monitorPolicy
+        await libraryChangeMonitor.stopAndWait()
+        do {
+            _ = try await referencedSourceStore.updateMonitorPolicy(
+                sourceID: sourceID,
+                policy: policy
+            )
+            try await startReferencedSourceMonitor(
+                libraryChangeMonitor,
+                reconciler: referencedSourceReconciler,
+                roots: try await referencedSourceReconciler.monitoredSourceRoots()
+            )
+        } catch {
+            _ = try? await referencedSourceStore.updateMonitorPolicy(
+                sourceID: sourceID,
+                policy: originalPolicy
+            )
             try? await startReferencedSourceMonitor(
                 libraryChangeMonitor,
                 reconciler: referencedSourceReconciler,
@@ -566,14 +834,14 @@ final class LibrarySession: LibrarySessionLifecycle {
         guard !isClosed,
               let referencedSourceReconciler,
               let libraryChangeMonitor else { return }
-        let originalRoots = referencedSourceReconciler.sourceRoots
+        let originalRoots = try await referencedSourceReconciler.monitoredSourceRoots()
         await libraryChangeMonitor.stopAndWait()
         do {
             try await referencedSourceReconciler.removeSource(sourceID)
             try await startReferencedSourceMonitor(
                 libraryChangeMonitor,
                 reconciler: referencedSourceReconciler,
-                roots: referencedSourceReconciler.sourceRoots
+                roots: try await referencedSourceReconciler.monitoredSourceRoots()
             )
         } catch {
             try? await startReferencedSourceMonitor(
@@ -609,7 +877,7 @@ final class LibrarySession: LibrarySessionLifecycle {
               let libraryChangeMonitor else {
             throw LibrarySessionFactoryError.missingReferencedSourceServices
         }
-        let originalRoots = referencedSourceReconciler.sourceRoots
+        let originalRoots = try await referencedSourceReconciler.monitoredSourceRoots()
         await libraryChangeMonitor.stopAndWait()
         do {
             try await sourceReconnectService.reconnectSource(
@@ -620,13 +888,13 @@ final class LibrarySession: LibrarySessionLifecycle {
             try await startReferencedSourceMonitor(
                 libraryChangeMonitor,
                 reconciler: referencedSourceReconciler,
-                roots: referencedSourceReconciler.sourceRoots
+                roots: try await referencedSourceReconciler.monitoredSourceRoots()
             )
         } catch {
             try? await startReferencedSourceMonitor(
                 libraryChangeMonitor,
                 reconciler: referencedSourceReconciler,
-                roots: sourceReconnectServiceRoots(
+                roots: try await sourceReconnectServiceRoots(
                     fallback: originalRoots,
                     reconciler: referencedSourceReconciler
                 )
@@ -726,8 +994,8 @@ final class LibrarySession: LibrarySessionLifecycle {
     private func sourceReconnectServiceRoots(
         fallback: [UUID: URL],
         reconciler: ReferencedSourceReconciler
-    ) -> [UUID: URL] {
-        let current = reconciler.sourceRoots
+    ) async throws -> [UUID: URL] {
+        let current = try await reconciler.monitoredSourceRoots()
         return current.isEmpty ? fallback : current
     }
 

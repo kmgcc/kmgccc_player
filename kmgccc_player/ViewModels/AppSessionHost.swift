@@ -478,6 +478,61 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
+    /// A launch-scoped snapshot of library operations for CLI/MCP Jobs. The
+    /// session owns cancellation and lifetime; this host only exposes the
+    /// active session's view to other control planes.
+    func libraryJobDescriptors() -> [LibraryOperationTaskDescriptor] {
+        activeLibraryBinding.activeSession?.libraryJobDescriptorsSnapshot() ?? []
+    }
+
+    @discardableResult
+    func cancelLibraryJob(id: UUID, libraryID: UUID? = nil) -> Bool {
+        guard let session = activeLibraryBinding.activeSession,
+              libraryID == nil || session.context.id == libraryID else { return false }
+        return session.cancelLibraryJob(id: id)
+    }
+
+    @discardableResult
+    func startLyricsRefreshJob(
+        trackIDs: [UUID],
+        force: Bool,
+        libraryID: UUID? = nil
+    ) -> LibraryOperationTaskDescriptor? {
+        guard let session = activeLibraryBinding.activeSession,
+              libraryID == nil || session.context.id == libraryID else { return nil }
+        return session.startAutomationLyricsRefresh(trackIDs: trackIDs, force: force)
+    }
+
+    @discardableResult
+    func startSourceRefreshJob(
+        sourceID: UUID,
+        libraryID: UUID? = nil
+    ) -> LibraryOperationTaskDescriptor? {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.mode == .referenced,
+              libraryID == nil || session.context.id == libraryID else {
+            return nil
+        }
+        return session.startAutomationSourceRefresh(sourceID: sourceID)
+    }
+
+    @discardableResult
+    func startSourceImportJob(
+        selection: LibraryInitialImportSelection,
+        playlistID: UUID? = nil,
+        libraryID: UUID? = nil
+    ) -> LibraryOperationTaskDescriptor? {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.mode == .referenced,
+              libraryID == nil || session.context.id == libraryID else {
+            return nil
+        }
+        return session.startAutomationInitialImport(
+            selection: selection,
+            playlistID: playlistID
+        )
+    }
+
     func relocateMusicLibrary(id: UUID, to parentURL: URL) async throws {
         guard let libraryRelocationService else { throw LibraryRelocationError.libraryNotRegistered }
         _ = try await libraryRelocationService.relocate(libraryID: id, toParent: parentURL)
@@ -613,7 +668,7 @@ final class AppSessionHost: ObservableObject {
         }
         beginManualScanOverride(sourceIDs: [id])
         do {
-            let issues = try await session.runLibraryOperation {
+            let issues = try await session.runLibraryOperation(as: .sourceScan) {
                 try await session.refreshReferencedSource(id)
             }
             endManualScanOverride(sourceIDs: [id], markFailed: false)
@@ -638,7 +693,7 @@ final class AppSessionHost: ObservableObject {
         guard !sourceIDs.isEmpty else { return }
         beginManualScanOverride(sourceIDs: sourceIDs)
         do {
-            _ = try await session.runLibraryOperation {
+            _ = try await session.runLibraryOperation(as: .sourceScan) {
                 try await session.refreshReferencedSources()
             }
             endManualScanOverride(sourceIDs: sourceIDs, markFailed: false)
@@ -670,9 +725,30 @@ final class AppSessionHost: ObservableObject {
         }
     }
 
+    func setReferencedSourceMonitorPolicy(
+        id: UUID,
+        policy: ReferencedSourceMonitorPolicy,
+        libraryID: UUID? = nil
+    ) async throws {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.mode == .referenced else {
+            throw LibrarySessionFactoryError.missingReferencedSourceServices
+        }
+        if let libraryID, session.context.id != libraryID {
+            throw LibraryOperationError.sessionQuiescing
+        }
+        try await session.runLibraryOperation {
+            try await session.setReferencedSourceMonitorPolicy(
+                sourceID: id,
+                policy: policy
+            )
+        }
+    }
+
     func bindReferencedSource(
         id: UUID,
         to playlistID: UUID,
+        relativePath: String? = nil,
         libraryID: UUID? = nil
     ) async throws {
         guard let session = activeLibraryBinding.activeSession,
@@ -684,7 +760,11 @@ final class AppSessionHost: ObservableObject {
             throw LibraryOperationError.sessionQuiescing
         }
         try await session.runLibraryOperation {
-            try await reconciler.bindSourcesToPlaylist([id], playlistID: playlistID)
+            try await reconciler.bindSourcesToPlaylist(
+                [id],
+                playlistID: playlistID,
+                relativePath: relativePath
+            )
         }
         await session.libraryViewModel.reloadLibrary()
     }
@@ -713,8 +793,11 @@ final class AppSessionHost: ObservableObject {
         return removedCount
     }
 
-    func removeReferencedSource(id: UUID) async throws {
+    func removeReferencedSource(id: UUID, libraryID: UUID? = nil) async throws {
         guard let session = activeLibraryBinding.activeSession else { return }
+        if let libraryID, session.context.id != libraryID {
+            throw LibraryOperationError.sessionQuiescing
+        }
         try await session.runLibraryOperation {
             try await session.removeReferencedSource(id)
         }

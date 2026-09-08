@@ -11,11 +11,51 @@
 import Foundation
 import SwiftUI
 
+enum LibraryAutomationMutationError: Error, Equatable, LocalizedError, Sendable {
+    case sessionQuiescing
+    case playlistNotFound(UUID)
+    case revisionConflict(expected: String, actual: String)
+    case resultUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .sessionQuiescing:
+            return "资料库正在切换或关闭，暂时不能接受新的写操作。"
+        case .playlistNotFound(let id):
+            return "播放列表不存在：\(id.uuidString)"
+        case .revisionConflict:
+            return "播放列表在操作前已经发生变化，请重新查询后再试。"
+        case .resultUnavailable:
+            return "资料库写入完成状态不可用。"
+        }
+    }
+}
+
 enum TrackEditPersistenceMode {
     case metaOnly
     case metaAndLyrics
     case metaAndArtwork
     case metaLyricsAndArtwork
+}
+
+/// App-owned metadata patch used by CLI/MCP. `fields` distinguishes an
+/// omitted value from an explicit clear while keeping this boundary free of
+/// wire-format types.
+struct LibraryAutomationMetadataPatch {
+    let fields: Set<String>
+    let title: String?
+    let artist: String?
+    let album: String?
+    let albumArtist: String?
+    let userDescription: String?
+    let genreTags: [String]?
+    let releaseDate: Date?
+}
+
+struct LibraryAutomationMetadataMutationOutcome {
+    let updatedTrackIDs: [UUID]
+    let skippedTrackIDs: [UUID]
+    let conflictedTrackIDs: [UUID]
 }
 
 enum TrackSortKey: String, CaseIterable, Identifiable {
@@ -898,6 +938,32 @@ final class LibraryViewModel {
         return result
     }
 
+    /// Throwing mutation entry used by non-UI control planes. It shares the
+    /// same session-owned coordinator and playlist commit hooks as UI actions,
+    /// while allowing the caller to return a structured error instead of the
+    /// UI's fire-and-forget fallback behaviour.
+    func performAutomationLibraryMutation(
+        _ work: @escaping @MainActor () async throws -> Void
+    ) async throws {
+        guard !rejectsUnownedMutations else {
+            throw LibraryAutomationMutationError.sessionQuiescing
+        }
+        guard let runOwnedLibraryMutation else {
+            try await work()
+            return
+        }
+        do {
+            try await runOwnedLibraryMutation {
+                try await work()
+            }
+        } catch let error as LibraryMutationCoordinatorError {
+            if error == .sessionQuiescing {
+                throw LibraryAutomationMutationError.sessionQuiescing
+            }
+            throw error
+        }
+    }
+
     private func reportLibraryMutationFailure(_ error: any Error) {
         Log.error("[LibraryVM] library mutation failed: \(error)", category: .library)
         onImportRejectedNotice?("资料库写入失败：\(error.localizedDescription)")
@@ -1488,6 +1554,23 @@ final class LibraryViewModel {
         }
     }
 
+    /// Create a playlist without changing the UI selection. This is the
+    /// application capability used by CLI/MCP and deliberately goes through
+    /// the same mutation owner as the ordinary UI action.
+    func createPlaylistForAutomation(name: String) async throws -> Playlist {
+        var createdPlaylist: Playlist?
+        try await performAutomationLibraryMutation {
+            let playlist = try await self.repository.createPlaylist(name: name)
+            self.playlists = await self.repository.fetchPlaylists()
+            self.refreshTrigger += 1
+            createdPlaylist = playlist
+        }
+        guard let createdPlaylist else {
+            throw LibraryAutomationMutationError.resultUnavailable
+        }
+        return createdPlaylist
+    }
+
     /// Create a new playlist with default name.
     func createNewPlaylist() async -> Playlist? {
         let name = String(
@@ -1547,6 +1630,42 @@ final class LibraryViewModel {
         }
     }
 
+    /// Throwing playlist-header mutation for non-UI control planes. The
+    /// revision is checked inside the shared mutation owner so a UI edit that
+    /// was queued before this request cannot be silently overwritten.
+    @discardableResult
+    func renamePlaylistForAutomation(
+        _ playlist: Playlist,
+        name: String,
+        description: String?,
+        expectedRevision: String?
+    ) async throws -> Playlist {
+        let playlistID = playlist.id
+        try await performAutomationLibraryMutation {
+            guard let currentPlaylist = self.playlists.first(where: { $0.id == playlistID }) else {
+                throw LibraryAutomationMutationError.playlistNotFound(playlistID)
+            }
+            try self.checkAutomationPlaylistRevision(
+                expectedRevision,
+                currentPlaylist: currentPlaylist
+            )
+            try await self.repository.updatePlaylistDetails(
+                currentPlaylist,
+                name: name,
+                description: description ?? currentPlaylist.userDescription
+            )
+            self.playlists = await self.repository.fetchPlaylists()
+            await self.invalidateDetailSelectionCachesIfNeeded(
+                selectionIdentities: self.selectionIdentityVariants(for: .playlist(playlistID))
+            )
+            self.refreshTrigger += 1
+        }
+        guard let updated = playlists.first(where: { $0.id == playlistID }) else {
+            throw LibraryAutomationMutationError.resultUnavailable
+        }
+        return updated
+    }
+
     func savePlaylistEdits(_ playlist: Playlist, name: String, description: String) async {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return }
@@ -1566,6 +1685,26 @@ final class LibraryViewModel {
     func deletePlaylist(_ playlist: Playlist) async {
         await performOwnedLibraryMutation(rejectingWith: ()) {
             try await self.deletePlaylistWithoutOwnership(playlist)
+        }
+    }
+
+    /// Throwing destructive playlist deletion for the App policy layer. This
+    /// method only removes the playlist and its membership; it never deletes
+    /// Tracks or physical audio files.
+    func deletePlaylistForAutomation(
+        _ playlist: Playlist,
+        expectedRevision: String?
+    ) async throws {
+        let playlistID = playlist.id
+        try await performAutomationLibraryMutation {
+            guard let currentPlaylist = self.playlists.first(where: { $0.id == playlistID }) else {
+                throw LibraryAutomationMutationError.playlistNotFound(playlistID)
+            }
+            try self.checkAutomationPlaylistRevision(
+                expectedRevision,
+                currentPlaylist: currentPlaylist
+            )
+            try await self.deletePlaylistWithoutOwnership(currentPlaylist)
         }
     }
 
@@ -1592,6 +1731,36 @@ final class LibraryViewModel {
     func addTracksToPlaylist(_ tracks: [Track], playlist: Playlist) async {
         await performOwnedLibraryMutation(rejectingWith: ()) {
             try await self.addTracksToPlaylistWithoutOwnership(tracks, playlist: playlist)
+        }
+    }
+
+    /// Add already indexed Tracks to a playlist without importing or copying
+    /// their files. The revision check runs inside the shared mutation queue,
+    /// so a UI mutation that was queued before this operation cannot be
+    /// silently overwritten.
+    func addTracksToPlaylistForAutomation(
+        _ tracks: [Track],
+        playlist: Playlist,
+        expectedRevision: String?
+    ) async throws {
+        let playlistID = playlist.id
+        try await performAutomationLibraryMutation {
+            guard let currentPlaylist = self.playlists.first(where: { $0.id == playlistID }) else {
+                throw LibraryAutomationMutationError.playlistNotFound(playlistID)
+            }
+            if let expectedRevision {
+                let actualRevision = self.automationPlaylistRevision(for: currentPlaylist)
+                guard expectedRevision == actualRevision else {
+                    throw LibraryAutomationMutationError.revisionConflict(
+                        expected: expectedRevision,
+                        actual: actualRevision
+                    )
+                }
+            }
+            try await self.addTracksToPlaylistWithoutOwnership(
+                tracks,
+                playlist: currentPlaylist
+            )
         }
     }
 
@@ -1644,6 +1813,219 @@ final class LibraryViewModel {
         await performOwnedLibraryMutation(rejectingWith: ()) {
             try await self.removeTracksFromPlaylistWithoutOwnership(tracks, playlist: playlist)
         }
+    }
+
+    /// Remove playlist membership only. It never deletes a Track or its audio
+    /// file and uses the same referenced-source membership transaction as UI
+    /// removal.
+    func removeTracksFromPlaylistForAutomation(
+        _ tracks: [Track],
+        playlist: Playlist,
+        expectedRevision: String?
+    ) async throws {
+        let playlistID = playlist.id
+        try await performAutomationLibraryMutation {
+            guard let currentPlaylist = self.playlists.first(where: { $0.id == playlistID }) else {
+                throw LibraryAutomationMutationError.playlistNotFound(playlistID)
+            }
+            if let expectedRevision {
+                let actualRevision = self.automationPlaylistRevision(for: currentPlaylist)
+                guard expectedRevision == actualRevision else {
+                    throw LibraryAutomationMutationError.revisionConflict(
+                        expected: expectedRevision,
+                        actual: actualRevision
+                    )
+                }
+            }
+            try await self.removeTracksFromPlaylistWithoutOwnership(
+                tracks,
+                playlist: currentPlaylist
+            )
+        }
+    }
+
+    /// Replaces the ordered membership using the repository's atomic sidecar
+    /// write. Membership is deduplicated by Track ID and existing item dates
+    /// are retained; newly introduced members receive a new membership date.
+    /// Source-bound playlists remain source-owned for future reconciliation,
+    /// so callers should use source bindings when they want ongoing sync.
+    func replacePlaylistTracksForAutomation(
+        _ tracks: [Track],
+        playlist: Playlist,
+        expectedRevision: String?
+    ) async throws {
+        let playlistID = playlist.id
+        var uniqueTracks: [Track] = []
+        var seenIDs = Set<UUID>()
+        for track in tracks where seenIDs.insert(track.id).inserted {
+            uniqueTracks.append(track)
+        }
+        try await performAutomationLibraryMutation {
+            guard let currentPlaylist = self.playlists.first(where: { $0.id == playlistID }) else {
+                throw LibraryAutomationMutationError.playlistNotFound(playlistID)
+            }
+            try self.checkAutomationPlaylistRevision(
+                expectedRevision,
+                currentPlaylist: currentPlaylist
+            )
+            var itemDates = self.playlistItemAddedAtMap[playlistID] ?? [:]
+            for track in uniqueTracks where itemDates[track.id] == nil {
+                itemDates[track.id] = Date()
+            }
+            itemDates = itemDates.filter { id, _ in
+                uniqueTracks.contains { $0.id == id }
+            }
+            try await self.repository.replacePlaylistTracks(
+                uniqueTracks,
+                in: currentPlaylist,
+                itemAddedAt: itemDates
+            )
+            self.playlists = await self.repository.fetchPlaylists()
+            self.playlistItemAddedAtMap = await self.repository.fetchPlaylistItemAddedAtMap()
+            await self.invalidateDetailSelectionCachesIfNeeded(
+                selectionIdentities: self.selectionIdentityVariants(for: .playlist(playlistID))
+            )
+            self.refreshTrigger += 1
+        }
+    }
+
+    private func checkAutomationPlaylistRevision(
+        _ expectedRevision: String?,
+        currentPlaylist: Playlist
+    ) throws {
+        guard let expectedRevision else { return }
+        let actualRevision = automationPlaylistRevision(for: currentPlaylist)
+        guard expectedRevision == actualRevision else {
+            throw LibraryAutomationMutationError.revisionConflict(
+                expected: expectedRevision,
+                actual: actualRevision
+            )
+        }
+    }
+
+    /// Stable opaque membership revision for optimistic concurrency at the
+    /// Automation boundary. Do not use Swift's Hasher: its seed is process
+    /// dependent and would make a token unusable across requests.
+    func automationPlaylistRevision(for playlist: Playlist) -> String {
+        var fingerprint = playlist.id.uuidString
+        fingerprint.append("\n")
+        fingerprint.append(playlist.name)
+        fingerprint.append("\n")
+        fingerprint.append(playlist.userDescription)
+        for trackID in playlist.tracks.map(\.id) {
+            fingerprint.append("\n")
+            fingerprint.append(trackID.uuidString)
+        }
+
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in fingerprint.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return "v1-\(String(hash, radix: 16))"
+    }
+
+    /// Stable metadata revision for optimistic concurrency. It intentionally
+    /// covers only fields owned by the metadata patch capability, so unrelated
+    /// playback or artwork changes do not cause a false conflict.
+    func automationTrackRevision(for track: Track) -> String {
+        var fingerprint = track.id.uuidString
+        for value in [
+            track.title,
+            track.artist,
+            track.album,
+            track.albumArtist ?? "",
+            track.userDescription,
+            track.genreTags.joined(separator: "\u{1F} "),
+            track.releaseDate.map(ISO8601DateFormatter().string(from:)) ?? ""
+        ] {
+            fingerprint.append("\n")
+            fingerprint.append(value)
+        }
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in fingerprint.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return "v1-\(String(hash, radix: 16))"
+    }
+
+    /// Apply one patch to many existing Tracks through the same repository
+    /// persistence owner used by the UI. No embedded file tags are written.
+    func applyMetadataPatchForAutomation(
+        trackIDs: [UUID],
+        patch: LibraryAutomationMetadataPatch,
+        expectedRevisions: [UUID: String] = [:]
+    ) async throws -> LibraryAutomationMetadataMutationOutcome {
+        let uniqueIDs = Array(Set(trackIDs)).sorted { $0.uuidString < $1.uuidString }
+        var updatedIDs: [UUID] = []
+        var skippedIDs: [UUID] = []
+        var conflictIDs: [UUID] = []
+        try await performAutomationLibraryMutation {
+            let tracksByID = Dictionary(uniqueKeysWithValues: self.allTracks.map { ($0.id, $0) })
+            var changedTracks: [Track] = []
+            for id in uniqueIDs {
+                guard let track = tracksByID[id] else {
+                    skippedIDs.append(id)
+                    continue
+                }
+                if let expected = expectedRevisions[id],
+                   expected != self.automationTrackRevision(for: track) {
+                    conflictIDs.append(id)
+                    continue
+                }
+                var changed = false
+                if patch.fields.contains("title"), track.title != (patch.title ?? "") {
+                    track.title = patch.title ?? ""
+                    changed = true
+                }
+                if patch.fields.contains("artist"), track.artist != (patch.artist ?? "") {
+                    track.artist = patch.artist ?? ""
+                    changed = true
+                }
+                if patch.fields.contains("album"), track.album != (patch.album ?? "") {
+                    track.album = patch.album ?? ""
+                    changed = true
+                }
+                if patch.fields.contains("albumArtist"), track.albumArtist != patch.albumArtist {
+                    track.albumArtist = patch.albumArtist
+                    changed = true
+                }
+                if patch.fields.contains("description"), track.userDescription != (patch.userDescription ?? "") {
+                    track.userDescription = patch.userDescription ?? ""
+                    changed = true
+                }
+                if patch.fields.contains("genreTags"), track.genreTags != patch.genreTags ?? [] {
+                    track.genreTags = patch.genreTags ?? []
+                    changed = true
+                }
+                if patch.fields.contains("releaseDate"), track.releaseDate != patch.releaseDate {
+                    track.releaseDate = patch.releaseDate
+                    changed = true
+                }
+                if changed {
+                    changedTracks.append(track)
+                    updatedIDs.append(id)
+                } else {
+                    skippedIDs.append(id)
+                }
+            }
+            guard !changedTracks.isEmpty else { return }
+            let persisted = await self.repository.persistTrackMetaOnly(
+                changedTracks,
+                reason: "automationMetadataPatch"
+            )
+            let persistedIDs = Set(persisted.persistedTrackIDs)
+            let failedIDs = Set(persisted.failedTrackIDs)
+            updatedIDs = updatedIDs.filter { persistedIDs.contains($0) }
+            skippedIDs.append(contentsOf: failedIDs)
+            await self.refresh()
+        }
+        return LibraryAutomationMetadataMutationOutcome(
+            updatedTrackIDs: Array(Set(updatedIDs)).sorted { $0.uuidString < $1.uuidString },
+            skippedTrackIDs: Array(Set(skippedIDs)).sorted { $0.uuidString < $1.uuidString },
+            conflictedTrackIDs: Array(Set(conflictIDs)).sorted { $0.uuidString < $1.uuidString }
+        )
     }
 
     private func removeTracksFromPlaylistWithoutOwnership(

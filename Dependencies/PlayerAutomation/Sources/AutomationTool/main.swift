@@ -18,9 +18,28 @@ private struct CLIOptions {
     var noLaunch = false
     var socketPath = AutomationToolDefaults.socketPath
     var timeout: TimeInterval = 10
+    var libraryID: UUID?
+    var query: String?
+    var playlistID: String?
+    var sourceID: String?
+    var sourceMode: String?
+    var relativePathPrefix: String?
+    var ids: [String] = []
+    var filterJSON: AutomationJSONValue?
+    var sortJSON: AutomationJSONValue?
+    var paramsJSON: AutomationJSONValue?
+    var limit: Int?
+    var offset: Int?
+    var expectedRevision: String?
+    var idempotencyKey: String?
+    /// Normal playlist/source mutations are direct. Callers can opt into an
+    /// explicit preview with --dry-run; high-risk operations still require the
+    /// App policy and a separate confirmation path.
+    var dryRun = false
+    var confirm = false
 }
 
-private enum AutomationToolDefaults {
+enum AutomationToolDefaults {
     static var socketPath: String {
         if let override = ProcessInfo.processInfo.environment["KMGCCC_AUTOMATION_SOCKET"],
            !override.isEmpty {
@@ -69,22 +88,55 @@ private struct AutomationCLI {
         }
 
         if command == "mcp-stdio" {
-            writeDiagnostic("mcp-stdio is reserved for the Phase 6 MCP adapter; use CLI commands in Phase 1")
-            if options.json {
-                let response = AutomationResponse(
-                    requestID: UUID(),
-                    error: AutomationError(
-                        code: .methodNotFound,
-                        message: "MCP stdio is not implemented in this protocol spike."
-                    )
-                )
-                writeJSON(response)
+            guard args.isEmpty else {
+                writeDiagnostic("usage error: mcp-stdio does not accept positional arguments")
+                return .usage
             }
-            return .usage
+            let mcpExitCode = AutomationMCPStdioServer(
+                options: AutomationMCPStdioOptions(
+                    socketPath: options.socketPath,
+                    noLaunch: options.noLaunch,
+                    timeout: options.timeout
+                )
+            ).run()
+            return AutomationCLIExitCode(rawValue: mcpExitCode) ?? .internalError
         }
 
         let method: String
+        var params: AutomationJSONValue?
         switch command {
+        case "automation":
+            guard let action = args.first else {
+                writeDiagnostic("usage error: automation requires capabilities, scopes or call")
+                return .usage
+            }
+            args.removeFirst()
+            switch action {
+            case "capabilities":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: automation capabilities does not accept positional arguments")
+                    return .usage
+                }
+                method = AutomationMethod.automationCapabilities
+                params = nil
+            case "scopes":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: automation scopes does not accept positional arguments")
+                    return .usage
+                }
+                method = AutomationMethod.automationScopes
+                params = nil
+            case "call":
+                guard args.count == 1 else {
+                    writeDiagnostic("usage error: automation call requires exactly one method name")
+                    return .usage
+                }
+                method = args[0]
+                params = options.paramsJSON
+            default:
+                writeDiagnostic("usage error: unknown automation action \(action)")
+                return .usage
+            }
         case "system":
             guard let action = args.first else {
                 writeDiagnostic("usage error: system requires ping or info")
@@ -92,30 +144,438 @@ private struct AutomationCLI {
             }
             args.removeFirst()
             switch action {
-            case "ping": method = AutomationMethod.systemPing
-            case "info": method = AutomationMethod.systemInfo
+            case "ping":
+                method = AutomationMethod.systemPing
+            case "info":
+                method = AutomationMethod.systemInfo
             default:
                 writeDiagnostic("usage error: unknown system action \(action)")
                 return .usage
             }
+            guard args.isEmpty else {
+                writeDiagnostic("usage error: system action does not accept positional arguments")
+                return .usage
+            }
+            params = nil
         case "library":
-            guard let action = args.first, action == "list" else {
-                writeDiagnostic("usage error: library requires list")
+            guard let action = args.first else {
+                writeDiagnostic("usage error: library requires list or tracks")
                 return .usage
             }
             args.removeFirst()
-            method = AutomationMethod.libraryList
+            switch action {
+            case "list":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: library list does not accept positional arguments")
+                    return .usage
+                }
+                method = AutomationMethod.libraryList
+                params = nil
+            case "tracks":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: library tracks uses named options only")
+                    return .usage
+                }
+                method = AutomationMethod.libraryTracks
+                params = libraryTracksParameters(from: options)
+            default:
+                writeDiagnostic("usage error: unknown library action \(action)")
+                return .usage
+            }
+        case "playlist":
+            guard let action = args.first else {
+                writeDiagnostic("usage error: playlist requires list, get, create, rename, delete, add, remove, replace or reorder")
+                return .usage
+            }
+            args.removeFirst()
+            switch action {
+            case "list":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: playlist list does not accept positional arguments")
+                    return .usage
+                }
+                method = AutomationMethod.playlistList
+                params = nil
+            case "create":
+                guard args.count == 1 else {
+                    writeDiagnostic("usage error: playlist create requires exactly one name")
+                    return .usage
+                }
+                method = AutomationMethod.playlistCreate
+                params = .object([
+                    "name": .string(args[0]),
+                    "dryRun": .boolean(options.dryRun),
+                    "confirm": .boolean(options.confirm)
+                ])
+            case "get":
+                guard args.count == 1 else {
+                    writeDiagnostic("usage error: playlist get requires exactly one playlist ID")
+                    return .usage
+                }
+                method = AutomationMethod.playlistGet
+                params = .object(["playlistID": .string(args[0])])
+            case "rename":
+                guard args.count >= 2 else {
+                    writeDiagnostic("usage error: playlist rename requires an ID and a name")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [
+                    "playlistID": .string(args[0]),
+                    "name": .string(args[1]),
+                    "dryRun": .boolean(options.dryRun)
+                ]
+                if args.count > 2 { values["description"] = .string(args.dropFirst(2).joined(separator: " ")) }
+                if let expectedRevision = options.expectedRevision { values["expectedRevision"] = .string(expectedRevision) }
+                method = AutomationMethod.playlistRename
+                params = .object(values)
+            case "delete":
+                guard args.count == 1 else {
+                    writeDiagnostic("usage error: playlist delete requires exactly one playlist ID")
+                    return .usage
+                }
+                method = AutomationMethod.playlistDelete
+                params = .object([
+                    "id": .string(args[0]),
+                    "dryRun": .boolean(options.dryRun),
+                    "confirm": .boolean(options.confirm)
+                ])
+            case "replace", "reorder":
+                guard args.count >= 1 else {
+                    writeDiagnostic("usage error: playlist \(action) requires a playlist ID")
+                    return .usage
+                }
+                let playlistID = args[0]
+                let trackIDs = Array(args.dropFirst())
+                var values: [String: AutomationJSONValue] = [
+                    "playlistID": .string(playlistID),
+                    "trackIDs": .array(trackIDs.map { .string($0) }),
+                    "dryRun": .boolean(options.dryRun),
+                    "confirm": .boolean(options.confirm)
+                ]
+                if let expectedRevision = options.expectedRevision { values["expectedRevision"] = .string(expectedRevision) }
+                method = action == "replace" ? AutomationMethod.playlistReplaceTracks : AutomationMethod.playlistReorder
+                params = .object(values)
+            case "add", "remove":
+                guard (options.playlistID != nil && !args.isEmpty) || args.count >= 2 else {
+                    writeDiagnostic(
+                        "usage error: playlist \(action) requires a playlist ID and at least one track ID"
+                    )
+                    return .usage
+                }
+                guard let playlistID = options.playlistID ?? args.first else {
+                    writeDiagnostic("usage error: playlist ID is required")
+                    return .usage
+                }
+                let trackIDs = options.playlistID == nil
+                    ? Array(args.dropFirst())
+                    : args
+                guard !trackIDs.isEmpty else {
+                    writeDiagnostic("usage error: at least one track ID is required")
+                    return .usage
+                }
+                method = action == "add"
+                    ? AutomationMethod.playlistAddTracks
+                    : AutomationMethod.playlistRemoveTracks
+                var values: [String: AutomationJSONValue] = [
+                    "playlistID": .string(playlistID),
+                    "trackIDs": .array(trackIDs.map { .string($0) }),
+                    "dryRun": .boolean(options.dryRun),
+                    "confirm": .boolean(options.confirm)
+                ]
+                if let expectedRevision = options.expectedRevision {
+                    values["expectedRevision"] = .string(expectedRevision)
+                }
+                params = .object(values)
+            default:
+                writeDiagnostic("usage error: unknown playlist action \(action)")
+                return .usage
+            }
+        case "source":
+            guard let action = args.first else {
+                writeDiagnostic("usage error: source requires list, refresh, create, bind, exclude, include, watch, unwatch or remove")
+                return .usage
+            }
+            args.removeFirst()
+            switch action {
+            case "list":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: source list does not accept positional arguments")
+                    return .usage
+                }
+                method = AutomationMethod.sourceList
+                params = nil
+            case "refresh":
+                guard args.count == 1 else {
+                    writeDiagnostic("usage error: source refresh requires exactly one source ID")
+                    return .usage
+                }
+                method = AutomationMethod.sourceRefresh
+                params = .object([
+                    "sourceID": .string(args[0]),
+                    "dryRun": .boolean(options.dryRun)
+                ])
+            case "create":
+                guard args.isEmpty || args.count == 1 else {
+                    writeDiagnostic("usage error: source create accepts an optional path")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [
+                    "dryRun": .boolean(options.dryRun),
+                    "mode": .string(options.sourceMode ?? "directory")
+                ]
+                if let path = args.first { values["path"] = .string(path) }
+                if let playlistID = options.playlistID { values["playlistID"] = .string(playlistID) }
+                method = AutomationMethod.sourceCreate
+                params = .object(values)
+            case "bind":
+                guard args.count >= 2, args.count <= 3 else {
+                    writeDiagnostic("usage error: source bind requires source ID, playlist ID and optional relative path")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [
+                    "sourceID": .string(args[0]),
+                    "playlistID": .string(args[1]),
+                    "dryRun": .boolean(options.dryRun)
+                ]
+                if args.count == 3 { values["relativePath"] = .string(args[2]) }
+                method = AutomationMethod.sourceBindPlaylist
+                params = .object(values)
+            case "exclude", "include":
+                guard args.count == 2 else {
+                    writeDiagnostic("usage error: source \(action) requires a source ID and relative path")
+                    return .usage
+                }
+                method = AutomationMethod.sourceSetExcludedPath
+                params = .object([
+                    "sourceID": .string(args[0]),
+                    "relativePath": .string(args[1]),
+                    "excluded": .boolean(action == "exclude"),
+                    "dryRun": .boolean(options.dryRun)
+                ])
+            case "watch", "unwatch":
+                guard args.count == 1 else {
+                    writeDiagnostic("usage error: source \(action) requires a source ID")
+                    return .usage
+                }
+                method = AutomationMethod.sourceSetMonitorPolicy
+                params = .object([
+                    "sourceID": .string(args[0]),
+                    "policy": .string(action == "watch" ? "on" : "off"),
+                    "dryRun": .boolean(options.dryRun)
+                ])
+            case "remove":
+                guard args.count == 1 else {
+                    writeDiagnostic("usage error: source remove requires exactly one source ID")
+                    return .usage
+                }
+                method = AutomationMethod.sourceRemove
+                params = .object([
+                    "id": .string(args[0]),
+                    "dryRun": .boolean(options.dryRun),
+                    "confirm": .boolean(options.confirm)
+                ])
+            default:
+                writeDiagnostic("usage error: unknown source action \(action)")
+                return .usage
+            }
+        case "playback":
+            guard let action = args.first else {
+                writeDiagnostic("usage error: playback requires state, play, pause, next, previous, seek, volume or mode")
+                return .usage
+            }
+            args.removeFirst()
+            switch action {
+            case "state": method = AutomationMethod.playbackState; params = nil
+            case "play":
+                guard !args.isEmpty else { writeDiagnostic("usage error: playback play requires track IDs"); return .usage }
+                params = .object(["trackIDs": .array(args.map { .string($0) })]); method = AutomationMethod.playbackPlay
+            case "pause": method = AutomationMethod.playbackPause; params = nil
+            case "next": method = AutomationMethod.playbackNext; params = nil
+            case "previous": method = AutomationMethod.playbackPrevious; params = nil
+            case "seek":
+                guard args.count == 1, let value = Double(args[0]) else { writeDiagnostic("usage error: playback seek requires seconds"); return .usage }
+                method = AutomationMethod.playbackSeek; params = .object(["seconds": .number(value)])
+            case "volume":
+                guard args.count == 1, let value = Double(args[0]) else { writeDiagnostic("usage error: playback volume requires 0...1"); return .usage }
+                method = AutomationMethod.playbackSetVolume; params = .object(["volume": .number(value)])
+            case "mode":
+                guard args.count == 1 else { writeDiagnostic("usage error: playback mode requires a mode"); return .usage }
+                method = AutomationMethod.playbackSetMode; params = .object(["mode": .string(args[0])])
+            default: writeDiagnostic("usage error: unknown playback action \(action)"); return .usage
+            }
+            guard args.isEmpty || action == "play" else { writeDiagnostic("usage error: unexpected playback arguments"); return .usage }
+        case "queue":
+            guard let action = args.first else { writeDiagnostic("usage error: queue requires get, replace, enqueue, enqueue-next or clear"); return .usage }
+            args.removeFirst()
+            switch action {
+            case "get": method = AutomationMethod.queueGet; params = nil
+            case "clear": method = AutomationMethod.queueClear; params = .object(["dryRun": .boolean(options.dryRun)])
+            case "replace", "enqueue", "enqueue-next":
+                guard !args.isEmpty else {
+                    writeDiagnostic("usage error: queue \(action) requires at least one track ID")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [
+                    "trackIDs": .array(args.map { .string($0) }),
+                    "dryRun": .boolean(options.dryRun)
+                ]
+                if let expectedRevision = options.expectedRevision { values["expectedRevision"] = .string(expectedRevision) }
+                method = action == "replace" ? AutomationMethod.queueReplace : (action == "enqueue" ? AutomationMethod.queueEnqueue : AutomationMethod.queueEnqueueNext)
+                params = .object(values)
+            default: writeDiagnostic("usage error: unknown queue action \(action)"); return .usage
+            }
+        case "history":
+            guard let action = args.first else { writeDiagnostic("usage error: history requires list or clear"); return .usage }
+            args.removeFirst()
+            switch action {
+            case "list":
+                guard options.offset == nil else {
+                    writeDiagnostic("usage error: history list does not support --offset")
+                    return .usage
+                }
+                method = AutomationMethod.historyList
+                params = historyParameters(from: options)
+            case "clear": method = AutomationMethod.historyClear; params = .object(["dryRun": .boolean(options.dryRun), "confirm": .boolean(options.confirm)])
+            default: writeDiagnostic("usage error: unknown history action \(action)"); return .usage
+            }
+        case "metadata":
+            guard let action = args.first else { writeDiagnostic("usage error: metadata requires get or patch"); return .usage }
+            args.removeFirst()
+            switch action {
+            case "get":
+                guard !args.isEmpty else { writeDiagnostic("usage error: metadata get requires Track IDs"); return .usage }
+                method = AutomationMethod.metadataGet
+                params = .object(["trackIDs": .array(args.map { .string($0) })])
+            case "patch":
+                guard args.count >= 1, let patchJSON = options.paramsJSON else {
+                    writeDiagnostic("usage error: metadata patch requires Track IDs and --params-json patch object")
+                    return .usage
+                }
+                method = AutomationMethod.metadataPatch
+                params = .object([
+                    "trackIDs": .array(args.map { .string($0) }),
+                    "patch": patchJSON,
+                    "dryRun": .boolean(options.dryRun)
+                ])
+            default: writeDiagnostic("usage error: unknown metadata action \(action)"); return .usage
+            }
+        case "lyrics":
+            guard let action = args.first else { writeDiagnostic("usage error: lyrics requires get or refresh"); return .usage }
+            args.removeFirst()
+            switch action {
+            case "get":
+                guard args.count == 1 else { writeDiagnostic("usage error: lyrics get requires one Track ID"); return .usage }
+                method = AutomationMethod.lyricsGet
+                params = .object(["trackID": .string(args[0])])
+            case "refresh":
+                guard !args.isEmpty else { writeDiagnostic("usage error: lyrics refresh requires Track IDs"); return .usage }
+                method = AutomationMethod.lyricsRefresh
+                params = .object([
+                    "trackIDs": .array(args.map { .string($0) }),
+                    "force": .boolean(options.confirm),
+                    "dryRun": .boolean(options.dryRun)
+                ])
+            default: writeDiagnostic("usage error: unknown lyrics action \(action)"); return .usage
+            }
+        case "jobs":
+            guard let action = args.first else { writeDiagnostic("usage error: jobs requires list, get or cancel"); return .usage }
+            args.removeFirst()
+            switch action {
+            case "list": method = AutomationMethod.jobsList; params = nil
+            case "get", "cancel":
+                guard args.count == 1 else { writeDiagnostic("usage error: jobs \(action) requires a job ID"); return .usage }
+                method = action == "get" ? AutomationMethod.jobsGet : AutomationMethod.jobsCancel
+                params = .object(["jobID": .string(args[0])])
+            default: writeDiagnostic("usage error: unknown jobs action \(action)"); return .usage
+            }
+        case "diagnostics":
+            guard args.count == 1, args[0] == "health" else { writeDiagnostic("usage error: diagnostics health"); return .usage }
+            method = AutomationMethod.diagnosticsHealth
+            params = nil
+        case "settings":
+            guard let action = args.first else {
+                writeDiagnostic("usage error: settings requires get or patch")
+                return .usage
+            }
+            args.removeFirst()
+            switch action {
+            case "get":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: settings get does not accept positional arguments")
+                    return .usage
+                }
+                method = AutomationMethod.settingsGet
+                params = nil
+            case "patch":
+                guard args.isEmpty, let values = options.paramsJSON else {
+                    writeDiagnostic("usage error: settings patch requires --params-json values object")
+                    return .usage
+                }
+                method = AutomationMethod.settingsPatch
+                var parameters: [String: AutomationJSONValue] = [
+                    "values": values,
+                    "dryRun": .boolean(options.dryRun),
+                    "confirm": .boolean(options.confirm)
+                ]
+                if let expectedRevision = options.expectedRevision {
+                    parameters["expectedRevision"] = .string(expectedRevision)
+                }
+                params = .object(parameters)
+            default:
+                writeDiagnostic("usage error: unknown settings action \(action)")
+                return .usage
+            }
+        case "storage":
+            guard let action = args.first else {
+                writeDiagnostic("usage error: storage requires inspect, validate or repair")
+                return .usage
+            }
+            args.removeFirst()
+            guard args.isEmpty else {
+                writeDiagnostic("usage error: storage action does not accept positional arguments")
+                return .usage
+            }
+            switch action {
+            case "inspect":
+                method = AutomationMethod.storageInspect
+                params = nil
+            case "validate":
+                method = AutomationMethod.storageValidate
+                params = nil
+            case "repair":
+                method = AutomationMethod.storageRepair
+                params = .object(["dryRun": .boolean(options.dryRun)])
+            default:
+                writeDiagnostic("usage error: unknown storage action \(action)")
+                return .usage
+            }
         default:
             writeDiagnostic("usage error: unknown command \(command)")
             return .usage
         }
 
-        guard args.isEmpty else {
-            writeDiagnostic("usage error: unexpected arguments: \(args.joined(separator: " "))")
-            return .usage
+        let requestID = UUID()
+        let automaticIdempotencyKey: String?
+        if let idempotencyKey = options.idempotencyKey {
+            automaticIdempotencyKey = idempotencyKey
+        } else if AutomationToolCatalog.descriptor(for: method)?.readOnly == false {
+            // A single CLI invocation may retry after a lost transport
+            // response. Give those retries one stable key without making two
+            // separate invocations accidentally share a mutation.
+            automaticIdempotencyKey = "cli:\(requestID.uuidString)"
+        } else {
+            automaticIdempotencyKey = nil
         }
-
-        let request = AutomationRequest(method: method)
+        let request = AutomationRequest(
+            method: method,
+            params: params,
+            context: AutomationRequestContext(
+                libraryID: options.libraryID,
+                idempotencyKey: automaticIdempotencyKey,
+                caller: "cli"
+            ),
+            requestID: requestID
+        )
         do {
             if !options.noLaunch {
                 launchAppIfNeeded()
@@ -234,6 +694,44 @@ private struct AutomationCLI {
         throw lastError ?? AutomationIPCError.timeout
     }
 
+    private func libraryTracksParameters(from options: CLIOptions) -> AutomationJSONValue? {
+        var values: [String: AutomationJSONValue] = [:]
+        if let query = options.query {
+            values["query"] = .string(query)
+        }
+        if let playlistID = options.playlistID {
+            values["playlistID"] = .string(playlistID)
+        }
+        if let sourceID = options.sourceID {
+            values["sourceID"] = .string(sourceID)
+        }
+        if let relativePathPrefix = options.relativePathPrefix {
+            values["relativePathPrefix"] = .string(relativePathPrefix)
+        }
+        if !options.ids.isEmpty {
+            values["ids"] = .array(options.ids.map { .string($0) })
+        }
+        if let filterJSON = options.filterJSON {
+            values["filter"] = filterJSON
+        }
+        if let sortJSON = options.sortJSON {
+            values["sort"] = sortJSON
+        }
+        if let limit = options.limit {
+            values["limit"] = .number(Double(limit))
+        }
+        if let offset = options.offset {
+            values["offset"] = .number(Double(offset))
+        }
+        return values.isEmpty ? nil : .object(values)
+    }
+
+    private func historyParameters(from options: CLIOptions) -> AutomationJSONValue? {
+        var values: [String: AutomationJSONValue] = [:]
+        if let limit = options.limit { values["limit"] = .number(Double(limit)) }
+        return values.isEmpty ? nil : .object(values)
+    }
+
     private func launchAppIfNeeded() {
         let appName = ProcessInfo.processInfo.environment["KMGCCC_PLAYER_APP"] ?? "kmgccc_player"
         let process = Process()
@@ -270,12 +768,112 @@ private struct AutomationCLI {
                 }
                 options.timeout = timeout
                 args.removeSubrange(index...(index + 1))
+            case "--library":
+                guard index + 1 < args.count,
+                      let libraryID = UUID(uuidString: args[index + 1]) else {
+                    throw CLIError.invalidValue("--library")
+                }
+                options.libraryID = libraryID
+                args.removeSubrange(index...(index + 1))
+            case "--query":
+                guard index + 1 < args.count else {
+                    throw CLIError.missingValue("--query")
+                }
+                options.query = args[index + 1]
+                args.removeSubrange(index...(index + 1))
+            case "--playlist":
+                guard index + 1 < args.count else {
+                    throw CLIError.missingValue("--playlist")
+                }
+                options.playlistID = args[index + 1]
+                args.removeSubrange(index...(index + 1))
+            case "--source":
+                guard index + 1 < args.count else {
+                    throw CLIError.missingValue("--source")
+                }
+                options.sourceID = args[index + 1]
+                args.removeSubrange(index...(index + 1))
+            case "--source-mode":
+                guard index + 1 < args.count,
+                      ["directory", "file"].contains(args[index + 1]) else {
+                    throw CLIError.invalidValue("--source-mode")
+                }
+                options.sourceMode = args[index + 1]
+                args.removeSubrange(index...(index + 1))
+            case "--relative-path-prefix":
+                guard index + 1 < args.count else {
+                    throw CLIError.missingValue("--relative-path-prefix")
+                }
+                options.relativePathPrefix = args[index + 1]
+                args.removeSubrange(index...(index + 1))
+            case "--ids":
+                guard index + 1 < args.count else { throw CLIError.missingValue("--ids") }
+                options.ids = args[index + 1]
+                    .split(separator: ",", omittingEmptySubsequences: true)
+                    .map(String.init)
+                args.removeSubrange(index...(index + 1))
+            case "--filter-json":
+                guard index + 1 < args.count else { throw CLIError.missingValue("--filter-json") }
+                options.filterJSON = try decodeJSON(args[index + 1], option: "--filter-json")
+                args.removeSubrange(index...(index + 1))
+            case "--sort-json":
+                guard index + 1 < args.count else { throw CLIError.missingValue("--sort-json") }
+                options.sortJSON = try decodeJSON(args[index + 1], option: "--sort-json")
+                args.removeSubrange(index...(index + 1))
+            case "--params-json":
+                guard index + 1 < args.count else { throw CLIError.missingValue("--params-json") }
+                options.paramsJSON = try decodeJSON(args[index + 1], option: "--params-json")
+                args.removeSubrange(index...(index + 1))
+            case "--limit":
+                guard index + 1 < args.count,
+                      let limit = Int(args[index + 1]),
+                      (1...500).contains(limit) else {
+                    throw CLIError.invalidValue("--limit")
+                }
+                options.limit = limit
+                args.removeSubrange(index...(index + 1))
+            case "--offset":
+                guard index + 1 < args.count,
+                      let offset = Int(args[index + 1]),
+                      offset >= 0 else {
+                    throw CLIError.invalidValue("--offset")
+                }
+                options.offset = offset
+                args.removeSubrange(index...(index + 1))
+            case "--expected-revision":
+                guard index + 1 < args.count else {
+                    throw CLIError.missingValue("--expected-revision")
+                }
+                options.expectedRevision = args[index + 1]
+                args.removeSubrange(index...(index + 1))
+            case "--idempotency-key":
+                guard index + 1 < args.count else { throw CLIError.missingValue("--idempotency-key") }
+                options.idempotencyKey = args[index + 1]
+                args.removeSubrange(index...(index + 1))
+            case "--dry-run":
+                options.dryRun = true
+                args.remove(at: index)
+            case "--yes", "--confirm", "--apply":
+                options.confirm = true
+                options.dryRun = false
+                args.remove(at: index)
             case "--help", "-h":
                 printUsage(to: FileHandle.standardOutput)
                 exit(AutomationCLIExitCode.success.rawValue)
             default:
                 index += 1
             }
+        }
+    }
+
+    private func decodeJSON(_ raw: String, option: String) throws -> AutomationJSONValue {
+        guard let data = raw.data(using: .utf8) else {
+            throw CLIError.invalidValue(option)
+        }
+        do {
+            return try AutomationWireCoding.decoder().decode(AutomationJSONValue.self, from: data)
+        } catch {
+            throw CLIError.invalidValue(option)
         }
     }
 
@@ -315,18 +913,72 @@ private struct AutomationCLI {
         player-automation [cli] <command> [options]
 
         Commands:
+          automation capabilities  List the shared capability catalog
+          automation scopes        Show granted and denied scopes
+          automation call <method> Call any catalog method with --params-json
           system ping             Check the App automation socket
           system info             Read protocol and capability information
           library list            List registered libraries and active ID
+          library tracks          Query tracks with filters, sorting and pagination
+          playlist list            List playlists and revisions
+          playlist get <id>        Read ordered playlist membership
+          playlist create <name>   Create a playlist (use --dry-run to preview)
+          playlist rename <id> <name> [description]
+          playlist delete <id>     Delete a playlist (App confirmation required)
+          playlist replace <id> <track-id>...
+          playlist reorder <id> <track-id>...
+          playlist add <playlist-id> <track-id>...
+                                   Add existing library tracks (use --dry-run to preview)
+          playlist remove <playlist-id> <track-id>...
+                                   Remove playlist membership (use --dry-run to preview)
+          source list              List referenced-library sources
+          source refresh <id>      Refresh one authorized source (use --dry-run to preview)
+          source create [path]     Request a folder/file Source through the App picker
+          source bind <source-id> <playlist-id> [relative-path]
+          source exclude|include <source-id> <relative-path>
+          source watch|unwatch <source-id>
+          source remove <id>       Remove a Source (App confirmation required)
+          playback state|play|pause|next|previous|seek|volume|mode
+          queue get|replace|enqueue|enqueue-next|clear
+          history list|clear       Read or clear listening history
+          metadata get <track-id>...
+          metadata patch <track-id>... --params-json '{"title":"..."}'
+          lyrics get <track-id>
+          lyrics refresh <track-id>... (returns a Job)
+          jobs list|get|cancel     Inspect and cancel long-running library jobs
+          diagnostics health      Collect actionable Library/Source health evidence
+          settings get            Read supported persistent automation settings
+          settings patch          Update settings with --params-json
+          storage inspect         Inspect Library storage layout and schema
+          storage validate        Run App-owned storage integrity validation
+          storage repair          Repair missing App-owned scaffolding
 
         Options:
           --json                  Emit one versioned JSON response on stdout
           --no-launch             Do not ask LaunchServices to start the App
           --socket <path>         Override the per-user AF_UNIX socket path
           --timeout <seconds>     Bound connection and launch wait (default 10)
+          --library <id>          Require a specific active library UUID
+          --query <text>          Filter library tracks by title/artist/album
+          --playlist <id>         Limit library tracks to a playlist
+          --source <id>           Limit library tracks to a referenced source
+          --source-mode <mode>    Source creation mode: directory or file
+          --relative-path-prefix <path>
+                                  Limit tracks to a Source-relative path prefix
+          --ids <id,id,...>       Limit tracks to a set of Track IDs
+          --filter-json <json>    Composable all/any/not Track predicate
+          --sort-json <json>      Ordered sort descriptor array
+          --limit <count>         Page size from 1 to 500
+          --offset <count>        Page offset, starting at 0
+          --expected-revision <id>
+                                  Require a playlist revision before mutation
+          --idempotency-key <id>  Safely retry the same mutation
+          --params-json <json>    Parameters for automation call
+          --dry-run               Preview a mutation without applying it
+          --yes                   Acknowledge a high-risk request; App policy still confirms
           --help                  Show this help
 
-        mcp-stdio is reserved for the later MCP compatibility adapter.
+        mcp-stdio                 Serve the same tools over MCP stdio
         """
         if let data = usage.data(using: .utf8) {
             try? handle.write(contentsOf: data)

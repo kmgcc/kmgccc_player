@@ -52,6 +52,9 @@ nonisolated struct LibraryOperationTaskDescriptor: Equatable, Sendable, Identifi
     var finishedAt: Date?
     var lastCheckpointLabel: String?
     var lastCheckpointAt: Date?
+    var completedCount: Int?
+    var totalCount: Int?
+    var currentPhase: String?
     var partialFailureSummaries: [String]
 
     init(
@@ -65,6 +68,9 @@ nonisolated struct LibraryOperationTaskDescriptor: Equatable, Sendable, Identifi
         finishedAt: Date? = nil,
         lastCheckpointLabel: String? = nil,
         lastCheckpointAt: Date? = nil,
+        completedCount: Int? = nil,
+        totalCount: Int? = nil,
+        currentPhase: String? = nil,
         partialFailureSummaries: [String] = []
     ) {
         self.id = id
@@ -77,6 +83,9 @@ nonisolated struct LibraryOperationTaskDescriptor: Equatable, Sendable, Identifi
         self.finishedAt = finishedAt
         self.lastCheckpointLabel = lastCheckpointLabel
         self.lastCheckpointAt = lastCheckpointAt
+        self.completedCount = completedCount
+        self.totalCount = totalCount
+        self.currentPhase = currentPhase
         self.partialFailureSummaries = partialFailureSummaries
     }
 
@@ -96,6 +105,18 @@ nonisolated struct LibraryOperationTaskDescriptor: Equatable, Sendable, Identifi
 
     fileprivate mutating func appendPartialFailure(_ summary: String) {
         partialFailureSummaries.append(summary)
+    }
+
+    fileprivate mutating func updateProgress(
+        completedCount: Int,
+        totalCount: Int?,
+        phase: String?
+    ) {
+        self.completedCount = max(0, completedCount)
+        self.totalCount = totalCount.map { max(0, $0) }
+        if let phase, !phase.isEmpty {
+            currentPhase = phase
+        }
     }
 
     fileprivate mutating func finish(_ terminalState: LibraryTaskState, at date: Date) {
@@ -136,6 +157,13 @@ final class LibraryOperationCoordinator {
     /// immediately afterwards, so observers follow state changes without any
     /// polling loop.
     private(set) var taskDescriptors: [LibraryOperationTaskDescriptor] = []
+
+    /// A bounded in-process history makes a completed Job observable after its
+    /// operation has retired. It is deliberately transient: the underlying
+    /// library operation already persists its own domain data, while this
+    /// coordinator snapshot is diagnostic state for the current App launch.
+    private(set) var recentTaskDescriptors: [LibraryOperationTaskDescriptor] = []
+    private let recentTaskLimit = 100
 
     /// Invoked on the MainActor after every task-state mutation. Observers
     /// copy `taskDescriptors` inside the callback to refresh their snapshot.
@@ -296,6 +324,33 @@ final class LibraryOperationCoordinator {
         }
     }
 
+    /// Publishes item-level progress against the enclosing operation. Callers
+    /// outside a coordinated operation are ignored, just like checkpoints.
+    func recordProgress(completedCount: Int, totalCount: Int?, phase: String? = nil) {
+        guard let operationID = LibraryOperationContext.current?.operationID else { return }
+        mutateDescriptor(id: operationID) { descriptor in
+            descriptor.updateProgress(
+                completedCount: completedCount,
+                totalCount: totalCount,
+                phase: phase
+            )
+        }
+    }
+
+    /// Cancels one live operation without affecting unrelated work.
+    @discardableResult
+    func cancel(operationID: UUID) -> Bool {
+        guard let operation = operations[operationID] else { return false }
+        operation.cancel()
+        return true
+    }
+
+    /// Returns either a live or recently completed descriptor.
+    func taskDescriptor(operationID: UUID) -> LibraryOperationTaskDescriptor? {
+        taskDescriptors.first { $0.id == operationID }
+            ?? recentTaskDescriptors.first { $0.id == operationID }
+    }
+
     // MARK: - Quiesce
 
     func quiesceAndWait() async {
@@ -365,7 +420,17 @@ final class LibraryOperationCoordinator {
         mutateDescriptor(id: operationID) { descriptor in
             descriptor.finish(state, at: Date())
         }
+        if let finalDescriptor = descriptor(id: operationID) {
+            recentTaskDescriptors.insert(finalDescriptor, at: 0)
+            if recentTaskDescriptors.count > recentTaskLimit {
+                recentTaskDescriptors.removeLast(recentTaskDescriptors.count - recentTaskLimit)
+            }
+        }
         retire(operationID: operationID)
+        // The first notification exposes the terminal live snapshot for UI
+        // observers; this second notification exposes the same snapshot in
+        // the retained Job history for automation callers.
+        notifyTasksDidChange()
     }
 
     private func descriptor(id: UUID) -> LibraryOperationTaskDescriptor? {

@@ -98,21 +98,26 @@ public struct AutomationRequestContext: Codable, Equatable, Sendable {
     public let libraryID: UUID?
     public let idempotencyKey: String?
     public let deadline: Date?
+    /// Identifies the control plane for audit purposes. This is metadata, not
+    /// an authorization boundary; the App-owned policy remains authoritative.
+    public let caller: String?
 
     public init(
         principalSessionID: UUID? = nil,
         libraryID: UUID? = nil,
         idempotencyKey: String? = nil,
-        deadline: Date? = nil
+        deadline: Date? = nil,
+        caller: String? = nil
     ) {
         self.principalSessionID = principalSessionID
         self.libraryID = libraryID
         self.idempotencyKey = idempotencyKey
         self.deadline = deadline
+        self.caller = caller
     }
 }
 
-/// Versioned request envelope shared by the CLI, future MCP adapter and App.
+/// Versioned request envelope shared by the CLI, MCP adapter and App.
 /// Unknown JSON fields are intentionally ignored by Codable for forward
 /// compatibility; unknown methods are rejected by the App service.
 public struct AutomationRequest: Codable, Equatable, Sendable {
@@ -147,6 +152,48 @@ public enum AutomationErrorCode: String, Codable, Equatable, Sendable {
     case authorizationRequired
     case conflict
     case internalError
+}
+
+/// Coarse capability names shared by the App policy, CLI and MCP adapters.
+/// These are intentionally domain-oriented rather than tool-oriented so a
+/// future caller can request a useful bundle of operations without inventing
+/// a second permission vocabulary.
+public enum AutomationScope: String, Codable, CaseIterable, Sendable {
+    case libraryRead = "library.read"
+    case libraryWrite = "library.write"
+    case sourceRead = "source.read"
+    case sourceWrite = "source.write"
+    case playlistRead = "playlist.read"
+    case playlistWrite = "playlist.write"
+    case lyricsRead = "lyrics.read"
+    case lyricsWrite = "lyrics.write"
+    case metadataRead = "metadata.read"
+    case metadataWrite = "metadata.write"
+    case artworkRead = "artwork.read"
+    case artworkWrite = "artwork.write"
+    case playbackRead = "playback.read"
+    case playbackControl = "playback.control"
+    case queueRead = "queue.read"
+    case queueWrite = "queue.write"
+    case historyRead = "history.read"
+    case historyWrite = "history.write"
+    case settingsRead = "settings.read"
+    case settingsWrite = "settings.write"
+    case audioRead = "audio.read"
+    case audioWrite = "audio.write"
+    case diagnosticsRead = "diagnostics.read"
+    case diagnosticsRepair = "diagnostics.repair"
+    case filesRead = "files.read"
+    case filesWrite = "files.write"
+    case filesDelete = "files.delete"
+    case storageRead = "storage.read"
+    case storageWrite = "storage.write"
+}
+
+public enum AutomationRiskLevel: String, Codable, CaseIterable, Sendable {
+    case low
+    case medium
+    case high
 }
 
 public struct AutomationError: Codable, Equatable, Sendable {
@@ -208,6 +255,55 @@ public enum AutomationMethod {
     public static let systemPing = "system.ping"
     public static let systemInfo = "system.info"
     public static let libraryList = "library.list"
+    public static let libraryTracks = "library.tracks"
+    public static let playlistList = "playlist.list"
+    public static let playlistCreate = "playlist.create"
+    public static let playlistAddTracks = "playlist.addTracks"
+    public static let playlistRemoveTracks = "playlist.removeTracks"
+    public static let sourceList = "source.list"
+    public static let sourceRefresh = "source.refresh"
+    public static let sourceCreate = "source.create"
+    public static let sourceBindPlaylist = "source.bindPlaylist"
+    public static let sourceSetExcludedPath = "source.setExcludedPath"
+    public static let sourceSetMonitorPolicy = "source.setMonitorPolicy"
+    public static let sourceRemove = "source.remove"
+    public static let playlistGet = "playlist.get"
+    public static let playlistRename = "playlist.rename"
+    public static let playlistDelete = "playlist.delete"
+    public static let playlistReplaceTracks = "playlist.replaceTracks"
+    public static let playlistReorder = "playlist.reorder"
+    public static let playbackState = "playback.state"
+    public static let playbackPlay = "playback.play"
+    public static let playbackPause = "playback.pause"
+    public static let playbackNext = "playback.next"
+    public static let playbackPrevious = "playback.previous"
+    public static let playbackSeek = "playback.seek"
+    public static let playbackSetVolume = "playback.setVolume"
+    public static let playbackSetMode = "playback.setMode"
+    public static let queueGet = "queue.get"
+    public static let queueReplace = "queue.replace"
+    public static let queueEnqueue = "queue.enqueue"
+    public static let queueEnqueueNext = "queue.enqueueNext"
+    public static let queueClear = "queue.clear"
+    public static let historyList = "history.list"
+    public static let historyClear = "history.clear"
+    public static let metadataGet = "metadata.get"
+    public static let metadataPatch = "metadata.patch"
+    public static let lyricsGet = "lyrics.get"
+    public static let lyricsRefresh = "lyrics.refresh"
+    public static let jobsList = "jobs.list"
+    public static let jobsGet = "jobs.get"
+    public static let jobsCancel = "jobs.cancel"
+    public static let diagnosticsHealth = "diagnostics.health"
+    public static let settingsGet = "settings.get"
+    public static let settingsPatch = "settings.patch"
+    public static let storageInspect = "storage.inspect"
+    public static let storageValidate = "storage.validate"
+    public static let storageRepair = "storage.repair"
+    public static let automationCapabilities = "automation.capabilities"
+    public static let automationScopes = "automation.scopes"
+    public static let automationGrantScope = "automation.grantScope"
+    public static let automationRevokeScope = "automation.revokeScope"
 }
 
 public struct AutomationPingResult: Codable, Equatable, Sendable {
@@ -284,6 +380,1686 @@ public struct AutomationLibraryListResult: Codable, Equatable, Sendable {
         }
         self.activeLibraryID = activeLibraryID
     }
+}
+
+public struct AutomationTrackSourceMembership: Codable, Equatable, Sendable {
+    public let sourceID: UUID
+    public let relativePath: String
+
+    public init(sourceID: UUID, relativePath: String) {
+        self.sourceID = sourceID
+        self.relativePath = relativePath
+    }
+}
+
+public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable {
+    public let id: UUID
+    public let title: String
+    public let artist: String
+    public let album: String
+    public let duration: Double
+    public let availability: String
+    public let addedAt: Date
+    public let importedAt: Date?
+    public let sourceMemberships: [AutomationTrackSourceMembership]
+    public let albumArtist: String?
+    public let genreTags: [String]
+    public let releaseDate: Date?
+    public let metadataSource: String?
+    public let metadataConfidence: Double?
+    public let lyricsStatus: String
+    public let artworkAvailable: Bool
+    public let format: String?
+    public let codec: String?
+    public let sampleRateHz: Int?
+    public let bitDepth: Int?
+    public let channelCount: Int?
+    public let filePath: String?
+    public let playlistIDs: [UUID]
+
+    public init(
+        id: UUID,
+        title: String,
+        artist: String,
+        album: String,
+        duration: Double,
+        availability: String,
+        addedAt: Date,
+        importedAt: Date?,
+        sourceMemberships: [AutomationTrackSourceMembership] = [],
+        albumArtist: String? = nil,
+        genreTags: [String] = [],
+        releaseDate: Date? = nil,
+        metadataSource: String? = nil,
+        metadataConfidence: Double? = nil,
+        lyricsStatus: String = "none",
+        artworkAvailable: Bool = false,
+        format: String? = nil,
+        codec: String? = nil,
+        sampleRateHz: Int? = nil,
+        bitDepth: Int? = nil,
+        channelCount: Int? = nil,
+        filePath: String? = nil,
+        playlistIDs: [UUID] = []
+    ) {
+        self.id = id
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.duration = duration
+        self.availability = availability
+        self.addedAt = addedAt
+        self.importedAt = importedAt
+        self.sourceMemberships = sourceMemberships
+        self.albumArtist = albumArtist
+        self.genreTags = genreTags
+        self.releaseDate = releaseDate
+        self.metadataSource = metadataSource
+        self.metadataConfidence = metadataConfidence
+        self.lyricsStatus = lyricsStatus
+        self.artworkAvailable = artworkAvailable
+        self.format = format
+        self.codec = codec
+        self.sampleRateHz = sampleRateHz
+        self.bitDepth = bitDepth
+        self.channelCount = channelCount
+        self.filePath = filePath
+        self.playlistIDs = playlistIDs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, artist, album, duration, availability, addedAt, importedAt
+        case sourceMemberships, albumArtist, genreTags, releaseDate, metadataSource
+        case metadataConfidence, lyricsStatus, artworkAvailable, format, codec
+        case sampleRateHz, bitDepth, channelCount, filePath, playlistIDs
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        artist = try container.decode(String.self, forKey: .artist)
+        album = try container.decode(String.self, forKey: .album)
+        duration = try container.decode(Double.self, forKey: .duration)
+        availability = try container.decode(String.self, forKey: .availability)
+        addedAt = try container.decode(Date.self, forKey: .addedAt)
+        importedAt = try container.decodeIfPresent(Date.self, forKey: .importedAt)
+        sourceMemberships = try container.decodeIfPresent(
+            [AutomationTrackSourceMembership].self,
+            forKey: .sourceMemberships
+        ) ?? []
+        albumArtist = try container.decodeIfPresent(String.self, forKey: .albumArtist)
+        genreTags = try container.decodeIfPresent([String].self, forKey: .genreTags) ?? []
+        releaseDate = try container.decodeIfPresent(Date.self, forKey: .releaseDate)
+        metadataSource = try container.decodeIfPresent(String.self, forKey: .metadataSource)
+        metadataConfidence = try container.decodeIfPresent(Double.self, forKey: .metadataConfidence)
+        lyricsStatus = try container.decodeIfPresent(String.self, forKey: .lyricsStatus) ?? "none"
+        artworkAvailable = try container.decodeIfPresent(Bool.self, forKey: .artworkAvailable) ?? false
+        format = try container.decodeIfPresent(String.self, forKey: .format)
+        codec = try container.decodeIfPresent(String.self, forKey: .codec)
+        sampleRateHz = try container.decodeIfPresent(Int.self, forKey: .sampleRateHz)
+        bitDepth = try container.decodeIfPresent(Int.self, forKey: .bitDepth)
+        channelCount = try container.decodeIfPresent(Int.self, forKey: .channelCount)
+        filePath = try container.decodeIfPresent(String.self, forKey: .filePath)
+        playlistIDs = try container.decodeIfPresent([UUID].self, forKey: .playlistIDs) ?? []
+    }
+}
+
+public struct AutomationLibraryTracksResult: Codable, Equatable, Sendable {
+    public let tracks: [AutomationTrackSummary]
+    public let total: Int
+    public let offset: Int
+    public let limit: Int
+    public let nextOffset: Int?
+
+    public init(
+        tracks: [AutomationTrackSummary],
+        total: Int,
+        offset: Int,
+        limit: Int,
+        nextOffset: Int? = nil
+    ) {
+        self.tracks = tracks
+        self.total = total
+        self.offset = offset
+        self.limit = limit
+        self.nextOffset = nextOffset
+    }
+}
+
+public struct AutomationPlaylistSummary: Codable, Equatable, Sendable, Identifiable {
+    public let id: UUID
+    public let name: String
+    public let description: String
+    public let createdAt: Date
+    public let trackCount: Int
+    public let totalDuration: Double
+    /// Opaque, stable-for-the-current-library revision used for optimistic
+    /// concurrency checks. Callers must treat it as an opaque token.
+    public let revision: String
+
+    public init(
+        id: UUID,
+        name: String,
+        description: String,
+        createdAt: Date,
+        trackCount: Int,
+        totalDuration: Double,
+        revision: String
+    ) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.createdAt = createdAt
+        self.trackCount = trackCount
+        self.totalDuration = totalDuration
+        self.revision = revision
+    }
+}
+
+public struct AutomationPlaylistListResult: Codable, Equatable, Sendable {
+    public let playlists: [AutomationPlaylistSummary]
+
+    public init(playlists: [AutomationPlaylistSummary]) {
+        self.playlists = playlists.sorted { lhs, rhs in
+            switch lhs.name.localizedStandardCompare(rhs.name) {
+            case .orderedAscending:
+                return true
+            case .orderedDescending:
+                return false
+            case .orderedSame:
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+        }
+    }
+}
+
+public struct AutomationPlaylistMutationResult: Codable, Equatable, Sendable {
+    public let operation: String
+    public let applied: Bool
+    public let dryRun: Bool
+    public let playlist: AutomationPlaylistSummary?
+    public let requestedTrackIDs: [UUID]
+    public let changedTrackIDs: [UUID]
+    public let skippedTrackIDs: [UUID]
+    public let message: String?
+
+    public init(
+        operation: String,
+        applied: Bool,
+        dryRun: Bool,
+        playlist: AutomationPlaylistSummary?,
+        requestedTrackIDs: [UUID] = [],
+        changedTrackIDs: [UUID] = [],
+        skippedTrackIDs: [UUID] = [],
+        message: String? = nil
+    ) {
+        self.operation = operation
+        self.applied = applied
+        self.dryRun = dryRun
+        self.playlist = playlist
+        self.requestedTrackIDs = requestedTrackIDs
+        self.changedTrackIDs = changedTrackIDs
+        self.skippedTrackIDs = skippedTrackIDs
+        self.message = message
+    }
+}
+
+public struct AutomationSourceSummary: Codable, Equatable, Sendable, Identifiable {
+    public let id: UUID
+    public let mode: String
+    public let displayName: String
+    public let path: String
+    public let status: String
+    public let lastScan: Date?
+    public let playlistIDs: [UUID]
+    public let excludedRelativePaths: [String]
+    public let monitorPolicy: String
+
+    public init(
+        id: UUID,
+        mode: String,
+        displayName: String,
+        path: String,
+        status: String,
+        lastScan: Date?,
+        playlistIDs: [UUID],
+        excludedRelativePaths: [String] = [],
+        monitorPolicy: String = "on"
+    ) {
+        self.id = id
+        self.mode = mode
+        self.displayName = displayName
+        self.path = path
+        self.status = status
+        self.lastScan = lastScan
+        self.playlistIDs = playlistIDs
+        self.excludedRelativePaths = excludedRelativePaths.sorted()
+        self.monitorPolicy = monitorPolicy
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, mode, displayName, path, status, lastScan, playlistIDs
+        case excludedRelativePaths, monitorPolicy
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(UUID.self, forKey: .id),
+            mode: try container.decode(String.self, forKey: .mode),
+            displayName: try container.decode(String.self, forKey: .displayName),
+            path: try container.decode(String.self, forKey: .path),
+            status: try container.decode(String.self, forKey: .status),
+            lastScan: try container.decodeIfPresent(Date.self, forKey: .lastScan),
+            playlistIDs: try container.decodeIfPresent([UUID].self, forKey: .playlistIDs) ?? [],
+            excludedRelativePaths: try container.decodeIfPresent(
+                [String].self,
+                forKey: .excludedRelativePaths
+            ) ?? [],
+            monitorPolicy: try container.decodeIfPresent(
+                String.self,
+                forKey: .monitorPolicy
+            ) ?? "on"
+        )
+    }
+}
+
+public struct AutomationSourceListResult: Codable, Equatable, Sendable {
+    public let sources: [AutomationSourceSummary]
+
+    public init(sources: [AutomationSourceSummary]) {
+        self.sources = sources.sorted { lhs, rhs in
+            switch lhs.displayName.localizedStandardCompare(rhs.displayName) {
+            case .orderedAscending:
+                return true
+            case .orderedDescending:
+                return false
+            case .orderedSame:
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+        }
+    }
+}
+
+public struct AutomationSourceRefreshResult: Codable, Equatable, Sendable {
+    public let sourceID: UUID
+    public let applied: Bool
+    public let dryRun: Bool
+    public let completed: Bool
+    public let source: AutomationSourceSummary?
+    public let libraryTrackCount: Int
+    public let issues: [String]
+    public let job: AutomationJobSummary?
+    public let message: String?
+
+    public init(
+        sourceID: UUID,
+        applied: Bool,
+        dryRun: Bool,
+        source: AutomationSourceSummary?,
+        libraryTrackCount: Int,
+        issues: [String] = [],
+        completed: Bool = true,
+        job: AutomationJobSummary? = nil,
+        message: String? = nil
+    ) {
+        self.sourceID = sourceID
+        self.applied = applied
+        self.dryRun = dryRun
+        self.completed = completed
+        self.source = source
+        self.libraryTrackCount = libraryTrackCount
+        self.issues = issues
+        self.job = job
+        self.message = message
+    }
+}
+
+public struct AutomationSourceCreateResult: Codable, Equatable, Sendable {
+    public let applied: Bool
+    public let completed: Bool
+    public let source: AutomationSourceSummary?
+    public let selectedPath: String?
+    public let importedTrackCount: Int
+    public let failures: [String]
+    public let job: AutomationJobSummary?
+    public let message: String?
+
+    public init(
+        applied: Bool,
+        completed: Bool = true,
+        source: AutomationSourceSummary? = nil,
+        selectedPath: String? = nil,
+        importedTrackCount: Int = 0,
+        failures: [String] = [],
+        job: AutomationJobSummary? = nil,
+        message: String? = nil
+    ) {
+        self.applied = applied
+        self.completed = completed
+        self.source = source
+        self.selectedPath = selectedPath
+        self.importedTrackCount = importedTrackCount
+        self.failures = failures
+        self.job = job
+        self.message = message
+    }
+}
+
+public struct AutomationPlaylistDetailResult: Codable, Equatable, Sendable {
+    public let playlist: AutomationPlaylistSummary
+    public let trackIDs: [UUID]
+
+    public init(playlist: AutomationPlaylistSummary, trackIDs: [UUID]) {
+        self.playlist = playlist
+        self.trackIDs = trackIDs
+    }
+}
+
+public struct AutomationPlaybackState: Codable, Equatable, Sendable {
+    public let source: String
+    public let isPlaying: Bool
+    public let currentTrackID: UUID?
+    public let currentTitle: String?
+    public let currentArtist: String?
+    public let position: Double
+    public let duration: Double
+    public let volume: Double
+    public let playbackMode: String
+
+    public init(
+        source: String,
+        isPlaying: Bool,
+        currentTrackID: UUID?,
+        currentTitle: String?,
+        currentArtist: String?,
+        position: Double,
+        duration: Double,
+        volume: Double,
+        playbackMode: String
+    ) {
+        self.source = source
+        self.isPlaying = isPlaying
+        self.currentTrackID = currentTrackID
+        self.currentTitle = currentTitle
+        self.currentArtist = currentArtist
+        self.position = position
+        self.duration = duration
+        self.volume = volume
+        self.playbackMode = playbackMode
+    }
+}
+
+public struct AutomationQueueResult: Codable, Equatable, Sendable {
+    public let trackIDs: [UUID]
+    public let currentTrackID: UUID?
+    public let revision: String
+
+    public init(trackIDs: [UUID], currentTrackID: UUID?, revision: String) {
+        self.trackIDs = trackIDs
+        self.currentTrackID = currentTrackID
+        self.revision = revision
+    }
+}
+
+public struct AutomationHistoryItem: Codable, Equatable, Sendable, Identifiable {
+    public let id: UUID
+    public let trackID: UUID
+    public let playedAt: Date
+    public let title: String
+    public let artist: String
+    public let album: String
+    public let duration: Double
+    public let playedSeconds: Double
+
+    public init(
+        id: UUID,
+        trackID: UUID,
+        playedAt: Date,
+        title: String,
+        artist: String,
+        album: String,
+        duration: Double,
+        playedSeconds: Double
+    ) {
+        self.id = id
+        self.trackID = trackID
+        self.playedAt = playedAt
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.duration = duration
+        self.playedSeconds = playedSeconds
+    }
+}
+
+public struct AutomationHistoryListResult: Codable, Equatable, Sendable {
+    public let items: [AutomationHistoryItem]
+    public let revision: String
+
+    public init(items: [AutomationHistoryItem], revision: String) {
+        self.items = items
+        self.revision = revision
+    }
+}
+
+public struct AutomationMetadataMutationResult: Codable, Equatable, Sendable {
+    public let applied: Bool
+    public let dryRun: Bool
+    public let updatedTrackIDs: [UUID]
+    public let skippedTrackIDs: [UUID]
+    public let conflictedTrackIDs: [UUID]
+    public let message: String
+
+    public init(
+        applied: Bool,
+        dryRun: Bool,
+        updatedTrackIDs: [UUID] = [],
+        skippedTrackIDs: [UUID] = [],
+        conflictedTrackIDs: [UUID] = [],
+        message: String
+    ) {
+        self.applied = applied
+        self.dryRun = dryRun
+        self.updatedTrackIDs = updatedTrackIDs
+        self.skippedTrackIDs = skippedTrackIDs
+        self.conflictedTrackIDs = conflictedTrackIDs
+        self.message = message
+    }
+}
+
+public struct AutomationLyricsDetail: Codable, Equatable, Sendable {
+    public let trackID: UUID
+    public let status: String
+    public let ttml: String?
+    public let plainText: String?
+
+    public init(
+        trackID: UUID,
+        status: String,
+        ttml: String? = nil,
+        plainText: String? = nil
+    ) {
+        self.trackID = trackID
+        self.status = status
+        self.ttml = ttml
+        self.plainText = plainText
+    }
+}
+
+public struct AutomationLyricsRefreshResult: Codable, Equatable, Sendable {
+    public let applied: Bool
+    public let dryRun: Bool
+    public let selectedTrackIDs: [UUID]
+    public let job: AutomationJobSummary?
+    public let message: String
+
+    public init(
+        applied: Bool,
+        dryRun: Bool,
+        selectedTrackIDs: [UUID],
+        job: AutomationJobSummary? = nil,
+        message: String
+    ) {
+        self.applied = applied
+        self.dryRun = dryRun
+        self.selectedTrackIDs = selectedTrackIDs
+        self.job = job
+        self.message = message
+    }
+}
+
+public enum AutomationJobState: String, Codable, Sendable {
+    case queued
+    case running
+    case checkpointed
+    case completed
+    case partialFailure
+    case failed
+    case cancelled
+}
+
+public struct AutomationJobSummary: Codable, Equatable, Sendable, Identifiable {
+    public let id: UUID
+    public let kind: String
+    public let libraryID: UUID?
+    public let state: AutomationJobState
+    public let createdAt: Date
+    public let startedAt: Date?
+    public let finishedAt: Date?
+    public let checkpoint: String?
+    public let completedCount: Int
+    public let totalCount: Int?
+    public let currentPhase: String?
+    public let failures: [String]
+
+    public init(
+        id: UUID,
+        kind: String,
+        libraryID: UUID?,
+        state: AutomationJobState,
+        createdAt: Date,
+        startedAt: Date? = nil,
+        finishedAt: Date? = nil,
+        checkpoint: String? = nil,
+        completedCount: Int = 0,
+        totalCount: Int? = nil,
+        currentPhase: String? = nil,
+        failures: [String] = []
+    ) {
+        self.id = id
+        self.kind = kind
+        self.libraryID = libraryID
+        self.state = state
+        self.createdAt = createdAt
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+        self.checkpoint = checkpoint
+        self.completedCount = completedCount
+        self.totalCount = totalCount
+        self.currentPhase = currentPhase
+        self.failures = failures
+    }
+}
+
+public struct AutomationJobListResult: Codable, Equatable, Sendable {
+    public let jobs: [AutomationJobSummary]
+
+    public init(jobs: [AutomationJobSummary]) {
+        self.jobs = jobs.sorted { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
+            return lhs.id.uuidString < rhs.id.uuidString
+        }
+    }
+}
+
+public struct AutomationDiagnosticsResult: Codable, Equatable, Sendable {
+    public let healthy: Bool
+    public let libraryID: UUID?
+    public let trackCount: Int
+    public let playlistCount: Int
+    public let missingTrackCount: Int
+    public let unavailableTrackCount: Int
+    public let sourceCount: Int
+    public let sourceIssues: [String]
+    public let runningJobCount: Int
+    public let checks: [String: String]
+
+    public init(
+        healthy: Bool,
+        libraryID: UUID?,
+        trackCount: Int,
+        playlistCount: Int,
+        missingTrackCount: Int,
+        unavailableTrackCount: Int,
+        sourceCount: Int,
+        sourceIssues: [String] = [],
+        runningJobCount: Int = 0,
+        checks: [String: String] = [:]
+    ) {
+        self.healthy = healthy
+        self.libraryID = libraryID
+        self.trackCount = trackCount
+        self.playlistCount = playlistCount
+        self.missingTrackCount = missingTrackCount
+        self.unavailableTrackCount = unavailableTrackCount
+        self.sourceCount = sourceCount
+        self.sourceIssues = sourceIssues.sorted()
+        self.runningJobCount = runningJobCount
+        self.checks = checks
+    }
+}
+
+public struct AutomationSettingsResult: Codable, Equatable, Sendable {
+    public let libraryID: UUID?
+    public let values: [String: AutomationJSONValue]
+    public let revision: String
+    public let applied: Bool
+    public let dryRun: Bool
+    public let message: String
+
+    public init(
+        libraryID: UUID?,
+        values: [String: AutomationJSONValue],
+        revision: String,
+        applied: Bool = false,
+        dryRun: Bool = false,
+        message: String
+    ) {
+        self.libraryID = libraryID
+        self.values = values
+        self.revision = revision
+        self.applied = applied
+        self.dryRun = dryRun
+        self.message = message
+    }
+}
+
+public struct AutomationStorageResult: Codable, Equatable, Sendable {
+    public let libraryID: UUID?
+    public let mode: String?
+    public let rootPath: String?
+    public let schemaVersion: Int?
+    public let manifestPresent: Bool
+    public let missingRequiredDirectories: [String]
+    public let validation: String
+    public let validationMessage: String?
+    public let message: String
+
+    public init(
+        libraryID: UUID?,
+        mode: String?,
+        rootPath: String?,
+        schemaVersion: Int?,
+        manifestPresent: Bool,
+        missingRequiredDirectories: [String] = [],
+        validation: String,
+        validationMessage: String? = nil,
+        message: String
+    ) {
+        self.libraryID = libraryID
+        self.mode = mode
+        self.rootPath = rootPath
+        self.schemaVersion = schemaVersion
+        self.manifestPresent = manifestPresent
+        self.missingRequiredDirectories = missingRequiredDirectories.sorted()
+        self.validation = validation
+        self.validationMessage = validationMessage
+        self.message = message
+    }
+}
+
+public struct AutomationCapabilityResult: Codable, Equatable, Sendable {
+    public let protocolVersion: Int
+    public let scopes: [AutomationScope]
+    public let grantedScopes: [AutomationScope]
+    public let deniedScopes: [AutomationScope]
+    public let tools: [AutomationToolDescriptor]
+    public let notes: [String]
+
+    public init(
+        protocolVersion: Int = AutomationProtocol.currentVersion,
+        scopes: [AutomationScope] = AutomationScope.allCases,
+        grantedScopes: [AutomationScope] = AutomationScope.allCases,
+        deniedScopes: [AutomationScope] = [],
+        tools: [AutomationToolDescriptor] = AutomationToolCatalog.all,
+        notes: [String] = []
+    ) {
+        self.protocolVersion = protocolVersion
+        self.scopes = scopes.sorted { $0.rawValue < $1.rawValue }
+        self.grantedScopes = grantedScopes.sorted { $0.rawValue < $1.rawValue }
+        self.deniedScopes = deniedScopes.sorted { $0.rawValue < $1.rawValue }
+        self.tools = tools
+        self.notes = notes
+    }
+}
+
+public struct AutomationScopeMutationResult: Codable, Equatable, Sendable {
+    public let scope: AutomationScope
+    public let granted: Bool
+    public let persistent: Bool
+    public let expiresAt: Date?
+    public let message: String
+
+    public init(
+        scope: AutomationScope,
+        granted: Bool,
+        persistent: Bool = true,
+        expiresAt: Date? = nil,
+        message: String
+    ) {
+        self.scope = scope
+        self.granted = granted
+        self.persistent = persistent
+        self.expiresAt = expiresAt
+        self.message = message
+    }
+}
+
+/// Shared short-form guidance used by MCP Resources and the public Agent
+/// documentation. Keep this focused on stable product semantics; the full
+/// examples and troubleshooting material live under `docs/`.
+public enum AutomationDocumentation {
+    public static let agentBehaviorGuide = """
+    kmgccc_player automation semantics:
+    - Track, Library membership, Playlist membership, Source membership and a real audio File are different relationships.
+    - Removing a Track from a Playlist does not remove it from the Library or delete its file. Deleting a Playlist also retains Tracks and files.
+    - When a referenced Source file disappears, the default is to preserve the Track, metadata, history and Playlist membership while marking it missing/unavailable.
+    - Low-risk mutations may execute directly after authorization. Use dryRun for impact inspection. High-risk file deletion, destructive mirroring, mass deletion, history clearing and direct storage writes require App-owned foreground confirmation.
+    - Prefer the formal Automation API, then diagnostics/repair, then the current-version source and storage documentation. Back up before any controlled storage fallback and validate/reload afterward.
+    - Query first, preserve the returned revision, apply with expectedRevision when offered, and verify the result. Use idempotencyKey when retrying a mutation.
+    """
+
+    public static let capabilityOverview = """
+    The shared automation layer is App-owned. CLI and MCP are adapters over the same AF_UNIX IPC contract. `library.tracks` is the composable query entry point: combine text, IDs, Source/Playlist membership, availability, lyric/artwork/metadata state, technical audio fields, boolean all/any/not predicates, stable sort and offset pagination. Library Track identity is resolved before Playlist membership mutations, so an existing Track can be added to any Playlist without being imported again. Source exclusions, supported persistent settings, and App-owned storage inspect/validate/repair are exposed as separate capabilities; arbitrary file or JSON writes are not ordinary tools.
+    """
+}
+
+/// Provider-neutral capability metadata shared by CLI, MCP and a future
+/// in-process Agent. The catalog describes the operation; the App remains the
+/// only owner of validation, authorization, persistence and side effects.
+public struct AutomationToolDescriptor: Codable, Equatable, Sendable {
+    public let name: String
+    public let title: String
+    public let description: String
+    public let readOnly: Bool
+    public let requiresConfirmation: Bool
+    public let scopes: [AutomationScope]
+    public let risk: AutomationRiskLevel
+    public let supportsDryRun: Bool
+    public let supportsJobs: Bool
+    public let supportsTasks: Bool
+    public let inputSchema: AutomationJSONValue
+
+    public init(
+        name: String,
+        title: String,
+        description: String,
+        readOnly: Bool,
+        requiresConfirmation: Bool = false,
+        scopes: [AutomationScope] = [],
+        risk: AutomationRiskLevel = .medium,
+        supportsDryRun: Bool = false,
+        supportsJobs: Bool = false,
+        supportsTasks: Bool = false,
+        inputSchema: AutomationJSONValue
+    ) {
+        self.name = name
+        self.title = title
+        self.description = description
+        self.readOnly = readOnly
+        self.requiresConfirmation = requiresConfirmation
+        self.scopes = scopes.sorted { $0.rawValue < $1.rawValue }
+        self.risk = risk
+        self.supportsDryRun = supportsDryRun
+        self.supportsJobs = supportsJobs
+        self.supportsTasks = supportsTasks
+        self.inputSchema = inputSchema
+    }
+}
+
+public enum AutomationToolCatalog {
+    public static let all: [AutomationToolDescriptor] = [
+        AutomationToolDescriptor(
+            name: AutomationMethod.systemPing,
+            title: "Ping Player",
+            description: "Check whether the local player automation endpoint is reachable.",
+            readOnly: true,
+            requiresConfirmation: false,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.systemInfo,
+            title: "Player Info",
+            description: "Read the player version, protocol capabilities and active library.",
+            readOnly: true,
+            requiresConfirmation: false,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.libraryList,
+            title: "List Libraries",
+            description: "List registered local music libraries without switching the active library.",
+            readOnly: true,
+            requiresConfirmation: false,
+            scopes: [.libraryRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.libraryTracks,
+            title: "Find Tracks",
+            description: "Compose ID, text, source, playlist, availability, date, technical and metadata filters, then page and sort tracks.",
+            readOnly: true,
+            requiresConfirmation: false,
+            scopes: [.libraryRead],
+            risk: .low,
+            inputSchema: libraryTracksInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playlistList,
+            title: "List Playlists",
+            description: "List playlists and opaque revisions in the active library.",
+            readOnly: true,
+            requiresConfirmation: false,
+            scopes: [.playlistRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playlistCreate,
+            title: "Create Playlist",
+            description: "Create an empty playlist. This normal library mutation is direct and idempotent by request key when supplied; use dryRun for a preview.",
+            readOnly: false,
+            requiresConfirmation: false,
+            scopes: [.playlistWrite],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: playlistCreateInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playlistAddTracks,
+            title: "Add Tracks to Playlist",
+            description: "Add existing library tracks to a playlist without importing or copying files; duplicate membership is skipped.",
+            readOnly: false,
+            requiresConfirmation: false,
+            scopes: [.playlistWrite],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: playlistTrackMutationInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playlistRemoveTracks,
+            title: "Remove Tracks from Playlist",
+            description: "Preview or remove playlist membership without deleting library tracks or files.",
+            readOnly: false,
+            requiresConfirmation: false,
+            scopes: [.playlistWrite],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: playlistTrackMutationInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.sourceList,
+            title: "List Sources",
+            description: "List authorized referenced-library sources and their current scan status.",
+            readOnly: true,
+            requiresConfirmation: false,
+            scopes: [.sourceRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.sourceRefresh,
+            title: "Refresh Source",
+            description: "Start a Job that scans an authorized Source and reconciles added, renamed and missing files; existing Track identities are reused and missing Tracks are preserved.",
+            readOnly: false,
+            requiresConfirmation: false,
+            scopes: [.sourceWrite, .libraryWrite],
+            risk: .low,
+            supportsDryRun: true,
+            supportsJobs: true,
+            inputSchema: sourceRefreshInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.automationCapabilities,
+            title: "Automation Capabilities",
+            description: "Read the shared capability catalog, scopes, risk levels and supported composition features.",
+            readOnly: true,
+            requiresConfirmation: false,
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playlistGet,
+            title: "Get Playlist",
+            description: "Read one playlist's ordered Track IDs and opaque revision.",
+            readOnly: true,
+            scopes: [.playlistRead],
+            risk: .low,
+            inputSchema: playlistIDInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playlistRename,
+            title: "Rename Playlist",
+            description: "Rename a playlist without changing membership.",
+            readOnly: false,
+            scopes: [.playlistWrite],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: playlistRenameInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playlistDelete,
+            title: "Delete Playlist",
+            description: "Delete a playlist and its memberships; Tracks and physical files are retained. This is a medium-risk mutation and supports preview.",
+            readOnly: false,
+            requiresConfirmation: true,
+            scopes: [.playlistWrite],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: destructiveIDInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playlistReplaceTracks,
+            title: "Replace Playlist Tracks",
+            description: "Replace the ordered membership of a playlist using existing library Track IDs.",
+            readOnly: false,
+            scopes: [.playlistWrite],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: playlistReplaceInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playlistReorder,
+            title: "Reorder Playlist",
+            description: "Reorder existing playlist membership without importing or deleting Tracks.",
+            readOnly: false,
+            scopes: [.playlistWrite],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: playlistReplaceInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.sourceCreate,
+            title: "Add Source",
+            description: "Request an authorized folder or file Source through the App picker, then start an import/reconcile Job. The Agent can initiate the whole permission flow.",
+            readOnly: false,
+            scopes: [.sourceWrite, .libraryWrite],
+            risk: .medium,
+            supportsDryRun: true,
+            supportsJobs: true,
+            inputSchema: sourceCreateInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.sourceBindPlaylist,
+            title: "Bind Source to Playlist",
+            description: "Bind an authorized Source to an existing Playlist; source scans then keep that Playlist synchronized under its configured policy.",
+            readOnly: false,
+            scopes: [.sourceWrite, .playlistWrite],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: sourceBindPlaylistInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.sourceSetExcludedPath,
+            title: "Set Source Exclusion",
+            description: "Include or exclude a safe directory-relative path from a directory Source scan without deleting existing Tracks.",
+            readOnly: false,
+            scopes: [.sourceWrite, .libraryWrite],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: sourceExcludedPathInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.sourceSetMonitorPolicy,
+            title: "Set Source Monitor Policy",
+            description: "Enable or disable automatic filesystem reconciliation for a Source; manual refresh remains available when disabled.",
+            readOnly: false,
+            scopes: [.sourceWrite],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: sourceMonitorPolicyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.sourceRemove,
+            title: "Remove Source",
+            description: "Remove a Source authority and its source contribution. Preview first; the App policy decides how orphaned Tracks are retained.",
+            readOnly: false,
+            requiresConfirmation: true,
+            scopes: [.sourceWrite, .libraryWrite],
+            risk: .high,
+            supportsDryRun: true,
+            inputSchema: destructiveIDInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playbackState,
+            title: "Playback State",
+            description: "Read current playback source, Track, position, volume and playback mode.",
+            readOnly: true,
+            scopes: [.playbackRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playbackPlay,
+            title: "Play",
+            description: "Play one existing Track or an ordered set of existing Tracks from the active library.",
+            readOnly: false,
+            scopes: [.playbackControl, .libraryRead],
+            risk: .low,
+            inputSchema: playbackPlayInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playbackPause,
+            title: "Pause",
+            description: "Pause the active playback provider.",
+            readOnly: false,
+            scopes: [.playbackControl],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playbackNext,
+            title: "Next Track",
+            description: "Advance to the next item in the active playback queue/provider.",
+            readOnly: false,
+            scopes: [.playbackControl],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playbackPrevious,
+            title: "Previous Track",
+            description: "Go to the previous item in the active playback queue/provider.",
+            readOnly: false,
+            scopes: [.playbackControl],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playbackSeek,
+            title: "Seek",
+            description: "Seek the active playback provider to a position in seconds.",
+            readOnly: false,
+            scopes: [.playbackControl],
+            risk: .low,
+            inputSchema: playbackSeekInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playbackSetVolume,
+            title: "Set Volume",
+            description: "Set the active provider volume between 0 and 1.",
+            readOnly: false,
+            scopes: [.playbackControl, .audioWrite],
+            risk: .low,
+            inputSchema: playbackVolumeInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.playbackSetMode,
+            title: "Set Playback Mode",
+            description: "Set sequence, shuffle, repeat-one or stop-after-track playback mode.",
+            readOnly: false,
+            scopes: [.playbackControl, .audioWrite],
+            risk: .low,
+            inputSchema: playbackModeInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.queueGet,
+            title: "Get Queue",
+            description: "Read the current local queue, current Track and opaque queue revision.",
+            readOnly: true,
+            scopes: [.queueRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.queueReplace,
+            title: "Replace Queue",
+            description: "Replace the local queue with existing Track IDs using an optional expected queue revision.",
+            readOnly: false,
+            scopes: [.queueWrite, .libraryRead],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: queueMutationInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.queueEnqueue,
+            title: "Enqueue Tracks",
+            description: "Append existing Tracks to the local queue.",
+            readOnly: false,
+            scopes: [.queueWrite, .libraryRead],
+            risk: .low,
+            inputSchema: queueMutationInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.queueEnqueueNext,
+            title: "Enqueue Next",
+            description: "Insert existing Tracks after the currently playing Track.",
+            readOnly: false,
+            scopes: [.queueWrite, .libraryRead],
+            risk: .low,
+            inputSchema: queueMutationInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.queueClear,
+            title: "Clear Queue",
+            description: "Clear the local queue. The currently playing item may remain provider-defined.",
+            readOnly: false,
+            scopes: [.queueWrite],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: queueClearInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.historyList,
+            title: "List History",
+            description: "Read recent listening history with optional limit and date bounds.",
+            readOnly: true,
+            scopes: [.historyRead],
+            risk: .low,
+            inputSchema: historyListInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.historyClear,
+            title: "Clear History",
+            description: "Delete all listening history. The App must require foreground confirmation.",
+            readOnly: false,
+            requiresConfirmation: true,
+            scopes: [.historyWrite],
+            risk: .high,
+            supportsDryRun: true,
+            inputSchema: confirmationInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.metadataGet,
+            title: "Get Metadata",
+            description: "Read authoritative App metadata and technical fields for one or more existing Tracks.",
+            readOnly: true,
+            scopes: [.metadataRead, .libraryRead],
+            risk: .low,
+            inputSchema: metadataGetInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.metadataPatch,
+            title: "Patch Metadata",
+            description: "Patch App-owned Track metadata in a batch. This does not write embedded tags into the original audio file.",
+            readOnly: false,
+            scopes: [.metadataWrite, .libraryRead],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: metadataPatchInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.lyricsGet,
+            title: "Get Lyrics",
+            description: "Read the current persisted TTML/plain lyrics and normalized lyrics status for a Track.",
+            readOnly: true,
+            scopes: [.lyricsRead, .libraryRead],
+            risk: .low,
+            inputSchema: lyricsGetInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.lyricsRefresh,
+            title: "Refresh Lyrics",
+            description: "Search selected Tracks through the existing lyrics providers and return a tracked batch Job; only a better result replaces the current lyrics.",
+            readOnly: false,
+            scopes: [.lyricsWrite, .libraryRead],
+            risk: .medium,
+            supportsDryRun: true,
+            supportsJobs: true,
+            inputSchema: lyricsRefreshInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.jobsList,
+            title: "List Jobs",
+            description: "Read active long-running library operations and their checkpoints.",
+            readOnly: true,
+            scopes: [.diagnosticsRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.jobsGet,
+            title: "Get Job",
+            description: "Read one active library operation by ID.",
+            readOnly: true,
+            scopes: [.diagnosticsRead],
+            risk: .low,
+            inputSchema: jobIDInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.jobsCancel,
+            title: "Cancel Job",
+            description: "Request cancellation of an active library operation.",
+            readOnly: false,
+            scopes: [.diagnosticsRepair],
+            risk: .medium,
+            inputSchema: jobIDInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.diagnosticsHealth,
+            title: "Library Health",
+            description: "Inspect Library, Source, missing Track and active Job health with actionable evidence.",
+            readOnly: true,
+            scopes: [.diagnosticsRead, .libraryRead, .sourceRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.settingsGet,
+            title: "Get Automation Settings",
+            description: "Read the small set of persistent library settings currently safe to automate, including referenced-track deletion policy.",
+            readOnly: true,
+            scopes: [.settingsRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.settingsPatch,
+            title: "Patch Automation Settings",
+            description: "Preview or update supported persistent library settings. Unsupported UI-only preferences are rejected instead of being guessed.",
+            readOnly: false,
+            scopes: [.settingsWrite],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: settingsPatchInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.storageInspect,
+            title: "Inspect Library Storage",
+            description: "Read the active Library storage mode, schema, root and required-directory health without writing files or exposing secrets.",
+            readOnly: true,
+            scopes: [.storageRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.storageValidate,
+            title: "Validate Library Storage",
+            description: "Run the App-owned storage, sidecar, index, manifest and playback-history integrity validator against the active Library.",
+            readOnly: true,
+            scopes: [.storageRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.storageRepair,
+            title: "Repair Library Scaffolding",
+            description: "Repair only missing App-owned Library directories and the default scoped-settings file, then leave domain data untouched.",
+            readOnly: false,
+            scopes: [.storageWrite, .diagnosticsRepair],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: storageMutationInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.automationScopes,
+            title: "Automation Scope Status",
+            description: "Read the App-owned granted and denied automation scopes.",
+            readOnly: true,
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.automationGrantScope,
+            title: "Grant Automation Scope",
+            description: "Request an App-owned scope grant. The App requires foreground confirmation, especially for file deletion or storage writes.",
+            readOnly: false,
+            requiresConfirmation: true,
+            risk: .high,
+            supportsDryRun: true,
+            inputSchema: scopeMutationInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.automationRevokeScope,
+            title: "Revoke Automation Scope",
+            description: "Revoke one App-owned automation scope for future calls.",
+            readOnly: false,
+            risk: .low,
+            inputSchema: scopeInputSchema
+        )
+    ].sorted { $0.name < $1.name }
+
+    public static func descriptor(for name: String) -> AutomationToolDescriptor? {
+        all.first { $0.name == name }
+    }
+
+    private static let emptyInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false)
+    ])
+
+    private static let libraryTracksInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "query": .object(["type": .string("string")]),
+            "playlistID": .object(["type": .string("string")]),
+            "sourceID": .object(["type": .string("string")]),
+            "relativePathPrefix": .object(["type": .string("string")]),
+            "ids": .object([
+                "type": .string("array"),
+                "items": .object(["type": .string("string")])
+            ]),
+            "filter": .object([
+                "type": .string("object"),
+                "description": .string("Composable filter object: all/any/not plus id, ids, text, titleContains, artistContains, albumContains, genreContains, sourceID, playlistID, availability, missing, addedAfter, addedBefore, releaseAfter, releaseBefore, durationMin, durationMax, hasLyrics, lyricsStatus, hasArtwork, metadataConfidenceMin, codec, format, sampleRateHz and bitDepth.")
+            ]),
+            "sort": .object([
+                "type": .string("array"),
+                "items": .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "field": .object(["type": .string("string")]),
+                        "direction": .object(["type": .string("string"), "enum": .array([.string("asc"), .string("desc")])])
+                    ])
+                ])
+            ]),
+            "limit": .object([
+                "type": .string("integer"),
+                "minimum": .number(1),
+                "maximum": .number(500)
+            ]),
+            "offset": .object([
+                "type": .string("integer"),
+                "minimum": .number(0)
+            ])
+        ])
+    ])
+
+    private static let playlistCreateInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("name")]),
+        "properties": .object([
+            "name": .object(["type": .string("string"), "minLength": .number(1)]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let playlistTrackMutationInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("playlistID"), .string("trackIDs")]),
+        "properties": .object([
+            "playlistID": .object(["type": .string("string")]),
+            "trackIDs": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "items": .object(["type": .string("string")])
+            ]),
+            "expectedRevision": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let sourceRefreshInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("sourceID")]),
+        "properties": .object([
+            "sourceID": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")]),
+        ])
+    ])
+
+    private static let queueClearInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "expectedRevision": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let metadataGetInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "trackID": .object(["type": .string("string")]),
+            "trackIDs": .object([
+                "type": .string("array"),
+                "items": .object(["type": .string("string")])
+            ])
+        ])
+    ])
+
+    private static let metadataPatchInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackIDs"), .string("patch")]),
+        "properties": .object([
+            "trackIDs": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "items": .object(["type": .string("string")])
+            ]),
+            "patch": .object(["type": .string("object")]),
+            "expectedRevisions": .object(["type": .string("object")]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let lyricsGetInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackID")]),
+        "properties": .object([
+            "trackID": .object(["type": .string("string")])
+        ])
+    ])
+
+    private static let lyricsRefreshInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackIDs")]),
+        "properties": .object([
+            "trackIDs": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "items": .object(["type": .string("string")])
+            ]),
+            "force": .object(["type": .string("boolean")]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let playlistIDInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("playlistID")]),
+        "properties": .object([
+            "playlistID": .object(["type": .string("string")])
+        ])
+    ])
+
+    private static let playlistRenameInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("playlistID"), .string("name")]),
+        "properties": .object([
+            "playlistID": .object(["type": .string("string")]),
+            "name": .object(["type": .string("string"), "minLength": .number(1)]),
+            "description": .object(["type": .string("string")]),
+            "expectedRevision": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let playlistReplaceInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("playlistID"), .string("trackIDs")]),
+        "properties": .object([
+            "playlistID": .object(["type": .string("string")]),
+            "trackIDs": .object([
+                "type": .string("array"),
+                "items": .object(["type": .string("string")])
+            ]),
+            "expectedRevision": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let destructiveIDInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("id")]),
+        "properties": .object([
+            "id": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let sourceCreateInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "path": .object(["type": .string("string")]),
+            "mode": .object(["type": .string("string"), "enum": .array([.string("directory"), .string("file")])]),
+            "playlistID": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let scopeInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("scope")]),
+        "properties": .object([
+            "scope": .object([
+                "type": .string("string"),
+                "enum": .array(AutomationScope.allCases.map { .string($0.rawValue) })
+            ])
+        ])
+    ])
+
+    private static let scopeMutationInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("scope")]),
+        "properties": .object([
+            "scope": .object([
+                "type": .string("string"),
+                "enum": .array(AutomationScope.allCases.map { .string($0.rawValue) })
+            ]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let sourceBindPlaylistInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("sourceID"), .string("playlistID")]),
+        "properties": .object([
+            "sourceID": .object(["type": .string("string")]),
+            "playlistID": .object(["type": .string("string")]),
+            "relativePath": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let sourceExcludedPathInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("sourceID"), .string("relativePath")]),
+        "properties": .object([
+            "sourceID": .object(["type": .string("string")]),
+            "relativePath": .object(["type": .string("string"), "minLength": .number(1)]),
+            "excluded": .object(["type": .string("boolean")]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let sourceMonitorPolicyInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("sourceID"), .string("policy")]),
+        "properties": .object([
+            "sourceID": .object(["type": .string("string")]),
+            "policy": .object([
+                "type": .string("string"),
+                "enum": .array([.string("on"), .string("off")])
+            ]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let settingsPatchInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("values")]),
+        "properties": .object([
+            "values": .object([
+                "type": .string("object"),
+                "description": .string("Currently supported: referencedTrackDeletePolicy = onlyLibrary or recycleSource.")
+            ]),
+            "expectedRevision": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let storageMutationInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let playbackPlayInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "trackID": .object(["type": .string("string")]),
+            "trackIDs": .object([
+                "type": .string("array"),
+                "items": .object(["type": .string("string")])
+            ]),
+            "startIndex": .object(["type": .string("integer"), "minimum": .number(0)])
+        ])
+    ])
+
+    private static let playbackSeekInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("seconds")]),
+        "properties": .object([
+            "seconds": .object(["type": .string("number"), "minimum": .number(0)])
+        ])
+    ])
+
+    private static let playbackVolumeInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("volume")]),
+        "properties": .object([
+            "volume": .object(["type": .string("number"), "minimum": .number(0), "maximum": .number(1)])
+        ])
+    ])
+
+    private static let playbackModeInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("mode")]),
+        "properties": .object([
+            "mode": .object([
+                "type": .string("string"),
+                "enum": .array([.string("sequence"), .string("shuffle"), .string("repeatOne"), .string("stopAfterTrack")])
+            ])
+        ])
+    ])
+
+    private static let queueMutationInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackIDs")]),
+        "properties": .object([
+            "trackIDs": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "items": .object(["type": .string("string")])
+            ]),
+            "expectedRevision": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let historyListInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "limit": .object(["type": .string("integer"), "minimum": .number(1), "maximum": .number(500)]),
+            "from": .object(["type": .string("string")]),
+            "to": .object(["type": .string("string")])
+        ])
+    ])
+
+    private static let confirmationInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let jobIDInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("jobID")]),
+        "properties": .object([
+            "jobID": .object(["type": .string("string")])
+        ])
+    ])
 }
 
 public enum AutomationWireCoding {
