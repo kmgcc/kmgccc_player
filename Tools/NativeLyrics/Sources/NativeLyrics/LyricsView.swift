@@ -76,6 +76,10 @@ private enum LyricsEntryAnimation: Equatable {
     public private(set) var document: LyricsDocument?
     public private(set) var lastFrame: LyricsFrame?
     public var automaticDisplayUpdates = true { didSet { wake() } }
+    /// True while an overlay (for example the fullscreen mini-player) owns
+    /// the pointer. The gate is persistent; clearing hover once is not enough
+    /// because the next mouse-moved event can otherwise re-enable it.
+    public private(set) var isPointerInteractionSuppressed = false
     /// Whether a window-backed display loop is currently installed.
     /// Hosts can use this to verify that a visible surface actually advances
     /// between sparse playback snapshots without exposing the display link.
@@ -138,16 +142,18 @@ private enum LyricsEntryAnimation: Equatable {
     /// the current row stays anchored while its neighbours close in around it.
     private var pendingEntryAnimation: LyricsEntryAnimation?
     private var runningEntryAnimation: LyricsEntryAnimation?
+    /// Keep the entry solver as the owner for a short handoff after it
+    /// settles. Replacing it immediately with the normal focus solver can
+    /// expose a one-frame jump when the entry spring returns from overshoot.
+    private var entryAnimationHandoffUntil = 0.0
     private var rendering = false
     private var scrollBoundary = (min: 0.0, max: 0.0)
 
     private var entryPositionSpring: SpringParameters {
-        // The normal position spring is intentionally adaptive to lyric
-        // intervals. Entry motion should feel consistent across tracks and
-        // should not inherit a high-bounce user override unless one was
-        // explicitly selected in settings.
-        configuration.positionSpring
-            ?? SpringParameters(mass: 1, damping: 22, stiffness: 120, soft: true)
+        // Entry motion must retain a real under-damped position solver. A
+        // critically damped fallback makes the load animation look like a
+        // linear translation and removes the requested settle-back motion.
+        configuration.positionSpring ?? .position
     }
 
     private var entryScaleSpring: SpringParameters {
@@ -180,6 +186,7 @@ private enum LyricsEntryAnimation: Equatable {
         rebuildTimeline(); interaction.resume(); gapIdentity = nil; gapLastMedia = -Double.infinity; lastFocus = -1
         pendingEntryAnimation = .load
         runningEntryAnimation = nil
+        entryAnimationHandoffUntil = 0
         clock.synchronize(time:time,playing:playing,host:hostTime,force:true)
         previousHost = nil; layoutDirty = true; seekPending = true
         // A view can be loaded before Auto Layout has assigned its final
@@ -202,6 +209,7 @@ private enum LyricsEntryAnimation: Equatable {
         interaction.resume(); gapIdentity = nil; gapLastMedia = -Double.infinity; lastFocus = -1
         pendingEntryAnimation = nil
         runningEntryAnimation = nil
+        entryAnimationHandoffUntil = 0
         previousHost = nil; layoutDirty = true; seekPending = true; lastFrame = nil
         pendingReflowIndices.removeAll(); pendingReflowCursor = 0; reflowInProgress = false
         stopDisplayLink()
@@ -222,9 +230,12 @@ private enum LyricsEntryAnimation: Equatable {
             // A real seek supersedes a wake animation. A freshly loaded
             // document keeps its initial entrance so the first frame is not
             // replaced by a hard jump when the host supplies its initial time.
-            if seek || discontinuity {
+            let isInitialLoadRebase = (pendingEntryAnimation == .load || runningEntryAnimation == .load)
+                && abs(time - predicted) <= 0.05
+            if !isInitialLoadRebase {
                 if pendingEntryAnimation == .wake { pendingEntryAnimation = nil }
                 runningEntryAnimation = nil
+                entryAnimationHandoffUntil = 0
             }
         }
         wake()
@@ -238,7 +249,8 @@ private enum LyricsEntryAnimation: Equatable {
     /// restart that animation halfway through.
     public func prepareWakeEntryAnimation() {
         guard document != nil, !groups.isEmpty, lastFrame != nil,
-              pendingEntryAnimation == nil, runningEntryAnimation == nil
+              pendingEntryAnimation == nil, runningEntryAnimation == nil,
+              CACurrentMediaTime() >= entryAnimationHandoffUntil
         else { return }
         interaction.resume()
         pendingEntryAnimation = .wake
@@ -249,6 +261,7 @@ private enum LyricsEntryAnimation: Equatable {
         groups.forEach { $0.root.removeFromSuperlayer() }; groups.removeAll(); cache.removeAll(); layoutDirty = true
         pendingEntryAnimation = nil
         runningEntryAnimation = nil
+        entryAnimationHandoffUntil = 0
         pendingReflowIndices.removeAll(); pendingReflowCursor = 0; reflowInProgress = false
     }
     private func rebuildTimeline() {
@@ -322,7 +335,17 @@ private enum LyricsEntryAnimation: Equatable {
     fileprivate func displayTick() {
         let now = CACurrentMediaTime()
         render(at:now)
-        if !clock.isPlaying && !interaction.suspended && now >= clearUntil && groups.allSatisfy({$0.settled(now)}) { stopDisplayLink() }
+        if !clock.isPlaying
+            && !interaction.suspended
+            && !layoutDirty
+            && !reflowInProgress
+            && runningEntryAnimation == nil
+            && now >= entryAnimationHandoffUntil
+            && now >= clearUntil
+            && groups.allSatisfy({ $0.settled(now) })
+        {
+            stopDisplayLink()
+        }
     }
 
     /// Deterministic host-time entry point for a replay, trace, or offscreen comparison.
@@ -337,7 +360,12 @@ private enum LyricsEntryAnimation: Equatable {
         // hover gate cannot suppress inactive-row blur forever, while a real
         // pointer still receives ownership from tracking-area events.
         reconcilePointerTracking(hostTime: now)
-        let media = clock.time(at:now), seek = seekPending; seekPending = false
+        let seek = seekPending
+        let seekMotion = seek ? pendingSeekMotion : .immediate
+        seekPending = false
+        pendingSeekMotion = .immediate
+        let media = clock.time(at:now)
+        let seekPreview = seek && seekMotion == .preview
         if interaction.update(now:now,profile:configuration.profile,allowAutoResume:!hoverInside) { followPending = true }
         let snapshot = timeline.update(media,seek:seek,hasBottom:!configuration.bottomText.isEmpty)
         // Manual browsing remains anchored while the pointer is over the lyric
@@ -352,10 +380,17 @@ private enum LyricsEntryAnimation: Equatable {
         let renderScale = min(1,max(0.35,requestedRenderScale))
         let scale = backingScale * renderScale
         let needsReflow = layoutDirty || lastSize != bounds.size || scale != lastScale
+        // AppKit sends a layout pass for every live-resize tick. Keep the
+        // existing text shaping while the pointer is still resizing the
+        // window; reflow once at the latest size after the resize ends. This
+        // avoids repeatedly throwing away an in-progress batch before the
+        // text width has even settled, which otherwise makes the windowed
+        // lyric surface the dominant main-thread cost during a drag.
+        let deferLiveResizeReflow = window?.inLiveResize == true
         // `reflowed` means a new generation started in this frame. A
         // continuation frame keeps the resize spring's current velocity.
         var reflowed = false
-        if needsReflow {
+        if needsReflow && !deferLiveResizeReflow {
             if groups.count != prepared.count {
                 // Initial document installation has no usable old geometry;
                 // create all group shells atomically so frame consumers still
@@ -389,7 +424,9 @@ private enum LyricsEntryAnimation: Equatable {
         if focusChanged || seek || snapshot.interlude != gapIdentity {
             focusInterval = focus>0 && focus<prepared.count ? prepared[focus].range.start-prepared[focus-1].range.start : nil
             if focusInterval != nil || seek || snapshot.interlude != nil {
-                currentPositionSpring = .position(interval:focusInterval,slow:seek || snapshot.interlude != nil,end:snapshot.endOfSong,profile:configuration.profile)
+                currentPositionSpring = seekPreview
+                    ? .nonBouncyPosition()
+                    : .position(interval:focusInterval,slow:seek || snapshot.interlude != nil,end:snapshot.endOfSong,profile:configuration.profile)
             }
             lastFocusTime = now; lastFocus = focus
         }
@@ -417,13 +454,23 @@ private enum LyricsEntryAnimation: Equatable {
         }
         var offsets = [0.0]; for height in heights { offsets.append(offsets.last!+height) }
         let gap = snapshot.interlude
-        let gapHeight = gap == nil ? 0 : configuration.fontSize*1.1
+        let introInterlude = gap?.anchor == -1
+        let focusIndex = min(max(0,focus),groups.count)
+        // An intro marker occupies the first lyric row, so the next real row
+        // must use the same slot height as that row. The old fixed
+        // fontSize*1.1 offset was neither a row height nor the marker's real
+        // bounds; it made the first lyric sit between row one and row two.
+        let gapHeight: Double = {
+            guard gap != nil else { return 0 }
+            if introInterlude, focusIndex < heights.count {
+                return heights[focusIndex]
+            }
+            return configuration.fontSize*1.1
+        }()
         if let gap {
             for i in offsets.indices where i>=gap.anchor+1 { offsets[i] += gapHeight }
         }
-        let focusIndex = min(max(0,focus),groups.count)
         let alignOffset = configuration.alignOffset.isFinite ? configuration.alignOffset : 0
-        let introInterlude = gap?.anchor == -1
         // For an intro gap the marker owns the virtual active slot. Keep the
         // stack origin at the normal active anchor instead of subtracting the
         // inserted slot; the first lyric then lands one row below that slot.
@@ -454,11 +501,13 @@ private enum LyricsEntryAnimation: Equatable {
             snapshot: snapshot,
             now: now
         )
-        let position = configuration.positionSpring ?? currentPositionSpring
+        let position = seekPreview
+            ? .nonBouncyPosition(from: configuration.positionSpring ?? currentPositionSpring)
+            : (configuration.positionSpring ?? currentPositionSpring)
         // Clicks cascade in visual reading order. Scrubbing moves the stack
         // directly, and cannot leave delayed springs from a previous click.
-        let seekCascade = ((seek && pendingSeekMotion == .cascade) || returning) && !reflowed && configuration.spring
-        let immediateSeek = seek && !seekCascade
+        let seekCascade = ((seek && seekMotion == .cascade) || returning) && !reflowed && configuration.spring
+        let immediateSeek = seek && seekMotion == .immediate
         if seekCascade { cascadeUntil = now+0.7 }
         if immediateSeek { cascadeUntil = 0 }
         let firstVisible = groups.firstIndex { $0.y.value(now)+$0.layout.expandedHeight >= 0 } ?? 0
@@ -468,39 +517,32 @@ private enum LyricsEntryAnimation: Equatable {
         for (i,group) in groups.enumerated() {
             let target = origin+offsets[i]
             let resizeTargetChanged = group.reflowTarget.map { abs($0-target) > 0.5 } ?? false
-            if let entryMode = runningEntryAnimation {
+            let entryMotionActive = runningEntryAnimation != nil || now < entryAnimationHandoffUntil
+            if entryMotionActive {
                 group.isReflowing = false; group.reflowTarget = nil
-                let entryFocus = min(max(0, focus), max(0, groups.count-1))
-                let distance = abs(Double(i-entryFocus))
                 let presentationActive = snapshot.playing.contains(i)
                     || snapshot.highlighted.contains(i)
-                let delay: Double
-                switch entryMode {
-                case .load:
-                    // New documents rise in reading order: the first/focused
-                    // row leads and the lower rows follow from below.
-                    delay = min(0.28, Double(max(0, i-entryFocus))*0.04)
-                case .wake:
-                    // Reappearance gathers symmetrically around the focused
-                    // row so neither side snaps in before the other.
-                    delay = min(0.24, distance*0.04)
-                }
+                // Delay is part of the entry event, not a per-frame layout
+                // decision. Re-arming it while the focus/height target moves
+                // can strand a row in the pending state and then make it snap
+                // to the target after the visible spring has already played.
+                let remainingEntryDelay = max(0, group.entryDelayUntil-now)
                 let normalScale = configuration.scale && clock.isPlaying
                     && !presentationActive ? 0.97 : 1
                 if configuration.spring {
                     group.y.retarget(
                         target,
                         at: now,
-                        delay: delay,
+                        delay: remainingEntryDelay,
                         parameters: entryPositionSpring,
-                        preserveVelocity: false
+                        preserveVelocity: true
                     )
                     group.scale.retarget(
                         normalScale,
                         at: now,
-                        delay: delay,
+                        delay: remainingEntryDelay,
                         parameters: entryScaleSpring,
-                        preserveVelocity: false
+                        preserveVelocity: true
                     )
                 } else {
                     group.y.snap(target,at:now)
@@ -518,7 +560,7 @@ private enum LyricsEntryAnimation: Equatable {
                 group.isReflowing = false; group.reflowTarget = nil
                 let delay = seekCascade
                     ? min(0.6,Double(max(0,i-firstVisible))*configuration.motion.clickStagger)
-                    : (focusChanged ? stagger : 0)
+                    : (focusChanged && !seekPreview ? stagger : 0)
                 if seekCascade { group.cascadeStart = now+delay }
                 let remainingDelay = now < cascadeUntil ? max(0,group.cascadeStart-now) : delay
                 group.y.retarget(target,at:now,delay:remainingDelay,parameters:position)
@@ -532,13 +574,23 @@ private enum LyricsEntryAnimation: Equatable {
             group.y.resolve(now)
             let y = group.y.value(now)
             let distance = abs(Double(i-focus))
-            let clear = hoverInside || now < clearUntil
+            let clear = hoverInside || now < clearUntil || seekPreview
             // AMLL keeps every row in the current foreground span crisp.  The
             // highlighted set includes rows retained across a parallel voice,
             // so a completed middle row does not suddenly blur while its
             // neighbouring duet/main rows continue singing.
             let isFocus = snapshot.playing.contains(i) || snapshot.highlighted.contains(i)
-            group.blur.set(configuration.blur && !clear && !isFocus ? min(configuration.motion.maximumBlurRadius,configuration.motion.blurRadius+distance*0.45) : 0,at:now,duration:configuration.motion.blurTransition)
+            let blurTarget = configuration.blur && !clear && !isFocus
+                ? min(configuration.motion.maximumBlurRadius,configuration.motion.blurRadius+distance*0.45)
+                : 0
+            if seekPreview {
+                // A scrub preview is a temporary inspection state. Do not
+                // spend the first few frames fading old blur away; every row
+                // must be readable while the pointer is moving.
+                group.blur.snap(0)
+            } else {
+                group.blur.set(blurTarget,at:now,duration:configuration.motion.blurTransition)
+            }
             let passed = configuration.hidePassedLines && i<(gap.map { $0.anchor+1 } ?? snapshot.focus) && clock.isPlaying
             // The timeline's highlighted set is AMLL's buffered foreground
             // span, not only the currently hot rows. Retained parallel rows
@@ -633,10 +685,24 @@ private enum LyricsEntryAnimation: Equatable {
         if runningEntryAnimation != nil,
            groups.allSatisfy({ $0.y.settled(now) && $0.scale.settled(now) }) {
             runningEntryAnimation = nil
+            entryAnimationHandoffUntil = now + 0.18
+            for group in groups { group.entryDelayUntil = 0 }
         }
-        let introMarkerY = introInterlude
-            ? bounds.height*configuration.alignPosition-interaction.offset-alignOffset
-            : nil
+        if runningEntryAnimation == nil, now >= entryAnimationHandoffUntil {
+            entryAnimationHandoffUntil = 0
+        }
+        let introMarkerY: Double? = {
+            guard introInterlude else { return nil }
+            // `LyricsInterludeFrame.y` is a center coordinate. Resolve the
+            // normal focused row first, then remove the intro virtual slot
+            // from its offset. This keeps .top/.center/.bottom semantics
+            // identical for the marker and the real active line.
+            let focusOffsetWithoutIntro = offsets[focusIndex] - gapHeight
+            var normalOrigin = bounds.height*configuration.alignPosition - focusOffsetWithoutIntro
+            if configuration.alignAnchor == .center { normalOrigin -= anchorHeight/2 }
+            if configuration.alignAnchor == .bottom { normalOrigin -= anchorHeight }
+            return normalOrigin + anchorHeight/2 - interaction.offset - alignOffset
+        }()
         let interludeFrame = updateDots(
             snapshot,
             media: media,
@@ -677,29 +743,34 @@ private enum LyricsEntryAnimation: Equatable {
                 // clock is running; the animated entrance is for an actively
                 // changing track.
                 runningEntryAnimation = nil
-                for group in groups { group.scale.snap(1,at:now) }
+                for group in groups {
+                    group.entryDelayUntil = 0
+                    group.scale.snap(1,at:now)
+                }
                 return
             }
             // Groups are created below the viewport. A small initial scale
             // gives the spring rise a little depth without affecting the
             // authored text layout.
             let initialScale = configuration.scale ? 0.94 : 1
-            for group in groups {
+            for (i, group) in groups.enumerated() {
+                group.entryDelayUntil = now + min(0.28, Double(max(0, i-entryFocus))*0.04)
                 group.scale.snap(initialScale,at:now)
             }
         case .wake:
             // The focused row starts exactly at its normal target. Rows above
-            // begin below that row and rows below begin above it, producing a
-            // larger temporary line spacing that closes symmetrically.
+            // begin farther above and rows below farther below, then both sides
+            // move inward so the initial state has expanded line spacing.
             let spacing = min(180, max(20, configuration.fontSize*0.9))
             for i in groups.indices {
                 let target = origin + (offsets.indices.contains(i) ? offsets[i] : 0)
                 let distance = Double(abs(i-entryFocus))
                 let direction: Double
-                if i < entryFocus { direction = 1 }
-                else if i > entryFocus { direction = -1 }
+                if i < entryFocus { direction = -1 }
+                else if i > entryFocus { direction = 1 }
                 else { direction = 0 }
                 groups[i].y.snap(target + direction*distance*spacing,at:now)
+                groups[i].entryDelayUntil = now + min(0.24, distance*0.04)
 
                 let presentationActive = snapshot.playing.contains(i)
                     || snapshot.highlighted.contains(i)
@@ -911,15 +982,60 @@ private enum LyricsEntryAnimation: Equatable {
     }
 
     public func groupIndex(at point: CGPoint) -> Int? {
-        lastFrame?.groups.first { $0.opacity>0.01 && point.y >= $0.y && point.y < $0.y+$0.height }?.index
+        let now = previousHost ?? CACurrentMediaTime()
+        if let group = groups.first(where: { group in
+            guard group.opacity.value(now) > 0.01 else { return false }
+            let reveal = group.reveal.value(now)
+            let height = group.layout.collapsedHeight
+                + (group.layout.expandedHeight - group.layout.collapsedHeight) * reveal
+            let y = group.y.value(now)
+            return point.y >= y && point.y < y + height
+        }) {
+            return group.index
+        }
+        return lastFrame?.groups.first {
+            $0.opacity > 0.01 && point.y >= $0.y && point.y < $0.y + $0.height
+        }?.index
+    }
+    private func lyricViewportContains(_ point: CGPoint) -> Bool {
+        guard !isPointerInteractionSuppressed,
+              bounds.contains(point)
+        else { return false }
+        // SwiftUI's fullscreen mask/offset can make AppKit's `visibleRect`
+        // describe only a lower slice of this layer-backed view. The visual
+        // effect is row-gated by `pointerRegionContains`; using `bounds` here
+        // keeps the complete lyric column hittable while still rejecting
+        // points outside the hosted window and covered mini-player.
+        return true
+    }
+    private func pointerRegionContains(_ point: CGPoint) -> Bool {
+        guard lyricViewportContains(point) else { return false }
+        // The NSView is intentionally taller than the masked fullscreen
+        // viewport. Only a rendered lyric row is a hover surface; whitespace,
+        // overbleed and the area below the embedded window must stay inert.
+        return groupIndex(at: point) != nil
+    }
+    private func pointerIsInsideWindow(_ window: NSWindow) -> Bool {
+        window.isVisible
+            && !window.isMiniaturized
+            && window.frame.contains(NSEvent.mouseLocation)
     }
     public func seekTime(forGroup index: Int) -> Double? {
         guard prepared.indices.contains(index) else { return nil }
         return max(0,prepared[index].source.main.range.start+configuration.timing.seekOffset)
     }
     public override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let window, event.window === window,
+              pointerIsInsideWindow(window),
+              pointerRegionContains(point),
+              let i = groupIndex(at: point),
+              let time = seekTime(forGroup:i)
+        else {
+            setPointerInside(false)
+            return
+        }
         setPointerInside(true)
-        guard let i = groupIndex(at:convert(event.locationInWindow,from:nil)), let time = seekTime(forGroup:i) else { return }
         interaction.resume(); onSeek?(time); wake()
         // A click can move focus to the lyric view without delivering the
         // matching tracking-area exit when fullscreen changes its host. Read
@@ -932,6 +1048,10 @@ private enum LyricsEntryAnimation: Equatable {
         reconcilePointerTracking()
     }
     public override func scrollWheel(with event: NSEvent) {
+        guard lyricViewportContains(convert(event.locationInWindow, from: nil)) else {
+            setPointerInside(false)
+            return
+        }
         scroll(by:-event.scrollingDeltaY*(event.hasPreciseScrollingDeltas ? 1 : 50),hostTime:CACurrentMediaTime())
     }
     public func scroll(by delta: Double, hostTime: Double = CACurrentMediaTime()) {
@@ -947,38 +1067,87 @@ private enum LyricsEntryAnimation: Equatable {
     }
     public override func updateTrackingAreas() {
         super.updateTrackingAreas(); trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect:.zero,options:[.activeAlways,.inVisibleRect,.mouseEnteredAndExited,.mouseMoved],owner:self))
+        // Do not use `.inVisibleRect`: SwiftUI's fullscreen mask/offset can
+        // make AppKit's visibleRect cover only a lower slice of this host.
+        // Row/window checks below still keep the visual hover effect strict.
+        addTrackingArea(NSTrackingArea(rect:bounds,options:[.activeInActiveApp,.mouseEnteredAndExited,.mouseMoved],owner:self))
     }
     public func setPointerInside(_ inside: Bool, hostTime: Double = CACurrentMediaTime()) {
-        hoverInside = inside
-        if !inside {
+        let nextInside = inside && !isPointerInteractionSuppressed
+        hoverInside = nextInside
+        if !nextInside {
             clearUntil = hostTime+configuration.motion.pointerExitDelay
             hoveredIndex = nil
             interaction.pointerExited(now: hostTime)
         }
         wake()
     }
-    public override func mouseEntered(with event: NSEvent) { setPointerInside(true); mouseMoved(with:event) }
+    public func setPointerInteractionSuppressed(_ suppressed: Bool, hostTime: Double = CACurrentMediaTime()) {
+        guard isPointerInteractionSuppressed != suppressed else {
+            if suppressed { setPointerInside(false, hostTime: hostTime) }
+            return
+        }
+        isPointerInteractionSuppressed = suppressed
+        if suppressed {
+            setPointerInside(false, hostTime: hostTime)
+        } else {
+            // The overlay may disappear while the mouse is already over a
+            // lyric. Reconcile from the authoritative screen position instead
+            // of waiting for a new mouse-moved event.
+            reconcilePointerTracking(hostTime: hostTime)
+        }
+    }
+    public override func hitTest(_ point: NSPoint) -> NSView? {
+        // Scrolling must remain possible in the whitespace around the last
+        // visible row. Hover/click highlighting remains row-gated above, but
+        // using that gate for hit testing strands the surface at the scroll
+        // boundary when the pointer is no longer over a stale frame row.
+        guard lyricViewportContains(point) else { return nil }
+        // LyricsView renders into CALayers and has no interactive NSView
+        // descendants. Returning self avoids another AppKit visibleRect
+        // intersection after the explicit bounds gate above.
+        return self
+    }
+    public override func mouseEntered(with event: NSEvent) { mouseMoved(with:event) }
     public override func mouseExited(with event: NSEvent) { setPointerInside(false) }
-    public override func mouseMoved(with event: NSEvent) { setPointerInside(true); hoveredIndex = groupIndex(at:convert(event.locationInWindow,from:nil)) }
+    public override func mouseMoved(with event: NSEvent) {
+        guard let window, event.window === window, pointerIsInsideWindow(window) else {
+            setPointerInside(false)
+            return
+        }
+        let point = convert(event.locationInWindow, from: nil)
+        guard pointerRegionContains(point) else {
+            setPointerInside(false)
+            return
+        }
+        setPointerInside(true)
+        hoveredIndex = groupIndex(at: point)
+    }
     private func reconcilePointerTracking(hostTime: Double = CACurrentMediaTime()) {
         // Offscreen/unit-test surfaces have no window-backed pointer to query;
         // leave their explicitly supplied interaction state untouched.
         guard let window else { return }
+        guard !isPointerInteractionSuppressed,
+              pointerIsInsideWindow(window)
+        else {
+            if hoverInside { setPointerInside(false, hostTime: hostTime) }
+            return
+        }
         // `NSEvent.mouseLocation` is the current screen position, whereas
         // `mouseLocationOutsideOfEventStream` may remain at the last event
         // while a fullscreen host is being reparented.
         let pointInWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
         let point = convert(pointInWindow, from: nil)
-        guard hoverInside else { return }
-        if !bounds.contains(point) {
-            setPointerInside(false, hostTime: hostTime)
-        } else {
+        if pointerRegionContains(point) {
+            if !hoverInside { setPointerInside(true, hostTime: hostTime) }
             hoveredIndex = groupIndex(at: point)
+        } else if hoverInside {
+            setPointerInside(false, hostTime: hostTime)
         }
     }
     public override func menu(for event: NSEvent) -> NSMenu? {
-        guard let i = groupIndex(at:convert(event.locationInWindow,from:nil)) else { return nil }
+        let point = convert(event.locationInWindow, from: nil)
+        guard pointerRegionContains(point), let i = groupIndex(at: point) else { return nil }
         let menu = NSMenu(); let item = menu.addItem(withTitle:"Copy lyrics",action:#selector(copyLyric(_:)),keyEquivalent:""); item.target = self; item.tag = i
         return menu
     }

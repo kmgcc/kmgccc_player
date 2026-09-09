@@ -86,8 +86,12 @@ final class NativeLyricsSurface: NSObject {
             && view.document != nil
             && lastTrackID == trackID
             && lastTTML == rawText
+        let isSameTrackReplay = forceLyricsReload
+            && sameValidDocument
+            && self.currentTime > 1.0
+            && nextTime < 0.2
         let forcedSeek = forceLyricsReload && abs(nextTime - self.currentTime) > 0.05
-        let shouldReload = rawChanged || (forceLyricsReload && !sameValidDocument)
+        let shouldReload = rawChanged || isSameTrackReplay || (forceLyricsReload && !sameValidDocument)
         guard shouldReload else {
             // Repeated force-refresh callbacks are common during a track/mode
             // transition. Keep the existing document (and its interlude
@@ -161,14 +165,18 @@ final class NativeLyricsSurface: NSObject {
         )
     }
 
-    func setCurrentTime(_ time: Double, force: Bool = false) {
+    func setCurrentTime(
+        _ time: Double,
+        force: Bool = false,
+        motion: LyricsSeekMotion = .immediate
+    ) {
         guard time.isFinite else { return }
         guard force || abs(time - currentTime) >= 0.001 || pendingClickSeek else { return }
         // A forced update is used for an explicit seek/reveal (for example
         // when the fullscreen surface is brought back on screen). Preserve
         // that intent all the way through the native clock so a stale
         // low-frequency playback sample cannot be mistaken for the seek.
-        synchronize(time: time, playing: isPlaying, seek: force, motion: .immediate)
+        synchronize(time: time, playing: isPlaying, seek: force, motion: motion)
     }
 
     func setPlaying(_ playing: Bool, force: Bool = false) {
@@ -185,10 +193,10 @@ final class NativeLyricsSurface: NSObject {
     }
 
     func setMouseInteractionSuppressed(_ suppressed: Bool) {
-        // Native surfaces do not need a JavaScript pointer gate. Suppression
-        // still has the same visible contract: a covered surface loses hover
-        // state and returns to its normal blurred presentation.
-        if suppressed { view.setPointerInside(false) }
+        // Keep the gate in the native view itself. Clearing hover once is not
+        // sufficient: the next mouse-moved event would otherwise make a lyric
+        // surface under the mini-player clear its blur again.
+        view.setPointerInteractionSuppressed(suppressed)
     }
 
     func releaseRenderingResources() {
@@ -310,11 +318,15 @@ final class NativeLyricsSurfaceManager {
         }
     }
 
-    func updatePlaybackTime(_ time: Double, force: Bool = false) {
+    func updatePlaybackTime(
+        _ time: Double,
+        force: Bool = false,
+        motion: LyricsSeekMotion = .immediate
+    ) {
         guard time.isFinite else { return }
         snapshot.time = max(0, time)
         for (role, surface) in surfaces where role.receivesSharedPlaybackSnapshot {
-            surface.setCurrentTime(snapshot.time, force: force)
+            surface.setCurrentTime(snapshot.time, force: force, motion: motion)
         }
     }
 
@@ -487,16 +499,9 @@ extension NativeLyricsSurfaceManager {
             AppSettings.lyricSpringBounceRange.lowerBound,
             min(AppSettings.lyricSpringBounceRange.upperBound, settings.bounce)
         )
-        if abs(duration - AppSettings.defaultLyricSpringDuration) < 0.0001,
-           abs(bounce - AppSettings.defaultLyricSpringBounce) < 0.0001 {
-            // nil keeps NativeLyrics' focus-interval adaptive position spring.
-            return nil
-        }
         return .positionOverride(
             duration: duration,
-            bounce: bounce,
-            referenceDuration: AppSettings.defaultLyricSpringDuration,
-            referenceBounce: AppSettings.defaultLyricSpringBounce
+            bounce: bounce
         )
     }
 }

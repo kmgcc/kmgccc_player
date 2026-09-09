@@ -125,6 +125,21 @@ final class LyricsPlaybackPipeline {
         let currentTime = presentation.lyricsCurrentTime
         let seekRevision = playbackCoordinator?.lyricsSeekRevision
         let explicitSeek = seekRevision != nil && seekRevision != lastSeekRevision
+        let restarted = (lastSyncedTime ?? 0) > 1.0
+            && currentTime < 0.2
+            && presentation.effectiveLyricsIsPlaying
+        if restarted {
+            // A same-track replay has no content-state change, but it is still
+            // a new lyric entrance. Reinstall the document so NativeLyrics can
+            // start its bottom-to-target spring instead of treating the reset
+            // as an immediate seek on the settled stack.
+            applyPresentation(
+                presentation,
+                reason: "playback restarted",
+                forceLyricsReload: true
+            )
+            return
+        }
         if explicitSeek || lastSyncedTime == nil || abs((lastSyncedTime ?? 0) - currentTime) >= 0.01 {
             lyricsVM.syncTime(currentTime, force: explicitSeek)
         }

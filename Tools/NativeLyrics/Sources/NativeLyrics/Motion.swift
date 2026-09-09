@@ -15,15 +15,33 @@ public struct SpringParameters: Equatable, Sendable {
     public static let position = SpringParameters(mass:0.9,damping:15,stiffness:90)
     public static let scale = SpringParameters(mass:2,damping:25,stiffness:100)
     public static let background = SpringParameters(mass:1,damping:20,stiffness:50)
+    /// A seek preview follows the same position solver family, but is always
+    /// critically damped. Scrubbing must accelerate/decelerate naturally
+    /// without overshooting the lyric target on every pointer sample.
+    public static func nonBouncyPosition(from parameters: Self = .position) -> Self {
+        let mass = max(0.01, parameters.mass.isFinite ? parameters.mass : Self.position.mass)
+        let stiffness = max(0.01, parameters.stiffness.isFinite ? parameters.stiffness : Self.position.stiffness)
+        return Self(
+            mass: mass,
+            damping: 2 * sqrt(mass * stiffness),
+            stiffness: stiffness,
+            soft: true
+        )
+    }
     /// Maps the player's duration/bounce controls relative to the native
     /// position spring while preserving its damping ratio before bounce
-    /// shaping. The host keeps its default pair on the nil/no-override path so
-    /// normal focus changes can continue using interval-adaptive parameters.
+    /// shaping. The default pair is mapped explicitly too, so the value shown
+    /// in settings and the value used by the renderer cannot take different
+    /// solver paths.
     public static func positionOverride(
         duration: Double,
         bounce: Double,
-        referenceDuration: Double = 0.65,
-        referenceBounce: Double = 0.25
+        // Keep these solver reference values aligned with the public AMLL
+        // implementation. They are not the settings defaults: the public
+        // defaults may change independently, while the control mapping must
+        // continue to produce the same physical curve for the same values.
+        referenceDuration: Double = 0.5,
+        referenceBounce: Double = 0.3
     ) -> Self {
         let resolvedDuration = min(1.2,max(0.3,duration.isFinite ? duration : referenceDuration))
         let resolvedBounce = min(3.25,max(-0.25,bounce.isFinite ? bounce : referenceBounce))
@@ -34,7 +52,11 @@ public struct SpringParameters: Equatable, Sendable {
         let bounceOffset = resolvedBounce-referenceBounce
         if bounceOffset > 0 {
             let primary = min(1,bounceOffset)
-            damping *= 1-pow(primary,3)*0.55
+            // AMLL compresses the primary bounce range quadratically. A cubic
+            // here made the new 0.55/0.75 default almost critically damped,
+            // which looked like a plain translation and removed the settle
+            // back that the settings promise.
+            damping *= 1-pow(primary,2)*0.55
             let extraRange = max(0.001,3.25-referenceBounce-1)
             let extra = min(1,max(0,bounceOffset-1)/extraRange)
             damping *= 1-extra*0.35

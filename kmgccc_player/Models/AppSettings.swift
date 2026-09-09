@@ -679,31 +679,47 @@ public final class AppSettings {
         static let springEnabled = "amllLyricsSpringEnabled"
         static let springDuration = "amllLyricsSpringDuration"
         static let springBounce = "amllLyricsSpringBounce"
-        static let springDefaultsMigration = "nativeLyricsSpringDefaultsMigrationV1"
+        // This migration is intentionally keyed separately from the earlier
+        // NativeLyrics migration. Its only baseline is the public main-build
+        // default, never a default introduced by a NativeLyrics build.
+        static let springDefaultsMigration = "lyricSpringDefaultsMigrationV2"
     }
 
     static let lyricSpringDurationRange: ClosedRange<Double> = 0.30...1.20
     static let lyricSpringBounceRange: ClosedRange<Double> = -0.25...3.25
-    static let defaultLyricSpringDuration: Double = 0.65
-    static let defaultLyricSpringBounce: Double = 0.25
+    static let defaultLyricSpringDuration: Double = 0.55
+    static let defaultLyricSpringBounce: Double = 0.75
+    private static let publicReleaseLyricSpringDuration: Double = 0.4
+    private static let publicReleaseLyricSpringBounce: Double = 0.75
+    /// The settings UI shows two decimal places. Keep an old persisted slider
+    /// sample that renders as the default from taking a different solver path
+    /// than an explicitly selected default. This is display-value
+    /// canonicalization, not migration from any NativeLyrics-era defaults.
+    private static let lyricSpringDisplayDefaultTolerance = 0.005
 
     private static func clampLyricSpringDuration(_ value: Double) -> Double {
         guard value.isFinite else { return defaultLyricSpringDuration }
-        return min(max(value, lyricSpringDurationRange.lowerBound), lyricSpringDurationRange.upperBound)
+        let clamped = min(max(value, lyricSpringDurationRange.lowerBound), lyricSpringDurationRange.upperBound)
+        return abs(clamped - defaultLyricSpringDuration) < lyricSpringDisplayDefaultTolerance
+            ? defaultLyricSpringDuration
+            : clamped
     }
 
     private static func clampLyricSpringBounce(_ value: Double) -> Double {
         guard value.isFinite else { return defaultLyricSpringBounce }
-        return min(max(value, lyricSpringBounceRange.lowerBound), lyricSpringBounceRange.upperBound)
+        let clamped = min(max(value, lyricSpringBounceRange.lowerBound), lyricSpringBounceRange.upperBound)
+        return abs(clamped - defaultLyricSpringBounce) < lyricSpringDisplayDefaultTolerance
+            ? defaultLyricSpringBounce
+            : clamped
     }
 
-    private func migrateLegacyLyricSpringDefaults() {
+    private func migratePublicReleaseLyricSpringDefaults() {
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: AMLLKeys.springDefaultsMigration) else { return }
         if let duration = defaults.object(forKey: AMLLKeys.springDuration) as? NSNumber,
            let bounce = defaults.object(forKey: AMLLKeys.springBounce) as? NSNumber,
-           abs(duration.doubleValue - 0.4) < 0.0001,
-           abs(bounce.doubleValue - 0.75) < 0.0001 {
+           abs(duration.doubleValue - Self.publicReleaseLyricSpringDuration) < 0.0001,
+           abs(bounce.doubleValue - Self.publicReleaseLyricSpringBounce) < 0.0001 {
             defaults.set(Self.defaultLyricSpringDuration, forKey: AMLLKeys.springDuration)
             defaults.set(Self.defaultLyricSpringBounce, forKey: AMLLKeys.springBounce)
         }
@@ -1733,7 +1749,7 @@ public final class AppSettings {
         }
 
         migrateLegacyLyricsTypographyDefaults()
-        migrateLegacyLyricSpringDefaults()
+        migratePublicReleaseLyricSpringDefaults()
         seedDefaultFullscreenLyricsTypographyProfilesIfNeeded()
 
         // A missing value means this is a new install (or an older install

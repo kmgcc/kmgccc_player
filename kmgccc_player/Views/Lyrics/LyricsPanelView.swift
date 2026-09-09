@@ -217,7 +217,7 @@ struct LyricsPanelView: View {
 
     private func setupSeekCallback() {
         lyricsVM.onSeekRequest = { seconds in
-            playbackCoordinator.seek(to: seconds)
+            playbackCoordinator.seekAndResumeIfNeeded(to: seconds)
         }
     }
 

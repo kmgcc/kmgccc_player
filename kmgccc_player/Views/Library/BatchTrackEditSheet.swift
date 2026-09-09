@@ -1354,7 +1354,7 @@ struct BatchTrackEditSheet: View {
         uiState.lyricsPanelSuppressedByModal = true
         LyricsSurfaceManager.shared.activate(role: .batchPreview)
         let seekHandler: (Double) -> Void = { [playbackCoordinator] seconds in
-            playbackCoordinator.seek(to: seconds)
+            playbackCoordinator.seekAndResumeIfNeeded(to: seconds)
         }
         NativeLyricsSurfaceManager.shared.setSeekHandler(seekHandler, for: .batchPreview)
 

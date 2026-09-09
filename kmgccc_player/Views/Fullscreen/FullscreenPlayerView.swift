@@ -1786,8 +1786,12 @@ struct FullscreenPlayerView: View {
     }
 
     private func setPointerOverMiniPlayerOcclusion(_ isOccluded: Bool, reason: String) {
-        guard isPointerOverMiniPlayerOcclusion != isOccluded else { return }
-        isPointerOverMiniPlayerOcclusion = isOccluded
+        if isPointerOverMiniPlayerOcclusion != isOccluded {
+            isPointerOverMiniPlayerOcclusion = isOccluded
+        }
+        // Apply even when the state is unchanged. A native surface can be
+        // created after the monitor already observed the pointer, so a
+        // transition-only callback would leave that new surface ungated.
         applyFullscreenLyricsMouseGate(reason: reason)
     }
 
@@ -3094,7 +3098,7 @@ struct FullscreenPlayerView: View {
 
     private func setupSeekCallback() {
         let seekHandler: (Double) -> Void = { seconds in
-            playbackCoordinator.seek(to: seconds)
+            playbackCoordinator.seekAndResumeIfNeeded(to: seconds)
         }
         if LyricsSurfaceManager.rendererBackend == .native {
             NativeLyricsSurfaceManager.shared.setSeekHandler(seekHandler, for: .fullscreen)
@@ -4689,6 +4693,10 @@ struct FullscreenPlayerView: View {
         manager.existingSurface(for: .fullscreenCoverBlurHighlight)?.setRenderingActive(
             shouldRenderLyrics && manager.isActive(.fullscreenCoverBlurHighlight)
         )
+        // Re-apply the occlusion gate after activation/materialization. The
+        // mini-player may already be under the pointer when the surface is
+        // attached to the embedded fullscreen host.
+        applyFullscreenLyricsMouseGate(reason: "native rendering state sync")
     }
 
     private func pushFullscreenLyricsConfig(
@@ -5832,9 +5840,10 @@ private struct PanoramicArtworkVolumeScrollArea: NSViewRepresentable {
         }
 
         private func handle(_ event: NSEvent, in view: PassthroughView) {
+            let point = view.convert(event.locationInWindow, from: nil)
             guard isEnabled,
                   event.window === view.window,
-                  view.bounds.contains(view.convert(event.locationInWindow, from: nil))
+                  Self.centralInteractionRect(in: view.bounds).contains(point)
             else {
                 return
             }
@@ -5975,8 +5984,8 @@ private struct PanoramicArtworkVolumeScrollArea: NSViewRepresentable {
 
         private func apply(
             adjustment: Double,
-            performsHapticFeedback: Bool
-        ) {
+                performsHapticFeedback: Bool
+            ) {
             let currentVolume = volume.wrappedValue
             let proposedVolume = VolumeControlBehavior.clamped(currentVolume + adjustment)
             guard abs(proposedVolume - currentVolume) > 0.0001 else { return }
@@ -5985,6 +5994,21 @@ private struct PanoramicArtworkVolumeScrollArea: NSViewRepresentable {
             if performsHapticFeedback {
                 VolumeControlBehavior.performDefaultSnapFeedback()
             }
+        }
+
+        /// Keep wheel volume control inside the visual center of the cover.
+        /// The AppKit monitor is intentionally pass-through, so using the
+        /// whole artwork frame here made a wheel gesture that finished beside
+        /// the lyrics or over another control still adjust volume.
+        private static func centralInteractionRect(in bounds: CGRect) -> CGRect {
+            let width = max(1, bounds.width * 0.68)
+            let height = max(1, bounds.height * 0.68)
+            return CGRect(
+                x: bounds.midX - width * 0.5,
+                y: bounds.midY - height * 0.5,
+                width: width,
+                height: height
+            )
         }
     }
 }

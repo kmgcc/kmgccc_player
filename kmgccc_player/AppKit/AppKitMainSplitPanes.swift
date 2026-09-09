@@ -991,7 +991,7 @@ struct LyricsFlatDriverView: View {
     private func setupSeekCallback() {
         let coordinator = playbackCoordinator
         lyricsVM.onSeekRequest = { seconds in
-            coordinator.seek(to: seconds)
+            coordinator.seekAndResumeIfNeeded(to: seconds)
         }
     }
 

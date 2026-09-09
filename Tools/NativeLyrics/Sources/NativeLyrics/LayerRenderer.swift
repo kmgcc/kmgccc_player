@@ -301,6 +301,7 @@ final class LineLayers {
         let visualActive = keepHighlight || highlightHold
         let highlightLifetime = preserveHighlight ? 1 : lifetime
         let smooth = layout.isDynamic && !config.lineTimingOnly && config.highlightMode == .smooth
+        let discrete = layout.isDynamic && !config.lineTimingOnly && config.highlightMode == .discrete
         let renderLayer = config.effectiveRenderLayer
         let highlightOnly = renderLayer == .highlight
         let baseOnly = renderLayer == .base
@@ -326,14 +327,21 @@ final class LineLayers {
         renderedCursor = maskCursor
         for word in words {
             var wordDark = dark, wordBright = bright, wordLifetime = highlightLifetime
-            if layout.isDynamic && !config.lineTimingOnly && config.highlightMode == .discrete {
+            if discrete {
                 let range = word.placement.atom.word.range
                 let duration = max(0.3,min(2,range.duration))
                 let progress = Curves.sampled((media-range.start)/duration,count:18) { log1p($0*2.2)/log1p(2.2) }
                 let inactive = background ? 0.4 : 0.28
                 wordDark = inactive+(1-inactive)*progress*highlightLifetime; wordBright = wordDark; wordLifetime = progress*highlightLifetime
             }
-            word.update(now:now,media:media,cursor:maskCursor,fade:fade,dark:wordDark,bright:wordBright,config:config,floatTime:layout.isDynamic && !config.lineTimingOnly ? floatTime : -1e9,background:background,lifetime:wordLifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible,lineTimed:!layout.isDynamic && !config.lineTimingOnly)
+            // Discrete mode is an opacity transition per word. The continuous
+            // line cursor must not remain active in fullscreen, otherwise the
+            // opaque base/highlight channels still reveal a left-to-right
+            // sweep even though the setting says one word at a time.
+            let wordCursor = discrete
+                ? word.placement.rect.maxX + fade + 1
+                : maskCursor
+            word.update(now:now,media:media,cursor:wordCursor,fade:fade,dark:wordDark,bright:wordBright,config:config,floatTime:discrete ? -1e9 : (layout.isDynamic && !config.lineTimingOnly ? floatTime : -1e9),background:background,lifetime:wordLifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible,lineTimed:!layout.isDynamic && !config.lineTimingOnly)
             for glyph in word.glyphs { glyph.updateBlend(active:keepHighlight,config:config) }
         }
         for subline in sublines {
@@ -360,6 +368,9 @@ final class GroupLayers {
     var y: SpringTrack
     var scale = SpringTrack(0.97,.scale)
     var reveal = Tween(0)
+    /// Absolute host time through which the current entry delay is owned by
+    /// the entry animation. It is not recomputed from moving lyric targets.
+    var entryDelayUntil = 0.0
     var cascadeStart = 0.0
     var opacity = Tween(1), blur = Tween(0)
     var alpha = 0.0

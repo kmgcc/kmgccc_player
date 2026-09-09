@@ -8,6 +8,7 @@
 
 import CryptoKit
 import Foundation
+import NativeLyrics
 import SwiftUI
 import WebKit
 
@@ -53,6 +54,11 @@ final class LyricsSurfaceManager {
     private var stores: [LyricsSurfaceRole: LyricsWebViewStore] = [:]
     private var activeRoles: Set<LyricsSurfaceRole> = []
     private var currentPlaybackSnapshot: PlaybackSnapshot = .empty
+    /// Progress scrubbing owns the lyric clock until the gesture ends. The
+    /// audio transport continues to publish its real position, but those
+    /// low-frequency samples must not overwrite the position under the
+    /// pointer or the preview would visibly snap back while dragging.
+    private var isPlaybackTimePreviewActive = false
     private var surfaceSnapshots: [LyricsSurfaceRole: SurfaceSnapshot] = [:]
     private var baseThemePalette: ThemePalette?
 
@@ -749,6 +755,7 @@ final class LyricsSurfaceManager {
 
     func updatePlaybackTime(_ currentTime: Double, force: Bool = false) {
         guard currentTime.isFinite else { return }
+        guard !isPlaybackTimePreviewActive else { return }
         currentPlaybackSnapshot.currentTime = currentTime
         if Self.rendererBackend == .native {
             NativeLyricsSurfaceManager.shared.updatePlaybackTime(currentTime, force: force)
@@ -757,9 +764,63 @@ final class LyricsSurfaceManager {
 
     func updatePlayingState(_ isPlaying: Bool) {
         currentPlaybackSnapshot.isPlaying = isPlaying
+        guard !isPlaybackTimePreviewActive else { return }
         if Self.rendererBackend == .native {
             NativeLyricsSurfaceManager.shared.updatePlayingState(isPlaying)
         }
+    }
+
+    /// Begin a seek preview without moving the audio transport. The native
+    /// renderer is paused at the preview position so the real playback clock
+    /// cannot run ahead between gesture samples.
+    func beginPlaybackTimePreview(at time: Double, isPlaying: Bool) {
+        guard time.isFinite else { return }
+        isPlaybackTimePreviewActive = true
+        currentPlaybackSnapshot.currentTime = max(0, time)
+        currentPlaybackSnapshot.isPlaying = isPlaying
+        guard Self.rendererBackend == .native else { return }
+        NativeLyricsSurfaceManager.shared.updatePlayingState(false)
+        NativeLyricsSurfaceManager.shared.updatePlaybackTime(
+            max(0, time),
+            force: true,
+            motion: .preview
+        )
+    }
+
+    /// Update all shared native lyric surfaces at the pointer position. This
+    /// intentionally uses a forced clock sync so small drag deltas still
+    /// update line focus and word masks immediately.
+    func updatePlaybackTimePreview(_ time: Double) {
+        guard time.isFinite else { return }
+        guard isPlaybackTimePreviewActive else {
+            updatePlaybackTime(time, force: true)
+            return
+        }
+        let normalized = max(0, time)
+        currentPlaybackSnapshot.currentTime = normalized
+        guard Self.rendererBackend == .native else { return }
+        NativeLyricsSurfaceManager.shared.updatePlaybackTime(
+            normalized,
+            force: true,
+            motion: .preview
+        )
+    }
+
+    /// Commit the preview clock after the audio seek has been requested and
+    /// restore the real playing state for the next transport tick.
+    func endPlaybackTimePreview(at time: Double, isPlaying: Bool) {
+        guard time.isFinite else { return }
+        let normalized = max(0, time)
+        isPlaybackTimePreviewActive = false
+        currentPlaybackSnapshot.currentTime = normalized
+        currentPlaybackSnapshot.isPlaying = isPlaying
+        guard Self.rendererBackend == .native else { return }
+        NativeLyricsSurfaceManager.shared.updatePlaybackTime(
+            normalized,
+            force: true,
+            motion: .preview
+        )
+        NativeLyricsSurfaceManager.shared.updatePlayingState(isPlaying)
     }
 
     func updateSurfaceConfigSnapshot(

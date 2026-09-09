@@ -134,7 +134,7 @@ final class BehaviorRegressionTests: XCTestCase {
         let firstCenter = intro.groups[0].y + intro.groups[0].height / 2
         XCTAssertEqual(
             firstCenter,
-            activeAnchor + view.configuration.fontSize * 1.1,
+            dots.y + intro.groups[0].height,
             accuracy: 0.001
         )
 
@@ -143,6 +143,50 @@ final class BehaviorRegressionTests: XCTestCase {
         let playingCenter = playing.groups[0].y + playing.groups[0].height / 2
         XCTAssertEqual(playingCenter, activeAnchor, accuracy: 0.001)
         XCTAssertLessThan(playing.groups[0].y, intro.groups[0].y)
+    }
+
+    @MainActor func testIntroInterludeMarkerUsesTheFocusedRowCenterForEveryAnchor() throws {
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='8s' end='10s'>First</p><p begin='15s' end='17s'>Second</p></div></body></tt>".utf8)
+        for anchor in [LyricAlignment.top, .center, .bottom] {
+            let view = LyricsView(frame: NSRect(x: 0, y: 0, width: 760, height: 720))
+            view.automaticDisplayUpdates = false
+            view.configuration.timing.enabled = false
+            view.configuration.spring = false
+            view.configuration.blur = false
+            view.configuration.alignAnchor = anchor
+            try view.load(ttml: data, time: 0, playing: true, hostTime: 0)
+
+            let frame = view.render(at: 2)
+            let dots = try XCTUnwrap(frame.interlude)
+            let activeAnchor = view.bounds.height * view.configuration.alignPosition
+                - view.configuration.alignOffset
+            let first = frame.groups[0]
+            let expectedMarker = switch anchor {
+            case .top: activeAnchor + first.height / 2
+            case .center: activeAnchor
+            case .bottom: activeAnchor - first.height / 2
+            }
+            XCTAssertEqual(dots.y, expectedMarker, accuracy: 0.001)
+            XCTAssertEqual(first.y + first.height / 2, dots.y + first.height, accuracy: 0.001)
+        }
+    }
+
+    @MainActor func testLoadEntryContinuesIndependentlyWhenIntroInterludeIsVisible() throws {
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='8s' end='10s'>First</p><p begin='15s' end='17s'>Second</p></div></body></tt>".utf8)
+        let view = LyricsView(frame: NSRect(x: 0, y: 0, width: 760, height: 720))
+        view.automaticDisplayUpdates = false
+        view.configuration.timing.enabled = false
+        view.configuration.blur = false
+        try view.load(ttml: data, time: 0, playing: true, hostTime: 0)
+
+        let start = view.render(at: 0)
+        let moving = view.render(at: 0.15)
+        let later = view.render(at: 0.6)
+        XCTAssertNotNil(start.interlude)
+        XCTAssertNotNil(later.interlude)
+        XCTAssertLessThan(moving.groups[0].y, start.groups[0].y)
+        XCTAssertLessThan(later.groups[0].y, moving.groups[0].y)
+        XCTAssertGreaterThan(later.interlude?.opacity ?? 0, start.interlude?.opacity ?? 0)
     }
 
     @MainActor func testLoadAndWakeEntryAnimationsUseSeparateStates() throws {
@@ -162,12 +206,39 @@ final class BehaviorRegressionTests: XCTestCase {
         view.prepareWakeEntryAnimation()
         let gathered = view.render(at: 5.01)
         XCTAssertEqual(gathered.groups[0].y, settled.groups[0].y, accuracy: 0.001)
-        XCTAssertLessThan(gathered.groups[1].y, settled.groups[1].y)
-        XCTAssertLessThan(gathered.groups[2].y, settled.groups[2].y)
+        XCTAssertGreaterThan(gathered.groups[1].y, settled.groups[1].y)
+        XCTAssertGreaterThan(gathered.groups[2].y, settled.groups[2].y)
 
         let closing = view.render(at: 5.35)
-        XCTAssertGreaterThan(closing.groups[1].y, gathered.groups[1].y)
-        XCTAssertGreaterThan(closing.groups[2].y, gathered.groups[2].y)
+        XCTAssertLessThan(closing.groups[1].y, gathered.groups[1].y)
+        XCTAssertLessThan(closing.groups[2].y, gathered.groups[2].y)
+    }
+
+    @MainActor func testLoadEntryUsesUnderdampedPositionAndSurvivesInitialRebase() throws {
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='20s'>First</p><p begin='20s' end='40s'>Second</p></div></body></tt>".utf8)
+
+        let animated = LyricsView(frame: NSRect(x: 0, y: 0, width: 760, height: 720))
+        animated.automaticDisplayUpdates = false
+        animated.configuration.timing.enabled = false
+        animated.configuration.blur = false
+        try animated.load(ttml: data, time: 0, playing: true, hostTime: 0)
+
+        _ = animated.render(at: 0)
+        let entrySamples = stride(from: 0.15, through: 1.5, by: 0.05).map {
+            animated.render(at: $0).groups[0].y
+        }
+
+        let reference = LyricsView(frame: NSRect(x: 0, y: 0, width: 760, height: 720))
+        reference.automaticDisplayUpdates = false
+        reference.configuration.timing.enabled = false
+        reference.configuration.blur = false
+        try reference.load(ttml: data, time: 0, playing: true, hostTime: 0)
+        let targetY = reference.render(at: 5).groups[0].y
+        XCTAssertLessThan(entrySamples.min() ?? .infinity, targetY - 0.01)
+
+        animated.synchronize(time: 0, playing: true, seek: true, motion: .immediate, hostTime: 0)
+        let afterInitialRebase = animated.render(at: 0.15).groups[0].y
+        XCTAssertGreaterThan(afterInitialRebase, targetY + 0.01)
     }
 
     func testLineTimedWindowDoesNotDoubleApplyInactiveOpacity() throws {
@@ -188,6 +259,29 @@ final class BehaviorRegressionTests: XCTestCase {
         XCTAssertEqual(glyph.highlightOpacity,0,accuracy:0.0001)
     }
 
+    func testDiscreteHighlightPinsEachWordToAUniformMask() throws {
+        let words = [
+            LyricWord(id: "first", text: "First", range: .init(0, 1)),
+            LyricWord(id: "second", text: "Second", range: .init(1, 2))
+        ]
+        let line = LyricLine(id: "line", range: .init(0, 2), words: words, isWordTimed: true)
+        var config = LyricsConfiguration()
+        config.highlightMode = .discrete
+        config.fullscreenLyricDodgeMode = true
+        let prepared = PreparedGroup(source: .init(main: line), main: line, background: nil)
+        let layout = TextLayoutEngine().group(prepared, width: 760, config: config, dynamic: true, hasDuet: false).main
+        let layers = LineLayers(layout, cache: GlyphCache(), scale: 2, config: config, previous: nil, now: 0)
+
+        layers.update(now: 0.35, media: 0.35, floatTime: 0.35, active: true, alpha: 1, background: false, config: config)
+
+        // A discrete word is composed with one opacity value. Its gradient
+        // boundary is pushed beyond the glyph instead of sweeping through it.
+        for word in layers.words {
+            let glyph = try XCTUnwrap(word.glyphs.first)
+            XCTAssertGreaterThan(glyph.gradient.endPoint.x, 0.99)
+        }
+    }
+
     @MainActor func testFullscreenLineTimedRowsStayOpaqueAndCanBlur() throws {
         let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='2s' end='4s'>First</p><p begin='6s' end='8s'>Second</p></div></body></tt>".utf8)
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
@@ -203,18 +297,22 @@ final class BehaviorRegressionTests: XCTestCase {
         XCTAssertGreaterThan(frame.groups[1].blur,0)
     }
 
-    @MainActor func testScrubCancelsCascadeAndMovesStackImmediately() throws {
+    @MainActor func testScrubPreviewScrollsTheWholeStackWithoutBlur() throws {
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
         view.configuration.timing.enabled = false
         try view.load(ttml:fixture,hostTime:0)
-        view.synchronize(time:9.1,playing:false,seek:true,motion:.cascade,hostTime:1)
+        view.synchronize(time:9.1,playing:false,seek:true,motion:.preview,hostTime:1)
         let start = view.render(at:1)
         let moving = view.render(at:1.02)
         XCTAssertLessThan(moving.groups[0].y,start.groups[0].y)
-        XCTAssertEqual(moving.groups[3].y,start.groups[3].y,accuracy:0.001)
-        view.synchronize(time:3.1,playing:false,seek:true,hostTime:1.03)
-        let scrub = view.render(at:1.03), later = view.render(at:2)
-        for i in scrub.groups.indices { XCTAssertEqual(scrub.groups[i].y,later.groups[i].y,accuracy:0.001) }
+        XCTAssertNotEqual(moving.groups[3].y,start.groups[3].y,accuracy:0.001)
+        XCTAssertTrue(moving.groups.allSatisfy { $0.blur < 0.001 })
+        view.synchronize(time:3.1,playing:false,seek:true,motion:.preview,hostTime:1.03)
+        let scrub = view.render(at:1.03), later = view.render(at:1.08)
+        for i in scrub.groups.indices {
+            XCTAssertNotEqual(scrub.groups[i].y,later.groups[i].y,accuracy:0.001)
+            XCTAssertLessThan(scrub.groups[i].blur,0.001)
+        }
     }
 
     func testWhitespaceAndBackwardsWordDoNotScrambleSweep() {

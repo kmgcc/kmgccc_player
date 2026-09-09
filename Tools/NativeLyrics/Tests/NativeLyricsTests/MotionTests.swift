@@ -57,16 +57,26 @@ final class MotionTests: XCTestCase {
         }
     }
     func testPositionOverrideKeepsReferenceSpringAndShapesBounce() {
-        let reference = SpringParameters.positionOverride(duration:0.65,bounce:0.25)
-        XCTAssertEqual(reference,.position)
-        let calm = SpringParameters.positionOverride(duration:0.65,bounce:-0.25)
-        let bouncy = SpringParameters.positionOverride(duration:0.65,bounce:1.25)
+        let reference = SpringParameters.positionOverride(duration:0.55,bounce:0.75)
+        let expectedStiffness = SpringParameters.position.stiffness * pow(0.5 / 0.55, 2)
+        XCTAssertEqual(reference.stiffness, expectedStiffness, accuracy: 1e-12)
+        XCTAssertLessThan(reference.damping, 2 * sqrt(reference.mass * reference.stiffness))
+        let calm = SpringParameters.positionOverride(duration:0.55,bounce:0.25)
+        let bouncy = SpringParameters.positionOverride(duration:0.55,bounce:1.25)
         XCTAssertGreaterThan(calm.damping,reference.damping)
         XCTAssertLessThan(bouncy.damping,reference.damping)
         XCTAssertEqual(calm.stiffness,reference.stiffness,accuracy:1e-12)
-        let faster = SpringParameters.positionOverride(duration:0.325,bounce:0.25)
-        XCTAssertEqual(faster.stiffness,reference.stiffness*4,accuracy:1e-12)
-        XCTAssertEqual(faster.damping,reference.damping*2,accuracy:1e-12)
+        let faster = SpringParameters.positionOverride(duration:0.3,bounce:0.75)
+        let speedRatio = 0.55 / 0.3
+        XCTAssertEqual(faster.stiffness,reference.stiffness*speedRatio*speedRatio,accuracy:1e-12)
+        XCTAssertEqual(faster.damping,reference.damping*speedRatio,accuracy:1e-12)
+    }
+    func testNonBouncyPositionIsCriticallyDamped() {
+        let preview = SpringParameters.nonBouncyPosition(
+            from: .init(mass: 0.9, damping: 8, stiffness: 180, soft: false)
+        )
+        XCTAssertEqual(preview.damping, 2 * sqrt(preview.mass * preview.stiffness), accuracy: 1e-12)
+        XCTAssertTrue(preview.soft)
     }
     func testEmphasisStartsAndEndsAtRestWithCharacterStagger() {
         let e = EmphasisEnvelope(start:3,duration:2,characters:5,anchorCharacters:5,isLast:false,isBackground:false)

@@ -420,10 +420,25 @@ struct MiniPlayerView: View {
             progress: progressDisplayTime(for: presentation),
             duration: presentation.duration,
             isSeekEnabled: presentation.isSeekEnabled,
-            onSeek: { dragProgress = $0 },
-            onDragStart: { isDragging = true },
+            onSeek: { seekTime in
+                dragProgress = seekTime
+                LyricsSurfaceManager.shared.updatePlaybackTimePreview(
+                    lyricsPreviewTime(for: seekTime, presentation: presentation)
+                )
+            },
+            onDragStart: {
+                isDragging = true
+                LyricsSurfaceManager.shared.beginPlaybackTimePreview(
+                    at: presentation.lyricsCurrentTime,
+                    isPlaying: presentation.effectiveLyricsIsPlaying
+                )
+            },
             onDragEnd: {
                 playbackCoordinator.seek(to: dragProgress)
+                LyricsSurfaceManager.shared.endPlaybackTimePreview(
+                    at: lyricsPreviewTime(for: dragProgress, presentation: presentation),
+                    isPlaying: presentation.effectiveLyricsIsPlaying
+                )
                 isDragging = false
             }
         )
@@ -439,6 +454,13 @@ struct MiniPlayerView: View {
 
     private func progressDisplayTime(for presentation: NowPlayingPresentation) -> Double {
         isDragging ? dragProgress : presentation.currentTime
+    }
+
+    private func lyricsPreviewTime(
+        for seekTime: Double,
+        presentation: NowPlayingPresentation
+    ) -> Double {
+        max(0, presentation.lyricsCurrentTime + (seekTime - presentation.currentTime))
     }
     
     private func currentArtworkTaskKey(for presentation: NowPlayingPresentation) -> String {

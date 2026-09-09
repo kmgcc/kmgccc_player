@@ -344,7 +344,7 @@ public struct LyricsChannelBlendConfiguration: Equatable, Sendable {
     var isExplicit: Bool { inactive != nil || current != nil || highlight != nil }
 }
 
-public enum LyricsSeekMotion: Sendable { case immediate, cascade }
+public enum LyricsSeekMotion: Sendable { case immediate, cascade, preview }
 
 public struct LyricsTimingConfiguration: Equatable, Sendable {
     public var enabled = true

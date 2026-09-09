@@ -94,6 +94,39 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(afterRefresh.walk[2], progressed.walk[2] - 0.001)
     }
 
+    @MainActor
+    func testSameTrackReplayRestartsTheNativeEntrySpring() throws {
+        let surface = NativeLyricsSurface(role: .main)
+        surface.view.frame = NSRect(x: 0, y: 0, width: 760, height: 720)
+        surface.view.configuration.timing.enabled = false
+        surface.view.configuration.spring = true
+        surface.view.configuration.blur = false
+
+        let trackID = UUID()
+        let data = "<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='20s'>First</p><p begin='20s' end='40s'>Second</p></div></body></tt>"
+        let initialHost = CACurrentMediaTime()
+        surface.applyTrack(trackID: trackID, ttml: data, currentTime: 0, isPlaying: true)
+        let settled = surface.view.render(at: initialHost + 3)
+        let targetY = try XCTUnwrap(settled.groups.first).y
+
+        // Advance the adapter's snapshot without changing the document, then
+        // emulate pressing the same track's restart button. The force-refresh
+        // path must reinstall the document so the first frame starts below the
+        // viewport instead of synchronizing directly at the settled position.
+        surface.applyTrack(trackID: trackID, ttml: data, currentTime: 3, isPlaying: true)
+        let replayHost = CACurrentMediaTime()
+        surface.applyTrack(
+            trackID: trackID,
+            ttml: data,
+            currentTime: 0,
+            isPlaying: true,
+            forceLyricsReload: true
+        )
+        let replay = surface.view.render(at: replayHost + 0.02)
+
+        XCTAssertGreaterThan(try XCTUnwrap(replay.groups.first).y, targetY + 0.1)
+    }
+
     func testW3CRelativeProfileRemainsExplicit() throws {
         let document = try TTMLDecoder(profile: .w3cRelative).decode(Data(strictRelativeNestedTTML.utf8))
         XCTAssertEqual(document.groups.count, 2)
@@ -200,6 +233,39 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testPlaybackTimePreviewIsNotOverwrittenByTransportSamples() {
+        let nativeManager = NativeLyricsSurfaceManager.shared
+        nativeManager.shutdownAll()
+        defer { nativeManager.shutdownAll() }
+
+        let surfaceManager = LyricsSurfaceManager.shared
+        surfaceManager.updatePlaybackSnapshot(
+            trackID: UUID(),
+            lyricsTTML: mainTTML,
+            currentTime: 1,
+            isPlaying: true
+        )
+        nativeManager.activate(role: .main)
+        let surface = nativeManager.surface(for: .main)
+
+        surfaceManager.beginPlaybackTimePreview(at: 7, isPlaying: true)
+        XCTAssertEqual(surface.currentTime, 7, accuracy: 0.0001)
+        XCTAssertFalse(surface.isPlaying)
+
+        // The normal presentation clock continues to publish while audio is
+        // playing, but must not pull the lyric preview back under the pointer.
+        surfaceManager.updatePlaybackTime(2)
+        XCTAssertEqual(surface.currentTime, 7, accuracy: 0.0001)
+
+        surfaceManager.updatePlaybackTimePreview(8)
+        XCTAssertEqual(surface.currentTime, 8, accuracy: 0.0001)
+
+        surfaceManager.endPlaybackTimePreview(at: 8, isPlaying: true)
+        XCTAssertEqual(surface.currentTime, 8, accuracy: 0.0001)
+        XCTAssertTrue(surface.isPlaying)
+    }
+
+    @MainActor
     func testSeekHandlerSurvivesLazySurfaceCreation() {
         let manager = NativeLyricsSurfaceManager.shared
         manager.shutdownAll()
@@ -285,8 +351,8 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
           "alignPosition": 0.72,
           "alignOffset": 18,
           "alignAnchor": "bottom",
-          "springDuration": 0.65,
-          "springBounce": 0.25,
+          "springDuration": 0.55,
+          "springBounce": 0.75,
           "enableSpring": true
         }
         """
@@ -303,7 +369,73 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
         XCTAssertEqual(configuration.alignOffset, 18, accuracy: 0.0001)
         XCTAssertEqual(configuration.alignAnchor, .bottom)
         XCTAssertEqual(configuration.interludeDotScale, 1.45, accuracy: 0.0001)
-        XCTAssertNil(configuration.positionSpring)
+        let expectedSpring = SpringParameters.positionOverride(duration: 0.55, bounce: 0.75)
+        XCTAssertEqual(configuration.positionSpring, expectedSpring)
+        XCTAssertNotEqual(configuration.positionSpring, .position)
+    }
+
+    @MainActor
+    func testSettingsDefaultsAndJSONInstallTheSameConcreteSpring() throws {
+        let fromSettings = try XCTUnwrap(
+            NativeLyricsSurfaceManager.springParameters(
+                from: LyricSpringUserSettings(
+                    enabled: true,
+                    duration: AppSettings.defaultLyricSpringDuration,
+                    bounce: AppSettings.defaultLyricSpringBounce
+                )
+            )
+        )
+        let fromJSON = try XCTUnwrap(
+            NativeLyricsConfigurationMapper.fromJSON(
+                "{\"springDuration\":0.55,\"springBounce\":0.75,\"enableSpring\":true}",
+                role: .fullscreen
+            )?.positionSpring
+        )
+
+        XCTAssertEqual(fromSettings, fromJSON)
+        XCTAssertLessThan(
+            fromSettings.damping,
+            2 * sqrt(fromSettings.mass * fromSettings.stiffness)
+        )
+    }
+
+    @MainActor
+    func testPreviousNativeSpringDefaultsAreNotTreatedAsCurrentDefault() throws {
+        let configuration = try XCTUnwrap(
+            NativeLyricsConfigurationMapper.fromJSON(
+                "{\"springDuration\":0.65,\"springBounce\":0.25}",
+                role: .fullscreen
+            )
+        )
+
+        XCTAssertNotNil(configuration.positionSpring)
+    }
+
+    @MainActor
+    func testFullscreenDiscreteHighlightConfigurationReachesNativeSurface() throws {
+        let configuration = try XCTUnwrap(
+            NativeLyricsConfigurationMapper.fromJSON(
+                "{\"wordHighlightMode\":\"discrete\"}",
+                role: .fullscreen
+            )
+        )
+        XCTAssertEqual(configuration.highlightMode, .discrete)
+    }
+
+    @MainActor
+    func testNativePointerSuppressionCannotBeReopenedByInsideEvents() {
+        let manager = NativeLyricsSurfaceManager.shared
+        manager.shutdownAll()
+        defer { manager.shutdownAll() }
+
+        manager.activate(role: .fullscreen)
+        let surface = manager.surface(for: .fullscreen)
+        surface.setMouseInteractionSuppressed(true)
+        surface.setPointerInside(true)
+
+        XCTAssertTrue(surface.view.isPointerInteractionSuppressed)
+        surface.setMouseInteractionSuppressed(false)
+        XCTAssertFalse(surface.view.isPointerInteractionSuppressed)
     }
 
     @MainActor

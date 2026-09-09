@@ -776,13 +776,22 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
             width: max(0, view.bounds.width - inset * 2),
             height: view.bounds.height
         )
-        if nativeLyricsView.frame != targetFrame {
+        let frameChanged = nativeLyricsView.frame != targetFrame
+        if frameChanged {
             nativeLyricsView.frame = targetFrame
+            nativeLyricsView.needsLayout = true
         }
         queueOverlayVC?.view.frame = view.bounds
-        syncVisibilityAndAttachment(reason: "flatHostLayout")
-        nativeLyricsView.needsLayout = true
-        nativeLyricsView.layoutSubtreeIfNeeded()
+
+        // Attachment changes are the only reason to touch the surface owner
+        // from this hot layout callback. AppKit will lay out the child after
+        // its frame changes; forcing a synchronous subtree layout here made
+        // every window-resize tick enter NativeLyrics' text reflow on the
+        // main thread.
+        let isAttached = nativeLyricsView.superview === view
+        if isAttached != shouldAttachLyricsSurface {
+            syncVisibilityAndAttachment(reason: frameChanged ? "flatHostLayoutAttachment" : "flatHostLayoutState")
+        }
     }
 
     private func installDriverIfNeeded() {
