@@ -3,15 +3,16 @@
 //  myPlayer2
 //
 //  kmgccc_player - Lyrics ViewModel
-//  Manages lyrics display and sync via LyricsWebViewStore.
+//  Manages lyrics content, configuration and playback synchronization.
 //
 
 import Foundation
 import NativeLyrics
 import SwiftUI
 
-/// Observable ViewModel for lyrics display.
-/// Now delegates all WebView communication to LyricsWebViewStore.
+/// Observable ViewModel for the main lyrics display. NativeLyrics is the
+/// production path; LyricsWebViewStore is consulted only by the rollback
+/// backend.
 @Observable
 @MainActor
 final class LyricsViewModel {
@@ -21,14 +22,14 @@ final class LyricsViewModel {
     private let settings: AppSettings
     private var playbackSourceProvider: (() -> PlaybackSource)?
 
-    // Don't cache store reference - always get from LyricsSurfaceManager
-    // This ensures we always use the current active store after surface switches
-    private var store: LyricsWebViewStore {
-        LyricsSurfaceManager.shared.mainStore
+    private var usesNativeRenderer: Bool {
+        LyricsSurfaceManager.rendererBackend == .native
     }
 
-    private var nativeSurface: NativeLyricsSurface {
-        NativeLyricsSurfaceManager.shared.surface(for: .main)
+    // Rollback-only compatibility store. Keep access lazy so the production
+    // native path never materializes a WebView owner.
+    private var store: LyricsWebViewStore {
+        LyricsSurfaceManager.shared.mainStore
     }
 
     /// Current track (source of lyrics).
@@ -50,15 +51,11 @@ final class LyricsViewModel {
         return !getContentForTrack(track).isEmpty
     }
 
-    /// Whether the WebView is ready.
+    /// Whether the selected renderer can accept state.
     var isReady: Bool {
-        nativeSurface.isReady
-    }
-
-    var webViewStore: LyricsWebViewStore {
-        // Always get the current store from LyricsSurfaceManager
-        // This ensures we get the correct store even after surface switches
-        LyricsSurfaceManager.shared.mainStore
+        usesNativeRenderer
+            ? (NativeLyricsSurfaceManager.shared.existingSurface(for: .main)?.isReady ?? true)
+            : store.isReady
     }
 
     /// Callback for when user seeks via lyrics UI.
@@ -100,32 +97,39 @@ final class LyricsViewModel {
 
         let lyricsText = getContentForTrack(track, currentTime: currentTime, isPlaying: isPlaying)
         let snapshotTTML = track == nil ? "" : lyricsText
+
+        // Configuration is part of the document-install contract. Apply its
+        // final font/timing/motion values before the one native lyric load.
+        refreshConfigFromSettings()
         LyricsSurfaceManager.shared.updatePlaybackSnapshot(
             trackID: track?.id,
             lyricsTTML: snapshotTTML,
             currentTime: currentTime,
-            isPlaying: isPlaying
-        )
-        // 使用统一日志系统，LyricsWebViewStore 也会打印 applyTrack 日志
-        Log.debug("[LyricsVM] applyTrack: \(track?.title ?? "nil"), lyricsLen: \(lyricsText.count), webViewObjectID=\(store.webViewObjectID)", category: .lyrics)
-
-        // Update config
-        refreshConfigFromSettings()
-
-        // Use store's sequenced apply
-        // Distinguish transition nil (debounced) from concrete "no lyrics" (clear immediately).
-        let ttmlForStore: String? = (track == nil) ? nil : lyricsText
-        store.applyTrack(
-            trackID: track?.id,
-            ttml: ttmlForStore,
-            currentTime: currentTime,
             isPlaying: isPlaying,
-            forceLyricsReload: forceLyricsReload)
+            forceLyricsReload: forceLyricsReload
+        )
+        Log.debug(
+            "[LyricsVM] applyTrack: \(track?.title ?? "nil"), lyricsLen: \(lyricsText.count), renderer=\(usesNativeRenderer ? "native" : "webView")",
+            category: .lyrics
+        )
+
+        if !usesNativeRenderer {
+            // Distinguish transition nil (debounced) from concrete "no lyrics"
+            // (clear immediately) on the rollback bridge.
+            let ttmlForStore: String? = (track == nil) ? nil : lyricsText
+            store.applyTrack(
+                trackID: track?.id,
+                ttml: ttmlForStore,
+                currentTime: currentTime,
+                isPlaying: isPlaying,
+                forceLyricsReload: forceLyricsReload
+            )
+        }
         rebindSeekCallback()
     }
 
-    /// Unified AMLL state sync entrypoint.
-    func ensureAMLLLoaded(
+    /// Unified renderer-neutral state sync entrypoint.
+    func ensureLyricsLoaded(
         track: Track?,
         currentTime: TimeInterval,
         isPlaying: Bool,
@@ -140,21 +144,26 @@ final class LyricsViewModel {
             // 仅同步必要的播放状态，不做重复歌词应用
             LyricsSurfaceManager.shared.updatePlaybackTime(currentTime)
             LyricsSurfaceManager.shared.updatePlayingState(isPlaying)
-            store.setPlaying(isPlaying)
-            store.setCurrentTime(currentTime)
+            if !usesNativeRenderer {
+                store.setPlaying(isPlaying)
+                store.setCurrentTime(currentTime)
+            }
             return
         }
         
         // 对相同状态的调用来做去重，避免同一阶段连续打印相同 debug 日志
         let trackIdStr = track?.id.uuidString.prefix(8) ?? "nil"
-        let logKey = "ensureAMLLLoaded.\(reason).\(trackIdStr)"
+        let logKey = "ensureLyricsLoaded.\(reason).\(trackIdStr)"
         let shouldLog = LogStateTrackerSync.shared.checkStateChanged(key: logKey, value: "\(isPlaying).\(currentTime)")
         
         if shouldLog {
-            Log.debug("[LyricsVM] ensureAMLLLoaded: reason=\(reason), trackId=\(trackIdStr), isReady=\(store.isReady), webViewObjectID=\(store.webViewObjectID)", category: .lyrics)
+            Log.debug(
+                "[LyricsVM] ensureLyricsLoaded: reason=\(reason), trackId=\(trackIdStr), isReady=\(isReady), renderer=\(usesNativeRenderer ? "native" : "webView")",
+                category: .lyrics
+            )
         }
 
-        if forceWebReload {
+        if forceWebReload && !usesNativeRenderer {
             store.forceReload(recreateWebView: recreateWebViewOnForceReload)
         }
         rebindSeekCallback()
@@ -180,18 +189,24 @@ final class LyricsViewModel {
         } else {
             // Re-sync theme even if track hasn't changed (ensure latest palette)
             if let palette = ThemeStore.shared.palette {
-                store.applyTheme(palette)
+                if usesNativeRenderer {
+                    LyricsSurfaceManager.shared.applyTheme(palette)
+                } else {
+                    store.applyTheme(palette)
+                }
             }
 
             // Just sync state
             LyricsSurfaceManager.shared.updatePlaybackTime(currentTime)
             LyricsSurfaceManager.shared.updatePlayingState(isPlaying)
-            store.setPlaying(isPlaying)
-            store.setCurrentTime(currentTime)
+            if !usesNativeRenderer {
+                store.setPlaying(isPlaying)
+                store.setCurrentTime(currentTime)
+            }
         }
     }
 
-    func ensureExternalAMLLLoaded(
+    func ensureExternalLyricsLoaded(
         presentation: NowPlayingPresentation,
         reason: String,
         forceWebReload: Bool = false,
@@ -211,20 +226,22 @@ final class LyricsViewModel {
         let lyricsCurrentTime = presentation.lyricsCurrentTime
         let lyricsIsPlaying = presentation.effectiveLyricsIsPlaying
 
+        // As with local tracks, final timing/motion configuration must precede
+        // the native document update.
+        refreshConfigFromSettings()
         LyricsSurfaceManager.shared.updatePlaybackSnapshot(
             trackID: trackID,
             lyricsTTML: lyricsText,
             currentTime: lyricsCurrentTime,
-            isPlaying: lyricsIsPlaying
+            isPlaying: lyricsIsPlaying,
+            forceLyricsReload: forceLyricsReload
         )
         Log.debug(
-            "[LyricsVM] ensureExternalAMLLLoaded: reason=\(reason), identity=\(identity.prefix(16)), lyricsLen=\(lyricsText.count), webViewObjectID=\(store.webViewObjectID)",
+            "[LyricsVM] ensureExternalLyricsLoaded: reason=\(reason), identity=\(identity.prefix(16)), lyricsLen=\(lyricsText.count), renderer=\(usesNativeRenderer ? "native" : "webView")",
             category: .lyrics
         )
 
-        refreshConfigFromSettings()
-
-        if forceWebReload {
+        if forceWebReload && !usesNativeRenderer {
             store.forceReload(recreateWebView: recreateWebViewOnForceReload)
         }
         rebindSeekCallback()
@@ -232,28 +249,36 @@ final class LyricsViewModel {
         if forceLyricsReload || lastAppliedExternalLyricsSignature != lyricsSignature {
             lastAppliedExternalLyricsIdentity = identity
             lastAppliedExternalLyricsSignature = lyricsSignature
-            store.applyTrack(
-                trackID: trackID,
-                ttml: lyricsText,
-                currentTime: lyricsCurrentTime,
-                isPlaying: lyricsIsPlaying,
-                forceLyricsReload: forceLyricsReload
-            )
+            if !usesNativeRenderer {
+                store.applyTrack(
+                    trackID: trackID,
+                    ttml: lyricsText,
+                    currentTime: lyricsCurrentTime,
+                    isPlaying: lyricsIsPlaying,
+                    forceLyricsReload: forceLyricsReload
+                )
+            }
             rebindSeekCallback()
         } else {
             if let palette = ThemeStore.shared.palette {
-                store.applyTheme(palette)
+                if usesNativeRenderer {
+                    LyricsSurfaceManager.shared.applyTheme(palette)
+                } else {
+                    store.applyTheme(palette)
+                }
             }
             LyricsSurfaceManager.shared.updatePlaybackTime(lyricsCurrentTime)
             LyricsSurfaceManager.shared.updatePlayingState(lyricsIsPlaying)
-            store.setPlaying(lyricsIsPlaying)
-            store.setCurrentTime(lyricsCurrentTime)
+            if !usesNativeRenderer {
+                store.setPlaying(lyricsIsPlaying)
+                store.setCurrentTime(lyricsCurrentTime)
+            }
         }
     }
 
     /// Reconcile the external lyrics offset without forcing a full lyrics reload.
     /// The playback pipeline calls this on every sync tick; it only re-pushes the
-    /// AMLL config when the offset actually changes (e.g. the user edited the
+    /// renderer config when the offset actually changes (e.g. the user edited the
     /// external override), so offset edits take effect immediately.
     func applyExternalLyricsOffset(_ ms: Double) {
         let clamped = max(-15000, min(15000, ms))
@@ -295,7 +320,7 @@ final class LyricsViewModel {
             _ = await track.loadLyricsOffMainIfNeeded()
 
             // Give the control release transaction a render opportunity before
-            // AMLL receives a potentially large new lyric document.
+            // The renderer receives a potentially large new lyric document.
             try? await Task.sleep(for: .milliseconds(40))
             guard !Task.isCancelled,
                   let self,
@@ -404,7 +429,9 @@ final class LyricsViewModel {
             currentTime: 0,
             isPlaying: false
         )
-        store.setLyricsTTML("")
+        if !usesNativeRenderer {
+            store.setLyricsTTML("")
+        }
     }
 
     /// Retrieve current TTML (debug helper)
@@ -419,7 +446,17 @@ final class LyricsViewModel {
             do {
                 let text = try String(contentsOf: url, encoding: .utf8)
                 print("[LyricsVM] Loaded sample.ttml: \(text.count) bytes")
-                store.setLyricsTTML(text)
+                if usesNativeRenderer {
+                    LyricsSurfaceManager.shared.updatePlaybackSnapshot(
+                        trackID: nil,
+                        lyricsTTML: text,
+                        currentTime: 0,
+                        isPlaying: false,
+                        forceLyricsReload: true
+                    )
+                } else {
+                    store.setLyricsTTML(text)
+                }
             } catch {
                 print("[LyricsVM] Failed to load sample.ttml: \(error)")
             }
@@ -431,38 +468,48 @@ final class LyricsViewModel {
     // MARK: - Sync
 
     /// Sync current playback time to lyrics.
-    func syncTime(_ seconds: TimeInterval) {
+    func syncTime(_ seconds: TimeInterval, force: Bool = false) {
         rebindSeekCallback()
-        LyricsSurfaceManager.shared.updatePlaybackTime(seconds)
-        store.setCurrentTime(seconds)
+        LyricsSurfaceManager.shared.updatePlaybackTime(seconds, force: force)
+        if !usesNativeRenderer {
+            store.setCurrentTime(seconds, force: force)
+        }
     }
 
     func revealExistingLyrics(reason: String) {
         rebindSeekCallback()
-        let targetStore = store
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
-            targetStore.revealExistingLyrics(reason: reason)
+        if usesNativeRenderer {
+            NativeLyricsSurfaceManager.shared.followCurrentLyrics(for: .main)
+        } else {
+            let targetStore = store
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+                targetStore.revealExistingLyrics(reason: reason)
+            }
         }
-        NativeLyricsSurfaceManager.shared.followCurrentLyrics(for: .main)
     }
 
     /// Set playback state.
     func setPlaying(_ isPlaying: Bool) {
         rebindSeekCallback()
         LyricsSurfaceManager.shared.updatePlayingState(isPlaying)
-        store.setPlaying(isPlaying)
+        if !usesNativeRenderer {
+            store.setPlaying(isPlaying)
+        }
     }
 
     private func rebindSeekCallback() {
-        store.onUserSeek = onSeekRequest
-        nativeSurface.onSeek = onSeekRequest
+        if usesNativeRenderer {
+            NativeLyricsSurfaceManager.shared.setSeekHandler(onSeekRequest, for: .main)
+        } else {
+            store.onUserSeek = onSeekRequest
+        }
     }
 
     // MARK: - Configuration
 
-    /// Update AMLL configuration based on AppSettings.
+    /// Update lyric-renderer configuration based on AppSettings.
     func refreshConfigFromSettings() {
-        let surfaceRole = LyricsSurfaceRole(rawValue: store.role) ?? .main
+        let surfaceRole = LyricsSurfaceRole.main
         let resolvedScheme = ThemeStore.shared.colorScheme
         let resolvedTheme = resolvedScheme == .dark ? "dark" : "light"
         let isDarkMode = resolvedScheme == .dark
@@ -510,6 +557,11 @@ final class LyricsViewModel {
             "fontSize": settings.lyricsFontSize,
             "fontWeight": clampedWeight,
             "fontFamilyMain": mainFontFamily,
+            // Keep the legacy CSS family list for the rollback WebView, but
+            // expose script-specific families to NativeLyrics. A single CSS
+            // list cannot preserve independent CJK/Latin settings.
+            "fontFamilyLatin": settings.lyricsFontNameEn,
+            "fontFamilyCJK": settings.lyricsFontNameZh,
             "fontFamilyTranslation": translationFontFamily,
             "translationFontSize": settings.lyricsTranslationFontSize,
             "translationFontWeight": clampedTranslationWeight,
@@ -537,8 +589,8 @@ final class LyricsViewModel {
             let json = String(data: data, encoding: .utf8)
         {
             LyricsSurfaceManager.shared.updateSurfaceConfigSnapshot(json, for: surfaceRole)
-            store.setConfigJSON(json)
-            if surfaceRole == .main {
+            if !usesNativeRenderer {
+                store.setConfigJSON(json)
                 store.scheduleDebugVisibleLayerProbe(label: "main-config", delay: 0.75)
             }
         }
@@ -551,7 +603,9 @@ final class LyricsViewModel {
             lyricsTimeOffsetMs: rawTrackOffsetMs,
             role: .main
         )
-        NativeLyricsSurfaceManager.shared.applyConfiguration(nativeConfiguration, for: .main)
+        if usesNativeRenderer {
+            NativeLyricsSurfaceManager.shared.applyConfiguration(nativeConfiguration, for: .main)
+        }
     }
 
     // MARK: - Dynamic Color (Moved to ThemeStore)

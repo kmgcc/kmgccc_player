@@ -10,6 +10,20 @@ extension LyricsColor {
     }
 }
 
+/// Linear interpolation in the same color space supplied by the host.  The
+/// interlude marker uses this instead of opacity to express its per-dot walk,
+/// keeping inactive and active dots on the exact main-lyric palette.
+func interpolateLyricsColor(_ from: LyricsColor, _ to: LyricsColor, _ amount: Double) -> LyricsColor {
+    let t = Curves.clamp(amount)
+    return LyricsColor(
+        from.red + (to.red-from.red)*t,
+        from.green + (to.green-from.green)*t,
+        from.blue + (to.blue-from.blue)*t,
+        alpha: from.alpha + (to.alpha-from.alpha)*t,
+        displayP3: from.displayP3 || to.displayP3
+    )
+}
+
 /// Bounded, shared glyph bitmap cache. Text is shaped only on layout/cache misses.
 final class GlyphCache {
     struct Entry { let image: CGImage; let size: CGSize; let padding: Double; let bytes: Int; var stamp: UInt64 }
@@ -96,7 +110,7 @@ final class GlyphLayers {
         gradient.startPoint = CGPoint(x:0,y:0.5); gradient.endPoint = CGPoint(x:1,y:0.5)
         gradient.colors = [NSColor.white.cgColor,NSColor.white.cgColor,NSColor.clear.cgColor,NSColor.clear.cgColor]
     }
-    func update(now: Double, media: Double, logicalX: Double, cursor: Double, fade: Double, darkAlpha: Double, brightAlpha: Double, emphasis: EmphasisEnvelope?, fontSize: Double, config: LyricsConfiguration, float: Double, background: Bool = false, subline: Bool = false, lifetime: Double = 1, baseVisible: Bool = true, highlightVisible: Bool = true, glowVisible: Bool = true) {
+    func update(now: Double, media: Double, logicalX: Double, cursor: Double, fade: Double, darkAlpha: Double, brightAlpha: Double, emphasis: EmphasisEnvelope?, fontSize: Double, config: LyricsConfiguration, float: Double, background: Bool = false, subline: Bool = false, lifetime: Double = 1, baseVisible: Bool = true, highlightVisible: Bool = true, glowVisible: Bool = true, lineTimed: Bool = false) {
         x.resolve(now); y.resolve(now)
         var e = EmphasisSample()
         if config.emphasis, let emphasis, let character = placement.characterIndex {
@@ -109,14 +123,36 @@ final class GlyphLayers {
         root.transform = CATransform3DMakeScale(e.scale,e.scale,1)
         let baseColor: LyricsColor, highColor: LyricsColor
         if config.usesOpaqueCompositing {
-            baseColor = subline ? config.palette.translation : background ? config.palette.backgroundInactive : config.palette.mainInactive
+            if subline {
+                // Cover-blur keeps a dedicated line-timing sub color.  The
+                // artistic fullscreen CSS intentionally uses the regular
+                // sub-color for this layer, so only the cover profile opts in.
+                baseColor = lineTimed && config.usesCoverBlurCompositing
+                    ? config.palette.lineTimingSubInactive
+                    : config.palette.translation
+            } else if background {
+                baseColor = config.palette.backgroundInactive
+            } else {
+                baseColor = lineTimed ? config.palette.lineTimingInactive : config.palette.mainInactive
+            }
             highColor = background ? config.palette.backgroundKaraoke : config.palette.mainActive
             baseOpacity = baseVisible ? (subline ? 1 : background ? config.palette.backgroundBaseOpacity : 1) : 0
             highlightOpacity = highlightVisible && !subline ? lifetime*(background ? config.palette.backgroundKaraokeOpacity : 1) : 0
         } else {
+            // AMLL dims a line-timed document at the group level (`0.2`).
+            // Its glyphs remain opaque, whereas the native window compositor
+            // used to apply the line-level factor *and* the regular karaoke
+            // inactive alpha here.  That multiplied a normal inactive line
+            // down to roughly 0.05, making tracks exported from LRC look
+            // inexplicably washed out.  Keep the single group attenuation and
+            // leave the glyph channel opaque for non-dynamic lines.
             baseColor = config.palette.mainActive; highColor = config.palette.mainActive
-            baseOpacity = baseVisible ? darkAlpha : 0
-            highlightOpacity = highlightVisible ? max(0,(brightAlpha-darkAlpha)/max(0.0001,1-darkAlpha)) : 0
+            let intrinsicBase = lineTimed ? 1 : darkAlpha
+            baseOpacity = baseVisible ? intrinsicBase : 0
+            let highlightBase = lineTimed ? 1 : darkAlpha
+            highlightOpacity = highlightVisible
+                ? max(0,(brightAlpha-highlightBase)/max(0.0001,1-highlightBase))
+                : 0
         }
         // Compose ink before applying the glyph silhouette. Highlight never
         // samples the window backdrop, and glyph edges are masked only once.
@@ -178,12 +214,12 @@ final class WordLayers {
         root.anchorPoint = .zero
         for glyph in glyphs { root.addSublayer(glyph.root) }
     }
-    func update(now: Double, media: Double, cursor: Double, fade: Double, dark: Double, bright: Double, config: LyricsConfiguration, floatTime: Double, background: Bool, lifetime: Double, baseVisible: Bool = true, highlightVisible: Bool = true, glowVisible: Bool = true) {
+    func update(now: Double, media: Double, cursor: Double, fade: Double, dark: Double, bright: Double, config: LyricsConfiguration, floatTime: Double, background: Bool, lifetime: Double, baseVisible: Bool = true, highlightVisible: Bool = true, glowVisible: Bool = true, lineTimed: Bool = false) {
         x.resolve(now); y.resolve(now); root.position = CGPoint(x:x.value(now),y:y.value(now))
         let duration = max(1,placement.atom.word.range.duration)
         let float = -Curves.easeOut.value(at:Curves.clamp((floatTime-placement.atom.word.range.start)/duration))*placement.fontSize*0.05*(background ? 2 : 1)
         for glyph in glyphs {
-            glyph.update(now:now,media:media,logicalX:logicalX,cursor:cursor,fade:fade,darkAlpha:dark,brightAlpha:bright,emphasis:placement.atom.emphasis,fontSize:placement.fontSize,config:config,float:float,background:background,lifetime:lifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible)
+            glyph.update(now:now,media:media,logicalX:logicalX,cursor:cursor,fade:fade,darkAlpha:dark,brightAlpha:bright,emphasis:placement.atom.emphasis,fontSize:placement.fontSize,config:config,float:float,background:background,lifetime:lifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible,lineTimed:lineTimed)
         }
     }
     func settled(_ time: Double) -> Bool { x.settled(time) && y.settled(time) && glyphs.allSatisfy { $0.settled(time) } }
@@ -202,7 +238,7 @@ final class LineLayers {
     private var previousTime: Double?
     private var cursor = HighlightSmoother()
     private(set) var renderedCursor = 0.0
-    init(_ layout: LineTextLayout, cache: GlyphCache, scale: Double, config: LyricsConfiguration, previous: LineLayers?, now: Double, buildContent: Bool = true) {
+    init(_ layout: LineTextLayout, cache: GlyphCache, scale: Double, config: LyricsConfiguration, previous: LineLayers?, now: Double, buildContent: Bool = true, preserveWordMotion: Bool = true) {
         self.layout = layout; fade = max(0.01,(layout.words.first?.fadeHeight ?? layout.fontSize*1.2)*config.wordFadeWidth)
         mask = MaskPath(layout.words,fadeWidth:fade)
         root.anchorPoint = .zero; root.bounds = CGRect(x:0,y:0,width:layout.width,height:layout.height)
@@ -211,7 +247,13 @@ final class LineLayers {
             highlight = previous.highlight; wasActive = previous.wasActive
             previousTime = previous.previousTime; cursor = previous.cursor
         }
-        if buildContent { build(cache:cache,scale:scale,config:config,previous:previous,now:now) }
+        if buildContent {
+            // A width/font reflow is a layout correction, not a lyric event.
+            // Keep the line-level state (highlight, alpha and cursor) but let
+            // the newly measured glyphs start at their final positions instead
+            // of animating every word/character from its old wrapping.
+            build(cache:cache,scale:scale,config:config,previous:preserveWordMotion ? previous : nil,now:now)
+        }
     }
     func ensureContent(cache: GlyphCache, scale: Double, config: LyricsConfiguration, now: Double) {
         if words.isEmpty && !layout.words.isEmpty { build(cache:cache,scale:scale,config:config,previous:nil,now:now) }
@@ -230,21 +272,26 @@ final class LineLayers {
         for word in words { root.addSublayer(word.root) }
         for subline in sublines { root.addSublayer(subline.root) }
     }
-    func update(now: Double, media: Double, floatTime: Double, active: Bool, alpha: Double, background: Bool, config: LyricsConfiguration, playing: Bool = true, seek: Bool = false, highlightHold: Bool = false) {
+    func update(now: Double, media: Double, floatTime: Double, active: Bool, alpha: Double, background: Bool, config: LyricsConfiguration, playing: Bool = true, seek: Bool = false, highlightHold: Bool = false, preserveHighlight: Bool = false) {
+        // `preserveHighlight` is the completed member of a parallel
+        // foreground span.  It remains fully bright until the whole span is
+        // gone; it is deliberately separate from `active` so a normal line
+        // transition still gets the authored enter/exit fade.
+        let keepHighlight = active || preserveHighlight
         if seek {
-            highlight.snap(active ? 1 : 0)
-            wasActive = active
-            brightAlpha = active ? 1 : 0.2+0.2*alpha
+            highlight.snap(keepHighlight ? 1 : 0)
+            wasActive = keepHighlight
+            brightAlpha = keepHighlight ? 1 : 0.2+0.2*alpha
             darkAlpha = 0.2+0.2*alpha
             cursor.reset(mask.position(at:media))
-        } else if active != wasActive {
-            highlight.set(active ? 1 : 0,at:now,duration:active ? 0.2 : config.motion.exitFade)
-            if active && config.lineTimingOnly { highlight.start += 0.05 }
-            wasActive = active
+        } else if keepHighlight != wasActive {
+            highlight.set(keepHighlight ? 1 : 0,at:now,duration:keepHighlight ? 0.2 : config.motion.exitFade)
+            if keepHighlight && config.lineTimingOnly { highlight.start += 0.05 }
+            wasActive = keepHighlight
         }
         let lifetime = highlight.value(now)
-        let visualActive = active || highlightHold
-        let highlightLifetime = lifetime
+        let visualActive = keepHighlight || highlightHold
+        let highlightLifetime = preserveHighlight ? 1 : lifetime
         let smooth = layout.isDynamic && !config.lineTimingOnly && config.highlightMode == .smooth
         let renderLayer = config.effectiveRenderLayer
         let highlightOnly = renderLayer == .highlight
@@ -259,10 +306,10 @@ final class LineLayers {
         let highlightVisible = !baseOnly && (!highlightOnly || hasHighlightLifetime) && !hideActiveMain
         let glowVisible = renderLayer != .base && !config.coverBlurSuppressEmphasisGlow
         let delta = max(0,now-(previousTime ?? now)); previousTime = now
-        let targetDark = 0.2+0.2*alpha, targetBright = active ? 1 : targetDark+(1-targetDark)*lifetime
-        brightAlpha = active ? brightAlpha+(targetBright-brightAlpha)*(1-exp(-50*delta)) : targetBright
+        let targetDark = 0.2+0.2*alpha, targetBright = active || preserveHighlight ? 1 : targetDark+(1-targetDark)*highlightLifetime
+        brightAlpha = active || preserveHighlight ? brightAlpha+(targetBright-brightAlpha)*(1-exp(-50*delta)) : targetBright
         darkAlpha += (targetDark-darkAlpha)*(1-exp(-(targetDark>darkAlpha ? 50 : 7)*delta))
-        let bright = smooth ? (active ? brightAlpha : darkAlpha+(1-darkAlpha)*lifetime) : ((background ? 0.4 : 0.28)+(background ? 0.6 : 0.72)*lifetime)
+        let bright = smooth ? (active || preserveHighlight ? brightAlpha : darkAlpha+(1-darkAlpha)*highlightLifetime) : ((background ? 0.4 : 0.28)+(background ? 0.6 : 0.72)*highlightLifetime)
         let dark = smooth ? darkAlpha : bright
         let target = playing && active ? mask.anticipatedPosition(at:media,amount:config.motion.highlightAnticipation) : mask.position(at:media)
         let maskCursor = smooth ? cursor.sample(target:target,now:now,playing:playing && visualActive,reset:seek,fadeWidth:fade) : Double.greatestFiniteMagnitude
@@ -276,12 +323,12 @@ final class LineLayers {
                 let inactive = background ? 0.4 : 0.28
                 wordDark = inactive+(1-inactive)*progress*highlightLifetime; wordBright = wordDark; wordLifetime = progress*highlightLifetime
             }
-            word.update(now:now,media:media,cursor:maskCursor,fade:fade,dark:wordDark,bright:wordBright,config:config,floatTime:layout.isDynamic && !config.lineTimingOnly ? floatTime : -1e9,background:background,lifetime:wordLifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible)
-            for glyph in word.glyphs { glyph.updateBlend(active:active,config:config) }
+            word.update(now:now,media:media,cursor:maskCursor,fade:fade,dark:wordDark,bright:wordBright,config:config,floatTime:layout.isDynamic && !config.lineTimingOnly ? floatTime : -1e9,background:background,lifetime:wordLifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible,lineTimed:!layout.isDynamic && !config.lineTimingOnly)
+            for glyph in word.glyphs { glyph.updateBlend(active:keepHighlight,config:config) }
         }
         for subline in sublines {
-            subline.update(now:now,media:media,logicalX:0,cursor:1e9,fade:1,darkAlpha:0.3,brightAlpha:0.3,emphasis:nil,fontSize:layout.fontSize,config:config,float:0,background:background,subline:true,lifetime:highlightLifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:false)
-            subline.updateBlend(active:active,config:config)
+            subline.update(now:now,media:media,logicalX:0,cursor:1e9,fade:1,darkAlpha:0.3,brightAlpha:0.3,emphasis:nil,fontSize:layout.fontSize,config:config,float:0,background:background,subline:true,lifetime:highlightLifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:false,lineTimed:!layout.isDynamic && !config.lineTimingOnly)
+            subline.updateBlend(active:keepHighlight,config:config)
         }
     }
     func settled(_ time: Double) -> Bool { highlight.settled(time) && words.allSatisfy { $0.settled(time) } }
@@ -353,8 +400,8 @@ final class GroupLayers {
     }
     func reflow(_ layout: GroupTextLayout, cache: GlyphCache, scale: Double, config: LyricsConfiguration, now: Double) {
         let oldMain = main, oldBG = background
-        main = LineLayers(layout.main,cache:cache,scale:scale,config:config,previous:oldMain,now:now,buildContent:!oldMain.words.isEmpty)
-        background = layout.background.map { LineLayers($0,cache:cache,scale:scale,config:config,previous:oldBG,now:now,buildContent:!(oldBG?.words.isEmpty ?? true)) }
+        main = LineLayers(layout.main,cache:cache,scale:scale,config:config,previous:oldMain,now:now,buildContent:!oldMain.words.isEmpty,preserveWordMotion:false)
+        background = layout.background.map { LineLayers($0,cache:cache,scale:scale,config:config,previous:oldBG,now:now,buildContent:!(oldBG?.words.isEmpty ?? true),preserveWordMotion:false) }
         oldMain.root.removeFromSuperlayer(); oldBG?.root.removeFromSuperlayer()
         root.addSublayer(main.root); if let background { backgroundWrapper.addSublayer(background.root) }
         self.layout = layout; isReflowing = true

@@ -35,6 +35,7 @@ enum NativeLyricsConfigurationMapper {
 
         var config = base(role: role)
         config.fontName = firstFontName(settings.lyricsFontNameEn, fallback: LyricsFontDefaults.english)
+        config.fontNameCJK = firstFontName(settings.lyricsFontNameZh, fallback: LyricsFontDefaults.chinese)
         config.fontSize = settings.lyricsFontSize
         config.fontWeight = cssWeight(Double(weight))
         config.translationFontName = firstFontName(
@@ -75,6 +76,12 @@ enum NativeLyricsConfigurationMapper {
         configuration.fpsCap = role.fpsCap
         configuration.overscan = Double(role.overscanPx)
         configuration.wordFadeWidth = role.wordFadeWidth
+        // The main inspector used the package default (0.35), which leaves
+        // the focused row noticeably low once the panel's top padding is
+        // applied. Keep fullscreen's skin-owned top anchor untouched while
+        // giving the window surface the same slightly-upward reading position
+        // as the old AMLL panel.
+        if role == .main { configuration.alignPosition = 0.30 }
         configuration.glow = true
         configuration.emphasis = true
         configuration.showTranslation = true
@@ -102,7 +109,22 @@ enum NativeLyricsConfigurationMapper {
     static func apply(_ values: [String: Any], to configuration: inout LyricsConfiguration, role: LyricsSurfaceRole) {
         if let value = double(values["fontSize"]) { configuration.fontSize = max(10, value) }
         if let value = double(values["fontWeight"]) { configuration.fontWeight = cssWeight(value) }
-        if let value = string(values["fontFamilyMain"]) { configuration.fontName = firstFontName(value, fallback: configuration.fontName) }
+        var mainFamilies: [String] = []
+        if let value = string(values["fontFamilyMain"]) {
+            mainFamilies = fontNames(value)
+            configuration.fontName = mainFamilies.first ?? configuration.fontName
+        }
+        if let value = string(values["fontFamilyLatin"]) {
+            configuration.fontName = firstFontName(value, fallback: configuration.fontName)
+        }
+        if let value = string(values["fontFamilyCJK"]) {
+            configuration.fontNameCJK = firstFontName(value, fallback: configuration.fontNameCJK ?? LyricsFontDefaults.chinese)
+        } else if configuration.fontNameCJK == nil, let fallbackCJK = mainFamilies.last {
+            // Backward-compatible parsing for older JSON that only carried a
+            // CSS family list: the last non-system candidate is the intended
+            // CJK family in LyricsFontResolver's ordering.
+            configuration.fontNameCJK = fallbackCJK
+        }
         if let value = double(values["translationFontSize"]) { configuration.translationFontSize = value }
         if let value = double(values["translationFontWeight"]) { configuration.translationFontWeight = cssWeight(value) }
         if let value = string(values["fontFamilyTranslation"]) { configuration.translationFontName = firstFontName(value, fallback: configuration.translationFontName) }
@@ -124,8 +146,10 @@ enum NativeLyricsConfigurationMapper {
         if let value = bool(values["enableBlur"]) { configuration.blur = value }
         if let value = bool(values["enableSpring"]) { configuration.spring = value }
         if double(values["springDuration"]) != nil || double(values["springBounce"]) != nil {
-            let springDuration = double(values["springDuration"]) ?? 0.4
-            let springBounce = double(values["springBounce"]) ?? 0.75
+            let springDuration = double(values["springDuration"])
+                ?? AppSettings.defaultLyricSpringDuration
+            let springBounce = double(values["springBounce"])
+                ?? AppSettings.defaultLyricSpringBounce
             let springEnabled = bool(values["enableSpring"]) ?? configuration.spring
             configuration.positionSpring = NativeLyricsSurfaceManager.springParameters(
                 from: LyricSpringUserSettings(
@@ -147,6 +171,10 @@ enum NativeLyricsConfigurationMapper {
             configuration.coverBlurGenericMode = value
             if value {
                 configuration.surface = .coverBlurLight
+                // Generic fullscreen cover/Apple skins use one native surface;
+                // its highlight channel must remain in that surface.  A base
+                // channel is only selected for the dedicated second overlay.
+                configuration.coverBlurRenderLayer = .full
                 configuration.coverBlurSuppressEmphasisGlow =
                     bool(values["coverBlurSuppressEmphasisGlow"]) ?? false
             } else if role != .fullscreenCoverBlurHighlight {
@@ -180,8 +208,18 @@ enum NativeLyricsConfigurationMapper {
             values["fullscreenInactiveColor"] ?? values["coverBlurMainInactiveColor"],
             fallback: configuration.palette.mainInactive
         )
+        configuration.palette.lineTimingInactive = color(
+            values["fullscreenLineTimingInactiveColor"]
+                ?? values["coverBlurLineTimingInactiveColor"],
+            fallback: configuration.palette.mainInactive
+        )
         configuration.palette.translation = color(
             values["fullscreenSubColor"] ?? values["coverBlurSubColor"],
+            fallback: configuration.palette.translation
+        )
+        configuration.palette.lineTimingSubInactive = color(
+            values["fullscreenLineTimingSubInactiveColor"]
+                ?? values["coverBlurLineTimingSubInactiveColor"],
             fallback: configuration.palette.translation
         )
         configuration.palette.backgroundActive = color(
@@ -208,7 +246,8 @@ enum NativeLyricsConfigurationMapper {
         if role == .fullscreenCoverBlurHighlight {
             configuration.coverBlurRenderLayer = .highlight
             configuration.coverBlurSuppressEmphasisGlow = false
-        } else if configuration.surface == .coverBlurLight || configuration.surface == .coverBlurDark {
+        } else if !configuration.coverBlurGenericMode
+                    && (configuration.surface == .coverBlurLight || configuration.surface == .coverBlurDark) {
             configuration.coverBlurRenderLayer = .base
         }
     }
@@ -217,7 +256,9 @@ enum NativeLyricsConfigurationMapper {
         var result = LyricsPalette()
         result.mainActive = color(palette.activeLine, fallback: .white)
         result.mainInactive = color(palette.inactiveLine, fallback: LyricsColor(0.42, 0.44, 0.49))
+        result.lineTimingInactive = result.mainInactive
         result.translation = result.mainInactive
+        result.lineTimingSubInactive = result.translation
         result.emphasisGlow = result.mainActive
         return result
     }
@@ -228,11 +269,25 @@ enum NativeLyricsConfigurationMapper {
     }
 
     private static func firstFontName(_ value: String, fallback: String) -> String {
-        let candidate = value
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "\"'")) }
-            .first(where: { !$0.isEmpty && !$0.hasPrefix("-") })
+        let candidate = fontNames(value).first
         return candidate ?? fallback
+    }
+
+    private static func fontNames(_ value: String) -> [String] {
+        value
+            .split(separator: ",")
+            .map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            }
+            .filter {
+                guard !$0.isEmpty, !$0.hasPrefix("-") else { return false }
+                let lower = $0.lowercased()
+                return lower != "sans-serif"
+                    && lower != "serif"
+                    && lower != "system-ui"
+                    && lower != "ui-sans-serif"
+            }
     }
 
     private static func color(_ value: Any?, fallback: LyricsColor) -> LyricsColor {

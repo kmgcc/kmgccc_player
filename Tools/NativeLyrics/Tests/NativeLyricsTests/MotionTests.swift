@@ -56,6 +56,18 @@ final class MotionTests: XCTestCase {
             XCTAssertTrue(p.stiffness.isFinite); XCTAssertTrue((170...220).contains(p.stiffness))
         }
     }
+    func testPositionOverrideKeepsReferenceSpringAndShapesBounce() {
+        let reference = SpringParameters.positionOverride(duration:0.65,bounce:0.25)
+        XCTAssertEqual(reference,.position)
+        let calm = SpringParameters.positionOverride(duration:0.65,bounce:-0.25)
+        let bouncy = SpringParameters.positionOverride(duration:0.65,bounce:1.25)
+        XCTAssertGreaterThan(calm.damping,reference.damping)
+        XCTAssertLessThan(bouncy.damping,reference.damping)
+        XCTAssertEqual(calm.stiffness,reference.stiffness,accuracy:1e-12)
+        let faster = SpringParameters.positionOverride(duration:0.325,bounce:0.25)
+        XCTAssertEqual(faster.stiffness,reference.stiffness*4,accuracy:1e-12)
+        XCTAssertEqual(faster.damping,reference.damping*2,accuracy:1e-12)
+    }
     func testEmphasisStartsAndEndsAtRestWithCharacterStagger() {
         let e = EmphasisEnvelope(start:3,duration:2,characters:5,anchorCharacters:5,isLast:false,isBackground:false)
         XCTAssertEqual(e.sample(2,character:0,fontSize:40,radiusScale:1).scale,1)
@@ -70,5 +82,34 @@ final class MotionTests: XCTestCase {
         XCTAssertEqual(clock.time(at:500),20.125)
         clock.synchronize(time:3,playing:true,host:500)
         XCTAssertEqual(clock.time(at:501),4)
+    }
+
+    func testMediaClockIgnoresSmallBackwardPresentationJitter() {
+        var clock = LyricsClock()
+        clock.synchronize(time: 10, playing: true, host: 0)
+        XCTAssertEqual(clock.time(at: 0.25), 10.25, accuracy: 0.0001)
+
+        // A presentation callback can contain a value sampled just before the
+        // display clock's prediction.  It must not pull the sweep backwards.
+        clock.synchronize(time: 10.05, playing: true, host: 0.25)
+        XCTAssertEqual(clock.time(at: 0.5), 10.50, accuracy: 0.0001)
+
+        // An explicit rebase remains exact, even when it is a small backward
+        // seek rather than a whole-second jump.
+        clock.synchronize(time: 9.9, playing: true, host: 0.5, force: true)
+        XCTAssertEqual(clock.time(at: 0.5), 9.9, accuracy: 0.0001)
+    }
+
+    func testInterludeColorWalkUsesTheMainLyricPalette() {
+        let inactive = LyricsColor(0.2,0.3,0.4,alpha:0.7,displayP3:true)
+        let active = LyricsColor(0.8,0.7,0.6,alpha:1,displayP3:true)
+        XCTAssertEqual(interpolateLyricsColor(inactive,active,0),inactive)
+        XCTAssertEqual(interpolateLyricsColor(inactive,active,1),active)
+        let middle = interpolateLyricsColor(inactive,active,0.5)
+        XCTAssertEqual(middle.red,0.5,accuracy:0.0001)
+        XCTAssertEqual(middle.green,0.5,accuracy:0.0001)
+        XCTAssertEqual(middle.blue,0.5,accuracy:0.0001)
+        XCTAssertEqual(middle.alpha,0.85,accuracy:0.0001)
+        XCTAssertTrue(middle.displayP3)
     }
 }

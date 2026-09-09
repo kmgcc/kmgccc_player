@@ -42,23 +42,27 @@ struct LyricsTimeline {
         snapshot.interlude = interludes.first { $0.range.contains(time+(profile == .currentPlayer ? 0.02 : 0)) }
         snapshot.endOfSong = !bounds.isEmpty && time >= (bounds.map(\.end).max() ?? 0)
         if isSeek {
-            snapshot.highlighted = hot
+            snapshot.highlighted = preserveParallelHighlight ? foregroundSpan(for: hot) : hot
             if profile == .upstream {
                 if let anchor = bounds.indices.last(where: { bounds[$0].start <= time && bounds[$0].duration>0 }) {
                     snapshot.highlighted = Set((0...anchor).filter { bounds[$0].duration>0 && bounds[$0].end > bounds[anchor].start })
                     snapshot.focus = snapshot.highlighted.min() ?? 0
                 } else { snapshot.focus = 0 }
             } else { snapshot.focus = hot.min() ?? bounds.firstIndex(where: { $0.start >= time }) ?? bounds.count }
+        } else if !preserveParallelHighlight {
+            snapshot.highlighted = hot
+            snapshot.focus = hot.min() ?? snapshot.focus
         } else if !new.isEmpty {
-            snapshot.highlighted.formUnion(new)
-            snapshot.highlighted.subtract(expired)
+            // AMLL's buffered foreground is the contiguous span between the
+            // currently hot endpoints. A parallel voice may finish at the
+            // exact instant another starts while the long main line remains
+            // hot; the completed middle row stays highlighted in that span.
+            // Once the old endpoint is no longer hot, a new transition
+            // rebuilds the span and drops rows from the previous group.
+            snapshot.highlighted = foregroundSpan(for: hot)
             snapshot.focus = snapshot.highlighted.min() ?? snapshot.focus
         } else if profile == .currentPlayer && !expired.isEmpty && expired == snapshot.highlighted {
             snapshot.highlighted.removeAll()
-        }
-        if !preserveParallelHighlight {
-            snapshot.highlighted = hot
-            snapshot.focus = hot.min() ?? snapshot.focus
         }
         if profile == .upstream && ((snapshot.interlude != nil && hot.isEmpty) || snapshot.endOfSong) { snapshot.highlighted.removeAll() }
         if snapshot.endOfSong && snapshot.highlighted.isEmpty {
@@ -66,36 +70,68 @@ struct LyricsTimeline {
         }
         return snapshot
     }
+
+    private func foregroundSpan(for hot: Set<Int>) -> Set<Int> {
+        guard let first = hot.min(), let last = hot.max() else { return [] }
+        return Set(first...last)
+    }
 }
 
 struct LyricsInteraction {
     var offset = 0.0
     var suspended = false
     var lastWheel = -Double.infinity
+    private var resumeArmedAt = -Double.infinity
     var frozenFocus = 0
     var frozenInterlude: LyricInterlude?
     mutating func scroll(_ delta: Double, now: Double, timeline: LyricsTimelineSnapshot) {
         if !suspended { frozenFocus = timeline.focus; frozenInterlude = timeline.interlude }
-        suspended = true; offset += delta; lastWheel = now
+        suspended = true; offset += delta; lastWheel = now; resumeArmedAt = now
     }
-    mutating func resume() { offset = 0; suspended = false; frozenInterlude = nil }
-    mutating func update(now: Double, profile: LyricsProfile) -> Bool {
+    mutating func resume() { offset = 0; suspended = false; frozenInterlude = nil; resumeArmedAt = -Double.infinity }
+    mutating func pointerExited(now: Double) {
+        guard suspended, now.isFinite else { return }
+        // The five-second browsing timeout starts when the pointer leaves the
+        // lyric surface, not while the user is still moving over it.
+        resumeArmedAt = now
+    }
+    mutating func update(now: Double, profile: LyricsProfile, allowAutoResume: Bool = true) -> Bool {
         let delay = profile == .upstream ? 5.15 : 5.0
-        if suspended && now-lastWheel >= delay { resume(); return true }; return false
+        if allowAutoResume && suspended && now-resumeArmedAt >= delay { resume(); return true }; return false
     }
     func dotsHidden(_ time: Double) -> Bool { time-lastWheel < 0.22 }
 }
 
 /// Host media samples can arrive at any cadence. Display refresh never integrates media deltas.
 public struct LyricsClock: Sendable {
+    /// Presentation updates are intentionally sparse (the player publishes at
+    /// 4–10 Hz), while the lyric surface renders on the display clock.  A
+    /// delayed presentation sample can therefore be a few hundred
+    /// milliseconds behind the time we already predicted locally.  Re-basing
+    /// to that stale value makes the highlight visibly slow, then causes it to
+    /// catch up on the next sample.  Keep this tolerance below the explicit
+    /// seek/discontinuity threshold so ordinary user seeks can still be
+    /// applied by the view.
+    public static let backwardsJitterTolerance = 0.35
+
     private var anchorMedia = 0.0
     private var anchorHost = 0.0
     public private(set) var isPlaying = false
     public var rate: Double = 1
     public init() {}
     public func time(at host: Double) -> Double { max(0,anchorMedia + (isPlaying ? max(0,host-anchorHost)*rate : 0)) }
-    public mutating func synchronize(time: Double, playing: Bool, host: Double) {
+    public mutating func synchronize(time: Double, playing: Bool, host: Double, force: Bool = false) {
         guard time.isFinite, host.isFinite else { return }
-        anchorMedia = max(0,time); anchorHost = host; isPlaying = playing
+        let requested = max(0,time)
+        let predicted = self.time(at: host)
+        let staleBacktrack = isPlaying && playing && requested < predicted
+            && predicted - requested <= Self.backwardsJitterTolerance
+
+        // Keep a monotonic predicted clock while playing when a host sample
+        // arrives slightly late.  Explicit loads/seeks pass `force` and are
+        // always allowed to rebase, including small backward seeks.
+        anchorMedia = force || !staleBacktrack ? requested : predicted
+        anchorHost = host
+        isPlaying = playing
     }
 }

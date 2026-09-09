@@ -29,6 +29,7 @@ struct NowPlayingLyricsTabView: View {
     @State private var amllLyricsSpringBounce: Double = AppSettings.shared.amllLyricsSpringBounce
     @State private var amllDiscreteWordHighlightEnabled: Bool = AppSettings.shared.amllDiscreteWordHighlightEnabled
     @State private var pendingSpringSettingsRefreshTask: Task<Void, Never>?
+    @State private var pendingTypographyRefreshTask: Task<Void, Never>?
 
     private let fontWeights: [(label: LocalizedStringKey, value: Int)] = [
         ("settings.lyrics.weight_thin", 100),
@@ -37,6 +38,7 @@ struct NowPlayingLyricsTabView: View {
         ("settings.lyrics.weight_medium", 500),
         ("settings.lyrics.weight_semibold", 600),
         ("settings.lyrics.weight_bold", 700),
+        ("settings.lyrics.weight_black", 900),
     ]
 
     var body: some View {
@@ -182,15 +184,15 @@ struct NowPlayingLyricsTabView: View {
         .onAppear {
             syncStateFromSettings()
         }
-        .onChange(of: lyricsFontNameZh) { _, newValue in syncToSettings() }
-        .onChange(of: lyricsFontNameEn) { _, newValue in syncToSettings() }
-        .onChange(of: lyricsTranslationFontName) { _, newValue in syncToSettings() }
-        .onChange(of: lyricsFontWeightLight) { _, newValue in syncToSettings() }
-        .onChange(of: lyricsFontWeightDark) { _, newValue in syncToSettings() }
-        .onChange(of: lyricsFontSize) { _, newValue in syncToSettings() }
-        .onChange(of: lyricsTranslationFontSize) { _, newValue in syncToSettings() }
-        .onChange(of: lyricsTranslationFontWeightLight) { _, newValue in syncToSettings() }
-        .onChange(of: lyricsTranslationFontWeightDark) { _, newValue in syncToSettings() }
+        .onChange(of: lyricsFontNameZh) { _, _ in syncToSettings(debounceLyrics: true) }
+        .onChange(of: lyricsFontNameEn) { _, _ in syncToSettings(debounceLyrics: true) }
+        .onChange(of: lyricsTranslationFontName) { _, _ in syncToSettings(debounceLyrics: true) }
+        .onChange(of: lyricsFontWeightLight) { _, _ in syncToSettings(debounceLyrics: true) }
+        .onChange(of: lyricsFontWeightDark) { _, _ in syncToSettings(debounceLyrics: true) }
+        .onChange(of: lyricsFontSize) { _, _ in syncToSettings(debounceLyrics: true) }
+        .onChange(of: lyricsTranslationFontSize) { _, _ in syncToSettings(debounceLyrics: true) }
+        .onChange(of: lyricsTranslationFontWeightLight) { _, _ in syncToSettings(debounceLyrics: true) }
+        .onChange(of: lyricsTranslationFontWeightDark) { _, _ in syncToSettings(debounceLyrics: true) }
     }
 
     private var previewSection: some View {
@@ -238,7 +240,7 @@ struct NowPlayingLyricsTabView: View {
         amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
     }
 
-    private func syncToSettings() {
+    private func syncToSettings(debounceLyrics: Bool = false) {
         settings.lyricsFontNameZh = lyricsFontNameZh
         settings.lyricsFontNameEn = lyricsFontNameEn
         settings.lyricsTranslationFontName = lyricsTranslationFontName
@@ -253,7 +255,25 @@ struct NowPlayingLyricsTabView: View {
         settings.amllLyricsSpringDuration = amllLyricsSpringDuration
         settings.amllLyricsSpringBounce = amllLyricsSpringBounce
         settings.amllDiscreteWordHighlightEnabled = amllDiscreteWordHighlightEnabled
-        lyricsVM.refreshConfigFromSettings()
+        if debounceLyrics {
+            scheduleTypographyRefresh()
+        } else {
+            lyricsVM.refreshConfigFromSettings()
+        }
+    }
+
+    private func scheduleTypographyRefresh() {
+        pendingTypographyRefreshTask?.cancel()
+        pendingTypographyRefreshTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .milliseconds(120))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            lyricsVM.refreshConfigFromSettings()
+            pendingTypographyRefreshTask = nil
+        }
     }
 
     private func syncSpringSettingsDebounced() {

@@ -58,16 +58,123 @@ final class TextLayoutEngine {
                                padding:size*0.4,gap:size*0.3,width:width)
     }
 
-    private func font(_ config: LyricsConfiguration, size: Double) -> CTFont {
-        let font = NSFont(name:config.fontName,size:size) ?? NSFont.systemFont(ofSize:size,weight:.semibold)
-        let descriptor = font.fontDescriptor.addingAttributes([.traits:[NSFontDescriptor.TraitKey.weight:config.fontWeight]])
-        let resolved = NSFont(descriptor:descriptor,size:size) ?? font
-        return (config.fontWeight >= 0.23 ? NSFontManager.shared.convert(resolved,toHaveTrait:.boldFontMask) : resolved) as CTFont
+    /// Resolve one concrete face for the script represented by `text`.
+    /// CoreText will fall back between families when a single font is used for
+    /// a mixed lyric, but that also makes the CJK weight silently inherit the
+    /// Latin face.  Selecting the family per script keeps the two fullscreen
+    /// typography controls independent.
+    private func font(_ config: LyricsConfiguration, size: Double, text: String? = nil) -> CTFont {
+        let familyName: String = {
+            guard let text, isCJK(text),
+                  let cjk = config.fontNameCJK?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !cjk.isEmpty else { return config.fontName }
+            return cjk
+        }()
+        let base = NSFont(name: familyName, size: size)
+            ?? NSFont.systemFont(ofSize: size, weight: .semibold)
+        let cssWeight = max(100, min(900, config.fontWeight * 500 + 400))
+
+        // NSFontDescriptor's numeric weight trait is only a hint for many
+        // families (Helvetica Neue and PingFang silently resolve every value
+        // to the regular face).  Resolve a concrete family member instead so
+        // the light/dark independent lyric weight settings actually reach the
+        // glyph bitmap cache.
+        if let family = base.familyName,
+           let members = NSFontManager.shared.availableMembers(ofFontFamily: family) {
+            struct Member {
+                let name: String
+                let label: String
+                let weight: Double
+            }
+            let parsed: [Member] = members.compactMap { row in
+                guard let name = row.first as? String, !name.isEmpty else { return nil }
+                let label = row.count > 1 ? String(describing: row[1]) : name
+                // availableMembers uses AppKit's 1...11 weight scale in the
+                // third column.  Keep a finite fallback for unusual fonts.
+                let weight = row.count > 2 ? ((row[2] as? NSNumber)?.doubleValue ?? 5) : 5
+                return Member(name: name, label: label, weight: weight)
+            }
+            let italic = base.fontDescriptor.symbolicTraits.contains(.italic)
+            let candidates = parsed.filter { member in
+                let lower = member.label.lowercased()
+                return lower.contains("italic") == italic
+            }
+            let pool = candidates.isEmpty ? parsed : candidates
+            let tokens: [String]
+            switch cssWeight {
+            case ...150: tokens = ["ultralight", "ultra light", "extralight"]
+            case ...250: tokens = ["thin"]
+            case ...350: tokens = ["light"]
+            case ...450: tokens = ["regular", "normal", "book"]
+            case ...550: tokens = ["medium"]
+            case ...650: tokens = ["semibold", "demibold", "demi", "medium"]
+            case ...750: tokens = ["bold"]
+            case ...850: tokens = ["heavy"]
+            default: tokens = ["black"]
+            }
+            // AppKit's member labels are not consistent across families. In
+            // particular, Inter exposes `ExtraBold`/`Black` while PingFang
+            // exposes only `Semibold`; asking for an exact token therefore
+            // made the 900 setting resolve to an arbitrary middle face. The
+            // extrema are intentional: choose the lightest/thickest available
+            // member, then use semantic labels for the middle CSS weights.
+            let selected: Member?
+            if cssWeight <= 150 {
+                selected = pool.min { $0.weight < $1.weight }
+            } else if cssWeight >= 850 {
+                selected = pool.max { $0.weight < $1.weight }
+            } else {
+                selected = tokens.lazy.compactMap { token in
+                    pool.first { $0.label.lowercased().contains(token) }
+                }.first ?? pool.min {
+                    abs($0.weight - appKitWeight(for: cssWeight))
+                        < abs($1.weight - appKitWeight(for: cssWeight))
+                }
+            }
+            if let selected,
+               let resolved = NSFont(name: selected.name, size: size) {
+                return resolved as CTFont
+            }
+        }
+
+        let descriptor = base.fontDescriptor.addingAttributes([
+            .traits: [NSFontDescriptor.TraitKey.weight: config.fontWeight]
+        ])
+        return (NSFont(descriptor: descriptor, size: size) ?? base) as CTFont
     }
     static func shape(_ text: String, font: CTFont) -> CTLine {
         CTLineCreateWithAttributedString(NSAttributedString(string:text,attributes:[NSAttributedString.Key(kCTFontAttributeName as String):font,NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String):true]))
     }
     static func width(_ text: String, font: CTFont) -> Double { CTLineGetTypographicBounds(shape(text,font:font),nil,nil,nil) }
+
+    /// Split a string into contiguous Latin/CJK runs.  A run keeps its own
+    /// resolved face, so a mixed line never gets shaped entirely by whichever
+    /// family CoreText happens to choose first.
+    private func fontRuns(_ text: String, config: LyricsConfiguration, size: Double) -> [(text: String, font: CTFont)] {
+        guard !text.isEmpty else { return [] }
+        var result: [(text: String, font: CTFont)] = []
+        var current = ""
+        var currentIsCJK: Bool?
+        for character in text {
+            let value = String(character)
+            let isCharacterCJK = isCJK(value)
+            if let currentIsCJK, currentIsCJK != isCharacterCJK, !current.isEmpty {
+                result.append((current, font(config, size: size, text: current)))
+                current = ""
+            }
+            currentIsCJK = isCharacterCJK
+            current.append(character)
+        }
+        if !current.isEmpty {
+            result.append((current, font(config, size: size, text: current)))
+        }
+        return result
+    }
+
+    private func measuredWidth(_ text: String, config: LyricsConfiguration, size: Double) -> Double {
+        fontRuns(text, config: config, size: size)
+            .reduce(0) { $0 + Self.width($1.text, font: $1.font) }
+    }
 
     private func select(_ layers: [LyricTextLayer], language: String) -> LyricTextLayer? {
         layers.first { $0.language == language } ?? layers.first { !language.isEmpty && $0.language.hasPrefix(language.split(separator:"-").first.map(String.init) ?? language) } ?? layers.first
@@ -75,11 +182,12 @@ final class TextLayoutEngine {
 
     private func line(_ original: LyricLine, width: Double, config: LyricsConfiguration, dynamic: Bool, fontSize: Double) -> LineTextLayout {
         var line = original
-        let mainFont = font(config,size:fontSize), smallFont = font(config,size:max(10,fontSize*0.5))
         let product = config.profile == .currentPlayer && config.surface != .coreReference
-        var subConfig = config; subConfig.fontName = config.translationFontName; subConfig.fontWeight = config.translationFontWeight
+        var subConfig = config
+        subConfig.fontName = config.translationFontName
+        subConfig.fontNameCJK = config.translationFontName
+        subConfig.fontWeight = config.translationFontWeight
         let subSize = max(6,config.translationFontSize ?? (product ? config.fontSize*0.75 : fontSize*0.5))
-        let subFont = font(subConfig,size:subSize)
         let roman = config.showRomanization ? select(line.romanizations,language:config.romanizationLanguage) : nil
         if let roman, !roman.words.isEmpty {
             var cursor = 0
@@ -111,9 +219,9 @@ final class TextLayoutEngine {
         var words: [WordPlacement] = []
         let rowHeight = fontSize*(product ? 1.42 : 1.2) + (hasRuby ? fontSize*0.5 : 0) + (hasRoman ? fontSize*0.5 : 0)
         var atomWidths = atoms.map { atom -> Double in
-            let base = Self.width(atom.word.text,font:mainFont)
-            let ruby = Self.width(atom.word.ruby.map(\.text).joined(),font:smallFont)
-            let roman = Self.width(atom.word.romanization,font:smallFont) + (hasRoman ? fontSize*0.15 : 0)
+            let base = measuredWidth(atom.word.text, config: config, size: fontSize)
+            let ruby = measuredWidth(atom.word.ruby.map(\.text).joined(), config: config, size: max(10, fontSize*0.5))
+            let roman = measuredWidth(atom.word.romanization, config: config, size: max(10, fontSize*0.5)) + (hasRoman ? fontSize*0.15 : 0)
             return max(base,ruby,roman)
         }
         // Preserve AMLL wrapper boundaries, with a safe fallback for a single overlong word.
@@ -141,35 +249,61 @@ final class TextLayoutEngine {
                 // CTTypesetter is the native escape hatch for a pathological unbreakable token.
                 let text = atom.word.text.trimmingCharacters(in:.whitespacesAndNewlines)
                 if text.isEmpty { x += w; continue }
-                let baseWidth = Self.width(text,font:mainFont)
+                let baseRuns = fontRuns(text, config: config, size: fontSize)
+                let baseWidth = baseRuns.reduce(0) { $0 + Self.width($1.text, font: $1.font) }
                 let baseX = max(0,(w-baseWidth)/2)
                 let mainY = hasRuby ? fontSize*0.5 : 0
                 var pieces: [GlyphPlacement] = []
                 if atom.emphasis != nil && config.emphasis {
                     var cx = baseX
                     for (j,ch) in text.enumerated() {
-                        let cw = Self.width(String(ch),font:mainFont)
-                        pieces.append(.init(text:String(ch),origin:CGPoint(x:cx,y:mainY),width:cw,font:mainFont,characterIndex:atom.characterOffset+j)); cx += cw
+                        let value = String(ch)
+                        let charFont = font(config, size: fontSize, text: value)
+                        let cw = Self.width(value, font: charFont)
+                        pieces.append(.init(text:value,origin:CGPoint(x:cx,y:mainY),width:cw,font:charFont,characterIndex:atom.characterOffset+j)); cx += cw
                     }
                 } else {
-                    pieces.append(.init(text:text,origin:CGPoint(x:baseX,y:mainY),width:baseWidth,font:mainFont))
+                    var cx = baseX
+                    for run in baseRuns {
+                        let runWidth = Self.width(run.text, font: run.font)
+                        pieces.append(.init(text:run.text,origin:CGPoint(x:cx,y:mainY),width:runWidth,font:run.font))
+                        cx += runWidth
+                    }
                 }
                 if hasRuby {
-                    let text = atom.word.ruby.map(\.text).joined(), rw = Self.width(text,font:smallFont)
-                    if !text.isEmpty { pieces.append(.init(text:text,origin:CGPoint(x:(w-rw)/2,y:0),width:rw,font:smallFont)) }
+                    let text = atom.word.ruby.map(\.text).joined()
+                    let rubyRuns = fontRuns(text, config: config, size: max(10, fontSize*0.5))
+                    let rw = rubyRuns.reduce(0) { $0 + Self.width($1.text, font: $1.font) }
+                    if !text.isEmpty {
+                        var rx = (w-rw)/2
+                        for run in rubyRuns {
+                            let runWidth = Self.width(run.text, font: run.font)
+                            pieces.append(.init(text:run.text,origin:CGPoint(x:rx,y:0),width:runWidth,font:run.font))
+                            rx += runWidth
+                        }
+                    }
                 }
                 if hasRoman, !atom.word.romanization.isEmpty {
-                    let text = atom.word.romanization, rw = Self.width(text,font:smallFont)
-                    pieces.append(.init(text:text,origin:CGPoint(x:(w-rw)/2,y:mainY+fontSize*1.2),width:rw,font:smallFont))
+                    let text = atom.word.romanization
+                    let romanRuns = fontRuns(text, config: config, size: max(10, fontSize*0.5))
+                    let rw = romanRuns.reduce(0) { $0 + Self.width($1.text, font: $1.font) }
+                    var rx = (w-rw)/2
+                    for run in romanRuns {
+                        let runWidth = Self.width(run.text, font: run.font)
+                        pieces.append(.init(text:run.text,origin:CGPoint(x:rx,y:mainY+fontSize*1.2),width:runWidth,font:run.font))
+                        rx += runWidth
+                    }
                 }
                 if w > width {
                     // Keep glyph identity/time; split at grapheme boundaries without dropping content.
                     var cx = 0.0, cy = 0.0
                     pieces = []
                     for (j,ch) in text.enumerated() {
-                        let cw = Self.width(String(ch),font:mainFont)
+                        let value = String(ch)
+                        let charFont = font(config, size: fontSize, text: value)
+                        let cw = Self.width(value, font: charFont)
                         if cx+cw>width && cx>0 { cx = 0; cy += rowHeight }
-                        pieces.append(.init(text:String(ch),origin:CGPoint(x:cx,y:cy+mainY),width:cw,font:mainFont,characterIndex:atom.emphasis == nil ? nil : atom.characterOffset+j)); cx += cw
+                        pieces.append(.init(text:value,origin:CGPoint(x:cx,y:cy+mainY),width:cw,font:charFont,characterIndex:atom.emphasis == nil ? nil : atom.characterOffset+j)); cx += cw
                     }
                     words.append(.init(atom:atom,rect:CGRect(x:x,y:y,width:width,height:rowHeight+cy),pieces:pieces,width:baseWidth,fontSize:fontSize,fadeHeight:rowHeight))
                     y += cy
@@ -186,20 +320,40 @@ final class TextLayoutEngine {
         var sublines: [GlyphPlacement] = []
         func append(_ text: String) {
             guard !text.isEmpty else { return }
-            let string = NSAttributedString(string:text,attributes:[NSAttributedString.Key(kCTFontAttributeName as String):subFont])
+            let string = NSMutableAttributedString()
+            for run in fontRuns(text, config: subConfig, size: subSize) {
+                string.append(NSAttributedString(string: run.text, attributes: [NSAttributedString.Key(kCTFontAttributeName as String): run.font]))
+            }
             let typesetter = CTTypesetterCreateWithAttributedString(string)
             var offset = 0
             while offset<string.length {
                 let count = max(1,CTTypesetterSuggestLineBreak(typesetter,offset,width))
                 let s = (text as NSString).substring(with:NSRange(location:offset,length:min(count,string.length-offset)))
-                let w = Self.width(s,font:subFont)
-                sublines.append(.init(text:s,origin:CGPoint(x:line.isDuet ? max(0,width-w) : 0,y:y),width:w,font:subFont))
+                let runs = fontRuns(s, config: subConfig, size: subSize)
+                let lineWidth = runs.reduce(0) { $0 + Self.width($1.text, font: $1.font) }
+                var x = line.isDuet ? max(0,width-lineWidth) : 0
+                for run in runs {
+                    let runWidth = Self.width(run.text, font: run.font)
+                    sublines.append(.init(text:run.text,origin:CGPoint(x:x,y:y),width:runWidth,font:run.font))
+                    x += runWidth
+                }
                 offset += count; y += subSize*(product ? 1.42 : 1.5)
             }
         }
         if config.showTranslation { append(select(line.translations,language:config.translationLanguage)?.text ?? "") }
         if let roman, roman.words.isEmpty { append(roman.text) }
         return LineTextLayout(words:words,sublines:sublines,height:max(fontSize*1.2,y),width:width,fontSize:fontSize,isDynamic:dynamic)
+    }
+}
+
+private func appKitWeight(for cssWeight: Double) -> Double {
+    switch cssWeight {
+    case ...150: return 2
+    case ...350: return 3
+    case ...450: return 5
+    case ...650: return 6
+    case ...750: return 9
+    default: return 11
     }
 }
 

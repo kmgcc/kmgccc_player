@@ -258,10 +258,12 @@ final class LyricsWebViewStore: NSObject {
     }
 
     func setRenderQualityScale(_ scale: CGFloat, reason: String) {
-        if let nativeSurface {
-            var configuration = nativeSurface.view.configuration
+        if LyricsSurfaceManager.rendererBackend == .native,
+           let surfaceRole = LyricsSurfaceRole(rawValue: role) {
+            var configuration = NativeLyricsSurfaceManager.shared.configuration(for: surfaceRole)
+                ?? NativeLyricsConfigurationMapper.base(role: surfaceRole)
             configuration.renderScale = max(0.35, min(1, Double(scale)))
-            nativeSurface.apply(configuration: configuration)
+            NativeLyricsSurfaceManager.shared.applyConfiguration(configuration, for: surfaceRole)
             return
         }
         let clampedScale = max(0.1, min(1, scale))
@@ -1054,8 +1056,9 @@ final class LyricsWebViewStore: NSObject {
     /// later resume can restore it exactly.
     func suspendRendererPreservingSnapshot(reason: String) {
         guard !isShutDown, !isRendererSuspended else { return }
-        if nativeSurface != nil {
+        if let nativeSurface {
             isRendererSuspended = true
+            nativeSurface.setRenderingActive(false)
             return
         }
         isRendererSuspended = true
@@ -1076,8 +1079,11 @@ final class LyricsWebViewStore: NSObject {
     /// Resume a renderer previously suspended for a hidden surface.
     func resumeRendererIfNeeded(reason: String) {
         guard !isShutDown, isRendererSuspended else { return }
-        if nativeSurface != nil {
+        if let nativeSurface, let surfaceRole = LyricsSurfaceRole(rawValue: role) {
             isRendererSuspended = false
+            nativeSurface.setRenderingActive(
+                NativeLyricsSurfaceManager.shared.isActive(surfaceRole)
+            )
             return
         }
         isRendererSuspended = false
@@ -1118,7 +1124,8 @@ final class LyricsWebViewStore: NSObject {
     func setConfigJSON(_ json: String) {
         guard !isShutDown else { return }
 
-        if nativeSurface != nil, let surfaceRole = LyricsSurfaceRole(rawValue: role) {
+        if LyricsSurfaceManager.rendererBackend == .native,
+           let surfaceRole = LyricsSurfaceRole(rawValue: role) {
             lastConfigJSON = json
             NativeLyricsSurfaceManager.shared.applyConfigurationJSON(json, for: surfaceRole)
             return
@@ -1138,7 +1145,8 @@ final class LyricsWebViewStore: NSObject {
     func forceSetConfigJSON(_ json: String, reason: String) {
         guard !isShutDown else { return }
 
-        if nativeSurface != nil, let surfaceRole = LyricsSurfaceRole(rawValue: role) {
+        if LyricsSurfaceManager.rendererBackend == .native,
+           let surfaceRole = LyricsSurfaceRole(rawValue: role) {
             lastConfigJSON = json
             NativeLyricsSurfaceManager.shared.applyConfigurationJSON(json, for: surfaceRole)
             return
@@ -2240,7 +2248,8 @@ final class LyricsWebViewStore: NSObject {
     /// Sets config theme and injects CSS variables for deep styling.
     func applyTheme(_ palette: ThemePalette) {
         baseThemePalette = palette
-        if let surfaceRole = LyricsSurfaceRole(rawValue: role), nativeSurface != nil {
+        if LyricsSurfaceManager.rendererBackend == .native,
+           let surfaceRole = LyricsSurfaceRole(rawValue: role) {
             NativeLyricsSurfaceManager.shared.applyPalette(palette, for: surfaceRole)
             return
         }
@@ -2251,8 +2260,11 @@ final class LyricsWebViewStore: NSObject {
     /// This lets fullscreen keep a dark-style lyrics palette while the app theme continues updating.
     func setThemePaletteOverride(_ palette: ThemePalette?) {
         overrideThemePalette = palette
-        if let palette, let surfaceRole = LyricsSurfaceRole(rawValue: role), nativeSurface != nil {
-            NativeLyricsSurfaceManager.shared.applyPalette(palette, for: surfaceRole)
+        if LyricsSurfaceManager.rendererBackend == .native,
+           let surfaceRole = LyricsSurfaceRole(rawValue: role) {
+            if let effectivePalette = palette ?? baseThemePalette {
+                NativeLyricsSurfaceManager.shared.applyPalette(effectivePalette, for: surfaceRole)
+            }
             return
         }
         applyEffectiveTheme()

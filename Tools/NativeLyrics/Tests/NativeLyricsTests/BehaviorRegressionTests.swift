@@ -25,7 +25,7 @@ final class BehaviorRegressionTests: XCTestCase {
         XCTAssertGreaterThan(view.render(at:4.8).groups[0].blur,2)
     }
 
-    @MainActor func testOnlyFocusedRowStaysSharpWhenTTMLRangesOverlap() throws {
+    @MainActor func testAllParallelRowsStaySharpWhenTTMLRangesOverlap() throws {
         let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='4s'><span begin='0s' end='4s'>Main</span></p><p begin='2s' end='6s'><span begin='0s' end='4s'>Background</span></p><p begin='4.5s' end='7.5s'><span begin='0s' end='3s'>Next</span></p></div></body></tt>".utf8)
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
         view.configuration.timing.enabled = false
@@ -33,13 +33,23 @@ final class BehaviorRegressionTests: XCTestCase {
         let frame = view.render(at:3)
         XCTAssertEqual(frame.timeline.focus,0)
         XCTAssertEqual(frame.groups[0].blur,0,accuracy:0.001)
-        XCTAssertGreaterThan(frame.groups[1].blur,2)
+        // Blur transitions are intentionally eased; once the overlap has
+        // settled, every concurrently highlighted row is sharp.
+        let settled = view.render(at:3.6)
+        XCTAssertEqual(settled.groups[0].blur,0,accuracy:0.001)
+        XCTAssertEqual(settled.groups[1].blur,0,accuracy:0.001)
         view.render(at:4)
         view.render(at:5.8)
         let next = view.render(at:6.4)
         XCTAssertEqual(next.timeline.focus,1)
-        XCTAssertGreaterThan(next.groups[0].blur,0)
+        XCTAssertEqual(next.timeline.highlighted,[1,2])
+        XCTAssertGreaterThan(next.groups[0].blur,2)
         XCTAssertEqual(next.groups[1].blur,0,accuracy:0.001)
+        XCTAssertEqual(next.groups[2].blur,0,accuracy:0.001)
+        // A completed middle row is still AMLL-buffered while the long main
+        // row and the next duet row overlap. It must retain the active scale
+        // instead of shrinking as soon as its own range ends.
+        XCTAssertEqual(next.groups[1].scale,1,accuracy:0.001)
     }
 
     @MainActor func testExpiredFocusBlursDuringAnInterlude() throws {
@@ -53,6 +63,67 @@ final class BehaviorRegressionTests: XCTestCase {
         XCTAssertTrue(gap.timeline.playing.isEmpty)
         XCTAssertGreaterThan(gap.groups[0].blur,2)
         XCTAssertGreaterThan(gap.groups[1].blur,2)
+    }
+
+    @MainActor func testInterludeKeepsPreviousRowInPlaceAndCentersDots() throws {
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='2s'>阖上眼我就是自由灵魂</p><p begin='8s' end='10s'>就闭上眼 当我</p></div></body></tt>".utf8)
+        let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720))
+        view.automaticDisplayUpdates = false
+        view.configuration.timing.enabled = false
+        view.configuration.spring = false
+        view.configuration.blur = false
+        try view.load(ttml:data,playing:true,hostTime:0)
+
+        let beforeGap = view.render(at:1.9)
+        let inGap = view.render(at:3.0)
+        guard let dots = inGap.interlude else {
+            return XCTFail("Expected a visible interlude frame")
+        }
+        XCTAssertEqual(inGap.timeline.interlude?.anchor,0)
+        // Inserting the marker must not apply the old AMLL global-origin
+        // subtraction, which lifted the completed line at gap entrance.
+        XCTAssertEqual(inGap.groups[0].y,beforeGap.groups[0].y,accuracy:0.001)
+        let previousBottom = inGap.groups[0].y + inGap.groups[0].height
+        let expectedCenter = previousBottom + (inGap.groups[1].y-previousBottom)/2
+        XCTAssertEqual(dots.y,expectedCenter,accuracy:0.001)
+        XCTAssertGreaterThan(dots.opacity,0)
+        XCTAssertEqual(dots.walk.count,3)
+        XCTAssertGreaterThanOrEqual(dots.walk[0],dots.walk[1])
+        XCTAssertGreaterThanOrEqual(dots.walk[1],dots.walk[2])
+    }
+
+    func testLineTimedWindowDoesNotDoubleApplyInactiveOpacity() throws {
+        // A line-timed LRC/TTML document intentionally keeps AMLL's group
+        // opacity of 0.2.  The glyph channel must stay opaque inside that
+        // group; applying the normal karaoke inactive alpha as well makes the
+        // whole track appear abnormally pale.
+        let word = LyricWord(id:"line-0",text:"Blessing",range:.init(0,4))
+        let line = LyricLine(id:"line",range:.init(0,4),words:[word],isWordTimed:false)
+        var config = LyricsConfiguration()
+        config.surface = .window
+        let prepared = PreparedGroup(source:.init(main:line),main:line,background:nil)
+        let layout = TextLayoutEngine().group(prepared,width:760,config:config,dynamic:false,hasDuet:false).main
+        let layers = LineLayers(layout,cache:GlyphCache(),scale:2,config:config,previous:nil,now:0)
+
+        layers.update(now:0,media:1,floatTime:1,active:false,alpha:0,background:false,config:config,seek:true)
+        let glyph = try XCTUnwrap(layers.words.first?.glyphs.first)
+        XCTAssertEqual(glyph.baseOpacity,1,accuracy:0.0001)
+        XCTAssertEqual(glyph.highlightOpacity,0,accuracy:0.0001)
+    }
+
+    @MainActor func testFullscreenLineTimedRowsStayOpaqueAndCanBlur() throws {
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='2s' end='4s'>First</p><p begin='6s' end='8s'>Second</p></div></body></tt>".utf8)
+        let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
+        view.configuration.timing.enabled = false
+        view.configuration.fullscreenLyricDodgeMode = true
+        try view.load(ttml:data,playing:true,hostTime:0)
+
+        _ = view.render(at:0)
+        let frame = view.render(at:0.3)
+        XCTAssertTrue(view.configuration.usesOpaqueCompositing)
+        XCTAssertTrue(frame.groups.allSatisfy { $0.opacity >= 0.999 })
+        XCTAssertGreaterThan(frame.groups[0].blur,0)
+        XCTAssertGreaterThan(frame.groups[1].blur,0)
     }
 
     @MainActor func testScrubCancelsCascadeAndMovesStackImmediately() throws {
@@ -168,10 +239,15 @@ final class BehaviorRegressionTests: XCTestCase {
         view.scroll(by:140,hostTime:2); view.render(at:2)
         let before = view.render(at:2.999)
         XCTAssertFalse(before.following)
-        let start = view.render(at:3)
+        let stillBrowsing = view.render(at:3)
+        XCTAssertFalse(stillBrowsing.following)
+        for i in stillBrowsing.groups.indices { XCTAssertEqual(stillBrowsing.groups[i].y,before.groups[i].y,accuracy:0.02) }
+        view.setPointerInside(false,hostTime:3)
+        XCTAssertFalse(view.render(at:7.99).following)
+        let start = view.render(at:8)
         XCTAssertTrue(start.following)
         for i in start.groups.indices { XCTAssertEqual(start.groups[i].y,before.groups[i].y,accuracy:0.02) }
-        let moving = view.render(at:3.03)
+        let moving = view.render(at:8.03)
         XCTAssertNotEqual(moving.groups[0].y,start.groups[0].y)
         XCTAssertEqual(moving.groups[3].y,start.groups[3].y,accuracy:0.02)
     }
@@ -188,18 +264,16 @@ final class BehaviorRegressionTests: XCTestCase {
         }
     }
 
-    func testHighlightSmootherTracksPromptlyAndGlidesOnlyDuringAStall() {
+    func testHighlightSmootherNeverAddsSyntheticLeadOrLag() {
         var smoother = HighlightSmoother()
         XCTAssertEqual(smoother.sample(target:0,now:0,playing:false,reset:true,fadeWidth:48),0)
         XCTAssertEqual(smoother.sample(target:100,now:0.1,playing:true,reset:false,fadeWidth:48),100,accuracy:0.001)
         let before = smoother.value
         let duringStall = smoother.sample(target:100,now:0.2,playing:true,reset:false,fadeWidth:48)
-        XCTAssertGreaterThan(duringStall,before)
-        XCTAssertLessThanOrEqual(duringStall,101.44)
+        XCTAssertEqual(duringStall,before,accuracy:0.001)
         XCTAssertEqual(smoother.sample(target:80,now:0.3,playing:false,reset:false,fadeWidth:48),80,accuracy:0.001)
         let resumed = smoother.sample(target:80,now:1,playing:true,reset:false,fadeWidth:48)
-        XCTAssertGreaterThanOrEqual(resumed,80)
-        XCTAssertLessThanOrEqual(resumed,80.1)
+        XCTAssertEqual(resumed,80,accuracy:0.001)
     }
 
     @MainActor func testPausedMaskIsExactAndDoesNotDrift() throws {

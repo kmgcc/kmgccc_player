@@ -23,6 +23,8 @@ final class NativeLyricsSurface: NSObject {
     var onSeek: ((Double) -> Void)?
     private(set) var lastError: Error?
     private(set) var lastTTML = ""
+    private var lastRawTTML = ""
+    private var lastRawTrackID: UUID?
     private(set) var lastTrackID: UUID?
     private(set) var currentTime = 0.0
     private(set) var isPlaying = false
@@ -33,6 +35,10 @@ final class NativeLyricsSurface: NSObject {
         self.view = LyricsView(frame: .zero)
         super.init()
 
+        // A surface may be configured or receive a snapshot before a host is
+        // visible. Activation is the only operation that starts frame delivery.
+        view.automaticDisplayUpdates = false
+
         view.onSeek = { [weak self] seconds in
             guard let self else { return }
             self.pendingClickSeek = true
@@ -40,7 +46,14 @@ final class NativeLyricsSurface: NSObject {
         }
     }
 
-    var isReady: Bool { true }
+    var isReady: Bool { lastError == nil }
+
+    var isRenderingActive: Bool { view.automaticDisplayUpdates }
+
+    func setRenderingActive(_ active: Bool) {
+        guard view.automaticDisplayUpdates != active else { return }
+        view.automaticDisplayUpdates = active
+    }
 
     func apply(configuration: LyricsConfiguration) {
         view.configuration = configuration
@@ -53,12 +66,37 @@ final class NativeLyricsSurface: NSObject {
         isPlaying: Bool,
         forceLyricsReload: Bool = false
     ) {
-        let text = ttml ?? ""
+        // The library can contain legacy AMLL TTML whose nested clocks are
+        // absolute. Normalize once at the app/native boundary; the renderer
+        // itself intentionally accepts strict parent-relative TTML only.
+        let rawText = ttml ?? ""
+        let rawChanged = rawText != lastRawTTML || trackID != lastRawTrackID
+        guard forceLyricsReload || rawChanged else {
+            self.currentTime = currentTime.isFinite ? max(0, currentTime) : 0
+            self.isPlaying = isPlaying
+            synchronize(time: self.currentTime, playing: isPlaying)
+            return
+        }
+
+        let text = NativeLyricsTTMLAdapter.normalizeForNative(rawText)
         let shouldReload = forceLyricsReload || trackID != lastTrackID || text != lastTTML
         self.currentTime = currentTime.isFinite ? max(0, currentTime) : 0
         self.isPlaying = isPlaying
         guard shouldReload else {
+            lastRawTTML = rawText
+            lastRawTrackID = trackID
             synchronize(time: self.currentTime, playing: isPlaying)
+            return
+        }
+
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            view.clear(time: self.currentTime, playing: isPlaying)
+            lastError = nil
+            lastTTML = ""
+            lastRawTTML = rawText
+            lastRawTrackID = trackID
+            lastTrackID = trackID
+            pendingClickSeek = false
             return
         }
 
@@ -70,15 +108,25 @@ final class NativeLyricsSurface: NSObject {
             )
             lastError = nil
             lastTTML = text
+            lastRawTTML = rawText
+            lastRawTrackID = trackID
             lastTrackID = trackID
         } catch {
             // Parse before replacing the previous visible document. The native
             // view follows the same failure boundary as the old bridge: an
             // invalid payload is recorded and the last valid surface remains.
             lastError = error
+            lastRawTTML = rawText
+            lastRawTrackID = trackID
             Log.error(
                 "Native lyrics TTML rejected role=\(role.rawValue): \(error.localizedDescription)",
                 category: .lyrics
+            )
+            view.synchronize(
+                time: self.currentTime,
+                playing: isPlaying,
+                seek: true,
+                motion: .immediate
             )
         }
         pendingClickSeek = false
@@ -106,7 +154,11 @@ final class NativeLyricsSurface: NSObject {
     func setCurrentTime(_ time: Double, force: Bool = false) {
         guard time.isFinite else { return }
         guard force || abs(time - currentTime) >= 0.001 || pendingClickSeek else { return }
-        synchronize(time: time, playing: isPlaying)
+        // A forced update is used for an explicit seek/reveal (for example
+        // when the fullscreen surface is brought back on screen). Preserve
+        // that intent all the way through the native clock so a stale
+        // low-frequency playback sample cannot be mistaken for the seek.
+        synchronize(time: time, playing: isPlaying, seek: force, motion: .immediate)
     }
 
     func setPlaying(_ playing: Bool, force: Bool = false) {
@@ -134,6 +186,7 @@ final class NativeLyricsSurface: NSObject {
     }
 
     func shutdown() {
+        setRenderingActive(false)
         view.releaseRenderingResources()
         onSeek = nil
     }
@@ -152,6 +205,7 @@ final class NativeLyricsSurfaceManager {
 
     private var surfaces: [LyricsSurfaceRole: NativeLyricsSurface] = [:]
     private var configurations: [LyricsSurfaceRole: LyricsConfiguration] = [:]
+    private var seekHandlers: [LyricsSurfaceRole: (Double) -> Void] = [:]
     private var activeRoles: Set<LyricsSurfaceRole> = []
     private var snapshot = PlaybackSnapshot()
 
@@ -163,7 +217,7 @@ final class NativeLyricsSurfaceManager {
         if let configuration = configurations[role] {
             surface.apply(configuration: configuration)
         }
-        if !snapshot.ttml.isEmpty || snapshot.trackID != nil {
+        if role.receivesSharedPlaybackSnapshot {
             surface.applyTrack(
                 trackID: snapshot.trackID,
                 ttml: snapshot.ttml,
@@ -172,6 +226,8 @@ final class NativeLyricsSurfaceManager {
                 forceLyricsReload: true
             )
         }
+        surface.onSeek = seekHandlers[role]
+        surface.setRenderingActive(activeRoles.contains(role))
         surfaces[role] = surface
         return surface
     }
@@ -182,11 +238,12 @@ final class NativeLyricsSurfaceManager {
 
     func activate(role: LyricsSurfaceRole) {
         activeRoles.insert(role)
-        _ = surface(for: role)
+        surface(for: role).setRenderingActive(true)
     }
 
     func deactivate(role: LyricsSurfaceRole) {
         activeRoles.remove(role)
+        surfaces[role]?.setRenderingActive(false)
         guard !role.persistsState else { return }
         surfaces.removeValue(forKey: role)?.shutdown()
     }
@@ -199,7 +256,8 @@ final class NativeLyricsSurfaceManager {
         trackID: UUID?,
         lyricsTTML: String,
         currentTime: Double,
-        isPlaying: Bool
+        isPlaying: Bool,
+        forceLyricsReload: Bool = false
     ) {
         snapshot = PlaybackSnapshot(
             trackID: trackID,
@@ -207,12 +265,13 @@ final class NativeLyricsSurfaceManager {
             time: currentTime.isFinite ? max(0, currentTime) : 0,
             playing: isPlaying
         )
-        for surface in surfaces.values {
+        for (role, surface) in surfaces where role.receivesSharedPlaybackSnapshot {
             surface.applyTrack(
                 trackID: trackID,
                 ttml: lyricsTTML,
                 currentTime: snapshot.time,
-                isPlaying: isPlaying
+                isPlaying: isPlaying,
+                forceLyricsReload: forceLyricsReload
             )
         }
     }
@@ -230,7 +289,7 @@ final class NativeLyricsSurfaceManager {
             time: currentTime.isFinite ? max(0, currentTime) : 0,
             playing: isPlaying
         )
-        for surface in surfaces.values {
+        for (role, surface) in surfaces where role.receivesSharedPlaybackSnapshot {
             surface.applyTrack(
                 trackID: trackID,
                 ttml: ttml,
@@ -241,20 +300,24 @@ final class NativeLyricsSurfaceManager {
         }
     }
 
-    func updatePlaybackTime(_ time: Double) {
+    func updatePlaybackTime(_ time: Double, force: Bool = false) {
         guard time.isFinite else { return }
         snapshot.time = max(0, time)
-        for surface in surfaces.values { surface.setCurrentTime(snapshot.time) }
+        for (role, surface) in surfaces where role.receivesSharedPlaybackSnapshot {
+            surface.setCurrentTime(snapshot.time, force: force)
+        }
     }
 
     func updatePlayingState(_ playing: Bool) {
         snapshot.playing = playing
-        for surface in surfaces.values { surface.setPlaying(playing) }
+        for (role, surface) in surfaces where role.receivesSharedPlaybackSnapshot {
+            surface.setPlaying(playing)
+        }
     }
 
     func applyConfiguration(_ configuration: LyricsConfiguration, for role: LyricsSurfaceRole) {
         configurations[role] = configuration
-        surface(for: role).apply(configuration: configuration)
+        surfaces[role]?.apply(configuration: configuration)
     }
 
     func applyConfigurationJSON(_ json: String, for role: LyricsSurfaceRole) {
@@ -273,8 +336,15 @@ final class NativeLyricsSurfaceManager {
         applyConfiguration(configuration, for: role)
     }
 
+    func setRenderScale(_ scale: Double, for role: LyricsSurfaceRole) {
+        var configuration = configurations[role] ?? NativeLyricsConfigurationMapper.base(role: role)
+        configuration.renderScale = max(0.35, min(1, scale))
+        applyConfiguration(configuration, for: role)
+    }
+
     func applyTheme(_ palette: ThemePalette) {
-        for role in configurations.keys {
+        let roles = Set(configurations.keys).union(surfaces.keys)
+        for role in roles {
             var configuration = configurations[role] ?? NativeLyricsConfigurationMapper.base(role: role)
             configuration.palette = NativeLyricsConfigurationMapper.paletteForWindow(palette)
             applyConfiguration(configuration, for: role)
@@ -289,10 +359,16 @@ final class NativeLyricsSurfaceManager {
         surfaces[role]?.followCurrentLyrics()
     }
 
+    func setSeekHandler(_ handler: ((Double) -> Void)?, for role: LyricsSurfaceRole) {
+        seekHandlers[role] = handler
+        surfaces[role]?.onSeek = handler
+    }
+
     func shutdownAll() {
         surfaces.values.forEach { $0.shutdown() }
         surfaces.removeAll()
         configurations.removeAll()
+        seekHandlers.removeAll()
         activeRoles.removeAll()
         snapshot = PlaybackSnapshot()
     }
@@ -361,7 +437,7 @@ extension NativeLyricsSurfaceManager {
         let isP3 = lower.contains("display-p3")
         let isRGB = lower.hasPrefix("rgb(") || lower.hasPrefix("rgba(") || isP3
         guard isRGB else { return nil }
-        var body = trimmed
+        let body = trimmed
             .replacingOccurrences(of: "color(display-p3", with: "", options: .caseInsensitive)
             .replacingOccurrences(of: "rgba(", with: "", options: .caseInsensitive)
             .replacingOccurrences(of: "rgb(", with: "", options: .caseInsensitive)
@@ -393,13 +469,24 @@ extension NativeLyricsSurfaceManager {
 
     static func springParameters(from settings: LyricSpringUserSettings) -> SpringParameters? {
         guard settings.enabled else { return nil }
-        let duration = max(0.1, min(1.6, settings.duration))
-        let bounce = max(-0.8, min(0.8, settings.bounce))
-        // Convert the existing duration/bounce controls to a damped system.
-        // The native solver preserves velocity and delay; only these two user
-        // controls are mapped here, keeping the package API independent.
-        let stiffness = 110 / max(0.35, duration)
-        let damping = 18 * (1 - bounce * 0.35)
-        return SpringParameters(mass: 1, damping: damping, stiffness: stiffness, soft: bounce <= 0)
+        let duration = max(
+            AppSettings.lyricSpringDurationRange.lowerBound,
+            min(AppSettings.lyricSpringDurationRange.upperBound, settings.duration)
+        )
+        let bounce = max(
+            AppSettings.lyricSpringBounceRange.lowerBound,
+            min(AppSettings.lyricSpringBounceRange.upperBound, settings.bounce)
+        )
+        if abs(duration - AppSettings.defaultLyricSpringDuration) < 0.0001,
+           abs(bounce - AppSettings.defaultLyricSpringBounce) < 0.0001 {
+            // nil keeps NativeLyrics' focus-interval adaptive position spring.
+            return nil
+        }
+        return .positionOverride(
+            duration: duration,
+            bounce: bounce,
+            referenceDuration: AppSettings.defaultLyricSpringDuration,
+            referenceBounce: AppSettings.defaultLyricSpringBounce
+        )
     }
 }

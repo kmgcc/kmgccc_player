@@ -240,7 +240,7 @@ struct LyricsPanelView: View {
         let shouldRevealExistingLyrics =
             LyricsSurfaceManager.shared.currentMode == .main
             && LyricsSurfaceManager.shared.switchState == .idle
-            && LyricsSurfaceManager.shared.existingStore(for: .main)?.isReady == true
+            && LyricsSurfaceManager.shared.hasReadySurface(for: .main)
         updateLyricsSurfaceHosting(
             shouldHost: isVisible && hasTrack,
             reason: reason
@@ -311,7 +311,7 @@ struct LyricsPanelView: View {
         let presentation = playbackCoordinator.presentation
         switch presentation.source {
         case .local:
-            lyricsVM.ensureAMLLLoaded(
+            lyricsVM.ensureLyricsLoaded(
                 track: presentation.localTrack,
                 currentTime: presentation.lyricsCurrentTime,
                 isPlaying: presentation.isPlaying,
@@ -320,7 +320,7 @@ struct LyricsPanelView: View {
                 forceLyricsReload: forceLyricsReload
             )
         case .appleMusic, .systemNowPlaying:
-            lyricsVM.ensureExternalAMLLLoaded(
+            lyricsVM.ensureExternalLyricsLoaded(
                 presentation: presentation,
                 reason: reason,
                 forceWebReload: forceWebReload,
@@ -789,8 +789,11 @@ struct LyricsSettingsObserver: ViewModifier {
         Int = 500
     @AppStorage("lyricsTranslationFontWeightDark") private var lyricsTranslationFontWeightDark:
         Int = 100
-    @AppStorage("lyricsLeadInMs") private var lyricsLeadInMs: Double = 300
-    @AppStorage("lyricsNearSwitchGapMs") private var lyricsNearSwitchGapMs: Double = 70
+    // Keep the observer defaults aligned with AppSettings and the native
+    // timing contract. These wrappers can be the first access to the shared
+    // UserDefaults keys when the lyrics panel is mounted before Settings.
+    @AppStorage("lyricsLeadInMs") private var lyricsLeadInMs: Double = 600
+    @AppStorage("lyricsNearSwitchGapMs") private var lyricsNearSwitchGapMs: Double = 160
     @AppStorage("lyricsGlobalAdvanceMs") private var lyricsGlobalAdvanceMs: Double = 0
 
     func body(content: Content) -> some View {

@@ -86,6 +86,7 @@
 "settings.lyrics.weight_medium" = "中等";
 "settings.lyrics.weight_semibold" = "半粗";
 "settings.lyrics.weight_bold" = "粗体";
+"settings.lyrics.weight_black" = "极粗";
 "settings.lyrics.translation_size" = "翻译大小";
 "settings.lyrics.translation_weight" = "翻译粗细";
 "settings.lyrics.chinese_font" = "中文字体";

@@ -216,6 +216,11 @@ private final class DocumentBuilder {
             groups.append(LyricGroup(main:main,background:bg))
             for (index,b) in backgrounds.dropFirst().enumerated() {
                 var extra = try line(b,id:id+"-extra-bg-\(index)")
+                // Preserve the flat AMLL stream's background marker when an
+                // input contains more than one x-bg line.  The timing policy
+                // may then collapse excessive consecutive background rows in
+                // exactly the same pass as the original adapter.
+                extra.isBackground = true
                 extra.isDuet = main.isDuet; extra.agent = main.agent
                 groups.append(LyricGroup(main:extra))
                 diagnostics.append("Additional background voice promoted to an independent group, matching AMLL's converter.")

@@ -3,6 +3,69 @@ import XCTest
 @testable import NativeLyrics
 
 final class LayoutTests: XCTestCase {
+    func testFlatLRCLineIsNotTreatedAsKaraokeWordTiming() {
+        let word = LyricWord(id: "line", text: "A whole LRC line", range: .init(1, 4))
+        let line = LyricLine(id: "line", range: .init(1, 4), words: [word], isWordTimed: true)
+        XCTAssertFalse(line.hasEffectiveWordTiming)
+        let group = PreparedGroup(source: .init(main: line), main: line, background: nil)
+        let layout = TextLayoutEngine().group(
+            group, width: 760, config: LyricsConfiguration(),
+            dynamic: line.hasEffectiveWordTiming, hasDuet: false
+        )
+        XCTAssertFalse(layout.main.isDynamic)
+    }
+
+    func testDistinctWordRangesEnableKaraokeWordTiming() {
+        let words = [
+            LyricWord(id: "a", text: "One", range: .init(1, 2)),
+            LyricWord(id: "b", text: "Two", range: .init(2, 4))
+        ]
+        let line = LyricLine(id: "line", range: .init(1, 4), words: words, isWordTimed: true)
+        XCTAssertTrue(line.hasEffectiveWordTiming)
+    }
+
+    func testIndependentFontWeightsResolveConcreteFamilyFaces() {
+        guard NSFontManager.shared.availableMembers(ofFontFamily: "Helvetica Neue") != nil else { return }
+        let word = LyricWord(id: "word", text: "Weight", range: .init(0, 2))
+        let line = LyricLine(id: "line", range: .init(0, 2), words: [word])
+        let group = PreparedGroup(source: .init(main: line), main: line, background: nil)
+        var thin = LyricsConfiguration(); thin.fontName = "Helvetica Neue"; thin.fontWeight = -0.6
+        var bold = thin; bold.fontWeight = 0.6
+        let thinLayout = TextLayoutEngine().group(group, width: 760, config: thin, dynamic: false, hasDuet: false)
+        let boldLayout = TextLayoutEngine().group(group, width: 760, config: bold, dynamic: false, hasDuet: false)
+        guard let thinFont = thinLayout.main.words.first?.pieces.first?.font,
+              let boldFont = boldLayout.main.words.first?.pieces.first?.font else {
+            return XCTFail("Expected shaped glyphs")
+        }
+        let thinName = String(CTFontCopyPostScriptName(thinFont))
+        let boldName = String(CTFontCopyPostScriptName(boldFont))
+        XCTAssertNotEqual(thinName, boldName)
+        XCTAssertTrue(thinName.localizedCaseInsensitiveContains("ultralight") || thinName.localizedCaseInsensitiveContains("thin"))
+        XCTAssertTrue(boldName.localizedCaseInsensitiveContains("bold"))
+    }
+
+    func testScriptSpecificFamiliesAndExtremeWeightsReachGlyphs() {
+        guard NSFontManager.shared.availableMembers(ofFontFamily: "Inter") != nil,
+              NSFontManager.shared.availableMembers(ofFontFamily: "PingFang SC") != nil else { return }
+        let word = LyricWord(id:"mixed",text:"Hello 世界",range:.init(0,4))
+        let line = LyricLine(id:"mixed",range:.init(0,4),words:[word])
+        let group = PreparedGroup(source:.init(main:line),main:line,background:nil)
+        var config = LyricsConfiguration()
+        config.fontName = "Inter"
+        config.fontNameCJK = "PingFang SC"
+        config.fontWeight = 1
+        let layout = TextLayoutEngine().group(group,width:760,config:config,dynamic:false,hasDuet:false)
+        let names = layout.main.words.flatMap(\.pieces).map { String(CTFontCopyPostScriptName($0.font)) }
+        XCTAssertTrue(names.contains { $0.localizedCaseInsensitiveContains("Black") || $0.localizedCaseInsensitiveContains("ExtraBold") })
+        XCTAssertTrue(names.contains { $0.localizedCaseInsensitiveContains("PingFang") })
+
+        var thin = config
+        thin.fontWeight = -0.6
+        let thinLayout = TextLayoutEngine().group(group,width:760,config:thin,dynamic:false,hasDuet:false)
+        let thinNames = thinLayout.main.words.flatMap(\.pieces).map { String(CTFontCopyPostScriptName($0.font)) }
+        XCTAssertTrue(thinNames.contains { $0.localizedCaseInsensitiveContains("Thin") || $0.localizedCaseInsensitiveContains("ExtraLight") })
+    }
+
     func testMaskDwellsBetweenWordsAndReachesEnd() {
         let a = LyricWord(id:"a",text:"Alpha",range:.init(1,2)), b = LyricWord(id:"b",text:"Beta",range:.init(4,5))
         let placements = [a,b].map { WordPlacement(atom:TextAtom(word:$0),rect:.zero,pieces:[],width:100,fontSize:40,fadeHeight:48) }
@@ -58,6 +121,35 @@ final class LayoutTests: XCTestCase {
         let before = view.document
         XCTAssertThrowsError(try view.load(ttml:Data("bad xml".utf8)))
         XCTAssertEqual(view.document,before)
+    }
+    @MainActor func testClearRemovesDocumentAndStopsAutomaticUpdates() throws {
+        let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720))
+        view.automaticDisplayUpdates = false
+        try view.load(ttml:Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='1s' end='3s'>Clear me</p></div></body></tt>".utf8),playing:true,hostTime:0)
+        XCTAssertNotNil(view.document)
+        view.clear(time:2,playing:true,hostTime:10)
+        XCTAssertNil(view.document)
+        XCTAssertNil(view.lastFrame)
+        XCTAssertFalse(view.isDisplayUpdateRunning)
+    }
+    @MainActor func testPlayingViewAdvancesFromHostClockAndPauseFreezes() throws {
+        let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720))
+        view.automaticDisplayUpdates = false
+        try view.load(
+            ttml:Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='10s'><span begin='0s' end='10s'>Moving</span></p></div></body></tt>".utf8),
+            time:1,
+            playing:true,
+            hostTime:100
+        )
+        let first = view.render(at:100)
+        let advanced = view.render(at:102.5)
+        XCTAssertEqual(first.timeline.time,1,accuracy:0.0001)
+        XCTAssertEqual(advanced.timeline.time,3.5,accuracy:0.0001)
+        XCTAssertGreaterThan(advanced.groups[0].maskPosition,first.groups[0].maskPosition)
+
+        view.synchronize(time:4,playing:false,hostTime:103)
+        let frozen = view.render(at:200)
+        XCTAssertEqual(frozen.timeline.time,4,accuracy:0.0001)
     }
     @MainActor func testClickUsesSourceNotVisualAdvance() throws {
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false

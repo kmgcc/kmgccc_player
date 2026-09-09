@@ -27,6 +27,7 @@ struct FullscreenLyricsTabView: View {
     @State private var amllLyricsSpringBounce: Double = AppSettings.shared.amllLyricsSpringBounce
     @State private var amllDiscreteWordHighlightEnabled: Bool = AppSettings.shared.amllDiscreteWordHighlightEnabled
     @State private var pendingSpringSettingsRefreshTask: Task<Void, Never>?
+    @State private var pendingTypographyRefreshTask: Task<Void, Never>?
 
     private let fontWeights: [(label: LocalizedStringKey, value: Int)] = [
         ("settings.lyrics.weight_thin", 100),
@@ -35,6 +36,7 @@ struct FullscreenLyricsTabView: View {
         ("settings.lyrics.weight_medium", 500),
         ("settings.lyrics.weight_semibold", 600),
         ("settings.lyrics.weight_bold", 700),
+        ("settings.lyrics.weight_black", 900),
     ]
 
     var body: some View {
@@ -60,7 +62,7 @@ struct FullscreenLyricsTabView: View {
         .onChange(of: settings.fullscreen.skinID) { _, _ in
             syncStateFromSettings()
         }
-        .onChange(of: fullscreenLyricsTypography) { _, _ in syncToSettings() }
+        .onChange(of: fullscreenLyricsTypography) { _, _ in syncToSettings(debounceLyrics: true) }
         .onChange(of: amllLyricsRenderQuality) { _, _ in syncToSettings() }
         .onChange(of: amllLyricsSpringDuration) { _, _ in syncSpringSettingsDebounced() }
         .onChange(of: amllLyricsSpringBounce) { _, _ in syncSpringSettingsDebounced() }
@@ -197,7 +199,7 @@ struct FullscreenLyricsTabView: View {
         amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
     }
 
-    private func syncToSettings() {
+    private func syncToSettings(debounceLyrics: Bool = false) {
         let typography = fullscreenLyricsTypography
         if settings.fullscreenLyricsUsesPerSkinTypography {
             settings.setFullscreenLyricsTypography(
@@ -218,7 +220,29 @@ struct FullscreenLyricsTabView: View {
         settings.amllLyricsSpringDuration = amllLyricsSpringDuration
         settings.amllLyricsSpringBounce = amllLyricsSpringBounce
         settings.amllDiscreteWordHighlightEnabled = amllDiscreteWordHighlightEnabled
-        lyricsVM.refreshConfigFromSettings()
+        if debounceLyrics {
+            scheduleTypographyRefresh()
+        } else {
+            lyricsVM.refreshConfigFromSettings()
+        }
+    }
+
+    private func scheduleTypographyRefresh() {
+        pendingTypographyRefreshTask?.cancel()
+        pendingTypographyRefreshTask = Task { @MainActor in
+            do {
+                // A slider emits one value per pointer tick. Persist each value
+                // immediately, but rebuild the native glyph layout only after
+                // the short burst settles so a drag cannot schedule dozens of
+                // full document reflows in one frame.
+                try await Task.sleep(for: .milliseconds(120))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            lyricsVM.refreshConfigFromSettings()
+            pendingTypographyRefreshTask = nil
+        }
     }
 
     private func syncSpringSettingsDebounced() {

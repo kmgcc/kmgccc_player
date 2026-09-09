@@ -42,6 +42,29 @@ public struct LyricLine: Equatable, Codable, Sendable {
     public var agent = ""
     public var language = ""
     public var text: String { words.map(\.text).joined() }
+
+    /// Whether this line contains enough distinct word timing to support a
+    /// karaoke sweep.  A number of LDDC-to-TTML converters wrap an entire LRC
+    /// line in one timed span.  That span is timed at the line level, but it
+    /// is not word timing and must not be rendered with a moving mask.
+    public var hasEffectiveWordTiming: Bool {
+        var first: LyricRange?
+        var count = 0
+        for word in words {
+            guard !word.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  word.range.start.isFinite, word.range.end.isFinite else { continue }
+            count += 1
+            if let first {
+                if abs(word.range.start - first.start) > 0.001
+                    || abs(word.range.end - first.end) > 0.001 {
+                    return count >= 2
+                }
+            } else {
+                first = word.range
+            }
+        }
+        return false
+    }
 }
 
 public struct LyricGroup: Equatable, Codable, Sendable {
@@ -55,7 +78,11 @@ public struct LyricsDocument: Equatable, Codable, Sendable {
     public var title: String
     public var duration: Double
     public var diagnostics: [String]
-    public var isWordTimed: Bool { groups.contains { $0.main.isWordTimed } }
+    public var isWordTimed: Bool {
+        groups.contains {
+            $0.main.hasEffectiveWordTiming || $0.background?.hasEffectiveWordTiming == true
+        }
+    }
     public var hasDuet: Bool { groups.contains { $0.main.isDuet } }
 }
 
@@ -106,7 +133,13 @@ public struct LyricsColor: Equatable, Sendable {
 public struct LyricsPalette: Equatable, Sendable {
     public var mainActive = LyricsColor.white
     public var mainInactive = LyricsColor(0.42,0.44,0.49)
+    /// In fullscreen AMLL skins a line-timed document has its own inactive
+    /// tone.  Window palettes leave these equal to `mainInactive`; keeping
+    /// the channel explicit prevents the native renderer from silently
+    /// dropping the skin's line-timing colors.
+    public var lineTimingInactive = LyricsColor(0.42,0.44,0.49)
     public var translation = LyricsColor(0.48,0.50,0.55)
+    public var lineTimingSubInactive = LyricsColor(0.48,0.50,0.55)
     public var backgroundActive = LyricsColor(0.84,0.84,0.84)
     public var backgroundInactive = LyricsColor(0.38,0.40,0.44)
     public var backgroundKaraoke = LyricsColor(0.90,0.91,0.93)
@@ -121,7 +154,11 @@ public struct LyricsConfiguration: Equatable, Sendable {
     public var motion = LyricsMotionConfiguration()
     public var channelBlend = LyricsChannelBlendConfiguration()
     public var profile: LyricsProfile = .currentPlayer
+    /// Main Latin/English family. CJK glyphs use `fontNameCJK` when supplied;
+    /// keeping the two families separate is required for fullscreen typography
+    /// settings, whose CSS fallback list cannot express per-script weight.
     public var fontName = "Helvetica Neue"
+    public var fontNameCJK: String? = nil
     public var fontSize: Double = 38
     public var fontWeight: Double = 0.4
     public var translationFontName = "Helvetica Neue"

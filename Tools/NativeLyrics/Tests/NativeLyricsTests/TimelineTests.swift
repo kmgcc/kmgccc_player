@@ -9,11 +9,29 @@ final class TimelineTests: XCTestCase {
         XCTAssertEqual(t.update(7).highlighted,[])
         XCTAssertEqual(t.update(8).highlighted,[2])
     }
+    func testCompletedMiddleParallelRowRemainsHighlighted() {
+        var t = LyricsTimeline(bounds:[.init(0,10),.init(5,6),.init(6,7)],profile:.currentPlayer)
+        XCTAssertEqual(t.update(5.5).highlighted,[0,1])
+        // B ends at the same instant C starts.  A keeps the foreground span
+        // alive, so B is retained rather than blinking out between voices.
+        XCTAssertEqual(t.update(6).playing,[0,2])
+        XCTAssertEqual(t.update(6).highlighted,[0,1,2])
+        XCTAssertEqual(t.update(7).highlighted,[0,1,2])
+        XCTAssertEqual(t.update(10).highlighted,[])
+    }
     func testParallelRetentionCanBeDisabledForSingleLayerHosts() {
         var t = LyricsTimeline(bounds:[.init(1,4),.init(2,7)],profile:.currentPlayer,preserveParallelHighlight:false)
         XCTAssertEqual(t.update(2).highlighted,[0,1])
         XCTAssertEqual(t.update(3).highlighted,[0,1])
         XCTAssertEqual(t.update(4).highlighted,[1])
+    }
+    func testNewParallelEndpointDropsRowsFromPreviousForegroundSpan() {
+        var t = LyricsTimeline(bounds:[.init(0,4),.init(2,6),.init(4.5,7.5)],profile:.currentPlayer)
+        XCTAssertEqual(t.update(2.1).highlighted,[0,1])
+        // A has ended before C starts. Once C opens the next foreground span,
+        // A must not remain sharp while B/C continue.
+        XCTAssertEqual(t.update(4.5).highlighted,[1,2])
+        XCTAssertEqual(t.update(5.8).highlighted,[1,2])
     }
     func testSeekClearsExpiredParallelAndSelectsNextInGap() {
         var t = LyricsTimeline(bounds:[.init(1,4),.init(2,7),.init(8,10)],profile:.currentPlayer)
@@ -42,5 +60,14 @@ final class TimelineTests: XCTestCase {
         interaction.scroll(100,now:1,timeline:snapshot)
         XCTAssertEqual(interaction.frozenFocus,4); XCTAssertFalse(interaction.update(now:6.14,profile:.upstream))
         XCTAssertTrue(interaction.update(now:6.15,profile:.upstream)); XCTAssertEqual(interaction.offset,0)
+    }
+    func testUserScrollTimeoutWaitsForPointerExit() {
+        var interaction = LyricsInteraction(); var snapshot = LyricsTimelineSnapshot(); snapshot.focus = 2
+        interaction.scroll(100,now:1,timeline:snapshot)
+        XCTAssertFalse(interaction.update(now:20,profile:.currentPlayer,allowAutoResume:false))
+        XCTAssertTrue(interaction.suspended)
+        interaction.pointerExited(now:20)
+        XCTAssertFalse(interaction.update(now:24.99,profile:.currentPlayer))
+        XCTAssertTrue(interaction.update(now:25,profile:.currentPlayer))
     }
 }

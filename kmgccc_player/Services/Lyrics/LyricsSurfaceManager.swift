@@ -119,8 +119,10 @@ final class LyricsSurfaceManager {
             if mode == .main {
                 activeRoles.insert(.main)
                 activeRoles.remove(.fullscreen)
+                activeRoles.remove(.fullscreenCoverBlurHighlight)
                 NativeLyricsSurfaceManager.shared.activate(role: .main)
                 NativeLyricsSurfaceManager.shared.deactivate(role: .fullscreen)
+                NativeLyricsSurfaceManager.shared.deactivate(role: .fullscreenCoverBlurHighlight)
             } else {
                 activeRoles.insert(.fullscreen)
                 activeRoles.remove(.main)
@@ -289,7 +291,10 @@ final class LyricsSurfaceManager {
                     switchState = .idle
                     activeRoles.insert(.main)
                     activeRoles.remove(.fullscreen)
+                    activeRoles.remove(.fullscreenCoverBlurHighlight)
                     NativeLyricsSurfaceManager.shared.activate(role: .main)
+                    NativeLyricsSurfaceManager.shared.deactivate(role: .fullscreen)
+                    NativeLyricsSurfaceManager.shared.deactivate(role: .fullscreenCoverBlurHighlight)
                 }
             } else {
                 activeRoles.remove(.main)
@@ -357,6 +362,7 @@ final class LyricsSurfaceManager {
                 activeRoles.insert(.fullscreen)
                 activeRoles.remove(.main)
                 NativeLyricsSurfaceManager.shared.activate(role: .fullscreen)
+                NativeLyricsSurfaceManager.shared.deactivate(role: .main)
             } else {
                 activeRoles.remove(.fullscreen)
                 NativeLyricsSurfaceManager.shared.deactivate(role: .fullscreen)
@@ -518,6 +524,14 @@ final class LyricsSurfaceManager {
         stores[role]
     }
 
+    /// Read readiness without materializing either renderer backend.
+    func hasReadySurface(for role: LyricsSurfaceRole) -> Bool {
+        if Self.rendererBackend == .native {
+            return NativeLyricsSurfaceManager.shared.existingSurface(for: role)?.isReady == true
+        }
+        return stores[role]?.isReady == true
+    }
+
     /// Mark a role as active (has a visible surface).
     func activate(role: LyricsSurfaceRole) {
         if Self.rendererBackend == .native {
@@ -622,6 +636,20 @@ final class LyricsSurfaceManager {
         isPlaying: Bool,
         forceLyricsReload: Bool = false
     ) {
+        if Self.rendererBackend == .native {
+            // Keep this legacy entry point renderer-neutral. A few editor and
+            // restoration paths still call `applyTrack` directly; routing
+            // them through the native snapshot owner prevents a silent no-op
+            // now that production no longer materializes WebView stores.
+            NativeLyricsSurfaceManager.shared.applyTrack(
+                trackID: trackID,
+                ttml: ttml,
+                currentTime: currentTime,
+                isPlaying: isPlaying,
+                forceLyricsReload: forceLyricsReload
+            )
+            return
+        }
         for role in activeRoles {
             guard let store = stores[role] else { continue }
             store.applyTrack(
@@ -639,6 +667,34 @@ final class LyricsSurfaceManager {
         baseThemePalette = palette
         if Self.rendererBackend == .native {
             NativeLyricsSurfaceManager.shared.applyTheme(palette)
+
+            // Native surfaces keep their configuration in a separate manager,
+            // while fullscreen skins store a track-guarded palette/config
+            // override in this compatibility owner.  Replaying only the base
+            // ThemePalette would erase the skin's line-timing colors (and can
+            // make a whole line-timed song look washed out) until the next
+            // fullscreen view update.  Mirror the WebView replay contract:
+            // reapply a still-valid override and then its complete config
+            // snapshot after the global palette has changed.
+            for (role, snapshot) in surfaceSnapshots {
+                let trackMatches = !snapshot.isThemeOverrideTrackGuarded
+                    || snapshot.themeOverrideTrackID == currentPlaybackSnapshot.trackID
+                guard trackMatches else { continue }
+
+                if let override = snapshot.themeOverridePalette {
+                    NativeLyricsSurfaceManager.shared.applyPalette(override, for: role)
+                }
+
+                let configMatches = !snapshot.isConfigTrackGuarded
+                    || snapshot.configTrackID == currentPlaybackSnapshot.trackID
+                if configMatches, let json = snapshot.configJSON {
+                    NativeLyricsSurfaceManager.shared.applyConfigurationJSON(json, for: role)
+                }
+            }
+            // Production is native-only. The compatibility stores are kept
+            // solely for an explicit rollback backend and must not receive a
+            // theme replay (or be woken up) on the native path.
+            return
         }
         // Apply to all stores, not just active ones
         for (_, store) in stores {
@@ -650,7 +706,8 @@ final class LyricsSurfaceManager {
         trackID: UUID?,
         lyricsTTML: String,
         currentTime: Double,
-        isPlaying: Bool
+        isPlaying: Bool,
+        forceLyricsReload: Bool = false
     ) {
         let lyricsHash = Self.hashLyrics(lyricsTTML)
         let normalizedTime = currentTime.isFinite ? currentTime : currentPlaybackSnapshot.currentTime
@@ -667,7 +724,8 @@ final class LyricsSurfaceManager {
                 trackID: trackID,
                 lyricsTTML: lyricsTTML,
                 currentTime: normalizedTime,
-                isPlaying: isPlaying
+                isPlaying: isPlaying,
+                forceLyricsReload: forceLyricsReload
             )
         }
 
@@ -679,11 +737,11 @@ final class LyricsSurfaceManager {
         }
     }
 
-    func updatePlaybackTime(_ currentTime: Double) {
+    func updatePlaybackTime(_ currentTime: Double, force: Bool = false) {
         guard currentTime.isFinite else { return }
         currentPlaybackSnapshot.currentTime = currentTime
         if Self.rendererBackend == .native {
-            NativeLyricsSurfaceManager.shared.updatePlaybackTime(currentTime)
+            NativeLyricsSurfaceManager.shared.updatePlaybackTime(currentTime, force: force)
         }
     }
 

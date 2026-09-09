@@ -91,6 +91,11 @@ final class PlaybackCoordinator {
     private(set) var activeSource: PlaybackSource
     private(set) var presentation: NowPlayingPresentation = .emptyLocal
     private(set) var stablePresentation: NowPlayingPresentation = .emptyLocal
+    /// Monotonic marker for explicit transport seeks. Lyrics use it to
+    /// distinguish a deliberate small backward seek from a stale 4 Hz
+    /// presentation sample, which the native display clock intentionally
+    /// ignores while playing.
+    private(set) var lyricsSeekRevision = 0
 
     var localNowPlayingAssetURL: URL? {
         localPlayback?.nowPlayingAssetURL
@@ -287,6 +292,7 @@ final class PlaybackCoordinator {
     func seek(to seconds: Double) {
         guard seconds.isFinite else { return }
         recordCrashPlaybackCommand(.seek)
+        lyricsSeekRevision &+= 1
         switch activeSource {
         case .local:
             localPlayback?.seek(to: seconds)

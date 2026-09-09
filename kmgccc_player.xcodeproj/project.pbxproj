@@ -87,6 +87,7 @@
 		C20000000000000000000003 /* CMSampleBufferFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000013 /* CMSampleBufferFactory.swift */; };
 		C20000000000000000000004 /* RendererPlaybackPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000014 /* RendererPlaybackPipeline.swift */; };
 		C21000000000000000000001 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C21000000000000000000011 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift */; };
+		D30000000000000000000001 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */; };
 		F01000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000001 /* AppDelegate.swift */; };
 		F01000000000000000000002 /* DockController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000002 /* DockController.swift */; };
 		F01000000000000000000003 /* PlaybackCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000003 /* PlaybackCommands.swift */; };
@@ -182,6 +183,7 @@
 		C20000000000000000000013 /* CMSampleBufferFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CMSampleBufferFactory.swift; path = kmgccc_player/Services/Audio/Renderer/CMSampleBufferFactory.swift; sourceTree = "<group>"; };
 		C20000000000000000000014 /* RendererPlaybackPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RendererPlaybackPipeline.swift; path = kmgccc_player/Services/Audio/Renderer/RendererPlaybackPipeline.swift; sourceTree = "<group>"; };
 		C21000000000000000000011 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/PlaybackKeyboardSeekTests.swift; sourceTree = "<group>"; };
+		D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift; sourceTree = "<group>"; };
 		E01000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = kmgccc_player/AppDelegate.swift; sourceTree = "<group>"; };
 		E01000000000000000000002 /* DockController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DockController.swift; path = kmgccc_player/DockController.swift; sourceTree = "<group>"; };
 		E01000000000000000000003 /* PlaybackCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlaybackCommands.swift; path = kmgccc_player/PlaybackCommands.swift; sourceTree = "<group>"; };
@@ -410,6 +412,7 @@
 				C20000000000000000000013 /* CMSampleBufferFactory.swift */,
 				C20000000000000000000014 /* RendererPlaybackPipeline.swift */,
 				C21000000000000000000011 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift */,
+				D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */,
 			);
 			name = Tests;
 			sourceTree = "<group>";
@@ -747,6 +750,7 @@
 				C20000000000000000000003 /* CMSampleBufferFactory.swift in Sources */,
 				C20000000000000000000004 /* RendererPlaybackPipeline.swift in Sources */,
 				C21000000000000000000001 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift in Sources */,
+				D30000000000000000000001 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

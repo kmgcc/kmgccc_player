@@ -12,9 +12,38 @@ public struct SpringParameters: Equatable, Sendable {
     var system: Spring {
         Spring(mass:mass,stiffness:stiffness,damping:soft ? 2*sqrt(mass*stiffness) : damping,allowOverDamping:false)
     }
-    static let position = SpringParameters(mass:0.9,damping:15,stiffness:90)
-    static let scale = SpringParameters(mass:2,damping:25,stiffness:100)
-    static let background = SpringParameters(mass:1,damping:20,stiffness:50)
+    public static let position = SpringParameters(mass:0.9,damping:15,stiffness:90)
+    public static let scale = SpringParameters(mass:2,damping:25,stiffness:100)
+    public static let background = SpringParameters(mass:1,damping:20,stiffness:50)
+    /// Maps the player's duration/bounce controls relative to the native
+    /// position spring while preserving its damping ratio before bounce
+    /// shaping. The host keeps its default pair on the nil/no-override path so
+    /// normal focus changes can continue using interval-adaptive parameters.
+    public static func positionOverride(
+        duration: Double,
+        bounce: Double,
+        referenceDuration: Double = 0.65,
+        referenceBounce: Double = 0.25
+    ) -> Self {
+        let resolvedDuration = min(1.2,max(0.3,duration.isFinite ? duration : referenceDuration))
+        let resolvedBounce = min(3.25,max(-0.25,bounce.isFinite ? bounce : referenceBounce))
+        let speedRatio = referenceDuration/resolvedDuration
+        let base = Self.position
+        let stiffness = min(5_000,max(8,base.stiffness*speedRatio*speedRatio))
+        var damping = base.damping*speedRatio
+        let bounceOffset = resolvedBounce-referenceBounce
+        if bounceOffset > 0 {
+            let primary = min(1,bounceOffset)
+            damping *= 1-pow(primary,3)*0.55
+            let extraRange = max(0.001,3.25-referenceBounce-1)
+            let extra = min(1,max(0,bounceOffset-1)/extraRange)
+            damping *= 1-extra*0.35
+        } else if bounceOffset < 0 {
+            let range = max(0.001,referenceBounce-(-0.25))
+            damping *= 1+sqrt(min(1,-bounceOffset/range))*1.15
+        }
+        return Self(mass:base.mass,damping:min(260,max(0.8,damping)),stiffness:stiffness,soft:false)
+    }
     static func position(interval: Double?, slow: Bool, end: Bool, profile: LyricsProfile) -> Self {
         if slow || interval == nil { return .position }
         if end && profile == .upstream { return Self(mass:0.9,damping:22,stiffness:140) }
@@ -113,11 +142,11 @@ func exitCatchUpTime(start: Double, end: Double, elapsed: Double, duration: Doub
     return min(end,start+t+max(0,remaining-d)*pow(t/d,2))
 }
 
-/// Keeps a running karaoke mask alive through very short identical host
-/// samples. Normal media movement is applied immediately; only a bounded
-/// forward glide is synthesized while the target is effectively unchanged.
-/// This is deliberately not a trailing low-pass filter, so a real word
-/// boundary never waits for the smoother to catch up.
+/// Samples the karaoke mask without adding a trailing filter.  The host clock
+/// is already authoritative; smoothing the sampled position makes imprecise
+/// LDDC line timing look late and can leave a word visibly stuck behind audio.
+/// Anticipation through authored gaps is handled by `MaskPath`, before this
+/// sampler, and remains bounded to the source timing.
 struct HighlightSmoother {
     private(set) var value = 0.0
     private var lastTarget = 0.0
@@ -134,21 +163,10 @@ struct HighlightSmoother {
             value = target; lastTarget = target; lastHost = now; initialized = true
             return value
         }
-        let dt = min(0.08, max(0, now - (lastHost ?? now)))
-        let targetDelta = target - lastTarget
-        if target < value - max(1, fadeWidth * 4) {
-            value = target
-        } else {
-            // Never trail a target that is already moving. This also makes a
-            // malformed overlapping word (for example 3 Strikes' "got") safe
-            // after MaskPath has clamped its document-order boundary.
-            value = max(value, target)
-            if abs(targetDelta) <= max(0.0001, fadeWidth * 0.0005) {
-                let maxLead = max(0.35, fadeWidth * 0.03)
-                let glideRate = max(0.12, fadeWidth * 0.02)
-                value += max(0, target + maxLead - value) * (1-exp(-glideRate*dt/maxLead))
-            }
-        }
+        // A real media sample is not something to ease toward.  Applying it
+        // directly keeps both forward and backward seeks exact and leaves no
+        // synthetic lead/lag when the display link receives repeated samples.
+        value = target
         lastTarget = target; lastHost = now
         return value
     }

@@ -43,7 +43,7 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
     var requiresSeparateInstance: Bool {
         switch self {
         case .main:
-            return false  // Shared with batch preview
+            return false  // Canonical window playback surface
         case .fullscreen, .fullscreenCoverBlurHighlight:
             return true   // Isolated for fullscreen
         case .batchPreview:
@@ -51,6 +51,13 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
         case .standalone:
             return true   // Always isolated
         }
+    }
+
+    /// Whether the role follows the app-wide Now Playing snapshot. Editing
+    /// previews own a deliberately independent clock/document and must never be
+    /// overwritten by the currently playing track.
+    var receivesSharedPlaybackSnapshot: Bool {
+        self != .batchPreview
     }
     
     /// The render scale for this role (1.0 = full quality).
