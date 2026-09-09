@@ -92,11 +92,88 @@ final class BehaviorRegressionTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(dots.walk[1],dots.walk[2])
     }
 
+    @MainActor func testInterludeEntranceDoesNotRestartAfterBackwardPlaybackSample() throws {
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='8s' end='10s'>First</p><p begin='15s' end='17s'>Second</p></div></body></tt>".utf8)
+        let view = LyricsView(frame: NSRect(x: 0, y: 0, width: 760, height: 720))
+        view.automaticDisplayUpdates = false
+        view.configuration.timing.enabled = false
+        view.configuration.spring = false
+        view.configuration.blur = false
+        try view.load(ttml: data, time: 0, playing: true, hostTime: 0)
+
+        let progressed = view.render(at: 2.0)
+        let progressedDots = try XCTUnwrap(progressed.interlude)
+
+        // A stale presentation callback can rebase the lyric clock backwards
+        // while the same authored gap is still active. The marker must keep
+        // its AMLL-style monotonic progress instead of running scale-in again.
+        view.synchronize(time: 0.5, playing: true, seek: false, hostTime: 2.1)
+        let afterBacktrack = try XCTUnwrap(view.render(at: 2.2).interlude)
+        XCTAssertGreaterThanOrEqual(afterBacktrack.opacity, progressedDots.opacity - 0.001)
+        XCTAssertGreaterThanOrEqual(afterBacktrack.walk[0], progressedDots.walk[0] - 0.001)
+        XCTAssertGreaterThanOrEqual(afterBacktrack.walk[1], progressedDots.walk[1] - 0.001)
+        XCTAssertGreaterThanOrEqual(afterBacktrack.walk[2], progressedDots.walk[2] - 0.001)
+    }
+
+    @MainActor func testIntroInterludeOwnsActiveSlotAndPushesFirstRowDown() throws {
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='8s' end='10s'>First</p><p begin='15s' end='17s'>Second</p></div></body></tt>".utf8)
+        let view = LyricsView(frame: NSRect(x: 0, y: 0, width: 760, height: 720))
+        view.automaticDisplayUpdates = false
+        view.configuration.timing.enabled = false
+        view.configuration.spring = false
+        view.configuration.blur = false
+        try view.load(ttml: data, time: 0, playing: true, hostTime: 0)
+
+        let intro = view.render(at: 2)
+        let dots = try XCTUnwrap(intro.interlude)
+        let activeAnchor = view.bounds.height * view.configuration.alignPosition
+            - view.configuration.alignOffset
+        XCTAssertEqual(dots.anchor, -1)
+        XCTAssertEqual(dots.y, activeAnchor, accuracy: 0.001)
+
+        let firstCenter = intro.groups[0].y + intro.groups[0].height / 2
+        XCTAssertEqual(
+            firstCenter,
+            activeAnchor + view.configuration.fontSize * 1.1,
+            accuracy: 0.001
+        )
+
+        let playing = view.render(at: 8.1)
+        XCTAssertNil(playing.interlude)
+        let playingCenter = playing.groups[0].y + playing.groups[0].height / 2
+        XCTAssertEqual(playingCenter, activeAnchor, accuracy: 0.001)
+        XCTAssertLessThan(playing.groups[0].y, intro.groups[0].y)
+    }
+
+    @MainActor func testLoadAndWakeEntryAnimationsUseSeparateStates() throws {
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='20s'>First</p><p begin='20s' end='40s'>Second</p><p begin='40s' end='60s'>Third</p></div></body></tt>".utf8)
+        let view = LyricsView(frame: NSRect(x: 0, y: 0, width: 760, height: 720))
+        view.automaticDisplayUpdates = false
+        view.configuration.timing.enabled = false
+        view.configuration.blur = false
+        try view.load(ttml: data, time: 0, playing: true, hostTime: 0)
+
+        let loadStart = view.render(at: 0)
+        let loadMoving = view.render(at: 0.15)
+        XCTAssertLessThan(loadMoving.groups[0].y, loadStart.groups[0].y)
+        XCTAssertGreaterThan(loadMoving.groups[0].scale, loadStart.groups[0].scale)
+
+        let settled = view.render(at: 5)
+        view.prepareWakeEntryAnimation()
+        let gathered = view.render(at: 5.01)
+        XCTAssertEqual(gathered.groups[0].y, settled.groups[0].y, accuracy: 0.001)
+        XCTAssertLessThan(gathered.groups[1].y, settled.groups[1].y)
+        XCTAssertLessThan(gathered.groups[2].y, settled.groups[2].y)
+
+        let closing = view.render(at: 5.35)
+        XCTAssertGreaterThan(closing.groups[1].y, gathered.groups[1].y)
+        XCTAssertGreaterThan(closing.groups[2].y, gathered.groups[2].y)
+    }
+
     func testLineTimedWindowDoesNotDoubleApplyInactiveOpacity() throws {
-        // A line-timed LRC/TTML document intentionally keeps AMLL's group
-        // opacity of 0.2.  The glyph channel must stay opaque inside that
-        // group; applying the normal karaoke inactive alpha as well makes the
-        // whole track appear abnormally pale.
+        // A line-timed LRC/TTML document keeps an opaque glyph channel in the
+        // window surface. Applying the normal karaoke inactive alpha as well
+        // would make the whole track appear abnormally pale.
         let word = LyricWord(id:"line-0",text:"Blessing",range:.init(0,4))
         let line = LyricLine(id:"line",range:.init(0,4),words:[word],isWordTimed:false)
         var config = LyricsConfiguration()

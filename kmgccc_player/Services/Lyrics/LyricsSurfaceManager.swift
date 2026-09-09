@@ -689,6 +689,16 @@ final class LyricsSurfaceManager {
                     || snapshot.configTrackID == currentPlaybackSnapshot.trackID
                 if configMatches, let json = snapshot.configJSON {
                     NativeLyricsSurfaceManager.shared.applyConfigurationJSON(json, for: role)
+                    if role == .main {
+                        // The main-panel snapshot predates the palette refresh
+                        // and carries a legacy `textColor` field. Replaying it
+                        // after ThemeStore publishes a new artwork palette
+                        // would put the old (often black) color back on the
+                        // native surface. The native configuration already
+                        // retained all non-color settings; restore the
+                        // confirmed ThemeStore palette after the replay.
+                        NativeLyricsSurfaceManager.shared.applyPalette(palette, for: role)
+                    }
                 }
             }
             // Production is native-only. The compatibility stores are kept

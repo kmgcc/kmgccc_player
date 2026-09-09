@@ -37,6 +37,13 @@ final class LyricsViewModel {
     private var lastAppliedTrackId: UUID?
     private var lastAppliedExternalLyricsIdentity: String?
     private var lastAppliedExternalLyricsSignature: String?
+    /// Artwork source belonging to the lyric document currently on screen.
+    /// ThemeStore holds the previous palette while a new cover is analysed;
+    /// these fields let the native surface keep that confirmed palette without
+    /// treating it as the new song's colour.
+    private var expectedPaletteTrackID: UUID?
+    private var expectedPaletteArtworkIdentity: String?
+    private var expectedPaletteArtworkChecksum: UInt64 = 0
     /// Effective lyrics time offset for external playback, mirrored from the
     /// presentation's `externalLyricsTimeOffsetMs` (override ?? matched-track
     /// offset). Local playback reads `currentTrack.lyricsTimeOffsetMs` instead.
@@ -94,6 +101,9 @@ final class LyricsViewModel {
         rebindSeekCallback()
         currentTrack = track
         lastAppliedTrackId = track?.id
+        expectedPaletteTrackID = track?.id
+        expectedPaletteArtworkIdentity = track?.id.uuidString
+        expectedPaletteArtworkChecksum = track?.artworkData.map(ColorMath.fnv1a) ?? 0
 
         let lyricsText = getContentForTrack(track, currentTime: currentTime, isPlaying: isPlaying)
         let snapshotTTML = track == nil ? "" : lyricsText
@@ -188,7 +198,7 @@ final class LyricsViewModel {
             }
         } else {
             // Re-sync theme even if track hasn't changed (ensure latest palette)
-            if let palette = ThemeStore.shared.palette {
+            if let palette = ThemeStore.shared.palette, paletteIsReadyForCurrentDocument(palette) {
                 if usesNativeRenderer {
                     LyricsSurfaceManager.shared.applyTheme(palette)
                 } else {
@@ -216,6 +226,11 @@ final class LyricsViewModel {
         rebindSeekCallback()
         currentTrack = presentation.localTrack
         externalLyricsTimeOffsetMs = presentation.externalLyricsTimeOffsetMs ?? 0
+        expectedPaletteTrackID = presentation.artworkDisplayTrackID ?? presentation.localTrack?.id
+        expectedPaletteArtworkIdentity = presentation.artworkIdentity
+            ?? presentation.externalStableKey
+            ?? presentation.lyricsIdentity
+        expectedPaletteArtworkChecksum = presentation.artworkData.map(ColorMath.fnv1a) ?? 0
         let identity = presentation.lyricsIdentity ?? "external.empty"
         let lyricsText = LyricsFormatSupport.normalizedTTMLText(presentation.lyricsText) ?? ""
         let lyricsSignature = "\(identity):\(lyricsText.count):\(lyricsText.hashValue)"
@@ -260,7 +275,7 @@ final class LyricsViewModel {
             }
             rebindSeekCallback()
         } else {
-            if let palette = ThemeStore.shared.palette {
+            if let palette = ThemeStore.shared.palette, paletteIsReadyForCurrentDocument(palette) {
                 if usesNativeRenderer {
                     LyricsSurfaceManager.shared.applyTheme(palette)
                 } else {
@@ -423,6 +438,9 @@ final class LyricsViewModel {
         lastAppliedTrackId = nil
         lastAppliedExternalLyricsIdentity = nil
         lastAppliedExternalLyricsSignature = nil
+        expectedPaletteTrackID = nil
+        expectedPaletteArtworkIdentity = nil
+        expectedPaletteArtworkChecksum = 0
         LyricsSurfaceManager.shared.updatePlaybackSnapshot(
             trackID: nil,
             lyricsTTML: "",
@@ -516,6 +534,8 @@ final class LyricsViewModel {
 
         let palette = ThemeStore.shared.palette
         let paletteMatchesScheme = palette?.scheme == resolvedScheme
+        let paletteIsReady = paletteMatchesScheme
+            && palette.map(paletteIsReadyForCurrentDocument) == true
 
         let playbackSource = playbackSourceProvider?() ?? .local
         let overlay = LyricsRuntimeOverlayResolver.overlay(
@@ -581,7 +601,7 @@ final class LyricsViewModel {
             "wordHighlightMode": settings.amllDiscreteWordHighlightEnabled ? "discrete" : "smooth",
             "lineHeight": 1.5,
             "activeScale": surfaceRole.activeScale,
-            "textColor": (paletteMatchesScheme ? palette?.text : nil)
+            "textColor": (paletteIsReady ? palette?.text : nil)
                 ?? (isDarkMode ? "rgba(255,255,255,0.98)" : "rgba(0,0,0,0.9)"),
         ]
 
@@ -597,15 +617,50 @@ final class LyricsViewModel {
 
         let nativeConfiguration = NativeLyricsConfigurationMapper.makeWindowConfiguration(
             settings: settings,
-            palette: paletteMatchesScheme ? palette : nil,
+            palette: paletteIsReady ? palette : nil,
             playbackSource: playbackSource,
             currentTrack: currentTrack,
             lyricsTimeOffsetMs: rawTrackOffsetMs,
             role: .main
         )
-        if usesNativeRenderer {
-            NativeLyricsSurfaceManager.shared.applyConfiguration(nativeConfiguration, for: .main)
+        var resolvedNativeConfiguration = nativeConfiguration
+        if !paletteIsReady,
+           paletteMatchesScheme,
+           let existing = NativeLyricsSurfaceManager.shared.configuration(for: .main) {
+            // Preserve the last confirmed palette while artwork extraction is
+            // pending. A scheme change intentionally uses fresh mapper
+            // defaults until ThemeStore publishes the new scheme palette.
+            resolvedNativeConfiguration.palette = existing.palette
         }
+        if usesNativeRenderer {
+            NativeLyricsSurfaceManager.shared.applyConfiguration(resolvedNativeConfiguration, for: .main)
+        }
+    }
+
+    /// ThemeStore publishes palette metadata only after artwork extraction is
+    /// complete. Match the current scheme and source identity before a palette
+    /// is allowed to replace the lyric surface's confirmed colours.
+    private func paletteIsReadyForCurrentDocument(_ palette: ThemePalette) -> Bool {
+        guard palette.scheme == ThemeStore.shared.colorScheme else { return false }
+        if expectedPaletteArtworkChecksum != 0 {
+            return ThemeStore.shared.paletteMatches(
+                trackID: expectedPaletteTrackID,
+                artworkIdentity: expectedPaletteArtworkIdentity,
+                artworkChecksum: expectedPaletteArtworkChecksum
+            )
+        }
+        if let expectedPaletteTrackID {
+            return ThemeStore.shared.paletteTrackID == expectedPaletteTrackID
+        }
+        if let expectedPaletteArtworkIdentity,
+           !expectedPaletteArtworkIdentity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return ThemeStore.shared.paletteArtworkIdentity == expectedPaletteArtworkIdentity
+        }
+        return ThemeStore.shared.paletteMatches(
+            trackID: nil,
+            artworkIdentity: nil,
+            artworkChecksum: 0
+        )
     }
 
     // MARK: - Dynamic Color (Moved to ThemeStore)

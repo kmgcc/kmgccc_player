@@ -139,20 +139,28 @@ final class GlyphLayers {
             baseOpacity = baseVisible ? (subline ? 1 : background ? config.palette.backgroundBaseOpacity : 1) : 0
             highlightOpacity = highlightVisible && !subline ? lifetime*(background ? config.palette.backgroundKaraokeOpacity : 1) : 0
         } else {
-            // AMLL dims a line-timed document at the group level (`0.2`).
-            // Its glyphs remain opaque, whereas the native window compositor
-            // used to apply the line-level factor *and* the regular karaoke
-            // inactive alpha here.  That multiplied a normal inactive line
-            // down to roughly 0.05, making tracks exported from LRC look
-            // inexplicably washed out.  Keep the single group attenuation and
-            // leave the glyph channel opaque for non-dynamic lines.
-            baseColor = config.palette.mainActive; highColor = config.palette.mainActive
-            let intrinsicBase = lineTimed ? 1 : darkAlpha
-            baseOpacity = baseVisible ? intrinsicBase : 0
-            let highlightBase = lineTimed ? 1 : darkAlpha
-            highlightOpacity = highlightVisible
-                ? max(0,(brightAlpha-highlightBase)/max(0.0001,1-highlightBase))
-                : 0
+            if lineTimed && !subline {
+                // A line-level LRC span still needs a visible left-to-right
+                // sweep. Keep its inactive ink opaque and use the same mask
+                // cursor as karaoke timing instead of dimming the whole row
+                // to a flat, already-bright colour.
+                baseColor = config.palette.mainInactive
+                highColor = config.palette.mainActive
+                baseOpacity = baseVisible ? 1 : 0
+                highlightOpacity = highlightVisible ? lifetime : 0
+            } else {
+                // Dynamic rows retain the composited alpha model used by the
+                // native window surface. A line-timed translation has no
+                // independent mask, so it remains a single translation tone.
+                baseColor = config.palette.mainActive
+                highColor = config.palette.mainActive
+                let intrinsicBase = lineTimed ? 1 : darkAlpha
+                baseOpacity = baseVisible ? intrinsicBase : 0
+                let highlightBase = lineTimed ? 1 : darkAlpha
+                highlightOpacity = highlightVisible
+                    ? max(0,(brightAlpha-highlightBase)/max(0.0001,1-highlightBase))
+                    : 0
+            }
         }
         // Compose ink before applying the glyph silhouette. Highlight never
         // samples the window backdrop, and glyph edges are masked only once.
@@ -312,8 +320,10 @@ final class LineLayers {
         let bright = smooth ? (active || preserveHighlight ? brightAlpha : darkAlpha+(1-darkAlpha)*highlightLifetime) : ((background ? 0.4 : 0.28)+(background ? 0.6 : 0.72)*highlightLifetime)
         let dark = smooth ? darkAlpha : bright
         let target = playing && active ? mask.anticipatedPosition(at:media,amount:config.motion.highlightAnticipation) : mask.position(at:media)
-        let maskCursor = smooth ? cursor.sample(target:target,now:now,playing:playing && visualActive,reset:seek,fadeWidth:fade) : Double.greatestFiniteMagnitude
-        renderedCursor = smooth ? maskCursor : mask.position(at:media)
+        let maskCursor = smooth
+            ? cursor.sample(target:target,now:now,playing:playing && visualActive,reset:seek,fadeWidth:fade)
+            : mask.position(at:media)
+        renderedCursor = maskCursor
         for word in words {
             var wordDark = dark, wordBright = bright, wordLifetime = highlightLifetime
             if layout.isDynamic && !config.lineTimingOnly && config.highlightMode == .discrete {
@@ -361,6 +371,10 @@ final class GroupLayers {
     /// resize spring until this track settles instead of switching back to
     /// the more lively focus spring on the very next display tick.
     var isReflowing = false
+    /// First target produced for the current reflow. A lyric event can change
+    /// the stack target while a resize is still settling; that event must use
+    /// the normal playback spring instead of inheriting the resize track.
+    var reflowTarget: Double?
     var isHovered = false
     var isVisible = true
     let index: Int
@@ -404,7 +418,7 @@ final class GroupLayers {
         background = layout.background.map { LineLayers($0,cache:cache,scale:scale,config:config,previous:oldBG,now:now,buildContent:!(oldBG?.words.isEmpty ?? true),preserveWordMotion:false) }
         oldMain.root.removeFromSuperlayer(); oldBG?.root.removeFromSuperlayer()
         root.addSublayer(main.root); if let background { backgroundWrapper.addSublayer(background.root) }
-        self.layout = layout; isReflowing = true
+        self.layout = layout; isReflowing = true; reflowTarget = nil
     }
     func settled(_ time: Double) -> Bool {
         y.settled(time) && scale.settled(time) && reveal.settled(time) && opacity.settled(time) && blur.settled(time) && main.settled(time) && (background?.settled(time) ?? true) && (exitTime.map { time-$0>2 } ?? true)

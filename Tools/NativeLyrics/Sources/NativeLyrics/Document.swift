@@ -77,9 +77,10 @@ public struct LyricLine: Equatable, Codable, Sendable {
     }
 
     /// Whether this line contains enough distinct word timing to support a
-    /// karaoke sweep.  A number of LDDC-to-TTML converters wrap an entire LRC
-    /// line in one timed span.  That span is timed at the line level, but it
-    /// is not word timing and must not be rendered with a moving mask.
+    /// karaoke sweep. A number of LDDC-to-TTML converters wrap an entire LRC
+    /// line in one timed span. That span is still line-timed (the renderer can
+    /// use one continuous line-level mask), but it is not independent word
+    /// timing and must not opt into the per-word karaoke layout path.
     public var hasEffectiveWordTiming: Bool {
         var first: LyricRange?
         var count = 0
@@ -258,7 +259,9 @@ public struct LyricsConfiguration: Equatable, Sendable {
     public var wordFadeWidth: Double = 0.5
     /// Relative diameter of the three-dot interlude indicator. The indicator
     /// keeps a centered transform anchor while this value changes its size.
-    public var interludeDotScale: Double = 1
+    /// Slightly larger than the original native size so the marker remains
+    /// legible in the compact window and fullscreen density settings.
+    public var interludeDotScale: Double = 1.15
     public var emphasis = true
     public var glow = true
     public var glowRadiusScale: Double = 1
@@ -306,8 +309,11 @@ public struct LyricsConfiguration: Equatable, Sendable {
 }
 
 public struct LyricsMotionConfiguration: Equatable, Sendable {
-    public var blurRadius: Double = 3
-    public var maximumBlurRadius: Double = 6
+    /// Keep inactive rows legible over artwork. The old native defaults were
+    /// noticeably heavier than AMLL's 5px CSS cap once Core Image and the
+    /// distance falloff were combined.
+    public var blurRadius: Double = 2.25
+    public var maximumBlurRadius: Double = 4.5
     public var blurTransition: Double = 0.45
     /// Delay before blur returns after pointer exit. The Demo and native
     /// default are zero: blur starts immediately; hosts may opt into a delay.

@@ -470,6 +470,32 @@ struct MaskPath {
     var points: [Point] = []
     private var anticipation: [Point] = []
     init(_ words: [WordPlacement], fadeWidth: Double) {
+        // A flattened LRC/TTML line is often tokenized into several visual
+        // words even though every token carries the same line-level range.
+        // Treat that range as one authored sweep. Without this special case,
+        // collapsing duplicate time knots leaves the cursor at the end of the
+        // line on the very first sample (the one-word “good night” symptom).
+        let spanWords = words.filter {
+            !$0.atom.word.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && $0.atom.word.range.start.isFinite
+                && $0.atom.word.range.end.isFinite
+        }
+        let singleTimedSpan: Bool = {
+            guard let first = spanWords.first else { return false }
+            let sharedRange = spanWords.allSatisfy {
+                abs($0.atom.word.range.start - first.atom.word.range.start) < 0.001
+                    && abs($0.atom.word.range.end - first.atom.word.range.end) < 0.001
+            }
+            // Timed ruby syllables are a real sub-word sweep even when the
+            // base word itself has one line-level range. Preserve those knots.
+            let rubyHasDistinctTiming = spanWords.contains { placement in
+                placement.atom.word.ruby.contains {
+                    abs($0.range.start - placement.atom.word.range.start) >= 0.001
+                        || abs($0.range.end - placement.atom.word.range.end) >= 0.001
+                }
+            }
+            return sharedRange && !rubyHasDistinctTiming
+        }()
         var x = -2*fadeWidth
         points = [Point(time:words.first?.atom.word.range.start ?? 0,position:x)]
         for (i,placement) in words.enumerated() {
@@ -495,6 +521,15 @@ struct MaskPath {
                 x += placement.width + (i == 0 ? fadeWidth*1.5 : 0) + (i == words.count-1 ? fadeWidth*0.5 : 0)
                 points.append(.init(time:word.range.end,position:x))
             }
+        }
+        if singleTimedSpan,
+           let first = spanWords.first,
+           let last = points.last,
+           first.atom.word.range.end > first.atom.word.range.start {
+            points = [
+                Point(time: first.atom.word.range.start, position: points.first?.position ?? -2 * fadeWidth),
+                Point(time: first.atom.word.range.end, position: last.position)
+            ]
         }
         // A malformed overlapping word must not reorder the spatial sweep.
         // Keep document order and clamp backwards timestamps to the last boundary.

@@ -49,6 +49,11 @@ public struct LyricsFrame: Codable, Sendable {
     @objc func tick(_ link: CADisplayLink) { view?.displayTick() }
 }
 
+private enum LyricsEntryAnimation: Equatable {
+    case load
+    case wake
+}
+
 /// A reusable TTML-only, layer-backed native surface. The host owns playback and seek.
 @MainActor public final class LyricsView: NSView {
     public var configuration = LyricsConfiguration() {
@@ -79,6 +84,12 @@ public struct LyricsFrame: Codable, Sendable {
     public override var acceptsFirstResponder: Bool { true }
     public var isFollowing: Bool { !interaction.suspended }
     public var diagnosticTimings: [LyricGroup] { prepared.map { LyricGroup(main:$0.main,background:$0.background) } }
+    /// Internal rendering probe used by regression tests. The public frame
+    /// intentionally exposes only timing/geometry, while this verifies that
+    /// a cleared interlude marker is actually made visible after a reload.
+    var areInterludeDotLayersVisible: Bool {
+        !dots.isHidden && dotLayers.count == 3 && dotLayers.allSatisfy { !$0.isHidden }
+    }
 
     private var prepared: [PreparedGroup] = []
     private var timeline = LyricsTimeline(bounds:[],profile:.currentPlayer)
@@ -95,6 +106,14 @@ public struct LyricsFrame: Codable, Sendable {
     private var layoutDirty = true
     private var lastSize = CGSize.zero
     private var lastScale = 0.0
+    /// Drain expensive text shaping in small display-frame batches during a
+    /// live resize. Existing group layouts remain valid until their queued
+    /// replacement is ready, so the main actor never stalls on a whole song.
+    private var pendingReflowIndices: [Int] = []
+    private var pendingReflowCursor = 0
+    private var reflowInProgress = false
+    private let reflowBatchLimit = 4
+    private let reflowFrameBudget: Double = 0.004
     private var previousHost: Double?
     private var seekPending = true
     private var pendingSeekMotion: LyricsSeekMotion = .immediate
@@ -105,12 +124,35 @@ public struct LyricsFrame: Codable, Sendable {
     private var hoveredIndex: Int?
     private var gapIdentity: LyricInterlude?
     private var gapEntrance = 0.0
+    /// Highest media position rendered for the current interlude.  Playback
+    /// snapshots can arrive out of order (especially while switching tracks
+    /// or completing a seek); keeping the marker's own clock monotonic mirrors
+    /// AMLL's delta-driven InterludeDots and prevents a second scale-in.
+    private var gapLastMedia = -Double.infinity
     private var lastFocus = -1
     private var lastFocusTime: Double?
     private var focusInterval: Double?
     private var currentPositionSpring = SpringParameters.position
+    /// A document load starts rows below the viewport. A surface that was
+    /// hidden and becomes visible again uses the separate gather animation so
+    /// the current row stays anchored while its neighbours close in around it.
+    private var pendingEntryAnimation: LyricsEntryAnimation?
+    private var runningEntryAnimation: LyricsEntryAnimation?
     private var rendering = false
     private var scrollBoundary = (min: 0.0, max: 0.0)
+
+    private var entryPositionSpring: SpringParameters {
+        // The normal position spring is intentionally adaptive to lyric
+        // intervals. Entry motion should feel consistent across tracks and
+        // should not inherit a high-bounce user override unless one was
+        // explicitly selected in settings.
+        configuration.positionSpring
+            ?? SpringParameters(mass: 1, damping: 22, stiffness: 120, soft: true)
+    }
+
+    private var entryScaleSpring: SpringParameters {
+        SpringParameters(mass: 1, damping: 24, stiffness: 150, soft: true)
+    }
 
     public override init(frame frameRect: NSRect) { super.init(frame:frameRect); setUp() }
     public required init?(coder: NSCoder) { super.init(coder:coder); setUp() }
@@ -123,6 +165,7 @@ public struct LyricsFrame: Codable, Sendable {
         // breathing and exit scaling never pull it toward the leading edge.
         dots.anchorPoint = CGPoint(x:0.5,y:0.5)
         for _ in 0..<3 { let dot = CALayer(); dot.backgroundColor = NSColor.white.cgColor; dots.addSublayer(dot); dotLayers.append(dot) }
+        setDotsHidden(true)
         bottom.alignmentMode = .center; bottom.foregroundColor = NSColor.white.withAlphaComponent(0.3).cgColor
         displayTarget.view = self
         setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityLabel("Lyrics")
@@ -134,7 +177,9 @@ public struct LyricsFrame: Codable, Sendable {
         let decoded = try TTMLDecoder().decode(data)
         document = decoded
         groups.forEach { $0.root.removeFromSuperlayer() }; groups.removeAll()
-        rebuildTimeline(); interaction.resume(); gapIdentity = nil; lastFocus = -1
+        rebuildTimeline(); interaction.resume(); gapIdentity = nil; gapLastMedia = -Double.infinity; lastFocus = -1
+        pendingEntryAnimation = .load
+        runningEntryAnimation = nil
         clock.synchronize(time:time,playing:playing,host:hostTime,force:true)
         previousHost = nil; layoutDirty = true; seekPending = true
         // A view can be loaded before Auto Layout has assigned its final
@@ -151,11 +196,14 @@ public struct LyricsFrame: Codable, Sendable {
         prepared.removeAll()
         timeline = LyricsTimeline(bounds:[],profile:configuration.profile,preserveParallelHighlight:configuration.preserveCompletedHighlight)
         groups.forEach { $0.root.removeFromSuperlayer() }; groups.removeAll()
-        dotLayers.forEach { $0.isHidden = true }
+        setDotsHidden(true)
         bottom.string = nil
         clock.synchronize(time:time,playing:playing,host:hostTime,force:true)
-        interaction.resume(); gapIdentity = nil; lastFocus = -1
+        interaction.resume(); gapIdentity = nil; gapLastMedia = -Double.infinity; lastFocus = -1
+        pendingEntryAnimation = nil
+        runningEntryAnimation = nil
         previousHost = nil; layoutDirty = true; seekPending = true; lastFrame = nil
+        pendingReflowIndices.removeAll(); pendingReflowCursor = 0; reflowInProgress = false
         stopDisplayLink()
     }
     public func synchronize(time: Double, playing: Bool, seek: Bool = false, motion: LyricsSeekMotion = .immediate, hostTime: Double = CACurrentMediaTime()) {
@@ -169,13 +217,39 @@ public struct LyricsFrame: Codable, Sendable {
             host: hostTime,
             force: seek || discontinuity
         )
-        if seek || discontinuity { seekPending = true; pendingSeekMotion = motion; interaction.resume() }
+        if seek || discontinuity {
+            seekPending = true; pendingSeekMotion = motion; interaction.resume()
+            // A real seek supersedes a wake animation. A freshly loaded
+            // document keeps its initial entrance so the first frame is not
+            // replaced by a hard jump when the host supplies its initial time.
+            if seek || discontinuity {
+                if pendingEntryAnimation == .wake { pendingEntryAnimation = nil }
+                runningEntryAnimation = nil
+            }
+        }
         wake()
     }
     public func followCurrentLyrics() { followPending = interaction.suspended; interaction.resume(); wake() }
+
+    /// Request the reappearance animation used when a lyric surface is shown
+    /// again after being hidden or moved between the window and fullscreen
+    /// hosts. The request is ignored while a newly loaded document is still
+    /// performing its one-time entrance, so that lifecycle transitions cannot
+    /// restart that animation halfway through.
+    public func prepareWakeEntryAnimation() {
+        guard document != nil, !groups.isEmpty, lastFrame != nil,
+              pendingEntryAnimation == nil, runningEntryAnimation == nil
+        else { return }
+        interaction.resume()
+        pendingEntryAnimation = .wake
+        wake()
+    }
     public func releaseRenderingResources() {
         displayLink?.invalidate(); displayLink = nil
         groups.forEach { $0.root.removeFromSuperlayer() }; groups.removeAll(); cache.removeAll(); layoutDirty = true
+        pendingEntryAnimation = nil
+        runningEntryAnimation = nil
+        pendingReflowIndices.removeAll(); pendingReflowCursor = 0; reflowInProgress = false
     }
     private func rebuildTimeline() {
         guard let document else { return }
@@ -186,6 +260,10 @@ public struct LyricsFrame: Codable, Sendable {
     public override func layout() { super.layout(); if bounds.size != lastSize { layoutDirty = true; wake() } }
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        // AppKit may retain the old tracking-area state while a lyric surface
+        // moves between the windowed and fullscreen hosts. Clear that
+        // transient hover state so inactive rows regain blur after re-entry.
+        setPointerInside(false, hostTime: CACurrentMediaTime())
         displayLink?.invalidate(); displayLink = nil
         observations.forEach(NotificationCenter.default.removeObserver); observations.removeAll()
         if let window {
@@ -195,6 +273,11 @@ public struct LyricsFrame: Codable, Sendable {
                     MainActor.assumeIsolated { self?.wake() }
                 })
             }
+            // Reparenting a surface (most notably the fullscreen host) is a
+            // real visual reappearance. If the document was already rendered,
+            // gather the rows around the current line once the new host is
+            // ready. A pending load entrance takes precedence.
+            prepareWakeEntryAnimation()
             // `load` may have happened before constraints were resolved. Force
             // one valid-size commit when the view enters a window so the Demo
             // cannot open with only the pre-layout blurred layer state.
@@ -205,8 +288,16 @@ public struct LyricsFrame: Codable, Sendable {
             wake()
         }
     }
-    public override func viewDidHide() { super.viewDidHide(); stopDisplayLink() }
-    public override func viewDidUnhide() { super.viewDidUnhide(); wake() }
+    public override func viewDidHide() {
+        super.viewDidHide()
+        setPointerInside(false, hostTime: CACurrentMediaTime())
+        stopDisplayLink()
+    }
+    public override func viewDidUnhide() {
+        super.viewDidUnhide()
+        prepareWakeEntryAnimation()
+        wake()
+    }
     private func stopDisplayLink() { displayLink?.invalidate(); displayLink = nil }
     private func wake() {
         guard automaticDisplayUpdates, document != nil, let window, !isHiddenOrHasHiddenAncestor, !window.isMiniaturized, window.occlusionState.contains(.visible) else { stopDisplayLink(); return }
@@ -241,8 +332,12 @@ public struct LyricsFrame: Codable, Sendable {
         rendering = true; defer { rendering = false }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         previousHost = now
+        // Fullscreen/AppKit transitions can swallow a matching mouse-exit
+        // event. Reconcile only an already-entered pointer here so a stale
+        // hover gate cannot suppress inactive-row blur forever, while a real
+        // pointer still receives ownership from tracking-area events.
+        reconcilePointerTracking(hostTime: now)
         let media = clock.time(at:now), seek = seekPending; seekPending = false
-        if seek { gapIdentity = nil }
         if interaction.update(now:now,profile:configuration.profile,allowAutoResume:!hoverInside) { followPending = true }
         let snapshot = timeline.update(media,seek:seek,hasBottom:!configuration.bottomText.isEmpty)
         // Manual browsing remains anchored while the pointer is over the lyric
@@ -256,9 +351,33 @@ public struct LyricsFrame: Codable, Sendable {
         let requestedRenderScale = configuration.renderScale.isFinite ? configuration.renderScale : 1
         let renderScale = min(1,max(0.35,requestedRenderScale))
         let scale = backingScale * renderScale
-        let reflowed = layoutDirty || lastSize != bounds.size || scale != lastScale
-        if reflowed {
-            reflow(now:now,scale:scale); lastSize = bounds.size; lastScale = scale; layoutDirty = false
+        let needsReflow = layoutDirty || lastSize != bounds.size || scale != lastScale
+        // `reflowed` means a new generation started in this frame. A
+        // continuation frame keeps the resize spring's current velocity.
+        var reflowed = false
+        if needsReflow {
+            if groups.count != prepared.count {
+                // Initial document installation has no usable old geometry;
+                // create all group shells atomically so frame consumers still
+                // receive one complete group array on the first render.
+                reflowAll(now: now, scale: scale)
+                pendingReflowIndices.removeAll(keepingCapacity: true)
+                pendingReflowCursor = 0
+                reflowInProgress = false
+                lastSize = bounds.size
+                lastScale = scale
+                layoutDirty = false
+                reflowed = true
+            } else {
+                beginIncrementalReflow(focus: snapshot.focus)
+                lastSize = bounds.size
+                lastScale = scale
+                layoutDirty = false
+                reflowed = true
+                _ = processIncrementalReflow(now: now, scale: scale)
+            }
+        } else if reflowInProgress {
+            _ = processIncrementalReflow(now: now, scale: scale)
         }
         content.frame = bounds
         content.backgroundColor = configuration.backdropColor?.cgColor
@@ -284,7 +403,7 @@ public struct LyricsFrame: Codable, Sendable {
             let presentationActive = active || snapshot.highlighted.contains(i)
             if seek {
                 group.exitTime = nil; group.lastMedia = media; group.exitMedia = media
-                group.isReflowing = false
+                group.isReflowing = false; group.reflowTarget = nil
             } else if group.active && !active { group.exitTime = now; group.exitMedia = media }
             else if !group.active && active { group.exitTime = nil }
             group.active = active
@@ -303,7 +422,14 @@ public struct LyricsFrame: Codable, Sendable {
             for i in offsets.indices where i>=gap.anchor+1 { offsets[i] += gapHeight }
         }
         let focusIndex = min(max(0,focus),groups.count)
-        let baseOrigin = bounds.height*configuration.alignPosition-offsets[focusIndex]
+        let alignOffset = configuration.alignOffset.isFinite ? configuration.alignOffset : 0
+        let introInterlude = gap?.anchor == -1
+        // For an intro gap the marker owns the virtual active slot. Keep the
+        // stack origin at the normal active anchor instead of subtracting the
+        // inserted slot; the first lyric then lands one row below that slot.
+        let baseOrigin = bounds.height*configuration.alignPosition
+            - offsets[focusIndex]
+            + (introInterlude ? gapHeight : 0)
         // The interlude is an inserted slot between two rows. Subtracting its
         // height from the entire stack origin moves the completed row upward
         // exactly when the gap starts, which is the visible jump seen after
@@ -320,8 +446,14 @@ public struct LyricsFrame: Codable, Sendable {
         let anchorHeight = focusIndex<heights.count ? heights[focusIndex] : configuration.fontSize*2
         if configuration.alignAnchor == .center { origin -= anchorHeight/2 }
         if configuration.alignAnchor == .bottom { origin -= anchorHeight }
-        let alignOffset = configuration.alignOffset.isFinite ? configuration.alignOffset : 0
         origin -= interaction.offset + alignOffset
+        startPendingEntryAnimation(
+            focus: focus,
+            origin: origin,
+            offsets: offsets,
+            snapshot: snapshot,
+            now: now
+        )
         let position = configuration.positionSpring ?? currentPositionSpring
         // Clicks cascade in visual reading order. Scrubbing moves the stack
         // directly, and cannot leave delayed springs from a previous click.
@@ -335,10 +467,55 @@ public struct LyricsFrame: Codable, Sendable {
         var leadingXs: [Double] = []
         for (i,group) in groups.enumerated() {
             let target = origin+offsets[i]
-            if group.isReflowing && !seek && configuration.spring {
+            let resizeTargetChanged = group.reflowTarget.map { abs($0-target) > 0.5 } ?? false
+            if let entryMode = runningEntryAnimation {
+                group.isReflowing = false; group.reflowTarget = nil
+                let entryFocus = min(max(0, focus), max(0, groups.count-1))
+                let distance = abs(Double(i-entryFocus))
+                let presentationActive = snapshot.playing.contains(i)
+                    || snapshot.highlighted.contains(i)
+                let delay: Double
+                switch entryMode {
+                case .load:
+                    // New documents rise in reading order: the first/focused
+                    // row leads and the lower rows follow from below.
+                    delay = min(0.28, Double(max(0, i-entryFocus))*0.04)
+                case .wake:
+                    // Reappearance gathers symmetrically around the focused
+                    // row so neither side snaps in before the other.
+                    delay = min(0.24, distance*0.04)
+                }
+                let normalScale = configuration.scale && clock.isPlaying
+                    && !presentationActive ? 0.97 : 1
+                if configuration.spring {
+                    group.y.retarget(
+                        target,
+                        at: now,
+                        delay: delay,
+                        parameters: entryPositionSpring,
+                        preserveVelocity: false
+                    )
+                    group.scale.retarget(
+                        normalScale,
+                        at: now,
+                        delay: delay,
+                        parameters: entryScaleSpring,
+                        preserveVelocity: false
+                    )
+                } else {
+                    group.y.snap(target,at:now)
+                    group.scale.snap(normalScale,at:now)
+                }
+            } else if group.isReflowing && !seek && !seekCascade && configuration.spring && !focusChanged && !resizeTargetChanged {
+                if group.reflowTarget == nil { group.reflowTarget = target }
                 group.y.retarget(target,at:now,parameters:configuration.motion.resizeSpring,preserveVelocity:!reflowed)
-                if group.y.settled(now) { group.isReflowing = false }
+                if group.y.settled(now) { group.isReflowing = false; group.reflowTarget = nil }
             } else if configuration.spring && !immediateSeek && !interaction.suspended {
+                // A playback focus/height transition supersedes a resize
+                // reflow. Clearing the marker here prevents the next frame
+                // from applying the critically damped resize spring to the
+                // authored lyric movement, which otherwise reads as a hitch.
+                group.isReflowing = false; group.reflowTarget = nil
                 let delay = seekCascade
                     ? min(0.6,Double(max(0,i-firstVisible))*configuration.motion.clickStagger)
                     : (focusChanged ? stagger : 0)
@@ -346,9 +523,10 @@ public struct LyricsFrame: Codable, Sendable {
                 let remainingDelay = now < cascadeUntil ? max(0,group.cascadeStart-now) : delay
                 group.y.retarget(target,at:now,delay:remainingDelay,parameters:position)
             } else if interaction.suspended && configuration.spring && !immediateSeek {
+                group.isReflowing = false; group.reflowTarget = nil
                 group.y.retarget(target,at:now,parameters:position)
             } else {
-                group.isReflowing = false
+                group.isReflowing = false; group.reflowTarget = nil
                 group.y.snap(target,at:now)
             }
             group.y.resolve(now)
@@ -360,25 +538,27 @@ public struct LyricsFrame: Codable, Sendable {
             // so a completed middle row does not suddenly blur while its
             // neighbouring duet/main rows continue singing.
             let isFocus = snapshot.playing.contains(i) || snapshot.highlighted.contains(i)
-            group.blur.set(configuration.blur && !clear && !isFocus ? min(configuration.motion.maximumBlurRadius,configuration.motion.blurRadius+distance*0.6) : 0,at:now,duration:configuration.motion.blurTransition)
+            group.blur.set(configuration.blur && !clear && !isFocus ? min(configuration.motion.maximumBlurRadius,configuration.motion.blurRadius+distance*0.45) : 0,at:now,duration:configuration.motion.blurTransition)
             let passed = configuration.hidePassedLines && i<(gap.map { $0.anchor+1 } ?? snapshot.focus) && clock.isPlaying
             // The timeline's highlighted set is AMLL's buffered foreground
             // span, not only the currently hot rows. Retained parallel rows
             // therefore keep the same buffered opacity until the next
             // foreground transition rebuilds that span.
             // The upstream fullscreen stylesheet forces the line wrapper to
-            // opaque (`lyricLineWrapper { opacity: 1 !important; }`).  The
-            // window renderer intentionally keeps AMLL's non-dynamic .2
-            // wrapper dimming, but carrying that factor into fullscreen made
-            // every LDDC line-timed track look washed out and also hid the
-            // inactive-row blur behind a near-transparent layer.
+            // opaque (`lyricLineWrapper { opacity: 1 !important; }`). Keep
+            // that same readable baseline on the window surface as well; a
+            // blanket .2 wrapper made converted line-timed LRC tracks look
+            // washed out and hid their inactive-row contrast.
             let groupAlpha: Double
-            if configuration.usesOpaqueCompositing {
+            if configuration.usesOpaqueCompositing || snapshot.playing.contains(i) {
                 groupAlpha = 1
             } else if snapshot.highlighted.contains(i) {
+                // Retained parallel rows stay just under the currently hot
+                // line, but must not inherit the old blanket 0.2 opacity that
+                // made every inactive line-timed LRC row look washed out.
                 groupAlpha = 0.85
             } else {
-                groupAlpha = document?.isWordTimed == false ? 0.2 : 1
+                groupAlpha = 1
             }
             group.opacity.set(passed ? 0 : groupAlpha,at:now)
             group.root.position = CGPoint(x:0,y:y); group.root.opacity = Float(group.opacity.value(now))
@@ -450,40 +630,186 @@ public struct LyricsFrame: Codable, Sendable {
             frames.append(.init(index:i,y:y,height:heights[i],scale:ms,backgroundScale:bs,backgroundSlide:0,opacity:group.opacity.value(now),blur:blur,active:group.active,maskPosition:group.main.renderedCursor))
             if target+heights[i]>=0 && !seekCascade { stagger += baseDelay; if i>=focus { baseDelay /= 1.05 } }
         }
-        let interludeFrame = updateDots(snapshot,media:media,now:now,frames:frames,leadingXs:leadingXs)
+        if runningEntryAnimation != nil,
+           groups.allSatisfy({ $0.y.settled(now) && $0.scale.settled(now) }) {
+            runningEntryAnimation = nil
+        }
+        let introMarkerY = introInterlude
+            ? bounds.height*configuration.alignPosition-interaction.offset-alignOffset
+            : nil
+        let interludeFrame = updateDots(
+            snapshot,
+            media: media,
+            now: now,
+            frames: frames,
+            leadingXs: leadingXs,
+            introMarkerY: introMarkerY
+        )
         bottom.string = configuration.bottomText; bottom.fontSize = max(10,configuration.fontSize*0.5); bottom.contentsScale = scale
         bottom.frame = CGRect(x:20,y:origin+(offsets.last ?? 0)+configuration.fontSize,width:max(0,bounds.width-40),height:configuration.fontSize*2)
         CATransaction.commit()
         let result = LyricsFrame(timeline:snapshot,groups:frames,interlude:interludeFrame,following:!interaction.suspended,glyphCacheBytes:cache.bytes,glyphCacheMisses:cache.misses,layoutCount:layoutEngine.layoutCount,renderMilliseconds:(CACurrentMediaTime()-started)*1000)
         lastFrame = result; onFrame?(result); return result
     }
-    private func reflow(now: Double, scale: Double) {
+
+    private func startPendingEntryAnimation(
+        focus: Int,
+        origin: Double,
+        offsets: [Double],
+        snapshot: LyricsTimelineSnapshot,
+        now: Double
+    ) {
+        guard let pending = pendingEntryAnimation else { return }
+        guard !groups.isEmpty else {
+            pendingEntryAnimation = nil
+            return
+        }
+
+        pendingEntryAnimation = nil
+        runningEntryAnimation = pending
+        let entryFocus = min(max(0, focus), max(0, groups.count-1))
+
+        switch pending {
+        case .load:
+            guard clock.isPlaying else {
+                // A paused document is a stable inspection state. Do not
+                // strand its first frame below the viewport while no display
+                // clock is running; the animated entrance is for an actively
+                // changing track.
+                runningEntryAnimation = nil
+                for group in groups { group.scale.snap(1,at:now) }
+                return
+            }
+            // Groups are created below the viewport. A small initial scale
+            // gives the spring rise a little depth without affecting the
+            // authored text layout.
+            let initialScale = configuration.scale ? 0.94 : 1
+            for group in groups {
+                group.scale.snap(initialScale,at:now)
+            }
+        case .wake:
+            // The focused row starts exactly at its normal target. Rows above
+            // begin below that row and rows below begin above it, producing a
+            // larger temporary line spacing that closes symmetrically.
+            let spacing = min(180, max(20, configuration.fontSize*0.9))
+            for i in groups.indices {
+                let target = origin + (offsets.indices.contains(i) ? offsets[i] : 0)
+                let distance = Double(abs(i-entryFocus))
+                let direction: Double
+                if i < entryFocus { direction = 1 }
+                else if i > entryFocus { direction = -1 }
+                else { direction = 0 }
+                groups[i].y.snap(target + direction*distance*spacing,at:now)
+
+                let presentationActive = snapshot.playing.contains(i)
+                    || snapshot.highlighted.contains(i)
+                let normalScale = configuration.scale && clock.isPlaying
+                    && !presentationActive ? 0.97 : 1
+                groups[i].scale.snap(configuration.scale ? min(normalScale,0.97) : normalScale,at:now)
+            }
+        }
+    }
+
+    private func reflowAll(now: Double, scale: Double) {
         cache.budget = configuration.cacheBudgetBytes
         guard let document else { return }
         for i in prepared.indices {
-            let dynamic = prepared[i].main.hasEffectiveWordTiming
-                || prepared[i].background?.hasEffectiveWordTiming == true
-            let layout = layoutEngine.group(prepared[i],width:max(1,bounds.width),config:configuration,dynamic:dynamic,hasDuet:document.hasDuet)
-            if i<groups.count { groups[i].reflow(layout,cache:cache,scale:scale,config:configuration,now:now) }
-            else {
-                let group = GroupLayers(index:i,layout:layout,initialY:bounds.height*2,cache:cache,scale:scale,config:configuration,now:now)
-                groups.append(group); content.insertSublayer(group.root,below:dots)
-            }
+            reflowGroup(at: i, now: now, scale: scale, document: document)
         }
+    }
+
+    private func beginIncrementalReflow(focus: Int) {
+        pendingReflowIndices = prepared.indices.sorted {
+            let lhs = abs($0 - focus), rhs = abs($1 - focus)
+            return lhs == rhs ? $0 < $1 : lhs < rhs
+        }
+        pendingReflowCursor = 0
+        reflowInProgress = !pendingReflowIndices.isEmpty
+    }
+
+    @discardableResult
+    private func processIncrementalReflow(now: Double, scale: Double) -> Bool {
+        guard reflowInProgress, let document else { return false }
+        cache.budget = configuration.cacheBudgetBytes
+        let started = CACurrentMediaTime()
+        var processed = 0
+        while pendingReflowCursor < pendingReflowIndices.count {
+            if processed >= reflowBatchLimit { break }
+            if processed > 0 && CACurrentMediaTime() - started >= reflowFrameBudget { break }
+            let index = pendingReflowIndices[pendingReflowCursor]
+            pendingReflowCursor += 1
+            reflowGroup(at: index, now: now, scale: scale, document: document)
+            processed += 1
+        }
+        if pendingReflowCursor >= pendingReflowIndices.count {
+            pendingReflowIndices.removeAll(keepingCapacity: true)
+            pendingReflowCursor = 0
+            reflowInProgress = false
+        }
+        return processed > 0
+    }
+
+    private func reflowGroup(at index: Int, now: Double, scale: Double, document: LyricsDocument) {
+        guard prepared.indices.contains(index) else { return }
+        let dynamic = prepared[index].main.hasEffectiveWordTiming
+            || prepared[index].background?.hasEffectiveWordTiming == true
+        let layout = layoutEngine.group(
+            prepared[index],
+            width: max(1, bounds.width),
+            config: configuration,
+            dynamic: dynamic,
+            hasDuet: document.hasDuet
+        )
+        if index < groups.count {
+            groups[index].reflow(layout, cache: cache, scale: scale, config: configuration, now: now)
+        } else {
+            let group = GroupLayers(
+                index: index,
+                layout: layout,
+                initialY: bounds.height * 2,
+                cache: cache,
+                scale: scale,
+                config: configuration,
+                now: now
+            )
+            groups.append(group)
+            content.insertSublayer(group.root, below: dots)
+        }
+    }
+
+    private func setDotsHidden(_ hidden: Bool) {
+        dots.isHidden = hidden
+        dotLayers.forEach { $0.isHidden = hidden }
     }
     private func updateDots(
         _ snapshot: LyricsTimelineSnapshot,
         media: Double,
         now: Double,
         frames: [LyricsGroupFrame],
-        leadingXs: [Double]
+        leadingXs: [Double],
+        introMarkerY: Double?
     ) -> LyricsInterludeFrame? {
-        guard let gap = snapshot.interlude,
-              configuration.effectiveRenderLayer != .highlight,
-              !interaction.dotsHidden(now),
-              !frames.isEmpty
+        guard !frames.isEmpty else {
+            setDotsHidden(true)
+            return nil
+        }
+        guard let gap = snapshot.interlude else {
+            // Once playback has actually left the previous gap, forget its
+            // progress so seeking back into that gap gets a correct entrance.
+            // A hidden marker caused by scrolling or a cover-blur layer keeps
+            // the identity intact and therefore cannot trigger a duplicate
+            // entrance on the next visible frame.
+            if let identity = gapIdentity, !identity.range.contains(media) {
+                gapIdentity = nil
+                gapLastMedia = -Double.infinity
+            }
+            setDotsHidden(true)
+            return nil
+        }
+        guard configuration.effectiveRenderLayer != .highlight,
+              !interaction.dotsHidden(now)
         else {
-            dots.isHidden = true
+            setDotsHidden(true)
             return nil
         }
         if gap != gapIdentity {
@@ -492,9 +818,16 @@ public struct LyricsFrame: Codable, Sendable {
             // Using the first observed media sample (the old upstream path)
             // restarts the fade when playback updates arrive late.
             gapEntrance = gap.range.start
+            gapLastMedia = max(gap.range.start, media)
         }
+        // The host media clock may briefly move backwards when a presentation
+        // callback races the display link. Do not rewind the marker's own
+        // elapsed time; AMLL advances InterludeDots by positive deltas and
+        // therefore keeps an in-flight entrance from replaying.
+        let dotsMedia = max(media, gapLastMedia)
+        gapLastMedia = dotsMedia
         let sample = interludeSample(
-            elapsed: media-gapEntrance,
+            elapsed: dotsMedia-gapEntrance,
             duration: gap.range.end-gapEntrance,
             profile: configuration.profile
         )
@@ -503,7 +836,7 @@ public struct LyricsFrame: Codable, Sendable {
             : 1
         let size = max(1,configuration.fontSize*0.3*dotScale)
         let step = size*1.7
-        dots.isHidden = false
+        setDotsHidden(false)
         // Entrance and exit are a single global fade. Per-dot progress is
         // represented by the inactive-to-active color below, so all surfaces
         // retain an actual inactive state instead of forcing three bright dots.
@@ -513,13 +846,18 @@ public struct LyricsFrame: Codable, Sendable {
         let leadingX = leadingXs.indices.contains(nextIndex)
             ? leadingXs[nextIndex]
             : (bounds.width <= 500 ? 20.0 : configuration.fontSize)
-        // The transform is centered. Compensate for the known maximum
-        // breathing scale so the physical left tangent of the first dot meets
-        // the lyric leading edge at the peak.
-        let maximumBreathingScale = 0.7 * 1.05
+        // The transform is centered. Keep the physical left tangent pinned to
+        // the lyric leading edge while the marker breathes. This is equivalent
+        // to aligning the largest state (the important boundary) and avoids
+        // Core Animation rounding/anchor differences making the expanded dots
+        // spill past the lyric edge.
         let dotWidth = size + step*2
         let dotHeight = configuration.fontSize
-        let dotX = leadingX + dotWidth*(maximumBreathingScale-1)/2
+        // Pin the fully expanded marker to the lyric leading edge. At smaller
+        // breathing states it remains slightly inset instead of protruding
+        // past the text column.
+        let peakScale = 0.7*1.05
+        let dotX = leadingX + dotWidth*(peakScale-1)/2
 
         let nextTop = frames[nextIndex].y
         let previousBottom: Double
@@ -529,9 +867,12 @@ public struct LyricsFrame: Codable, Sendable {
             previousBottom = nextTop - configuration.fontSize*1.1
         }
         // Place the marker at the exact midpoint of the two row boundaries.
-        // This remains correct while line-level springs settle because the
-        // current frame geometry, rather than a stale target offset, is used.
-        let centerY = previousBottom + (nextTop-previousBottom)/2
+        // Intro gaps are special: their marker owns the active slot itself,
+        // so use the virtual active anchor while the first lyric is pushed
+        // down into the following row.
+        let centerY = gap.anchor == -1 && introMarkerY != nil
+            ? introMarkerY!
+            : previousBottom + (nextTop-previousBottom)/2
         dots.bounds = CGRect(x:0,y:0,width:dotWidth,height:dotHeight)
         dots.position = CGPoint(x:dotX+dotWidth/2,y:centerY)
         dots.transform = CATransform3DMakeScale(sample.scale,sample.scale,1)
@@ -543,6 +884,7 @@ public struct LyricsFrame: Codable, Sendable {
                 height: size
             )
             dotLayers[i].cornerRadius = size/2
+            dotLayers[i].isHidden = false
             dotLayers[i].opacity = 1
             // AMLL's walk starts at 0.25. Normalize that baseline to the
             // configured inactive color, then blend toward the exact active
@@ -579,6 +921,15 @@ public struct LyricsFrame: Codable, Sendable {
         setPointerInside(true)
         guard let i = groupIndex(at:convert(event.locationInWindow,from:nil)), let time = seekTime(forGroup:i) else { return }
         interaction.resume(); onSeek?(time); wake()
+        // A click can move focus to the lyric view without delivering the
+        // matching tracking-area exit when fullscreen changes its host. Read
+        // the window's authoritative pointer location after the seek so a
+        // pointer that is already outside cannot leave blur suppressed.
+        DispatchQueue.main.async { [weak self] in self?.reconcilePointerTracking() }
+    }
+    public override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        reconcilePointerTracking()
     }
     public override func scrollWheel(with event: NSEvent) {
         scroll(by:-event.scrollingDeltaY*(event.hasPreciseScrollingDeltas ? 1 : 50),hostTime:CACurrentMediaTime())
@@ -610,6 +961,22 @@ public struct LyricsFrame: Codable, Sendable {
     public override func mouseEntered(with event: NSEvent) { setPointerInside(true); mouseMoved(with:event) }
     public override func mouseExited(with event: NSEvent) { setPointerInside(false) }
     public override func mouseMoved(with event: NSEvent) { setPointerInside(true); hoveredIndex = groupIndex(at:convert(event.locationInWindow,from:nil)) }
+    private func reconcilePointerTracking(hostTime: Double = CACurrentMediaTime()) {
+        // Offscreen/unit-test surfaces have no window-backed pointer to query;
+        // leave their explicitly supplied interaction state untouched.
+        guard let window else { return }
+        // `NSEvent.mouseLocation` is the current screen position, whereas
+        // `mouseLocationOutsideOfEventStream` may remain at the last event
+        // while a fullscreen host is being reparented.
+        let pointInWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let point = convert(pointInWindow, from: nil)
+        guard hoverInside else { return }
+        if !bounds.contains(point) {
+            setPointerInside(false, hostTime: hostTime)
+        } else {
+            hoveredIndex = groupIndex(at: point)
+        }
+    }
     public override func menu(for event: NSEvent) -> NSMenu? {
         guard let i = groupIndex(at:convert(event.locationInWindow,from:nil)) else { return nil }
         let menu = NSMenu(); let item = menu.addItem(withTitle:"Copy lyrics",action:#selector(copyLyric(_:)),keyEquivalent:""); item.target = self; item.tag = i

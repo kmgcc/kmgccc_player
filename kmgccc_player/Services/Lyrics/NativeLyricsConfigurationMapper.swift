@@ -76,12 +76,22 @@ enum NativeLyricsConfigurationMapper {
         configuration.fpsCap = role.fpsCap
         configuration.overscan = Double(role.overscanPx)
         configuration.wordFadeWidth = role.wordFadeWidth
+        // The package default is intentionally conservative for the standalone
+        // demo. Keep the player marker legible without letting the breathing
+        // transform dominate the compact lyric column.
+        configuration.interludeDotScale = {
+            switch role {
+            case .main: return 1.6
+            case .fullscreen, .fullscreenCoverBlurHighlight, .standalone: return 1.45
+            case .batchPreview: return 1.3
+            }
+        }()
         // The main inspector used the package default (0.35), which leaves
         // the focused row noticeably low once the panel's top padding is
         // applied. Keep fullscreen's skin-owned top anchor untouched while
         // giving the window surface the same slightly-upward reading position
         // as the old AMLL panel.
-        if role == .main { configuration.alignPosition = 0.30 }
+        if role == .main { configuration.alignPosition = 0.27 }
         configuration.glow = true
         configuration.emphasis = true
         configuration.showTranslation = true

@@ -1,6 +1,7 @@
 import XCTest
 import NativeLyrics
 import SwiftUI
+import QuartzCore
 @testable import kmgccc_player
 
 final class NativeLyricsSurfaceManagerTests: XCTestCase {
@@ -55,6 +56,42 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
         XCTAssertEqual(surface.lastTTML, mainTTML)
         XCTAssertEqual(groups[0].main.range.start, 1, accuracy: 0.0001)
         XCTAssertEqual(groups[0].main.range.end, 5, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testRepeatedForceRefreshDoesNotRestartAnActiveInterludeEntrance() throws {
+        let surface = NativeLyricsSurface(role: .main)
+        surface.view.configuration.timing.enabled = false
+        surface.view.configuration.spring = false
+        surface.view.configuration.blur = false
+        let data = "<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='8s' end='10s'>First</p><p begin='15s' end='17s'>Second</p></div></body></tt>"
+        let trackID = UUID()
+        let start = CACurrentMediaTime()
+
+        surface.applyTrack(
+            trackID: trackID,
+            ttml: data,
+            currentTime: 0,
+            isPlaying: true
+        )
+        let progressed = try XCTUnwrap(surface.view.render(at: start + 2).interlude)
+
+        // The fullscreen/presentation pipeline can issue a forced refresh with
+        // the same valid TTML but a stale time sample. It must rebase playback
+        // without replaying the already visible scale-in entrance.
+        let refreshHost = CACurrentMediaTime()
+        surface.applyTrack(
+            trackID: trackID,
+            ttml: data,
+            currentTime: 0.1,
+            isPlaying: true,
+            forceLyricsReload: true
+        )
+        let afterRefresh = try XCTUnwrap(surface.view.render(at: refreshHost + 0.02).interlude)
+        XCTAssertGreaterThanOrEqual(afterRefresh.opacity, progressed.opacity - 0.001)
+        XCTAssertGreaterThanOrEqual(afterRefresh.walk[0], progressed.walk[0] - 0.001)
+        XCTAssertGreaterThanOrEqual(afterRefresh.walk[1], progressed.walk[1] - 0.001)
+        XCTAssertGreaterThanOrEqual(afterRefresh.walk[2], progressed.walk[2] - 0.001)
     }
 
     func testW3CRelativeProfileRemainsExplicit() throws {
@@ -265,6 +302,7 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
         XCTAssertEqual(configuration.alignPosition, 0.72, accuracy: 0.0001)
         XCTAssertEqual(configuration.alignOffset, 18, accuracy: 0.0001)
         XCTAssertEqual(configuration.alignAnchor, .bottom)
+        XCTAssertEqual(configuration.interludeDotScale, 1.45, accuracy: 0.0001)
         XCTAssertNil(configuration.positionSpring)
     }
 
@@ -364,6 +402,37 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
         XCTAssertEqual(configuration.palette.mainActive.red, 242.0 / 255.0, accuracy: 0.0001)
         XCTAssertEqual(configuration.palette.mainInactive.blue, 45.0 / 255.0, accuracy: 0.0001)
         XCTAssertEqual(configuration.palette.lineTimingInactive.red, 80.0 / 255.0, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testGlobalThemeRefreshDoesNotRestoreStaleMainTextColor() throws {
+        let native = NativeLyricsSurfaceManager.shared
+        let surfaces = LyricsSurfaceManager.shared
+        native.shutdownAll()
+        defer {
+            native.shutdownAll()
+            surfaces.updateSurfaceConfigSnapshot("{}", for: .main)
+        }
+
+        // The main-panel snapshot contains the previous light-mode textColor,
+        // while ThemeStore has just published the confirmed artwork palette.
+        surfaces.updateSurfaceConfigSnapshot(
+            "{\"textColor\":\"rgba(0,0,0,0.9)\"}",
+            for: .main
+        )
+        let palette = ThemePalette(
+            scheme: .dark,
+            background: "#111111",
+            text: "#f2c078",
+            activeLine: "#f2c078",
+            inactiveLine: "#6a402d"
+        )
+
+        surfaces.applyTheme(palette)
+
+        let configuration = try XCTUnwrap(native.configuration(for: .main))
+        XCTAssertEqual(configuration.palette.mainActive.red, 242.0 / 255.0, accuracy: 0.0001)
+        XCTAssertEqual(configuration.palette.mainActive.green, 192.0 / 255.0, accuracy: 0.0001)
     }
 
 }

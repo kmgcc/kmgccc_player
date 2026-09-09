@@ -55,7 +55,15 @@ final class NativeLyricsSurface: NSObject {
     var isRenderingActive: Bool { view.automaticDisplayUpdates }
 
     func setRenderingActive(_ active: Bool) {
-        guard view.automaticDisplayUpdates != active else { return }
+        let wasActive = view.automaticDisplayUpdates
+        if active {
+            // A surface can be reattached to a fullscreen host without a
+            // matching mouse-exit event. Reset the transient hover gate before
+            // the first frame so inactive-row blur is not lost on re-entry.
+            view.setPointerInside(false)
+            if !wasActive { view.prepareWakeEntryAnimation() }
+        }
+        guard wasActive != active else { return }
         view.automaticDisplayUpdates = active
     }
 
@@ -72,15 +80,27 @@ final class NativeLyricsSurface: NSObject {
     ) {
         let rawText = ttml ?? ""
         let rawChanged = trackID != lastInputTrackID || rawText != lastInputTTML
-        let shouldReload = forceLyricsReload || rawChanged
+        let nextTime = currentTime.isFinite ? max(0, currentTime) : 0
+        let sameValidDocument = !rawChanged
+            && lastError == nil
+            && view.document != nil
+            && lastTrackID == trackID
+            && lastTTML == rawText
+        let forcedSeek = forceLyricsReload && abs(nextTime - self.currentTime) > 0.05
+        let shouldReload = rawChanged || (forceLyricsReload && !sameValidDocument)
         guard shouldReload else {
-            self.currentTime = currentTime.isFinite ? max(0, currentTime) : 0
+            // Repeated force-refresh callbacks are common during a track/mode
+            // transition. Keep the existing document (and its interlude
+            // entrance state) and only rebase the clock when the requested
+            // media position actually moved. This prevents a second forced
+            // callback from replaying the intro dots halfway through.
+            self.currentTime = nextTime
             self.isPlaying = isPlaying
-            synchronize(time: self.currentTime, playing: isPlaying)
+            synchronize(time: self.currentTime, playing: isPlaying, seek: forcedSeek)
             return
         }
 
-        self.currentTime = currentTime.isFinite ? max(0, currentTime) : 0
+        self.currentTime = nextTime
         self.isPlaying = isPlaying
         lastInputTTML = rawText
         lastInputTrackID = trackID

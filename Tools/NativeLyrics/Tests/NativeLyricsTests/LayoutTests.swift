@@ -76,6 +76,30 @@ final class LayoutTests: XCTestCase {
         XCTAssertEqual(path.position(at:5),200)
         XCTAssertEqual(path.position(at:4.5),145)
     }
+    func testFlattenedSingleSpanStillHasAContinuousSweep() {
+        let line = LyricLine(
+            id: "good-night",
+            range: .init(0, 4),
+            words: [LyricWord(id: "good-night-word", text: "good night", range: .init(0, 4))],
+            isWordTimed: false
+        )
+        let layout = TextLayoutEngine().group(
+            PreparedGroup(source: .init(main: line), main: line, background: nil),
+            width: 760,
+            config: LyricsConfiguration(),
+            dynamic: false,
+            hasDuet: false
+        ).main
+        let layers = LineLayers(layout, cache: GlyphCache(), scale: 2, config: LyricsConfiguration(), previous: nil, now: 0)
+        layers.update(now: 0, media: 0, floatTime: 0, active: false, alpha: 0, background: false, config: LyricsConfiguration(), seek: true)
+        let start = layers.renderedCursor
+        layers.update(now: 1, media: 2, floatTime: 2, active: true, alpha: 1, background: false, config: LyricsConfiguration())
+        let middle = layers.renderedCursor
+        layers.update(now: 2, media: 4, floatTime: 4, active: true, alpha: 1, background: false, config: LyricsConfiguration())
+        let end = layers.renderedCursor
+        XCTAssertGreaterThan(middle, start)
+        XCTAssertGreaterThan(end, middle)
+    }
     func testTimedRubyControlsBaseSweep() {
         let word = LyricWord(id:"a",text:"星空",range:.init(1,5),ruby:[.init(text:"ほし",range:.init(1,2)),.init(text:"ぞら",range:.init(4,5))])
         let path = MaskPath([WordPlacement(atom:TextAtom(word:word),rect:.zero,pieces:[],width:100,fontSize:40,fadeHeight:48)],fadeWidth:10)
@@ -131,6 +155,22 @@ final class LayoutTests: XCTestCase {
         XCTAssertNil(view.document)
         XCTAssertNil(view.lastFrame)
         XCTAssertFalse(view.isDisplayUpdateRunning)
+    }
+    @MainActor func testInterludeDotLayersReappearAfterClearAndReload() throws {
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='8s' end='10s'>First</p><p begin='15s' end='17s'>Second</p></div></body></tt>".utf8)
+        let view = LyricsView(frame: NSRect(x: 0, y: 0, width: 760, height: 720))
+        view.automaticDisplayUpdates = false
+        view.configuration.timing.enabled = false
+        try view.load(ttml: data, playing: true, hostTime: 0)
+        let intro = view.render(at: 2)
+        XCTAssertEqual(intro.timeline.interlude?.anchor, -1)
+        XCTAssertNotNil(intro.interlude)
+        XCTAssertTrue(view.areInterludeDotLayersVisible)
+
+        view.clear(time: 2, playing: true, hostTime: 2)
+        try view.load(ttml: data, time: 2, playing: true, hostTime: 2)
+        XCTAssertNotNil(view.render(at: 3).interlude)
+        XCTAssertTrue(view.areInterludeDotLayersVisible)
     }
     @MainActor func testPlayingViewAdvancesFromHostClockAndPauseFreezes() throws {
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720))
