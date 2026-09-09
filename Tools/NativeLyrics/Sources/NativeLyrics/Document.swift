@@ -41,7 +41,40 @@ public struct LyricLine: Equatable, Codable, Sendable {
     public var isDuet = false
     public var agent = ""
     public var language = ""
+    /// The optional AMLL `itunes:song-part` value inherited from the
+    /// containing `<div>`.
+    public var songPart: String?
+    /// The source-order block index used to distinguish repeated song parts.
+    public var blockIndex: Int?
     public var text: String { words.map(\.text).joined() }
+
+    public init(
+        id: String,
+        range: LyricRange,
+        words: [LyricWord],
+        translations: [LyricTextLayer] = [],
+        romanizations: [LyricTextLayer] = [],
+        isWordTimed: Bool = false,
+        isBackground: Bool = false,
+        isDuet: Bool = false,
+        agent: String = "",
+        language: String = "",
+        songPart: String? = nil,
+        blockIndex: Int? = nil
+    ) {
+        self.id = id
+        self.range = range
+        self.words = words
+        self.translations = translations
+        self.romanizations = romanizations
+        self.isWordTimed = isWordTimed
+        self.isBackground = isBackground
+        self.isDuet = isDuet
+        self.agent = agent
+        self.language = language
+        self.songPart = songPart
+        self.blockIndex = blockIndex
+    }
 
     /// Whether this line contains enough distinct word timing to support a
     /// karaoke sweep.  A number of LDDC-to-TTML converters wrap an entire LRC
@@ -78,12 +111,45 @@ public struct LyricsDocument: Equatable, Codable, Sendable {
     public var title: String
     public var duration: Double
     public var diagnostics: [String]
+    public var timingMode: TTMLTimingMode
+    /// AMLL metadata is retained by key so host integrations can consume
+    /// platform IDs, author information, and custom `amll:meta` values
+    /// without reparsing the source XML.
+    public var metadata: [String: [String]]
+
+    public init(
+        groups: [LyricGroup],
+        title: String,
+        duration: Double,
+        diagnostics: [String],
+        timingMode: TTMLTimingMode = .word,
+        metadata: [String: [String]] = [:]
+    ) {
+        self.groups = groups
+        self.title = title
+        self.duration = duration
+        self.diagnostics = diagnostics
+        self.timingMode = timingMode
+        self.metadata = metadata
+    }
     public var isWordTimed: Bool {
         groups.contains {
             $0.main.hasEffectiveWordTiming || $0.background?.hasEffectiveWordTiming == true
         }
     }
     public var hasDuet: Bool { groups.contains { $0.main.isDuet } }
+}
+
+public enum TTMLTimingMode: String, CaseIterable, Codable, Sendable {
+    case word = "Word"
+    case line = "Line"
+}
+
+/// The time semantics of the input document. AMLL TTML is media-absolute by
+/// default; generic W3C parent-relative timing is available only explicitly.
+public enum TTMLTimingProfile: String, CaseIterable, Codable, Sendable {
+    case amllAbsolute
+    case w3cRelative
 }
 
 public enum LyricsProfile: String, CaseIterable, Codable, Sendable {

@@ -83,7 +83,7 @@ final class LayoutTests: XCTestCase {
     }
     @MainActor func testResizeDoesNotResetTimelineOrJumpGroupPosition() throws {
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
-        try view.load(ttml:Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='1s' end='12s'><span begin='0s' end='4s'>Watch </span><span begin='4s' end='11s'>the stars moving across the sky</span></p></div></body></tt>".utf8),playing:true,hostTime:0)
+        try view.load(ttml:Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='1s' end='12s'><span begin='1s' end='5s'>Watch </span><span begin='5s' end='12s'>the stars moving across the sky</span></p></div></body></tt>".utf8),playing:true,hostTime:0)
         for i in 0...600 { view.render(at:Double(i)/120) }
         let before = view.render(at:5)
         view.setFrameSize(NSSize(width:390,height:600))
@@ -95,7 +95,7 @@ final class LayoutTests: XCTestCase {
     }
     @MainActor func testResizeUsesGentleReflowForWrappedLine() throws {
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
-        try view.load(ttml:Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='1s' end='12s'><span begin='0s' end='11s'>Watch the stars moving across the sky tonight</span></p><p begin='12s' end='20s'>Next line</p></div></body></tt>".utf8),playing:true,hostTime:0)
+        try view.load(ttml:Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='1s' end='12s'><span begin='1s' end='12s'>Watch the stars moving across the sky tonight</span></p><p begin='12s' end='20s'>Next line</p></div></body></tt>".utf8),playing:true,hostTime:0)
         for i in 0...600 { _ = view.render(at:Double(i)/120) }
         let before = view.render(at:5)
         view.setFrameSize(NSSize(width:390,height:600))
@@ -204,7 +204,7 @@ final class LayoutTests: XCTestCase {
     @MainActor func testNoPerFrameTextLayoutAndBoundedGlyphCache() throws {
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
         view.configuration.cacheBudgetBytes = 1024*1024
-        try view.load(ttml:Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='1s' end='8s'><span begin='0s' end='7s'>天空 👩🏽‍🚀 é ffi</span></p></div></body></tt>".utf8),playing:true,hostTime:0)
+        try view.load(ttml:Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='1s' end='8s'><span begin='1s' end='8s'>天空 👩🏽‍🚀 é ffi</span></p></div></body></tt>".utf8),playing:true,hostTime:0)
         let count = view.lastFrame!.layoutCount
         for i in 0...600 { let frame = view.render(at:Double(i)/120); XCTAssertEqual(frame.layoutCount,count); XCTAssertLessThanOrEqual(frame.glyphCacheBytes,1024*1024) }
     }

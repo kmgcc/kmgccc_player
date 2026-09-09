@@ -183,9 +183,6 @@ import OSLog
             let documentTitle = imported.document.title == "TTML Lyrics" ? nil : imported.document.title
             let title = displayTitle ?? sidecar ?? documentTitle ?? DemoTTMLImporter.metadataTitle(data) ?? url.deletingPathExtension().lastPathComponent
             titleLabel.stringValue = title
-            if imported.repairedNamespace || imported.normalizedAbsoluteTiming {
-                logger.info("Imported legacy library TTML through Demo adapter namespaceRepair=\(imported.repairedNamespace) absoluteTiming=\(imported.normalizedAbsoluteTiming)")
-            }
             updateControls()
         } catch { showError(error, url:url) }
     }
@@ -389,7 +386,7 @@ import OSLog
         logger.error("\(error.localizedDescription,privacy:.public)")
         let alert = NSAlert(); alert.messageText = "Unable to load lyrics"
         let location = url.map { "\n\nFile: \($0.path)" } ?? ""
-        alert.informativeText = "\(error.localizedDescription)\(location)\n\nThe native engine accepts standard TTML. The Demo can normalize the player library's AMLL absolute-time export, but it does not convert LRC or other lyric formats."
+        alert.informativeText = "\(error.localizedDescription)\(location)\n\nThe native engine accepts AMLL TTML directly. LRC and other lyric formats remain outside this Demo import path."
         alert.alertStyle = .warning; alert.addButton(withTitle:"OK"); alert.beginSheetModal(for:window)
     }
 }
@@ -399,7 +396,7 @@ MainActor.assumeIsolated {
         let url = URL(fileURLWithPath: CommandLine.arguments[index + 1])
         do {
             let imported = try DemoTTMLImporter.load(Data(contentsOf: url))
-            print("title=\(imported.document.title) duration=\(imported.document.duration) groups=\(imported.document.groups.count) namespaceRepair=\(imported.repairedNamespace) absoluteTiming=\(imported.normalizedAbsoluteTiming)")
+            print("title=\(imported.document.title) duration=\(imported.document.duration) groups=\(imported.document.groups.count) timing=\(imported.document.timingMode.rawValue)")
             for group in imported.document.groups.prefix(8) {
                 let words = group.main.words.map { $0.text.replacingOccurrences(of: " ", with: "·") }.joined(separator: "|")
                 print("\(group.main.range.start)-\(group.main.range.end) \(words)")

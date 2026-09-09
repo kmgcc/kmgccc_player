@@ -23,9 +23,13 @@ final class NativeLyricsSurface: NSObject {
     var onSeek: ((Double) -> Void)?
     private(set) var lastError: Error?
     private(set) var lastTTML = ""
-    private var lastRawTTML = ""
-    private var lastRawTrackID: UUID?
     private(set) var lastTrackID: UUID?
+    // Keep the input identity separate from the last successfully decoded
+    // document. This preserves the old failure boundary: a repeatedly
+    // delivered invalid payload is reported once while the last valid view
+    // remains on screen.
+    private var lastInputTTML = ""
+    private var lastInputTrackID: UUID?
     private(set) var currentTime = 0.0
     private(set) var isPlaying = false
     private var pendingClickSeek = false
@@ -66,35 +70,25 @@ final class NativeLyricsSurface: NSObject {
         isPlaying: Bool,
         forceLyricsReload: Bool = false
     ) {
-        // The library can contain legacy AMLL TTML whose nested clocks are
-        // absolute. Normalize once at the app/native boundary; the renderer
-        // itself intentionally accepts strict parent-relative TTML only.
         let rawText = ttml ?? ""
-        let rawChanged = rawText != lastRawTTML || trackID != lastRawTrackID
-        guard forceLyricsReload || rawChanged else {
+        let rawChanged = trackID != lastInputTrackID || rawText != lastInputTTML
+        let shouldReload = forceLyricsReload || rawChanged
+        guard shouldReload else {
             self.currentTime = currentTime.isFinite ? max(0, currentTime) : 0
             self.isPlaying = isPlaying
             synchronize(time: self.currentTime, playing: isPlaying)
             return
         }
 
-        let text = NativeLyricsTTMLAdapter.normalizeForNative(rawText)
-        let shouldReload = forceLyricsReload || trackID != lastTrackID || text != lastTTML
         self.currentTime = currentTime.isFinite ? max(0, currentTime) : 0
         self.isPlaying = isPlaying
-        guard shouldReload else {
-            lastRawTTML = rawText
-            lastRawTrackID = trackID
-            synchronize(time: self.currentTime, playing: isPlaying)
-            return
-        }
+        lastInputTTML = rawText
+        lastInputTrackID = trackID
 
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             view.clear(time: self.currentTime, playing: isPlaying)
             lastError = nil
             lastTTML = ""
-            lastRawTTML = rawText
-            lastRawTrackID = trackID
             lastTrackID = trackID
             pendingClickSeek = false
             return
@@ -102,22 +96,18 @@ final class NativeLyricsSurface: NSObject {
 
         do {
             try view.load(
-                ttml: Data(text.utf8),
+                ttml: Data(rawText.utf8),
                 time: self.currentTime,
                 playing: isPlaying
             )
             lastError = nil
-            lastTTML = text
-            lastRawTTML = rawText
-            lastRawTrackID = trackID
+            lastTTML = rawText
             lastTrackID = trackID
         } catch {
             // Parse before replacing the previous visible document. The native
             // view follows the same failure boundary as the old bridge: an
             // invalid payload is recorded and the last valid surface remains.
             lastError = error
-            lastRawTTML = rawText
-            lastRawTrackID = trackID
             Log.error(
                 "Native lyrics TTML rejected role=\(role.rawValue): \(error.localizedDescription)",
                 category: .lyrics

@@ -186,24 +186,24 @@ U `LayoutCalculator.beginFrame/commit` 分离：先前缀和、focal top/height�
 
 F Spring 的两个实现细节不应误当物理学：`soft || ζ>=1` 强制临界分支；arrived 中 velocity/acceleration 未取绝对值，U已修复。延迟队列在旧 solver 前进后才到期，retarget继承当前速度；同目标更新在 U 有近似去重。保留可感知曲线与速度，不复制旧 queue 清理缺陷。
 
-## 8. 标准 TTML 输入契约
+## 8. AMLL TTML 输入契约
 
-正式加载入口只接受 XML TTML Data/String，不接受 AMLL JSON、LRC、ESLyric 或任意 HTML。文档模型要保存段落、词、Ruby、语言、agent、source timing、空白和 metadata；之后才生成 renderer profile。
+正式加载入口只接受 XML TTML Data/String，不接受 AMLL JSON、LRC、ESLyric 或任意 HTML。默认加载的是 AMLL absolute profile；真正的 W3C parent-relative profile 必须显式选择。文档模型要保存段落、词、Ruby、语言、agent、source timing、空白和 metadata；之后才生成 renderer profile。
 
-**标准与现有素材必须分开处理。** AMLL 的 parser 使用媒体绝对时间，不完整实现 W3C 的嵌套时间容器；音乐库中还存在无默认 TTML namespace 的旧文件。不能声称这些原文件全部是标准 TTML。Demo 的素材准备层允许一次性把这些文件规范化：补正确namespace、将绝对时刻转为标准 parent-relative offset，不改音频和作者文本。引擎本身不内置这种猜测性 fallback。
+**AMLL 与通用 W3C profile 必须显式区分。** AMLL parser 使用媒体绝对时间，不把嵌套节点的时间再加上父节点起点；音乐库中还存在无默认 TTML namespace 的历史文件。NativeLyrics 默认使用 `.amllAbsolute`，直接解析这些原始 bytes，并在模型中保留 namespace shadow、紧凑 `mm:ss`、裸十进制秒数、metadata 和 sidecar 兼容性。真正需要父子相对时钟的调用方必须显式选择 `.w3cRelative`；两个 profile 都不会改写输入 XML。
 
-Demo 对玩家资料库的打开入口也遵守这条边界：`DemoTTMLImporter` 先尝试严格解码，失败或检测到历史导出形态时才在导入层修复结构命名空间，并把 `div → p → span` 上重复的媒体绝对 `begin/end` 转为父节点相对偏移。它同时接受资料库中出现的紧凑 `mm:ss` 和裸十进制秒数，并在序列化后再次经过严格解码；一行歌词也通过重复的两级起点检测，避免把父级时间重复相加。当前资料库批量结果为 397 份中 396 份可导入，唯一失败是截断 XML，不能安全猜测修复。显示标题优先使用歌曲目录旁的播放器元数据，其次才使用 TTML 的 `amll:meta musicName`。
+Demo 对玩家资料库的打开入口也遵守这条边界：`DemoTTMLImporter` 直接把原始 Data 交给 `TTMLDecoder`，没有 adapter、猜测性重写或二次序列化。显示标题优先使用歌曲目录旁的播放器元数据，其次才使用 TTML 的 `amll:meta musicName`。
 
 支持的歌词 TTML profile：
 
 - `tt/head/metadata/body/div/p/span/br`，TTML namespace；按 URI 解析 `ttm/tts/ttp/xml`，不用 prefix 拼写识别。
-- 时钟 `hh:mm:ss.fraction`、offset `h/m/s/ms/f/t`、frame/subframe、frameRateMultiplier/tickRate；默认media timeBase。嵌套 par/seq、begin/end/dur继承与裁切。
+- AMLL 时钟支持 `hh:mm:ss.fraction`、紧凑 `mm:ss` 和裸秒数；同时保留显式 W3C profile 的 offset `h/m/s/ms/f/t`、frame/subframe、frameRateMultiplier/tickRate 解析。默认 media timeBase；AMLL 的父节点范围只用于结构校验，不给子节点时间加 origin。
 - `xml:space`、xml:lang、xml:id、ttm:agent；角色 x-bg/x-translation/x-roman 是 namespaced lyrics extensions，不伪称为 W3C 内置角色。
 - `tts:ruby` container/base/textContainer/text；保留注音时间。iTunes sidecar translation/transliteration按 key/for关联；语言选择和词音译对齐可配置。
 - 基本 style/region 的字体/对齐可解析或给出诊断；字幕区域布局、TTML任意set/animate、图像/音频嵌入、vertical writing和wallclock/SMPTE/drop-frame不属于 AMLL 歌词 profile，遇到必须报告不支持，不能静默声称完整TTML2播放器。
 - 非法XML/namespace/时间、不支持timeBase、无界活动段落可报错；零时长可保留但不活跃；输入失败不破坏已载入文档。
 
-上游 `TTMLParser` 存多语言/words/ruby/agents，`toAmllLyrics` 降为 main+BG数组。词roman对齐优先start差≤2ms，否则按时间交并比≥.1选最优并推进游标。person agent切换翻转duet；首个other从右侧；group总左不更新person记忆。原生使用这些已有歌词语义，同时把标准时间解析放在独立层。
+上游 `TTMLParser` 存多语言/words/ruby/agents，`toAmllLyrics` 降为 main+BG数组。词roman对齐优先start差≤2ms，否则按时间交并比≥.1选最优并推进游标。person agent切换翻转duet；首个other从右侧；group总左不更新person记忆。原生使用这些已有歌词语义；时间解析由 `TTMLDecoder` 直接按 AMLL absolute profile 完成，通用 W3C relative profile 仅显式启用。
 
 ## 9. Apple 原生方案与职责边界
 

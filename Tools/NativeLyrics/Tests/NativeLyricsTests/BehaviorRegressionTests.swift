@@ -3,7 +3,7 @@ import XCTest
 @testable import NativeLyrics
 
 final class BehaviorRegressionTests: XCTestCase {
-    private let fixture = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='3s'><span begin='0s' end='3s'>First</span></p><p begin='3s' end='6s'><span begin='0s' end='3s'>Second</span></p><p begin='6s' end='9s'><span begin='0s' end='3s'>Third</span></p><p begin='9s' end='12s'><span begin='0s' end='3s'>Fourth</span></p></div></body></tt>".utf8)
+    private let fixture = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='3s'><span begin='0s' end='3s'>First</span></p><p begin='3s' end='6s'><span begin='3s' end='6s'>Second</span></p><p begin='6s' end='9s'><span begin='6s' end='9s'>Third</span></p><p begin='9s' end='12s'><span begin='9s' end='12s'>Fourth</span></p></div></body></tt>".utf8)
 
     @MainActor func testBlurTransitionsAndPointerExitDeadline() throws {
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
@@ -26,7 +26,7 @@ final class BehaviorRegressionTests: XCTestCase {
     }
 
     @MainActor func testAllParallelRowsStaySharpWhenTTMLRangesOverlap() throws {
-        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='4s'><span begin='0s' end='4s'>Main</span></p><p begin='2s' end='6s'><span begin='0s' end='4s'>Background</span></p><p begin='4.5s' end='7.5s'><span begin='0s' end='3s'>Next</span></p></div></body></tt>".utf8)
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='4s'><span begin='0s' end='4s'>Main</span></p><p begin='2s' end='6s'><span begin='2s' end='6s'>Background</span></p><p begin='4.5s' end='7.5s'><span begin='4.5s' end='7.5s'>Next</span></p></div></body></tt>".utf8)
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
         view.configuration.timing.enabled = false
         try view.load(ttml:data,playing:true,hostTime:0)
@@ -53,7 +53,7 @@ final class BehaviorRegressionTests: XCTestCase {
     }
 
     @MainActor func testExpiredFocusBlursDuringAnInterlude() throws {
-        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='2s'><span begin='0s' end='2s'>First</span></p><p begin='4s' end='6s'><span begin='0s' end='2s'>Second</span></p></div></body></tt>".utf8)
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='2s'><span begin='0s' end='2s'>First</span></p><p begin='4s' end='6s'><span begin='4s' end='6s'>Second</span></p></div></body></tt>".utf8)
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
         view.configuration.timing.enabled = false
         try view.load(ttml:data,playing:true,hostTime:0)
@@ -188,7 +188,7 @@ final class BehaviorRegressionTests: XCTestCase {
     }
 
     @MainActor func testBackgroundRevealIsContinuousAndDoesNotOvershoot() throws {
-        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml' xmlns:ttm='http://www.w3.org/ns/ttml#metadata'><body><div><p begin='1s' end='4s'><span begin='0s' end='3s'>Main</span><span ttm:role='x-bg' begin='0s' end='3s'>Background</span></p></div></body></tt>".utf8)
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml' xmlns:ttm='http://www.w3.org/ns/ttml#metadata'><body><div><p begin='1s' end='4s'><span begin='1s' end='4s'>Main</span><span ttm:role='x-bg' begin='1s' end='4s'>Background</span></p></div></body></tt>".utf8)
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false
         view.configuration.timing.enabled = false
         try view.load(ttml:data,playing:true,hostTime:0)

@@ -40,39 +40,34 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
     </tt>
     """
 
-    func testStrictTTMLPassesThroughWithoutTimingRewrite() {
-        XCTAssertEqual(
-            NativeLyricsTTMLAdapter.normalizeForNative(mainTTML),
-            mainTTML
-        )
-    }
-
     @MainActor
-    func testStrictRelativeNestedTTMLIsNotMistakenForAbsoluteExport() throws {
-        let normalized = NativeLyricsTTMLAdapter.normalizeForNative(strictRelativeNestedTTML)
-        XCTAssertEqual(normalized, strictRelativeNestedTTML.trimmingCharacters(in: .whitespacesAndNewlines))
-
+    func testAMLLTTMLIsPassedToDecoderWithoutTimingRewrite() throws {
         let surface = NativeLyricsSurface(role: .main)
         surface.applyTrack(
             trackID: UUID(),
-            ttml: strictRelativeNestedTTML,
+            ttml: mainTTML,
             currentTime: 1,
             isPlaying: false
         )
 
         let groups = try XCTUnwrap(surface.view.document?.groups)
-        XCTAssertEqual(groups.count, 2)
-        // The div starts at 1s. Child p/span clocks are relative, so the
-        // second line begins at 1 + 3 = 4s and its second span ends at 7s.
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(surface.lastTTML, mainTTML)
         XCTAssertEqual(groups[0].main.range.start, 1, accuracy: 0.0001)
-        XCTAssertEqual(groups[0].main.words[0].range.start, 1, accuracy: 0.0001)
-        XCTAssertEqual(groups[0].main.words[1].range.end, 3, accuracy: 0.0001)
-        XCTAssertEqual(groups[1].main.range.start, 4, accuracy: 0.0001)
-        XCTAssertEqual(groups[1].main.words[1].range.end, 7, accuracy: 0.0001)
+        XCTAssertEqual(groups[0].main.range.end, 5, accuracy: 0.0001)
+    }
+
+    func testW3CRelativeProfileRemainsExplicit() throws {
+        let document = try TTMLDecoder(profile: .w3cRelative).decode(Data(strictRelativeNestedTTML.utf8))
+        XCTAssertEqual(document.groups.count, 2)
+        XCTAssertEqual(document.groups[0].main.range.start, 1, accuracy: 0.0001)
+        XCTAssertEqual(document.groups[0].main.words[0].range.start, 1, accuracy: 0.0001)
+        XCTAssertEqual(document.groups[1].main.range.start, 4, accuracy: 0.0001)
+        XCTAssertEqual(document.groups[1].main.words[1].range.end, 7, accuracy: 0.0001)
     }
 
     @MainActor
-    func testLegacyAbsoluteTTMLIsNormalizedBeforeNativeDecode() throws {
+    func testAMLLAbsoluteTTMLIsDecodedWithoutNormalization() throws {
         let surface = NativeLyricsSurface(role: .main)
         surface.applyTrack(
             trackID: UUID(),
@@ -99,7 +94,7 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
     }
 
     @MainActor
-    func testLegacyUnnamespacedTTMLGetsStandardNamespaceRepair() throws {
+    func testLegacyUnnamespacedTTMLIsAcceptedWithoutNamespaceRewrite() throws {
         let surface = NativeLyricsSurface(role: .main)
         surface.applyTrack(
             trackID: UUID(),

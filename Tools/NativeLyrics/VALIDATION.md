@@ -14,11 +14,9 @@ swift run --package-path Tools/NativeLyrics --quiet LyricsProbe \
 bash Tools/NativeLyrics/script/build_and_run.sh
 ```
 
-The current run passes **46 XCTest cases**. The fixed-song probe loads 80 groups and 549 timed spans after the fixture preparation step; the latest 3-second ProMotion replay reports about 118.7 Hz callbacks, 0.47 ms median render time, 0.65 ms P95, and 1.32 ms maximum while keeping glyph cache usage bounded by the configured budget.
+The current run passes **75 XCTest cases**. The fixed-song probe and batch import checks use the stored AMLL bytes directly; no fixture preparation or runtime XML conversion is part of the path.
 
-The fixture preparation script is deliberately outside the renderer. It converts the library's legacy absolute-time resource into standard parent-relative TTML, while the public `TTMLDecoder` rejects unnamespaced timed input and accepts only the standard TTML contract.
-
-The Demo's `Library songs` menu uses the same boundary for real player-library files. Its adapter recognizes compact `mm:ss` clocks, bare decimal-second attributes, repeated absolute `begin`/`end` values on `div → p → span`, and explicit empty namespace declarations on timed nodes. It serializes the repaired document with explicit seconds, then runs the strict decoder. A batch pass over the available library material validated **396 of 397** files; the remaining file is truncated XML and is reported as invalid instead of being guessed into a different lyric order. Sidecar metadata supplies the visible track title, while `amll:meta musicName` is used when no sidecar title exists.
+The Demo's `Library songs` menu uses the same boundary for real player-library files. Compact `mm:ss` clocks, bare decimal-second attributes, repeated absolute `begin`/`end` values on `div → p → span`, explicit empty namespace declarations on timed nodes, sidecars, and AMLL metadata are decoded natively. Invalid XML is reported instead of being guessed into a different lyric order. Sidecar metadata supplies the visible track title, while `amll:meta musicName` is used when no sidecar title exists.
 
 ## APP reference comparison
 
@@ -48,10 +46,10 @@ The browser capture is an oracle for geometry and state only. It is not linked i
 - native resize and window occlusion lifecycle;
 - native lyric click and context-menu copy path.
 - the `Library songs` menu, including selecting a real absolute-time library export, title/metadata display, and an adjacent audio file when present;
-- a batch `--dump-import` check over player-library `lyrics.ttml` files, including one-line absolute timing and namespace-shadow cases;
+- a batch `--dump-import` check over player-library `lyrics.ttml` files, including one-line absolute timing, namespace-shadow, metadata, and sidecar cases;
 - prompt smooth-mask tracking during normal playback samples; paused and seeked samples still snap exactly to the requested media time.
 - launch without the optional local fixture, where the Demo falls back to the visible Glow sample instead of opening on an all-future blurred Motion lead-in; invalid local fixtures follow the same fallback.
 
 ## Remaining acceptance boundary
 
-Cover artwork blur, ThemeStore color extraction, and final fullscreen skin composition remain host responsibilities. The native lyric surface exposes the same semantic channels and timing states, but production integration still needs a separate adapter and real-window parity pass for every main/fullscreen/MiniPlayer host. No production renderer switch has been made on this branch.
+Cover artwork blur, ThemeStore color extraction, and final fullscreen skin composition remain host responsibilities. The native lyric surface exposes the same semantic channels and timing states; production integration still needs a real-window parity pass for every main/fullscreen/MiniPlayer host. No production renderer switch has been made on this branch.

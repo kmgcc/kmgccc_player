@@ -16,7 +16,7 @@ AMLL resources and the AMLL submodule are outside this change.
 ## Confirmed baseline before this repair
 
 - Production selects `LyricsRendererBackend.native`.
-- `NativeLyrics` package tests pass (69 tests after the timing, parallel-focus,
+- `NativeLyrics` package tests pass (75 tests after the timing, parallel-focus,
   font-face and scroll corrections; the initial checkout had 48 tests after
   clearing a stale SwiftPM module cache).
 - The package owns TTML parsing, timing, layout, focus, scroll, karaoke masks,
@@ -117,10 +117,10 @@ AMLL resources and the AMLL submodule are outside this change.
   the old valid document, so a track with no lyrics incorrectly kept showing
   the previous track.
 - The player's legacy AMLL/LDDC TTML export repeats absolute `begin`/`end`
-  clocks on `div`, `p`, and `span`. NativeLyrics correctly resolves child
-  clocks relative to their parent, but the app had no compatibility boundary,
-  so nested times accumulated and manufactured late lines and false
-  interludes.
+  clocks on `div`, `p`, and `span`. Before this repair the default decoder
+  resolved child clocks relative to their parent, so nested times accumulated
+  and manufactured late lines and false interludes. The decoder now defaults
+  to `.amllAbsolute`; parent-relative parsing is explicit and opt-in.
 - The persisted default spring pair (`0.40`, `0.75`) was more oscillatory than
   the documented settled pair (`0.65`, `0.25`), and the native mapper replaced
   the package's interval-adaptive spring even when the user had selected the
@@ -164,10 +164,10 @@ AMLL resources and the AMLL submodule are outside this change.
 - `LyricsView.clear` gives empty lyrics a real clear operation while invalid
   non-empty TTML continues to preserve the last valid document and report an
   error.
-- `NativeLyricsTTMLAdapter` now normalizes only legacy absolute/unnamespaced
-  TTML at the native surface boundary. Strict parent-relative TTML remains
-  untouched, while every main/fullscreen/Cover Blur/batch surface receives the
-  same corrected timeline.
+- `TTMLDecoder` now defaults to the explicit `.amllAbsolute` profile and every
+  main/fullscreen/Cover Blur/batch surface receives the stored AMLL TTML bytes
+  directly. The opt-in `.w3cRelative` profile remains available for genuine
+  parent-relative inputs; neither profile rewrites XML at the surface boundary.
 - Batch preview owns an isolated document/clock and direct native seek route.
 - Defaults are now `0.65` / `0.25`. Only the exact legacy default pair is
   migrated; custom values remain intact. The default uses NativeLyrics'
