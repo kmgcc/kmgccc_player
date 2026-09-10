@@ -187,7 +187,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         playlists = loadedPlaylists.sorted { $0.createdAt < $1.createdAt }
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
-        scheduleSearchIndexRebuild(reason: "repositoryReload")
+        await scheduleSearchIndexRebuild(reason: "repositoryReload")
         await applyMetadataSync(
             artistSidecars: snapshot.artistSidecars,
             albumSidecars: snapshot.albumSidecars,
@@ -426,7 +426,7 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
         rebuildRuntimeDerivedState()
         rebuildTrackIndexCache()
-        scheduleSearchIndexRebuild(reason: "refreshTracks")
+        await scheduleSearchIndexRebuild(reason: "refreshTracks")
         let (artistSidecars, albumSidecars) = await Task.detached { @Sendable in
             let scanner = LibraryDiskScanner(paths: capturedPaths)
             return (scanner.loadArtistSidecars(), scanner.loadAlbumSidecars())
@@ -1942,11 +1942,13 @@ final class SwiftDataLibraryRepository: LibraryRepositoryProtocol {
         }
     }
 
-    private func scheduleSearchIndexRebuild(reason: String) {
+    private func scheduleSearchIndexRebuild(reason: String) async {
         let sources = makeSearchDocumentSources(for: allTracks)
-        Task(priority: .utility) {
-            await searchIndex.scheduleFullRebuild(from: sources, reason: reason)
-        }
+        // Register the rebuild on the index actor before returning to any
+        // caller that can immediately rebuild a search page. `search()` waits
+        // for the actor's pending task; spawning a separate Task here left a
+        // race where the query could observe the old/empty index first.
+        await searchIndex.scheduleFullRebuild(from: sources, reason: reason)
     }
 
     private func scheduleSearchIndexUpsert(for tracks: [Track], reason: String) {

@@ -8,6 +8,7 @@
 
 import CryptoKit
 import Foundation
+import NativeLyrics
 import SwiftUI
 import WebKit
 
@@ -44,9 +45,20 @@ final class LyricsSurfaceManager {
 
     static let shared = LyricsSurfaceManager()
 
+    /// The app's production renderer is selected here, behind the neutral
+    /// surface manager API. NativeLyrics owns the actual drawing; the old
+    /// WebView store remains only as a compatibility adapter for callers that
+    /// have not yet been migrated to the package API.
+    static let rendererBackend: LyricsRendererBackend = .native
+
     private var stores: [LyricsSurfaceRole: LyricsWebViewStore] = [:]
     private var activeRoles: Set<LyricsSurfaceRole> = []
     private var currentPlaybackSnapshot: PlaybackSnapshot = .empty
+    /// Progress scrubbing owns the lyric clock until the gesture ends. The
+    /// audio transport continues to publish its real position, but those
+    /// low-frequency samples must not overwrite the position under the
+    /// pointer or the preview would visibly snap back while dragging.
+    private var isPlaybackTimePreviewActive = false
     private var surfaceSnapshots: [LyricsSurfaceRole: SurfaceSnapshot] = [:]
     private var baseThemePalette: ThemePalette?
 
@@ -102,6 +114,30 @@ final class LyricsSurfaceManager {
     /// Request a mode switch. This is the ONLY way to change surfaces.
     /// Views should NOT call this directly - use reportMainVisible/reportFullscreenVisible instead.
     func requestMode(_ mode: TargetMode, onComplete: ((TargetMode, Int) -> Void)? = nil) {
+        if Self.rendererBackend == .native {
+            pendingSwitchWorkItem?.cancel()
+            pendingSwitchWorkItem = nil
+            switchGeneration += 1
+            let generation = switchGeneration
+            targetMode = mode
+            currentMode = mode == .main ? .main : .fullscreen
+            switchState = .idle
+            if mode == .main {
+                activeRoles.insert(.main)
+                activeRoles.remove(.fullscreen)
+                activeRoles.remove(.fullscreenCoverBlurHighlight)
+                NativeLyricsSurfaceManager.shared.activate(role: .main)
+                NativeLyricsSurfaceManager.shared.deactivate(role: .fullscreen)
+                NativeLyricsSurfaceManager.shared.deactivate(role: .fullscreenCoverBlurHighlight)
+            } else {
+                activeRoles.insert(.fullscreen)
+                activeRoles.remove(.main)
+                NativeLyricsSurfaceManager.shared.activate(role: .fullscreen)
+                NativeLyricsSurfaceManager.shared.deactivate(role: .main)
+            }
+            onComplete?(mode, generation)
+            return
+        }
         let desiredCurrentMode: CurrentMode = (mode == .main) ? .main : .fullscreen
 
         // Ignore only when the requested mode is already fully active and idle.
@@ -253,6 +289,25 @@ final class LyricsSurfaceManager {
     /// Report main view visibility change
     /// This may trigger a mode switch if fullscreen is not requested
     func reportMainVisible(_ visible: Bool) {
+        if Self.rendererBackend == .native {
+            if visible {
+                if targetMode != .fullscreen || currentMode != .fullscreen {
+                    targetMode = .main
+                    currentMode = .main
+                    switchState = .idle
+                    activeRoles.insert(.main)
+                    activeRoles.remove(.fullscreen)
+                    activeRoles.remove(.fullscreenCoverBlurHighlight)
+                    NativeLyricsSurfaceManager.shared.activate(role: .main)
+                    NativeLyricsSurfaceManager.shared.deactivate(role: .fullscreen)
+                    NativeLyricsSurfaceManager.shared.deactivate(role: .fullscreenCoverBlurHighlight)
+                }
+            } else {
+                activeRoles.remove(.main)
+                NativeLyricsSurfaceManager.shared.deactivate(role: .main)
+            }
+            return
+        }
         Log.debug("LyricsSurfaceManager: reportMainVisible=\(visible), targetMode=\(targetMode), currentMode=\(currentMode), state=\(switchState)", category: .webview)
 
         if !visible {
@@ -305,6 +360,22 @@ final class LyricsSurfaceManager {
     /// Report fullscreen view visibility change
     /// This may trigger a mode switch if conditions are met
     func reportFullscreenVisible(_ visible: Bool) {
+        if Self.rendererBackend == .native {
+            if visible {
+                targetMode = .fullscreen
+                currentMode = .fullscreen
+                switchState = .idle
+                activeRoles.insert(.fullscreen)
+                activeRoles.remove(.main)
+                NativeLyricsSurfaceManager.shared.activate(role: .fullscreen)
+                NativeLyricsSurfaceManager.shared.deactivate(role: .main)
+            } else {
+                activeRoles.remove(.fullscreen)
+                NativeLyricsSurfaceManager.shared.deactivate(role: .fullscreen)
+                if targetMode == .fullscreen { requestMode(.main) }
+            }
+            return
+        }
         Log.debug("LyricsSurfaceManager: reportFullscreenVisible=\(visible), targetMode=\(targetMode), currentMode=\(currentMode), state=\(switchState)", category: .webview)
 
         if visible {
@@ -402,6 +473,9 @@ final class LyricsSurfaceManager {
     /// The role is not marked active; current snapshots are replayed so attach
     /// can be cheap. Never materialize a non-target role in the background.
     func prewarm(role: LyricsSurfaceRole, reason: String) {
+        if Self.rendererBackend == .native {
+            return
+        }
         guard role == targetSurfaceRole else {
             Log.debug(
                 "Skipping lyrics prewarm for inactive role: role=\(role.rawValue), target=\(targetSurfaceRole.rawValue), reason=\(reason)",
@@ -456,8 +530,21 @@ final class LyricsSurfaceManager {
         stores[role]
     }
 
+    /// Read readiness without materializing either renderer backend.
+    func hasReadySurface(for role: LyricsSurfaceRole) -> Bool {
+        if Self.rendererBackend == .native {
+            return NativeLyricsSurfaceManager.shared.existingSurface(for: role)?.isReady == true
+        }
+        return stores[role]?.isReady == true
+    }
+
     /// Mark a role as active (has a visible surface).
     func activate(role: LyricsSurfaceRole) {
+        if Self.rendererBackend == .native {
+            activeRoles.insert(role)
+            NativeLyricsSurfaceManager.shared.activate(role: role)
+            return
+        }
         cancelDeferredTeardown(for: role)
         activeRoles.insert(role)
         Log.debug("Activated role: \(role.rawValue)", category: .webview)
@@ -466,6 +553,11 @@ final class LyricsSurfaceManager {
     /// Mark a role as inactive (surface hidden/closed).
     /// For non-persistent roles, performs full teardown.
     func deactivate(role: LyricsSurfaceRole) {
+        if Self.rendererBackend == .native {
+            activeRoles.remove(role)
+            NativeLyricsSurfaceManager.shared.deactivate(role: role)
+            return
+        }
         FSDiagnostics.emit(
             "LyricsSurfaceManager.deactivate role=\(role.rawValue) persistsState=\(role.persistsState) storeExists=\(stores[role] != nil) t=\(String(format: "%.4f", ProcessInfo.processInfo.systemUptime))",
             category: .webview
@@ -550,6 +642,20 @@ final class LyricsSurfaceManager {
         isPlaying: Bool,
         forceLyricsReload: Bool = false
     ) {
+        if Self.rendererBackend == .native {
+            // Keep this legacy entry point renderer-neutral. A few editor and
+            // restoration paths still call `applyTrack` directly; routing
+            // them through the native snapshot owner prevents a silent no-op
+            // now that production no longer materializes WebView stores.
+            NativeLyricsSurfaceManager.shared.applyTrack(
+                trackID: trackID,
+                ttml: ttml,
+                currentTime: currentTime,
+                isPlaying: isPlaying,
+                forceLyricsReload: forceLyricsReload
+            )
+            return
+        }
         for role in activeRoles {
             guard let store = stores[role] else { continue }
             store.applyTrack(
@@ -565,6 +671,47 @@ final class LyricsSurfaceManager {
     /// Apply theme to all surfaces (active and pre-created).
     func applyTheme(_ palette: ThemePalette) {
         baseThemePalette = palette
+        if Self.rendererBackend == .native {
+            NativeLyricsSurfaceManager.shared.applyTheme(palette)
+
+            // Native surfaces keep their configuration in a separate manager,
+            // while fullscreen skins store a track-guarded palette/config
+            // override in this compatibility owner.  Replaying only the base
+            // ThemePalette would erase the skin's line-timing colors (and can
+            // make a whole line-timed song look washed out) until the next
+            // fullscreen view update.  Mirror the WebView replay contract:
+            // reapply a still-valid override and then its complete config
+            // snapshot after the global palette has changed.
+            for (role, snapshot) in surfaceSnapshots {
+                let trackMatches = !snapshot.isThemeOverrideTrackGuarded
+                    || snapshot.themeOverrideTrackID == currentPlaybackSnapshot.trackID
+                guard trackMatches else { continue }
+
+                if let override = snapshot.themeOverridePalette {
+                    NativeLyricsSurfaceManager.shared.applyPalette(override, for: role)
+                }
+
+                let configMatches = !snapshot.isConfigTrackGuarded
+                    || snapshot.configTrackID == currentPlaybackSnapshot.trackID
+                if configMatches, let json = snapshot.configJSON {
+                    NativeLyricsSurfaceManager.shared.applyConfigurationJSON(json, for: role)
+                    if role == .main {
+                        // The main-panel snapshot predates the palette refresh
+                        // and carries a legacy `textColor` field. Replaying it
+                        // after ThemeStore publishes a new artwork palette
+                        // would put the old (often black) color back on the
+                        // native surface. The native configuration already
+                        // retained all non-color settings; restore the
+                        // confirmed ThemeStore palette after the replay.
+                        NativeLyricsSurfaceManager.shared.applyPalette(palette, for: role)
+                    }
+                }
+            }
+            // Production is native-only. The compatibility stores are kept
+            // solely for an explicit rollback backend and must not receive a
+            // theme replay (or be woken up) on the native path.
+            return
+        }
         // Apply to all stores, not just active ones
         for (_, store) in stores {
             store.applyTheme(palette)
@@ -575,7 +722,8 @@ final class LyricsSurfaceManager {
         trackID: UUID?,
         lyricsTTML: String,
         currentTime: Double,
-        isPlaying: Bool
+        isPlaying: Bool,
+        forceLyricsReload: Bool = false
     ) {
         let lyricsHash = Self.hashLyrics(lyricsTTML)
         let normalizedTime = currentTime.isFinite ? currentTime : currentPlaybackSnapshot.currentTime
@@ -587,6 +735,16 @@ final class LyricsSurfaceManager {
             currentTime: normalizedTime,
             isPlaying: isPlaying
         )
+        if Self.rendererBackend == .native {
+            NativeLyricsSurfaceManager.shared.updatePlaybackSnapshot(
+                trackID: trackID,
+                lyricsTTML: lyricsTTML,
+                currentTime: normalizedTime,
+                isPlaying: isPlaying,
+                forceLyricsReload: forceLyricsReload
+            )
+            currentPlaybackSnapshot.currentTime = NativeLyricsSurfaceManager.shared.currentPlaybackTime
+        }
 
         if previousSnapshot.trackID != trackID || previousSnapshot.lyricsHash != lyricsHash {
             Log.debug(
@@ -596,13 +754,77 @@ final class LyricsSurfaceManager {
         }
     }
 
-    func updatePlaybackTime(_ currentTime: Double) {
+    func updatePlaybackTime(_ currentTime: Double, force: Bool = false) {
         guard currentTime.isFinite else { return }
-        currentPlaybackSnapshot.currentTime = currentTime
+        guard !isPlaybackTimePreviewActive else { return }
+        if Self.rendererBackend == .native {
+            NativeLyricsSurfaceManager.shared.updatePlaybackTime(currentTime, force: force)
+            currentPlaybackSnapshot.currentTime = NativeLyricsSurfaceManager.shared.currentPlaybackTime
+        } else {
+            currentPlaybackSnapshot.currentTime = currentTime
+        }
     }
 
     func updatePlayingState(_ isPlaying: Bool) {
         currentPlaybackSnapshot.isPlaying = isPlaying
+        guard !isPlaybackTimePreviewActive else { return }
+        if Self.rendererBackend == .native {
+            NativeLyricsSurfaceManager.shared.updatePlayingState(isPlaying)
+            currentPlaybackSnapshot.currentTime = NativeLyricsSurfaceManager.shared.currentPlaybackTime
+        }
+    }
+
+    /// Begin a seek preview without moving the audio transport. The native
+    /// renderer is paused at the preview position so the real playback clock
+    /// cannot run ahead between gesture samples.
+    func beginPlaybackTimePreview(at time: Double, isPlaying: Bool) {
+        guard time.isFinite else { return }
+        isPlaybackTimePreviewActive = true
+        currentPlaybackSnapshot.currentTime = max(0, time)
+        currentPlaybackSnapshot.isPlaying = isPlaying
+        guard Self.rendererBackend == .native else { return }
+        NativeLyricsSurfaceManager.shared.updatePlayingState(false)
+        NativeLyricsSurfaceManager.shared.updatePlaybackTime(
+            max(0, time),
+            force: true,
+            motion: .preview
+        )
+    }
+
+    /// Update all shared native lyric surfaces at the pointer position. This
+    /// intentionally uses a forced clock sync so small drag deltas still
+    /// update line focus and word masks immediately.
+    func updatePlaybackTimePreview(_ time: Double) {
+        guard time.isFinite else { return }
+        guard isPlaybackTimePreviewActive else {
+            updatePlaybackTime(time, force: true)
+            return
+        }
+        let normalized = max(0, time)
+        currentPlaybackSnapshot.currentTime = normalized
+        guard Self.rendererBackend == .native else { return }
+        NativeLyricsSurfaceManager.shared.updatePlaybackTime(
+            normalized,
+            force: true,
+            motion: .preview
+        )
+    }
+
+    /// Commit the preview clock after the audio seek has been requested and
+    /// restore the real playing state for the next transport tick.
+    func endPlaybackTimePreview(at time: Double, isPlaying: Bool) {
+        guard time.isFinite else { return }
+        let normalized = max(0, time)
+        isPlaybackTimePreviewActive = false
+        currentPlaybackSnapshot.currentTime = normalized
+        currentPlaybackSnapshot.isPlaying = isPlaying
+        guard Self.rendererBackend == .native else { return }
+        NativeLyricsSurfaceManager.shared.updatePlaybackTime(
+            normalized,
+            force: true,
+            motion: .preview
+        )
+        NativeLyricsSurfaceManager.shared.updatePlayingState(isPlaying)
     }
 
     func updateSurfaceConfigSnapshot(
@@ -679,6 +901,7 @@ final class LyricsSurfaceManager {
     /// Shutdown all stores (app termination).
     func shutdownAll() {
         Log.info("Shutting down all stores", category: .webview)
+        NativeLyricsSurfaceManager.shared.shutdownAll()
         pendingSwitchWorkItem?.cancel()
         onStoreReadyHandlers.removeAll()
 
@@ -717,7 +940,7 @@ extension LyricsSurfaceManager {
 
     /// Check if a role is currently active.
     func isActive(_ role: LyricsSurfaceRole) -> Bool {
-        activeRoles.contains(role)
+        activeRoles.contains(role) || NativeLyricsSurfaceManager.shared.isActive(role)
     }
 
     /// Check if currently in fullscreen mode

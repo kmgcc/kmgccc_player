@@ -9,6 +9,7 @@
 import Combine
 import CryptoKit
 import Foundation
+import NativeLyrics
 import QuartzCore
 import SwiftUI
 import WebKit
@@ -199,6 +200,16 @@ final class LyricsWebViewStore: NSObject {
 
     var onUserSeek: ((Double) -> Void)?
 
+    /// Existing player call sites still receive this state adapter while their
+    /// visual surface is supplied by NativeLyrics. The adapter is deliberately
+    /// renderer-neutral and can be removed once callers use the package API.
+    private var nativeSurface: NativeLyricsSurface? {
+        guard LyricsSurfaceManager.rendererBackend == .native,
+              let surfaceRole = LyricsSurfaceRole(rawValue: role)
+        else { return nil }
+        return NativeLyricsSurfaceManager.shared.surface(for: surfaceRole)
+    }
+
     init(role: String = "main") {
         self.role = role
         self.fallbackObjectID = role.hashValue
@@ -215,6 +226,8 @@ final class LyricsWebViewStore: NSObject {
     // MARK: - Native Mouse Event Gate
 
     func setMouseInteractionSuppressed(_ suppressed: Bool, reason: String) {
+        nativeSurface?.setMouseInteractionSuppressed(suppressed)
+        if nativeSurface != nil { return }
         guard isMouseInteractionSuppressed != suppressed else { return }
 
         isMouseInteractionSuppressed = suppressed
@@ -222,6 +235,7 @@ final class LyricsWebViewStore: NSObject {
     }
 
     func refreshMouseInteractionSuppression(reason: String) {
+        if nativeSurface != nil { return }
         applyMouseInteractionSuppression(reason: reason)
     }
 
@@ -244,6 +258,14 @@ final class LyricsWebViewStore: NSObject {
     }
 
     func setRenderQualityScale(_ scale: CGFloat, reason: String) {
+        if LyricsSurfaceManager.rendererBackend == .native,
+           let surfaceRole = LyricsSurfaceRole(rawValue: role) {
+            var configuration = NativeLyricsSurfaceManager.shared.configuration(for: surfaceRole)
+                ?? NativeLyricsConfigurationMapper.base(role: surfaceRole)
+            configuration.renderScale = max(0.35, min(1, Double(scale)))
+            NativeLyricsSurfaceManager.shared.applyConfiguration(configuration, for: surfaceRole)
+            return
+        }
         let clampedScale = max(0.1, min(1, scale))
         guard abs(renderQualityScale - clampedScale) >= 0.001 else {
             applyBackingScaleForRenderQuality(reason: reason)
@@ -902,6 +924,18 @@ final class LyricsWebViewStore: NSObject {
     func setLyricsTTML(_ ttml: String, force: Bool = false) {
         guard !isShutDown else { return }
 
+        if let nativeSurface {
+            nativeSurface.applyTrack(
+                trackID: lastTrackID,
+                ttml: ttml,
+                currentTime: lastTime ?? 0,
+                isPlaying: lastIsPlaying ?? false,
+                forceLyricsReload: force
+            )
+            lastTTML = ttml
+            return
+        }
+
         // Deduplication: skip if same TTML
         if !force && ttml == lastTTML && ttml.count > 0 {
             Log.debug(
@@ -928,6 +962,20 @@ final class LyricsWebViewStore: NSObject {
     ) {
         guard !isShutDown else { return }
         let safeCurrentTime = currentTime.isFinite ? currentTime : 0
+
+        if let nativeSurface {
+            nativeSurface.applyTrack(
+                trackID: lastTrackID,
+                ttml: ttml,
+                currentTime: safeCurrentTime,
+                isPlaying: isPlaying,
+                forceLyricsReload: true
+            )
+            lastTTML = ttml
+            lastTime = safeCurrentTime
+            lastIsPlaying = isPlaying
+            return
+        }
 
         lastTTML = ttml
         lastTime = safeCurrentTime
@@ -961,6 +1009,12 @@ final class LyricsWebViewStore: NSObject {
         guard !isShutDown else { return }
         guard seconds.isFinite else { return }
 
+        if let nativeSurface {
+            nativeSurface.setCurrentTime(seconds, force: force)
+            lastTime = seconds
+            return
+        }
+
         // Deduplication: skip if time hasn't changed meaningfully
         if !force, let last = lastTime, abs(seconds - last) < 0.01 {
             return
@@ -975,6 +1029,12 @@ final class LyricsWebViewStore: NSObject {
 
     func setPlaying(_ isPlaying: Bool, force: Bool = false) {
         guard !isShutDown else { return }
+
+        if let nativeSurface {
+            nativeSurface.setPlaying(isPlaying, force: force)
+            lastIsPlaying = isPlaying
+            return
+        }
 
         // Deduplication: skip if same state
         if !force && isPlaying == lastIsPlaying {
@@ -996,6 +1056,11 @@ final class LyricsWebViewStore: NSObject {
     /// later resume can restore it exactly.
     func suspendRendererPreservingSnapshot(reason: String) {
         guard !isShutDown, !isRendererSuspended else { return }
+        if let nativeSurface {
+            isRendererSuspended = true
+            nativeSurface.setRenderingActive(false)
+            return
+        }
         isRendererSuspended = true
         AMLLLifecycleDiagnostics.emit(
             "renderer.suspend role=\(role) reason=\(reason) ready=\(isReady) objectID=\(webViewObjectID)"
@@ -1014,6 +1079,13 @@ final class LyricsWebViewStore: NSObject {
     /// Resume a renderer previously suspended for a hidden surface.
     func resumeRendererIfNeeded(reason: String) {
         guard !isShutDown, isRendererSuspended else { return }
+        if let nativeSurface, let surfaceRole = LyricsSurfaceRole(rawValue: role) {
+            isRendererSuspended = false
+            nativeSurface.setRenderingActive(
+                NativeLyricsSurfaceManager.shared.isActive(surfaceRole)
+            )
+            return
+        }
         isRendererSuspended = false
         AMLLLifecycleDiagnostics.emit(
             "renderer.resume role=\(role) reason=\(reason) ready=\(isReady) objectID=\(webViewObjectID)"
@@ -1032,6 +1104,11 @@ final class LyricsWebViewStore: NSObject {
 
     func revealExistingLyrics(reason: String, currentTime: Double? = nil) {
         guard !isShutDown else { return }
+        if let nativeSurface {
+            nativeSurface.followCurrentLyrics()
+            if let currentTime { nativeSurface.setCurrentTime(currentTime, force: true) }
+            return
+        }
         let sanitizedReason = reason.replacingOccurrences(of: "\n", with: " ")
         var options: [String: Any] = ["reason": sanitizedReason]
         if let seconds = currentTime ?? lastTime, seconds.isFinite {
@@ -1047,6 +1124,13 @@ final class LyricsWebViewStore: NSObject {
     func setConfigJSON(_ json: String) {
         guard !isShutDown else { return }
 
+        if LyricsSurfaceManager.rendererBackend == .native,
+           let surfaceRole = LyricsSurfaceRole(rawValue: role) {
+            lastConfigJSON = json
+            NativeLyricsSurfaceManager.shared.applyConfigurationJSON(json, for: surfaceRole)
+            return
+        }
+
         // Deduplication: skip if same config
         if json == lastConfigJSON {
             return
@@ -1060,6 +1144,13 @@ final class LyricsWebViewStore: NSObject {
     /// Use when appearance/colorScheme changes require guaranteed delivery.
     func forceSetConfigJSON(_ json: String, reason: String) {
         guard !isShutDown else { return }
+
+        if LyricsSurfaceManager.rendererBackend == .native,
+           let surfaceRole = LyricsSurfaceRole(rawValue: role) {
+            lastConfigJSON = json
+            NativeLyricsSurfaceManager.shared.applyConfigurationJSON(json, for: surfaceRole)
+            return
+        }
 
         Log.debug("forceSetConfigJSON: reason=\(reason), webViewObjectID=\(webViewObjectID), jsonChanged=\(json != lastConfigJSON)", category: .webview)
 
@@ -1549,6 +1640,16 @@ final class LyricsWebViewStore: NSObject {
     /// Force reload (for manual recovery).
     func forceReload(recreateWebView: Bool = false) {
         guard !isShutDown else { return }
+        if let nativeSurface {
+            nativeSurface.applyTrack(
+                trackID: lastTrackID,
+                ttml: lastTTML ?? "",
+                currentTime: lastTime ?? 0,
+                isPlaying: lastIsPlaying ?? false,
+                forceLyricsReload: true
+            )
+            return
+        }
         cancelPendingApplyTrack()
         AMLLLifecycleDiagnostics.emit(
             "bridge.reload role=\(role) recreate=\(recreateWebView) \(debugLayerStateSnapshot)"
@@ -1590,6 +1691,21 @@ final class LyricsWebViewStore: NSObject {
         isPlaying: Bool,
         forceLyricsReload: Bool = false
     ) {
+        if let nativeSurface {
+            let text = ttml ?? ""
+            nativeSurface.applyTrack(
+                trackID: trackID,
+                ttml: text,
+                currentTime: currentTime,
+                isPlaying: isPlaying,
+                forceLyricsReload: forceLyricsReload
+            )
+            lastTrackID = trackID
+            lastTTML = text
+            lastTime = currentTime
+            lastIsPlaying = isPlaying
+            return
+        }
         // Cancel any pending apply. The generation check also protects against
         // a work item that was already enqueued when the surface was hidden or
         // a reload began.
@@ -2132,6 +2248,11 @@ final class LyricsWebViewStore: NSObject {
     /// Sets config theme and injects CSS variables for deep styling.
     func applyTheme(_ palette: ThemePalette) {
         baseThemePalette = palette
+        if LyricsSurfaceManager.rendererBackend == .native,
+           let surfaceRole = LyricsSurfaceRole(rawValue: role) {
+            NativeLyricsSurfaceManager.shared.applyPalette(palette, for: surfaceRole)
+            return
+        }
         applyEffectiveTheme()
     }
 
@@ -2139,6 +2260,13 @@ final class LyricsWebViewStore: NSObject {
     /// This lets fullscreen keep a dark-style lyrics palette while the app theme continues updating.
     func setThemePaletteOverride(_ palette: ThemePalette?) {
         overrideThemePalette = palette
+        if LyricsSurfaceManager.rendererBackend == .native,
+           let surfaceRole = LyricsSurfaceRole(rawValue: role) {
+            if let effectivePalette = palette ?? baseThemePalette {
+                NativeLyricsSurfaceManager.shared.applyPalette(effectivePalette, for: surfaceRole)
+            }
+            return
+        }
         applyEffectiveTheme()
     }
 

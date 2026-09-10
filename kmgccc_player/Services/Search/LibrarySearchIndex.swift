@@ -174,6 +174,11 @@ actor LibrarySearchIndex {
             : requestedFields
 
         do {
+            // Library reload publishes tracks before its utility-priority
+            // index rebuild finishes. Searching that window used to query an
+            // empty/deleted index and made lyric search appear randomly
+            // broken immediately after launch or a library refresh.
+            await waitForPendingRebuild()
             try ensureSchema()
 
             var candidateScores: [String: Double] = [:]

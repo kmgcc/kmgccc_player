@@ -252,11 +252,18 @@ struct TrackRowView<MenuContent: View>: View {
             guard enableSecondaryInteractions else { return }
             isHovering = hover
         }
-        .onTapGesture {
-            if !model.isMissing || allowsMissingRowTap {
-                onTap(Self.isShiftPressed)
-            }
-        }
+        // Keep the row action on this view only. The lyric snippet is a real
+        // child Button; including subview gestures here lets a snippet tap
+        // bubble into the row action as well, which starts the track again at
+        // zero and races the lyric seek.
+        .gesture(
+            TapGesture().onEnded {
+                if !model.isMissing || allowsMissingRowTap {
+                    onTap(Self.isShiftPressed)
+                }
+            },
+            including: .gesture
+        )
         .contextMenu {
             if enableSecondaryInteractions {
                 menuContent()

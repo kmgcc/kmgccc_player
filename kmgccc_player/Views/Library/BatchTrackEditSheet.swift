@@ -156,7 +156,7 @@ struct BatchTrackEditSheet: View {
                         .frame(minWidth: 500, idealWidth: 720, maxWidth: .infinity)
                         .layoutPriority(1)
                         .clipped()
-                    amllPreviewPanel
+                    lyricsPreviewPanel
                         .frame(minWidth: 280, idealWidth: 480, maxWidth: 640)
                         .clipped()
                 }
@@ -266,8 +266,8 @@ struct BatchTrackEditSheet: View {
         return tracks[currentIndex]
     }
 
-    private var batchPreviewStore: LyricsWebViewStore {
-        LyricsSurfaceManager.shared.store(for: .batchPreview)
+    private var batchPreviewSurface: NativeLyricsSurface {
+        NativeLyricsSurfaceManager.shared.surface(for: .batchPreview)
     }
 
     private var currentPreviewSnapshot: BatchEditTrackSnapshot? {
@@ -779,9 +779,9 @@ struct BatchTrackEditSheet: View {
         }
     }
 
-    private var amllPreviewPanel: some View {
-        BatchAMLLPreviewPanel(
-            store: batchPreviewStore,
+    private var lyricsPreviewPanel: some View {
+        BatchNativeLyricsPreviewPanel(
+            surface: batchPreviewSurface,
             trackSnapshot: currentPreviewSnapshot,
             lyricsText: lyricsText,
             isDarkMode: colorScheme == .dark,
@@ -1310,34 +1310,34 @@ struct BatchTrackEditSheet: View {
         colorScheme: ColorScheme,
         reason: String
     ) {
-        let store = batchPreviewStore
+        let surface = batchPreviewSurface
         let normalizedLyrics = LyricsFormatSupport.normalizedTTMLText(lyricsText) ?? ""
         let playbackState = batchPreviewPlaybackState(for: snapshot?.id)
 
         if let themePalette {
-            store.applyTheme(themePalette)
+            NativeLyricsSurfaceManager.shared.applyPalette(themePalette, for: .batchPreview)
         }
 
-        let previewConfig = BatchAMLLPreviewPanel.previewConfigJSON(
+        let previewConfig = BatchNativeLyricsPreviewPanel.previewConfigJSON(
             settings: settings,
             colorScheme: colorScheme,
             lyricsTimeOffsetMs: lyricsTimeOffsetMs
         )
-        store.forceSetConfigJSON(previewConfig, reason: "batchPreview.\(reason)")
+        NativeLyricsSurfaceManager.shared.applyConfigurationJSON(
+            previewConfig,
+            for: .batchPreview
+        )
 
-        store.applyTrack(
+        surface.applyTrack(
             trackID: snapshot?.id,
             ttml: normalizedLyrics,
             currentTime: playbackState.currentTime,
             isPlaying: playbackState.isPlaying
         )
-        store.setCurrentTime(playbackState.currentTime)
-        store.setPlaying(playbackState.isPlaying)
+        surface.setCurrentTime(playbackState.currentTime)
+        surface.setPlaying(playbackState.isPlaying)
         if !normalizedLyrics.isEmpty {
-            store.revealExistingLyrics(
-                reason: "batchPreview.\(reason)",
-                currentTime: playbackState.currentTime
-            )
+            surface.followCurrentLyrics()
         }
         batchPreviewReloadToken &+= 1
     }
@@ -1353,9 +1353,10 @@ struct BatchTrackEditSheet: View {
 
         uiState.lyricsPanelSuppressedByModal = true
         LyricsSurfaceManager.shared.activate(role: .batchPreview)
-        batchPreviewStore.onUserSeek = { [playbackCoordinator] seconds in
-            playbackCoordinator.seek(to: seconds)
+        let seekHandler: (Double) -> Void = { [playbackCoordinator] seconds in
+            playbackCoordinator.seekAndResumeIfNeeded(to: seconds)
         }
+        NativeLyricsSurfaceManager.shared.setSeekHandler(seekHandler, for: .batchPreview)
 
         guard windowLyricsWasVisible else {
             print("[BatchTrackEditSheet] Window lyrics already hidden; no suspension needed.")
@@ -1365,11 +1366,13 @@ struct BatchTrackEditSheet: View {
         didSuspendWindowLyricsSurface = true
         print("[BatchTrackEditSheet] Suspending window lyrics surface while batch editor is open.")
         LyricsSurfaceManager.shared.reportMainVisible(false)
-        LyricsSurfaceManager.shared.mainStore.setPlaying(false)
+        if LyricsSurfaceManager.rendererBackend != .native {
+            LyricsSurfaceManager.shared.mainStore.setPlaying(false)
+        }
     }
 
     private func leaveBatchPreviewSession() {
-        batchPreviewStore.onUserSeek = nil
+        NativeLyricsSurfaceManager.shared.setSeekHandler(nil, for: .batchPreview)
         uiState.lyricsPanelSuppressedByModal = false
 
         print(
@@ -1384,7 +1387,7 @@ struct BatchTrackEditSheet: View {
 
         print("[BatchTrackEditSheet] Restoring window lyrics surface after batch editor dismissal.")
         LyricsSurfaceManager.shared.reportMainVisible(true)
-        lyricsVM.ensureAMLLLoaded(
+        lyricsVM.ensureLyricsLoaded(
             track: playerVM.currentTrack,
             currentTime: playerVM.lyricsCurrentTime,
             isPlaying: playerVM.isPlaying,
@@ -1434,7 +1437,7 @@ struct BatchTrackEditSheet: View {
 
     private func refreshLiveLyricsIfEditingCurrentTrack(_ track: Track, reason: String) {
         guard playerVM.currentTrack?.id == track.id else { return }
-        lyricsVM.ensureAMLLLoaded(
+        lyricsVM.ensureLyricsLoaded(
             track: track,
             currentTime: playerVM.lyricsCurrentTime,
             isPlaying: playerVM.isPlaying,
@@ -1504,7 +1507,7 @@ struct BatchTrackEditSheet: View {
 
 }
 
-private struct BatchAMLLPreviewPanel: View, Equatable {
+private struct BatchNativeLyricsPreviewPanel: View, Equatable {
     private enum PreviewState: Equatable {
         case noTrack
         case noLyrics
@@ -1512,15 +1515,15 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
         case ready(String)
     }
 
-    let store: LyricsWebViewStore
+    let surface: NativeLyricsSurface
     let trackSnapshot: BatchEditTrackSnapshot?
     let lyricsText: String
     let isDarkMode: Bool
     let secondaryTextColor: NSColor
     let reloadToken: Int
 
-    static func == (lhs: BatchAMLLPreviewPanel, rhs: BatchAMLLPreviewPanel) -> Bool {
-        lhs.store === rhs.store
+    static func == (lhs: BatchNativeLyricsPreviewPanel, rhs: BatchNativeLyricsPreviewPanel) -> Bool {
+        lhs.surface === rhs.surface
             && lhs.trackSnapshot == rhs.trackSnapshot
             && lhs.lyricsText == rhs.lyricsText
             && lhs.isDarkMode == rhs.isDarkMode
@@ -1569,6 +1572,8 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
                 english: settings.lyricsFontNameEn,
                 chinese: settings.lyricsFontNameZh
             ),
+            "fontFamilyLatin": settings.lyricsFontNameEn,
+            "fontFamilyCJK": settings.lyricsFontNameZh,
             "fontFamilyTranslation": LyricsFontResolver.cssFontFamily([
                 settings.lyricsTranslationFontName
             ]),
@@ -1628,7 +1633,7 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
             Text("歌词预览")
                 .font(.headline)
 
-            Text("编辑态 AMLL surface，跟随当前播放进度并支持滚动与点击跳转。")
+            Text("编辑态原生歌词，跟随当前播放进度并支持滚动与点击跳转。")
                 .font(.caption)
                 .foregroundStyle(appFgSecondary)
 
@@ -1660,12 +1665,12 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
                             .padding(.horizontal, 24)
                     }
                 case .ready:
-                    BatchAMLLPreviewWebView(store: store, reloadToken: reloadToken)
+                    BatchNativeLyricsPreviewView(surface: surface, reloadToken: reloadToken)
                         .id(trackSnapshot?.id)
                         .padding(8)
                         .overlay {
                             BatchPreviewPlaybackObserver(
-                                store: store,
+                                surface: surface,
                                 editedTrackID: trackSnapshot?.id
                             )
                             .allowsHitTesting(false)
@@ -1677,47 +1682,19 @@ private struct BatchAMLLPreviewPanel: View, Equatable {
     }
 }
 
-private struct BatchAMLLPreviewWebView: View, Equatable {
-    let store: LyricsWebViewStore
+private struct BatchNativeLyricsPreviewView: View, Equatable {
+    let surface: NativeLyricsSurface
     let reloadToken: Int
 
-    @State private var didTimeout = false
-
-    static func == (lhs: BatchAMLLPreviewWebView, rhs: BatchAMLLPreviewWebView) -> Bool {
-        lhs.store === rhs.store && lhs.reloadToken == rhs.reloadToken
+    static func == (lhs: BatchNativeLyricsPreviewView, rhs: BatchNativeLyricsPreviewView) -> Bool {
+        lhs.surface === rhs.surface && lhs.reloadToken == rhs.reloadToken
     }
 
     var body: some View {
-        Group {
-            if store.hasPreparedWebView || store.isReady {
-                AMLLWebView(store: store, animatesAttachment: false)
-                    .clipped()
-            } else if didTimeout {
-                VStack(spacing: 8) {
-                    Text("歌词预览暂不可用")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("WebView 初始化失败不会影响批量编辑和保存。")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                VStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("歌词预览加载中")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .task(id: reloadToken) {
-                    didTimeout = false
-                    _ = store.webView
-                    try? await Task.sleep(for: .seconds(3))
-                    guard !Task.isCancelled else { return }
-                    didTimeout = !store.isReady
-                }
-            }
-        }
+        NativeLyricsViewRepresentable(
+            surface: surface
+        )
+        .clipped()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
@@ -1725,7 +1702,7 @@ private struct BatchAMLLPreviewWebView: View, Equatable {
 private struct BatchPreviewPlaybackObserver: View {
     @Environment(PlayerViewModel.self) private var playerVM
 
-    let store: LyricsWebViewStore
+    let surface: NativeLyricsSurface
     let editedTrackID: UUID?
 
     var body: some View {
@@ -1749,16 +1726,16 @@ private struct BatchPreviewPlaybackObserver: View {
 
     private func syncPreviewPlaybackState() {
         guard let editedTrackID, playerVM.currentTrack?.id == editedTrackID else {
-            store.setPlaying(false)
-            store.setCurrentTime(0)
+            surface.setPlaying(false)
+            surface.setCurrentTime(0)
             return
         }
 
         let currentTime = playerVM.lyricsCurrentTime
         if !playerVM.isPlaying {
-            store.setCurrentTime(currentTime)
+            surface.setCurrentTime(currentTime)
         }
-        store.setPlaying(playerVM.isPlaying)
-        store.setCurrentTime(currentTime)
+        surface.setPlaying(playerVM.isPlaying)
+        surface.setCurrentTime(currentTime)
     }
 }

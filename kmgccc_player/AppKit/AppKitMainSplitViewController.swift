@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import NativeLyrics
 import SwiftData
 import SwiftUI
 
@@ -311,7 +312,7 @@ final class AppKitMainSplitViewController: NSSplitViewController {
     /// transition has completed. The pane is restored synchronously, but its
     /// child controller can receive one more layout callback while the
     /// fullscreen SwiftUI host is being removed. A final explicit pass keeps
-    /// the single main WebView attached without creating a second one.
+    /// the single main renderer attached without creating a second one.
     func synchronizeLyricsSurfaceAfterFullscreenTransition(reason: String) {
         guard isViewLoaded else { return }
         forceSynchronousSplitLayout()
@@ -676,36 +677,29 @@ final class CenterPanePassthroughViewController: NSViewController {
 // MARK: - Flat AppKit lyrics inspector pane
 
 /// Production lyrics inspector pane.
-/// Hosts the WKWebView directly in AppKit so normal track switches do not
-/// re-wrap the WebView in the SwiftUI inspector hierarchy. A zero-sized
+/// Hosts the reusable NativeLyrics layer-backed view directly in AppKit so
+/// normal track switches do not re-wrap the renderer in SwiftUI. A zero-sized
 /// `NSHostingController` child keeps the non-visual LyricsViewModel bindings
 /// alive (seek callback, time sync, settings observation).
 ///
-/// Why the previous implementation showed blank lyrics:
-///   LyricsViewModel.ensureAMLLLoaded is never called without the SwiftUI driver,
-///   so LyricsSurfaceManager.currentPlaybackSnapshot stays empty. The store loads AMLL
-///   but has no track/lyrics data to replay. Time sync (LyricsRealtimeSyncObserver)
-///   was also absent, so lyrics would not advance even if content appeared.
+/// The zero-sized SwiftUI driver remains the state bridge for playback, theme,
+/// seek and settings observation; the visible renderer is owned by this host.
 @MainActor
 final class LyricsFlatAppKitHostViewController: NSViewController {
     private let appSession: AppSessionHost
-    private var attachmentID: UUID?
     private var driverVC: NSViewController?
     private var backgroundVC: NSViewController?
     private var queueOverlayVC: NSViewController?
     private var playbackQueueVisibilityObserver: NSObjectProtocol?
-    // WebViewHostView provides the correct superview type for mouse suppression and
-    // scaled hit-testing (webViewLayoutScale) when render quality < 1.0.
-    private var webViewHostView: WebViewHostView!
-    private var lastAppliedLayoutSignature: String?
-    private var pendingLayoutSignature: String?
-    private var isApplyingDeferredLayout = false
+    private var nativeLyricsView: LyricsView!
     private var lastReportedMainSurfaceVisible: Bool?
 
-    // 24pt matches LyricsPanelView's .padding(.horizontal, 24) on AMLLWebView.
+    // 24pt matches LyricsPanelView's horizontal inset.
     private static let horizontalInset: CGFloat = 24
 
-    private var mainStore: LyricsWebViewStore { LyricsSurfaceManager.shared.mainStore }
+    private var nativeSurface: NativeLyricsSurface {
+        NativeLyricsSurfaceManager.shared.surface(for: .main)
+    }
 
     init(appSession: AppSessionHost) {
         self.appSession = appSession
@@ -718,22 +712,22 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
     override func loadView() {
         let v = NSView()
         v.wantsLayer = true
-        let host = WebViewHostView()
+        let host = nativeSurface.view
         v.addSubview(host)
-        webViewHostView = host
+        nativeLyricsView = host
         view = v
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
         // Background layer mirrors LyricsPanelView.appKitInspectorBackgroundLayer.
-        // Must be installed below webViewHostView in the z-order.
+        // Must be installed below the native lyric view in the z-order.
         let bgVC = NSHostingController(
             rootView: FlatLyricsBackgroundView().environment(AppSettings.shared)
         )
         bgVC.view.frame = view.bounds
         bgVC.view.autoresizingMask = [.width, .height]
-        view.addSubview(bgVC.view, positioned: .below, relativeTo: webViewHostView)
+        view.addSubview(bgVC.view, positioned: .below, relativeTo: nativeLyricsView)
         addChild(bgVC)
         backgroundVC = bgVC
         installQueueOverlayIfNeeded()
@@ -751,13 +745,13 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         super.viewWillDisappear()
         removePlaybackQueueVisibilityObserver()
         reportMainSurfaceVisible(false)
-        detachWebView()
+        detachNativeView()
     }
 
     /// Runs after the fullscreen manager has returned the main window to its
     /// normal mode. Keep this idempotent: if AppKit already attached the store,
     /// the pass only relayouts and confirms the attachment; it never allocates
-    /// another WebView.
+    /// another renderer surface.
     func synchronizeAfterFullscreenTransition(reason: String) {
         guard isViewLoaded, view.window != nil else { return }
         view.needsLayout = true
@@ -776,26 +770,28 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         super.viewDidLayout()
         installQueueOverlayIfNeeded()
         let inset = Self.horizontalInset
-        // Always update the host frame so webViewHostView.bounds is correct when
-        // viewDidAppear fires and attachWebViewIfNeeded reads it.
         let targetFrame = CGRect(
             x: inset,
             y: 0,
             width: max(0, view.bounds.width - inset * 2),
             height: view.bounds.height
         )
-        if webViewHostView.frame != targetFrame {
-            webViewHostView.frame = targetFrame
+        let frameChanged = nativeLyricsView.frame != targetFrame
+        if frameChanged {
+            nativeLyricsView.frame = targetFrame
+            nativeLyricsView.needsLayout = true
         }
         queueOverlayVC?.view.frame = view.bounds
-        syncVisibilityAndAttachment(reason: "flatHostLayout")
-        // Guard: skip layout when the WebView is detached (attachmentID == nil).
-        // viewDidLayout fires during the NSSplitView collapse animation after
-        // viewWillDisappear + detachWebView. Without this guard, the shrinking panel
-        // bounds would corrupt the WebView's frame/transform, causing the "content
-        // shrunk to top-left corner" regression on the next reopen.
-        guard attachmentID != nil else { return }
-        schedulePreparedWebViewLayout(reason: "flatHostLayout")
+
+        // Attachment changes are the only reason to touch the surface owner
+        // from this hot layout callback. AppKit will lay out the child after
+        // its frame changes; forcing a synchronous subtree layout here made
+        // every window-resize tick enter NativeLyrics' text reflow on the
+        // main thread.
+        let isAttached = nativeLyricsView.superview === view
+        if isAttached != shouldAttachLyricsSurface {
+            syncVisibilityAndAttachment(reason: frameChanged ? "flatHostLayoutAttachment" : "flatHostLayoutState")
+        }
     }
 
     private func installDriverIfNeeded() {
@@ -854,7 +850,7 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         vc.view.autoresizingMask = [.width, .height]
         vc.view.wantsLayer = true
         vc.view.layer?.backgroundColor = NSColor.clear.cgColor
-        view.addSubview(vc.view, positioned: .above, relativeTo: webViewHostView)
+        view.addSubview(vc.view, positioned: .above, relativeTo: nativeLyricsView)
         addChild(vc)
         queueOverlayVC = vc
     }
@@ -878,158 +874,57 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         self.playbackQueueVisibilityObserver = nil
     }
 
-    private var shouldAttachLyricsWebView: Bool {
+    private var shouldAttachLyricsSurface: Bool {
         // Fullscreen keeps uiState.lyricsVisible mirrored so the pane can be
-        // restored on exit. That mirrored value must not remount the window
-        // WKWebView while the actual target surface is fullscreen.
+        // restored on exit. That mirrored value must not remount the main
+        // surface while the actual target surface is fullscreen.
         LyricsSurfaceManager.shared.targetMode == .main
             && appSession.uiState.lyricsVisible
             && !appSession.uiState.isWindowPlaybackQueueVisible
             && view.window != nil
-            && webViewHostView.bounds.width > 1
-            && webViewHostView.bounds.height > 1
+            && nativeLyricsView.bounds.width > 1
+            && nativeLyricsView.bounds.height > 1
     }
 
     private func syncVisibilityAndAttachment(reason: String) {
         guard isViewLoaded else { return }
         AMLLLifecycleDiagnostics.emit(
-            "mainHost.sync reason=\(reason) target=\(String(describing: LyricsSurfaceManager.shared.targetMode)) shouldAttach=\(shouldAttachLyricsWebView) viewHidden=\(view.isHidden) hasWindow=\(view.window != nil) hostBounds=\(webViewHostView.bounds)"
+            "mainHost.sync reason=\(reason) target=\(String(describing: LyricsSurfaceManager.shared.targetMode)) shouldAttach=\(shouldAttachLyricsSurface) viewHidden=\(view.isHidden) hasWindow=\(view.window != nil) hostBounds=\(nativeLyricsView.bounds)"
         )
-        guard shouldAttachLyricsWebView else {
+        guard shouldAttachLyricsSurface else {
             reportMainSurfaceVisible(false)
-            detachWebView()
+            detachNativeView()
             return
         }
 
-        // Call reportMainVisible BEFORE installDriver so the surface manager
-        // registers its onStoreReady handler before the WebView attach below.
         reportMainSurfaceVisible(true)
-        // Apply quality scale before attach so layoutWebView uses the correct scale immediately.
-        mainStore.setRenderQualityScale(AppSettings.shared.amllLyricsRenderQualityScale, reason: reason)
+        NativeLyricsSurfaceManager.shared.activate(role: .main)
         installDriverIfNeeded()
-        attachWebViewIfNeeded()
-        // After attach, explicitly relayout with current host bounds.
-        // setRenderQualityScale early-exits when scale is unchanged (guard in the store
-        // skips layoutWebView). layoutPreparedWebView always applies renderQualityScale
-        // to the provided bounds, correcting any stale frame/transform left from before
-        // collapse or from a zero-bounds layout call during the expand animation.
-        mainStore.layoutPreparedWebView(in: webViewHostView.bounds, reason: "\(reason).postAttach")
+        attachNativeViewIfNeeded()
     }
 
     private func reportMainSurfaceVisible(_ visible: Bool) {
         guard lastReportedMainSurfaceVisible != visible else { return }
         lastReportedMainSurfaceVisible = visible
         LyricsSurfaceManager.shared.reportMainVisible(visible)
-    }
-
-    private func attachWebViewIfNeeded() {
-        let store = mainStore
-        guard let webView = store.webView else {
-            attachmentID = nil
-            return
-        }
-        if attachmentID == nil {
-            attachmentID = UUID()
-        }
-        if let attachmentID,
-           store.activeAttachmentID != attachmentID || !store.isAttached
-        {
-            self.attachmentID = store.attach(requestingID: attachmentID)
-        }
-        webViewHostView.webViewLayoutScale = CGFloat(AppSettings.shared.amllLyricsRenderQualityScale)
-        webViewHostView.onLayout = { [weak store] _ in
-            store?.requestLayoutResync(reason: "flatHost.hostLayout")
-        }
-        webViewHostView.onWindowStateChange = { [weak store] reason in
-            store?.requestLayoutResync(reason: "flatHost.\(reason)")
-        }
-        guard webView.superview !== webViewHostView else {
-            store.layoutPreparedWebView(in: webViewHostView.bounds, reason: "flatHost.alreadyAttached")
-            LyricsSurfaceManager.shared.notifyStoreAttached(.main, store: store)
-            return
-        }
-        if let oldHostView = webView.superview as? WebViewHostView {
-            oldHostView.onLayout = nil
-            oldHostView.onWindowStateChange = nil
-            oldHostView.webViewLayoutScale = 1
-        }
-        webView.removeFromSuperview()
-        store.layoutPreparedWebView(in: webViewHostView.bounds, reason: "flatHost.attach")
-        webViewHostView.addSubview(webView)
-        store.refreshMouseInteractionSuppression(reason: "flatHost.attach")
-        LyricsSurfaceManager.shared.notifyStoreAttached(.main, store: store)
-    }
-
-    private func schedulePreparedWebViewLayout(reason: String) {
-        let signature = layoutSignature(for: webViewHostView.bounds)
-        guard lastAppliedLayoutSignature != signature else { return }
-        guard pendingLayoutSignature != signature else { return }
-        guard !isApplyingDeferredLayout else {
-            pendingLayoutSignature = signature
-            return
-        }
-
-        pendingLayoutSignature = signature
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            guard self.isViewLoaded, self.view.window != nil else {
-                self.pendingLayoutSignature = nil
-                return
-            }
-            guard self.attachmentID != nil else {
-                self.pendingLayoutSignature = nil
-                return
-            }
-
-            let currentSignature = self.layoutSignature(for: self.webViewHostView.bounds)
-            guard currentSignature == signature else {
-                self.pendingLayoutSignature = nil
-                self.schedulePreparedWebViewLayout(reason: reason)
-                return
-            }
-
-            self.isApplyingDeferredLayout = true
-            self.pendingLayoutSignature = nil
-            guard self.lastAppliedLayoutSignature != signature else {
-                self.isApplyingDeferredLayout = false
-                return
-            }
-            self.lastAppliedLayoutSignature = signature
-            self.mainStore.layoutPreparedWebView(in: self.webViewHostView.bounds, reason: reason)
-            self.isApplyingDeferredLayout = false
-
-            if let nextSignature = self.pendingLayoutSignature,
-               nextSignature != self.lastAppliedLayoutSignature
-            {
-                self.schedulePreparedWebViewLayout(reason: reason)
-            }
+        if visible {
+            NativeLyricsSurfaceManager.shared.activate(role: .main)
+        } else {
+            NativeLyricsSurfaceManager.shared.deactivate(role: .main)
         }
     }
 
-    private func layoutSignature(for bounds: CGRect) -> String {
-        let scale = AppSettings.shared.amllLyricsRenderQualityScale
-        return String(
-            format: "%.3fx%.3f|%.4f",
-            bounds.width,
-            bounds.height,
-            scale
-        )
+    private func attachNativeViewIfNeeded() {
+        guard nativeLyricsView.superview !== view else { return }
+        nativeLyricsView.removeFromSuperview()
+        view.addSubview(nativeLyricsView, positioned: .above, relativeTo: backgroundVC?.view)
+        nativeLyricsView.frame = view.bounds.insetBy(dx: Self.horizontalInset, dy: 0)
+        nativeLyricsView.autoresizingMask = [.width, .height]
     }
 
-    private func detachWebView() {
-        guard let id = attachmentID else { return }
-        attachmentID = nil
-        lastAppliedLayoutSignature = nil
-        pendingLayoutSignature = nil
-        isApplyingDeferredLayout = false
-        guard let store = LyricsSurfaceManager.shared.existingStore(for: .main) else { return }
-        guard store.activeAttachmentID == id else { return }
-        if let webView = store.preparedWebView, webView.superview === webViewHostView {
-            webView.removeFromSuperview()
-        }
-        webViewHostView.onLayout = nil
-        webViewHostView.onWindowStateChange = nil
-        webViewHostView.webViewLayoutScale = 1
-        store.detach(requestingID: id)
+    private func detachNativeView() {
+        guard nativeLyricsView.superview === view else { return }
+        nativeLyricsView.removeFromSuperview()
+        NativeLyricsSurfaceManager.shared.deactivate(role: .main)
     }
 }

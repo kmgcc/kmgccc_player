@@ -19,6 +19,7 @@ protocol LocalPlaybackControlling: AnyObject {
     var audioOutputDelay: Double { get }
     var duration: Double { get }
     var currentTrack: Track? { get }
+    var isReadyForSeek: Bool { get }
     var nowPlayingAssetURL: URL? { get }
     var currentPlaybackOrderMode: PlaybackOrderMode { get }
     var volume: Double { get }
@@ -91,6 +92,11 @@ final class PlaybackCoordinator {
     private(set) var activeSource: PlaybackSource
     private(set) var presentation: NowPlayingPresentation = .emptyLocal
     private(set) var stablePresentation: NowPlayingPresentation = .emptyLocal
+    /// Monotonic marker for explicit transport seeks. Lyrics use it to
+    /// distinguish a deliberate small backward seek from a stale 4 Hz
+    /// presentation sample, which the native display clock intentionally
+    /// ignores while playing.
+    private(set) var lyricsSeekRevision = 0
 
     var localNowPlayingAssetURL: URL? {
         localPlayback?.nowPlayingAssetURL
@@ -287,6 +293,7 @@ final class PlaybackCoordinator {
     func seek(to seconds: Double) {
         guard seconds.isFinite else { return }
         recordCrashPlaybackCommand(.seek)
+        lyricsSeekRevision &+= 1
         switch activeSource {
         case .local:
             localPlayback?.seek(to: seconds)
@@ -302,6 +309,21 @@ final class PlaybackCoordinator {
         }
         refreshPresentation()
         NowPlayingService.shared.updateNowPlaying(force: true)
+    }
+
+    /// A lyric-row tap is an explicit navigation command. If the player was
+    /// paused, the tap should both move the playhead and resume playback; the
+    /// progress bar and keyboard seek paths continue using `seek(to:)` so they
+    /// retain their existing pause-preserving behavior.
+    func seekAndResumeIfNeeded(to seconds: Double) {
+        guard seconds.isFinite else { return }
+        let shouldResume = presentation.hasTrack
+            && presentation.isSeekEnabled
+            && !presentation.isPlaying
+        seek(to: seconds)
+        if shouldResume {
+            resume()
+        }
     }
 
     func seek(by offset: Double) {
@@ -609,6 +631,14 @@ final class PlaybackCoordinator {
                     continue
                 }
                 guard self.localPlayback?.isPlaying == true else {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    continue
+                }
+                guard self.localPlayback?.isReadyForSeek == true else {
+                    // The playback command publishes the track and playing
+                    // state before AVAudioFile preparation completes. Calling
+                    // seek in that window is a silent no-op because the audio
+                    // service has no file to schedule yet.
                     try? await Task.sleep(nanoseconds: 50_000_000)
                     continue
                 }

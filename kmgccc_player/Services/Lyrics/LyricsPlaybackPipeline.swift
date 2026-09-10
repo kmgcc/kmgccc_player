@@ -29,6 +29,7 @@ final class LyricsPlaybackPipeline {
     private var lastHadTrack = false
     private var lastIsPlaying: Bool?
     private var lastSyncedTime: Double?
+    private var lastSeekRevision: Int?
 
     init(
         lyricsVM: LyricsViewModel,
@@ -46,6 +47,7 @@ final class LyricsPlaybackPipeline {
                 reason: "presentation changed"
             )
         }
+        lastSeekRevision = playbackCoordinator?.lyricsSeekRevision
         refreshCurrent(reason: "pipeline start", forceLyricsReload: true)
     }
 
@@ -91,7 +93,7 @@ final class LyricsPlaybackPipeline {
 
         switch presentation.source {
         case .local:
-            lyricsVM.ensureAMLLLoaded(
+            lyricsVM.ensureLyricsLoaded(
                 track: presentation.localTrack,
                 currentTime: presentation.lyricsCurrentTime,
                 isPlaying: presentation.isPlaying,
@@ -99,7 +101,7 @@ final class LyricsPlaybackPipeline {
                 forceLyricsReload: forceLyricsReload
             )
         case .appleMusic, .systemNowPlaying:
-            lyricsVM.ensureExternalAMLLLoaded(
+            lyricsVM.ensureExternalLyricsLoaded(
                 presentation: presentation,
                 reason: "pipeline \(reason)",
                 forceLyricsReload: forceLyricsReload
@@ -114,20 +116,41 @@ final class LyricsPlaybackPipeline {
 
         // An offset-only change (e.g. user edited the external override) does not
         // alter the lyrics content signature, so it would otherwise be treated as
-        // a plain sync and never re-push the AMLL config. Reconcile the external
+        // a plain sync and never re-push renderer config. Reconcile the external
         // offset here so offset edits refresh the lyrics config immediately.
         if presentation.source.isExternal {
             lyricsVM.applyExternalLyricsOffset(presentation.externalLyricsTimeOffsetMs ?? 0)
         }
 
         let currentTime = presentation.lyricsCurrentTime
-        if lastSyncedTime == nil || abs((lastSyncedTime ?? 0) - currentTime) >= 0.01 {
-            lyricsVM.syncTime(currentTime)
+        let seekRevision = playbackCoordinator?.lyricsSeekRevision
+        let explicitSeek = seekRevision != nil && seekRevision != lastSeekRevision
+        let restarted = (lastSyncedTime ?? 0) > 1.0
+            && currentTime < 0.2
+            && presentation.effectiveLyricsIsPlaying
+        if restarted {
+            // A same-track replay has no content-state change, but it is still
+            // a new lyric entrance. Reinstall the document so NativeLyrics can
+            // start its bottom-to-target spring instead of treating the reset
+            // as an immediate seek on the settled stack.
+            applyPresentation(
+                presentation,
+                reason: "playback restarted",
+                forceLyricsReload: true
+            )
+            return
         }
-
         let isPlaying = presentation.effectiveLyricsIsPlaying
         if lastIsPlaying != isPlaying {
+            // Freeze/restart the native presentation clock at the transport
+            // transition before feeding it the next (possibly stale) media
+            // sample. This preserves the audio-output-delay/Bluetooth timing
+            // already encoded in lyricsCurrentTime without letting callback
+            // ordering move the lyric highlight backwards.
             lyricsVM.setPlaying(isPlaying)
+        }
+        if explicitSeek || lastSyncedTime == nil || abs((lastSyncedTime ?? 0) - currentTime) >= 0.01 {
+            lyricsVM.syncTime(currentTime, force: explicitSeek)
         }
     }
 
@@ -139,6 +162,7 @@ final class LyricsPlaybackPipeline {
         lastHadTrack = presentation.hasTrack
         lastIsPlaying = presentation.effectiveLyricsIsPlaying
         lastSyncedTime = presentation.lyricsCurrentTime
+        lastSeekRevision = playbackCoordinator?.lyricsSeekRevision
     }
 
     private func contentState(for presentation: NowPlayingPresentation) -> ContentState {

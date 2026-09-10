@@ -3,14 +3,15 @@
 //  myPlayer2
 //
 //  kmgccc_player - Lyrics Panel View
-//  Right-side panel hosting AMLL lyrics with player state binding.
-//  Uses LyricsWebViewStore singleton for stable WebView lifecycle.
+//  Right-side panel hosting native lyrics with player state binding.
+//  The surface manager owns renderer lifetime across SwiftUI/AppKit hosts.
 //
 
+import NativeLyrics
 import SwiftUI
 
-/// Right-side lyrics panel with AMLL WebView.
-/// The WebView is attached only when a track exists, to avoid eager WebKit startup.
+/// Right-side lyrics panel with the native layer-backed lyrics surface.
+/// The surface is attached only when a track exists, to avoid eager raster work.
 struct LyricsPanelView: View {
 
     enum HostContainer: Sendable {
@@ -33,8 +34,8 @@ struct LyricsPanelView: View {
     @ObservedObject private var fullscreenWindowManager = FullscreenWindowManager.shared
 
     private let hostContainer: HostContainer
-    @State private var shouldHostLyricsWebView = false
-    @State private var pendingWebViewUnmount: DispatchWorkItem?
+    @State private var shouldHostLyricsSurface = false
+    @State private var pendingSurfaceUnmount: DispatchWorkItem?
 
     init(hostContainer: HostContainer = .swiftUIDetailColumn) {
         self.hostContainer = hostContainer
@@ -69,9 +70,9 @@ struct LyricsPanelView: View {
                 Log.info("LyricsPanelView disappeared", category: .webview)
                 // Report visibility to manager - manager will debounce/handle transient states
                 LyricsSurfaceManager.shared.reportMainVisible(false)
-                pendingWebViewUnmount?.cancel()
-                pendingWebViewUnmount = nil
-                shouldHostLyricsWebView = false
+                pendingSurfaceUnmount?.cancel()
+                pendingSurfaceUnmount = nil
+                shouldHostLyricsSurface = false
                 FirstUseHitchDiagnostics.end(token)
             }
             .onChange(of: playbackCoordinator.presentation.lyricsIdentity, handleTrackIdentityChange)
@@ -112,7 +113,7 @@ struct LyricsPanelView: View {
             }
             .onChange(of: themeStore.colorScheme) { _, _ in
                 guard isLyricsSurfaceActive else { return }
-                // Theme mode switches must immediately re-push AMLL config,
+                // Theme mode switches must immediately re-push lyrics config,
                 // so light/dark dedicated font weights take effect without waiting for settings edits.
                 lyricsVM.refreshConfigFromSettings()
             }
@@ -164,10 +165,6 @@ struct LyricsPanelView: View {
                     .glassEffect(.regular, in: .rect(cornerRadius: 0))
 
                 themeStore.backgroundColor.opacity(0.10)
-
-                Rectangle()
-                    .fill(themeStore.secondaryTextColor.opacity(0.14))
-                    .frame(width: 1)
             }
             .allowsHitTesting(false)
         case .clear:
@@ -191,8 +188,10 @@ struct LyricsPanelView: View {
             ZStack {
                 if !playbackCoordinator.presentation.hasTrack {
                     emptyStateView
-                } else if shouldHostLyricsWebView {
-                    AMLLWebView(store: lyricsVM.webViewStore, animatesAttachment: false)
+                } else if shouldHostLyricsSurface {
+                    NativeLyricsViewRepresentable(
+                        surface: NativeLyricsSurfaceManager.shared.surface(for: .main)
+                    )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(.horizontal, 24)
                 }
@@ -214,7 +213,7 @@ struct LyricsPanelView: View {
 
     private func setupSeekCallback() {
         lyricsVM.onSeekRequest = { seconds in
-            playbackCoordinator.seek(to: seconds)
+            playbackCoordinator.seekAndResumeIfNeeded(to: seconds)
         }
     }
 
@@ -224,12 +223,12 @@ struct LyricsPanelView: View {
         hasTrackOverride: Bool? = nil
     ) {
         guard LyricsSurfaceManager.shared.targetMode == .main else {
-            pendingWebViewUnmount?.cancel()
-            pendingWebViewUnmount = nil
-            if shouldHostLyricsWebView {
-                Log.debug("LyricsPanelView host WebView: false immediately, reason=\(reason).fullscreenTarget", category: .webview)
+            pendingSurfaceUnmount?.cancel()
+            pendingSurfaceUnmount = nil
+            if shouldHostLyricsSurface {
+                Log.debug("LyricsPanelView host surface: false immediately, reason=\(reason).fullscreenTarget", category: .lyrics)
             }
-            shouldHostLyricsWebView = false
+            shouldHostLyricsSurface = false
             LyricsSurfaceManager.shared.reportMainVisible(false)
             return
         }
@@ -237,8 +236,8 @@ struct LyricsPanelView: View {
         let shouldRevealExistingLyrics =
             LyricsSurfaceManager.shared.currentMode == .main
             && LyricsSurfaceManager.shared.switchState == .idle
-            && LyricsSurfaceManager.shared.existingStore(for: .main)?.isReady == true
-        updateLyricsWebViewHosting(
+            && LyricsSurfaceManager.shared.hasReadySurface(for: .main)
+        updateLyricsSurfaceHosting(
             shouldHost: isVisible && hasTrack,
             reason: reason
         )
@@ -250,7 +249,7 @@ struct LyricsPanelView: View {
 
         LyricsSurfaceManager.shared.reportMainVisible(true)
         reloadLyricsSurface(reason: reason)
-        // A mode switch/new WebView already receives the native AMLL loading
+        // A mode switch/new surface already receives the native lyric loading
         // entrance from LyricsSurfaceManager's snapshot replay. Only ask for
         // the existing-line reveal when this main surface was already ready
         // and stable; otherwise it would animate the same lyric twice.
@@ -259,24 +258,24 @@ struct LyricsPanelView: View {
         }
     }
 
-    private func updateLyricsWebViewHosting(shouldHost: Bool, reason: String) {
-        pendingWebViewUnmount?.cancel()
-        pendingWebViewUnmount = nil
+    private func updateLyricsSurfaceHosting(shouldHost: Bool, reason: String) {
+        pendingSurfaceUnmount?.cancel()
+        pendingSurfaceUnmount = nil
 
         if shouldHost {
-            if !shouldHostLyricsWebView {
-                Log.debug("LyricsPanelView host WebView: true, reason=\(reason)", category: .webview)
+            if !shouldHostLyricsSurface {
+                Log.debug("LyricsPanelView host surface: true, reason=\(reason)", category: .lyrics)
             }
-            shouldHostLyricsWebView = true
+            shouldHostLyricsSurface = true
             return
         }
 
         let workItem = DispatchWorkItem {
-            Log.debug("LyricsPanelView host WebView: false, reason=\(reason)", category: .webview)
-            shouldHostLyricsWebView = false
-            pendingWebViewUnmount = nil
+            Log.debug("LyricsPanelView host surface: false, reason=\(reason)", category: .lyrics)
+            shouldHostLyricsSurface = false
+            pendingSurfaceUnmount = nil
         }
-        pendingWebViewUnmount = workItem
+        pendingSurfaceUnmount = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(900), execute: workItem)
     }
 
@@ -308,7 +307,7 @@ struct LyricsPanelView: View {
         let presentation = playbackCoordinator.presentation
         switch presentation.source {
         case .local:
-            lyricsVM.ensureAMLLLoaded(
+            lyricsVM.ensureLyricsLoaded(
                 track: presentation.localTrack,
                 currentTime: presentation.lyricsCurrentTime,
                 isPlaying: presentation.isPlaying,
@@ -317,7 +316,7 @@ struct LyricsPanelView: View {
                 forceLyricsReload: forceLyricsReload
             )
         case .appleMusic, .systemNowPlaying:
-            lyricsVM.ensureExternalAMLLLoaded(
+            lyricsVM.ensureExternalLyricsLoaded(
                 presentation: presentation,
                 reason: reason,
                 forceWebReload: forceWebReload,
@@ -786,8 +785,11 @@ struct LyricsSettingsObserver: ViewModifier {
         Int = 500
     @AppStorage("lyricsTranslationFontWeightDark") private var lyricsTranslationFontWeightDark:
         Int = 100
-    @AppStorage("lyricsLeadInMs") private var lyricsLeadInMs: Double = 300
-    @AppStorage("lyricsNearSwitchGapMs") private var lyricsNearSwitchGapMs: Double = 70
+    // Keep the observer defaults aligned with AppSettings and the native
+    // timing contract. These wrappers can be the first access to the shared
+    // UserDefaults keys when the lyrics panel is mounted before Settings.
+    @AppStorage("lyricsLeadInMs") private var lyricsLeadInMs: Double = 600
+    @AppStorage("lyricsNearSwitchGapMs") private var lyricsNearSwitchGapMs: Double = 160
     @AppStorage("lyricsGlobalAdvanceMs") private var lyricsGlobalAdvanceMs: Double = 0
 
     func body(content: Content) -> some View {

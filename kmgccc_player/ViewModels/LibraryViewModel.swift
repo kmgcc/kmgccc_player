@@ -365,6 +365,10 @@ final class LibraryViewModel {
 
     /// Trigger for UI refresh.
     private(set) var refreshTrigger: Int = 0
+    /// Structural library revision consumed by Home. Auxiliary track data
+    /// (lyrics/artwork/preferences) still emits `refreshTrigger` for the
+    /// detail/list owners, but must not make Home rebuild its full snapshot.
+    private(set) var homeContentRevision: Int = 0
     private(set) var trackUpdateEvent: TrackUpdateEvent?
     private(set) var collectionSortRevision: Int = 0
 
@@ -1255,7 +1259,7 @@ final class LibraryViewModel {
     /// Refresh all data and trigger UI update.
     func refresh() async {
         await reloadLibrary()
-        refreshTrigger += 1
+        markRefreshTrigger(affectsHome: true)
         Log.debug("Refresh triggered, refreshTrigger=\(refreshTrigger)", category: .library)
     }
 
@@ -1264,7 +1268,7 @@ final class LibraryViewModel {
         let uniqueTrackIDs = Array(Set(trackIDs)).sorted { $0.uuidString < $1.uuidString }
         guard !uniqueTrackIDs.isEmpty else { return }
 
-        refreshTrigger += 1
+        markRefreshTrigger(affectsHome: false)
 
         if let currentTrackID = currentTrackIDProvider?(),
            uniqueTrackIDs.contains(currentTrackID) {
@@ -1275,6 +1279,13 @@ final class LibraryViewModel {
                 object: nil,
                 userInfo: ["trackID": currentTrackID]
             )
+        }
+    }
+
+    private func markRefreshTrigger(affectsHome: Bool) {
+        refreshTrigger += 1
+        if affectsHome {
+            homeContentRevision += 1
         }
     }
 
@@ -1483,7 +1494,7 @@ final class LibraryViewModel {
             let playlist = try await self.repository.createPlaylist(name: name)
             self.playlists = await self.repository.fetchPlaylists()
             self.selectOrResetCurrentSelection(.playlist(playlist.id))
-            self.refreshTrigger += 1
+            self.markRefreshTrigger(affectsHome: true)
             return playlist
         }
     }
@@ -1586,7 +1597,7 @@ final class LibraryViewModel {
         await invalidateDetailSelectionCachesIfNeeded(
             selectionIdentities: selectionIdentityVariants(for: .playlist(playlist.id))
         )
-        refreshTrigger += 1
+        markRefreshTrigger(affectsHome: true)
     }
 
     func addTracksToPlaylist(_ tracks: [Track], playlist: Playlist) async {
@@ -1637,7 +1648,7 @@ final class LibraryViewModel {
         await invalidateDetailSelectionCachesIfNeeded(
             selectionIdentities: selectionIdentityVariants(for: .playlist(playlist.id))
         )
-        refreshTrigger += 1
+        markRefreshTrigger(affectsHome: true)
     }
 
     func removeTracksFromPlaylist(_ tracks: [Track], playlist: Playlist) async {
@@ -1685,7 +1696,7 @@ final class LibraryViewModel {
         await invalidateDetailSelectionCachesIfNeeded(
             selectionIdentities: selectionIdentityVariants(for: .playlist(playlist.id))
         )
-        refreshTrigger += 1
+        markRefreshTrigger(affectsHome: true)
     }
 
     private func refreshGeneratedArtworkIfPlaylistBecameNonEmpty(
@@ -1718,7 +1729,7 @@ final class LibraryViewModel {
         await invalidateDetailSelectionCachesIfNeeded(
             selectionIdentities: selectionIdentityVariants(for: .playlist(playlistID))
         )
-        refreshTrigger += 1
+        markRefreshTrigger(affectsHome: true)
     }
 
     // MARK: - Track Operations
@@ -1771,7 +1782,7 @@ final class LibraryViewModel {
         resetSelectionIfNeededAfterDeletingTracks(deletedTrackIDs)
         removeDeletedTracksFromVisibleState(deletedTrackIDs)
         await invalidateSelectionCaches(invalidatedSelectionIdentities)
-        refreshTrigger += 1
+        markRefreshTrigger(affectsHome: true)
         await syncVisibleStateFromRepository(
             reason: "trackDelete",
             invalidatedSelectionIdentities: invalidatedSelectionIdentities
@@ -2222,7 +2233,7 @@ final class LibraryViewModel {
             affectedTrackIDs
         )
         await invalidateSelectionCaches(invalidatedSelectionIdentities)
-        refreshTrigger += 1
+        markRefreshTrigger(affectsHome: true)
 
         pendingRepositoryDeletionTrackIDs.formUnion(affectedTrackIDs)
         do {
@@ -2269,7 +2280,7 @@ final class LibraryViewModel {
             affectedTrackIDs
         )
         await invalidateSelectionCaches(invalidatedSelectionIdentities)
-        refreshTrigger += 1
+        markRefreshTrigger(affectsHome: true)
 
         pendingRepositoryDeletionTrackIDs.formUnion(affectedTrackIDs)
         do {
@@ -2636,7 +2647,7 @@ final class LibraryViewModel {
         migrateLegacySortingToLibraryIfNeeded()
         applySortPreferenceForCurrentSelection()
         await invalidateSelectionCaches(invalidatedSelectionIdentities)
-        refreshTrigger += 1
+        markRefreshTrigger(affectsHome: true)
         Log.info(
             "Synced visible library state without full disk reload reason=\(reason), totalTracks=\(totalTrackCount)",
             category: .library
@@ -3101,7 +3112,7 @@ final class LibraryViewModel {
 
         let currentIdentities = selectionIdentityVariants(for: currentSelection)
         guard !currentIdentities.isDisjoint(with: selectionIdentities) else { return }
-        refreshTrigger += 1
+        markRefreshTrigger(affectsHome: true)
     }
 
     /// Returns both the stable page identity and the canonical-key alias while
