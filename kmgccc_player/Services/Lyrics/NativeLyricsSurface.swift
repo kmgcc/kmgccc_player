@@ -98,9 +98,7 @@ final class NativeLyricsSurface: NSObject {
             // entrance state) and only rebase the clock when the requested
             // media position actually moved. This prevents a second forced
             // callback from replaying the intro dots halfway through.
-            self.currentTime = nextTime
-            self.isPlaying = isPlaying
-            synchronize(time: self.currentTime, playing: isPlaying, seek: forcedSeek)
+            synchronize(time: nextTime, playing: isPlaying, seek: forcedSeek)
             return
         }
 
@@ -153,16 +151,26 @@ final class NativeLyricsSurface: NSObject {
         motion: LyricsSeekMotion = .immediate
     ) {
         guard time.isFinite else { return }
-        currentTime = max(0, time)
-        isPlaying = playing
+        let hostTime = CACurrentMediaTime()
+        let requestedTime = max(0, time)
+        let playbackTransition = self.isPlaying != playing
         let clickSeek = pendingClickSeek
         pendingClickSeek = false
-        view.synchronize(
-            time: currentTime,
+        // While paused, ordinary transport callbacks are not seeks. They can
+        // still contain the last pre-pause sample and must not rebase the
+        // already-frozen lyric clock. Explicit seeks and a real pause/resume
+        // transition remain allowed through the normal clock path.
+        let effectiveRequestedTime = !playing && !playbackTransition && !seek && !clickSeek
+            ? currentTime
+            : requestedTime
+        currentTime = view.synchronize(
+            time: effectiveRequestedTime,
             playing: playing,
             seek: seek || clickSeek,
-            motion: clickSeek ? .cascade : motion
+            motion: clickSeek ? .cascade : motion,
+            hostTime: hostTime
         )
+        isPlaying = playing
     }
 
     func setCurrentTime(
@@ -179,9 +187,10 @@ final class NativeLyricsSurface: NSObject {
         synchronize(time: time, playing: isPlaying, seek: force, motion: motion)
     }
 
-    func setPlaying(_ playing: Bool, force: Bool = false) {
+    func setPlaying(_ playing: Bool, force: Bool = false, hostTime: Double = CACurrentMediaTime()) {
         guard force || playing != isPlaying else { return }
-        synchronize(time: currentTime, playing: playing)
+        currentTime = view.synchronize(time: currentTime, playing: playing, hostTime: hostTime)
+        isPlaying = playing
     }
 
     func followCurrentLyrics() {
@@ -254,6 +263,8 @@ final class NativeLyricsSurfaceManager {
         surfaces[role]
     }
 
+    var currentPlaybackTime: Double { snapshot.time }
+
     func activate(role: LyricsSurfaceRole) {
         activeRoles.insert(role)
         surface(for: role).setRenderingActive(true)
@@ -292,6 +303,7 @@ final class NativeLyricsSurfaceManager {
                 forceLyricsReload: forceLyricsReload
             )
         }
+        snapshot.time = surfaces.values.first(where: { $0.role.receivesSharedPlaybackSnapshot })?.currentTime ?? snapshot.time
     }
 
     func applyTrack(
@@ -316,6 +328,7 @@ final class NativeLyricsSurfaceManager {
                 forceLyricsReload: forceLyricsReload
             )
         }
+        snapshot.time = surfaces.values.first(where: { $0.role.receivesSharedPlaybackSnapshot })?.currentTime ?? snapshot.time
     }
 
     func updatePlaybackTime(
@@ -324,16 +337,21 @@ final class NativeLyricsSurfaceManager {
         motion: LyricsSeekMotion = .immediate
     ) {
         guard time.isFinite else { return }
-        snapshot.time = max(0, time)
+        let normalized = max(0, time)
+        snapshot.time = normalized
         for (role, surface) in surfaces where role.receivesSharedPlaybackSnapshot {
-            surface.setCurrentTime(snapshot.time, force: force, motion: motion)
+            surface.setCurrentTime(normalized, force: force, motion: motion)
         }
+        snapshot.time = surfaces.values.first(where: { $0.role.receivesSharedPlaybackSnapshot })?.currentTime ?? normalized
     }
 
     func updatePlayingState(_ playing: Bool) {
         snapshot.playing = playing
         for (role, surface) in surfaces where role.receivesSharedPlaybackSnapshot {
             surface.setPlaying(playing)
+        }
+        if let effectiveTime = surfaces.values.first(where: { $0.role.receivesSharedPlaybackSnapshot })?.currentTime {
+            snapshot.time = effectiveTime
         }
     }
 

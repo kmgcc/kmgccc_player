@@ -116,6 +116,7 @@ public struct LyricsClock: Sendable {
 
     private var anchorMedia = 0.0
     private var anchorHost = 0.0
+    private var hasAnchor = false
     public private(set) var isPlaying = false
     public var rate: Double = 1
     public init() {}
@@ -124,14 +125,25 @@ public struct LyricsClock: Sendable {
         guard time.isFinite, host.isFinite else { return }
         let requested = max(0,time)
         let predicted = self.time(at: host)
-        let staleBacktrack = isPlaying && playing && requested < predicted
+        let playbackTransition = hasAnchor && isPlaying != playing
+        let staleBacktrack = !playbackTransition && isPlaying && playing && requested < predicted
             && predicted - requested <= Self.backwardsJitterTolerance
+        let staleResume = playbackTransition && playing
+            && abs(requested - predicted) <= Self.backwardsJitterTolerance
 
-        // Keep a monotonic predicted clock while playing when a host sample
-        // arrives slightly late.  Explicit loads/seeks pass `force` and are
-        // always allowed to rebase, including small backward seeks.
-        anchorMedia = force || !staleBacktrack ? requested : predicted
+        // A play/pause transition is sampled at the current predicted media
+        // time. The last low-frequency playback sample can lag behind the
+        // audio clock, so rebasing to it would visibly move lyrics backwards
+        // on pause and create a time jump again on resume. A large difference
+        // on resume is treated as a real rebase (for example an explicit seek
+        // completed while paused); a small difference is just a stale sample.
+        // Explicit loads and seeks still pass force and intentionally win over
+        // the prediction.
+        anchorMedia = force || (!staleBacktrack && !staleResume && !(playbackTransition && !playing))
+            ? requested
+            : predicted
         anchorHost = host
         isPlaying = playing
+        hasAnchor = true
     }
 }

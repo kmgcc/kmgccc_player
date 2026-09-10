@@ -22,7 +22,6 @@ struct FullscreenLyricsTabView: View {
     // skin's values while SwiftUI updates individual controls.
     @State private var fullscreenLyricsTypography: FullscreenLyricsTypography =
         AppSettings.shared.effectiveFullscreenLyricsTypography
-    @State private var amllLyricsRenderQuality: AppSettings.AMLLLyricsRenderQuality = AppSettings.shared.amllLyricsRenderQuality
     @State private var amllLyricsSpringDuration: Double = AppSettings.shared.amllLyricsSpringDuration
     @State private var amllLyricsSpringBounce: Double = AppSettings.shared.amllLyricsSpringBounce
     @State private var amllDiscreteWordHighlightEnabled: Bool = AppSettings.shared.amllDiscreteWordHighlightEnabled
@@ -63,16 +62,19 @@ struct FullscreenLyricsTabView: View {
             syncStateFromSettings()
         }
         .onChange(of: fullscreenLyricsTypography) { _, _ in syncToSettings(debounceLyrics: true) }
-        .onChange(of: amllLyricsRenderQuality) { _, _ in syncToSettings() }
         .onChange(of: amllLyricsSpringDuration) { _, _ in syncSpringSettingsDebounced() }
         .onChange(of: amllLyricsSpringBounce) { _, _ in syncSpringSettingsDebounced() }
-        .onChange(of: amllDiscreteWordHighlightEnabled) { _, _ in syncToSettings() }
+        .onChange(of: amllDiscreteWordHighlightEnabled) { _, _ in
+            syncToSettings()
+            NotificationCenter.default.post(name: .lyricHighlightModeDidChange, object: nil)
+        }
     }
 
     private var appearanceSection: some View {
         SettingsSection("外观") {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                AMLLLyricsRenderQualitySlider(quality: $amllLyricsRenderQuality)
+                // The AMLL render-quality control is intentionally hidden.
+                // NativeLyrics always renders at full backing resolution.
 
                 AMLLLyricSpringSettingsControls(
                     duration: $amllLyricsSpringDuration,
@@ -193,7 +195,6 @@ struct FullscreenLyricsTabView: View {
     private func syncStateFromSettings() {
         fullscreenLyricsUsesPerSkinTypography = settings.fullscreenLyricsUsesPerSkinTypography
         fullscreenLyricsTypography = settings.effectiveFullscreenLyricsTypography
-        amllLyricsRenderQuality = settings.amllLyricsRenderQuality
         amllLyricsSpringDuration = settings.amllLyricsSpringDuration
         amllLyricsSpringBounce = settings.amllLyricsSpringBounce
         amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
@@ -215,7 +216,6 @@ struct FullscreenLyricsTabView: View {
             settings.fullscreenLyricsFontSize = typography.mainFontSize
             settings.fullscreenLyricsTranslationFontSize = typography.translationFontSize
         }
-        settings.amllLyricsRenderQuality = amllLyricsRenderQuality
         settings.amllLyricsSpringEnabled = true
         settings.amllLyricsSpringDuration = amllLyricsSpringDuration
         settings.amllLyricsSpringBounce = amllLyricsSpringBounce

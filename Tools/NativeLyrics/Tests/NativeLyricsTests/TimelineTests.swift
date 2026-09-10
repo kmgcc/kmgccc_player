@@ -55,6 +55,32 @@ final class TimelineTests: XCTestCase {
         let u = LyricsTimeline(bounds:[.init(1,3),.init(7.1,10)],profile:.upstream)
         XCTAssertTrue(f.interludes.isEmpty); XCTAssertEqual(u.interludes.count,1)
     }
+    func testPauseFreezesPredictedTimeAndResumeDoesNotJumpBack() {
+        var clock = LyricsClock()
+        clock.synchronize(time: 0, playing: true, host: 0, force: true)
+
+        XCTAssertEqual(clock.time(at: 1), 1, accuracy: 0.0001)
+
+        // The playback sample is stale, but the pause transition must use the
+        // predicted audio/presentation time at the transition boundary.
+        clock.synchronize(time: 0.8, playing: false, host: 1)
+        XCTAssertEqual(clock.time(at: 1), 1, accuracy: 0.0001)
+        XCTAssertEqual(clock.time(at: 2), 1, accuracy: 0.0001)
+
+        // Resume from the frozen point even though the first resume sample is
+        // still the old low-frequency value.
+        clock.synchronize(time: 0.8, playing: true, host: 2)
+        XCTAssertEqual(clock.time(at: 2), 1, accuracy: 0.0001)
+        XCTAssertEqual(clock.time(at: 3), 2, accuracy: 0.0001)
+    }
+
+    func testPausedExplicitTimeUpdateStillMovesTheClock() {
+        var clock = LyricsClock()
+        clock.synchronize(time: 4, playing: false, host: 0, force: true)
+        clock.synchronize(time: 7, playing: false, host: 1)
+
+        XCTAssertEqual(clock.time(at: 10), 7, accuracy: 0.0001)
+    }
     func testUserScrollReturnsAtProfileDeadline() {
         var interaction = LyricsInteraction(); var snapshot = LyricsTimelineSnapshot(); snapshot.focus = 4
         interaction.scroll(100,now:1,timeline:snapshot)

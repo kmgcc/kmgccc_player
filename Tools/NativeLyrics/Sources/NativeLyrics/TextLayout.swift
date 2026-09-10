@@ -363,6 +363,13 @@ private func isCJK(_ text: String) -> Bool {
 
 func makeAtoms(_ line: LyricLine, profile: LyricsProfile, dynamic: Bool) -> [TextAtom] {
     var atoms: [TextAtom] = [], chunk = 0, mergingLatin = false
+    // The fall starts when the last authored word highlight has finished, not
+    // when a paragraph's container range happens to end.  Imported TTML can
+    // have either range slightly ahead of the words, so prefer the actual
+    // word clock and only fall back to the line range for wordless/legacy
+    // lines.  Every emphasis chunk in the line still receives this one shared
+    // boundary.
+    let emphasisLineEnd = line.words.map { $0.range.end }.max() ?? line.range.end
     for word in line.words {
         if !dynamic {
             let tokenizer = NLTokenizer(unit:.word); tokenizer.string = word.text
@@ -430,7 +437,7 @@ func makeAtoms(_ line: LyricLine, profile: LyricsProfile, dynamic: Bool) -> [Tex
         if dynamic && qualifiesChunk {
             let characters = atoms[start..<i].reduce(0) { $0+$1.word.text.trimmingCharacters(in:.whitespacesAndNewlines).count }
             let ruby = atoms[start..<i].reduce(0) { $0+$1.word.ruby.reduce(0) { $0+$1.text.utf16.count } }
-            let env = EmphasisEnvelope(start:from,duration:to-from,characters:characters,anchorCharacters:ruby>0 ? ruby : characters,isLast:text.contains(line.words.last?.text ?? ""),isBackground:line.isBackground)
+            let env = EmphasisEnvelope(start:from,duration:to-from,characters:characters,anchorCharacters:ruby>0 ? ruby : characters,isLast:text.contains(line.words.last?.text ?? ""),isBackground:line.isBackground,lineEnd:emphasisLineEnd)
             var offset = 0
             for j in start..<i { atoms[j].emphasis = env; atoms[j].characterOffset = offset; offset += atoms[j].word.text.trimmingCharacters(in:.whitespacesAndNewlines).count }
         }

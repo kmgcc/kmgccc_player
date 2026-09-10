@@ -139,6 +139,34 @@ enum Curves {
     }
 }
 
+/// Normal emphasis rises are intentionally staggered per character, but the
+/// return to the baseline is one slow, shared line motion. Keep the duration
+/// here so the regular word float and the emphasis float cannot drift apart.
+let lyricLineFallDuration = 2.4
+
+/// Returns the shared fall multiplier after the authored line highlight has
+/// finished. A nil result means the line is still in its per-character rise
+/// phase. `exitMedia`/`exitElapsed` let a line that leaves the foreground
+/// continue the same media-time fall on the host clock without snapping.
+func lyricLineFallMultiplier(
+    time: Double,
+    lineEnd: Double,
+    exitMedia: Double? = nil,
+    exitElapsed: Double? = nil
+) -> Double? {
+    guard lineEnd.isFinite else { return nil }
+    let elapsed: Double
+    if let exitElapsed {
+        let mediaElapsed = max(0, (exitMedia ?? lineEnd) - lineEnd)
+        elapsed = mediaElapsed + max(0, exitElapsed)
+    } else {
+        elapsed = time - lineEnd
+    }
+    guard elapsed > 0 else { return nil }
+    let progress = Curves.clamp(elapsed / lyricLineFallDuration)
+    return 1 - Curves.ease.value(at: progress)
+}
+
 struct Tween {
     var from: Double
     var target: Double
@@ -210,18 +238,136 @@ struct EmphasisEnvelope {
     let anchorCharacters: Int
     let isLast: Bool
     let isBackground: Bool
-    func sample(_ time: Double, character: Int, fontSize: Double, radiusScale: Double) -> EmphasisSample {
-        var du = max(1,duration)
-        func shape(_ x: Double) -> Double { x > 1 ? sqrt(x) : pow(x,3) }
-        var amount = shape(du/2)*0.6, blur = shape(du/3)*0.5
-        if isLast { amount *= 1.6; blur *= 1.5; du *= 1.2 }
-        amount = min(1.2,amount); blur = min(0.8,blur)
+    /// The emphasis float keeps its per-character rise, but its descent is a
+    /// line-level motion.  The old native path started a separate exit clock
+    /// for every character when the row lost focus, which made the line fall
+    /// in a visibly staggered, granular way.
+    let lineEnd: Double?
+
+    init(
+        start: Double,
+        duration: Double,
+        characters: Int,
+        anchorCharacters: Int,
+        isLast: Bool,
+        isBackground: Bool,
+        lineEnd: Double? = nil
+    ) {
+        self.start = start
+        self.duration = duration
+        self.characters = characters
+        self.anchorCharacters = anchorCharacters
+        self.isLast = isLast
+        self.isBackground = isBackground
+        self.lineEnd = lineEnd
+    }
+
+    private func safeDuration() -> Double { max(1,duration.isFinite ? duration : 1) }
+    private func effectiveLineEnd() -> Double {
+        let fallback = start + safeDuration()
+        guard let lineEnd, lineEnd.isFinite else { return fallback }
+        return max(start,lineEnd)
+    }
+    private func floatProgress(_ time: Double, character: Int, duration du: Double) -> Double {
         let delay = start + du/2.5/Double(max(1,anchorCharacters))*Double(character)
-        let e = Curves.sampled((time-delay)/du,value:Curves.emphasis)
-        let float = Curves.sampled((time-delay+0.4)/(du*1.4)) { sin($0 * .pi) }
+        return (time-delay+0.4)/(du*1.4)
+    }
+    private func heldFloatValue(_ time: Double, character: Int, duration du: Double) -> Double {
+        let progress = Curves.clamp(floatProgress(time,character:character,duration:du))
+        // The normal float animation reaches its apex well before the
+        // word/line ends. Keep that apex stable until the shared line fall
+        // boundary; sampling the full sine after 0.5 would otherwise make it
+        // fall back to zero while the line is still being sung.
+        let rising = min(0.5,progress)
+        return Curves.sampled(rising) { sin($0 * .pi) }
+    }
+    private func sineFloatValue(_ time: Double, character: Int, duration du: Double) -> Double {
+        Curves.sampled(floatProgress(time,character:character,duration:du)) { sin($0 * .pi) }
+    }
+    private func floatValue(
+        at time: Double,
+        character: Int,
+        duration du: Double,
+        exitMedia: Double?,
+        exitElapsed: Double?
+    ) -> Double {
+        let current = isLast
+            ? sineFloatValue(time,character:character,duration:du)
+            : heldFloatValue(time,character:character,duration:du)
+        guard !isLast else { return current }
+
+        // The line's authored end is the first legal fall instant. It is a
+        // media boundary, so the fall can begin while the row is still
+        // visually active during an authored gap before the next row starts.
+        // Once it starts, every character samples this same multiplier.
+        let lineEnd = effectiveLineEnd()
+        return lyricLineFallMultiplier(
+            time: time,
+            lineEnd: lineEnd,
+            exitMedia: exitMedia,
+            exitElapsed: exitElapsed
+        ) ?? current
+    }
+
+    private func heldEmphasisValue(_ time: Double, character: Int, duration du: Double) -> Double {
+        let delay = start + du/2.5/Double(max(1,anchorCharacters))*Double(character)
+        let progress = Curves.clamp((time-delay)/du)
+        // Keep the per-character rise, but hold its apex until the shared
+        // line fall starts. The old full emphasis curve returned to zero per
+        // character and was the remaining source of granular vertical motion.
+        return Curves.sampled(min(0.5,progress),value:Curves.emphasis)
+    }
+
+    private func emphasisYValue(
+        at time: Double,
+        character: Int,
+        duration du: Double,
+        exitMedia: Double?,
+        exitElapsed: Double?
+    ) -> Double {
+        let current = heldEmphasisValue(time,character:character,duration:du)
+        guard !isLast else { return Curves.sampled((time-(start + du/2.5/Double(max(1,anchorCharacters))*Double(character)))/du,value:Curves.emphasis) }
+        return lyricLineFallMultiplier(
+            time: time,
+            lineEnd: effectiveLineEnd(),
+            exitMedia: exitMedia,
+            exitElapsed: exitElapsed
+        ) ?? current
+    }
+
+    func sample(
+        _ time: Double,
+        character: Int,
+        fontSize: Double,
+        radiusScale: Double,
+        exitMedia: Double? = nil,
+        exitElapsed: Double? = nil
+    ) -> EmphasisSample {
+        let du = safeDuration()
+        func shape(_ x: Double) -> Double { x > 1 ? sqrt(x) : pow(x,3) }
+        var animatedDuration = du
+        var amount = shape(du/2)*0.6, blur = shape(du/3)*0.5
+        if isLast { amount *= 1.6; blur *= 1.5; animatedDuration *= 1.2 }
+        amount = min(1.2,amount); blur = min(0.8,blur)
+        let delay = start + animatedDuration/2.5/Double(max(1,anchorCharacters))*Double(character)
+        let e = Curves.sampled((time-delay)/animatedDuration,value:Curves.emphasis)
+        let yEmphasis = emphasisYValue(
+            at: time,
+            character: character,
+            duration: animatedDuration,
+            exitMedia: exitMedia,
+            exitElapsed: exitElapsed
+        )
+        let float = floatValue(
+            at: time,
+            character: character,
+            duration: animatedDuration,
+            exitMedia: exitMedia,
+            exitElapsed: exitElapsed
+        )
         return EmphasisSample(scale:1+e*0.1*amount,
                               x: -e*0.03*amount*(Double(characters)/2-Double(character))*fontSize,
-                              y: -e*0.025*amount*fontSize,
+                              y: -yEmphasis*0.025*amount*fontSize,
                               floatY: -float*0.05*fontSize*(isBackground ? 2 : 1),
                               glowOpacity:e*blur,glowRadius:min(0.3,blur*0.3)*fontSize*radiusScale)
     }

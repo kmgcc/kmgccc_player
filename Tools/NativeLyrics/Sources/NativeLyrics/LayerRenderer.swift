@@ -105,24 +105,51 @@ final class GlyphLayers {
         // the bitmap's padding provides the bounded expansion area instead.
         glow.contents = bitmap.image; glow.contentsScale = scale; glow.contentsGravity = .resize
         glow.filters = glowBlur.map { [$0] }
+        // Emphasis is a light contribution, not an opaque second ink pass.
+        // Addition compositing keeps the halo additive over the lyric/backdrop
+        // and matches the intended plus-lighter glow semantics.
+        glow.compositingFilter = CIFilter(name:"CIAdditionCompositing")
         glow.backgroundColor = nil
         appliedGlowColor = nil
         gradient.startPoint = CGPoint(x:0,y:0.5); gradient.endPoint = CGPoint(x:1,y:0.5)
         gradient.colors = [NSColor.white.cgColor,NSColor.white.cgColor,NSColor.clear.cgColor,NSColor.clear.cgColor]
     }
-    func update(now: Double, media: Double, logicalX: Double, cursor: Double, fade: Double, darkAlpha: Double, brightAlpha: Double, emphasis: EmphasisEnvelope?, fontSize: Double, config: LyricsConfiguration, float: Double, background: Bool = false, subline: Bool = false, lifetime: Double = 1, baseVisible: Bool = true, highlightVisible: Bool = true, glowVisible: Bool = true, lineTimed: Bool = false) {
+    func update(now: Double, media: Double, logicalX: Double, cursor: Double, fade: Double, darkAlpha: Double, brightAlpha: Double, emphasis: EmphasisEnvelope?, fontSize: Double, config: LyricsConfiguration, float: Double, background: Bool = false, subline: Bool = false, lifetime: Double = 1, floatLifetime: Double? = nil, emphasisExitMedia: Double? = nil, emphasisExitElapsed: Double? = nil, baseVisible: Bool = true, highlightVisible: Bool = true, glowVisible: Bool = true, lineTimed: Bool = false, discreteOpacity: Double? = nil) {
         x.resolve(now); y.resolve(now)
         var e = EmphasisSample()
         if config.emphasis, let emphasis, let character = placement.characterIndex {
-            e = emphasis.sample(media,character:character,fontSize:fontSize,radiusScale:config.glowRadiusScale)
+            e = emphasis.sample(media,character:character,fontSize:fontSize,radiusScale:config.glowRadiusScale,exitMedia:emphasisExitMedia,exitElapsed:emphasisExitElapsed)
         }
         e.scale = 1+(e.scale-1)*lifetime
-        e.x *= lifetime; e.y *= lifetime; e.floatY *= lifetime; e.glowOpacity *= lifetime
+        e.x *= lifetime; e.y *= lifetime; e.glowOpacity *= lifetime
         let w = root.bounds.width
-        root.position = CGPoint(x:x.value(now)-padding+w/2+e.x,y:y.value(now)-padding+root.bounds.height/2+e.y+e.floatY+float*lifetime)
+        let motionLifetime = floatLifetime ?? lifetime
+        // Float is an independent element animation. During an exit its
+        // lifetime must not collapse together with the highlight fade, or a
+        // line will snap down before the authored exit motion has finished.
+        root.position = CGPoint(x:x.value(now)-padding+w/2+e.x,y:y.value(now)-padding+root.bounds.height/2+e.y+e.floatY*motionLifetime+float*motionLifetime)
         root.transform = CATransform3DMakeScale(e.scale,e.scale,1)
         let baseColor: LyricsColor, highColor: LyricsColor
-        if config.usesOpaqueCompositing {
+        if let discreteOpacity, !subline, !lineTimed {
+            let opacity = min(1, max(0, discreteOpacity.isFinite ? discreteOpacity : 0))
+            let color = background ? config.palette.backgroundKaraoke : config.palette.mainActive
+            baseColor = color
+            highColor = color
+
+            // Discrete highlighting is a single opacity value per word. Keep
+            // it in whichever ink channel is currently visible so the same
+            // renderer works for both the window and fullscreen surfaces.
+            if baseVisible {
+                baseOpacity = opacity
+                highlightOpacity = 0
+            } else if highlightVisible {
+                baseOpacity = 0
+                highlightOpacity = opacity
+            } else {
+                baseOpacity = 0
+                highlightOpacity = 0
+            }
+        } else if config.usesOpaqueCompositing {
             if subline {
                 // Cover-blur keeps a dedicated line-timing sub color.  The
                 // artistic fullscreen CSS intentionally uses the regular
@@ -222,12 +249,12 @@ final class WordLayers {
         root.anchorPoint = .zero
         for glyph in glyphs { root.addSublayer(glyph.root) }
     }
-    func update(now: Double, media: Double, cursor: Double, fade: Double, dark: Double, bright: Double, config: LyricsConfiguration, floatTime: Double, background: Bool, lifetime: Double, baseVisible: Bool = true, highlightVisible: Bool = true, glowVisible: Bool = true, lineTimed: Bool = false) {
+    func update(now: Double, media: Double, cursor: Double, fade: Double, dark: Double, bright: Double, config: LyricsConfiguration, floatTime: Double, floatOffset: Double? = nil, background: Bool, lifetime: Double, floatLifetime: Double? = nil, emphasisExitMedia: Double? = nil, emphasisExitElapsed: Double? = nil, baseVisible: Bool = true, highlightVisible: Bool = true, glowVisible: Bool = true, lineTimed: Bool = false, discreteOpacity: Double? = nil) {
         x.resolve(now); y.resolve(now); root.position = CGPoint(x:x.value(now),y:y.value(now))
         let duration = max(1,placement.atom.word.range.duration)
-        let float = -Curves.easeOut.value(at:Curves.clamp((floatTime-placement.atom.word.range.start)/duration))*placement.fontSize*0.05*(background ? 2 : 1)
+        let float = floatOffset ?? (-Curves.easeOut.value(at:Curves.clamp((floatTime-placement.atom.word.range.start)/duration))*placement.fontSize*0.05*(background ? 2 : 1))
         for glyph in glyphs {
-            glyph.update(now:now,media:media,logicalX:logicalX,cursor:cursor,fade:fade,darkAlpha:dark,brightAlpha:bright,emphasis:placement.atom.emphasis,fontSize:placement.fontSize,config:config,float:float,background:background,lifetime:lifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible,lineTimed:lineTimed)
+            glyph.update(now:now,media:media,logicalX:logicalX,cursor:cursor,fade:fade,darkAlpha:dark,brightAlpha:bright,emphasis:placement.atom.emphasis,fontSize:placement.fontSize,config:config,float:float,background:background,lifetime:lifetime,floatLifetime:floatLifetime,emphasisExitMedia:emphasisExitMedia,emphasisExitElapsed:emphasisExitElapsed,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible,lineTimed:lineTimed,discreteOpacity:discreteOpacity)
         }
     }
     func settled(_ time: Double) -> Bool { x.settled(time) && y.settled(time) && glyphs.allSatisfy { $0.settled(time) } }
@@ -246,6 +273,8 @@ final class LineLayers {
     private var previousTime: Double?
     private var cursor = HighlightSmoother()
     private(set) var renderedCursor = 0.0
+    private var emphasisExitMedia: Double?
+    private var emphasisExitHost: Double?
     init(_ layout: LineTextLayout, cache: GlyphCache, scale: Double, config: LyricsConfiguration, previous: LineLayers?, now: Double, buildContent: Bool = true, preserveWordMotion: Bool = true) {
         self.layout = layout; fade = max(0.01,(layout.words.first?.fadeHeight ?? layout.fontSize*1.2)*config.wordFadeWidth)
         mask = MaskPath(layout.words,fadeWidth:fade)
@@ -254,6 +283,8 @@ final class LineLayers {
             brightAlpha = previous.brightAlpha; darkAlpha = previous.darkAlpha
             highlight = previous.highlight; wasActive = previous.wasActive
             previousTime = previous.previousTime; cursor = previous.cursor
+            emphasisExitMedia = previous.emphasisExitMedia
+            emphasisExitHost = previous.emphasisExitHost
         }
         if buildContent {
             // A width/font reflow is a layout correction, not a lyric event.
@@ -289,10 +320,16 @@ final class LineLayers {
         if seek {
             highlight.snap(keepHighlight ? 1 : 0)
             wasActive = keepHighlight
+            emphasisExitMedia = nil; emphasisExitHost = nil
             brightAlpha = keepHighlight ? 1 : 0.2+0.2*alpha
             darkAlpha = 0.2+0.2*alpha
             cursor.reset(mask.position(at:media))
         } else if keepHighlight != wasActive {
+            if keepHighlight {
+                emphasisExitMedia = nil; emphasisExitHost = nil
+            } else {
+                emphasisExitMedia = media; emphasisExitHost = now
+            }
             highlight.set(keepHighlight ? 1 : 0,at:now,duration:keepHighlight ? 0.2 : config.motion.exitFade)
             if keepHighlight && config.lineTimingOnly { highlight.start += 0.05 }
             wasActive = keepHighlight
@@ -301,10 +338,28 @@ final class LineLayers {
         let visualActive = keepHighlight || highlightHold
         let highlightLifetime = preserveHighlight ? 1 : lifetime
         let smooth = layout.isDynamic && !config.lineTimingOnly && config.highlightMode == .smooth
-        let discrete = layout.isDynamic && !config.lineTimingOnly && config.highlightMode == .discrete
+        // Discrete mode is a presentation choice, not a statement that the
+        // source must contain independent word spans.  A line-timed document
+        // still has one real timed atom; treating that atom as a single
+        // discrete word removes the left-to-right mask instead of silently
+        // falling back to smooth highlighting.
+        let discrete = !config.lineTimingOnly && config.highlightMode == .discrete
         let renderLayer = config.effectiveRenderLayer
         let highlightOnly = renderLayer == .highlight
         let baseOnly = renderLayer == .base
+        let exitElapsed = emphasisExitHost.map { max(0,now-$0) }
+        let floatLifetime: Double? = exitElapsed == nil ? nil : 1
+        let lineEnd = layout.words.map { $0.atom.word.range.end }
+            .filter { $0.isFinite }
+            .max()
+        let sharedLineFloat = lyricLineFallMultiplier(
+            time: media,
+            lineEnd: lineEnd ?? .infinity,
+            exitMedia: emphasisExitMedia,
+            exitElapsed: exitElapsed
+        ).map {
+            -$0 * layout.fontSize * 0.05 * (background ? 2 : 1)
+        }
         // The APP can render a cover-blur base and highlight surface
         // separately. Keep the exit channel alive for the same half-second
         // line fade that the fork uses, so the highlight surface does not
@@ -327,12 +382,35 @@ final class LineLayers {
         renderedCursor = maskCursor
         for word in words {
             var wordDark = dark, wordBright = bright, wordLifetime = highlightLifetime
+            var discreteOpacity: Double?
             if discrete {
                 let range = word.placement.atom.word.range
                 let duration = max(0.3,min(2,range.duration))
-                let progress = Curves.sampled((media-range.start)/duration,count:18) { log1p($0*2.2)/log1p(2.2) }
+                // A line-timed source has one atom for the whole line.  There
+                // is no word boundary to sweep through, so discrete mode
+                // must switch that atom as a unit instead of turning the
+                // entire line into a slow continuous opacity ramp.
+                let progress = layout.isDynamic
+                    ? Curves.sampled((media-range.start)/duration,count:18) { log1p($0*2.2)/log1p(2.2) }
+                    : (keepHighlight ? 1 : 0)
+                // An opaque fullscreen surface still needs an inactive ink
+                // baseline.  Zero here makes every non-current word fully
+                // transparent, which was why some songs appeared to have no
+                // inactive lyrics at all when discrete mode was enabled.
                 let inactive = background ? 0.4 : 0.28
-                wordDark = inactive+(1-inactive)*progress*highlightLifetime; wordBright = wordDark; wordLifetime = progress*highlightLifetime
+                let target: Double
+                if keepHighlight {
+                    target = inactive + (1 - inactive) * (preserveHighlight ? 1 : progress)
+                } else if highlightLifetime > 0.001 {
+                    // Let an exiting line fade from its current bright state
+                    // instead of snapping every word back to inactive.
+                    target = 1
+                } else {
+                    target = inactive
+                }
+                discreteOpacity = inactive + (target - inactive) * highlightLifetime
+                wordDark = discreteOpacity ?? inactive
+                wordBright = wordDark
             }
             // Discrete mode is an opacity transition per word. The continuous
             // line cursor must not remain active in fullscreen, otherwise the
@@ -341,11 +419,12 @@ final class LineLayers {
             let wordCursor = discrete
                 ? word.placement.rect.maxX + fade + 1
                 : maskCursor
-            word.update(now:now,media:media,cursor:wordCursor,fade:fade,dark:wordDark,bright:wordBright,config:config,floatTime:discrete ? -1e9 : (layout.isDynamic && !config.lineTimingOnly ? floatTime : -1e9),background:background,lifetime:wordLifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible,lineTimed:!layout.isDynamic && !config.lineTimingOnly)
+            let lineTimed = !layout.isDynamic && !config.lineTimingOnly && !discrete
+            word.update(now:now,media:media,cursor:wordCursor,fade:fade,dark:wordDark,bright:wordBright,config:config,floatTime:config.lineTimingOnly ? -1e9 : floatTime,floatOffset:sharedLineFloat,background:background,lifetime:wordLifetime,floatLifetime:floatLifetime,emphasisExitMedia:emphasisExitMedia,emphasisExitElapsed:exitElapsed,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible,lineTimed:lineTimed,discreteOpacity:discreteOpacity)
             for glyph in word.glyphs { glyph.updateBlend(active:keepHighlight,config:config) }
         }
         for subline in sublines {
-            subline.update(now:now,media:media,logicalX:0,cursor:1e9,fade:1,darkAlpha:0.3,brightAlpha:0.3,emphasis:nil,fontSize:layout.fontSize,config:config,float:0,background:background,subline:true,lifetime:highlightLifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:false,lineTimed:!layout.isDynamic && !config.lineTimingOnly)
+            subline.update(now:now,media:media,logicalX:0,cursor:1e9,fade:1,darkAlpha:0.3,brightAlpha:0.3,emphasis:nil,fontSize:layout.fontSize,config:config,float:0,background:background,subline:true,lifetime:highlightLifetime,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:false,lineTimed:!layout.isDynamic && !config.lineTimingOnly && !discrete)
             subline.updateBlend(active:keepHighlight,config:config)
         }
     }

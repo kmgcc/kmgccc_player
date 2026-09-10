@@ -15,6 +15,32 @@ final class LayoutTests: XCTestCase {
         XCTAssertFalse(layout.main.isDynamic)
     }
 
+    func testWordModeSingleSpanGetsVisualWordTimingOnlyInWordMode() {
+        let word = LyricWord(id: "line", text: "CB on the beat", range: .init(1, 4))
+        let line = LyricLine(id: "line", range: .init(1, 4), words: [word], isWordTimed: true)
+        let wordDocument = LyricsDocument(
+            groups: [LyricGroup(main: line)],
+            title: "single-span-word-mode",
+            duration: 4,
+            diagnostics: [],
+            timingMode: .word
+        )
+        XCTAssertTrue(usesVisualWordTiming(line, document: wordDocument))
+        let layout = TextLayoutEngine().group(
+            PreparedGroup(source: .init(main: line), main: line, background: nil),
+            width: 760,
+            config: LyricsConfiguration(),
+            dynamic: usesVisualWordTiming(line, document: wordDocument),
+            hasDuet: false
+        )
+        XCTAssertTrue(layout.main.isDynamic)
+
+        var lineDocument = wordDocument
+        lineDocument.timingMode = .line
+        XCTAssertFalse(usesVisualWordTiming(line, document: lineDocument))
+        XCTAssertEqual(line.words[0].range, .init(1, 4))
+    }
+
     func testDistinctWordRangesEnableKaraokeWordTiming() {
         let words = [
             LyricWord(id: "a", text: "One", range: .init(1, 2)),
@@ -187,9 +213,15 @@ final class LayoutTests: XCTestCase {
         XCTAssertEqual(advanced.timeline.time,3.5,accuracy:0.0001)
         XCTAssertGreaterThan(advanced.groups[0].maskPosition,first.groups[0].maskPosition)
 
-        view.synchronize(time:4,playing:false,hostTime:103)
+        // Pause may be accompanied by a stale presentation sample. The
+        // transition must freeze at the predicted clock boundary, not at the
+        // older sample supplied by the callback.
+        view.synchronize(time:3.8,playing:false,hostTime:103)
         let frozen = view.render(at:200)
         XCTAssertEqual(frozen.timeline.time,4,accuracy:0.0001)
+        view.synchronize(time:3.8,playing:true,hostTime:204)
+        let resumed = view.render(at:205)
+        XCTAssertEqual(resumed.timeline.time,5,accuracy:0.0001)
     }
     @MainActor func testClickUsesSourceNotVisualAdvance() throws {
         let view = LyricsView(frame:NSRect(x:0,y:0,width:760,height:720)); view.automaticDisplayUpdates = false

@@ -175,6 +175,7 @@ struct FullscreenLyricsTypography: Codable, Equatable {
 
 extension Notification.Name {
     static let lyricSpringSettingsDidSettle = Notification.Name("kmgccc_player.lyricSpringSettingsDidSettle")
+    static let lyricHighlightModeDidChange = Notification.Name("kmgccc_player.lyricHighlightModeDidChange")
 }
 
 /// Observable app settings using AppStorage for persistence.

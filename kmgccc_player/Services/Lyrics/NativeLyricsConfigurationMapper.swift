@@ -58,9 +58,11 @@ enum NativeLyricsConfigurationMapper {
         )
         config.spring = role.enableSpring && settings.amllLyricsSpringEnabled
         config.blur = role.enableBlur
-        config.renderScale = role.supportsAMLLRenderQuality
-            ? settings.amllLyricsRenderQualityScale
-            : role.renderScale
+        // NativeLyrics owns its layer-backed rasterization and is fast enough
+        // to stay at the display's full backing resolution. The old AMLL
+        // quality preference remains a compatibility value for the rollback
+        // WebView path, but must not downsample the native surface.
+        config.renderScale = role == .batchPreview ? role.renderScale : 1
         config.fpsCap = role.fpsCap
         config.overscan = Double(role.overscanPx)
         return config
@@ -72,7 +74,7 @@ enum NativeLyricsConfigurationMapper {
         configuration.surface = .window
         configuration.blur = role.enableBlur
         configuration.spring = role.enableSpring
-        configuration.renderScale = role.renderScale
+        configuration.renderScale = role == .batchPreview ? role.renderScale : 1
         configuration.fpsCap = role.fpsCap
         configuration.overscan = Double(role.overscanPx)
         configuration.wordFadeWidth = role.wordFadeWidth

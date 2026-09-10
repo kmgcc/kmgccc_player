@@ -152,8 +152,8 @@ final class LyricsViewModel {
         if track == nil && lastAppliedTrackId == nil && !forceLyricsReload {
             rebindSeekCallback()
             // 仅同步必要的播放状态，不做重复歌词应用
-            LyricsSurfaceManager.shared.updatePlaybackTime(currentTime)
             LyricsSurfaceManager.shared.updatePlayingState(isPlaying)
+            LyricsSurfaceManager.shared.updatePlaybackTime(currentTime)
             if !usesNativeRenderer {
                 store.setPlaying(isPlaying)
                 store.setCurrentTime(currentTime)
@@ -207,8 +207,8 @@ final class LyricsViewModel {
             }
 
             // Just sync state
-            LyricsSurfaceManager.shared.updatePlaybackTime(currentTime)
             LyricsSurfaceManager.shared.updatePlayingState(isPlaying)
+            LyricsSurfaceManager.shared.updatePlaybackTime(currentTime)
             if !usesNativeRenderer {
                 store.setPlaying(isPlaying)
                 store.setCurrentTime(currentTime)
@@ -282,8 +282,8 @@ final class LyricsViewModel {
                     store.applyTheme(palette)
                 }
             }
-            LyricsSurfaceManager.shared.updatePlaybackTime(lyricsCurrentTime)
             LyricsSurfaceManager.shared.updatePlayingState(lyricsIsPlaying)
+            LyricsSurfaceManager.shared.updatePlaybackTime(lyricsCurrentTime)
             if !usesNativeRenderer {
                 store.setPlaying(lyricsIsPlaying)
                 store.setCurrentTime(lyricsCurrentTime)

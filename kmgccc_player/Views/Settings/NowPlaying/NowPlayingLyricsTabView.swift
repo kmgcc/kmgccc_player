@@ -24,7 +24,6 @@ struct NowPlayingLyricsTabView: View {
     @State private var lyricsTranslationFontSize: Double = AppSettings.shared.lyricsTranslationFontSize
     @State private var lyricsTranslationFontWeightLight: Int = AppSettings.shared.lyricsTranslationFontWeightLight
     @State private var lyricsTranslationFontWeightDark: Int = AppSettings.shared.lyricsTranslationFontWeightDark
-    @State private var amllLyricsRenderQuality: AppSettings.AMLLLyricsRenderQuality = AppSettings.shared.amllLyricsRenderQuality
     @State private var amllLyricsSpringDuration: Double = AppSettings.shared.amllLyricsSpringDuration
     @State private var amllLyricsSpringBounce: Double = AppSettings.shared.amllLyricsSpringBounce
     @State private var amllDiscreteWordHighlightEnabled: Bool = AppSettings.shared.amllDiscreteWordHighlightEnabled
@@ -58,7 +57,8 @@ struct NowPlayingLyricsTabView: View {
     private var renderingSection: some View {
         SettingsSection("外观") {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                AMLLLyricsRenderQualitySlider(quality: $amllLyricsRenderQuality)
+                // The AMLL render-quality control is intentionally hidden.
+                // NativeLyrics always renders at full backing resolution.
 
                 AMLLLyricSpringSettingsControls(
                     duration: $amllLyricsSpringDuration,
@@ -75,15 +75,16 @@ struct NowPlayingLyricsTabView: View {
             }
         }
         .onAppear {
-            amllLyricsRenderQuality = settings.amllLyricsRenderQuality
             amllLyricsSpringDuration = settings.amllLyricsSpringDuration
             amllLyricsSpringBounce = settings.amllLyricsSpringBounce
             amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
         }
-        .onChange(of: amllLyricsRenderQuality) { _, _ in syncToSettings() }
         .onChange(of: amllLyricsSpringDuration) { _, _ in syncSpringSettingsDebounced() }
         .onChange(of: amllLyricsSpringBounce) { _, _ in syncSpringSettingsDebounced() }
-        .onChange(of: amllDiscreteWordHighlightEnabled) { _, _ in syncToSettings() }
+        .onChange(of: amllDiscreteWordHighlightEnabled) { _, _ in
+            syncToSettings()
+            NotificationCenter.default.post(name: .lyricHighlightModeDidChange, object: nil)
+        }
     }
 
     private var fontsSection: some View {
@@ -234,7 +235,6 @@ struct NowPlayingLyricsTabView: View {
         lyricsTranslationFontSize = settings.lyricsTranslationFontSize
         lyricsTranslationFontWeightLight = settings.lyricsTranslationFontWeightLight
         lyricsTranslationFontWeightDark = settings.lyricsTranslationFontWeightDark
-        amllLyricsRenderQuality = settings.amllLyricsRenderQuality
         amllLyricsSpringDuration = settings.amllLyricsSpringDuration
         amllLyricsSpringBounce = settings.amllLyricsSpringBounce
         amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
@@ -250,7 +250,6 @@ struct NowPlayingLyricsTabView: View {
         settings.lyricsTranslationFontSize = lyricsTranslationFontSize
         settings.lyricsTranslationFontWeightLight = lyricsTranslationFontWeightLight
         settings.lyricsTranslationFontWeightDark = lyricsTranslationFontWeightDark
-        settings.amllLyricsRenderQuality = amllLyricsRenderQuality
         settings.amllLyricsSpringEnabled = true
         settings.amllLyricsSpringDuration = amllLyricsSpringDuration
         settings.amllLyricsSpringBounce = amllLyricsSpringBounce

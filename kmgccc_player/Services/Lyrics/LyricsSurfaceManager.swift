@@ -743,6 +743,7 @@ final class LyricsSurfaceManager {
                 isPlaying: isPlaying,
                 forceLyricsReload: forceLyricsReload
             )
+            currentPlaybackSnapshot.currentTime = NativeLyricsSurfaceManager.shared.currentPlaybackTime
         }
 
         if previousSnapshot.trackID != trackID || previousSnapshot.lyricsHash != lyricsHash {
@@ -756,9 +757,11 @@ final class LyricsSurfaceManager {
     func updatePlaybackTime(_ currentTime: Double, force: Bool = false) {
         guard currentTime.isFinite else { return }
         guard !isPlaybackTimePreviewActive else { return }
-        currentPlaybackSnapshot.currentTime = currentTime
         if Self.rendererBackend == .native {
             NativeLyricsSurfaceManager.shared.updatePlaybackTime(currentTime, force: force)
+            currentPlaybackSnapshot.currentTime = NativeLyricsSurfaceManager.shared.currentPlaybackTime
+        } else {
+            currentPlaybackSnapshot.currentTime = currentTime
         }
     }
 
@@ -767,6 +770,7 @@ final class LyricsSurfaceManager {
         guard !isPlaybackTimePreviewActive else { return }
         if Self.rendererBackend == .native {
             NativeLyricsSurfaceManager.shared.updatePlayingState(isPlaying)
+            currentPlaybackSnapshot.currentTime = NativeLyricsSurfaceManager.shared.currentPlaybackTime
         }
     }
 

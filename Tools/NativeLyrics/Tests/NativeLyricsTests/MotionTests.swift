@@ -85,6 +85,34 @@ final class MotionTests: XCTestCase {
         XCTAssertEqual(e.sample(9,character:4,fontSize:40,radiusScale:1).scale,1)
         XCTAssertEqual(e.sample(4,character:1,fontSize:40,radiusScale:0.6).glowRadius,e.sample(4,character:1,fontSize:40,radiusScale:1).glowRadius*0.6,accuracy:1e-10)
     }
+    func testNormalEmphasisBeginsOneSharedSlowFallAtLineEnd() {
+        let e = EmphasisEnvelope(
+            start: 0,
+            duration: 2,
+            characters: 5,
+            anchorCharacters: 5,
+            isLast: false,
+            isBackground: false,
+            lineEnd: 4
+        )
+        let beforeApex = abs(e.sample(-0.4,character:0,fontSize:40,radiusScale:1).floatY)
+        let held = abs(e.sample(3.5,character:0,fontSize:40,radiusScale:1).floatY)
+        let atLineEnd = abs(e.sample(4,character:0,fontSize:40,radiusScale:1).floatY)
+        let firstCharacterFall = abs(e.sample(4.3,character:0,fontSize:40,radiusScale:1).floatY)
+        let lastCharacterFall = abs(e.sample(4.3,character:4,fontSize:40,radiusScale:1).floatY)
+        let afterFall = abs(e.sample(5.5,character:0,fontSize:40,radiusScale:1).floatY)
+        let settled = abs(e.sample(7,character:0,fontSize:40,radiusScale:1).floatY)
+        let continuedAfterExit = abs(e.sample(4.3,character:0,fontSize:40,radiusScale:1,exitMedia:4,exitElapsed:0.3).floatY)
+
+        XCTAssertLessThan(beforeApex,held)
+        XCTAssertEqual(held,atLineEnd,accuracy:0.0001)
+        XCTAssertLessThan(firstCharacterFall,atLineEnd)
+        XCTAssertEqual(firstCharacterFall,lastCharacterFall,accuracy:0.0001)
+        XCTAssertEqual(firstCharacterFall,continuedAfterExit,accuracy:0.0001)
+        XCTAssertGreaterThan(firstCharacterFall,afterFall)
+        XCTAssertGreaterThan(afterFall,settled)
+        XCTAssertEqual(settled,0,accuracy:0.0001)
+    }
     func testMediaClockDoesNotIntegrateFrameDeltas() {
         var clock = LyricsClock(); clock.synchronize(time:15,playing:true,host:100)
         XCTAssertEqual(clock.time(at:105.125),20.125)

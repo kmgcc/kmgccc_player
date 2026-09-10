@@ -84,8 +84,18 @@ final class BehaviorRegressionTests: XCTestCase {
         // subtraction, which lifted the completed line at gap entrance.
         XCTAssertEqual(inGap.groups[0].y,beforeGap.groups[0].y,accuracy:0.001)
         let previousBottom = inGap.groups[0].y + inGap.groups[0].height
-        let expectedCenter = previousBottom + (inGap.groups[1].y-previousBottom)/2
-        XCTAssertEqual(dots.y,expectedCenter,accuracy:0.001)
+        let markerMargin = view.configuration.fontSize * 0.4
+        let markerHeight = view.configuration.fontSize
+        XCTAssertEqual(
+            dots.y,
+            previousBottom + markerMargin + markerHeight / 2,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            inGap.groups[1].y,
+            dots.y + markerHeight / 2 + markerMargin,
+            accuracy: 0.001
+        )
         XCTAssertGreaterThan(dots.opacity,0)
         XCTAssertEqual(dots.walk.count,3)
         XCTAssertGreaterThanOrEqual(dots.walk[0],dots.walk[1])
@@ -115,7 +125,7 @@ final class BehaviorRegressionTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(afterBacktrack.walk[2], progressedDots.walk[2] - 0.001)
     }
 
-    @MainActor func testIntroInterludeOwnsActiveSlotAndPushesFirstRowDown() throws {
+    @MainActor func testIntroInterludeUsesFixedMarkerGapAndPushesFirstRowDown() throws {
         let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='8s' end='10s'>First</p><p begin='15s' end='17s'>Second</p></div></body></tt>".utf8)
         let view = LyricsView(frame: NSRect(x: 0, y: 0, width: 760, height: 720))
         view.automaticDisplayUpdates = false
@@ -131,10 +141,11 @@ final class BehaviorRegressionTests: XCTestCase {
         XCTAssertEqual(dots.anchor, -1)
         XCTAssertEqual(dots.y, activeAnchor, accuracy: 0.001)
 
-        let firstCenter = intro.groups[0].y + intro.groups[0].height / 2
+        let markerHeight = view.configuration.fontSize
+        let markerMargin = markerHeight * 0.4
         XCTAssertEqual(
-            firstCenter,
-            dots.y + intro.groups[0].height,
+            intro.groups[0].y,
+            dots.y + markerHeight / 2 + markerMargin,
             accuracy: 0.001
         )
 
@@ -167,7 +178,12 @@ final class BehaviorRegressionTests: XCTestCase {
             case .bottom: activeAnchor - first.height / 2
             }
             XCTAssertEqual(dots.y, expectedMarker, accuracy: 0.001)
-            XCTAssertEqual(first.y + first.height / 2, dots.y + first.height, accuracy: 0.001)
+            XCTAssertEqual(
+                first.y,
+                dots.y + view.configuration.fontSize / 2
+                    + view.configuration.fontSize * 0.4,
+                accuracy: 0.001
+            )
         }
     }
 
@@ -241,6 +257,49 @@ final class BehaviorRegressionTests: XCTestCase {
         XCTAssertGreaterThan(afterInitialRebase, targetY + 0.01)
     }
 
+    @MainActor func testLoadEntrySurvivesPausedTrackHandoff() throws {
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='20s'>First</p><p begin='20s' end='40s'>Second</p></div></body></tt>".utf8)
+        let view = LyricsView(frame: NSRect(x: 0, y: 0, width: 760, height: 720))
+        view.automaticDisplayUpdates = false
+        view.configuration.timing.enabled = false
+        view.configuration.blur = false
+        // A real track switch can deliver the new document while transport is
+        // briefly paused. The entrance must remain armed until playback state
+        // settles instead of snapping to its final position.
+        try view.load(ttml: data, time: 0, playing: false, hostTime: 0)
+        let start = view.render(at: 0)
+        let moving = view.render(at: 0.15)
+        XCTAssertLessThan(moving.groups[0].y, start.groups[0].y)
+        XCTAssertGreaterThan(moving.groups[0].scale, start.groups[0].scale)
+    }
+
+    @MainActor func testLoadEntrySurvivesDiscontinuousTransportReconciliation() throws {
+        let data = Data("<tt xmlns='http://www.w3.org/ns/ttml'><body><div><p begin='0s' end='20s'>First</p><p begin='20s' end='40s'>Second</p></div></body></tt>".utf8)
+        let view = LyricsView(frame: NSRect(x: 0, y: 0, width: 760, height: 720))
+        view.automaticDisplayUpdates = false
+        view.configuration.timing.enabled = false
+        view.configuration.blur = false
+        view.configuration.positionSpring = .positionOverride(duration: 0.55, bounce: 0.75)
+        try view.load(ttml: data, time: 0, playing: false, hostTime: 0)
+
+        let start = view.render(at: 0)
+        // A real track handoff can publish a new media position that is far
+        // from the load-time clock before the first display frames arrive.
+        // That transport rebase must not cancel the independent entry spring.
+        view.synchronize(time: 5, playing: true, seek: true, hostTime: 0.05)
+        let moving = view.render(at: 0.15)
+        XCTAssertLessThan(moving.groups[0].y, start.groups[0].y)
+
+        let reference = LyricsView(frame: NSRect(x: 0, y: 0, width: 760, height: 720))
+        reference.automaticDisplayUpdates = false
+        reference.configuration.timing.enabled = false
+        reference.configuration.spring = false
+        reference.configuration.blur = false
+        try reference.load(ttml: data, time: 5, playing: false, hostTime: 5)
+        let targetY = reference.render(at: 5).groups[0].y
+        XCTAssertGreaterThan(moving.groups[0].y, targetY + 0.01)
+    }
+
     func testLineTimedWindowDoesNotDoubleApplyInactiveOpacity() throws {
         // A line-timed LRC/TTML document keeps an opaque glyph channel in the
         // window surface. Applying the normal karaoke inactive alpha as well
@@ -280,6 +339,139 @@ final class BehaviorRegressionTests: XCTestCase {
             let glyph = try XCTUnwrap(word.glyphs.first)
             XCTAssertGreaterThan(glyph.gradient.endPoint.x, 0.99)
         }
+    }
+
+    func testDiscreteHighlightUsesPerWordOpacityOnWindowAndFullscreenSurfaces() throws {
+        let words = [
+            LyricWord(id: "first", text: "First", range: .init(0, 1)),
+            LyricWord(id: "second", text: "Second", range: .init(1, 2))
+        ]
+        let line = LyricLine(id: "line", range: .init(0, 2), words: words, isWordTimed: true)
+        let prepared = PreparedGroup(source: .init(main: line), main: line, background: nil)
+
+        for fullscreen in [false, true] {
+            var config = LyricsConfiguration()
+            config.highlightMode = .discrete
+            config.fullscreenLyricDodgeMode = fullscreen
+            let layout = TextLayoutEngine().group(
+                prepared,
+                width: 760,
+                config: config,
+                dynamic: true,
+                hasDuet: false
+            ).main
+            let layers = LineLayers(layout, cache: GlyphCache(), scale: 2, config: config, previous: nil, now: 0)
+
+            // Establish the line highlight, then sample after its short line
+            // transition has settled so the assertion isolates word timing.
+            layers.update(now: 0, media: 0, floatTime: 0, active: true, alpha: 1, background: false, config: config)
+            layers.update(now: 0.5, media: 0.5, floatTime: 0.5, active: true, alpha: 1, background: false, config: config)
+
+            let opacities = try layers.words.map { word in
+                let glyph = try XCTUnwrap(word.glyphs.first)
+                return glyph.baseOpacity + glyph.highlightOpacity
+            }
+            XCTAssertGreaterThan(opacities[0], opacities[1] + 0.05)
+            if fullscreen {
+                XCTAssertEqual(opacities[1], 0.28, accuracy: 0.0001)
+            } else {
+                XCTAssertEqual(opacities[1], 0.28, accuracy: 0.0001)
+            }
+        }
+    }
+
+    func testDiscreteHighlightAlsoAppliesToLineTimedRows() throws {
+        let word = LyricWord(id: "line", text: "Line timed", range: .init(0, 2))
+        let line = LyricLine(id: "line", range: .init(0, 2), words: [word], isWordTimed: false)
+        var config = LyricsConfiguration()
+        config.highlightMode = .discrete
+        config.fullscreenLyricDodgeMode = true
+        let layout = TextLayoutEngine().group(
+            PreparedGroup(source: .init(main: line), main: line, background: nil),
+            width: 760,
+            config: config,
+            dynamic: false,
+            hasDuet: false
+        ).main
+        let layers = LineLayers(layout, cache: GlyphCache(), scale: 2, config: config, previous: nil, now: 0)
+
+        layers.update(now: 0, media: 0, floatTime: 0, active: true, alpha: 1, background: false, config: config)
+        layers.update(now: 0.5, media: 0.5, floatTime: 0.5, active: true, alpha: 1, background: false, config: config)
+        let glyph = try XCTUnwrap(layers.words.first?.glyphs.first)
+        XCTAssertGreaterThan(glyph.gradient.endPoint.x, 0.99)
+        XCTAssertGreaterThan(glyph.baseOpacity + glyph.highlightOpacity, 0.28)
+    }
+
+    func testLineTimedRowsKeepTheirWordFloatWhenHighlightIsSmooth() throws {
+        let word = LyricWord(id: "line", text: "Line timed", range: .init(0, 2))
+        let line = LyricLine(id: "line", range: .init(0, 2), words: [word], isWordTimed: false)
+        let config = LyricsConfiguration()
+        let layout = TextLayoutEngine().group(
+            PreparedGroup(source: .init(main: line), main: line, background: nil),
+            width: 760,
+            config: config,
+            dynamic: false,
+            hasDuet: false
+        ).main
+        let layers = LineLayers(layout, cache: GlyphCache(), scale: 2, config: config, previous: nil, now: 0)
+
+        layers.update(now: 0, media: 0, floatTime: 0, active: true, alpha: 1, background: false, config: config, seek: true)
+        let start = try XCTUnwrap(layers.words.first?.glyphs.first).root.position.y
+        layers.update(now: 0.5, media: 0.5, floatTime: 0.5, active: true, alpha: 1, background: false, config: config)
+        let moving = try XCTUnwrap(layers.words.first?.glyphs.first).root.position.y
+        XCTAssertLessThan(moving, start)
+    }
+
+    func testDiscreteHighlightKeepsEmphasisFloatAndGlow() throws {
+        let word = LyricWord(id: "word", text: "Soooo", range: .init(0, 4))
+        let line = LyricLine(id: "line", range: .init(0, 4), words: [word], isWordTimed: true)
+        let prepared = PreparedGroup(source: .init(main: line), main: line, background: nil)
+
+        func sample(_ mode: HighlightMode) throws -> (CGPoint, Float) {
+            var config = LyricsConfiguration()
+            config.highlightMode = mode
+            let layout = TextLayoutEngine().group(
+                prepared,
+                width: 760,
+                config: config,
+                dynamic: true,
+                hasDuet: false
+            ).main
+            let layers = LineLayers(
+                layout,
+                cache: GlyphCache(),
+                scale: 2,
+                config: config,
+                previous: nil,
+                now: 0
+            )
+            layers.update(
+                now: 0,
+                media: 1,
+                floatTime: 1,
+                active: true,
+                alpha: 1,
+                background: false,
+                config: config
+            )
+            layers.update(
+                now: 1,
+                media: 2,
+                floatTime: 2,
+                active: true,
+                alpha: 1,
+                background: false,
+                config: config
+            )
+            let glyph = try XCTUnwrap(layers.words.first?.glyphs.first)
+            return (glyph.root.position, glyph.glow.opacity)
+        }
+
+        let smooth = try sample(.smooth)
+        let discrete = try sample(.discrete)
+        XCTAssertEqual(discrete.0.y, smooth.0.y, accuracy: 0.001)
+        XCTAssertEqual(discrete.1, smooth.1, accuracy: 0.001)
+        XCTAssertGreaterThan(discrete.1, 0)
     }
 
     @MainActor func testFullscreenLineTimedRowsStayOpaqueAndCanBlur() throws {
@@ -487,6 +679,37 @@ final class BehaviorRegressionTests: XCTestCase {
         XCTAssertEqual(glyph.highlightOpacity,0,accuracy:0.00001)
     }
 
+    func testLineExitLetsEmphasisFloatDescendIndependentlyFromHighlightFade() throws {
+        let word = LyricWord(id:"w",text:"Soooo",range:.init(0,2))
+        let line = LyricLine(id:"l",range:.init(0,8),words:[word],isWordTimed:true)
+        let config = LyricsConfiguration()
+        let layout = TextLayoutEngine().group(
+            PreparedGroup(source:.init(main:line),main:line,background:nil),
+            width:760,
+            config:config,
+            dynamic:true,
+            hasDuet:false
+        ).main
+        let layers = LineLayers(layout,cache:GlyphCache(),scale:2,config:config,previous:nil,now:0)
+
+        // Establish the word's upward float before the line leaves.
+        layers.update(now:0,media:1,floatTime:1,active:true,alpha:1,background:false,config:config,seek:true)
+
+        // The exit sample keeps the emphasized word at its apex while the
+        // line fade begins. Later host-time samples must move it down slowly;
+        // they must not use the accelerated mask media time as the float
+        // clock.
+        layers.update(now:1,media:1.5,floatTime:1.5,active:false,alpha:1,background:false,config:config)
+        let exitY = try XCTUnwrap(layers.words.first?.glyphs.first).root.position.y
+        layers.update(now:1.25,media:1.75,floatTime:1.25,active:false,alpha:1,background:false,config:config)
+        let duringFadeY = try XCTUnwrap(layers.words.first?.glyphs.first).root.position.y
+        layers.update(now:3.5,media:3.5,floatTime:-0.5,active:false,alpha:1,background:false,config:config)
+        let lateY = try XCTUnwrap(layers.words.first?.glyphs.first).root.position.y
+
+        XCTAssertGreaterThan(duringFadeY,exitY)
+        XCTAssertGreaterThan(lateY,duringFadeY)
+    }
+
     func testEmphasisGlowUsesTintedGlyphSourceAndBlurFilter() {
         let word = LyricWord(id:"w",text:"Soooo",range:.init(0,5))
         let line = LyricLine(id:"l",range:.init(0,5),words:[word],isWordTimed:true)
@@ -500,6 +723,7 @@ final class BehaviorRegressionTests: XCTestCase {
         XCTAssertTrue(names.contains("CIColorMonochrome"))
         XCTAssertTrue(names.contains("CIGaussianBlur"))
         XCTAssertNil(glyph.glow.mask)
+        XCTAssertEqual((glyph.glow.compositingFilter as? CIFilter)?.name, "CIAdditionCompositing")
     }
 
 }

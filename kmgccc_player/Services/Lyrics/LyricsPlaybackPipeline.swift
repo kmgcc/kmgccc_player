@@ -140,13 +140,17 @@ final class LyricsPlaybackPipeline {
             )
             return
         }
-        if explicitSeek || lastSyncedTime == nil || abs((lastSyncedTime ?? 0) - currentTime) >= 0.01 {
-            lyricsVM.syncTime(currentTime, force: explicitSeek)
-        }
-
         let isPlaying = presentation.effectiveLyricsIsPlaying
         if lastIsPlaying != isPlaying {
+            // Freeze/restart the native presentation clock at the transport
+            // transition before feeding it the next (possibly stale) media
+            // sample. This preserves the audio-output-delay/Bluetooth timing
+            // already encoded in lyricsCurrentTime without letting callback
+            // ordering move the lyric highlight backwards.
             lyricsVM.setPlaying(isPlaying)
+        }
+        if explicitSeek || lastSyncedTime == nil || abs((lastSyncedTime ?? 0) - currentTime) >= 0.01 {
+            lyricsVM.syncTime(currentTime, force: explicitSeek)
         }
     }
 

@@ -165,10 +165,6 @@ struct LyricsPanelView: View {
                     .glassEffect(.regular, in: .rect(cornerRadius: 0))
 
                 themeStore.backgroundColor.opacity(0.10)
-
-                Rectangle()
-                    .fill(themeStore.secondaryTextColor.opacity(0.14))
-                    .frame(width: 1)
             }
             .allowsHitTesting(false)
         case .clear:

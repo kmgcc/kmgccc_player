@@ -574,6 +574,13 @@ struct FullscreenPlayerView: View {
         .onReceive(NotificationCenter.default.publisher(for: .lyricSpringSettingsDidSettle)) { _ in
             applyFullscreenLyricsTheme(reason: "lyric spring settings settled")
         }
+        .onReceive(NotificationCenter.default.publisher(for: .lyricHighlightModeDidChange)) { _ in
+            // AppStorage-backed highlight settings are intentionally ignored
+            // by AppSettings observation. The quick fullscreen panel sends an
+            // explicit event so the live native surface is updated immediately
+            // instead of waiting for a reopen or track change.
+            applyFullscreenLyricsTheme(reason: "lyric highlight mode changed")
+        }
         .onChange(of: settings.fullscreenMiniPlayerAutoHideSeconds) { _, _ in
             resetFullscreenBottomControlsAutoHideState()
         }
@@ -3088,7 +3095,6 @@ struct FullscreenPlayerView: View {
             String(format: "%.0f", settings.lyricsNearSwitchGapMs),
             String(format: "%.0f", settings.lyricsGlobalAdvanceMs),
             settings.amllDiscreteWordHighlightEnabled ? "wordDiscrete" : "wordSmooth",
-            "amllQuality:\(settings.amllLyricsRenderQuality.rawValue)",
             playbackCoordinator.presentation.source.rawValue,
             hostContext.rawValue,
             overlay.signature,
@@ -4542,7 +4548,7 @@ struct FullscreenPlayerView: View {
                 100,
                 min(900, typography.translationFontWeight)
             ),
-            "renderScale": surfaceRole.renderScale,
+            "renderScale": 1.0,
             "enableBlur": surfaceRole.enableBlur,
             "enableSpring": surfaceRole.enableSpring,
             "springDuration": springSettings.duration,
@@ -5102,17 +5108,26 @@ struct FullscreenPlayerView: View {
         topFade: CGFloat,
         bottomFade: CGFloat
     ) -> some View {
-        VStack(spacing: 0) {
-            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                .frame(height: topFade)
+        let height = max(0, visibleHeight)
+        let top = min(height, max(0, topFade))
+        let bottom = min(height, max(top, height - max(0, bottomFade)))
+        let denominator = max(height, 1)
 
-            Rectangle()
-                .fill(.black)
-                .frame(height: max(0, visibleHeight - topFade - bottomFade))
-
-            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                .frame(height: bottomFade)
-        }
+        // Keep the two fade transitions in one rasterized mask.  Building this
+        // from adjacent gradient/rectangle/gradient views leaves a fractional
+        // boundary after fullscreen scaling; the mask then removes one row of
+        // lyric pixels while the opaque background underneath remains intact.
+        return LinearGradient(
+            stops: [
+                .init(color: .clear, location: 0),
+                .init(color: .black, location: top / denominator),
+                .init(color: .black, location: bottom / denominator),
+                .init(color: .clear, location: height / denominator),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .frame(height: height)
     }
 
     private func layoutMetrics(for windowSize: CGSize) -> FullscreenHorizontalSplitLayout {

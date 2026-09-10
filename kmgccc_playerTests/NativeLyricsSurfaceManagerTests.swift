@@ -266,6 +266,30 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testPauseUsesPredictedSurfaceTimeAndIgnoresStalePausedSamples() {
+        let surface = NativeLyricsSurface(role: .main)
+        surface.applyTrack(
+            trackID: UUID(),
+            ttml: mainTTML,
+            currentTime: 1,
+            isPlaying: true
+        )
+
+        let pauseHost = CACurrentMediaTime() + 0.25
+        surface.setPlaying(false, hostTime: pauseHost)
+        let pausedTime = surface.currentTime
+        XCTAssertGreaterThan(pausedTime, 1.1)
+
+        // A normal callback after the pause can still carry the old transport
+        // sample. It must not move the already-frozen native clock backwards.
+        surface.setCurrentTime(1)
+        XCTAssertEqual(surface.currentTime, pausedTime, accuracy: 0.0001)
+
+        surface.setPlaying(true, hostTime: pauseHost + 0.5)
+        XCTAssertEqual(surface.currentTime, pausedTime, accuracy: 0.0001)
+    }
+
+    @MainActor
     func testSeekHandlerSurvivesLazySurfaceCreation() {
         let manager = NativeLyricsSurfaceManager.shared
         manager.shutdownAll()
@@ -369,6 +393,7 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
         XCTAssertEqual(configuration.alignOffset, 18, accuracy: 0.0001)
         XCTAssertEqual(configuration.alignAnchor, .bottom)
         XCTAssertEqual(configuration.interludeDotScale, 1.45, accuracy: 0.0001)
+        XCTAssertEqual(configuration.renderScale, 1, accuracy: 0.0001)
         let expectedSpring = SpringParameters.positionOverride(duration: 0.55, bounce: 0.75)
         XCTAssertEqual(configuration.positionSpring, expectedSpring)
         XCTAssertNotEqual(configuration.positionSpring, .position)

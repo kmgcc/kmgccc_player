@@ -54,6 +54,21 @@ private enum LyricsEntryAnimation: Equatable {
     case wake
 }
 
+/// Some Apple/AMLL exports declare word timing but wrap an entire lyric line
+/// in one timed span. There is no authored word boundary to render, but
+/// keeping the line in the line-timed layout makes its vertical float move as
+/// one block. In that narrow case the layout engine may distribute the single
+/// span across its visible tokens for presentation only. The document's source
+/// ranges and seek semantics remain untouched.
+func usesVisualWordTiming(_ line: LyricLine, document: LyricsDocument) -> Bool {
+    if line.hasEffectiveWordTiming { return true }
+    guard document.timingMode == .word,
+          line.isWordTimed,
+          line.words.count == 1,
+          let text = line.words.first?.text else { return false }
+    return text.lazy.filter { !$0.isWhitespace }.count > 1
+}
+
 /// A reusable TTML-only, layer-backed native surface. The host owns playback and seek.
 @MainActor public final class LyricsView: NSView {
     public var configuration = LyricsConfiguration() {
@@ -156,6 +171,23 @@ private enum LyricsEntryAnimation: Equatable {
         configuration.positionSpring ?? .position
     }
 
+    /// The interlude marker occupies a real layout slot, rather than being
+    /// placed at the midpoint between two already-laid-out rows. Keeping the
+    /// marker's box and its edge margin in one place prevents the dot layer
+    /// from overlapping the first lyric when font metrics or alignment change.
+    private var interludeMarkerHeight: Double {
+        let size = configuration.fontSize.isFinite ? configuration.fontSize : 38
+        return max(10, size)
+    }
+
+    private var interludeMarkerMargin: Double {
+        interludeMarkerHeight * 0.4
+    }
+
+    private var interludeSlotHeight: Double {
+        interludeMarkerHeight + interludeMarkerMargin * 2
+    }
+
     private var entryScaleSpring: SpringParameters {
         SpringParameters(mass: 1, damping: 24, stiffness: 150, soft: true)
     }
@@ -214,11 +246,15 @@ private enum LyricsEntryAnimation: Equatable {
         pendingReflowIndices.removeAll(); pendingReflowCursor = 0; reflowInProgress = false
         stopDisplayLink()
     }
-    public func synchronize(time: Double, playing: Bool, seek: Bool = false, motion: LyricsSeekMotion = .immediate, hostTime: Double = CACurrentMediaTime()) {
-        guard time.isFinite else { return }
+    @discardableResult
+    public func synchronize(time: Double, playing: Bool, seek: Bool = false, motion: LyricsSeekMotion = .immediate, hostTime: Double = CACurrentMediaTime()) -> Double {
+        guard time.isFinite else { return clock.time(at: hostTime) }
         let predicted = clock.time(at: hostTime)
-        let discontinuity = abs(time-predicted)>0.5
-            || (clock.isPlaying && playing && time < predicted - LyricsClock.backwardsJitterTolerance)
+        let playbackTransition = clock.isPlaying != playing
+        let discontinuity = !playbackTransition && (
+            abs(time-predicted)>0.5
+                || (clock.isPlaying && playing && time < predicted - LyricsClock.backwardsJitterTolerance)
+        )
         clock.synchronize(
             time: time,
             playing: playing,
@@ -227,18 +263,23 @@ private enum LyricsEntryAnimation: Equatable {
         )
         if seek || discontinuity {
             seekPending = true; pendingSeekMotion = motion; interaction.resume()
-            // A real seek supersedes a wake animation. A freshly loaded
-            // document keeps its initial entrance so the first frame is not
-            // replaced by a hard jump when the host supplies its initial time.
-            let isInitialLoadRebase = (pendingEntryAnimation == .load || runningEntryAnimation == .load)
-                && abs(time - predicted) <= 0.05
-            if !isInitialLoadRebase {
+            // A real seek supersedes a wake animation. A loaded document owns
+            // its entrance until the position spring settles: transport
+            // reconciliation can arrive out of order during a track handoff,
+            // and cancelling the load spring here turns the whole entrance
+            // into the hard jump seen after a reload. An explicit seek still
+            // retargets the active entry spring through the normal render
+            // path; it does not need to replace it with a snap.
+            let isLoadEntryActive = pendingEntryAnimation == .load
+                || runningEntryAnimation == .load
+            if !isLoadEntryActive {
                 if pendingEntryAnimation == .wake { pendingEntryAnimation = nil }
                 runningEntryAnimation = nil
                 entryAnimationHandoffUntil = 0
             }
         }
         wake()
+        return clock.time(at: hostTime)
     }
     public func followCurrentLyrics() { followPending = interaction.suspended; interaction.resume(); wake() }
 
@@ -456,24 +497,28 @@ private enum LyricsEntryAnimation: Equatable {
         let gap = snapshot.interlude
         let introInterlude = gap?.anchor == -1
         let focusIndex = min(max(0,focus),groups.count)
-        // An intro marker occupies the first lyric row, so the next real row
-        // must use the same slot height as that row. The old fixed
-        // fontSize*1.1 offset was neither a row height nor the marker's real
-        // bounds; it made the first lyric sit between row one and row two.
+        // An interlude is a real slot in the vertical stack. For a normal
+        // gap the marker sits between two real row boundaries. At the start
+        // of a song, however, the marker is centred on the virtual active
+        // row, so the inserted distance must also include half of that
+        // row's measured height. This is the part the old font-size-only
+        // offset missed: a tall first row could consume the entire gap.
         let gapHeight: Double = {
             guard gap != nil else { return 0 }
-            if introInterlude, focusIndex < heights.count {
-                return heights[focusIndex]
+            guard introInterlude, focusIndex < heights.count else {
+                return interludeSlotHeight
             }
-            return configuration.fontSize*1.1
+            return heights[focusIndex] / 2
+                + interludeMarkerHeight / 2
+                + interludeMarkerMargin
         }()
         if let gap {
             for i in offsets.indices where i>=gap.anchor+1 { offsets[i] += gapHeight }
         }
         let alignOffset = configuration.alignOffset.isFinite ? configuration.alignOffset : 0
-        // For an intro gap the marker owns the virtual active slot. Keep the
-        // stack origin at the normal active anchor instead of subtracting the
-        // inserted slot; the first lyric then lands one row below that slot.
+        // For an intro gap the marker owns the active height. Keep the stack
+        // origin at the normal active anchor instead of subtracting the
+        // inserted spacing; the first lyric then lands directly below it.
         let baseOrigin = bounds.height*configuration.alignPosition
             - offsets[focusIndex]
             + (introInterlude ? gapHeight : 0)
@@ -637,8 +682,12 @@ private enum LyricsEntryAnimation: Equatable {
             let bs = configuration.scale ? 0.9+0.1*reveal : 1
             let mainY = group.layout.padding+(bgFirst ? bgFlowHeight*reveal : 0)
             let ms = group.scale.value(now)
-            group.main.root.anchorPoint = CGPoint(x:duet ? 1 : 0,y:0)
-            group.main.root.position = CGPoint(x:x+(duet ? group.layout.main.width : 0),y:mainY)
+            // AMLL scales a lyric line around its leading edge and vertical
+            // centre. Anchoring at the top made the inactive shrink also move
+            // the visible baseline, which reads as a small positional jitter
+            // while the row is moving to its next stack slot.
+            group.main.root.anchorPoint = CGPoint(x:duet ? 1 : 0,y:0.5)
+            group.main.root.position = CGPoint(x:x+(duet ? group.layout.main.width : 0),y:mainY+group.layout.main.height/2)
             group.main.root.transform = CATransform3DMakeScale(ms,ms,1)
             let alphaTarget = Curves.clamp((ms-0.97)/0.03)
             group.alpha = alphaTarget
@@ -655,7 +704,14 @@ private enum LyricsEntryAnimation: Equatable {
                 }
             }
             group.lastMedia = media
-            group.isVisible = y+heights[i] >= -configuration.overscan && y<=bounds.height+configuration.overscan
+            // Warm the focused line while a load entrance is still below the
+            // viewport. Without this one-line prewarm the first paused frame
+            // reports an uninitialized mask (0), then the mask jumps to its
+            // authored position as the spring reaches the viewport.
+            let entryFocus = min(max(0, focus), max(0, groups.count-1))
+            let prewarmEntryFocus = runningEntryAnimation != nil && i == entryFocus
+            group.isVisible = prewarmEntryFocus
+                || (y+heights[i] >= -configuration.overscan && y<=bounds.height+configuration.overscan)
             group.root.isHidden = !group.isVisible
             if group.isVisible {
                 group.main.ensureContent(cache:cache,scale:scale,config:configuration,now:now)
@@ -667,9 +723,21 @@ private enum LyricsEntryAnimation: Equatable {
                     // main line while it is scaled and revealed.  Recreate
                     // that relation in points instead of letting the two
                     // layers drift independently.
+                    //
+                    // `main.root` is vertically centered.  The old formula
+                    // treated `mainY` as the top edge and therefore applied
+                    // the scale a second time to the background offset.  As
+                    // the focused row changed scale this made the background
+                    // snap by a fraction of a point, which is visible as
+                    // granular line-to-line jitter.  Resolve the scaled main
+                    // bounds first, then attach the background to those
+                    // bounds with the fixed group gap.
+                    let mainHeight = group.layout.main.height
+                    let mainTop = mainY + (mainHeight-mainHeight*ms)/2
+                    let mainBottom = mainTop + mainHeight*ms
                     let by = bgFirst
-                        ? mainY-group.layout.gap-background.layout.height*bs
-                        : mainY+group.layout.main.height*ms+group.layout.gap
+                        ? mainTop-group.layout.gap-background.layout.height*bs
+                        : mainBottom+group.layout.gap
                     group.backgroundWrapper.position = CGPoint(x:x,y:by)
                     group.backgroundWrapper.opacity = Float(reveal)
                     background.root.anchorPoint = CGPoint(x:duet ? 1 : 0,y:0)
@@ -701,6 +769,8 @@ private enum LyricsEntryAnimation: Equatable {
             var normalOrigin = bounds.height*configuration.alignPosition - focusOffsetWithoutIntro
             if configuration.alignAnchor == .center { normalOrigin -= anchorHeight/2 }
             if configuration.alignAnchor == .bottom { normalOrigin -= anchorHeight }
+            // The dots are centred on the same active-row anchor that the
+            // first lyric will use after the intro slot is removed.
             return normalOrigin + anchorHeight/2 - interaction.offset - alignOffset
         }()
         let interludeFrame = updateDots(
@@ -737,23 +807,21 @@ private enum LyricsEntryAnimation: Equatable {
 
         switch pending {
         case .load:
-            guard clock.isPlaying else {
-                // A paused document is a stable inspection state. Do not
-                // strand its first frame below the viewport while no display
-                // clock is running; the animated entrance is for an actively
-                // changing track.
-                runningEntryAnimation = nil
-                for group in groups {
-                    group.entryDelayUntil = 0
-                    group.scale.snap(1,at:now)
-                }
-                return
-            }
             // Groups are created below the viewport. A small initial scale
             // gives the spring rise a little depth without affecting the
-            // authored text layout.
+            // authored text layout. Do not gate this on clock.isPlaying: a
+            // real track change can install its lyric document during the
+            // transport's short paused/loading handoff. Cancelling here turns
+            // the whole entrance into the hard seek snap seen on true track
+            // changes, while same-track replay happens to keep playing=true.
             let initialScale = configuration.scale ? 0.94 : 1
+            // Re-arm the position track explicitly. A document can be
+            // reloaded while the previous frame is still visible, so relying
+            // only on GroupLayers' construction-time value can leave the new
+            // entry starting at (or already settled on) its final target.
+            let entryStartY = max(1, bounds.height * 2)
             for (i, group) in groups.enumerated() {
+                group.y.snap(entryStartY, at: now)
                 group.entryDelayUntil = now + min(0.28, Double(max(0, i-entryFocus))*0.04)
                 group.scale.snap(initialScale,at:now)
             }
@@ -822,8 +890,8 @@ private enum LyricsEntryAnimation: Equatable {
 
     private func reflowGroup(at index: Int, now: Double, scale: Double, document: LyricsDocument) {
         guard prepared.indices.contains(index) else { return }
-        let dynamic = prepared[index].main.hasEffectiveWordTiming
-            || prepared[index].background?.hasEffectiveWordTiming == true
+        let dynamic = usesVisualWordTiming(prepared[index].main, document: document)
+            || prepared[index].background.map { usesVisualWordTiming($0, document: document) } == true
         let layout = layoutEngine.group(
             prepared[index],
             width: max(1, bounds.width),
@@ -923,7 +991,7 @@ private enum LyricsEntryAnimation: Equatable {
         // Core Animation rounding/anchor differences making the expanded dots
         // spill past the lyric edge.
         let dotWidth = size + step*2
-        let dotHeight = configuration.fontSize
+        let dotHeight = interludeMarkerHeight
         // Pin the fully expanded marker to the lyric leading edge. At smaller
         // breathing states it remains slightly inset instead of protruding
         // past the text column.
@@ -935,15 +1003,14 @@ private enum LyricsEntryAnimation: Equatable {
         if gap.anchor >= 0, frames.indices.contains(gap.anchor) {
             previousBottom = frames[gap.anchor].y + frames[gap.anchor].height
         } else {
-            previousBottom = nextTop - configuration.fontSize*1.1
+            previousBottom = nextTop - interludeSlotHeight
         }
-        // Place the marker at the exact midpoint of the two row boundaries.
-        // Intro gaps are special: their marker owns the active slot itself,
-        // so use the virtual active anchor while the first lyric is pushed
-        // down into the following row.
+        // The marker is attached to the preceding row's bottom edge with a
+        // fixed margin. Intro gaps use the virtual active anchor calculated
+        // above; normal gaps use the same slot contract between real rows.
         let centerY = gap.anchor == -1 && introMarkerY != nil
             ? introMarkerY!
-            : previousBottom + (nextTop-previousBottom)/2
+            : previousBottom + interludeMarkerMargin + dotHeight/2
         dots.bounds = CGRect(x:0,y:0,width:dotWidth,height:dotHeight)
         dots.position = CGPoint(x:dotX+dotWidth/2,y:centerY)
         dots.transform = CATransform3DMakeScale(sample.scale,sample.scale,1)
