@@ -84,6 +84,43 @@ final class UpdatePreferencesTests: XCTestCase {
         )
     }
 
+    func testReleaseNotesStoreRoundTripsAndRefreshesDownloadedNotes() {
+        withDefaults { defaults in
+            UpdateReleaseNotesStore.save(
+                version: "2.3.0",
+                build: "13",
+                notes: ["初始说明"],
+                defaults: defaults
+            )
+
+            XCTAssertEqual(
+                UpdateReleaseNotesStore.notice(forBuild: "13", defaults: defaults)?.notes,
+                ["初始说明"]
+            )
+            XCTAssertNil(
+                UpdateReleaseNotesStore.notice(forBuild: "12", defaults: defaults)
+            )
+
+            UpdateReleaseNotesStore.updateNotes(
+                ["下载完成后可重启更新", "补充稳定性修复"],
+                forBuild: "13",
+                defaults: defaults
+            )
+
+            XCTAssertEqual(
+                UpdateReleaseNotesStore.notice(forBuild: "13", defaults: defaults)?.notes,
+                ["下载完成后可重启更新", "补充稳定性修复"]
+            )
+        }
+    }
+
+    func testReleaseNotesParserRemovesMarkupAndBulletPrefixes() {
+        XCTAssertEqual(
+            UpdateReleaseNotesParser.parse("# 2.3.0\n- 第一项\n* 第二项\n<div>第三项</div>"),
+            ["第一项", "第二项", "第三项"]
+        )
+    }
+
     func testOmittedChannelResolvesAsProduction() throws {
         let environment = try UpdateEnvironment.resolve(info: productionEnvironmentInfo())
 

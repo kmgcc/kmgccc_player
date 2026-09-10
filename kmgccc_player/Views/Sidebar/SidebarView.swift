@@ -57,6 +57,7 @@ struct SidebarView: View {
     @State private var appearanceRotateTrigger = 0
     @State private var scrollFadeState = ScrollEdgeFadeState()
     @State private var showingLibraryImportStatus = false
+    @State private var updateReleaseNotesToShow: UpdateReleaseNotesNotice?
 
     private let scrollFadeHeight: CGFloat = 28
 
@@ -480,6 +481,10 @@ struct SidebarView: View {
             )
             .environmentObject(themeStore)
         }
+        .sheet(item: $updateReleaseNotesToShow) { notice in
+            SidebarUpdateReleaseNotesView(notice: notice)
+                .environmentObject(themeStore)
+        }
         .sheet(isPresented: $showingPlaylistSheet) {
             PlaylistEditSheet()
         }
@@ -629,14 +634,14 @@ struct SidebarView: View {
         case .downloading(let progress):
             return SidebarTaskProgress(
                 title: "正在下载更新",
-                detail: "下载完成后可重启安装",
+                detail: "",
                 fractionCompleted: progress,
                 state: .running
             )
         case .preparing(let progress):
             return SidebarTaskProgress(
                 title: "正在准备更新",
-                detail: "正在验证并解压安装包",
+                detail: "正在校验安装包",
                 fractionCompleted: progress,
                 state: .running
             )
@@ -693,10 +698,19 @@ struct SidebarView: View {
         return { updateCoordinator.retryFailedUpdate() }
     }
 
+    private var currentUpdateReleaseNotesAction: (() -> Void)? {
+        guard updateCoordinator.currentUpdateReleaseNotes != nil else { return nil }
+        return {
+            guard let notice = self.updateCoordinator.currentUpdateReleaseNotes else { return }
+            self.updateReleaseNotesToShow = notice
+        }
+    }
+
     private var hasSidebarTaskProgress: Bool {
         uiState.sidebarNotice != nil
             || updateSidebarProgress != nil
             || updateCoordinator.readyUpdate != nil
+            || updateCoordinator.postUpdateNotice != nil
             || importEnrichmentService.hasOutstandingWork
             || importEnrichmentService.completionSummary != nil
             || activeLibraryImportTask != nil
@@ -731,7 +745,8 @@ struct SidebarView: View {
                 SidebarTaskProgressView(
                     progress: progress,
                     onDismiss: updateProgressDismissAction,
-                    onRetry: updateProgressRetryAction
+                    onRetry: updateProgressRetryAction,
+                    onShowReleaseNotes: currentUpdateReleaseNotesAction
                 )
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
@@ -744,6 +759,20 @@ struct SidebarView: View {
                     },
                     onDismiss: {
                         updateCoordinator.dismissReadyUpdate()
+                    },
+                    onShowReleaseNotes: currentUpdateReleaseNotesAction
+                )
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            if let notice = updateCoordinator.postUpdateNotice {
+                SidebarUpdateCompletedView(
+                    notice: notice,
+                    onShowReleaseNotes: {
+                        updateReleaseNotesToShow = notice
+                    },
+                    onDismiss: {
+                        updateCoordinator.markPostUpdateNoticePresented()
                     }
                 )
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -1539,12 +1568,128 @@ private struct SidebarNoticeView: View {
     }
 }
 
+private struct SidebarUpdateCompletedView: View {
+    let notice: UpdateReleaseNotesNotice
+    let onShowReleaseNotes: () -> Void
+    let onDismiss: () -> Void
+
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.green)
+
+                Text("更新成功")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 18, height: 18)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                .help("关闭")
+            }
+
+            Text("已更新到 \(notice.version)")
+                .font(.caption)
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+
+            Button("查看更新日志", action: onShowReleaseNotes)
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.plain)
+                .foregroundStyle(themeStore.accentColor)
+                .padding(.leading, 22)
+                .help("查看更新日志")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.green.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(
+                    Color.green.opacity(0.25),
+                    lineWidth: 0.5
+                )
+        )
+    }
+}
+
+private struct SidebarUpdateReleaseNotesView: View {
+    let notice: UpdateReleaseNotesNotice
+
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var themeStore: ThemeStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .foregroundStyle(themeStore.accentColor)
+                Text("更新日志")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                Spacer(minLength: 0)
+            }
+
+            Text("版本 \(notice.version)")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(Array(notice.notes.enumerated()), id: \.offset) { _, note in
+                        Text("• \(note)")
+                            .font(.body)
+                            .foregroundStyle(themeStore.appForegroundPalette.primaryColor)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            HStack {
+                Spacer(minLength: 0)
+                Button("关闭") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 390, height: 330)
+    }
+}
+
 private struct SidebarUpdateReadyView: View {
     let update: UpdateReadyMetadata
     let onInstall: () -> Void
     let onDismiss: () -> Void
+    let onShowReleaseNotes: (() -> Void)?
 
     @EnvironmentObject private var themeStore: ThemeStore
+
+    private var updateButtonLabelColor: Color {
+        let rgb = themeStore.accentNSColor.usingColorSpace(.deviceRGB)
+            ?? themeStore.accentNSColor
+        let luminance =
+            0.2126 * rgb.redComponent
+            + 0.7152 * rgb.greenComponent
+            + 0.0722 * rgb.blueComponent
+        return luminance > 0.56 ? Color.black.opacity(0.82) : Color.white.opacity(0.95)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1571,16 +1716,26 @@ private struct SidebarUpdateReadyView: View {
                 .help("删除并忽略此版本")
             }
 
-            Text("已在后台安全下载")
-                .font(.caption)
-                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+            HStack(spacing: 10) {
+                if let onShowReleaseNotes {
+                    Button("查看更新日志", action: onShowReleaseNotes)
+                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(themeStore.accentColor)
+                        .help("查看更新日志")
+                }
 
-            Button("重启更新", action: onInstall)
-                .font(.caption.weight(.semibold))
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .tint(themeStore.accentColor)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                Spacer(minLength: 0)
+
+                Button("立即重启更新", action: onInstall)
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(
+                        SidebarUpdateInstallButtonStyle(
+                            fillColor: themeStore.accentColor,
+                            labelColor: updateButtonLabelColor
+                        )
+                    )
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -1598,21 +1753,43 @@ private struct SidebarUpdateReadyView: View {
     }
 }
 
+private struct SidebarUpdateInstallButtonStyle: ButtonStyle {
+    let fillColor: Color
+    let labelColor: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(labelColor)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 3)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(fillColor)
+            )
+            .opacity(configuration.isPressed ? 0.72 : 1)
+            .contentShape(Capsule(style: .continuous))
+    }
+}
+
 private struct SidebarTaskProgressView: View {
     let progress: SidebarTaskProgress
     let onDismiss: (() -> Void)?
     let onRetry: (() -> Void)?
+    let onShowReleaseNotes: (() -> Void)?
 
     @EnvironmentObject private var themeStore: ThemeStore
 
     init(
         progress: SidebarTaskProgress,
         onDismiss: (() -> Void)? = nil,
-        onRetry: (() -> Void)? = nil
+        onRetry: (() -> Void)? = nil,
+        onShowReleaseNotes: (() -> Void)? = nil
     ) {
         self.progress = progress
         self.onDismiss = onDismiss
         self.onRetry = onRetry
+        self.onShowReleaseNotes = onShowReleaseNotes
     }
 
     var body: some View {
@@ -1665,10 +1842,20 @@ private struct SidebarTaskProgressView: View {
                     .tint(themeStore.accentColor)
             }
 
-            Text(progress.detail)
-                .font(.caption)
-                .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
-                .lineLimit(2)
+            if !progress.detail.isEmpty {
+                Text(progress.detail)
+                    .font(.caption)
+                    .foregroundStyle(themeStore.appForegroundPalette.secondaryColor)
+                    .lineLimit(2)
+            }
+
+            if let onShowReleaseNotes {
+                Button("查看更新日志", action: onShowReleaseNotes)
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(themeStore.accentColor)
+                    .help("查看更新日志")
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)

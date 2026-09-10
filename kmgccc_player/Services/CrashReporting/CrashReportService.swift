@@ -40,6 +40,13 @@ final class CrashReportService: ObservableObject {
     }
 
     func start(anonymousInstallID: String) async {
+        guard TelemetryService.isReportingAllowed else {
+            Log.info(
+                "[CrashReporting] delivery disabled for Debug/developer-marker build",
+                category: .telemetry
+            )
+            return
+        }
         guard !hasStarted else { return }
         hasStarted = true
         installActivationObserverIfNeeded()
@@ -61,6 +68,11 @@ final class CrashReportService: ObservableObject {
     }
 
     func automaticUploadPreferenceDidChange(_ enabled: Bool) {
+        guard TelemetryService.isReportingAllowed else {
+            workerTask?.cancel()
+            workerTask = nil
+            return
+        }
         if let prompt = currentPrompt {
             currentPrompt = CrashReportPromptPresentation(
                 reportID: prompt.reportID,
@@ -93,6 +105,7 @@ final class CrashReportService: ObservableObject {
     }
 
     func sendCurrentPrompt(description: String) {
+        guard TelemetryService.isReportingAllowed else { return }
         guard let prompt = currentPrompt else { return }
         currentPrompt = nil
         Task {
@@ -216,6 +229,10 @@ final class CrashReportService: ObservableObject {
 
     private func scheduleDelivery() {
         workerTask?.cancel()
+        guard TelemetryService.isReportingAllowed else {
+            workerTask = nil
+            return
+        }
         workerTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
@@ -232,6 +249,7 @@ final class CrashReportService: ObservableObject {
     }
 
     private func deliverReadyRecords() async {
+        guard TelemetryService.isReportingAllowed else { return }
         let now = Date()
         let records = await store.records()
         for record in records {
@@ -242,6 +260,7 @@ final class CrashReportService: ObservableObject {
     }
 
     private func deliver(_ source: CrashReportRecord) async {
+        guard TelemetryService.isReportingAllowed else { return }
         var record = source
         if record.technicalUploadState == .pending || record.technicalUploadState == .failed {
             let isUserAuthorized = record.report.uploadMode == .userConfirmed

@@ -8,6 +8,36 @@
 import AppKit
 import Foundation
 
+enum TelemetryReportingPolicy {
+    nonisolated static let developerMarkerFileNames = [
+        ".kmgccc_dev_machine",
+        ".kmgccc_player_dev_marker",
+    ]
+
+    nonisolated static var isDeveloperMachine: Bool {
+        isDeveloperMachine(at: URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true))
+    }
+
+    nonisolated static func isDeveloperMachine(
+        at homeDirectory: URL,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        developerMarkerFileNames.contains { markerName in
+            fileManager.fileExists(
+                atPath: homeDirectory.appendingPathComponent(markerName).path
+            )
+        }
+    }
+
+    nonisolated static var isReportingAllowed: Bool {
+        #if DEBUG
+        return false
+        #else
+        return !isDeveloperMachine
+        #endif
+    }
+}
+
 enum TelemetryPlaybackMode: String, Codable, Sendable {
     case local
     case appleMusic = "apple_music"
@@ -107,6 +137,10 @@ private struct TelemetrySkinUsageRecord: Codable, Sendable {
 final class TelemetryService: NSObject {
     static let shared = TelemetryService()
 
+    nonisolated static var isReportingAllowed: Bool {
+        TelemetryReportingPolicy.isReportingAllowed
+    }
+
     private let consentStore = TelemetryConsentStore()
     private let identityStore = AnonymousInstallIdentityStore()
     private let queue = TelemetryLocalQueue()
@@ -130,7 +164,8 @@ final class TelemetryService: NSObject {
     }
 
     var anonymousInstallID: String {
-        identityStore.installID
+        guard Self.isReportingAllowed else { return "" }
+        return identityStore.installID
     }
 
     /// Returns the install identity after attempting the existing TOFU key
@@ -138,6 +173,7 @@ final class TelemetryService: NSObject {
     /// ID, so crash reports must bind to the value returned here rather than a
     /// value captured before registration finishes.
     func prepareAnonymousInstallIDForSignedUpload() async -> String {
+        guard Self.isReportingAllowed else { return "" }
         _ = await ensureRegistered()
         return identityStore.installID
     }
@@ -148,6 +184,7 @@ final class TelemetryService: NSObject {
     /// Force the normal registration flow instead of leaving crash reports in
     /// an endless HTTP 401 retry loop.
     func recoverDiagnosticSigningRegistrationAfterUnauthorized() async -> String? {
+        guard Self.isReportingAllowed else { return nil }
         UserDefaults.standard.set(0, forKey: TelemetryDefaults.signingRegisteredKey)
         guard await ensureRegistered() else { return nil }
         return identityStore.installID
@@ -158,6 +195,13 @@ final class TelemetryService: NSObject {
     }
 
     func configure(playbackCoordinator: PlaybackCoordinator) {
+        guard Self.isReportingAllowed else {
+            Log.info(
+                "[Telemetry] reporting disabled for Debug/developer-marker build",
+                category: .telemetry
+            )
+            return
+        }
         #if DEBUG
         TelemetryRequestSigner.runSelfCheck()
         #endif
@@ -199,6 +243,11 @@ final class TelemetryService: NSObject {
     }
 
     func setTelemetryEnabled(_ enabled: Bool) {
+        guard Self.isReportingAllowed else {
+            uploadTask?.cancel()
+            uploadTask = nil
+            return
+        }
         guard consentStore.isEnabled != enabled else { return }
         consentStore.isEnabled = enabled
 
@@ -223,6 +272,7 @@ final class TelemetryService: NSObject {
     }
 
     func endSession(reason: TelemetrySessionEndReason) {
+        guard Self.isReportingAllowed else { return }
         guard consentStore.isEnabled, let summary = accumulator?.finish(reason: reason) else { return }
         queue.enqueue(summaryEvent(from: summary))
         accumulator = nil
@@ -246,6 +296,7 @@ final class TelemetryService: NSObject {
     }
 
     private func startSessionIfNeeded() {
+        guard Self.isReportingAllowed else { return }
         guard consentStore.isEnabled, accumulator == nil else { return }
         enqueueInstallSeenIfNeeded()
 
@@ -276,6 +327,7 @@ final class TelemetryService: NSObject {
     }
 
     private func recoverPreviousSessionIfNeeded() {
+        guard Self.isReportingAllowed else { return }
         guard consentStore.isEnabled, let checkpoint = recoveryStore.load() else { return }
         let summary = checkpoint.recoveredSummary()
         queue.enqueue(summaryEvent(from: summary))
@@ -283,6 +335,7 @@ final class TelemetryService: NSObject {
     }
 
     private func enqueueInstallSeenIfNeeded() {
+        guard Self.isReportingAllowed else { return }
         guard !UserDefaults.standard.bool(forKey: TelemetryDefaults.installSeenAcknowledgedKey) else { return }
         let defaults = UserDefaults.standard
         let eventID = defaults.string(forKey: TelemetryDefaults.installSeenEventIDKey) ?? UUID().uuidString
@@ -299,6 +352,7 @@ final class TelemetryService: NSObject {
 
     private func updatePlaybackState(source: PlaybackSource, isPlaying: Bool) {
         syncCrashPlaybackContext(source: source, isPlaying: isPlaying, recordTransition: true)
+        guard Self.isReportingAllowed else { return }
         guard consentStore.isEnabled else { return }
         startSessionIfNeeded()
         accumulator?.update(mode: TelemetryPlaybackMode(source: source), isPlaying: isPlaying)
@@ -306,6 +360,7 @@ final class TelemetryService: NSObject {
     }
 
     @objc private func appDidBecomeActive() {
+        guard Self.isReportingAllowed else { return }
         guard consentStore.isEnabled else { return }
         startSessionIfNeeded()
         accumulator?.updateForeground(isActive: true)
@@ -313,6 +368,7 @@ final class TelemetryService: NSObject {
     }
 
     @objc private func appDidResignActive() {
+        guard Self.isReportingAllowed else { return }
         guard consentStore.isEnabled else { return }
         accumulator?.updateForeground(isActive: false)
         checkpoint()
@@ -321,6 +377,7 @@ final class TelemetryService: NSObject {
 
     func updateSkinState() {
         syncCrashPresentationContext(recordTransition: true)
+        guard Self.isReportingAllowed else { return }
         guard consentStore.isEnabled else { return }
         startSessionIfNeeded()
         accumulator?.updateSkins(
@@ -403,6 +460,7 @@ final class TelemetryService: NSObject {
     }
 
     private func checkpoint() {
+        guard Self.isReportingAllowed else { return }
         guard var accumulator else { return }
         recoveryStore.save(accumulator.checkpoint())
         self.accumulator = accumulator
@@ -412,6 +470,7 @@ final class TelemetryService: NSObject {
     /// no-ops once UserDefaults records success. Safe for install-seen-only uploads
     /// because those are already sent even when usage telemetry is disabled.
     private func ensureRegistered() async -> Bool {
+        guard Self.isReportingAllowed else { return false }
         // Force key load/generation first. publicKeyBase64() calls privateKey()
         // internally, which generates a new software key and sets
         // needsRegistration if the file is absent/corrupted (new install or
@@ -446,7 +505,7 @@ final class TelemetryService: NSObject {
             // or restore-from-backup. Reset the install_id so the next registration
             // uses a fresh TOFU first-bind, then retry once.
             Log.warning("[Telemetry] ensureRegistered: 409 key conflict, resetting install_id for fresh TOFU", category: .telemetry)
-            UserDefaults.standard.removeObject(forKey: TelemetryDefaults.installIDKey)
+            identityStore.resetInstallID()
             let newClientID = identityStore.installID
             Log.info("[Telemetry] ensureRegistered: retrying with new install_id=\(newClientID.prefix(8))", category: .telemetry)
             let retry = await uploader.registerSigningKey(clientID: newClientID, signer: signer)
@@ -479,6 +538,7 @@ final class TelemetryService: NSObject {
     }
 
     private func flushQueue() {
+        guard Self.isReportingAllowed else { return }
         guard consentStore.isEnabled, uploadTask == nil else { return }
         let events = queue.pendingEvents()
         guard !events.isEmpty else { return }
@@ -522,6 +582,7 @@ final class TelemetryService: NSObject {
     }
 
     private func flushInstallSeenQueue() {
+        guard Self.isReportingAllowed else { return }
         guard uploadTask == nil else { return }
         let events = queue.pendingEvents().filter { $0.eventType == "app_install_seen" }
         guard !events.isEmpty else { return }
@@ -668,15 +729,60 @@ private final class TelemetryConsentStore {
 
 private final class AnonymousInstallIdentityStore {
     var installID: String {
-        if let existing = UserDefaults.standard.string(forKey: TelemetryDefaults.installIDKey),
-           UUID(uuidString: existing) != nil {
+        if let existing = validInstallID(
+            UserDefaults.standard.string(forKey: TelemetryDefaults.installIDKey)
+        ) {
+            persist(existing)
             return existing
         }
+
+        if let restored = loadPersistedInstallID() {
+            UserDefaults.standard.set(restored, forKey: TelemetryDefaults.installIDKey)
+            return restored
+        }
+
         let newID = UUID().uuidString
         UserDefaults.standard.set(newID, forKey: TelemetryDefaults.installIDKey)
+        persist(newID)
         return newID
     }
 
+    func resetInstallID() {
+        UserDefaults.standard.removeObject(forKey: TelemetryDefaults.installIDKey)
+        try? FileManager.default.removeItem(at: TelemetryFilePaths.installIDFileURL)
+    }
+
+    private func loadPersistedInstallID() -> String? {
+        guard let data = try? Data(contentsOf: TelemetryFilePaths.installIDFileURL),
+              let value = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return validInstallID(value.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private func persist(_ installID: String) {
+        TelemetryFilePaths.ensureTelemetryDirectoryExists()
+        do {
+            try Data(installID.utf8).write(
+                to: TelemetryFilePaths.installIDFileURL,
+                options: .atomic
+            )
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: TelemetryFilePaths.installIDFileURL.path
+            )
+        } catch {
+            Log.warning(
+                "[Telemetry] failed to persist install_id file: \(error)",
+                category: .telemetry
+            )
+        }
+    }
+
+    private func validInstallID(_ value: String?) -> String? {
+        guard let value, UUID(uuidString: value) != nil else { return nil }
+        return value
+    }
 }
 
 private struct SessionMetricsAccumulator {
@@ -1221,8 +1327,28 @@ private enum TelemetryFilePaths {
         return base.appendingPathComponent(bundleID, isDirectory: true)
     }
 
+    static var telemetryDirectory: URL {
+        applicationSupport.appendingPathComponent("Telemetry", isDirectory: true)
+    }
+
+    static var installIDFileURL: URL {
+        telemetryDirectory.appendingPathComponent("install-id")
+    }
+
     static func ensureApplicationSupportExists() {
         try? FileManager.default.createDirectory(at: applicationSupport, withIntermediateDirectories: true)
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: applicationSupport.path
+        )
+    }
+
+    static func ensureTelemetryDirectoryExists() {
+        try? FileManager.default.createDirectory(at: telemetryDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: telemetryDirectory.path
+        )
     }
 }
 
