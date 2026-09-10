@@ -162,9 +162,21 @@ func lyricLineFallMultiplier(
     } else {
         elapsed = time - lineEnd
     }
-    guard elapsed > 0 else { return nil }
+    // At the exact boundary the line is still at its rise apex. Returning
+    // 1 here makes the fall continuous; returning nil made callers switch
+    // from their per-word rise to a full-amplitude line fall one frame later.
+    guard elapsed >= 0 else { return nil }
     let progress = Curves.clamp(elapsed / lyricLineFallDuration)
     return 1 - Curves.ease.value(at: progress)
+}
+
+/// The media instant at which a line's float begins descending. A line that
+/// leaves the foreground early starts from its current per-word amplitude;
+/// otherwise it waits for the authored end of the last word.
+func lyricLineFallStartMedia(lineEnd: Double, exitMedia: Double?) -> Double? {
+    guard lineEnd.isFinite else { return nil }
+    guard let exitMedia, exitMedia.isFinite else { return lineEnd }
+    return min(lineEnd, exitMedia)
 }
 
 struct Tween {
@@ -281,9 +293,6 @@ struct EmphasisEnvelope {
         let rising = min(0.5,progress)
         return Curves.sampled(rising) { sin($0 * .pi) }
     }
-    private func sineFloatValue(_ time: Double, character: Int, duration du: Double) -> Double {
-        Curves.sampled(floatProgress(time,character:character,duration:du)) { sin($0 * .pi) }
-    }
     private func floatValue(
         at time: Double,
         character: Int,
@@ -291,22 +300,23 @@ struct EmphasisEnvelope {
         exitMedia: Double?,
         exitElapsed: Double?
     ) -> Double {
-        let current = isLast
-            ? sineFloatValue(time,character:character,duration:du)
-            : heldFloatValue(time,character:character,duration:du)
-        guard !isLast else { return current }
-
-        // The line's authored end is the first legal fall instant. It is a
-        // media boundary, so the fall can begin while the row is still
-        // visually active during an authored gap before the next row starts.
-        // Once it starts, every character samples this same multiplier.
         let lineEnd = effectiveLineEnd()
-        return lyricLineFallMultiplier(
+        let fallStart = lyricLineFallStartMedia(lineEnd: lineEnd, exitMedia: exitMedia) ?? lineEnd
+        let current = heldFloatValue(time,character:character,duration:du)
+        // Every emphasis level uses the same line-level descent. The amount
+        // captured at the fall boundary remains character-specific, so an
+        // early exit cannot replace a partially-risen word with a full-height
+        // jump before it starts falling.
+        let atFallStart = heldFloatValue(fallStart,character:character,duration:du)
+        if let fall = lyricLineFallMultiplier(
             time: time,
             lineEnd: lineEnd,
             exitMedia: exitMedia,
             exitElapsed: exitElapsed
-        ) ?? current
+        ) {
+            return atFallStart * fall
+        }
+        return current
     }
 
     private func heldEmphasisValue(_ time: Double, character: Int, duration du: Double) -> Double {
@@ -325,14 +335,19 @@ struct EmphasisEnvelope {
         exitMedia: Double?,
         exitElapsed: Double?
     ) -> Double {
+        let lineEnd = effectiveLineEnd()
         let current = heldEmphasisValue(time,character:character,duration:du)
-        guard !isLast else { return Curves.sampled((time-(start + du/2.5/Double(max(1,anchorCharacters))*Double(character)))/du,value:Curves.emphasis) }
-        return lyricLineFallMultiplier(
+        let fallStart = lyricLineFallStartMedia(lineEnd: lineEnd, exitMedia: exitMedia) ?? lineEnd
+        let atFallStart = heldEmphasisValue(fallStart,character:character,duration:du)
+        if let fall = lyricLineFallMultiplier(
             time: time,
-            lineEnd: effectiveLineEnd(),
+            lineEnd: lineEnd,
             exitMedia: exitMedia,
             exitElapsed: exitElapsed
-        ) ?? current
+        ) {
+            return atFallStart * fall
+        }
+        return current
     }
 
     func sample(

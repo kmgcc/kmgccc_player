@@ -113,6 +113,55 @@ final class MotionTests: XCTestCase {
         XCTAssertGreaterThan(afterFall,settled)
         XCTAssertEqual(settled,0,accuracy:0.0001)
     }
+
+    func testEveryEmphasisLevelFallsToItsOriginalBaseline() {
+        for isLast in [false, true] {
+            let e = EmphasisEnvelope(
+                start: 0,
+                duration: 2,
+                characters: 5,
+                anchorCharacters: 5,
+                isLast: isLast,
+                isBackground: false,
+                lineEnd: 4
+            )
+
+            let apex = e.sample(3.5, character: 2, fontSize: 40, radiusScale: 1)
+            let atLineEnd = e.sample(4, character: 2, fontSize: 40, radiusScale: 1)
+            let falling = e.sample(5, character: 2, fontSize: 40, radiusScale: 1)
+            let settled = e.sample(8, character: 2, fontSize: 40, radiusScale: 1)
+
+            XCTAssertLessThan(apex.floatY, 0)
+            XCTAssertEqual(apex.floatY, atLineEnd.floatY, accuracy: 0.0001)
+            XCTAssertGreaterThan(falling.floatY, atLineEnd.floatY)
+            XCTAssertEqual(settled.floatY, 0, accuracy: 0.0001)
+            XCTAssertEqual(settled.y, 0, accuracy: 0.0001)
+        }
+    }
+
+    func testEarlyExitFallPreservesPartialRiseBeforeDescending() {
+        let e = EmphasisEnvelope(
+            start: 0,
+            duration: 4,
+            characters: 5,
+            anchorCharacters: 5,
+            isLast: true,
+            isBackground: false,
+            lineEnd: 8
+        )
+
+        let beforeExit = e.sample(1, character: 0, fontSize: 40, radiusScale: 1)
+        let atExit = e.sample(1, character: 0, fontSize: 40, radiusScale: 1, exitMedia: 1, exitElapsed: 0)
+        let afterExit = e.sample(1, character: 0, fontSize: 40, radiusScale: 1, exitMedia: 1, exitElapsed: 0.4)
+
+        XCTAssertEqual(atExit.floatY, beforeExit.floatY, accuracy: 0.0001)
+        XCTAssertGreaterThan(afterExit.floatY, atExit.floatY)
+        XCTAssertEqual(
+            e.sample(1, character: 0, fontSize: 40, radiusScale: 1, exitMedia: 1, exitElapsed: 4).floatY,
+            0,
+            accuracy: 0.0001
+        )
+    }
     func testMediaClockDoesNotIntegrateFrameDeltas() {
         var clock = LyricsClock(); clock.synchronize(time:15,playing:true,host:100)
         XCTAssertEqual(clock.time(at:105.125),20.125)

@@ -249,10 +249,16 @@ final class WordLayers {
         root.anchorPoint = .zero
         for glyph in glyphs { root.addSublayer(glyph.root) }
     }
-    func update(now: Double, media: Double, cursor: Double, fade: Double, dark: Double, bright: Double, config: LyricsConfiguration, floatTime: Double, floatOffset: Double? = nil, background: Bool, lifetime: Double, floatLifetime: Double? = nil, emphasisExitMedia: Double? = nil, emphasisExitElapsed: Double? = nil, baseVisible: Bool = true, highlightVisible: Bool = true, glowVisible: Bool = true, lineTimed: Bool = false, discreteOpacity: Double? = nil) {
+    func update(now: Double, media: Double, cursor: Double, fade: Double, dark: Double, bright: Double, config: LyricsConfiguration, floatTime: Double, lineFallStartMedia: Double? = nil, lineFallMultiplier: Double? = nil, background: Bool, lifetime: Double, floatLifetime: Double? = nil, emphasisExitMedia: Double? = nil, emphasisExitElapsed: Double? = nil, baseVisible: Bool = true, highlightVisible: Bool = true, glowVisible: Bool = true, lineTimed: Bool = false, discreteOpacity: Double? = nil) {
         x.resolve(now); y.resolve(now); root.position = CGPoint(x:x.value(now),y:y.value(now))
         let duration = max(1,placement.atom.word.range.duration)
-        let float = floatOffset ?? (-Curves.easeOut.value(at:Curves.clamp((floatTime-placement.atom.word.range.start)/duration))*placement.fontSize*0.05*(background ? 2 : 1))
+        let baseRise = -Curves.easeOut.value(at:Curves.clamp((floatTime-placement.atom.word.range.start)/duration))*placement.fontSize*0.05*(background ? 2 : 1)
+        let baseRiseAtFall = lineFallStartMedia.map {
+            -Curves.easeOut.value(at:Curves.clamp(($0-placement.atom.word.range.start)/duration))*placement.fontSize*0.05*(background ? 2 : 1)
+        }
+        let float = lineFallMultiplier.flatMap { multiplier in
+            baseRiseAtFall.map { $0 * multiplier }
+        } ?? baseRise
         for glyph in glyphs {
             glyph.update(now:now,media:media,logicalX:logicalX,cursor:cursor,fade:fade,darkAlpha:dark,brightAlpha:bright,emphasis:placement.atom.emphasis,fontSize:placement.fontSize,config:config,float:float,background:background,lifetime:lifetime,floatLifetime:floatLifetime,emphasisExitMedia:emphasisExitMedia,emphasisExitElapsed:emphasisExitElapsed,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible,lineTimed:lineTimed,discreteOpacity:discreteOpacity)
         }
@@ -352,14 +358,16 @@ final class LineLayers {
         let lineEnd = layout.words.map { $0.atom.word.range.end }
             .filter { $0.isFinite }
             .max()
-        let sharedLineFloat = lyricLineFallMultiplier(
+        let lineFallStartMedia = lyricLineFallStartMedia(
+            lineEnd: lineEnd ?? .infinity,
+            exitMedia: emphasisExitMedia
+        )
+        let lineFallMultiplier = lyricLineFallMultiplier(
             time: media,
             lineEnd: lineEnd ?? .infinity,
             exitMedia: emphasisExitMedia,
             exitElapsed: exitElapsed
-        ).map {
-            -$0 * layout.fontSize * 0.05 * (background ? 2 : 1)
-        }
+        )
         // The APP can render a cover-blur base and highlight surface
         // separately. Keep the exit channel alive for the same half-second
         // line fade that the fork uses, so the highlight surface does not
@@ -420,7 +428,7 @@ final class LineLayers {
                 ? word.placement.rect.maxX + fade + 1
                 : maskCursor
             let lineTimed = !layout.isDynamic && !config.lineTimingOnly && !discrete
-            word.update(now:now,media:media,cursor:wordCursor,fade:fade,dark:wordDark,bright:wordBright,config:config,floatTime:config.lineTimingOnly ? -1e9 : floatTime,floatOffset:sharedLineFloat,background:background,lifetime:wordLifetime,floatLifetime:floatLifetime,emphasisExitMedia:emphasisExitMedia,emphasisExitElapsed:exitElapsed,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible,lineTimed:lineTimed,discreteOpacity:discreteOpacity)
+            word.update(now:now,media:media,cursor:wordCursor,fade:fade,dark:wordDark,bright:wordBright,config:config,floatTime:config.lineTimingOnly ? -1e9 : floatTime,lineFallStartMedia:lineFallStartMedia,lineFallMultiplier:lineFallMultiplier,background:background,lifetime:wordLifetime,floatLifetime:floatLifetime,emphasisExitMedia:emphasisExitMedia,emphasisExitElapsed:exitElapsed,baseVisible:baseVisible,highlightVisible:highlightVisible,glowVisible:glowVisible,lineTimed:lineTimed,discreteOpacity:discreteOpacity)
             for glyph in word.glyphs { glyph.updateBlend(active:keepHighlight,config:config) }
         }
         for subline in sublines {

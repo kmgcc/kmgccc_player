@@ -420,6 +420,12 @@ final class BehaviorRegressionTests: XCTestCase {
         layers.update(now: 0.5, media: 0.5, floatTime: 0.5, active: true, alpha: 1, background: false, config: config)
         let moving = try XCTUnwrap(layers.words.first?.glyphs.first).root.position.y
         XCTAssertLessThan(moving, start)
+
+        // The ordinary, non-emphasis float must use the same line fall and
+        // return to the exact baseline after the slow descent completes.
+        layers.update(now: 4.5, media: 4.5, floatTime: 4.5, active: true, alpha: 1, background: false, config: config)
+        let settled = try XCTUnwrap(layers.words.first?.glyphs.first).root.position.y
+        XCTAssertEqual(settled, start, accuracy: 0.0001)
     }
 
     func testDiscreteHighlightKeepsEmphasisFloatAndGlow() throws {
