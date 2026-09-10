@@ -13,6 +13,13 @@ final class MetricKitDiagnosticService: NSObject, MXMetricManagerSubscriber {
     private var workerTask: Task<Void, Never>?
 
     func start(anonymousInstallID: String) {
+        guard TelemetryService.isReportingAllowed else {
+            Log.info(
+                "[MetricKit] delivery disabled for Debug/developer-marker build",
+                category: .telemetry
+            )
+            return
+        }
         guard !hasStarted else { return }
         hasStarted = true
         self.anonymousInstallID = anonymousInstallID
@@ -22,6 +29,11 @@ final class MetricKitDiagnosticService: NSObject, MXMetricManagerSubscriber {
     }
 
     func automaticUploadPreferenceDidChange(_ enabled: Bool) {
+        guard TelemetryService.isReportingAllowed else {
+            workerTask?.cancel()
+            workerTask = nil
+            return
+        }
         if enabled { scheduleDelivery() }
     }
 
@@ -61,6 +73,7 @@ final class MetricKitDiagnosticService: NSObject, MXMetricManagerSubscriber {
     }
 
     private func importCaptured(_ captured: [CapturedMetricKitDiagnostic]) {
+        guard TelemetryService.isReportingAllowed else { return }
         guard let anonymousInstallID else { return }
         Task {
             for diagnostic in captured {
@@ -107,6 +120,10 @@ final class MetricKitDiagnosticService: NSObject, MXMetricManagerSubscriber {
 
     private func scheduleDelivery() {
         workerTask?.cancel()
+        guard TelemetryService.isReportingAllowed else {
+            workerTask = nil
+            return
+        }
         guard CrashReportPreferences.automaticUploadEnabled() else { return }
         workerTask = Task { [weak self] in
             guard let self else { return }
@@ -118,6 +135,7 @@ final class MetricKitDiagnosticService: NSObject, MXMetricManagerSubscriber {
     }
 
     private func deliverReadyRecords() async {
+        guard TelemetryService.isReportingAllowed else { return }
         for var record in await store.records() {
             guard !Task.isCancelled else { return }
             if let nextRetryAt = record.nextRetryAt, nextRetryAt > Date() { continue }

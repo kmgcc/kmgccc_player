@@ -234,6 +234,147 @@ struct UpdateReadyMetadata: Codable, Equatable {
     }
 }
 
+struct UpdateReleaseNotesNotice: Codable, Equatable, Identifiable, Sendable {
+    let version: String
+    let build: String
+    let notes: [String]
+
+    var id: String { build }
+}
+
+private struct UpdateReleaseNotesMetadata: Codable, Equatable {
+    let version: String
+    let build: String
+    var notes: [String]
+    let preparedAt: Date
+}
+
+enum UpdateReleaseNotesStore {
+    private static let metadataKey = "updateReleaseNotesMetadata"
+    private static let presentedBuildKey = "updateReleaseNotesPresentedBuild"
+
+    static func save(
+        version: String,
+        build: String,
+        notes: [String],
+        defaults: UserDefaults = .standard
+    ) {
+        let metadata = UpdateReleaseNotesMetadata(
+            version: version,
+            build: build,
+            notes: notes,
+            preparedAt: Date()
+        )
+        guard let data = try? JSONEncoder().encode(metadata) else { return }
+        defaults.set(data, forKey: metadataKey)
+    }
+
+    static func updateNotes(
+        _ notes: [String],
+        forBuild build: String,
+        defaults: UserDefaults = .standard
+    ) {
+        guard let data = defaults.data(forKey: metadataKey),
+              var metadata = try? JSONDecoder().decode(
+                  UpdateReleaseNotesMetadata.self,
+                  from: data
+              ),
+              metadata.build == build else {
+            return
+        }
+        metadata.notes = notes
+        guard let updatedData = try? JSONEncoder().encode(metadata) else { return }
+        defaults.set(updatedData, forKey: metadataKey)
+    }
+
+    static func notice(
+        forBuild build: String,
+        defaults: UserDefaults = .standard
+    ) -> UpdateReleaseNotesNotice? {
+        guard let data = defaults.data(forKey: metadataKey),
+              let metadata = try? JSONDecoder().decode(
+                  UpdateReleaseNotesMetadata.self,
+                  from: data
+              ),
+              metadata.build == build else {
+            return nil
+        }
+        return makeNotice(from: metadata)
+    }
+
+    static func noticeForCurrentBuild(
+        bundle: Bundle = .main,
+        defaults: UserDefaults = .standard
+    ) -> UpdateReleaseNotesNotice? {
+        guard let installedBuild = bundle.object(
+            forInfoDictionaryKey: kCFBundleVersionKey as String
+        ) as? String,
+        !installedBuild.isEmpty,
+        let data = defaults.data(forKey: metadataKey),
+        let metadata = try? JSONDecoder().decode(
+            UpdateReleaseNotesMetadata.self,
+            from: data
+        ),
+        metadata.build == installedBuild,
+        defaults.string(forKey: presentedBuildKey) != installedBuild else {
+            return nil
+        }
+        return makeNotice(from: metadata)
+    }
+
+    static func markPresented(
+        bundle: Bundle = .main,
+        defaults: UserDefaults = .standard
+    ) {
+        guard let installedBuild = bundle.object(
+            forInfoDictionaryKey: kCFBundleVersionKey as String
+        ) as? String,
+        !installedBuild.isEmpty else {
+            return
+        }
+        defaults.set(installedBuild, forKey: presentedBuildKey)
+    }
+
+    private static func makeNotice(
+        from metadata: UpdateReleaseNotesMetadata
+    ) -> UpdateReleaseNotesNotice {
+        UpdateReleaseNotesNotice(
+            version: metadata.version,
+            build: metadata.build,
+            notes: metadata.notes.isEmpty ? ["包含改进和修复。"] : metadata.notes
+        )
+    }
+}
+
+enum UpdateReleaseNotesParser {
+    static func parse(_ text: String, limit: Int = 8) -> [String] {
+        guard limit > 0 else { return [] }
+        return Array<String>(
+            text
+                .components(separatedBy: .newlines)
+                .map { line in
+                    line
+                        .replacingOccurrences(
+                            of: "<[^>]+>",
+                            with: "",
+                            options: .regularExpression
+                        )
+                        .replacingOccurrences(of: "&amp;", with: "&")
+                        .replacingOccurrences(of: "&lt;", with: "<")
+                        .replacingOccurrences(of: "&gt;", with: ">")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .trimmingCharacters(
+                            in: CharacterSet(charactersIn: "-*•")
+                        )
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+                .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+                .prefix(limit)
+        )
+        .map { String($0) }
+    }
+}
+
 enum UpdateBuildPolicy {
     static func compare(_ lhs: String, _ rhs: String) -> ComparisonResult {
         if let left = Int(lhs), let right = Int(rhs) {
