@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/kmgcc/NativeLyrics.git",
       "state" : {
-        "revision" : "055f93a22d18e05ddd1b4271bfeef979db29827b",
-        "version" : "0.1.3"
+        "revision" : "717dd282a063a9f499092df7537d540dc83319cf",
+        "version" : "0.1.4"
       }
     },
     {

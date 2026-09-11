@@ -1081,7 +1081,7 @@
 			repositoryURL = "https://github.com/kmgcc/NativeLyrics.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 0.1.2;
+				minimumVersion = 0.1.4;
 			};
 		};
 		AA0000000000000000000001 /* XCRemoteSwiftPackageReference "WhatsNewKit" */ = {
