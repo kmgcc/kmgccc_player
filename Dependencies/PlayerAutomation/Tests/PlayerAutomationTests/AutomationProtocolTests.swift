@@ -74,6 +74,10 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     #expect(names.contains(AutomationMethod.playlistAddTracks))
     #expect(names.contains(AutomationMethod.sourceList))
     #expect(names.contains(AutomationMethod.sourceRefresh))
+    #expect(names.contains(AutomationMethod.filesInspect))
+    #expect(names.contains(AutomationMethod.filesRename))
+    #expect(names.contains(AutomationMethod.filesMove))
+    #expect(names.contains(AutomationMethod.filesDelete))
 
     let readOnly = try #require(
         AutomationToolCatalog.descriptor(for: AutomationMethod.libraryTracks)
@@ -103,6 +107,37 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     #expect(!sourceRefresh.requiresConfirmation)
     #expect(sourceRefresh.supportsJobs)
     #expect(!sourceRefresh.supportsTasks)
+
+    let filesInspect = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.filesInspect)
+    )
+    #expect(filesInspect.readOnly)
+    #expect(!filesInspect.requiresConfirmation)
+
+    let filesRename = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.filesRename)
+    )
+    #expect(!filesRename.readOnly)
+    #expect(filesRename.risk == .medium)
+    #expect(filesRename.supportsDryRun)
+    #expect(filesRename.supportsJobs)
+
+    let filesMove = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.filesMove)
+    )
+    #expect(!filesMove.readOnly)
+    #expect(filesMove.risk == .medium)
+    #expect(filesMove.supportsDryRun)
+    #expect(filesMove.supportsJobs)
+
+    let filesDelete = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.filesDelete)
+    )
+    #expect(!filesDelete.readOnly)
+    #expect(filesDelete.risk == .high)
+    #expect(filesDelete.requiresConfirmation)
+    #expect(filesDelete.supportsDryRun)
+    #expect(filesDelete.supportsJobs)
 
     for method in [
         AutomationMethod.sourceSetExcludedPath,

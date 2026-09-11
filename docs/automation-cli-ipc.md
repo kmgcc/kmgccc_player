@@ -1,7 +1,7 @@
 # Automation CLI / 本地 IPC / MCP
 
 这是当前 Automation contract 的入口说明。它保留既有 length-prefixed AF_UNIX IPC 和
-App 生命周期 owner，同时覆盖可组合 Track 查询、Source/Playlist、Playback/Queue、
+App 生命周期 owner，同时覆盖可组合 Track 查询、Source/Playlist、文件管理、Playback/Queue、
 History、Metadata、Lyrics Job、Diagnostics、scope policy 和 MCP stdio。完整领域语义见
 [Capability Reference](automation-capability-reference.md) 与 [Agent Behavior Guide](agent-behavior-guide.md)。
 
@@ -51,6 +51,10 @@ session，因此 CLI/MCP 请求不会偷偷切换资料库。
 | playlist create | playlist.create | 预览或创建 Playlist |
 | playlist add | playlist.addTracks | 预览或加入已有 Library Track，不重新导入文件 |
 | playlist remove | playlist.removeTracks | 预览或移除 Playlist membership，不删除 Track 或文件 |
+| files inspect | files.inspect | 检查当前/最后已知物理路径、可用性和 Source 归属 |
+| files rename | files.rename | 在已授权 Referenced Source 内重命名文件；单文件可直接执行，批量需 App 确认 |
+| files move | files.move | 在已授权 Referenced Source 内移动文件；支持 preview，批量移动需 App 确认 |
+| files delete | files.delete | 预览并将真实文件移入 macOS 废纸篓；始终需要 scope 和 App 前台确认 |
 | playback / queue | playback.* / queue.* | 控制本地播放和查询/插播/替换 Queue |
 | metadata | metadata.get/patch | 读取或批量修改 App metadata，不写 embedded file tags |
 | lyrics | lyrics.get/refresh | 查看歌词；批量刷新返回 Job，并只应用质量更高结果 |
@@ -78,6 +82,17 @@ swift run player-automation cli playlist remove <playlist-id> <track-id> --yes -
 新的 Playlist 状态。当前 Playlist mutation 只改变 Playlist membership：它不会导入、移动、重命名
 或删除真实音频文件；source.refresh 是单独的、已授权后可直接执行的来源扫描操作，可能导入尚未
 入库的文件，但仍不会移动、重命名或删除真实音频文件。
+
+文件操作是单独的正式 capability，不是 Playlist mutation 的隐藏副作用。`files.rename` 和
+`files.move` 只允许在 App 已授权的 Referenced Source 范围内工作；单文件操作可直接执行，
+批量操作应先 `dryRun`，再以 `confirm=true` 请求 App 前台确认。`files.delete` 只接受真实
+文件删除请求的 preview/apply，执行时会将文件移入 macOS 废纸篓，Track、Metadata、History
+和 Playlist membership 保留，随后由 Source refresh 标记 Track 为 missing。`files.delete`
+真实 apply 所需的 `files.delete` scope 默认拒绝；未获 App 授权时 apply 返回
+`authorizationRequired`，不会触碰文件。只读 `dryRun` 仍可用普通 Library scope 查看影响。
+
+当前设置窗口的“自动化与智能”板块控制本机 Automation endpoint、MCP 连接和 CLI/脚本
+入口。关闭 endpoint 会停止本机 socket；只关闭 MCP 或 CLI 时，其他控制面仍可用。
 
 ## MCP stdio
 
@@ -113,5 +128,7 @@ Agent 调用”冒充成“已经提供内置聊天/后台智能”。
 - App 进程拥有当前 LibrarySession；本阶段不会因为查询非 active 资料库而切换 UI。
 - mcp-stdio 已提供本地 stdio adapter；Streamable HTTP、远程授权和 MCP Tasks 映射仍留在
   后续阶段。
+- 实际文件的 reveal/copy/export 还没有独立 capability；需要文件改名、移动或删除时使用
+  `files.*`，不要直接改 Playlist 或 Storage JSON。
 - 真实签名 App、冷启动、切库期间和 sandbox 分发仍需在对应构建产物上做人工 smoke
   test；SwiftPM 单元测试不代替这些验收。

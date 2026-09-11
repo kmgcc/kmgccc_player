@@ -25,6 +25,10 @@ final class AppSessionHost: ObservableObject {
     /// distinguish "still loading the initial library" from "no library
     /// configured" instead of showing an indefinite spinner.
     @Published private(set) var hasCompletedInitialSetup = false
+    /// Whether the local App-owned automation listener is currently accepting
+    /// MCP/CLI requests. The persisted preference and this live status are
+    /// intentionally separate so Settings can explain a startup failure.
+    @Published private(set) var isAutomationRunning = false
     /// True while a user-initiated retry is trying to establish the startup
     /// library after an exceptional open failure.
     @Published private(set) var isRetryingLibraryStartup = false
@@ -908,6 +912,41 @@ final class AppSessionHost: ObservableObject {
         setupTask = nil
     }
 
+    /// Applies the Settings switch to the live local automation endpoint.
+    /// Existing library/playback setup is independent from this optional
+    /// control plane, so a listener failure never prevents normal App use.
+    @discardableResult
+    func setAutomationEndpointEnabled(_ enabled: Bool) async -> Bool {
+        AppSettings.shared.automationEndpointEnabled = enabled
+        guard hasSetupDependencies else {
+            isAutomationRunning = false
+            return true
+        }
+        guard let automationIPCServer else {
+            isAutomationRunning = false
+            AppSettings.shared.automationEndpointEnabled = false
+            return false
+        }
+        if enabled {
+            do {
+                try await automationIPCServer.start()
+                isAutomationRunning = automationIPCServer.isRunning
+                return isAutomationRunning
+            } catch {
+                isAutomationRunning = false
+                AppSettings.shared.automationEndpointEnabled = false
+                Log.error(
+                    "[Automation] failed to enable IPC server: \(error.localizedDescription)",
+                    category: .library
+                )
+                return false
+            }
+        }
+        await automationIPCServer.stop()
+        isAutomationRunning = false
+        return true
+    }
+
     /// Performs the one-time launch work. Callers must enter through
     /// `setupIfNeeded()` so concurrent launch/reopen events share one task.
     private func performInitialSetup() async {
@@ -1020,17 +1059,21 @@ final class AppSessionHost: ObservableObject {
             scheduleDeferredLaunchPromptsIfNeeded()
         }
         hasCompletedInitialSetup = true
-        do {
-            try await automationIPCServer?.start()
-        } catch {
-            // Automation is an optional control plane. A stale socket or a
-            // transient listener failure must not prevent normal playback and
-            // library UI startup; the CLI receives a bounded unavailable
-            // result until the next App launch.
-            Log.error(
-                "[Automation] failed to start IPC server: \(error.localizedDescription)",
-                category: .library
-            )
+        if AppSettings.shared.automationEndpointEnabled {
+            do {
+                try await automationIPCServer?.start()
+                isAutomationRunning = automationIPCServer?.isRunning == true
+            } catch {
+                // Automation is an optional control plane. A stale socket or a
+                // transient listener failure must not prevent normal playback and
+                // library UI startup; the CLI receives a bounded unavailable
+                // result until the next App launch.
+                isAutomationRunning = false
+                Log.error(
+                    "[Automation] failed to start IPC server: \(error.localizedDescription)",
+                    category: .library
+                )
+            }
         }
         // Covers the path where deferred prompts ran before
         // `hasCompletedInitialSetup` flipped (no crash-report prompt
@@ -1443,6 +1486,7 @@ final class AppSessionHost: ObservableObject {
             }
             Task {
                 await self.automationIPCServer?.stop()
+                self.isAutomationRunning = false
                 if let monitor = self.activeLibraryBinding.activeSession?.libraryChangeMonitor {
                     await monitor.stopAndWait()
                 }

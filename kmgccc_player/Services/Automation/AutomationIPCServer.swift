@@ -308,9 +308,39 @@ final class AutomationIPCServer {
             )
         }
 
+        if let caller = request.context.caller?.lowercased() {
+            let enabled: Bool?
+            switch caller {
+            case "mcp": enabled = AppSettings.shared.automationMCPEnabled
+            case "cli": enabled = AppSettings.shared.automationCLIEnabled
+            default: enabled = nil
+            }
+            if enabled == false {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .authorizationRequired,
+                        message: "The \(caller.uppercased()) control plane is disabled in App Settings.",
+                        details: .object([
+                            "controlPlane": .string(caller),
+                            "setting": .string(caller == "mcp" ? "automationMCPEnabled" : "automationCLIEnabled")
+                        ])
+                    )
+                )
+            }
+        }
+
         if let descriptor = AutomationToolCatalog.descriptor(for: request.method) {
             let granted = grantedScopes()
-            let required = Set(descriptor.scopes)
+            var required = Set(descriptor.scopes)
+            // A destructive preview is still read-only. Let an Agent inspect
+            // the impact with the normal library scope before requesting the
+            // separately protected delete scope for the real mutation.
+            if request.method == AutomationMethod.filesDelete,
+               case .object(let values) = request.params,
+               case .boolean(true) = values["dryRun"] {
+                required.remove(.filesDelete)
+            }
             if !granted.isSuperset(of: required) {
                 let denied = required.subtracting(granted)
                 return .failure(
@@ -1417,6 +1447,233 @@ final class AutomationIPCServer {
                 )
             } catch {
                 return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.filesInspect:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let trackIDs = try parameters.uuidArray("trackIDs", required: true)
+                let tracks = try automationTracks(ids: trackIDs, in: session.libraryViewModel.allTracks)
+                return encodeResult(
+                    AutomationFileOperationResult(
+                        operation: AutomationMethod.filesInspect,
+                        applied: false,
+                        dryRun: true,
+                        files: tracks.map { makeFileSummary($0) },
+                        message: "Physical file state inspected; no file system mutation was applied."
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.filesRename, AutomationMethod.filesMove:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            guard let appSession else {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .serverUnavailable,
+                        message: "The player App is no longer available.",
+                        retryable: true
+                    )
+                )
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let operations = try parameters.objectArray("operations", required: true)
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let confirm = try parameters.boolean("confirm", default: false)
+                let plans = try makeFilePlans(
+                    method: request.method,
+                    operations: operations,
+                    session: session
+                )
+                let files = plans.map { makeFileSummary($0.track) }
+                if dryRun {
+                    return encodeResult(
+                        AutomationFileOperationResult(
+                            operation: request.method,
+                            applied: false,
+                            dryRun: true,
+                            affectedTrackIDs: plans.map(\.trackID),
+                            files: files,
+                            message: "Preview only. Set dryRun=false to apply the planned file operation."
+                        ),
+                        for: request
+                    )
+                }
+
+                if plans.count > 1 {
+                    guard confirm else {
+                        return confirmationRequired(
+                            for: request,
+                            message: "Bulk file rename/move requires confirm=true and a foreground App confirmation.",
+                            details: .object([
+                                "operation": .string(request.method),
+                                "fileCount": .number(Double(plans.count))
+                            ])
+                        )
+                    }
+                    guard await confirmDestructiveOperation(
+                        title: request.method == AutomationMethod.filesRename
+                            ? "Rename multiple music files?"
+                            : "Move multiple music files?",
+                        message: "This will change the locations of \(plans.count) real music files. The App will rescan the affected Sources afterward."
+                    ) else {
+                        return interactionCancelled(for: request)
+                    }
+                }
+
+                try await session.runLibraryOperation(as: .other) {
+                    try self.applyFilePlans(plans)
+                }
+                let sourceIDs = Set(plans.flatMap(\.sourceIDs))
+                let jobs = sourceRefreshJobs(
+                    sourceIDs: sourceIDs,
+                    appSession: appSession,
+                    libraryID: session.context.id
+                )
+                let appliedFiles = plans.map { plan in
+                    makeFileSummary(
+                        plan.track,
+                        pathOverride: plan.destination?.path,
+                        existsOverride: plan.destination.map { FileManager.default.fileExists(atPath: $0.path) }
+                    )
+                }
+                return encodeResult(
+                    AutomationFileOperationResult(
+                        operation: request.method,
+                        applied: true,
+                        dryRun: false,
+                        confirmed: plans.count > 1 && confirm,
+                        affectedTrackIDs: plans.map(\.trackID),
+                        files: appliedFiles,
+                        jobs: jobs,
+                        message: "File operation applied. Source reconciliation Jobs were started to update Track locations."
+                    ),
+                    for: request
+                )
+            } catch let error as AutomationFileOperationError {
+                return invalidParameters(for: request, error: error)
+            } catch {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .internalError,
+                        message: "The file operation failed; no further file mutation was attempted.",
+                        details: .object(["reason": .string(String(describing: error))])
+                    )
+                )
+            }
+
+        case AutomationMethod.filesDelete:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            guard let appSession else {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .serverUnavailable,
+                        message: "The player App is no longer available.",
+                        retryable: true
+                    )
+                )
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let trackIDs = try parameters.uuidArray("trackIDs", required: true)
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let confirm = try parameters.boolean("confirm", default: false)
+                let plans = try makeFileDeletePlans(trackIDs: trackIDs, session: session)
+                let files = plans.map { makeFileSummary($0.track) }
+                if dryRun {
+                    return encodeResult(
+                        AutomationFileOperationResult(
+                            operation: AutomationMethod.filesDelete,
+                            applied: false,
+                            dryRun: true,
+                            affectedTrackIDs: plans.map(\.trackID),
+                            files: files,
+                            message: "Preview only. Files will be moved to the macOS Trash after confirm=true and foreground confirmation. Tracks and Playlist membership will be preserved."
+                        ),
+                        for: request
+                    )
+                }
+                guard confirm else {
+                    return confirmationRequired(
+                        for: request,
+                        message: "Moving real music files to the Trash requires confirm=true and a foreground App confirmation.",
+                        details: .object([
+                            "operation": .string(AutomationMethod.filesDelete),
+                            "fileCount": .number(Double(plans.count))
+                        ])
+                    )
+                }
+                guard await confirmDestructiveOperation(
+                    title: "Move music files to Trash?",
+                    message: "Move \(plans.count) real music file(s) to the macOS Trash? Tracks, metadata, history and Playlist membership will remain in the Library and become missing after Source refresh."
+                ) else {
+                    return interactionCancelled(for: request)
+                }
+
+                let outcome = try await session.runLibraryOperation(as: .other) {
+                    var succeeded: [UUID] = []
+                    var failures: [String] = []
+                    for plan in plans {
+                        do {
+                            try await MacOSLibraryRecycler().recycle(plan.from)
+                            succeeded.append(plan.trackID)
+                        } catch {
+                            failures.append("\(plan.trackID.uuidString): \(error.localizedDescription)")
+                        }
+                    }
+                    return (succeeded, failures)
+                }
+                let successfulPlans = plans.filter { outcome.0.contains($0.trackID) }
+                let jobs = sourceRefreshJobs(
+                    sourceIDs: Set(successfulPlans.flatMap(\.sourceIDs)),
+                    appSession: appSession,
+                    libraryID: session.context.id
+                )
+                let appliedFiles = plans.map { plan in
+                    makeFileSummary(
+                        plan.track,
+                        existsOverride: outcome.0.contains(plan.trackID) ? false : nil
+                    )
+                }
+                return encodeResult(
+                    AutomationFileOperationResult(
+                        operation: AutomationMethod.filesDelete,
+                        applied: !outcome.0.isEmpty,
+                        dryRun: false,
+                        confirmed: true,
+                        affectedTrackIDs: outcome.0,
+                        files: appliedFiles,
+                        jobs: jobs,
+                        failures: outcome.1,
+                        message: "Selected files were moved to the macOS Trash; the App started Source refresh Jobs to mark them missing without deleting Library records."
+                    ),
+                    for: request
+                )
+            } catch let error as AutomationFileOperationError {
+                return invalidParameters(for: request, error: error)
+            } catch {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .internalError,
+                        message: "The file deletion operation failed.",
+                        details: .object(["reason": .string(String(describing: error))])
+                    )
+                )
             }
 
         case AutomationMethod.playbackState:
@@ -2676,6 +2933,10 @@ final class AutomationIPCServer {
              AutomationMethod.sourceSetExcludedPath,
              AutomationMethod.sourceSetMonitorPolicy,
              AutomationMethod.sourceRemove: return "source"
+        case AutomationMethod.filesInspect,
+             AutomationMethod.filesRename,
+             AutomationMethod.filesMove,
+             AutomationMethod.filesDelete: return "files"
         case AutomationMethod.metadataGet,
              AutomationMethod.metadataPatch,
              AutomationMethod.lyricsGet,
@@ -3368,6 +3629,271 @@ final class AutomationIPCServer {
         )
     }
 
+    private struct AutomationFilePlan {
+        let track: Track
+        let trackID: UUID
+        let from: URL
+        let destination: URL?
+        let sourceIDs: Set<UUID>
+    }
+
+    private func makeFileSummary(
+        _ track: Track,
+        pathOverride: String? = nil,
+        existsOverride: Bool? = nil
+    ) -> AutomationFileSummary {
+        let locator = track.mediaLocator.referencedFile
+        let memberships = locator?.allSourceMemberships ?? []
+        let path = pathOverride ?? trackPath(track)
+        return AutomationFileSummary(
+            trackID: track.id,
+            path: path,
+            exists: existsOverride ?? FileManager.default.fileExists(atPath: path),
+            availability: track.availability.rawValue,
+            sourceIDs: memberships.map(\.sourceID),
+            relativePaths: memberships.map(\.relativePath)
+        )
+    }
+
+    private func makeFilePlans(
+        method: String,
+        operations: [[String: AutomationJSONValue]],
+        session: LibrarySession
+    ) throws -> [AutomationFilePlan] {
+        guard session.context.mode == .referenced,
+              let sourceScope = session.referencedSourceScope else {
+            throw AutomationFileOperationError.referencedLibraryRequired
+        }
+        let tracksByID = Dictionary(
+            uniqueKeysWithValues: session.libraryViewModel.allTracks.map { ($0.id, $0) }
+        )
+        var seenTrackIDs = Set<UUID>()
+        var plans: [AutomationFilePlan] = []
+
+        for operation in operations {
+            guard case let .string(rawTrackID) = operation["trackID"],
+                  let trackID = UUID(uuidString: rawTrackID),
+                  seenTrackIDs.insert(trackID).inserted else {
+                throw AutomationParameterError.invalidValue("operations.trackID")
+            }
+            guard let track = tracksByID[trackID] else {
+                throw AutomationFileOperationError.trackNotFound(trackID)
+            }
+            let current = try currentAuthorizedFile(for: track, session: session)
+            let destination: URL
+
+            if method == AutomationMethod.filesRename {
+                guard case let .string(rawName) = operation["name"] else {
+                    throw AutomationParameterError.missing("operations.name")
+                }
+                let name = try normalizedFileName(rawName, preservingExtensionOf: current.url)
+                destination = current.url.deletingLastPathComponent()
+                    .appendingPathComponent(name)
+                    .standardizedFileURL
+            } else {
+                guard case let .string(rawSourceID) = operation["sourceID"],
+                      let sourceID = UUID(uuidString: rawSourceID) else {
+                    throw AutomationParameterError.invalidValue("operations.sourceID")
+                }
+                guard case let .string(rawRelativePath) = operation["relativePath"] else {
+                    throw AutomationParameterError.missing("operations.relativePath")
+                }
+                let relativePath = rawRelativePath.trimmingCharacters(in: .whitespacesAndNewlines)
+                let root = try authorizedDirectoryRoot(sourceID: sourceID, sourceScope: sourceScope)
+                guard TrackMediaLocator.isSafeRelativePath(relativePath) else {
+                    throw AutomationFileOperationError.unsafeRelativePath(relativePath)
+                }
+                destination = root.appendingPathComponent(relativePath).standardizedFileURL
+                guard isAuthorizedPath(destination, inside: root) else {
+                    throw AutomationFileOperationError.unsafeRelativePath(relativePath)
+                }
+            }
+
+            guard current.url.path != destination.path else {
+                throw AutomationFileOperationError.destinationIsCurrentFile(destination.path)
+            }
+            guard !FileManager.default.fileExists(atPath: destination.path) else {
+                throw AutomationFileOperationError.destinationExists(destination.path)
+            }
+            var affectedSourceIDs = current.sourceIDs
+            if method == AutomationMethod.filesMove,
+               case let .string(rawSourceID) = operation["sourceID"],
+               let destinationSourceID = UUID(uuidString: rawSourceID) {
+                affectedSourceIDs.insert(destinationSourceID)
+            }
+            plans.append(
+                AutomationFilePlan(
+                    track: track,
+                    trackID: trackID,
+                    from: current.url,
+                    destination: destination,
+                    sourceIDs: affectedSourceIDs
+                )
+            )
+        }
+
+        let destinationPaths = plans.compactMap(\.destination).map { $0.path }
+        guard Set(destinationPaths).count == destinationPaths.count else {
+            throw AutomationFileOperationError.duplicateDestination
+        }
+        let sourcePaths = Set(plans.map { $0.from.path })
+        guard plans.compactMap(\.destination).allSatisfy({ !sourcePaths.contains($0.path) }) else {
+            throw AutomationFileOperationError.destinationOverlapsSelection
+        }
+        return plans
+    }
+
+    private func makeFileDeletePlans(
+        trackIDs: [UUID],
+        session: LibrarySession
+    ) throws -> [AutomationFilePlan] {
+        guard session.context.mode == .referenced else {
+            throw AutomationFileOperationError.referencedLibraryRequired
+        }
+        let tracks = try automationTracks(ids: trackIDs, in: session.libraryViewModel.allTracks)
+        return try tracks.map { track in
+            let current = try currentAuthorizedFile(for: track, session: session)
+            return AutomationFilePlan(
+                track: track,
+                trackID: track.id,
+                from: current.url,
+                destination: nil,
+                sourceIDs: current.sourceIDs
+            )
+        }
+    }
+
+    private func currentAuthorizedFile(
+        for track: Track,
+        session: LibrarySession
+    ) throws -> (url: URL, sourceIDs: Set<UUID>) {
+        guard case let .referenced(locator) = track.mediaLocator else {
+            throw AutomationFileOperationError.referencedFileRequired(track.id)
+        }
+        guard let sourceScope = session.referencedSourceScope else {
+            throw AutomationFileOperationError.referencedLibraryRequired
+        }
+        let sourceIDs = Set(locator.allSourceMemberships.map(\.sourceID))
+        for location in locator.locations {
+            for membership in location.sourceMemberships {
+                guard let authorizedRoot = sourceScope.authorizedRoots[membership.sourceID],
+                      isDirectoryRoot(authorizedRoot.url),
+                      TrackMediaLocator.isSafeRelativePath(membership.relativePath) else {
+                    continue
+                }
+                let candidate = authorizedRoot.url
+                    .appendingPathComponent(membership.relativePath)
+                    .standardizedFileURL
+                guard isAuthorizedPath(candidate, inside: authorizedRoot.url),
+                      FileManager.default.fileExists(atPath: candidate.path),
+                      !isDirectoryRoot(candidate) else {
+                    continue
+                }
+                return (candidate, sourceIDs)
+            }
+        }
+        if sourceIDs.isEmpty {
+            throw AutomationFileOperationError.noSourceMembership(track.id)
+        }
+        throw AutomationFileOperationError.fileUnavailable(track.id)
+    }
+
+    private func authorizedDirectoryRoot(
+        sourceID: UUID,
+        sourceScope: ReferencedSourceScope
+    ) throws -> URL {
+        guard let root = sourceScope.authorizedRoots[sourceID]?.url else {
+            throw AutomationFileOperationError.sourceNotAuthorized(sourceID)
+        }
+        guard isDirectoryRoot(root) else {
+            throw AutomationFileOperationError.sourceMustBeDirectory(sourceID)
+        }
+        return root.standardizedFileURL
+    }
+
+    private func normalizedFileName(
+        _ rawName: String,
+        preservingExtensionOf source: URL
+    ) throws -> String {
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty,
+              name != ".",
+              name != "..",
+              !name.contains("/"),
+              !name.contains("\\") else {
+            throw AutomationFileOperationError.invalidFileName
+        }
+        if source.pathExtension.isEmpty || name.contains(".") {
+            return name
+        }
+        return "\(name).\(source.pathExtension)"
+    }
+
+    private func isDirectoryRoot(_ url: URL) -> Bool {
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+        if let isDirectory = values?.isDirectory {
+            return isDirectory
+        }
+        return url.hasDirectoryPath
+    }
+
+    private func isAuthorizedPath(_ candidate: URL, inside root: URL) -> Bool {
+        let standardizedCandidate = candidate.standardizedFileURL
+        let standardizedRoot = root.standardizedFileURL
+        guard standardizedCandidate.path == standardizedRoot.path
+            || standardizedCandidate.path.hasPrefix(standardizedRoot.path + "/") else {
+            return false
+        }
+
+        // The lexical check above blocks traversal. Resolve the nearest
+        // existing ancestor as well so a symlinked directory cannot redirect
+        // a newly-created destination outside the authorized Source.
+        var existingAncestor = standardizedCandidate
+        while !FileManager.default.fileExists(atPath: existingAncestor.path),
+              existingAncestor.path != existingAncestor.deletingLastPathComponent().path {
+            existingAncestor.deleteLastPathComponent()
+        }
+        let canonicalRoot = standardizedRoot.resolvingSymlinksInPath().standardizedFileURL.path
+        let canonicalAncestor = existingAncestor.resolvingSymlinksInPath().standardizedFileURL.path
+        return canonicalAncestor == canonicalRoot
+            || canonicalAncestor.hasPrefix(canonicalRoot + "/")
+    }
+
+    private func applyFilePlans(_ plans: [AutomationFilePlan]) throws {
+        var applied: [AutomationFilePlan] = []
+        do {
+            for plan in plans {
+                guard let destination = plan.destination else { continue }
+                let parent = destination.deletingLastPathComponent()
+                try FileManager.default.createDirectory(
+                    at: parent,
+                    withIntermediateDirectories: true
+                )
+                try FileManager.default.moveItem(at: plan.from, to: destination)
+                applied.append(plan)
+            }
+        } catch {
+            for plan in applied.reversed() {
+                guard let destination = plan.destination else { continue }
+                try? FileManager.default.moveItem(at: destination, to: plan.from)
+            }
+            throw AutomationFileOperationError.operationFailed(error.localizedDescription)
+        }
+    }
+
+    private func sourceRefreshJobs(
+        sourceIDs: Set<UUID>,
+        appSession: AppSessionHost,
+        libraryID: UUID
+    ) -> [AutomationJobSummary] {
+        sourceIDs
+            .sorted { $0.uuidString < $1.uuidString }
+            .compactMap { sourceID in
+                appSession.startSourceRefreshJob(sourceID: sourceID, libraryID: libraryID)
+            }
+            .map(makeJobSummary)
+    }
+
     private func sourceIssueMessage(_ issue: ReferencedSourceScopeIssue) -> String {
         switch issue {
         case .offline(let sourceID):
@@ -3396,7 +3922,9 @@ final class AutomationIPCServer {
                 )
             )
         }
-        guard error == nil || error is AutomationParameterError else {
+        guard error == nil
+            || error is AutomationParameterError
+            || error is AutomationFileOperationError else {
             return .failure(
                 for: request,
                 error: AutomationError(
@@ -3548,6 +4076,28 @@ private struct AutomationParameters {
         return object
     }
 
+    func objectArray(
+        _ key: String,
+        required: Bool = false
+    ) throws -> [[String: AutomationJSONValue]] {
+        guard let value = values[key] else {
+            if required { throw AutomationParameterError.missing(key) }
+            return []
+        }
+        guard case .array(let array) = value else {
+            throw AutomationParameterError.invalidType(key, expected: "array of objects")
+        }
+        guard !array.isEmpty, array.count <= 5_000 else {
+            throw AutomationParameterError.outOfRange(key)
+        }
+        return try array.map { value in
+            guard case .object(let object) = value else {
+                throw AutomationParameterError.invalidType(key, expected: "array of objects")
+            }
+            return object
+        }
+    }
+
     func array(_ key: String) throws -> [AutomationJSONValue] {
         guard let value = values[key] else { return [] }
         guard case .array(let array) = value else {
@@ -3587,6 +4137,56 @@ private enum AutomationParameterError: Error, LocalizedError {
             return "Parameter '\(key)' has an invalid value."
         case .outOfRange(let key):
             return "Parameter '\(key)' is outside the supported range."
+        }
+    }
+}
+
+private enum AutomationFileOperationError: Error, LocalizedError {
+    case referencedLibraryRequired
+    case referencedFileRequired(UUID)
+    case trackNotFound(UUID)
+    case noSourceMembership(UUID)
+    case fileUnavailable(UUID)
+    case sourceNotAuthorized(UUID)
+    case sourceMustBeDirectory(UUID)
+    case unsafeRelativePath(String)
+    case invalidFileName
+    case destinationIsCurrentFile(String)
+    case destinationExists(String)
+    case duplicateDestination
+    case destinationOverlapsSelection
+    case operationFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .referencedLibraryRequired:
+            return "Physical file automation currently requires a referenced music library."
+        case .referencedFileRequired(let trackID):
+            return "Track \(trackID.uuidString) does not point to a referenced external file."
+        case .trackNotFound(let trackID):
+            return "Track \(trackID.uuidString) was not found in the active Library."
+        case .noSourceMembership(let trackID):
+            return "Track \(trackID.uuidString) has no authorized Source membership."
+        case .fileUnavailable(let trackID):
+            return "The current physical file for Track \(trackID.uuidString) is missing or unavailable."
+        case .sourceNotAuthorized(let sourceID):
+            return "Source \(sourceID.uuidString) is not currently authorized by the App."
+        case .sourceMustBeDirectory(let sourceID):
+            return "Source \(sourceID.uuidString) is a single-file Source; choose an authorized directory Source for this operation."
+        case .unsafeRelativePath(let path):
+            return "The destination path is not a safe Source-relative path: \(path)"
+        case .invalidFileName:
+            return "The new file name must be a single non-empty path component."
+        case .destinationIsCurrentFile(let path):
+            return "The destination is already the current file: \(path)"
+        case .destinationExists(let path):
+            return "The destination file already exists: \(path)"
+        case .duplicateDestination:
+            return "Multiple file operations resolve to the same destination."
+        case .destinationOverlapsSelection:
+            return "A file operation would overwrite another selected file; no mutation was applied."
+        case .operationFailed(let reason):
+            return "The physical file operation failed: \(reason)"
         }
     }
 }

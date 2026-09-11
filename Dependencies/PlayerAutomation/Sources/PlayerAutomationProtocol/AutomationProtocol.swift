@@ -267,6 +267,10 @@ public enum AutomationMethod {
     public static let sourceSetExcludedPath = "source.setExcludedPath"
     public static let sourceSetMonitorPolicy = "source.setMonitorPolicy"
     public static let sourceRemove = "source.remove"
+    public static let filesInspect = "files.inspect"
+    public static let filesRename = "files.rename"
+    public static let filesMove = "files.move"
+    public static let filesDelete = "files.delete"
     public static let playlistGet = "playlist.get"
     public static let playlistRename = "playlist.rename"
     public static let playlistDelete = "playlist.delete"
@@ -524,6 +528,67 @@ public struct AutomationLibraryTracksResult: Codable, Equatable, Sendable {
         self.offset = offset
         self.limit = limit
         self.nextOffset = nextOffset
+    }
+}
+
+public struct AutomationFileSummary: Codable, Equatable, Sendable, Identifiable {
+    public let trackID: UUID
+    public let path: String
+    public let exists: Bool
+    public let availability: String
+    public let sourceIDs: [UUID]
+    public let relativePaths: [String]
+
+    public var id: UUID { trackID }
+
+    public init(
+        trackID: UUID,
+        path: String,
+        exists: Bool,
+        availability: String,
+        sourceIDs: [UUID],
+        relativePaths: [String]
+    ) {
+        self.trackID = trackID
+        self.path = path
+        self.exists = exists
+        self.availability = availability
+        self.sourceIDs = sourceIDs.sorted { $0.uuidString < $1.uuidString }
+        self.relativePaths = relativePaths.sorted()
+    }
+}
+
+public struct AutomationFileOperationResult: Codable, Equatable, Sendable {
+    public let operation: String
+    public let applied: Bool
+    public let dryRun: Bool
+    public let confirmed: Bool
+    public let affectedTrackIDs: [UUID]
+    public let files: [AutomationFileSummary]
+    public let jobs: [AutomationJobSummary]
+    public let failures: [String]
+    public let message: String
+
+    public init(
+        operation: String,
+        applied: Bool,
+        dryRun: Bool,
+        confirmed: Bool = false,
+        affectedTrackIDs: [UUID] = [],
+        files: [AutomationFileSummary] = [],
+        jobs: [AutomationJobSummary] = [],
+        failures: [String] = [],
+        message: String
+    ) {
+        self.operation = operation
+        self.applied = applied
+        self.dryRun = dryRun
+        self.confirmed = confirmed
+        self.affectedTrackIDs = affectedTrackIDs
+        self.files = files
+        self.jobs = jobs
+        self.failures = failures
+        self.message = message
     }
 }
 
@@ -1394,6 +1459,49 @@ public enum AutomationToolCatalog {
             inputSchema: destructiveIDInputSchema
         ),
         AutomationToolDescriptor(
+            name: AutomationMethod.filesInspect,
+            title: "Inspect Track Files",
+            description: "Inspect the current or last-known physical file path, availability and Source memberships for existing Tracks.",
+            readOnly: true,
+            scopes: [.filesRead, .libraryRead],
+            risk: .low,
+            inputSchema: fileInspectInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.filesRename,
+            title: "Rename Track Files",
+            description: "Rename authorized referenced audio files in place. A single rename is direct; bulk renames require a preview and App foreground confirmation, then trigger Source reconciliation.",
+            readOnly: false,
+            scopes: [.filesWrite, .libraryRead],
+            risk: .medium,
+            supportsDryRun: true,
+            supportsJobs: true,
+            inputSchema: fileRenameInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.filesMove,
+            title: "Move Track Files",
+            description: "Move authorized referenced audio files to a directory Source-relative destination. Parent folders may be created; bulk moves require a preview and App foreground confirmation.",
+            readOnly: false,
+            scopes: [.filesWrite, .libraryRead, .sourceRead],
+            risk: .medium,
+            supportsDryRun: true,
+            supportsJobs: true,
+            inputSchema: fileMoveInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.filesDelete,
+            title: "Move Track Files to Trash",
+            description: "Preview and move real referenced audio files to the macOS Trash. The App always asks for foreground confirmation; Tracks remain in the Library and Source refresh marks them missing.",
+            readOnly: false,
+            requiresConfirmation: true,
+            scopes: [.filesDelete, .libraryRead],
+            risk: .high,
+            supportsDryRun: true,
+            supportsJobs: true,
+            inputSchema: fileDeleteInputSchema
+        ),
+        AutomationToolDescriptor(
             name: AutomationMethod.playbackState,
             title: "Playback State",
             description: "Read current playback source, Track, position, volume and playback mode.",
@@ -1949,6 +2057,83 @@ public enum AutomationToolCatalog {
                 "enum": .array([.string("on"), .string("off")])
             ]),
             "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let fileInspectInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackIDs")]),
+        "properties": .object([
+            "trackIDs": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "maxItems": .number(5_000),
+                "items": .object(["type": .string("string")])
+            ])
+        ])
+    ])
+
+    private static let fileRenameInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("operations")]),
+        "properties": .object([
+            "operations": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "maxItems": .number(5_000),
+                "items": .object([
+                    "type": .string("object"),
+                    "required": .array([.string("trackID"), .string("name")]),
+                    "properties": .object([
+                        "trackID": .object(["type": .string("string")]),
+                        "name": .object(["type": .string("string")])
+                    ])
+                ])
+            ]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let fileMoveInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("operations")]),
+        "properties": .object([
+            "operations": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "maxItems": .number(5_000),
+                "items": .object([
+                    "type": .string("object"),
+                    "required": .array([.string("trackID"), .string("sourceID"), .string("relativePath")]),
+                    "properties": .object([
+                        "trackID": .object(["type": .string("string")]),
+                        "sourceID": .object(["type": .string("string")]),
+                        "relativePath": .object(["type": .string("string"), "minLength": .number(1)])
+                    ])
+                ])
+            ]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let fileDeleteInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackIDs")]),
+        "properties": .object([
+            "trackIDs": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "maxItems": .number(5_000),
+                "items": .object(["type": .string("string")])
+            ]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
         ])
     ])
 

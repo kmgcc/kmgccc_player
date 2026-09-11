@@ -9,6 +9,10 @@
 4. 需要现有实例时使用 `--no-launch`；否则让 CLI/MCP 启动同一个 App bundle。
 5. `libraryNotActive` 表示请求的 `--library` 不是当前 active session，接口不会偷偷切库。
 
+设置窗口中的“自动化与智能”板块可以分别关闭本机 endpoint、MCP 入口或 CLI/脚本入口。
+如果 endpoint 关闭，先在该板块重新开启；如果只关闭了 MCP 或 CLI，对应 caller 会得到
+结构化 `authorizationRequired`，另一个控制面不受影响。
+
 ## Source permission / watcher
 
 - `source.list` 查看 Source path、status、lastScan 和 playlist bindings。
@@ -17,6 +21,11 @@
 - NAS/移动盘不在线时，默认保留 Source 和 Track，检查 `offline`、`permissionDenied`、
   `stale` 状态后再执行 `source.refresh`。
 - 文件消失默认是 missing + preserve；不要把 missing 误判成需要删除 Track。
+- `files.inspect` 可确认最后已知路径和 Source 归属；改名/移动后等待 `sourceScan` Job
+  完成，再用 `library.tracks` 检查 `availability` 和 `sourceMemberships`。
+- `files.delete` 的真实 apply 默认 scope 被拒绝是预期安全行为；用户必须在 App 前台授予
+  scope，之后仍要通过 App confirmation。`dryRun` 不修改文件，可以先查看影响摘要。不要把
+  `confirm=true` 当作绕过授权的开关。
 
 ## MCP handshake
 

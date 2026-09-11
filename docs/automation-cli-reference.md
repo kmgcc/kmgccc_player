@@ -31,6 +31,24 @@ settings get|patch
 storage inspect|validate|repair
 ```
 
+文件操作目前通过通用 capability 调用，避免把物理文件 mutation 隐藏在 Playlist 命令中：
+
+```sh
+player-automation automation call files.inspect \
+  --params-json '{"trackIDs":["TRACK-ID"]}' --json
+player-automation automation call files.rename \
+  --params-json '{"operations":[{"trackID":"TRACK-ID","name":"new-name"}]}' --json
+player-automation automation call files.move \
+  --params-json '{"dryRun":true,"operations":[{"trackID":"TRACK-ID","sourceID":"SOURCE-ID","relativePath":"folder/new-name.mp3"}]}' --json
+player-automation automation call files.delete \
+  --params-json '{"dryRun":true,"trackIDs":["TRACK-ID"]}' --json
+```
+
+`files.rename`/`files.move` 的批量请求必须先 preview，再以 `--confirm`/等价参数请求
+App 前台确认；`files.delete` 始终是高风险操作，真实 apply 所需的 `files.delete` scope
+默认拒绝，但 `dryRun` 可先查看影响摘要。
+真实删除进入 macOS 废纸篓，Track 与 Playlist membership 保留。
+
 `automation call <method> --params-json '<object>'` 是稳定的 escape hatch，会沿用同一
 个 App handler、scope、revision、Job 和错误 contract，可用于尚未有专用 shell alias 的
 新 capability。例如：

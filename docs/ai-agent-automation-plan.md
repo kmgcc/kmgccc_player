@@ -16,7 +16,8 @@ Pi runtime 和远程聊天 provider；本轮先把播放器本身建设成一个
 - 已完成：Phase A–K 的共享协议、Tool Catalog、CLI、AF_UNIX IPC、MCP stdio，以及
   Library / Playlist / 已授权 Referenced Source 的第一条垂直切片
 - 当前阶段：Phase L 验收与独立 review；Phase A–K 的共享合同和高价值基础能力已落地，
-  尚未开放的领域仍按本文件明确记录，不把能力目录数量当作完成度
+  本轮已补齐 Source missing/reappear 与授权范围内文件管理的关键闭环，尚未开放的领域仍按
+  本文件明确记录，不把能力目录数量当作完成度
 - 暂缓：Built-in Agent runtime 和任何独立模型数据层
 
 公开仓库地址以当前 `git remote -v` 为准，当前已验证为
@@ -145,7 +146,7 @@ revision，避免长任务期间悄悄改变目标集合。
 | Audio | 真实存在的 EQ、ReplayGain、output、device、gapless 等 | 不伪造当前没有的 DSP 能力 |
 | Diagnostics | library/source/playlist/lyrics/storage/automation/MCP health、report、repair | repair 只做可证明安全的动作 |
 | Jobs | create/status/progress/result/retry/cancel、durable/transient、restart 行为 | 扫描、导入、批量歌词/Metadata/Artwork 不阻塞同步 Tool |
-| Files | inspect/reveal/existence/export/rename/move/copy/delete | 真实文件写入和删除必须独立风险等级 |
+| Files | inspect/existence/rename/move/delete | 已实现的物理操作只允许授权 Referenced Source；reveal/copy/export 尚未开放，delete 独立为高风险 |
 | Storage | inspect/schema/version/validate/repair/backup/diff/orphan/reload | 当前 inspect/validate/repair 仅覆盖 App-owned scaffolding；不把任意 JSON write 暴露成普通 Tool |
 | Import/Export | playlist、metadata、library report、source config、diagnostics machine-readable | 输出不得泄露 secret |
 
@@ -257,8 +258,9 @@ snapshot。先覆盖真实 Track 字段，再加入技术音频字段、missing�
 
 ### Phase C：Library / Source / Playlist
 
-补齐 get/batch、Source 生命周期、授权流程、refresh/watch policy/exclude rules、Playlist rename/delete/
-replace/reorder/diff/export，并把现有 UI 高价值 mutation 逐步接入 shared capability。
+补齐 get/batch、Source 生命周期、授权流程、refresh/watch policy/exclude rules、missing/reappear/
+rename/move、Playlist rename/delete/replace/reorder/diff/export，并把现有 UI 高价值 mutation
+逐步接入 shared capability。
 必须覆盖目录 A 的 1–10 加 11–15 案例：无 duplicate Track，Playlist 包含 1–15，
 已有 Track 可以加入，membership removal 不删文件。
 
@@ -266,7 +268,9 @@ replace/reorder/diff/export，并把现有 UI 高价值 mutation 逐步接入 sh
 
 建立统一 scope、App 前台授权/确认、风险矩阵、audit、revision、幂等和 conflict。
 低风险 mutation 不被无意义确认阻塞；文件删除、mass delete、strict mirror、direct
-storage 等高风险动作必须可 preview、cancel、confirm、recover。
+storage 等高风险动作必须可 preview、cancel、confirm、recover。当前文件 rename/move 已支持
+授权范围内直接执行，批量请求要求 preview 和 App 前台确认；delete scope 默认拒绝并始终
+要求 App 前台确认。
 
 ### Phase E：Jobs / Batch
 
@@ -348,7 +352,7 @@ add selection to Playlist
 membership 或删除 Playlist 不删除音频文件。Source 文件消失时默认保留 Track、
 membership、Metadata 和 History，并在重新出现后尽可能恢复可用状态。
 
-## 13. 当前 checkpoint（2026-09-08）
+## 13. 当前 checkpoint（2026-09-11）
 
 本轮已把原始计划落成持续维护的实体文档，并在保留 dirty baseline 的新工作树继续实现：
 
@@ -360,6 +364,10 @@ membership、Metadata 和 History，并在重新出现后尽可能恢复可用�
 - Phase C：Playlist get/rename/delete/replace/reorder、Source create/bind/remove/refresh、
   directory-relative exclude/include、自动监听 on/off、App-owned NSOpenPanel 授权流程和
   已有 Track membership 复用已接入；关闭自动监听仅阻止自动 reconcile，显式 refresh 仍可用；
+  missing/reappear、物理 rename/move 的 Track identity 和 Playlist membership 语义已接入；
+- Phase C/D：`files.inspect/rename/move/delete` 已接入共享 capability。rename/move 只允许
+  已授权 Referenced Source，单文件可直接执行，批量要求 preview 和 App 前台确认；delete
+  scope 默认拒绝且始终要求 App 前台确认，执行语义为移入废纸篓并保留 Track；
 - Phase D：统一 catalog scopes、持久 scope policy、App 前台高风险确认、opaque revision、
   idempotency key 重试缓存和不记录音乐内容的 JSONL audit 已接入；
 - Phase E/F：统一 Job descriptor 增加 progress/phase/failure/cancel；Lyrics refresh 已使用
@@ -370,25 +378,29 @@ membership、Metadata 和 History，并在重新出现后尽可能恢复可用�
 - Phase H/I：Playback、Queue、History、Diagnostics 和 scope status 已提供；已开放有明确
   合同的 `settings.get/patch`（当前为 referenced-track deletion policy）以及 App-owned
   `storage.inspect/validate/repair`（repair 仅修复脚手架）；MCP Resources 已提供
-  capability/Agent guide；CLI 有主要命令 alias 和通用 `automation call` escape hatch；
+  capability/Agent guide；CLI 有主要命令 alias 和通用 `automation call` escape hatch；设置
+  窗口新增“自动化与智能”板块，提供 endpoint、MCP、CLI 开关、socket 状态和风险说明；
 - Phase J/K：Capability Reference、Agent Behavior Guide、CLI/MCP/troubleshooting 文档和可加载
   Skill 已落盘，并由 `docs/README.md` 统一索引。
 
-当前明确未宣称已实现：真实文件删除/移动 Tool、embedded tag 写入、完整 Artwork candidate
+当前明确未宣称已实现：文件 reveal/copy/export、embedded tag 写入、完整 Artwork candidate
 apply、超出当前合同的复杂持久 Settings patch、远程 HTTP transport、MCP Tasks 映射、任意
-JSON write、Storage backup/diff/orphan/reload、跨重启 durable Job history。它们保留在后续
-阶段，避免伪造 owner 或破坏性边界。
+JSON write、Storage backup/diff/orphan/reload、跨重启 durable Job history。文件
+`inspect/rename/move/delete` 已有正式 capability，但真实 delete 仍受默认 denied scope 和
+App 前台确认保护；本轮没有删除用户真实文件。
 
-最近验证：`swift test --quiet`（10 tests）通过；MCP stdio smoke 已验证现代
+最近验证（2026-09-11）：`swift test --quiet`（10 tests）通过；MCP stdio smoke 已验证现代
 `2026-07-28` stateless discovery/per-request metadata、旧版 `2025-11-25` initialize
-compatibility、Resources 2 个和 Tools 52 个；`xcodebuild ... -configuration Debug ...
-CODE_SIGNING_ALLOWED=NO build` 通过；`git diff --check` 通过。真实 Debug App 已通过 MCP
-在外置 SSD `/Volumes/SSD/Music/testmus/810` 创建并刷新 Source、导入 12 首歌曲、创建并
-填充 12 首 Playlist、验证 membership 与播放控制；随后授权父目录 Source，异步
-`importFiles` Job 完成，重复文件复用既有 Track，资料库增至 37 个逻辑 Track；
-`diagnostics.health` 与 `storage.validate` 均通过，App 重启后 Source/Playlist 仍可读。
-仍未验证真实 signed App、第三方 MCP host、拒绝授权分支、实际 missing/reappear 文件流程、
-高风险确认 UI、持久 Job history 和 MCP Tasks/真正取消。
+compatibility、Resources 2 个和 Tools 56 个；`xcodebuild ... -configuration Debug ...
+CODE_SIGNING_ALLOWED=NO build` 通过；`git diff --check` 通过。独立 bundle 的真实 Debug App
+已通过 MCP 连接外置 SSD `/Volumes/SSD/Music` 的 Referenced Library：创建 Playlist、加入
+4 个已有 Track、验证 idempotency、stale revision conflict、物理文件 rename/restore、
+`files.inspect`、Source refresh Job 和磁盘上的 Playlist JSON。进一步将其中一个文件临时
+移出两个重叠 Source 后 refresh，验证 Track `missing`、Playlist membership 保留；放回后
+再次 refresh，验证恢复 `available` 和 Source memberships。`storage.validate` 通过，设置窗口
+截图确认“自动化与智能”板块可见，三个开关、socket 状态和风险说明已显示。
+仍未验证真实 signed App、第三方 MCP host、拒绝 Source 授权分支、批量文件操作的实际前台
+确认交互、持久 Job history 和 MCP Tasks/跨重启真正取消。
 
 每完成一个阶段，都必须更新本节、验收矩阵和 `docs/README.md`，记录实际改动、测试、
 未验证边界和下一阶段，不得用“Tool 数量”代替验收。

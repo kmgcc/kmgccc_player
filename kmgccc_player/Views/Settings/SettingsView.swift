@@ -91,6 +91,8 @@ struct SettingsView: View {
                     } else {
                         unavailableLibrarySettings
                     }
+                case .automation:
+                    AutomationSettingsView()
                 case .about:
                     AboutSettingsView()
                 }

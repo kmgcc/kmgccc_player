@@ -46,6 +46,28 @@ source.list / source.refresh
 复杂需求优先用 `all`/`any`/`not`、membership、日期、技术音频和 metadata/lyrics 状态
 组合，而不是请求开发者为每个自然语言句子新增一个专用 Tool。
 
+## File operations
+
+文件操作只应针对 `files.*` capability，不应通过修改 Playlist、Track sidecar 或任意
+Storage JSON 来间接实现。推荐顺序是：
+
+```text
+files.inspect
+    -> files.rename / files.move dryRun
+    -> 检查影响摘要、目标路径和 Source containment
+    -> 单文件直接执行，批量操作请求 App 前台确认
+    -> source.refresh / jobs.get
+    -> files.inspect + library.tracks 验证
+```
+
+`files.rename` 和 `files.move` 只能操作 App 已授权的 Referenced Source；路径不能逃出
+Source 根目录，移动到未授权路径会被拒绝。`files.delete` 是高风险操作：先 preview，确认
+scope 已由用户授予，再让 App 前台显示影响并确认。执行后文件进入 macOS 废纸篓，Track、
+Metadata、History 和 Playlist membership 不会被静默删除。
+
+需要批量整理时，保留返回的 Job ID 并报告每项 failure；不要把文件移动当作“从 Playlist
+移除”。如果只需要分类，优先使用 Playlist membership，避免不必要的物理文件改动。
+
 ## Lyrics and metadata
 
 - 先查询 `lyricsStatus`/`metadataConfidence`，再批量选择目标。
@@ -68,6 +90,8 @@ source.list / source.refresh
 - 遇到 `conflict`：重新 query，不要盲目重放旧 payload。
 - 遇到 `authorizationRequired`：读取 scope 状态；需要 grant 时让 App 处理前台授权。
 - 失败的 Job 只 retry failed entries；不要重复整个批次造成不必要 provider 压力。
+- 真实文件 delete 的 scope 默认是 denied；不要为了绕过 App policy 直接编辑 scope 文件或
+  Storage。
 
 ## Storage fallback
 

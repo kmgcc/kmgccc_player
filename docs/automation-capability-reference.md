@@ -16,6 +16,9 @@ PlaybackCoordinator、Repository、Source reconciler 和 Job coordinator 仍然�
 - Track 已在 Library 中，仍然可以加入任意其他 Playlist；添加 membership 不会重复导入。
 - Referenced Source 的文件消失时，默认保留 Track、Metadata、History 和 Playlist membership，
   只把 Track 标记为 `missing`/`unavailable`。文件重新出现时，Source refresh 会尽可能恢复。
+- 文件改名和移动是 File capability 的物理操作，不等于修改 Playlist 或删除 Library Track；
+  只允许落在 App 已授权的 Referenced Source 内。真实文件删除会移入 macOS 废纸篓，随后保留
+  Track 并由 Source refresh 标记 missing。
 
 ## Current catalog
 
@@ -37,6 +40,7 @@ PlaybackCoordinator、Repository、Source reconciler 和 Job coordinator 仍然�
 | Diagnostics | `diagnostics.health` | Library/Source/missing/Job evidence |
 | Settings | `settings.get/patch` | 当前只开放持久的 referenced Track deletion policy，并带 revision |
 | Storage | `storage.inspect/validate/repair` | inspect/validate 只读；repair 仅补齐 App-owned scaffolding，不改 domain data |
+| Files | `files.inspect/rename/move/delete` | inspect 只读；rename/move 遵守 Source 授权和路径 containment，批量需 preview/App confirmation；delete 默认 scope 拒绝且始终前台确认 |
 | Policy | `automation.capabilities/scopes/grantScope/revokeScope` | scope 状态由 App 持久化并执行 |
 
 Artwork 的当前可见状态通过 `library.tracks` 的 `artworkAvailable` 返回；候选搜索和批量
@@ -111,8 +115,8 @@ Library domain data 仍由各自 durable owner 管理。Source 授权 UI 本身�
 
 ## Not yet exposed
 
-当前代码没有足够稳定、独立的 owner 时，不开放伪 capability。文件级删除/移动、embedded
-tag 写入、Artwork candidate apply、远程 HTTP transport、MCP Tasks 映射、复杂 Settings
+当前代码没有足够稳定、独立的 owner 时，不开放伪 capability。文件级 reveal/copy/export、
+embedded tag 写入、Artwork candidate apply、远程 HTTP transport、MCP Tasks 映射、复杂 Settings
 patch 和任意 JSON write 仍需沿用后续阶段的专门设计。Storage 的正式 API 目前只允许
 inspect/validate，以及不触碰 domain data 的 scaffolding repair。高级 Agent 可按
 [Agent Behavior Guide](agent-behavior-guide.md) 使用诊断、备份和源码审查进行受控 fallback。

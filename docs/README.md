@@ -13,9 +13,9 @@
 | [色彩系统](color-system.md) | 封面分析、OKLCH 语义色、Display P3 输出和局部可读性判断 |
 | [资料库存储](library-storage.md) | 托管/原位模式、registry、目录、source、缓存、索引、播放历史和删除边界 |
 | [资料库写入 authority matrix](library-write-authority.md) | Phase 0 的函数级持久化 owner、提交顺序、失败补偿与生命周期合同 |
-| [Automation CLI / 本地 IPC / MCP](automation-cli-ipc.md) | 共享 Automation contract、CLI、AF_UNIX IPC、MCP stdio 和安全边界 |
-| [AI Agent Automation 实施计划](ai-agent-automation-plan.md) | 面向外部 Agent 的持续实施计划、阶段状态和验收矩阵 |
-| [Automation Capability Reference](automation-capability-reference.md) | 当前可用的领域能力、组合查询、风险、scope、revision 和 Jobs |
+| [Automation CLI / 本地 IPC / MCP](automation-cli-ipc.md) | 共享 Automation contract、CLI、AF_UNIX IPC、MCP stdio、文件管理和安全边界 |
+| [AI Agent Automation 实施计划](ai-agent-automation-plan.md) | 面向外部 Agent 的持续实施计划、阶段状态、Source/文件验收和安全边界 |
+| [Automation Capability Reference](automation-capability-reference.md) | 当前可用的领域能力、组合查询、文件操作、风险、scope、revision 和 Jobs |
 | [Agent Behavior Guide](agent-behavior-guide.md) | Agent 的领域语义、安全规则、推荐 workflow 和 Storage fallback |
 | [Automation CLI Reference](automation-cli-reference.md) | 人、脚本和 Agent 可用的命令、JSON、exit code 和 batch 约定 |
 | [Automation MCP Setup / Reference](automation-mcp.md) | MCP lifecycle、Resources、stdio transport 和 App boundary |
