@@ -68,6 +68,7 @@ struct MiniPlayerProgressSpectrumRow: View {
     
     /// Unified hover state for the entire row
     @State private var isRowHovered = false
+    @State private var isProgressDragging = false
 
     init(
         scale: CGFloat,
@@ -180,13 +181,17 @@ struct MiniPlayerProgressSpectrumRow: View {
                         .onChanged { value in
                             guard isSeekEnabled else { return }
                             onInteraction()
-                            onDragStart()
+                            if !isProgressDragging {
+                                isProgressDragging = true
+                                onDragStart()
+                            }
                             onDragStateChanged(true)
                             let progress = max(0, min(1, value.location.x / geometry.size.width))
                             onSeek(progress * duration)
                         }
                         .onEnded { value in
                             guard isSeekEnabled else {
+                                isProgressDragging = false
                                 onDragStateChanged(false)
                                 return
                             }
@@ -194,6 +199,7 @@ struct MiniPlayerProgressSpectrumRow: View {
                             let progress = max(0, min(1, value.location.x / geometry.size.width))
                             onSeek(progress * duration)
                             onDragEnd()
+                            isProgressDragging = false
                             onDragStateChanged(false)
                         }
                 )
@@ -476,17 +482,22 @@ struct MiniPlayerProgressSpectrumRow: View {
             .onChanged { value in
                 guard isSeekEnabled else { return }
                 onInteraction()
-                onDragStart()
+                if !isProgressDragging {
+                    isProgressDragging = true
+                    onDragStart()
+                }
                 onDragStateChanged(true)
                 onSeek(max(0, min(1, value.location.x / width)) * duration)
             }
             .onEnded { value in
                 guard isSeekEnabled else {
+                    isProgressDragging = false
                     onDragStateChanged(false)
                     return
                 }
                 onSeek(max(0, min(1, value.location.x / width)) * duration)
                 onDragEnd()
+                isProgressDragging = false
                 onDragStateChanged(false)
             }
     }

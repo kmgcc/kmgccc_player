@@ -1,0 +1,6 @@
+.build/
+.swiftpm/
+.local/
+dist/
+output/
+.codex/

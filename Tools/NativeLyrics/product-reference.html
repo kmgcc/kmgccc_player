@@ -1,0 +1,21 @@
+<!doctype html><meta charset="utf-8"><title>Current APP AMLL reference</title>
+<style>html,body{margin:0;background:rgb(14,19,31);overflow:hidden}iframe{border:0;width:760px;height:720px}</style>
+<iframe src="../../kmgccc_player/Resources/AMLL/index.html"></iframe>
+<script>
+const frame = document.querySelector('iframe');
+window.ready = new Promise(resolve => frame.addEventListener('load',async()=>{
+  const ttml = await (await fetch('.local/original.ttml')).text();
+  const host = frame.contentWindow;
+  host.AMLL.setConfig({fontSize:38,fontWeight:700,translationFontSize:28.5,translationFontWeight:400,fontFamilyMain:'Helvetica Neue',fontFamilyTranslation:'Helvetica Neue',alignPosition:.35,alignAnchor:'center',leadInMs:600,nearSwitchGapMs:160,surfaceRole:'main'});
+  await host.AMLL.applyTrackState({ttmlText:ttml,currentTime:10,isPlaying:false});
+  window.reference = {
+    host,
+    seek:time=>host.AMLL.setCurrentTime(time),
+    play:()=>host.AMLL.setPlaying(true),
+    pause:()=>host.AMLL.setPlaying(false),
+    config:value=>host.AMLL.setConfig(value),
+    snapshot:()=>Array.from(frame.contentDocument.querySelectorAll('[class*="lyricLineWrapper"]')).map(el=>({rect:el.getBoundingClientRect().toJSON(),style:el.getAttribute('style'),text:el.textContent}))
+  };
+  resolve(true);
+}));
+</script>

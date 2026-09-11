@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tt xmlns="http://www.w3.org/ns/ttml"
+    xmlns:ttm="http://www.w3.org/ns/ttml#metadata"
+    xmlns:tts="http://www.w3.org/ns/ttml#styling"
+    xml:lang="en">
+  <head>
+    <metadata>
+      <ttm:title>Glow Showcase — long vowels and chorus</ttm:title>
+      <ttm:agent xml:id="lead" type="person"/>
+    </metadata>
+  </head>
+  <body dur="48s"><div>
+    <p begin="0s" end="10s" ttm:agent="lead">
+      <span begin="0s" end="2.2s">Golden </span><span begin="2.2s" end="4.4s">lights </span><span begin="4.4s" end="6.8s">slowly </span><span begin="6.8s" end="10s">turning</span>
+      <span ttm:role="x-translation" xml:lang="zh-Hans">金色的灯光缓缓旋转</span>
+    </p>
+    <p begin="11s" end="21s" ttm:agent="lead">
+      <span begin="0s" end="2.4s">Stay </span><span begin="2.4s" end="5.1s">near </span><span begin="5.1s" end="7.6s">the </span><span begin="7.6s" end="10s">fire</span>
+      <span ttm:role="x-bg" begin="1s" end="9.8s"><span begin="0s" end="2.1s">Echo </span><span begin="2.1s" end="4.5s">around </span><span begin="4.5s" end="6.9s">us </span><span begin="6.9s" end="8.8s">again</span></span>
+      <span ttm:role="x-translation" xml:lang="zh-Hans">靠近火光停留</span>
+    </p>
+    <p begin="22s" end="33s" ttm:agent="lead">
+      <span begin="0s" end="2.6s">Every </span><span begin="2.6s" end="5.5s">moment </span><span begin="5.5s" end="8.1s">shines </span><span begin="8.1s" end="11s">tonight</span>
+      <span ttm:role="x-translation" xml:lang="zh-Hans">每一个瞬间都在今夜发光</span>
+    </p>
+    <p begin="40s" end="47s" ttm:agent="lead">
+      <span begin="0s" end="2s">Carry </span><span begin="2s" end="4s">the </span><span begin="4s" end="7s">glow</span>
+      <span ttm:role="x-bg" begin="0.5s" end="6.8s"><span begin="0s" end="2.1s">Glow </span><span begin="2.1s" end="4.2s">glow </span><span begin="4.2s" end="6.3s">glow</span></span>
+      <span ttm:role="x-translation" xml:lang="zh-Hans">带着光芒继续前行</span>
+    </p>
+  </div></body>
+</tt>

@@ -379,21 +379,39 @@ struct FullscreenMiniPlayerView: View {
             onSeek: { seekTime in
                 onInteraction()
                 dragProgress = seekTime
+                LyricsSurfaceManager.shared.updatePlaybackTimePreview(
+                    lyricsPreviewTime(for: seekTime, presentation: presentation)
+                )
             },
             onDragStart: {
                 onInteraction()
                 isDragging = true
+                LyricsSurfaceManager.shared.beginPlaybackTimePreview(
+                    at: presentation.lyricsCurrentTime,
+                    isPlaying: presentation.effectiveLyricsIsPlaying
+                )
                 onProgressDraggingChanged(true)
             },
             onDragEnd: {
                 onInteraction()
                 playbackCoordinator.seek(to: dragProgress)
+                LyricsSurfaceManager.shared.endPlaybackTimePreview(
+                    at: lyricsPreviewTime(for: dragProgress, presentation: presentation),
+                    isPlaying: presentation.effectiveLyricsIsPlaying
+                )
                 isDragging = false
                 onProgressDraggingChanged(false)
             },
             onInteraction: onInteraction,
             onDragStateChanged: onProgressDraggingChanged
         )
+    }
+
+    private func lyricsPreviewTime(
+        for seekTime: Double,
+        presentation: NowPlayingPresentation
+    ) -> Double {
+        max(0, presentation.lyricsCurrentTime + (seekTime - presentation.currentTime))
     }
 
     private var currentArtworkTaskKey: String {

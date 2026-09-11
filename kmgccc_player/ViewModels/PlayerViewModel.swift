@@ -58,6 +58,10 @@ final class PlayerViewModel {
         playbackService.currentTrack
     }
 
+    var isReadyForSeek: Bool {
+        playbackService.isReadyForSeek
+    }
+
     var nowPlayingAssetURL: URL? {
         playbackService.nowPlayingAssetURL
     }

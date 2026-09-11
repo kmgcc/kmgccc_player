@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AMLL reference — isolated parity harness</title>
+<link rel="stylesheet" href="../../kmgccc_player/Resources/AMLL/style.css">
+<style>
+html,body { margin:0; width:100%; height:100%; overflow:hidden; background:rgb(14,19,31); color:white; font-family:"Helvetica Neue",sans-serif }
+#surface { width:760px; height:720px; font-size:38px; font-weight:700 }
+#surface>div { width:100%; height:100% }
+</style>
+<div id="surface"></div>
+<script type="module">
+import { LyricPlayer } from '../../kmgccc_player/Resources/AMLL/amll-core.js';
+import { parseTTML } from '../../kmgccc_player/Resources/AMLL/amll-lyric.js';
+const params = new URLSearchParams(location.search);
+const player = new LyricPlayer();
+document.querySelector('#surface').append(player.getElement());
+player.setAlignPosition(.35);
+const text = await (await fetch(params.get('ttml') || '.local/original.ttml')).text();
+const parsed = parseTTML(text);
+player.setLyricLines(parsed.lines,0);
+await player.calcLayout(true,true);
+player.pause();
+let last = 0;
+window.reference = {
+  player, parsed,
+  async seek(seconds) {
+    player.setCurrentTime(seconds*1000,true);
+    await player.calcLayout(true,false);
+    for (let i=0;i<240;i++) player.update(1000/120);
+    last=seconds;
+    return this.snapshot();
+  },
+  async step(seconds) {
+    player.setCurrentTime(seconds*1000,false);
+    player.update((seconds-last)*1000); last=seconds;
+    await Promise.resolve(); return this.snapshot();
+  },
+  play() { player.resume(); }, pause() { player.pause(); },
+  async resize(width,height) { Object.assign(document.querySelector('#surface').style,{width:width+'px',height:height+'px'}); await player.calcLayout(true,false); },
+  snapshot() {
+    return {
+      time:last, timeline:player.timelineState,
+      groups:player.currentLyricGroups.map((g,index)=>({index,start:g.startTime,end:g.endTime,rect:g.element.getBoundingClientRect().toJSON(),style:g.element.getAttribute('style')})),
+      animations:document.getAnimations().map(a=>({time:a.currentTime,rate:a.playbackRate,state:a.playState,timing:a.effect.getTiming(),frames:a.effect.getKeyframes()}))
+    };
+  }
+};
+window.ready = true;
+</script>

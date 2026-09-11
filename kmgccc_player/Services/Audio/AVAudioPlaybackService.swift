@@ -29,6 +29,10 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
     }
 
+    var isReadyForSeek: Bool {
+        audioFile != nil
+    }
+
     var volume: Double {
         didSet {
             playerNode.volume = Float(volume)
@@ -102,7 +106,11 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
     private struct SpatialPendingSeek {
         let segmentID: UUID
         let position: Double
-        let wasPlaying: Bool
+        /// The transport intent can change while the renderer is committing
+        /// the asynchronous timeline replacement. A paused lyric-row seek is
+        /// followed by `resume()` in the same main-actor turn, so this must
+        /// remain mutable instead of being frozen to the seek's initial state.
+        var wasPlaying: Bool
     }
     private var spatialPendingSeek: SpatialPendingSeek?
 
@@ -368,18 +376,23 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
             guard let self, self.spatialPendingSeek == nil else { return }
             self.spatialClockTime = clock
         }
-        rendererPipeline.onTimelineMutationCommitted = { [weak self] segmentID, clock, autoplay in
+        rendererPipeline.onTimelineMutationCommitted = { [weak self] segmentID, clock, _ in
             guard let self,
                   self.outputBackend == .spatialRenderer,
                   let pending = self.spatialPendingSeek,
                   pending.segmentID == segmentID else { return }
+            // `load(... autoplay:)` is queued before a possible `resume()`.
+            // The renderer can therefore commit with autoplay=false even
+            // though the user resumed while that load was in flight. The
+            // pending seek owns the final transport intent for this timeline.
+            let shouldPlay = pending.wasPlaying
             self.spatialPendingSeek = nil
             self.spatialClockTime = clock
             self.currentTime = pending.position
-            self.isPlaying = autoplay
+            self.isPlaying = shouldPlay
             self.smartController.endSeek()
-            AudioAnalysisHub.shared.setPlaying(autoplay)
-            if autoplay {
+            AudioAnalysisHub.shared.setPlaying(shouldPlay)
+            if shouldPlay {
                 self.startProgressTimer()
             } else {
                 self.stopProgressTimer()
@@ -1428,6 +1441,15 @@ final class AVAudioPlaybackService: AudioPlaybackServiceProtocol {
         }
         applyLookaheadPreferenceChangeIfNeeded(reason: "resume")
         if outputBackend == .spatialRenderer {
+            // A lyric-row tap can seek the renderer while paused and then
+            // resume before the asynchronous timeline load commits. Preserve
+            // that explicit resume intent for the commit callback; otherwise
+            // the callback would restore the seek's old autoplay=false state
+            // after audio has already started.
+            if var pendingSeek = spatialPendingSeek {
+                pendingSeek.wasPlaying = true
+                spatialPendingSeek = pendingSeek
+            }
             // A route can change while the player is paused, when the progress
             // timer is not running. Refresh immediately so the renderer resumes
             // on the current device clock instead of an old explicit UID.

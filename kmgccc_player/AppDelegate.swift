@@ -54,6 +54,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if UpdateCoordinator.shared.prepareUpdateForOrdinaryTermination() {
+            Log.info(
+                "[Lifecycle] Prepared Sparkle update will install during ordinary quit",
+                category: .ui
+            )
+            DispatchQueue.main.async {
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateCancel
+        }
         if Self.shouldCancelTerminationForPendingUpdateHandler?() == true {
             Log.info("[Lifecycle] Cancelled ordinary quit while Sparkle install reply is pending", category: .ui)
             return .terminateCancel

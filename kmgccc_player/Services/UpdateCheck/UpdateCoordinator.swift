@@ -5,6 +5,7 @@
 
 import AppKit
 import Combine
+import Foundation
 import Sparkle
 
 private final class UpdateCallbackBox: @unchecked Sendable {
@@ -54,6 +55,8 @@ final class UpdateCoordinator: NSObject, ObservableObject {
 
     @Published private(set) var state: UpdateCoordinatorState = .idle
     @Published private(set) var automaticUpdatesEnabled: Bool
+    @Published private(set) var currentUpdateReleaseNotes: UpdateReleaseNotesNotice? = nil
+    @Published private(set) var postUpdateNotice: UpdateReleaseNotesNotice? = nil
 
     /// Installed by AppSessionHost. The callback must finish all local shutdown
     /// work and then invoke its completion so Sparkle can safely relaunch.
@@ -86,6 +89,8 @@ final class UpdateCoordinator: NSObject, ObservableObject {
     private var downloadCancellation: (() -> Void)?
     private var readyChoiceReply: ((SPUUserUpdateChoice) -> Void)?
     private var readyMetadata: UpdateReadyMetadata?
+    private var updateInstallationRequested = false
+    private var releaseNotesTask: Task<Void, Never>?
     private var retryTerminationHandler: (() -> Void)?
     private var retryTerminationInFlight = false
     private var retryTerminationGeneration = 0
@@ -127,6 +132,11 @@ final class UpdateCoordinator: NSObject, ObservableObject {
         }
         super.init()
 
+        currentUpdateReleaseNotes = readyMetadata.flatMap {
+            UpdateReleaseNotesStore.notice(forBuild: $0.build)
+        }
+        postUpdateNotice = UpdateReleaseNotesStore.noticeForCurrentBuild()
+
         activeObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
@@ -141,6 +151,11 @@ final class UpdateCoordinator: NSObject, ObservableObject {
     var readyUpdate: UpdateReadyMetadata? {
         guard case .ready(let metadata) = state else { return nil }
         return metadata
+    }
+
+    func markPostUpdateNoticePresented() {
+        UpdateReleaseNotesStore.markPresented()
+        postUpdateNotice = nil
     }
 
     var canCheckForUpdates: Bool {
@@ -206,20 +221,28 @@ final class UpdateCoordinator: NSObject, ObservableObject {
             guard !isCheckInFlight else { return }
             beginCheck(.automatic, useFallback: false)
         } else {
-            cancelCurrentUpdate(markSuppressed: false)
-            updater.resetUpdateCycle()
+            if !updateInstallationRequested {
+                cancelCurrentUpdate(markSuppressed: false)
+                updater.resetUpdateCycle()
+            }
         }
     }
 
     func restartAndInstall() {
-        guard let metadata = readyMetadata, let readyChoiceReply else { return }
+        guard !updateInstallationRequested,
+              let metadata = readyMetadata,
+              let readyChoiceReply else {
+            return
+        }
+        let installReply = readyChoiceReply
         self.readyChoiceReply = nil
+        updateInstallationRequested = true
         expiryTimer?.invalidate()
         expiryTimer = nil
         state = .installReplyPending(metadata)
 
         let replyBox = UpdateCallbackBox {
-            readyChoiceReply(.install)
+            installReply(.install)
         }
         let install: @MainActor @Sendable () -> Void = { [weak self] in
             self?.state = .installing
@@ -230,6 +253,40 @@ final class UpdateCoordinator: NSObject, ObservableObject {
         } else {
             install()
         }
+    }
+
+    /// Turns a normal quit into a Sparkle install when a background download
+    /// has already finished. Sparkle keeps the prepared update behind the
+    /// reply passed to `showReady`; leaving that reply unanswered would let a
+    /// normal quit skip the update.
+    ///
+    /// Returns true when AppKit should pause the original quit while Sparkle
+    /// receives the install choice and prepares the relaunch.
+    func prepareUpdateForOrdinaryTermination() -> Bool {
+        guard !updateInstallationRequested,
+              case .ready(let metadata) = state,
+              let readyChoiceReply else {
+            return false
+        }
+
+        let installReply = readyChoiceReply
+        self.readyChoiceReply = nil
+        updateInstallationRequested = true
+        state = .installReplyPending(metadata)
+
+        let replyBox = UpdateCallbackBox {
+            installReply(.install)
+        }
+        let install: @MainActor @Sendable () -> Void = { [weak self] in
+            self?.state = .installing
+            replyBox.call()
+        }
+        if let terminationPreparationHandler {
+            terminationPreparationHandler(install)
+        } else {
+            install()
+        }
+        return true
     }
 
     func retryTerminatingApplication() {
@@ -277,9 +334,11 @@ final class UpdateCoordinator: NSObject, ObservableObject {
     }
 
     func handleApplicationWillTerminate() {
-        // Sparkle automatically installs a prepared update when the host exits.
-        // Do not answer the ready callback here: doing so can turn an ordinary
-        // quit into a second explicit termination request.
+        // Normal quits answer the prepared-update reply in
+        // prepareUpdateForOrdinaryTermination(). This hook only releases
+        // transient work after termination has been accepted.
+        releaseNotesTask?.cancel()
+        releaseNotesTask = nil
         expiryTimer?.invalidate()
     }
 
@@ -364,6 +423,7 @@ final class UpdateCoordinator: NSObject, ObservableObject {
         downloadCancellation = nil
         checkCancellation?()
         checkCancellation = nil
+        updateInstallationRequested = false
 
         checkGeneration += 1
         invalidateCheckRecoveryTimers()
@@ -371,6 +431,9 @@ final class UpdateCoordinator: NSObject, ObservableObject {
         pendingPrimaryError = nil
         attemptedFallback = false
 
+        releaseNotesTask?.cancel()
+        releaseNotesTask = nil
+        currentUpdateReleaseNotes = nil
         readyMetadata = nil
         UpdatePreferences.setReadyMetadata(nil)
         expiryTimer?.invalidate()
@@ -385,6 +448,7 @@ final class UpdateCoordinator: NSObject, ObservableObject {
     }
 
     private func markReady(item: SUAppcastItem) {
+        captureUpdate(item)
         let metadata = UpdateReadyMetadata(
             version: item.displayVersionString,
             build: item.versionString,
@@ -420,6 +484,49 @@ final class UpdateCoordinator: NSObject, ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.expireReadyUpdateIfNeeded()
+            }
+        }
+    }
+
+    private func captureUpdate(_ item: SUAppcastItem) {
+        currentItem = item
+
+        let version = item.displayVersionString
+        let build = item.versionString
+        let fallbackNotes = item.title.map { [$0] } ?? ["包含改进和修复。"]
+        UpdateReleaseNotesStore.save(
+            version: version,
+            build: build,
+            notes: fallbackNotes
+        )
+        currentUpdateReleaseNotes = UpdateReleaseNotesStore.notice(forBuild: build)
+
+        releaseNotesTask?.cancel()
+        releaseNotesTask = nil
+        guard let notesURL = item.releaseNotesURL else { return }
+
+        releaseNotesTask = Task { [weak self] in
+            guard let (data, response) = try? await URLSession.shared.data(from: notesURL),
+                  let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode),
+                  !Task.isCancelled else {
+                return
+            }
+
+            let notes = UpdateReleaseNotesParser.parse(
+                String(decoding: data, as: UTF8.self)
+            )
+            guard !notes.isEmpty, !Task.isCancelled else { return }
+
+            await MainActor.run {
+                guard let self,
+                      self.currentItem?.versionString == build else {
+                    return
+                }
+                UpdateReleaseNotesStore.updateNotes(notes, forBuild: build)
+                self.currentUpdateReleaseNotes = UpdateReleaseNotesStore.notice(
+                    forBuild: build
+                )
             }
         }
     }
@@ -606,6 +713,10 @@ final class UpdateCoordinator: NSObject, ObservableObject {
         downloadCancellation = nil
         readyChoiceReply = nil
         currentItem = nil
+        releaseNotesTask?.cancel()
+        releaseNotesTask = nil
+        currentUpdateReleaseNotes = nil
+        updateInstallationRequested = false
         readyMetadata = nil
         UpdatePreferences.setReadyMetadata(nil)
         expiryTimer?.invalidate()
@@ -653,7 +764,7 @@ extension UpdateCoordinator: SPUUserDriver {
         state updateState: SPUUserUpdateState,
         reply: @escaping (SPUUserUpdateChoice) -> Void
     ) {
-        currentItem = appcastItem
+        captureUpdate(appcastItem)
         checkCancellation = nil
         checkTimeoutTimer?.invalidate()
         checkTimeoutTimer = nil
@@ -683,7 +794,11 @@ extension UpdateCoordinator: SPUUserDriver {
         }
     }
 
-    func showUpdateReleaseNotes(with downloadData: SPUDownloadData) {}
+    func showUpdateReleaseNotes(with downloadData: SPUDownloadData) {
+        // Release notes are fetched from the appcast item's releaseNotesURL in
+        // captureUpdate so the same notes are available during download, once
+        // the package is ready, and after the relaunch.
+    }
 
     func showUpdateReleaseNotesFailedToDownloadWithError(_ error: Error) {
         Log.warning("[UpdateCoordinator] Release notes download failed: \(error)", category: .ui)
@@ -789,6 +904,7 @@ extension UpdateCoordinator: SPUUserDriver {
         }
 
         readyChoiceReply = reply
+        updateInstallationRequested = false
         markReady(item: currentItem)
     }
 
@@ -814,10 +930,14 @@ extension UpdateCoordinator: SPUUserDriver {
         acknowledgement: @escaping () -> Void
     ) {
         clearTerminationRetry()
+        updateInstallationRequested = false
         if relaunched {
             UpdatePreferences.setReadyMetadata(nil)
             UpdatePreferences.setSuppressedBuild(nil)
             readyMetadata = nil
+            releaseNotesTask?.cancel()
+            releaseNotesTask = nil
+            currentUpdateReleaseNotes = nil
             state = .idle
         } else {
             state = .failed(
@@ -861,7 +981,7 @@ extension UpdateCoordinator: SPUUpdaterDelegate {
     }
 
     func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
-        currentItem = item
+        captureUpdate(item)
         if UpdateBuildPolicy.shouldClearSuppression(
             candidateBuild: item.versionString,
             suppressedBuild: UpdatePreferences.suppressedBuild()

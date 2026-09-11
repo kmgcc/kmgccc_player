@@ -32,6 +32,12 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
     /// Currently playing track (nil if nothing playing).
     var currentTrack: Track? { get }
 
+    /// Whether the decoded audio resource is installed and can accept a seek.
+    /// A playback request publishes the track and playing state before the
+    /// background file preparation finishes, so `currentTrack != nil` alone
+    /// is not a sufficient readiness signal.
+    var isReadyForSeek: Bool { get }
+
     /// Resolved local file URL for the active item, when one is available. This
     /// is published to the system media session so macOS can classify the
     /// renderer as an audio player for spatial-mode eligibility.
@@ -107,6 +113,8 @@ protocol AudioPlaybackServiceProtocol: AnyObject {
 extension AudioPlaybackServiceProtocol {
 
     var nowPlayingAssetURL: URL? { nil }
+
+    var isReadyForSeek: Bool { currentTrack != nil }
 
     /// Toggle between play and pause.
     func togglePlayPause() {

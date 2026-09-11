@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tt xmlns="http://www.w3.org/ns/ttml"
+    xmlns:ttm="http://www.w3.org/ns/ttml#metadata"
+    xml:lang="en">
+  <head>
+    <metadata>
+      <ttm:title>Chorus / Background — anchored vocal timing</ttm:title>
+      <ttm:agent xml:id="lead" type="person"/>
+    </metadata>
+  </head>
+  <body dur="44s"><div>
+    <p begin="0s" end="9s" ttm:agent="lead">
+      <span begin="0s" end="2s">We </span><span begin="2s" end="4.2s">rise </span><span begin="4.2s" end="9s">together</span>
+      <span ttm:role="x-bg" begin="0.4s" end="8.6s"><span begin="0s" end="2s">Rise </span><span begin="2s" end="4s">rise </span><span begin="4s" end="6.1s">rise </span><span begin="6.1s" end="8.2s">together</span></span>
+      <span ttm:role="x-translation" xml:lang="zh-Hans">我们一起崛起</span>
+    </p>
+    <p begin="10s" end="19s" ttm:agent="lead">
+      <span begin="0s" end="2.2s">Hear </span><span begin="2.2s" end="4.6s">the </span><span begin="4.6s" end="9s">voices</span>
+      <span ttm:role="x-bg" begin="0.1s" end="8.8s"><span begin="0s" end="2.3s">Voices </span><span begin="2.3s" end="4.5s">in </span><span begin="4.5s" end="6.7s">the </span><span begin="6.7s" end="8.7s">distance</span></span>
+      <span ttm:role="x-translation" xml:lang="zh-Hans">听见远方的声音</span>
+    </p>
+    <p begin="20s" end="29s" ttm:agent="lead">
+      <span begin="0s" end="2.1s">Nothing </span><span begin="2.1s" end="4.3s">can </span><span begin="4.3s" end="6.5s">hold </span><span begin="6.5s" end="9s">us</span>
+      <span ttm:role="x-bg" begin="0.6s" end="8.5s"><span begin="0s" end="2s">No </span><span begin="2s" end="4s">one </span><span begin="4s" end="6s">can </span><span begin="6s" end="7.9s">stop</span></span>
+      <span ttm:role="x-translation" xml:lang="zh-Hans">没有什么可以阻挡我们</span>
+    </p>
+    <p begin="37s" end="43s" ttm:agent="lead">
+      <span begin="0s" end="2s">Sing </span><span begin="2s" end="4s">it </span><span begin="4s" end="6s">louder</span>
+      <span ttm:role="x-bg" begin="0s" end="6s"><span begin="0s" end="2s">Louder </span><span begin="2s" end="4s">and </span><span begin="4s" end="6s">louder</span></span>
+      <span ttm:role="x-translation" xml:lang="zh-Hans">放声歌唱</span>
+    </p>
+  </div></body>
+</tt>

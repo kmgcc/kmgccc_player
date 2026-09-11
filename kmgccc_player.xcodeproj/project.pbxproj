@@ -13,6 +13,7 @@
 		938818D52F7925E800880C25 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000006 /* Sparkle */; };
 		93A3C95A304949AC00BFA17B /* PlayerAutomationProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000002 /* PlayerAutomationProtocol */; };
 		93A3C95B304949AC00BFA17B /* PlayerAutomationIPC in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000003 /* PlayerAutomationIPC */; };
+		D20000000000000000000001 /* NativeLyrics in Frameworks */ = {isa = PBXBuildFile; productRef = D20000000000000000000003 /* NativeLyrics */; };
 		A01000000000000000000001 /* youdowhat.wav in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000001 /* youdowhat.wav */; };
 		A01000000000000000000002 /* youdowhatreversed.wav in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000002 /* youdowhatreversed.wav */; };
 		A01000000000000000000003 /* AGPL-3.0.txt in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000003 /* AGPL-3.0.txt */; };
@@ -86,6 +87,7 @@
 		C20000000000000000000003 /* CMSampleBufferFactory.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000013 /* CMSampleBufferFactory.swift */; };
 		C20000000000000000000004 /* RendererPlaybackPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000014 /* RendererPlaybackPipeline.swift */; };
 		C21000000000000000000001 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C21000000000000000000011 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift */; };
+		D30000000000000000000001 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */; };
 		F01000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000001 /* AppDelegate.swift */; };
 		F01000000000000000000002 /* DockController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000002 /* DockController.swift */; };
 		F01000000000000000000003 /* PlaybackCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000003 /* PlaybackCommands.swift */; };
@@ -181,6 +183,7 @@
 		C20000000000000000000013 /* CMSampleBufferFactory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = CMSampleBufferFactory.swift; path = kmgccc_player/Services/Audio/Renderer/CMSampleBufferFactory.swift; sourceTree = "<group>"; };
 		C20000000000000000000014 /* RendererPlaybackPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RendererPlaybackPipeline.swift; path = kmgccc_player/Services/Audio/Renderer/RendererPlaybackPipeline.swift; sourceTree = "<group>"; };
 		C21000000000000000000011 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/PlaybackKeyboardSeekTests.swift; sourceTree = "<group>"; };
+		D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift; sourceTree = "<group>"; };
 		E01000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = kmgccc_player/AppDelegate.swift; sourceTree = "<group>"; };
 		E01000000000000000000002 /* DockController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DockController.swift; path = kmgccc_player/DockController.swift; sourceTree = "<group>"; };
 		E01000000000000000000003 /* PlaybackCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlaybackCommands.swift; path = kmgccc_player/PlaybackCommands.swift; sourceTree = "<group>"; };
@@ -249,6 +252,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D20000000000000000000001 /* NativeLyrics in Frameworks */,
 				93A3C95B304949AC00BFA17B /* PlayerAutomationIPC in Frameworks */,
 				93A3C95A304949AC00BFA17B /* PlayerAutomationProtocol in Frameworks */,
 				938818D42F7925E800880C24 /* CrashReporter in Frameworks */,
@@ -408,6 +412,7 @@
 				C20000000000000000000013 /* CMSampleBufferFactory.swift */,
 				C20000000000000000000014 /* RendererPlaybackPipeline.swift */,
 				C21000000000000000000011 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift */,
+				D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */,
 			);
 			name = Tests;
 			sourceTree = "<group>";
@@ -445,6 +450,7 @@
 			);
 			name = kmgccc_player;
 			packageProductDependencies = (
+				D20000000000000000000003 /* NativeLyrics */,
 				AA0000000000000000000004 /* CrashReporter */,
 				AA0000000000000000000006 /* Sparkle */,
 				AA0000000000000000000002 /* WhatsNewKit */,
@@ -504,6 +510,7 @@
 			mainGroup = 935118892F3231C500766A5F;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				D20000000000000000000002 /* XCLocalSwiftPackageReference "Tools/NativeLyrics" */,
 				AA0000000000000000000001 /* XCRemoteSwiftPackageReference "WhatsNewKit" */,
 				AA0000000000000000000003 /* XCRemoteSwiftPackageReference "plcrashreporter" */,
 				AA0000000000000000000005 /* XCRemoteSwiftPackageReference "Sparkle" */,
@@ -743,6 +750,7 @@
 				C20000000000000000000003 /* CMSampleBufferFactory.swift in Sources */,
 				C20000000000000000000004 /* RendererPlaybackPipeline.swift in Sources */,
 				C21000000000000000000001 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift in Sources */,
+				D30000000000000000000001 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -897,7 +905,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = TYU73KR9WW;
 				ENABLE_APP_SANDBOX = NO;
@@ -919,7 +927,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = "$(inherited)";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 2.3.0;
+				MARKETING_VERSION = 2.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -951,7 +959,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = TYU73KR9WW;
 				ENABLE_APP_SANDBOX = NO;
@@ -972,7 +980,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = "$(inherited)";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 2.3.0;
+				MARKETING_VERSION = 2.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -1061,6 +1069,10 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
+		D20000000000000000000002 /* XCLocalSwiftPackageReference "Tools/NativeLyrics" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Tools/NativeLyrics;
+		};
 		D10000000000000000000001 /* XCLocalSwiftPackageReference "Dependencies/PlayerAutomation" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Dependencies/PlayerAutomation;
@@ -1119,6 +1131,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D10000000000000000000001 /* XCLocalSwiftPackageReference "Dependencies/PlayerAutomation" */;
 			productName = PlayerAutomationIPC;
+		};
+		D20000000000000000000003 /* NativeLyrics */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D20000000000000000000002 /* XCLocalSwiftPackageReference "Tools/NativeLyrics" */;
+			productName = NativeLyrics;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -969,10 +969,14 @@ struct LyricsFlatDriverView: View {
             .onChange(of: amllLyricsRenderQuality) { _, newValue in
                 guard isLyricsSurfaceActive else { return }
                 let scale = AppSettings.AMLLLyricsRenderQuality(rawValue: newValue)?.webViewScale ?? 0.75
-                LyricsSurfaceManager.shared.mainStore.setRenderQualityScale(
-                    scale,
-                    reason: "flatDriver.qualityChanged"
-                )
+                if LyricsSurfaceManager.rendererBackend == .native {
+                    NativeLyricsSurfaceManager.shared.setRenderScale(scale, for: .main)
+                } else {
+                    LyricsSurfaceManager.shared.mainStore.setRenderQualityScale(
+                        scale,
+                        reason: "flatDriver.qualityChanged"
+                    )
+                }
             }
     }
 
@@ -987,7 +991,7 @@ struct LyricsFlatDriverView: View {
     private func setupSeekCallback() {
         let coordinator = playbackCoordinator
         lyricsVM.onSeekRequest = { seconds in
-            coordinator.seek(to: seconds)
+            coordinator.seekAndResumeIfNeeded(to: seconds)
         }
     }
 
@@ -1010,12 +1014,12 @@ struct LyricsFlatDriverView: View {
         let shouldRevealExistingLyrics =
             LyricsSurfaceManager.shared.currentMode == .main
             && LyricsSurfaceManager.shared.switchState == .idle
-            && LyricsSurfaceManager.shared.existingStore(for: .main)?.isReady == true
+            && LyricsSurfaceManager.shared.hasReadySurface(for: .main)
 
         LyricsSurfaceManager.shared.reportMainVisible(true)
         reloadLyrics(reason: reason)
-        // A mode switch/new WebView already receives the full AMLL
-        // setLyricLines entrance from snapshot replay. Only a ready, already
+        // A mode switch/new surface already receives the full lyric entrance
+        // from snapshot replay. Only a ready, already
         // active main surface uses the lightweight existing-line relayout.
         if shouldRevealExistingLyrics {
             lyricsVM.revealExistingLyrics(reason: reason)
@@ -1026,7 +1030,7 @@ struct LyricsFlatDriverView: View {
         let presentation = playbackCoordinator.presentation
         switch presentation.source {
         case .local:
-            lyricsVM.ensureAMLLLoaded(
+            lyricsVM.ensureLyricsLoaded(
                 track: presentation.localTrack,
                 currentTime: presentation.lyricsCurrentTime,
                 isPlaying: presentation.isPlaying,
@@ -1035,7 +1039,7 @@ struct LyricsFlatDriverView: View {
                 forceLyricsReload: forceLyricsReload
             )
         case .appleMusic, .systemNowPlaying:
-            lyricsVM.ensureExternalAMLLLoaded(
+            lyricsVM.ensureExternalLyricsLoaded(
                 presentation: presentation,
                 reason: reason,
                 forceWebReload: forceWebReload,

@@ -65,7 +65,7 @@ struct HomeView: View {
 
             await prepareStartupGate()
         }
-        .onChange(of: libraryVM.refreshTrigger) { _, _ in
+        .onChange(of: libraryVM.homeContentRevision) { _, _ in
             homeVM.scheduleDeferredRefresh(
                 from: libraryVM,
                 playbackIsActive: { playbackIsActive }

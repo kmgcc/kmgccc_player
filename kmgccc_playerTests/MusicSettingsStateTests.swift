@@ -581,6 +581,94 @@ final class MusicSettingsStateTests: XCTestCase {
         await index.close()
     }
 
+    func testSearchIndexReturnsTimedLyricSnippetAfterAsyncRebuild() async throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = kmgccc_player.LibraryPaths(rootURL: root)
+        try paths.createRequiredDirectories()
+
+        let lyricURL = root.appendingPathComponent("search-result.lrc")
+        let lyricText = "[00:04.25]first line\n[00:12.50]needle lyric line\n"
+        try Data(lyricText.utf8).write(to: lyricURL)
+
+        let trackID = UUID()
+        let source = SearchDocumentSource(
+            trackID: trackID,
+            titleRaw: "Search Result",
+            artistRaw: "Artist",
+            albumRaw: "Album",
+            albumArtistRaw: nil,
+            ttmlLyricsFileURL: nil,
+            plainLyricsFileURL: lyricURL,
+            inlineTTMLText: nil,
+            inlinePlainLyricsText: nil,
+            playCount: 0,
+            preferenceScore: 0,
+            lastPlayedAt: nil,
+            updatedAt: Date(),
+            artistCreditsRaw: nil,
+            filePathRaw: "/Music/Search Result.flac",
+            formatRaw: "flac"
+        )
+
+        let index = LibrarySearchIndex(paths: paths)
+        await index.scheduleFullRebuild(from: [source], reason: "timed-lyric-search-test")
+        let hits = await index.search(query: "needle", fields: [.lyrics])
+
+        let hit = try XCTUnwrap(hits.first)
+        XCTAssertEqual(hit.trackID, trackID)
+        XCTAssertEqual(hit.lyricSnippetLine, "needle lyric line")
+        XCTAssertEqual(try XCTUnwrap(hit.lyricSnippetStartTime), 12.5, accuracy: 0.0001)
+        XCTAssertTrue(hit.matchedLyrics)
+        await index.close()
+    }
+
+    func testSearchIndexReturnsTimedLyricSnippetFromInlineTTML() async throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = kmgccc_player.LibraryPaths(rootURL: root)
+        try paths.createRequiredDirectories()
+
+        let trackID = UUID()
+        let ttml = """
+        <tt xmlns="http://www.w3.org/ns/ttml">
+          <body><div>
+            <p begin="2s" end="6s">opening line</p>
+            <p begin="11.5s" end="16s">needle from inline lyrics</p>
+          </div></body>
+        </tt>
+        """
+        let source = SearchDocumentSource(
+            trackID: trackID,
+            titleRaw: "Inline Search Result",
+            artistRaw: "Artist",
+            albumRaw: "Album",
+            albumArtistRaw: nil,
+            ttmlLyricsFileURL: nil,
+            plainLyricsFileURL: nil,
+            inlineTTMLText: ttml,
+            inlinePlainLyricsText: nil,
+            playCount: 0,
+            preferenceScore: 0,
+            lastPlayedAt: nil,
+            updatedAt: Date(),
+            artistCreditsRaw: nil,
+            filePathRaw: "/Music/Inline Search Result.flac",
+            formatRaw: "flac"
+        )
+
+        let index = LibrarySearchIndex(paths: paths)
+        await index.scheduleFullRebuild(from: [source], reason: "inline-timed-lyric-search-test")
+        let hits = await index.search(query: "needle", fields: [.lyrics])
+
+        let hit = try XCTUnwrap(hits.first)
+        XCTAssertEqual(hit.trackID, trackID)
+        XCTAssertEqual(hit.lyricSnippetLine, "needle from inline lyrics")
+        XCTAssertEqual(try XCTUnwrap(hit.lyricSnippetStartTime), 11.5, accuracy: 0.0001)
+        XCTAssertTrue(hit.matchedLyrics)
+        await index.close()
+    }
+
     func testDeletePolicyIsStoredInsideEachLibrary() async throws {
         let first = temporaryLibraryRoot()
         let second = temporaryLibraryRoot()

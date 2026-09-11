@@ -393,7 +393,7 @@ struct TrackEditSheet: View {
 
     private func refreshLiveLyricsIfEditingCurrentTrack(reason: String) {
         guard playerVM.currentTrack?.id == track.id else { return }
-        lyricsVM.ensureAMLLLoaded(
+        lyricsVM.ensureLyricsLoaded(
             track: track,
             currentTime: playerVM.lyricsCurrentTime,
             isPlaying: playerVM.isPlaying,
