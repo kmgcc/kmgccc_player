@@ -1,17 +1,16 @@
 # 色彩系统
 
-kmgccc_player 从封面提取颜色，但界面不直接消费采样结果。图像分析先生成稳定的统计模型，再由 `SemanticPaletteFactory` 映射为按用途命名的语义色。主要原生生产路径和全屏歌词颜色负载经 `ColorRenderingAdapter` 转换；窗口歌词、部分预览和少量兼容路径仍保留各自的出站形式。
+kmgccc_player 从封面提取颜色，但界面不直接消费采样结果。图像分析先生成稳定的统计模型，再由 `SemanticPaletteFactory` 映射为按用途命名的语义色。主要原生界面与纯原生 `NativeLyrics` 歌词引擎直接消费包含 Display P3 广色域的原生颜色；而保留的 AMLL 兼容路径则由 `ColorRenderingAdapter` 转换并下发对应的 CSS 颜色负载。
 
 ```mermaid
 flowchart LR
     Artwork["封面图像"] --> Analysis["ArtworkColorAnalysis"]
     Analysis --> Palette["SemanticPaletteFactory"]
     Palette --> Adapter["ColorRenderingAdapter"]
-    Adapter --> Native["主要 SwiftUI / AppKit / CG 路径"]
-    Adapter --> Web["全屏歌词 CSS 颜色负载"]
-    Palette --> Compat["窗口歌词与兼容/预览路径"]
+    Adapter --> Native["主要原生界面与 NativeLyrics (Display P3)"]
+    Adapter -. 兼容回退 .-> Web["全屏歌词 CSS 颜色负载 (AMLL)"]
     Palette --> Store["ThemeStore"]
-    Store --> Consumers["皮肤、全屏、频谱与歌词"]
+    Store --> Consumers["皮肤、全屏、频谱与原生歌词"]
 ```
 
 ## 为什么使用语义色
@@ -70,7 +69,7 @@ flowchart LR
 
 色域映射策略以保持角色顺序为目标。例如频谱中心色通常应比边缘色更亮、更有彩度，歌词活动色应保留对非活动色的层级。若某个高彩颜色先撞到色域边界再被简单裁剪，多个角色可能收敛；当前实现会在输出前按色相和目标色域收紧彩度，并由 SelfCheck、Golden baseline 和人工视觉检查共同验证这些不变量。
 
-全屏歌词路径会接收同时包含 sRGB 与 Display P3 的 CSS 颜色负载。窗口歌词和部分预览仍使用兼容颜色字符串，不能概括为所有 Web 歌词都已完成 P3 迁移。Swift 负责决定角色颜色和透明度；Web 侧完成选择、混合、阴影和动画，不应从 RGB 值反推新的语义角色。
+原生 `NativeLyrics` 引擎直接通过 `NativeLyricsConfigurationMapper` 获取原生 `NSColor` 调色板，获得与桌面视窗完全一致的高动态范围呈现；而全屏 Web 歌词路径在开启 AMLL 回退时接收同时包含 sRGB 与 Display P3 的 CSS 颜色负载。Swift 负责决定角色颜色和透明度；Web 侧仅在兼容模式下完成选择与阴影，不从 RGB 值反推新的语义角色。
 
 ## 主题发布与切歌稳定性
 

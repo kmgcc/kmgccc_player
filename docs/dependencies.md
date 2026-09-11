@@ -32,7 +32,7 @@ flowchart LR
 
 | 组件 | 运行边界 | 用途 | 失败时的降级 |
 | --- | --- | --- | --- |
-| AMLL | WKWebView 中的 JavaScript 与 DOM | TTML 解析和逐词歌词渲染 | 对应歌词 surface 无法显示 |
+| AMLL | WKWebView 中的 JavaScript 与 DOM（兼容回退通道） | 兼容模式下的 TTML 解析与逐词歌词渲染（生产环境默认由纯原生 Swift 组件 NativeLyrics 承载） | AMLL Web 兼容回退不可用，原生 NativeLyrics 渲染不受影响 |
 | LDDC Fetch Core | 本机回环 HTTP 服务 | 多来源歌词搜索、获取和格式处理 | LDDC 搜索不可用，本地 AMLL DB 仍可用 |
 | QQ Music Helper | stdin/stdout JSON 子进程 | QQ 音乐元数据和封面候选 | QQ 候选不可用，其他来源独立 |
 | MediaRemoteAdapter | 原生 framework 与流式 JSON | 系统 Now Playing 状态和控制 | 系统外部播放不可用，本地与 Apple Music 独立 |
@@ -42,11 +42,11 @@ flowchart LR
 
 ## AMLL
 
-[applemusic-like-lyrics](https://github.com/amll-dev/applemusic-like-lyrics) 提供逐词歌词渲染能力。项目使用固定 submodule 版本构建普通 DOM `LyricPlayer`、TTML parser 和背景渲染 bundle，App 通过 WKWebView 加载。
+[applemusic-like-lyrics](https://github.com/amll-dev/applemusic-like-lyrics) 在早期版本中为应用提供了基于前端技术的逐词歌词渲染能力。随着纯原生 Swift 歌词引擎（`NativeLyrics`，见 [原生 Swift 歌词系统](native-lyrics.md)）落地并成为默认渲染路径，AMLL 目前保留作为可选的兼容回退通道。项目仍通过固定 submodule 版本构建普通 DOM `LyricPlayer`、TTML parser 和背景渲染 bundle，供特定视窗或用户自选回退时由 WKWebView 加载。
 
 AMLL 资源分为两层：上游或集成层构建生成 JavaScript 与 CSS，App 适配层负责 bridge、surface 配置、时间预处理和原生状态投递。生成文件不作为手工编辑入口。
 
-许可证：AGPL-3.0-only。宿主边界和时间算法见 [歌词渲染系统](lyric-rendering.md)。
+许可证：AGPL-3.0-only。宿主调度边界和时间算法见 [歌词渲染系统](lyric-rendering.md)。
 
 ## LDDC Fetch Core
 
