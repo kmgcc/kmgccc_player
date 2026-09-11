@@ -510,7 +510,7 @@
 			mainGroup = 935118892F3231C500766A5F;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				D20000000000000000000002 /* XCLocalSwiftPackageReference "Tools/NativeLyrics" */,
+				D20000000000000000000002 /* XCRemoteSwiftPackageReference "NativeLyrics" */,
 				AA0000000000000000000001 /* XCRemoteSwiftPackageReference "WhatsNewKit" */,
 				AA0000000000000000000003 /* XCRemoteSwiftPackageReference "plcrashreporter" */,
 				AA0000000000000000000005 /* XCRemoteSwiftPackageReference "Sparkle" */,
@@ -1069,10 +1069,6 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		D20000000000000000000002 /* XCLocalSwiftPackageReference "Tools/NativeLyrics" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = Tools/NativeLyrics;
-		};
 		D10000000000000000000001 /* XCLocalSwiftPackageReference "Dependencies/PlayerAutomation" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Dependencies/PlayerAutomation;
@@ -1080,6 +1076,14 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		D20000000000000000000002 /* XCRemoteSwiftPackageReference "NativeLyrics" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/kmgcc/NativeLyrics.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.1.2;
+			};
+		};
 		AA0000000000000000000001 /* XCRemoteSwiftPackageReference "WhatsNewKit" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/SvenTiigi/WhatsNewKit.git";
@@ -1134,7 +1138,7 @@
 		};
 		D20000000000000000000003 /* NativeLyrics */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = D20000000000000000000002 /* XCLocalSwiftPackageReference "Tools/NativeLyrics" */;
+			package = D20000000000000000000002 /* XCRemoteSwiftPackageReference "NativeLyrics" */;
 			productName = NativeLyrics;
 		};
 /* End XCSwiftPackageProductDependency section */

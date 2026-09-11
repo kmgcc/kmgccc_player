@@ -1,6 +1,15 @@
 {
-  "originHash" : "28b88b6c581ffe2dbe925c0a383eaea4fa8a0f9ff6297d768cfe4e27b32be7a4",
+  "originHash" : "7e281b3ad506e0ee26eb1d24f30853fa2c4ef383780a76ba85c1e5ee678244f5",
   "pins" : [
+    {
+      "identity" : "nativelyrics",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/kmgcc/NativeLyrics.git",
+      "state" : {
+        "revision" : "6398956170242a9698314adc54bb641a4586c473",
+        "version" : "0.1.2"
+      }
+    },
     {
       "identity" : "plcrashreporter",
       "kind" : "remoteSourceControl",
