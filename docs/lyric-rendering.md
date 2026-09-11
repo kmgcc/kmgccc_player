@@ -1,33 +1,35 @@
 # 歌词渲染系统
 
-kmgccc_player 使用 AMLL 的普通 DOM `LyricPlayer` 渲染逐词歌词，TTML 解析与动画运行在 WKWebView 中，播放状态、颜色和 surface 生命周期由 Swift 管理。核心原则是让 Web 层专注渲染，让播放事实和界面切换继续由原生层持有。
+> [!NOTE]
+> 应用现已默认启用纯原生 Swift 歌词引擎（`NativeLyrics`），基于 Core Text 与 Core Animation 实现高刷新率排版与极低能耗。设计原理与原生渲染架构详见 [原生 Swift 歌词系统](native-lyrics.md)。本文档主要记录跨 surface 的统一调度生命周期、时间偏移预处理算法，以及保留作为兼容回退通道的 AMLL Web 渲染架构。
+
+kmgccc_player 采用统一的分层调度管理多 surface 歌词显示。播放状态、颜色计算与 surface 生命周期始终由 Swift 原生层持有，核心原则是让渲染层专注绘制，而播放事实与界面切换统一收敛在服务层。
 
 ```mermaid
 flowchart LR
     Presentation["NowPlayingPresentation"] --> Pipeline["LyricsPlaybackPipeline"]
-    Pipeline --> Model["LyricsViewModel"]
-    Model --> Manager["LyricsSurfaceManager"]
-    Manager --> Store["LyricsWebViewStore"]
+    Pipeline --> Model["LyricsViewModel (时间与偏移)"]
+    Model --> Manager["LyricsSurfaceManager (多 surface 调度)"]
+    Manager --> Native["NativeLyricsSurfaceManager (原生 Swift 后端)"]
+    Manager -. 兼容回退 .-> Store["LyricsWebViewStore (AMLL Web 后端)"]
     Store --> Bridge["JavaScript bridge"]
-    Bridge --> Parser["TTML parser"]
-    Parser --> Timing["时间预处理"]
-    Timing --> Player["AMLL LyricPlayer"]
+    Bridge --> AMLL["AMLL DOM LyricPlayer"]
 ```
 
-## 原生层与 Web 层的边界
+## 服务调度层与渲染后端的边界
 
-原生层持有当前曲目、播放时间、播放状态、歌词文本、偏移设置和语义色。`LyricsPlaybackPipeline` 监听展示模型变化，把一次播放快照转换为歌词状态；`LyricsViewModel` 计算曲目偏移、全局提前量和 surface 配置；`LyricsSurfaceManager` 决定哪些 surface 活跃；每个 `LyricsWebViewStore` 独立持有 WKWebView、ready 状态和可重放快照。
+服务调度层持有当前曲目、播放时间、播放状态、歌词文本、偏移设置和语义色。`LyricsPlaybackPipeline` 监听展示模型变化，把一次播放快照转换为歌词状态；`LyricsViewModel` 计算曲目偏移、全局提前量和 surface 配置；`LyricsSurfaceManager` 决定哪些 surface 处于活动状态，并分发给对应的渲染后端。
 
-Web 层解析 TTML、预处理行与逐词时间，并调用 `LyricPlayer`。它可以实现渲染所需的 CSS、动画和兼容适配，但不能反向成为播放状态来源，也不负责判断当前播放来自本地还是外部 provider。
+在默认的 `NativeLyrics` 原生后端中，歌词直接由 `NativeLyricsSurface` 承载，排版与动效直接在 Core Text 与 Core Animation 中完成，完全绕过浏览器运行时；在 AMLL 兼容后端中，`LyricsWebViewStore` 独立持有 WKWebView、ready 状态和可重放快照，Web 层仅负责执行渲染，不能反向成为播放状态的仲裁源。
 
 ## 多 surface 生命周期
 
-窗口歌词、全屏歌词和预览歌词共享渲染资源，但不共享同一个 WKWebView。每个 surface 都有独立的 ready 状态和 DOM 生命周期，`LyricsSurfaceManager` 用快照把同一份歌词状态投递给目标 surface。
+窗口歌词、全屏歌词和预览歌词拥有各自独立的展示区域（surface）。无论后端处于原生模式还是 Web 兼容模式，`LyricsSurfaceManager` 都通过快照机制将当前歌词状态安全分发至活动中的目标 surface。
 
 surface 切换遵循“先准备目标，再回收旧目标”的顺序：
 
 1. 激活目标 surface；
-2. 目标 WKWebView ready 后重放当前快照；
+2. 目标渲染容器（原生 Layer 树或兼容 WKWebView）ready 后重放当前快照；
 3. 确认目标已经接管显示；
 4. 延迟回收不再需要的旧 surface。
 
@@ -96,9 +98,9 @@ isNearSwitch = !hasOriginalOverlap && rawGap <= nearSwitchGapMs
 - 退出行高亮补完只是视觉补偿，不能成为时间事实来源。
 - 暂停、seek 和普通播放必须走可区分的状态路径；seek 不执行退出高亮补完。
 
-## 渲染性能
+## AMLL Web 兼容渲染性能
 
-WKWebView 的帧循环只在播放或动画尚未稳定时持续运行。暂停后保留一个短暂的收敛窗口，随后停止 `requestAnimationFrame`；新的 bridge 调用、可见性变化或配置更新会重新唤醒渲染器。
+在启用 AMLL 兼容模式时，WKWebView 的帧循环只在播放或动画尚未稳定时持续运行。暂停后保留一个短暂的收敛窗口，随后停止 `requestAnimationFrame`；新的 bridge 调用、可见性变化或配置更新会重新唤醒渲染器。原生 `NativeLyrics` 则直接由 Core Animation 与硬件垂直同步驱动，无此限制（详见 [原生 Swift 歌词系统](native-lyrics.md)）。
 
 歌词性能问题通常来自透明 WebView、持续帧循环、根节点阴影、混合模式、模糊滤镜或重复重建 DOM。诊断时先确认 surface 是否被反复创建、同一快照是否重复投递，以及暂停后帧循环能否真正停下。
 

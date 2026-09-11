@@ -16,8 +16,8 @@ flowchart TD
     Presentation --> UI["界面与皮肤"]
     Presentation --> Lyrics["歌词管线"]
     Presentation --> Theme["主题与颜色"]
-    Playback --> Audio["AudioAnalysisHub / 频谱与可视化"]
-    Lyrics --> AMLL["AMLL / WKWebView"]
+    Lyrics --> NativeLyrics["NativeLyrics (Swift / Core Text)"]
+    Lyrics -. 兼容回退 .-> AMLL["AMLL / WKWebView"]
 ```
 
 ## 应用启动
@@ -87,21 +87,21 @@ TTML 歌词文本
   → LyricsPlaybackPipeline（监听 presentation 变化，区分本地/外部来源）
   → LyricsViewModel（持有当前曲目、歌词配置和 offset 计算）
   → LyricsSurfaceManager（管理 main/fullscreen 等 surface 的活动关系）
-  → LyricsWebViewStore（持有 WKWebView 生命周期和 bridge 调用）
-  → AMLL WKWebView（TTML 解析 + timing 预处理 + DOM LyricPlayer）
+      ├─► NativeLyricsSurfaceManager（原生 Swift 后端：Core Text 排版 + Core Animation 图层）
+      └─► LyricsWebViewStore（兼容回退后端：WKWebView + AMLL DOM LyricPlayer）
 ```
 
 各层职责：
 
-- `LyricsPlaybackPipeline` 监听 presentation 变化，同步歌词内容、时间和播放态；
+- `LyricsPlaybackPipeline` 监听 presentation 变化，同步歌词内容、硬件时钟时间基准和播放态；
 - `LyricsViewModel` 持有当前曲目和 offset 计算，决定何时需要重新 apply；
-- `LyricsSurfaceManager` 持有各 surface 的活动关系和可回放 snapshot，切换 surface 时先准备目标再延迟回收旧目标；
-- 每个 `LyricsWebViewStore` 持有自己的 WKWebView 生命周期、ready 状态和 bridge 调用；
-- AMLL 的 `index.html` 负责 TTML 解析后的 timing 预处理、配置适配和 DOM renderer。
+- `LyricsSurfaceManager` 协调各 surface 的活动关系和可回放 snapshot，并根据设置派发到原生渲染或 Web 兼容后端；
+- `NativeLyricsSurfaceManager` 驱动基于 Core Text 与 Core Animation 的原生渲染视窗，以微秒级延迟响应音频时钟并呈现 120Hz 高刷新率动效；
+- `LyricsWebViewStore` 在开启兼容模式时持有 WKWebView 生命周期、ready 状态和 bridge 调用。
 
-窗口或全屏视图只报告可见性，不应成为歌词内容的状态源。手动隐藏再显示会保留持久 WKWebView 和已有行，切歌或新 surface 才投递新歌词。
+窗口或全屏视图只报告可见性，不应成为歌词内容的状态源。手动隐藏再显示会保留持久渲染宿主和已有行，切歌或新 surface 才投递新歌词。
 
-`LyricsSurfaceManager` 协调多个 surface 的切换，是歌词系统的核心调度点。修改歌词相关逻辑时，需要同时验证窗口歌词、全屏 surface、cover blur surface、seek、暂停与恢复、重叠行渲染和 lead-in 精度。
+`LyricsSurfaceManager` 协调多个 surface 的切换，是歌词系统的核心调度点。修改歌词相关逻辑时，需要同时验证窗口歌词、全屏 surface、cover blur surface、seek、暂停与恢复、重叠行渲染和 lead-in 精度。详细架构见 [原生 Swift 歌词系统](native-lyrics.md)。
 
 ## 界面与皮肤
 

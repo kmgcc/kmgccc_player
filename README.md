@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="screenshots/Icon-iOS-Default-1024x1024@1x.png" width="192" alt="kmgccc_player Icon" />
+  <img src="pages/assets/icon.png" width="192" alt="kmgccc_player Icon" />
 </p>
 
 <h1 align="center">kmgccc_player</h1>
@@ -18,12 +18,12 @@
 
 ## 主要功能
 
-- **本地曲库**：管理本地音乐文件，支持按专辑、歌手、播放列表浏览和搜索，批量编辑元数据。
-- **歌词显示**：基于 AMLL 实现类 Apple Music 的逐词歌词渲染，支持窗口、全屏和 MiniPlayer 多种歌词表面。
-- **外部播放**：读取 Apple Music 和系统正在播放的信息，自动匹配歌词和封面。
-- **多种皮肤**：内置多种 Now Playing 皮肤，支持全屏和多种可视化效果。
-- **动态主题**：从封面提取色彩，自动生成界面主题和歌词颜色。
-- **音频可视化**：实时频谱和波形显示，支持多种可视化样式。
+- **现代本地曲库**：支持多资料库独立管理与原位目录引用，无需移动或复制音频文件即可直接映射既有文件夹，并提供专辑、艺人与文件夹层级平行的双轴浏览体验。
+- **原生 Swift 歌词**：采用纯原生 Core Text 排版与 Core Animation 动效管线，紧随音频硬件时钟起伏实现细腻的逐字呼吸与弹簧滚动，能耗与发热显著降低，并完美支持 ProMotion 120Hz 高刷新率。
+- **外部播放协同**：无缝读取 Apple Music 及系统全局媒体的正在播放状态，自动关联高精度歌词与高清封面。
+- **多元视听皮肤**：内置多款精心调校的 Now Playing 与全屏皮肤，支持随乐曲脉动的多形态实时音频频谱与波形可视化。
+- **动态色彩系统**：从专辑封面中提炼具有视觉张力的 OKLCH 语义色，自适应生成舒适通透的视窗质感与高可读性歌词配色。
+- **纯粹本地优先**：全部元数据解析、全文搜索索引与偏好统计皆在 Mac 本地无声运行，无需注册账号，零网络依赖，尊重听者的隐私与数据掌控。
 
 ## 系统要求
 
@@ -76,7 +76,14 @@ git submodule update --init --recursive
 
 ## 技术文档
 
-已大致整理出一份技术文档，从 [`docs/README.md`](docs/README.md) 开始，覆盖应用架构、歌词渲染、OKLCH 色彩系统、资料库存储、曲库搜索和偏好随机播放。文档只描述可公开复用的原理、API 与工程设计。
+我们在 [`docs/README.md`](docs/README.md) 中系统梳理了应用的架构理念、核心算法与工程实现，文档面向开源贡献者与对实现细节感兴趣的开发者：
+
+- [应用架构](docs/architecture.md)：应用组合根、资料库 Session 隔离、本地与外部播放主链路及统一展示模型；
+- [原生 Swift 歌词系统](docs/native-lyrics.md)：Core Text 字体排版度量、Core Animation 遮罩动效、弹簧物理滚动与硬件时钟同步；
+- [现代本地音乐资料库体系](docs/library-system.md)：原位引用与托管双模式、多资料库隔离、标签与目录双轴浏览哲学；
+- [色彩系统](docs/color-system.md)：基于 OKLCH 与 Display P3 的封面取色、语义映射与局部可读性算法；
+- [曲库搜索](docs/search.md) 与 [偏好随机播放](docs/smart-shuffle.md)：基于 SQLite FTS5 的本地检索以及结合听觉行为的探索衰减模型；
+- [实现约束与坑](docs/PITFALLS.md)：关键业务逻辑中生效的硬性约束与避坑备忘录。
 
 ## 常见问题
 

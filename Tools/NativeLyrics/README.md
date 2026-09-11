@@ -27,4 +27,4 @@ swift test --package-path Tools/NativeLyrics --quiet
 bash Tools/NativeLyrics/script/build_and_run.sh
 ```
 
-The package is not part of the Xcode application target yet. The migration route and the complete AMLL/fork behavior matrix are documented in [Native Lyrics / AMLL Parity Investigation](../../docs/native-lyrics-amll-parity-investigation.md).
+The behavior regressions and validation suite are documented in [VALIDATION.md](VALIDATION.md) and [BEHAVIOR-REGRESSIONS.md](BEHAVIOR-REGRESSIONS.md).

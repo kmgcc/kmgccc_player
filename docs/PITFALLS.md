@@ -1,9 +1,10 @@
 # 实现约束与坑（PITFALLS）
 
-只收录**当前仍然生效**的实现约束与已知坑。改对应功能代码前先读本页；条目失效时直接改写或删除，不保留历史版本（过程性记录见 [archive/](archive/README.md)）。
+只收录**当前仍然生效**的实现约束与已知坑。改对应功能代码前先读本页；条目失效时直接改写或删除，不保留历史版本。
 
-## AMLL / 歌词
+## 歌词渲染（NativeLyrics 与 AMLL）
 
+- 生产环境默认采用原生 `NativeLyrics` 引擎（Core Text + Core Animation）；Web/AMLL 仅保留作为兼容回退。不要在原生渲染层中引入依赖 DOM、JavaScript bridge 或全局 WebView 实例的假设，也不得将 WebView 直接传给原生宿主视图。
 - `kmgccc_player/Resources/AMLL/` 下的 `amll-core.js`、`amll-lyric.js`、`amll-background.js`、`style.css` 是**生成物，不可手改**；用 `scripts/sync-amll-from-fork.sh` 从 fork 同步。
 - 歌词 WebView 的 owner 是 `LyricsSurfaceManager`；不要在 View 里持有或新建 WebView。view-owned WebView、旧 `LyricsBridge.swift`、旧 exiting-line suppress、离散 highlight 系统均已废弃，**不要恢复**。
 
@@ -31,7 +32,7 @@
 
 - 工程使用 Xcode **文件夹同步组**（PBXFileSystemSynchronizedRootGroup，无 membershipExceptions）：在同步目录里新建 `.swift` 文件即自动入 target，不需要也不应该手改 project.pbxproj 登记文件。
 - 两套测试定位不同：`kmgccc_playerTests/` 是挂在 scheme 上的 XCTest target；`Tests/` 是用 `xcrun swiftc -parse-as-library` 直接编译被测源码的轻量脚本回归（刻意不依赖 App / SwiftData target）。新增测试先想清楚进哪条轨。
-- 日志使用现有 `Log` 分类，**不加临时 `print`**——历史上积累过 100+ 处裸 print，清理计划见 [code-refactor-plan.md](code-refactor-plan.md)。
+- 日志使用现有 `Log` 分类，**不加临时 `print`**——严禁在业务逻辑中引入裸 print，统一走现有 `Log` 分类。
 
 ## 提交与验证
 
