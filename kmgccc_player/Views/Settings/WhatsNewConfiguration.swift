@@ -18,29 +18,14 @@ enum WhatsNewConfiguration {
         title: "什么是新的",
         features: [
             WhatsNew.Feature(
-                image: .init(systemName: "headphones", foregroundColor: .blue),
-                title: "空间音频",
-                subtitle: "支持 Apple 空间音频，配合兼容的耳机，可开启环绕声场和头部跟踪。"
+                image: .init(systemName: "music.note.list", foregroundColor: .indigo),
+                title: "原生 Swift 歌词引擎",
+                subtitle: "歌词全面迁移至原生 Swift 实现，带来更丝滑流畅的逐字动效与更精准的节奏同步，并大幅降低系统资源占用。"
             ),
             WhatsNew.Feature(
-                image: .init(systemName: "folder.fill", foregroundColor: .green),
-                title: "多资料库与就地入库",
-                subtitle: "可创建并切换多个曲库，也可直接添加本地文件夹，无需复制或移动文件。"
-            ),
-            WhatsNew.Feature(
-                image: .init(systemName: "speaker.wave.2.fill", foregroundColor: .purple),
-                title: "滚轮调节音量",
-                subtitle: "全屏播放时，在封面区域滑动滚轮或双指轻扫触控板，即可快捷调节音量。"
-            ),
-            WhatsNew.Feature(
-                image: .init(systemName: "doc.text", foregroundColor: .orange),
-                title: "更舒展的详情阅读",
-                subtitle: "点击专辑或艺人的介绍文字，可在大窗口中阅读完整内容；全屏播放时右键也能查看。"
-            ),
-            WhatsNew.Feature(
-                image: .init(systemName: "sun.max.fill", foregroundColor: .yellow),
-                title: "HDR 点缀",
-                subtitle: "在支持的 XDR 显示屏上，LED 仪表可使用高动态范围显示，亮度更高、对比更鲜明。"
+                image: .init(systemName: "arrow.down.circle.fill", foregroundColor: .green),
+                title: "无缝自动更新",
+                subtitle: "新版本支持在后台静默下载，更新完成后只需重启应用即可直接完成升级安装，无需再手动打开 DMG 镜像。"
             )
         ],
         primaryAction: .init(
