@@ -397,19 +397,27 @@ JSON write、Storage backup/diff/orphan/reload。文件
 App 前台确认保护；本轮没有删除用户真实文件。
 
 最近验证（2026-09-12）：PlayerAutomation SwiftPM 测试 12/12 通过；Xcode
-`MusicSettingsStateTests` 全部通过（含 durable Job history/restart recovery）；App Debug
-build 通过。此前 MCP stdio smoke 已验证现代
- `2026-07-28` stateless discovery/per-request metadata、旧版 `2025-11-25` initialize
+`MusicSettingsStateTests` 全部通过（含 durable Job history/restart recovery）；从当前工作树
+生成的独立 Debug App 产物启动成功；`MCP stdio smoke` 已验证现代
+`2026-07-28` stateless discovery/per-request metadata、旧版 `2025-11-25` initialize
 compatibility、Resources 2 个和 Tools 56 个；`xcodebuild ... -configuration Debug ...
-CODE_SIGNING_ALLOWED=NO build` 通过；`git diff --check` 通过。独立 bundle 的真实 Debug App
-已通过 MCP 连接外置 SSD `/Volumes/SSD/Music` 的 Referenced Library：创建 Playlist、加入
-4 个已有 Track、验证 idempotency、stale revision conflict、物理文件 rename/restore、
-`files.inspect`、Source refresh Job 和磁盘上的 Playlist JSON。进一步将其中一个文件临时
-移出两个重叠 Source 后 refresh，验证 Track `missing`、Playlist membership 保留；放回后
-再次 refresh，验证恢复 `available` 和 Source memberships。`storage.validate` 通过，设置窗口
-截图确认“自动化与智能”板块可见，三个开关、socket 状态和风险说明已显示。
-仍未验证真实 signed App、第三方 MCP host、拒绝 Source 授权分支、批量文件操作的实际前台
-确认交互、MCP Tasks/跨重启真正取消，以及真实 provider 大批量歌词结果。
+CODE_SIGNING_ALLOWED=NO build` 通过；`git diff --check` 通过。独立 Debug App 的真实 MCP
+会话已完成 initialize、`source.list`、`playlist.get`、`storage.validate`、Playlist 幂等
+加入、`files.delete` dry-run 和 Lyrics candidates；连接的 Referenced Library 为
+`0D4C4169-7848-44B0-A149-984C698D9063`，Source 为外置 SSD `/Volumes/SSD/Music/testmus`
+及其 `810` 子目录。MCP 发起 Source refresh Job `E711F5A9-F58A-4EC2-90A9-A3E7A02C305F`
+并完成；重启同一独立 App 后仍可通过 CLI 读取该 Job、测试 Playlist membership 和 storage
+validation，磁盘上的 `Settings/automation-jobs.json` 与 Playlist JSON 均已核对。现有
+12 个 missing Track 仍保留 Library、Metadata/Playlist 关系，健康诊断正确报告 missing。
+已使用本机 Claude Code 作为第三方 MCP Host，通过临时只读配置成功读取 `system.info` 和
+`source.list`，没有发生 mutation。临时关闭 `automationMCPEnabled` 或
+`automationCLIEnabled` 的实测分别返回结构化 `authorizationRequired`，随后已恢复为原本的
+未显式设置（代码默认开启）状态。设置窗口截图确认“自动化与智能”板块可见，三个开关、
+socket 状态和风险说明已显示。
+仍未验证真实 signed App、拒绝 Source 授权分支、批量文件操作的实际前台确认交互、真实
+高风险文件删除、MCP Tasks/跨重启真正取消，以及真实 provider 大批量歌词结果；本轮没有
+删除或移动外置 SSD 上的真实音乐文件。一次独立只读 review 因外部模型预算耗尽未返回报告，
+因此不把它计作 review 通过。
 
 每完成一个阶段，都必须更新本节、验收矩阵和 `docs/README.md`，记录实际改动、测试、
 未验证边界和下一阶段，不得用“Tool 数量”代替验收。
