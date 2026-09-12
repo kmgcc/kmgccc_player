@@ -17,7 +17,8 @@
 
 - `source.list` 查看 Source path、status、lastScan 和 playlist bindings。
 - 未授权 Source 必须通过 `source.create` 触发 App-owned picker；原始 path 不能直接伪造授权。
-- 用户拒绝时应得到 `authorizationRequired`/permission denial，且不应出现半成品 Source。
+- 用户拒绝或取消时应得到 `interactionRequired`/permission denial，且不应出现半成品 Source
+  或 import Job。
 - NAS/移动盘不在线时，默认保留 Source 和 Track，检查 `offline`、`permissionDenied`、
   `stale` 状态后再执行 `source.refresh`。
 - 文件消失默认是 missing + preserve；不要把 missing 误判成需要删除 Track。
@@ -45,14 +46,16 @@ scope；`automation.grantScope` 会把请求带到前台并要求用户确认。
 `lyrics.refresh` 或其他 App-owned 长任务返回 Job ID 时：
 
 ```text
-jobs.get -> 读取 state/currentPhase/completedCount/totalCount/failures
-jobs.cancel -> 请求取消
+jobs.get -> 读取 state/currentPhase/completedCount/totalCount/failures/failedItemIDs
+jobs.retry -> 对 retryable 的失败或部分失败 Job 重试（歌词优先只重试失败项）
+jobs.cancel -> 请求协作式取消
 重新查询 -> 验证已持久化的 domain data
 ```
 
-当前 Job observation 是 launch-scoped；App 重启后先查询 domain data 和 `source.list`，不要
-假设旧 Job ID 仍存在。当前 Source refresh/create 仍可能是同步 bounded operation，不要把
-它们当成已经具备跨重启 durable Job 的能力。
+Job 历史按资料库写入 `Settings/automation-jobs.json`，最多保留有界数量。App 重启时未完成
+的 Job 会以 recovery failure 变成 `failed`；安全可重建的 Lyrics/Source Job 可以通过
+`jobs.retry` 新建 Job。取消是协作式的，不会撤销已经提交的 domain data；不要把旧 Job 的
+取消误解为事务回滚。
 
 ## Build / helper
 

@@ -25,8 +25,14 @@ Use the App-owned automation capability catalog before inventing a workflow.
 2. Compose `library.tracks` predicates (`all`, `any`, `not`, membership, dates, technical fields,
    lyrics/artwork/metadata state), stable sort and pagination.
 3. Save revisions; use `dryRun` for medium/high risk changes and `expectedRevision` for writes.
-4. Use `idempotencyKey` for retried mutations; poll long operations through `jobs.get`.
+4. Use `idempotencyKey` for retried mutations; poll long operations through `jobs.get`, and use
+   `jobs.retry` for retryable failed/partial Jobs.
 5. Verify with a new query and report applied, skipped, conflicts and failures.
+
+For lyrics maintenance, use `lyrics.search`/`lyrics.candidates` to inspect candidates,
+`lyrics.compare` before `lyrics.apply`, or use `lyrics.refresh` for a batch Job. Refresh tries
+word-synced lyrics first, falls back to line-synced lyrics, and does not replace an equal or better
+current result unless the user explicitly requests force.
 
 For physical file work, inspect first, preview the destination, apply through `files.rename` or
 `files.move`, then refresh the affected Source and verify the Track path. Never use direct Storage

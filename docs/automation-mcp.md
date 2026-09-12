@@ -86,8 +86,10 @@ mutation 时，可以在 `tools/call.params` 旁带本项目扩展的 `context` 
 返回包含 Job ID 的结构化结果；调用方应使用 `jobs.get` 轮询并在 Job 完成后重新查询
 Source/Track 状态。这个项目扩展与 MCP Tasks 是两个不同层次的能力。
 
-当前内部 Job abstraction 通过 `jobs.list/get/cancel` 暴露；它还没有被错误地冒充成 MCP
-Tasks capability。等 Swift MCP SDK/协议映射和重启语义稳定后再增加 Tasks。
+当前内部 Job abstraction 通过 `jobs.list/get/cancel/retry` 暴露；它还没有被错误地冒充成
+MCP Tasks capability。Job 历史按资料库持久化，重启恢复和可重建的 Lyrics/Source retry
+仍由 App-owned Job contract 管理。等 Swift MCP SDK/协议映射和 MCP Tasks 语义稳定后再增加
+Tasks 映射。
 
 当前 stdio reader 是顺序同步 reader，不会把 legacy `notifications/cancelled` 虚报成已
 完成的底层取消。长任务应使用返回的 Job 与 `jobs.cancel`；MCP Tasks、transport-close

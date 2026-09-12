@@ -46,6 +46,11 @@ source.list / source.refresh
 复杂需求优先用 `all`/`any`/`not`、membership、日期、技术音频和 metadata/lyrics 状态
 组合，而不是请求开发者为每个自然语言句子新增一个专用 Tool。
 
+歌词维护应先组合 selection，再使用 `lyrics.search`/`lyrics.candidates`、`lyrics.compare`
+和 `lyrics.apply` 处理明确候选；大批量维护使用 `lyrics.refresh` Job。它会逐字优先、无可用
+逐字结果再考虑逐行结果，默认不覆盖同等或更高质量的当前歌词。Job 完成后检查
+`failedItemIDs`，对可重试的失败使用 `jobs.retry`，不要因超时而盲目重复整批。
+
 ## File operations
 
 文件操作只应针对 `files.*` capability，不应通过修改 Playlist、Track sidecar 或任意

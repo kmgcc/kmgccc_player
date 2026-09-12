@@ -57,8 +57,8 @@ session，因此 CLI/MCP 请求不会偷偷切换资料库。
 | files delete | files.delete | 预览并将真实文件移入 macOS 废纸篓；始终需要 scope 和 App 前台确认 |
 | playback / queue | playback.* / queue.* | 控制本地播放和查询/插播/替换 Queue |
 | metadata | metadata.get/patch | 读取或批量修改 App metadata，不写 embedded file tags |
-| lyrics | lyrics.get/refresh | 查看歌词；批量刷新返回 Job，并只应用质量更高结果 |
-| jobs / diagnostics | jobs.* / diagnostics.health | 查看进度、取消 Job 和收集 Source/Library evidence |
+| lyrics | lyrics.get/search/candidates/compare/apply/refresh | 查询候选、比较/应用；批量刷新返回 Job，逐字优先且只应用质量更高结果 |
+| jobs / diagnostics | jobs.list/get/cancel/retry / diagnostics.health | 查看进度、重试/取消 Job 和收集 Source/Library evidence |
 | policy | automation.capabilities/scopes/grantScope/revokeScope | 查看或经 App 确认管理统一 scope |
 
 每次请求使用 length-prefixed JSON frame。--json 时 stdout 只输出一个版本化
@@ -92,7 +92,8 @@ swift run player-automation cli playlist remove <playlist-id> <track-id> --yes -
 `authorizationRequired`，不会触碰文件。只读 `dryRun` 仍可用普通 Library scope 查看影响。
 
 当前设置窗口的“自动化与智能”板块控制本机 Automation endpoint、MCP 连接和 CLI/脚本
-入口。关闭 endpoint 会停止本机 socket；只关闭 MCP 或 CLI 时，其他控制面仍可用。
+入口。关闭 endpoint 会停止本机 socket；只关闭 MCP 或 CLI 时，已建立的 socket 仍保持
+连接但下一次业务请求会得到 `authorizationRequired`，另一个控制面仍可用。
 
 ## MCP stdio
 

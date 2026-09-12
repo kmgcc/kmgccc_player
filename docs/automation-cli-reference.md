@@ -21,11 +21,11 @@ library list|tracks
 playlist list|get|create|rename|delete|add|remove|replace|reorder
 source list|create|bind|exclude|include|watch|unwatch|remove|refresh
 metadata get|patch
-lyrics get|refresh
+lyrics get|search|candidates|compare|apply|refresh
 playback state|play|pause|next|previous|seek|volume|mode
 queue get|replace|enqueue|enqueue-next|clear
 history list|clear
-jobs list|get|cancel
+jobs list|get|cancel|retry
 diagnostics health
 settings get|patch
 storage inspect|validate|repair
@@ -69,6 +69,12 @@ App-owned scaffolding。
 在用户完成 App picker 后立即返回 `importFiles` Job。CLI 不会为了等待扫描而无限阻塞，
 应使用结果中的 Job ID 调用 `jobs get`，完成后再查询 Source、Track 和 Playlist。
 
+Lyrics 的候选工作流可以拆成可组合的调用：`lyrics search`/`lyrics candidates` 返回候选，
+`lyrics compare` 比较候选与当前结果，`lyrics apply` 应用明确选中的候选。`lyrics refresh`
+则把选择交给 App-owned Job：对每首歌先尝试逐字歌词，没有可用逐字结果再尝试逐行歌词，
+默认不覆盖质量相同或更好的当前结果；只有显式使用 `--force` 才允许强制覆盖。失败项会
+记录到 Job 的 `failedItemIDs`，可用 `jobs retry <job-id>` 只重试失败项。
+
 ## Output contract
 
 - `--json` 时 stdout 只输出一个 `AutomationResponse` JSON envelope；不要从 stdout 读取诊断。
@@ -94,5 +100,5 @@ App-owned scaffolding。
 歌词刷新返回 Job，脚本应：
 
 ```text
-lyrics refresh -> jobs.get(Job ID) -> jobs.cancel（必要时） -> 验证 library.tracks/lyrics.get
+lyrics refresh -> jobs.get(Job ID) -> jobs.retry/jobs.cancel（必要时） -> 验证 library.tracks/lyrics.get
 ```

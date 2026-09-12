@@ -15,9 +15,9 @@ Pi runtime 和远程聊天 provider；本轮先把播放器本身建设成一个
 - 基线：`main/origin/main`，commit `236a1b5d`
 - 已完成：Phase A–K 的共享协议、Tool Catalog、CLI、AF_UNIX IPC、MCP stdio，以及
   Library / Playlist / 已授权 Referenced Source 的第一条垂直切片
-- 当前阶段：Phase L 验收与独立 review；Phase A–K 的共享合同和高价值基础能力已落地，
-  本轮已补齐 Source missing/reappear 与授权范围内文件管理的关键闭环，尚未开放的领域仍按
-  本文件明确记录，不把能力目录数量当作完成度
+- 当前阶段：Phase E/F 收尾与 P0 验收；共享合同和高价值基础能力已落地，本轮继续补齐
+  durable Jobs、Lyrics 候选工作流与可重试批处理，随后仍需完成真实 Host、授权拒绝和前台
+  高风险确认验收，不把能力目录数量当作完成度
 - 暂缓：Built-in Agent runtime 和任何独立模型数据层
 
 公开仓库地址以当前 `git remote -v` 为准，当前已验证为
@@ -276,14 +276,17 @@ storage 等高风险动作必须可 preview、cancel、confirm、recover。当�
 
 建立 App-owned Job abstraction：ID、status、phase、progress、completed/total、failures、
 retry、cancel、result、timestamps、durable/transient 和 restart 行为，再映射到 CLI 和
-MCP Tasks（若 SDK/协议适合）。Source scan/import、歌词、Metadata、Artwork、repair
+MCP Tasks（若 SDK/协议适合）。当前已将有界历史持久化到每个资料库的
+`Settings/automation-jobs.json`，重启时把未终态 Job 恢复为带 recovery failure 的 failed
+记录，并对 Lyrics/Source 提供安全重建；Source scan/import、歌词、Metadata、Artwork、repair
 不得用无限等待的同步 Tool。
 
 ### Phase F：Lyrics
 
-调查现有 provider、candidate、ranking、TTML/LRC、cache 和 replace policy。实现 status、
-search、candidate、score、compare、preview、apply、quality policy、batch Job 和 retry；
-默认只在新候选明确更好时替换，不覆盖用户手工结果。
+调查现有 provider、candidate、ranking、TTML/LRC、cache 和 replace policy。当前已实现
+status/get、search/candidates、compare、apply、quality policy、batch Job 和 retry；refresh
+先尝试逐字歌词，没有可用逐字结果再尝试逐行歌词，默认只在新候选明确更好时替换，不覆盖
+用户手工结果。仍需补真实 provider/批量失败和前台产品验收。
 
 ### Phase G：Metadata / Artwork
 
@@ -352,7 +355,7 @@ add selection to Playlist
 membership 或删除 Playlist 不删除音频文件。Source 文件消失时默认保留 Track、
 membership、Metadata 和 History，并在重新出现后尽可能恢复可用状态。
 
-## 13. 当前 checkpoint（2026-09-11）
+## 13. 当前 checkpoint（2026-09-12）
 
 本轮已把原始计划落成持续维护的实体文档，并在保留 dirty baseline 的新工作树继续实现：
 
@@ -370,9 +373,13 @@ membership、Metadata 和 History，并在重新出现后尽可能恢复可用�
   scope 默认拒绝且始终要求 App 前台确认，执行语义为移入废纸篓并保留 Track；
 - Phase D：统一 catalog scopes、持久 scope policy、App 前台高风险确认、opaque revision、
   idempotency key 重试缓存和不记录音乐内容的 JSONL audit 已接入；
-- Phase E/F：统一 Job descriptor 增加 progress/phase/failure/cancel；Lyrics refresh 已使用
-  现有 provider/ranking pipeline 返回批处理 Job，并只应用质量更高结果；授权后的 Source
-  create/import 与 Source refresh 也已改为立即返回 App-owned Job，避免 MCP/CLI 请求超时；
+- Phase E/F：统一 Job descriptor 增加 progress/phase/failure/cancel，并写入每个资料库的
+  `Settings/automation-jobs.json`；终态历史在 App 重启后可查询，未终态 Job 会转为带 recovery
+  failure 的 failed 记录；Lyrics/Source retry spec 可通过 `jobs.retry` 重建，Lyrics 批处理
+  优先只重试 `failedItemIDs`。Lyrics 已使用现有 provider/ranking pipeline 暴露
+  `search/candidates/compare/apply`，refresh 先逐字后逐行，并在写入前检查 Track revision；
+  授权后的 Source create/import 与 Source refresh 也已改为立即返回 App-owned Job，避免
+  MCP/CLI 请求超时；
 - Phase G：App metadata get/patch 已接入，明确不写原始文件 embedded tags；Artwork 当前状态
   已进入 query，candidate mutation 保留给现有 provider owner；
 - Phase H/I：Playback、Queue、History、Diagnostics 和 scope status 已提供；已开放有明确
@@ -385,12 +392,14 @@ membership、Metadata 和 History，并在重新出现后尽可能恢复可用�
 
 当前明确未宣称已实现：文件 reveal/copy/export、embedded tag 写入、完整 Artwork candidate
 apply、超出当前合同的复杂持久 Settings patch、远程 HTTP transport、MCP Tasks 映射、任意
-JSON write、Storage backup/diff/orphan/reload、跨重启 durable Job history。文件
+JSON write、Storage backup/diff/orphan/reload。文件
 `inspect/rename/move/delete` 已有正式 capability，但真实 delete 仍受默认 denied scope 和
 App 前台确认保护；本轮没有删除用户真实文件。
 
-最近验证（2026-09-11）：`swift test --quiet`（10 tests）通过；MCP stdio smoke 已验证现代
-`2026-07-28` stateless discovery/per-request metadata、旧版 `2025-11-25` initialize
+最近验证（2026-09-12）：PlayerAutomation SwiftPM 测试 12/12 通过；Xcode
+`MusicSettingsStateTests` 全部通过（含 durable Job history/restart recovery）；App Debug
+build 通过。此前 MCP stdio smoke 已验证现代
+ `2026-07-28` stateless discovery/per-request metadata、旧版 `2025-11-25` initialize
 compatibility、Resources 2 个和 Tools 56 个；`xcodebuild ... -configuration Debug ...
 CODE_SIGNING_ALLOWED=NO build` 通过；`git diff --check` 通过。独立 bundle 的真实 Debug App
 已通过 MCP 连接外置 SSD `/Volumes/SSD/Music` 的 Referenced Library：创建 Playlist、加入
@@ -400,7 +409,7 @@ CODE_SIGNING_ALLOWED=NO build` 通过；`git diff --check` 通过。独立 bundl
 再次 refresh，验证恢复 `available` 和 Source memberships。`storage.validate` 通过，设置窗口
 截图确认“自动化与智能”板块可见，三个开关、socket 状态和风险说明已显示。
 仍未验证真实 signed App、第三方 MCP host、拒绝 Source 授权分支、批量文件操作的实际前台
-确认交互、持久 Job history 和 MCP Tasks/跨重启真正取消。
+确认交互、MCP Tasks/跨重启真正取消，以及真实 provider 大批量歌词结果。
 
 每完成一个阶段，都必须更新本节、验收矩阵和 `docs/README.md`，记录实际改动、测试、
 未验证边界和下一阶段，不得用“Tool 数量”代替验收。

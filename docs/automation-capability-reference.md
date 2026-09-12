@@ -35,8 +35,8 @@ PlaybackCoordinator、Repository、Source reconciler 和 Job coordinator 仍然�
 | Queue | `queue.get/replace/enqueue/enqueueNext/clear` | 返回 opaque queue revision |
 | History | `history.list/clear` | 清空 History 是 App confirmation 的高风险操作 |
 | Metadata | `metadata.get/patch` | 只写 App metadata，不写原始文件 embedded tags |
-| Lyrics | `lyrics.get/refresh` | refresh 返回 App-owned Job；只在质量更高时替换 |
-| Jobs | `jobs.list/get/cancel` | 当前为 launch-scoped Job snapshot |
+| Lyrics | `lyrics.get/search/candidates/compare/apply/refresh` | 候选可比较和明确应用；refresh 返回 App-owned Job，逐字优先 |
+| Jobs | `jobs.list/get/cancel/retry` | 每个资料库保留有界历史；支持可重建的 Lyrics/Source Job 重试 |
 | Diagnostics | `diagnostics.health` | Library/Source/missing/Job evidence |
 | Settings | `settings.get/patch` | 当前只开放持久的 referenced Track deletion policy，并带 revision |
 | Storage | `storage.inspect/validate/repair` | inspect/validate 只读；repair 仅补齐 App-owned scaffolding，不改 domain data |
@@ -103,15 +103,28 @@ Playlist、Queue、Metadata patch 支持 opaque revision/`expectedRevision`。�
 加入是集合语义；需要跨进程重试的 mutation 可在 request context 里提供
 `idempotencyKey`。相同 key 配不同参数会被拒绝。
 
+## Lyrics
+
+Lyrics 候选查询和批量维护共用现有 provider/ranking owner。`lyrics.search` 与
+`lyrics.candidates` 返回候选及其 provider、模式和分数；`lyrics.compare` 报告候选质量与
+当前结果的差异；`lyrics.apply` 只应用请求的候选，并在写入前检查可选的 Track revision。
+`lyrics.refresh` 用 Job 处理批量选择：先尝试逐字歌词，没有可用逐字结果再尝试逐行歌词，
+默认只应用更高质量结果；`--force` 只应在用户明确要求覆盖时使用。
+
 ## Jobs
 
 长操作不应被当成无限等待的同步调用。`lyrics.refresh`、授权后的 `source.create` 和
-`source.refresh` 都明确返回 Job；`jobs.*` 同时观察 App-owned 的导入/Source 任务快照
-（如果该任务由当前 App 流程启动）。Job descriptor 包含 ID、kind、state、phase、
-completed/total、checkpoint、timestamps 和 failure entries。通过 `jobs.get` 轮询，
-`jobs.cancel` 请求取消；当前 Job snapshot 在 App 重启后不承诺保留，但已经写入的
-Library domain data 仍由各自 durable owner 管理。Source 授权 UI 本身仍属于前台交互，
-只有用户完成授权后才会返回 `completed:false` 的 import Job。
+`source.refresh` 都明确返回 Job；`jobs.*` 观察 App-owned 的导入/Source/歌词任务。Job
+descriptor 包含 ID、kind、state、phase、completed/total、checkpoint、timestamps、failure
+entries、`failedItemIDs` 和 `retryable`。
+
+每个资料库的有界 Job 历史写在其 `Settings/automation-jobs.json`。App 重启时，未到达终态
+的旧 Job 会恢复为带 recovery failure 的 `failed` 记录；已经到达终态的记录可以继续由
+`jobs.list/get` 观察。`jobs.cancel` 是协作式取消，已提交的 domain data 不会回滚；对带有
+安全 retry spec 的失败、部分失败或取消 Job，`jobs.retry` 会创建新的 Job，歌词批处理优先
+使用原 Job 的 `failedItemIDs`，避免重复处理整批。Source refresh 也可以安全重建。
+Source 授权 UI 本身仍属于前台交互，只有用户完成授权后才会返回 `completed:false` 的
+import Job。
 
 ## Not yet exposed
 
