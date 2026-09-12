@@ -1034,6 +1034,10 @@ private struct AutomationCLI {
           settings patch          Update settings with --params-json
           storage inspect         Inspect Library storage layout and schema
           storage validate        Run App-owned storage integrity validation
+          storage orphans         Report Playlist references to missing Tracks
+          storage backup          Back up JSON/sidecar metadata without audio
+          storage diff <path>     Compare current metadata with a backup
+          storage reload          Reload the active Library from its storage
           storage repair          Repair missing App-owned scaffolding
 
         Options:
