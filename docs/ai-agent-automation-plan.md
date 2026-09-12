@@ -363,7 +363,7 @@ membership、Metadata 和 History，并在重新出现后尽可能恢复可用�
   通过；MCP lifecycle/version negotiation 已按标准收敛；
 - Phase B：`library.tracks` 已支持结构化 `all`/`any`/`not`、membership、状态、日期、技术
   音频字段、稳定排序和 offset 分页；Track summary 返回 source/playlist/lyrics/artwork/metadata
-  关系；
+  关系，并返回可用于跨页 stale snapshot 检测的 `revision`；未知顶层参数会按 schema 拒绝；
 - Phase C：Playlist get/rename/delete/replace/reorder、Source create/bind/remove/refresh、
   directory-relative exclude/include、自动监听 on/off、App-owned NSOpenPanel 授权流程和
   已有 Track membership 复用已接入；关闭自动监听仅阻止自动 reconcile，显式 refresh 仍可用；
@@ -372,7 +372,8 @@ membership、Metadata 和 History，并在重新出现后尽可能恢复可用�
   已授权 Referenced Source，单文件可直接执行，批量要求 preview 和 App 前台确认；delete
   scope 默认拒绝且始终要求 App 前台确认，执行语义为移入废纸篓并保留 Track；
 - Phase D：统一 catalog scopes、持久 scope policy、App 前台高风险确认、opaque revision、
-  idempotency key 重试缓存和不记录音乐内容的 JSONL audit 已接入；
+  idempotency key 重试缓存和不记录音乐内容的 JSONL audit 已接入；MCP 默认使用 JSON-RPC id
+  保持同一请求的 mutation 重试幂等；Source picker 授权失败返回结构化 denial；
 - Phase E/F：统一 Job descriptor 增加 progress/phase/failure/cancel，并写入每个资料库的
   `Settings/automation-jobs.json`；终态历史在 App 重启后可查询，未终态 Job 会转为带 recovery
   failure 的 failed 记录；Lyrics/Source retry spec 可通过 `jobs.retry` 重建，Lyrics 批处理
@@ -398,11 +399,11 @@ JSON write。文件
 `inspect/rename/move/delete` 已有正式 capability，但真实 delete 仍受默认 denied scope 和
 App 前台确认保护；本轮没有删除用户真实文件。
 
-最近验证（2026-09-12）：PlayerAutomation SwiftPM 测试 14/14 通过；Xcode
+最近验证（2026-09-12）：PlayerAutomation SwiftPM 测试 16/16 通过；Xcode
 `MusicSettingsStateTests` 全部通过（含 durable Job history/restart recovery）；从当前工作树
 生成的独立 Debug App 产物启动成功；`MCP stdio smoke` 已验证现代
 `2026-07-28` stateless discovery/per-request metadata、旧版 `2025-11-25` initialize
-compatibility、Resources 2 个和 Tools 60 个；`xcodebuild ... -configuration Debug ...
+compatibility、Resources 2 个和 Tools 65 个；`xcodebuild ... -configuration Debug ...
 CODE_SIGNING_ALLOWED=NO build` 通过；`git diff --check` 通过。独立 Debug App 的真实 MCP
 会话已完成 initialize、`source.list`、`playlist.get`、`storage.validate`、Playlist 幂等
 加入、`files.delete` dry-run 和 Lyrics candidates；连接的 Referenced Library 为

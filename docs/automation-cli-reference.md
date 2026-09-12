@@ -68,8 +68,10 @@ App-owned scaffolding。`storage backup` 创建 metadata-only backup，`storage 
 底层变更后重新载入资料库。
 
 `source refresh <id>` 在授权 Source 上立即返回 `sourceScan` Job；`source create [path]`
-在用户完成 App picker 后立即返回 `importFiles` Job。CLI 不会为了等待扫描而无限阻塞，
-应使用结果中的 Job ID 调用 `jobs get`，完成后再查询 Source、Track 和 Playlist。
+在用户完成 App picker 且授权可用后立即返回 `importFiles` Job。若授权失败，不会创建半成品
+Source 或 Job，返回 `permissionDenied`；用户取消 picker 则返回 `interactionRequired`。CLI
+不会为了等待扫描而无限阻塞，应使用结果中的 Job ID 调用 `jobs get`，完成后再查询 Source、
+Track 和 Playlist。
 
 Lyrics 的候选工作流可以拆成可组合的调用：`lyrics search`/`lyrics candidates` 返回候选，
 `lyrics compare` 比较候选与当前结果，`lyrics apply` 应用明确选中的候选。`lyrics refresh`
@@ -81,10 +83,13 @@ Lyrics 的候选工作流可以拆成可组合的调用：`lyrics search`/`lyric
 
 - `--json` 时 stdout 只输出一个 `AutomationResponse` JSON envelope；不要从 stdout 读取诊断。
 - 人类模式输出可读 key/value；stderr 输出连接、启动和失败诊断。
-- `--limit` 范围为 1–500，`--offset` 从 0 开始；Track query 返回 `nextOffset`。
+- `--limit` 范围为 1–500，`--offset` 从 0 开始；Track query 返回 `nextOffset` 和 `revision`。
+- `history list` 支持 `--from`（inclusive）和 `--to`（exclusive）的 ISO-8601 时间范围；
+  两者都省略时返回最近记录。
 - `--dry-run` 只生成 preview；普通 mutation 默认直接执行。
 - `--yes`/`--confirm` 只表示调用方确认，真正的高风险操作仍由 App 前台 policy 确认。
-- `--expected-revision` 防止 Playlist/Queue stale write；`--idempotency-key` 用于安全重试。
+- `--expected-revision` 防止 Library query 跨页漂移或 Playlist/Queue stale write；
+  `--idempotency-key` 用于安全重试。
 - `--no-launch` 禁止 LaunchServices 启动 App；`--socket` 可指定测试 socket。
 
 稳定 exit code：`0` 成功，`2` usage/contract，`3` endpoint/App 不可用，`4` 内部错误，

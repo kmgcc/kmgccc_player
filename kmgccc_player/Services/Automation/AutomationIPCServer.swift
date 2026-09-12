@@ -366,6 +366,17 @@ final class AutomationIPCServer {
             }
         }
 
+        let unknownParameterKeys = AutomationToolCatalog.unknownParameterKeys(
+            for: request.method,
+            params: request.params
+        )
+        if !unknownParameterKeys.isEmpty {
+            return invalidParameters(
+                for: request,
+                error: AutomationParameterError.unknown(unknownParameterKeys)
+            )
+        }
+
         if let descriptor = AutomationToolCatalog.descriptor(for: request.method) {
             let granted = grantedScopes()
             var required = Set(descriptor.scopes)
@@ -468,6 +479,7 @@ final class AutomationIPCServer {
                 let sort = try parameters.array("sort")
                 let limit = try parameters.integer("limit", default: 100)
                 let offset = try parameters.integer("offset", default: 0)
+                let expectedRevision = try parameters.string("expectedRevision")
                 guard (1...500).contains(limit), offset >= 0 else {
                     throw AutomationParameterError.outOfRange("limit/offset")
                 }
@@ -489,6 +501,18 @@ final class AutomationIPCServer {
                     playlistTrackIDs = Set(playlist.tracks.map(\.id))
                 } else {
                     playlistTrackIDs = nil
+                }
+
+                let revision = libraryTracksRevision(
+                    tracks: allTracks,
+                    playlists: viewModel.playlists
+                )
+                if let expectedRevision, expectedRevision != revision {
+                    return libraryTracksRevisionConflict(
+                        for: request,
+                        expected: expectedRevision,
+                        actual: revision
+                    )
                 }
 
                 var filteredTracks: [Track] = []
@@ -539,7 +563,8 @@ final class AutomationIPCServer {
                         total: orderedTracks.count,
                         offset: offset,
                         limit: limit,
-                        nextOffset: pageEnd < orderedTracks.count ? pageEnd : nil
+                        nextOffset: pageEnd < orderedTracks.count ? pageEnd : nil,
+                        revision: revision
                     ),
                     for: request
                 )
@@ -1192,9 +1217,12 @@ final class AutomationIPCServer {
                     return encodeResult(
                         AutomationSourceCreateResult(
                             applied: false,
+                            playlistBindingApplied: playlistID != nil,
                             source: makeSourceSummary(refreshed),
                             selectedPath: refreshed.lastKnownPath,
-                            message: "The requested Source already exists; no duplicate Source was created."
+                            message: playlistID == nil
+                                ? "The requested Source already exists; no duplicate Source was created."
+                                : "The requested Source already exists; no duplicate Source was created and the Playlist binding was applied."
                         ),
                         for: request
                     )
@@ -1208,6 +1236,14 @@ final class AutomationIPCServer {
                     return interactionCancelled(for: request)
                 }
                 let selection = LibraryInitialImportSelection(urls: [selectedURL])
+                guard selection.hasUsableAccess else {
+                    let path = selectedURL.path
+                    selection.release()
+                    return permissionDenied(
+                        for: request,
+                        path: path
+                    )
+                }
                 guard let job = appSession.startSourceImportJob(
                     selection: selection,
                     playlistID: playlistID,
@@ -1901,10 +1937,13 @@ final class AutomationIPCServer {
                 }
                 let from = try parameters.date("from")
                 let to = try parameters.date("to")
+                if let from, let to, from > to {
+                    throw AutomationParameterError.invalidValue("from/to")
+                }
                 let items: [PlaybackHistoryItem]
-                if let from {
+                if from != nil || to != nil {
                     items = session.playbackHistoryStore.fetchItems(
-                        from: from,
+                        from: from ?? .distantPast,
                         to: to,
                         limit: limit
                     )
@@ -2000,7 +2039,11 @@ final class AutomationIPCServer {
                         },
                         total: tracks.count,
                         offset: 0,
-                        limit: tracks.count
+                        limit: tracks.count,
+                        revision: libraryTracksRevision(
+                            tracks: session.libraryViewModel.allTracks,
+                            playlists: session.libraryViewModel.playlists
+                        )
                     ),
                     for: request
                 )
@@ -2358,6 +2401,9 @@ final class AutomationIPCServer {
                     )
                 )
             }
+            guard activeSession(for: request) != nil else {
+                return noActiveLibraryResponse(for: request)
+            }
             guard request.params == nil || request.params == .null || isObject(request.params) else {
                 return invalidParameters(for: request)
             }
@@ -2378,6 +2424,9 @@ final class AutomationIPCServer {
                         retryable: true
                     )
                 )
+            }
+            guard activeSession(for: request) != nil else {
+                return noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -2400,6 +2449,9 @@ final class AutomationIPCServer {
                         retryable: true
                     )
                 )
+            }
+            guard activeSession(for: request) != nil else {
+                return noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -2431,6 +2483,9 @@ final class AutomationIPCServer {
                         retryable: true
                     )
                 )
+            }
+            guard activeSession(for: request) != nil else {
+                return noActiveLibraryResponse(for: request)
             }
             do {
                 let parameters = try AutomationParameters(request)
@@ -3348,14 +3403,25 @@ final class AutomationIPCServer {
         context: LibraryContext,
         backupPath: String
     ) throws -> (URL, AutomationStorageBackupManifest) {
-        let candidate = URL(fileURLWithPath: backupPath).standardizedFileURL
-        let root = automationStorageBackupRoot(libraryID: context.id).standardizedFileURL
+        let candidate = URL(fileURLWithPath: backupPath)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let root = automationStorageBackupRoot(libraryID: context.id)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let candidateValues = try? candidate.resourceValues(forKeys: [.isDirectoryKey])
         guard candidate.path.hasPrefix(root.path + "/"),
-              FileManager.default.fileExists(atPath: candidate.path) else {
+              candidateValues?.isDirectory == true else {
             throw AutomationParameterError.invalidValue("backupPath")
         }
-        let manifestURL = candidate.appendingPathComponent("automation-backup.json")
-        guard let data = try? Data(contentsOf: manifestURL),
+        let manifestURL = candidate
+            .appendingPathComponent("automation-backup.json")
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let manifestValues = try? manifestURL.resourceValues(forKeys: [.isRegularFileKey])
+        guard manifestURL.path.hasPrefix(candidate.path + "/"),
+              manifestValues?.isRegularFile == true,
+              let data = try? Data(contentsOf: manifestURL),
               let manifest = try? AutomationWireCoding.decoder().decode(
                   AutomationStorageBackupManifest.self,
                   from: data
@@ -4067,6 +4133,24 @@ final class AutomationIPCServer {
         )
     }
 
+    private func permissionDenied(
+        for request: AutomationRequest,
+        path: String
+    ) -> AutomationResponse {
+        .failure(
+            for: request,
+            error: AutomationError(
+                code: .permissionDenied,
+                message: "The selected Source could not be authorized; no import Job was started.",
+                retryable: false,
+                details: .object([
+                    "path": .string(path),
+                    "reason": .string("securityScopedAccess")
+                ])
+            )
+        )
+    }
+
     private func activeSession(for request: AutomationRequest) -> LibrarySession? {
         guard let session = appSession?.activeLibraryBinding.activeSession else {
             return nil
@@ -4429,6 +4513,58 @@ final class AutomationIPCServer {
             ?? track.originalFilePath
     }
 
+    /// Build a deterministic snapshot token from the fields exposed by
+    /// `library.tracks`, including the order of the library and Playlist
+    /// membership. The token is intentionally opaque so callers can use it
+    /// for optimistic pagination without receiving any additional metadata.
+    private func libraryTracksRevision(
+        tracks: [Track],
+        playlists: [Playlist]
+    ) -> String {
+        var playlistIDsByTrackID: [UUID: Set<UUID>] = [:]
+        for playlist in playlists {
+            for track in playlist.tracks {
+                playlistIDsByTrackID[track.id, default: []].insert(playlist.id)
+            }
+        }
+        let summaries = tracks.map { track in
+            makeTrackSummary(
+                track,
+                playlists: [],
+                includeFilePath: false,
+                playlistIDsOverride: Array(
+                    playlistIDsByTrackID[track.id, default: []]
+                ).sorted { $0.uuidString < $1.uuidString }
+            )
+        }
+        guard let data = try? AutomationWireCoding.encoder().encode(summaries) else {
+            return "v1-unavailable"
+        }
+        let digest = SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "v1-" + digest
+    }
+
+    private func libraryTracksRevisionConflict(
+        for request: AutomationRequest,
+        expected: String,
+        actual: String
+    ) -> AutomationResponse {
+        .failure(
+            for: request,
+            error: AutomationError(
+                code: .conflict,
+                message: "The Library changed while the Track results were being paginated.",
+                retryable: true,
+                details: .object([
+                    "expectedRevision": .string(expected),
+                    "actualRevision": .string(actual)
+                ])
+            )
+        )
+    }
+
     private func trackLyricsStatus(_ track: Track) -> String {
         if let ttml = track.ttmlLyricText, !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return ttml.localizedCaseInsensitiveContains("<span") ? "wordSynced" : "lineSynced"
@@ -4444,7 +4580,8 @@ final class AutomationIPCServer {
     private func makeTrackSummary(
         _ track: Track,
         playlists: [Playlist] = [],
-        includeFilePath: Bool = true
+        includeFilePath: Bool = true,
+        playlistIDsOverride: [UUID]? = nil
     ) -> AutomationTrackSummary {
         let sourceMemberships = (track.mediaLocator.referencedFile?.allSourceMemberships ?? [])
             .map {
@@ -4461,10 +4598,15 @@ final class AutomationIPCServer {
             }
         let audio = track.mediaLocator.referencedFile?.locations.first?.audioProperties
             ?? track.audioProperties
-        let playlistIDs = playlists.lazy
-            .filter { playlist in playlist.tracks.contains { $0.id == track.id } }
-            .map(\.id)
-            .sorted { $0.uuidString < $1.uuidString }
+        let playlistIDs: [UUID]
+        if let playlistIDsOverride {
+            playlistIDs = playlistIDsOverride.sorted { $0.uuidString < $1.uuidString }
+        } else {
+            playlistIDs = playlists
+                .filter { playlist in playlist.tracks.contains { $0.id == track.id } }
+                .map(\.id)
+                .sorted { $0.uuidString < $1.uuidString }
+        }
         return AutomationTrackSummary(
             id: track.id,
             title: track.title,
@@ -4829,7 +4971,15 @@ final class AutomationIPCServer {
             for: request,
             error: AutomationError(
                 code: .invalidRequest,
-                message: error?.localizedDescription ?? "The request parameters are invalid."
+                message: error?.localizedDescription ?? "The request parameters are invalid.",
+                details: error.flatMap { error in
+                    guard case let AutomationParameterError.unknown(keys) = error else {
+                        return nil
+                    }
+                    return .object([
+                        "unknownParameters": .array(keys.map { .string($0) })
+                    ])
+                }
             )
         )
     }
@@ -4866,6 +5016,13 @@ private struct AutomationParameters {
         case nil, .some(.null):
             values = [:]
         case .some(.object(let values)):
+            let unknown = AutomationToolCatalog.unknownParameterKeys(
+                for: request.method,
+                params: .object(values)
+            )
+            guard unknown.isEmpty else {
+                throw AutomationParameterError.unknown(unknown)
+            }
             self.values = values
         default:
             throw AutomationParameterError.invalidShape
@@ -5008,6 +5165,7 @@ private struct AutomationParameters {
 
 private enum AutomationParameterError: Error, LocalizedError {
     case invalidShape
+    case unknown([String])
     case missing(String)
     case missingResource(String)
     case invalidType(String, expected: String)
@@ -5018,6 +5176,8 @@ private enum AutomationParameterError: Error, LocalizedError {
         switch self {
         case .invalidShape:
             return "Request parameters must be a JSON object."
+        case .unknown(let keys):
+            return "Unknown parameter(s): " + keys.joined(separator: ", ") + "."
         case .missing(let key):
             return "Missing required parameter '\(key)'."
         case .missingResource(let key):

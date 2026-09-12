@@ -159,6 +159,52 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
 }
 
 @Test
+func strictToolParametersRejectUnknownTopLevelKeysWithoutClosingExtensionObjects() throws {
+    #expect(
+        AutomationToolCatalog.unknownParameterKeys(
+            for: AutomationMethod.filesDelete,
+            params: .object([
+                "trackIDs": .array([]),
+                "dryRun": .boolean(true),
+                "dryrun": .boolean(true)
+            ])
+        ) == ["dryrun"]
+    )
+    #expect(
+        AutomationToolCatalog.unknownParameterKeys(
+            for: AutomationMethod.systemInfo,
+            params: .object(["futureField": .string("not accepted")])
+        ) == ["futureField"]
+    )
+    #expect(
+        AutomationToolCatalog.unknownParameterKeys(
+            for: AutomationMethod.metadataPatch,
+            params: .object([
+                "trackIDs": .array([]),
+                "patch": .object(["futureMetadataField": .string("extension")]),
+                "dryRun": .boolean(true)
+            ])
+        ).isEmpty
+    )
+}
+
+@Test
+func newSnapshotAndSourceFieldsRemainBackwardCompatibleWhenDecodingOldResponses() throws {
+    let tracks = try AutomationWireCoding.decoder().decode(
+        AutomationLibraryTracksResult.self,
+        from: Data("{\"tracks\":[],\"total\":0,\"offset\":0,\"limit\":100}".utf8)
+    )
+    #expect(tracks.revision == "v1-unknown")
+
+    let source = try AutomationWireCoding.decoder().decode(
+        AutomationSourceCreateResult.self,
+        from: Data("{\"applied\":false}".utf8)
+    )
+    #expect(source.playlistBindingApplied == false)
+    #expect(source.completed)
+}
+
+@Test
 func lyricsAutomationContractExposesSelectionAndRetrySemantics() throws {
     for method in [
         AutomationMethod.lyricsSearch,

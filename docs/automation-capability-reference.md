@@ -28,7 +28,7 @@ PlaybackCoordinator、Repository、Source reconciler 和 Job coordinator 仍然�
 | Domain | Methods | Notes |
 | --- | --- | --- |
 | System | `system.ping`, `system.info` | 不切换 active Library |
-| Library / Query | `library.list`, `library.tracks` | 结构化过滤、组合 predicate、排序、offset 分页 |
+| Library / Query | `library.list`, `library.tracks` | 结构化过滤、组合 predicate、排序、offset 分页；返回 opaque snapshot revision，可用 `expectedRevision` 防止跨页目标漂移 |
 | Playlist | `playlist.list/get/create/rename/delete/addTracks/removeTracks/replaceTracks/reorder` | Track identity 先解析；membership mutation 不删文件 |
 | Source | `source.list/create/bindPlaylist/setExcludedPath/setMonitorPolicy/remove/refresh` | 新 Source 由 App picker 创建 security-scoped bookmark；授权后的 create/import 与 refresh 返回 Job；排除目录不会删除既有 Track，monitor policy 可设 on/off |
 | Playback | `playback.state/play/pause/next/previous/seek/setVolume/setMode` | 统一进入 PlaybackCoordinator |
@@ -76,8 +76,9 @@ Artwork 的当前可见状态通过 `library.tracks` 的 `artworkAvailable` 返�
 `releaseBefore`、`durationMin`、`durationMax`、`metadataConfidenceMin`、`codec`、`format`、
 `sampleRateHz` 和 `bitDepth`。`all` 是 AND，`any` 是 OR，`not` 是 NOT。
 
-响应包含 `total`、`offset`、`limit`、`nextOffset` 和每首歌的 source/playlist membership，
-可直接把 ID 集合传给 Playlist、Metadata 或 Lyrics capability。
+响应包含 `total`、`offset`、`limit`、`nextOffset`、`revision` 和每首歌的
+source/playlist membership。下一页可带上上一页的 `revision` 作为 `expectedRevision`；如果
+Library 或 Playlist membership 在分页期间改变，会返回 `conflict`，调用方应重新查询。
 
 ## Risk and scope
 
@@ -98,10 +99,11 @@ scope grant 必须由 App 前台确认。以下动作不能用 Agent 自己的�
 
 ## Revisions and retries
 
-Playlist、Queue、Metadata patch 支持 opaque revision/`expectedRevision`。查询后若 UI 先
-修改，返回 `conflict`，调用方必须重新查询、重新计算 selection 再重试。重复 membership
-加入是集合语义；需要跨进程重试的 mutation 可在 request context 里提供
-`idempotencyKey`。相同 key 配不同参数会被拒绝。
+Library query、Playlist、Queue、Metadata patch 支持 opaque revision/`expectedRevision`。
+查询后若 UI 先修改，返回 `conflict`，调用方必须重新查询、重新计算 selection 再重试。重复
+membership 加入是集合语义；需要跨进程重试的 mutation 可在 request context 里提供
+`idempotencyKey`。相同 key 配不同参数会被拒绝；MCP 若未显式提供 key，会使用同一个 JSON-RPC
+request id 生成重试 key。
 
 ## Lyrics
 

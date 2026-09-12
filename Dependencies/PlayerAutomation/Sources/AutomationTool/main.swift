@@ -30,6 +30,8 @@ private struct CLIOptions {
     var paramsJSON: AutomationJSONValue?
     var limit: Int?
     var offset: Int?
+    var from: String?
+    var to: String?
     var expectedRevision: String?
     var idempotencyKey: String?
     /// Normal playlist/source mutations are direct. Callers can opt into an
@@ -132,7 +134,7 @@ private struct AutomationCLI {
                     writeDiagnostic("usage error: automation call requires exactly one method name")
                     return .usage
                 }
-                method = args[0]
+                method = args.removeFirst()
                 params = options.paramsJSON
             default:
                 writeDiagnostic("usage error: unknown automation action \(action)")
@@ -428,6 +430,10 @@ private struct AutomationCLI {
         case "history":
             guard let action = args.first else { writeDiagnostic("usage error: history requires list or clear"); return .usage }
             args.removeFirst()
+            guard args.isEmpty else {
+                writeDiagnostic("usage error: history action does not accept positional arguments")
+                return .usage
+            }
             switch action {
             case "list":
                 guard options.offset == nil else {
@@ -436,7 +442,13 @@ private struct AutomationCLI {
                 }
                 method = AutomationMethod.historyList
                 params = historyParameters(from: options)
-            case "clear": method = AutomationMethod.historyClear; params = .object(["dryRun": .boolean(options.dryRun), "confirm": .boolean(options.confirm)])
+            case "clear":
+                guard options.from == nil, options.to == nil else {
+                    writeDiagnostic("usage error: history clear does not support --from or --to")
+                    return .usage
+                }
+                method = AutomationMethod.historyClear
+                params = .object(["dryRun": .boolean(options.dryRun), "confirm": .boolean(options.confirm)])
             default: writeDiagnostic("usage error: unknown history action \(action)"); return .usage
             }
         case "metadata":
@@ -738,7 +750,7 @@ private struct AutomationCLI {
             return .usage
         case .serverUnavailable, .libraryNotActive:
             return .unavailable
-        case .authorizationRequired:
+        case .authorizationRequired, .permissionDenied:
             return .authorization
         case .conflict:
             return .conflict
@@ -800,12 +812,17 @@ private struct AutomationCLI {
         if let offset = options.offset {
             values["offset"] = .number(Double(offset))
         }
+        if let expectedRevision = options.expectedRevision {
+            values["expectedRevision"] = .string(expectedRevision)
+        }
         return values.isEmpty ? nil : .object(values)
     }
 
     private func historyParameters(from options: CLIOptions) -> AutomationJSONValue? {
         var values: [String: AutomationJSONValue] = [:]
         if let limit = options.limit { values["limit"] = .number(Double(limit)) }
+        if let from = options.from { values["from"] = .string(from) }
+        if let to = options.to { values["to"] = .string(to) }
         return values.isEmpty ? nil : .object(values)
     }
 
@@ -916,6 +933,17 @@ private struct AutomationCLI {
                     throw CLIError.invalidValue("--offset")
                 }
                 options.offset = offset
+                args.removeSubrange(index...(index + 1))
+            case "--from", "--to":
+                guard index + 1 < args.count,
+                      ISO8601DateFormatter().date(from: args[index + 1]) != nil else {
+                    throw CLIError.invalidValue(args[index])
+                }
+                if args[index] == "--from" {
+                    options.from = args[index + 1]
+                } else {
+                    options.to = args[index + 1]
+                }
                 args.removeSubrange(index...(index + 1))
             case "--expected-revision":
                 guard index + 1 < args.count else {
@@ -1057,8 +1085,10 @@ private struct AutomationCLI {
           --sort-json <json>      Ordered sort descriptor array
           --limit <count>         Page size from 1 to 500
           --offset <count>        Page offset, starting at 0
+          --from <iso8601>        History lower bound (inclusive)
+          --to <iso8601>          History upper bound (exclusive)
           --expected-revision <id>
-                                  Require a playlist revision before mutation
+                                  Require a matching library/playlist revision
           --idempotency-key <id>  Safely retry the same mutation
           --params-json <json>    Parameters for automation call
           --dry-run               Preview a mutation without applying it

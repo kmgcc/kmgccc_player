@@ -38,6 +38,17 @@ private enum MCPJSONRPCID: Codable, Equatable {
             try container.encodeNil()
         }
     }
+
+    /// MCP retries repeat the JSON-RPC id. Keep the App-side idempotency key
+    /// stable across those retries while distinguishing strings, numbers and
+    /// null IDs that happen to have similar textual descriptions.
+    var idempotencyComponent: String {
+        switch self {
+        case .string(let value): return "string:" + value
+        case .number(let value): return "number:" + String(value)
+        case .null: return "null"
+        }
+    }
 }
 
 private struct MCPRequest: Decodable {
@@ -302,7 +313,7 @@ struct AutomationMCPStdioServer {
             let suppliedContext = try automationContext(from: values["context"])
             let idempotencyKey = suppliedContext.idempotencyKey
                 ?? (AutomationToolCatalog.descriptor(for: toolName)?.readOnly == false
-                    ? "mcp:\(requestID.uuidString)"
+                    ? "mcp:\(id.idempotencyComponent)"
                     : nil)
             let automationRequest = AutomationRequest(
                 method: toolName,

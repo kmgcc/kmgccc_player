@@ -150,6 +150,16 @@ final class LibraryInitialImportSelection {
     private let bookmarkResolver: any BookmarkResolving
     private var leases: [SecurityScopedResourceLease]
 
+    /// A picker URL is usable when it has an active security scope or when
+    /// the current (unsandboxed) process can read it directly. The latter
+    /// keeps regular bookmarks and existing unsandboxed installations
+    /// compatible while still rejecting a sandboxed selection that the
+    /// resolver could not authorize.
+    var hasUsableAccess: Bool {
+        !leases.isEmpty
+            || urls.allSatisfy { FileManager.default.isReadableFile(atPath: $0.path) }
+    }
+
     init(
         urls: [URL],
         createPlaylistsForDirectories: Bool = false,

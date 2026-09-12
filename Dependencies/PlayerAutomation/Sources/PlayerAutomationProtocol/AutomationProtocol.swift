@@ -150,6 +150,7 @@ public enum AutomationErrorCode: String, Codable, Equatable, Sendable {
     case libraryNotActive
     case interactionRequired
     case authorizationRequired
+    case permissionDenied
     case conflict
     case internalError
 }
@@ -524,19 +525,44 @@ public struct AutomationLibraryTracksResult: Codable, Equatable, Sendable {
     public let offset: Int
     public let limit: Int
     public let nextOffset: Int?
+    /// Opaque snapshot token for safe pagination. A later page may send this
+    /// value as `expectedRevision` and receive a conflict if the library
+    /// changed in between requests.
+    public let revision: String
 
     public init(
         tracks: [AutomationTrackSummary],
         total: Int,
         offset: Int,
         limit: Int,
-        nextOffset: Int? = nil
+        nextOffset: Int? = nil,
+        revision: String = "v1-unknown"
     ) {
         self.tracks = tracks
         self.total = total
         self.offset = offset
         self.limit = limit
         self.nextOffset = nextOffset
+        self.revision = revision
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case tracks
+        case total
+        case offset
+        case limit
+        case nextOffset
+        case revision
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        tracks = try container.decode([AutomationTrackSummary].self, forKey: .tracks)
+        total = try container.decode(Int.self, forKey: .total)
+        offset = try container.decode(Int.self, forKey: .offset)
+        limit = try container.decode(Int.self, forKey: .limit)
+        nextOffset = try container.decodeIfPresent(Int.self, forKey: .nextOffset)
+        revision = try container.decodeIfPresent(String.self, forKey: .revision) ?? "v1-unknown"
     }
 }
 
@@ -792,6 +818,10 @@ public struct AutomationSourceRefreshResult: Codable, Equatable, Sendable {
 
 public struct AutomationSourceCreateResult: Codable, Equatable, Sendable {
     public let applied: Bool
+    /// True only when this request also bound an already-existing Source to
+    /// the requested Playlist. A newly queued import reports false because
+    /// binding completes with the Job.
+    public let playlistBindingApplied: Bool
     public let completed: Bool
     public let source: AutomationSourceSummary?
     public let selectedPath: String?
@@ -802,6 +832,7 @@ public struct AutomationSourceCreateResult: Codable, Equatable, Sendable {
 
     public init(
         applied: Bool,
+        playlistBindingApplied: Bool = false,
         completed: Bool = true,
         source: AutomationSourceSummary? = nil,
         selectedPath: String? = nil,
@@ -811,6 +842,7 @@ public struct AutomationSourceCreateResult: Codable, Equatable, Sendable {
         message: String? = nil
     ) {
         self.applied = applied
+        self.playlistBindingApplied = playlistBindingApplied
         self.completed = completed
         self.source = source
         self.selectedPath = selectedPath
@@ -818,6 +850,34 @@ public struct AutomationSourceCreateResult: Codable, Equatable, Sendable {
         self.failures = failures
         self.job = job
         self.message = message
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case applied
+        case playlistBindingApplied
+        case completed
+        case source
+        case selectedPath
+        case importedTrackCount
+        case failures
+        case job
+        case message
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        applied = try container.decode(Bool.self, forKey: .applied)
+        playlistBindingApplied = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .playlistBindingApplied
+        ) ?? false
+        completed = try container.decodeIfPresent(Bool.self, forKey: .completed) ?? true
+        source = try container.decodeIfPresent(AutomationSourceSummary.self, forKey: .source)
+        selectedPath = try container.decodeIfPresent(String.self, forKey: .selectedPath)
+        importedTrackCount = try container.decodeIfPresent(Int.self, forKey: .importedTrackCount) ?? 0
+        failures = try container.decodeIfPresent([String].self, forKey: .failures) ?? []
+        job = try container.decodeIfPresent(AutomationJobSummary.self, forKey: .job)
+        message = try container.decodeIfPresent(String.self, forKey: .message)
     }
 }
 
@@ -2205,6 +2265,26 @@ public enum AutomationToolCatalog {
         all.first { $0.name == name }
     }
 
+    /// Return unknown top-level parameter names for a tool whose schema opts
+    /// into strict object validation. Nested objects can remain open when the
+    /// schema deliberately uses them as extension points (for example the
+    /// metadata patch payload).
+    public static func unknownParameterKeys(
+        for name: String,
+        params: AutomationJSONValue?
+    ) -> [String] {
+        guard case let .object(values)? = params,
+              let descriptor = descriptor(for: name),
+              case let .object(schema) = descriptor.inputSchema,
+              case .boolean(false)? = schema["additionalProperties"] else {
+            return []
+        }
+        guard case let .object(properties)? = schema["properties"] else {
+            return values.keys.sorted()
+        }
+        return values.keys.filter { properties[$0] == nil }.sorted()
+    }
+
     private static let emptyInputSchema: AutomationJSONValue = .object([
         "type": .string("object"),
         "additionalProperties": .boolean(false)
@@ -2244,6 +2324,9 @@ public enum AutomationToolCatalog {
             "offset": .object([
                 "type": .string("integer"),
                 "minimum": .number(0)
+            ]),
+            "expectedRevision": .object([
+                "type": .string("string")
             ])
         ])
     ])
