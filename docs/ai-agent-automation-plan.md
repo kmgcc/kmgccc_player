@@ -384,23 +384,25 @@ membership、Metadata 和 History，并在重新出现后尽可能恢复可用�
   已进入 query，candidate mutation 保留给现有 provider owner；
 - Phase H/I：Playback、Queue、History、Diagnostics 和 scope status 已提供；已开放有明确
   合同的 `settings.get/patch`（当前为 referenced-track deletion policy）以及 App-owned
-  `storage.inspect/validate/repair`（repair 仅修复脚手架）；MCP Resources 已提供
-  capability/Agent guide；CLI 有主要命令 alias 和通用 `automation call` escape hatch；设置
-  窗口新增“自动化与智能”板块，提供 endpoint、MCP、CLI 开关、socket 状态和风险说明；
+  `storage.inspect/validate/orphans/backup/diff/reload/repair`。Diagnostics 会投影 failed
+  Job、Playlist orphan reference 和 storage validation evidence；backup 是 metadata-only，
+  不复制音频、index、cache 或 live SQLite。MCP Resources 已提供 capability/Agent guide；
+  CLI 有主要命令 alias 和通用 `automation call` escape hatch；设置窗口新增“自动化与智能”
+  板块，提供 endpoint、MCP、CLI 开关、socket 状态和风险说明；
 - Phase J/K：Capability Reference、Agent Behavior Guide、CLI/MCP/troubleshooting 文档和可加载
   Skill 已落盘，并由 `docs/README.md` 统一索引。
 
 当前明确未宣称已实现：文件 reveal/copy/export、embedded tag 写入、完整 Artwork candidate
 apply、超出当前合同的复杂持久 Settings patch、远程 HTTP transport、MCP Tasks 映射、任意
-JSON write、Storage backup/diff/orphan/reload。文件
+JSON write。文件
 `inspect/rename/move/delete` 已有正式 capability，但真实 delete 仍受默认 denied scope 和
 App 前台确认保护；本轮没有删除用户真实文件。
 
-最近验证（2026-09-12）：PlayerAutomation SwiftPM 测试 12/12 通过；Xcode
+最近验证（2026-09-12）：PlayerAutomation SwiftPM 测试 14/14 通过；Xcode
 `MusicSettingsStateTests` 全部通过（含 durable Job history/restart recovery）；从当前工作树
 生成的独立 Debug App 产物启动成功；`MCP stdio smoke` 已验证现代
 `2026-07-28` stateless discovery/per-request metadata、旧版 `2025-11-25` initialize
-compatibility、Resources 2 个和 Tools 56 个；`xcodebuild ... -configuration Debug ...
+compatibility、Resources 2 个和 Tools 60 个；`xcodebuild ... -configuration Debug ...
 CODE_SIGNING_ALLOWED=NO build` 通过；`git diff --check` 通过。独立 Debug App 的真实 MCP
 会话已完成 initialize、`source.list`、`playlist.get`、`storage.validate`、Playlist 幂等
 加入、`files.delete` dry-run 和 Lyrics candidates；连接的 Referenced Library 为
@@ -414,6 +416,13 @@ validation，磁盘上的 `Settings/automation-jobs.json` 与 Playlist JSON 均�
 `automationCLIEnabled` 的实测分别返回结构化 `authorizationRequired`，随后已恢复为原本的
 未显式设置（代码默认开启）状态。设置窗口截图确认“自动化与智能”板块可见，三个开关、
 socket 状态和风险说明已显示。
+随后按单实例资料库规则停止旧 App，启动当前工作树生成的新 Debug App，并把 active library
+恢复到外置 SSD 上的 managed Library `678B60AF-724E-4202-A9A9-D4A0DC6555A3`。通过 CLI
+和 MCP 实测了 `storage.orphans`、`diagnostics.health`、`storage.backup`、`storage.diff`
+和 `storage.reload`：backup 复制 1,736 个 metadata/sidecar 文件、无失败且未包含音频；
+现有 managed Library 的真实校验仍报告原有的 `playlistReferenceMissing`，同一个 missing
+Track `D88945DC-BCCB-4FEC-9E89-9CEF82B524A3` 被 `apl` 与 `2026` 两个 Playlist 引用。
+这些历史数据没有被自动清理，orphan 检查保持只读。
 仍未验证真实 signed App、拒绝 Source 授权分支、批量文件操作的实际前台确认交互、真实
 高风险文件删除、MCP Tasks/跨重启真正取消，以及真实 provider 大批量歌词结果；本轮没有
 删除或移动外置 SSD 上的真实音乐文件。一次独立只读 review 因外部模型预算耗尽未返回报告，

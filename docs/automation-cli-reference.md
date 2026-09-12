@@ -28,7 +28,7 @@ history list|clear
 jobs list|get|cancel|retry
 diagnostics health
 settings get|patch
-storage inspect|validate|repair
+storage inspect|validate|orphans|backup|diff|reload|repair
 ```
 
 文件操作目前通过通用 capability 调用，避免把物理文件 mutation 隐藏在 Playlist 命令中：
@@ -63,7 +63,9 @@ player-automation automation call metadata.patch \
 `source exclude/include <source-id> <relative-path>` 修改 Source 的目录排除规则，只影响
 未来扫描，不删除已经存在的 Track。`settings patch` 当前只接受
 `{"referencedTrackDeletePolicy":"onlyLibrary"|"recycleSource"}`；`storage repair` 只补齐
-App-owned scaffolding。
+App-owned scaffolding。`storage backup` 创建 metadata-only backup，`storage diff <backup-path>`
+比较当前 JSON/sidecar，`storage orphans` 报告 Playlist 孤儿引用，`storage reload` 在受控
+底层变更后重新载入资料库。
 
 `source refresh <id>` 在授权 Source 上立即返回 `sourceScan` Job；`source create [path]`
 在用户完成 App picker 后立即返回 `importFiles` Job。CLI 不会为了等待扫描而无限阻塞，

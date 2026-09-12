@@ -96,8 +96,9 @@ Tasks 映射。
 取消传播和更细的 request cancellation 是明确的后续工作。
 
 当前 catalog 也包含 Source 排除规则、受限持久设置以及
-`storage.inspect`/`storage.validate`/`storage.repair`。Storage repair 只处理 App-owned
-scaffolding；它不是任意 JSON 写入通道。
+`storage.inspect`/`storage.validate`/`storage.orphans`/`storage.backup`/`storage.diff`/
+`storage.reload`/`storage.repair`。Storage backup 是 metadata-only，diff 只接受当前资料库
+由 App 创建的 backup 路径，repair 只处理 App-owned scaffolding；这些都不是任意 JSON 写入通道。
 
 ## Transport boundary
 

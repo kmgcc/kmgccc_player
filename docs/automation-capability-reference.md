@@ -37,9 +37,9 @@ PlaybackCoordinator、Repository、Source reconciler 和 Job coordinator 仍然�
 | Metadata | `metadata.get/patch` | 只写 App metadata，不写原始文件 embedded tags |
 | Lyrics | `lyrics.get/search/candidates/compare/apply/refresh` | 候选可比较和明确应用；refresh 返回 App-owned Job，逐字优先 |
 | Jobs | `jobs.list/get/cancel/retry` | 每个资料库保留有界历史；支持可重建的 Lyrics/Source Job 重试 |
-| Diagnostics | `diagnostics.health` | Library/Source/missing/Job evidence |
+| Diagnostics | `diagnostics.health` | Library/Source/missing/Job/storage/Playlist-reference evidence |
 | Settings | `settings.get/patch` | 当前只开放持久的 referenced Track deletion policy，并带 revision |
-| Storage | `storage.inspect/validate/repair` | inspect/validate 只读；repair 仅补齐 App-owned scaffolding，不改 domain data |
+| Storage | `storage.inspect/validate/orphans/backup/diff/reload/repair` | inspect/validate/orphans/diff 只读；backup 只复制 JSON/sidecar/enrichment 文件；reload 重新载入当前存储；repair 仅补齐 App-owned scaffolding，不改 domain data |
 | Files | `files.inspect/rename/move/delete` | inspect 只读；rename/move 遵守 Source 授权和路径 containment，批量需 preview/App confirmation；delete 默认 scope 拒绝且始终前台确认 |
 | Policy | `automation.capabilities/scopes/grantScope/revokeScope` | scope 状态由 App 持久化并执行 |
 
@@ -130,6 +130,16 @@ import Job。
 
 当前代码没有足够稳定、独立的 owner 时，不开放伪 capability。文件级 reveal/copy/export、
 embedded tag 写入、Artwork candidate apply、远程 HTTP transport、MCP Tasks 映射、复杂 Settings
-patch 和任意 JSON write 仍需沿用后续阶段的专门设计。Storage 的正式 API 目前只允许
-inspect/validate，以及不触碰 domain data 的 scaffolding repair。高级 Agent 可按
-[Agent Behavior Guide](agent-behavior-guide.md) 使用诊断、备份和源码审查进行受控 fallback。
+patch 和任意 JSON write 仍需沿用后续阶段的专门设计。Storage backup 是 metadata-only：它不复制
+音频、缓存、索引或 live SQLite；`storage.diff` 只接受本 App 为当前资料库创建的 backup 路径。
+高级 Agent 可按 [Agent Behavior Guide](agent-behavior-guide.md) 使用诊断、backup/diff、源码审查
+和 validate/reload 进行受控 fallback。
+
+## Storage fallback surface
+
+`storage.orphans` 会列出 Playlist sidecar 中指向不存在 Track sidecar 的 membership，且不会
+自动删除历史关系。`storage.backup` 将当前资料库的 JSON、歌词/封面等 App-owned sidecar 复制到
+本机 App Support 的资料库专属备份目录，并返回绝对路径及 SHA-256 manifest；真实音频文件和
+运行时 SQLite 不在备份范围内。`storage.diff` 比较当前可观测文件与该 manifest，`storage.reload`
+在受控底层修改后重新载入 App-owned Library。底层 JSON write 仍不是普通 Tool，必须由高级用户
+依据当前版本源码自行执行，并在修改前备份、修改后 validate/reload。

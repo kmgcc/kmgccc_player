@@ -309,6 +309,10 @@ public enum AutomationMethod {
     public static let storageInspect = "storage.inspect"
     public static let storageValidate = "storage.validate"
     public static let storageRepair = "storage.repair"
+    public static let storageOrphans = "storage.orphans"
+    public static let storageBackup = "storage.backup"
+    public static let storageDiff = "storage.diff"
+    public static let storageReload = "storage.reload"
     public static let automationCapabilities = "automation.capabilities"
     public static let automationScopes = "automation.scopes"
     public static let automationGrantScope = "automation.grantScope"
@@ -1235,6 +1239,11 @@ public struct AutomationDiagnosticsResult: Codable, Equatable, Sendable {
     public let sourceIssues: [String]
     public let runningJobCount: Int
     public let checks: [String: String]
+    public let failedJobCount: Int
+    public let failedJobSummaries: [String]
+    public let playlistReferenceIssues: [AutomationPlaylistReferenceIssue]
+    public let storageValidation: String
+    public let storageValidationMessage: String?
 
     public init(
         healthy: Bool,
@@ -1246,7 +1255,12 @@ public struct AutomationDiagnosticsResult: Codable, Equatable, Sendable {
         sourceCount: Int,
         sourceIssues: [String] = [],
         runningJobCount: Int = 0,
-        checks: [String: String] = [:]
+        checks: [String: String] = [:],
+        failedJobCount: Int = 0,
+        failedJobSummaries: [String] = [],
+        playlistReferenceIssues: [AutomationPlaylistReferenceIssue] = [],
+        storageValidation: String = "notRun",
+        storageValidationMessage: String? = nil
     ) {
         self.healthy = healthy
         self.libraryID = libraryID
@@ -1258,6 +1272,54 @@ public struct AutomationDiagnosticsResult: Codable, Equatable, Sendable {
         self.sourceIssues = sourceIssues.sorted()
         self.runningJobCount = runningJobCount
         self.checks = checks
+        self.failedJobCount = failedJobCount
+        self.failedJobSummaries = failedJobSummaries
+        self.playlistReferenceIssues = playlistReferenceIssues
+        self.storageValidation = storageValidation
+        self.storageValidationMessage = storageValidationMessage
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case healthy, libraryID, trackCount, playlistCount, missingTrackCount
+        case unavailableTrackCount, sourceCount, sourceIssues, runningJobCount, checks
+        case failedJobCount, failedJobSummaries, playlistReferenceIssues
+        case storageValidation, storageValidationMessage
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        healthy = try container.decode(Bool.self, forKey: .healthy)
+        libraryID = try container.decodeIfPresent(UUID.self, forKey: .libraryID)
+        trackCount = try container.decode(Int.self, forKey: .trackCount)
+        playlistCount = try container.decode(Int.self, forKey: .playlistCount)
+        missingTrackCount = try container.decode(Int.self, forKey: .missingTrackCount)
+        unavailableTrackCount = try container.decode(Int.self, forKey: .unavailableTrackCount)
+        sourceCount = try container.decode(Int.self, forKey: .sourceCount)
+        sourceIssues = try container.decodeIfPresent([String].self, forKey: .sourceIssues) ?? []
+        runningJobCount = try container.decodeIfPresent(Int.self, forKey: .runningJobCount) ?? 0
+        checks = try container.decodeIfPresent([String: String].self, forKey: .checks) ?? [:]
+        failedJobCount = try container.decodeIfPresent(Int.self, forKey: .failedJobCount) ?? 0
+        failedJobSummaries = try container.decodeIfPresent([String].self, forKey: .failedJobSummaries) ?? []
+        playlistReferenceIssues = try container.decodeIfPresent(
+            [AutomationPlaylistReferenceIssue].self,
+            forKey: .playlistReferenceIssues
+        ) ?? []
+        storageValidation = try container.decodeIfPresent(String.self, forKey: .storageValidation) ?? "notRun"
+        storageValidationMessage = try container.decodeIfPresent(String.self, forKey: .storageValidationMessage)
+    }
+}
+
+public struct AutomationPlaylistReferenceIssue: Codable, Equatable, Sendable, Identifiable {
+    public let playlistID: UUID
+    public let playlistName: String
+    public let missingTrackIDs: [UUID]
+
+    public var id: UUID { playlistID }
+
+    public init(playlistID: UUID, playlistName: String, missingTrackIDs: [UUID]) {
+        self.playlistID = playlistID
+        self.playlistName = playlistName
+        self.missingTrackIDs = missingTrackIDs.sorted { $0.uuidString < $1.uuidString }
     }
 }
 
@@ -1316,6 +1378,88 @@ public struct AutomationStorageResult: Codable, Equatable, Sendable {
         self.missingRequiredDirectories = missingRequiredDirectories.sorted()
         self.validation = validation
         self.validationMessage = validationMessage
+        self.message = message
+    }
+}
+
+public struct AutomationStorageOrphansResult: Codable, Equatable, Sendable {
+    public let libraryID: UUID?
+    public let playlistReferenceIssues: [AutomationPlaylistReferenceIssue]
+    public let orphanReferenceCount: Int
+    public let message: String
+
+    public init(
+        libraryID: UUID?,
+        playlistReferenceIssues: [AutomationPlaylistReferenceIssue],
+        message: String
+    ) {
+        self.libraryID = libraryID
+        self.playlistReferenceIssues = playlistReferenceIssues
+        self.orphanReferenceCount = playlistReferenceIssues.reduce(0) {
+            $0 + $1.missingTrackIDs.count
+        }
+        self.message = message
+    }
+}
+
+public struct AutomationStorageBackupResult: Codable, Equatable, Sendable {
+    public let libraryID: UUID?
+    public let backupPath: String
+    public let createdAt: Date
+    public let copiedFileCount: Int
+    public let omittedFileCount: Int
+    public let copiedBytes: Int64
+    public let failures: [String]
+    public let message: String
+
+    public init(
+        libraryID: UUID?,
+        backupPath: String,
+        createdAt: Date,
+        copiedFileCount: Int,
+        omittedFileCount: Int,
+        copiedBytes: Int64,
+        failures: [String] = [],
+        message: String
+    ) {
+        self.libraryID = libraryID
+        self.backupPath = backupPath
+        self.createdAt = createdAt
+        self.copiedFileCount = copiedFileCount
+        self.omittedFileCount = omittedFileCount
+        self.copiedBytes = copiedBytes
+        self.failures = failures
+        self.message = message
+    }
+}
+
+public struct AutomationStorageDiffResult: Codable, Equatable, Sendable {
+    public let libraryID: UUID?
+    public let backupPath: String
+    public let added: [String]
+    public let removed: [String]
+    public let changed: [String]
+    public let unchangedCount: Int
+    public let truncated: Bool
+    public let message: String
+
+    public init(
+        libraryID: UUID?,
+        backupPath: String,
+        added: [String],
+        removed: [String],
+        changed: [String],
+        unchangedCount: Int,
+        truncated: Bool = false,
+        message: String
+    ) {
+        self.libraryID = libraryID
+        self.backupPath = backupPath
+        self.added = added.sorted()
+        self.removed = removed.sorted()
+        self.changed = changed.sorted()
+        self.unchangedCount = unchangedCount
+        self.truncated = truncated
         self.message = message
     }
 }
@@ -1382,7 +1526,7 @@ public enum AutomationDocumentation {
     """
 
     public static let capabilityOverview = """
-    The shared automation layer is App-owned. CLI and MCP are adapters over the same AF_UNIX IPC contract. `library.tracks` is the composable query entry point: combine text, IDs, Source/Playlist membership, availability, lyric/artwork/metadata state, technical audio fields, boolean all/any/not predicates, stable sort and offset pagination. Library Track identity is resolved before Playlist membership mutations, so an existing Track can be added to any Playlist without being imported again. Source exclusions, supported persistent settings, and App-owned storage inspect/validate/repair are exposed as separate capabilities; arbitrary file or JSON writes are not ordinary tools.
+    The shared automation layer is App-owned. CLI and MCP are adapters over the same AF_UNIX IPC contract. `library.tracks` is the composable query entry point: combine text, IDs, Source/Playlist membership, availability, lyric/artwork/metadata state, technical audio fields, boolean all/any/not predicates, stable sort and offset pagination. Library Track identity is resolved before Playlist membership mutations, so an existing Track can be added to any Playlist without being imported again. Source exclusions, supported persistent settings, and App-owned storage inspect/validate/orphans/backup/diff/reload/repair are exposed as separate capabilities; arbitrary file or JSON writes are not ordinary tools.
     """
 }
 
@@ -1994,6 +2138,42 @@ public enum AutomationToolCatalog {
             inputSchema: storageMutationInputSchema
         ),
         AutomationToolDescriptor(
+            name: AutomationMethod.storageOrphans,
+            title: "Find Storage Orphans",
+            description: "Report Playlist memberships that reference missing Track sidecars without changing the Library.",
+            readOnly: true,
+            scopes: [.storageRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.storageBackup,
+            title: "Back Up Library Metadata",
+            description: "Create an App-owned, machine-readable backup of Library JSON sidecars and enrichment assets without copying audio files, indexes or caches.",
+            readOnly: false,
+            scopes: [.storageRead],
+            risk: .low,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.storageDiff,
+            title: "Compare Library Metadata",
+            description: "Compare the current App-owned JSON/sidecar snapshot with a backup previously created by storage.backup.",
+            readOnly: true,
+            scopes: [.storageRead],
+            risk: .low,
+            inputSchema: storageDiffInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.storageReload,
+            title: "Reload Library Storage",
+            description: "Reload the active Library from its current App-owned storage after an external, controlled change; no arbitrary write is performed by this capability.",
+            readOnly: false,
+            scopes: [.storageRead, .diagnosticsRepair],
+            risk: .medium,
+            inputSchema: emptyInputSchema
+        ),
+        AutomationToolDescriptor(
             name: AutomationMethod.automationScopes,
             title: "Automation Scope Status",
             description: "Read the App-owned granted and denied automation scopes.",
@@ -2458,6 +2638,15 @@ public enum AutomationToolCatalog {
         "additionalProperties": .boolean(false),
         "properties": .object([
             "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let storageDiffInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("backupPath")]),
+        "properties": .object([
+            "backupPath": .object(["type": .string("string"), "minLength": .number(1)])
         ])
     ])
 

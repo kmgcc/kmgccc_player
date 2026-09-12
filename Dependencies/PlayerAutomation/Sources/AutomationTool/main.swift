@@ -568,22 +568,58 @@ private struct AutomationCLI {
             }
         case "storage":
             guard let action = args.first else {
-                writeDiagnostic("usage error: storage requires inspect, validate or repair")
+                writeDiagnostic("usage error: storage requires inspect, validate, orphans, backup, diff, reload or repair")
                 return .usage
             }
             args.removeFirst()
-            guard args.isEmpty else {
-                writeDiagnostic("usage error: storage action does not accept positional arguments")
-                return .usage
-            }
             switch action {
             case "inspect":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: storage inspect does not accept positional arguments")
+                    return .usage
+                }
                 method = AutomationMethod.storageInspect
                 params = nil
             case "validate":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: storage validate does not accept positional arguments")
+                    return .usage
+                }
                 method = AutomationMethod.storageValidate
                 params = nil
+            case "orphans":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: storage orphans does not accept positional arguments")
+                    return .usage
+                }
+                method = AutomationMethod.storageOrphans
+                params = nil
+            case "backup":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: storage backup does not accept positional arguments")
+                    return .usage
+                }
+                method = AutomationMethod.storageBackup
+                params = nil
+            case "diff":
+                guard args.count == 1 else {
+                    writeDiagnostic("usage error: storage diff requires exactly one backup path")
+                    return .usage
+                }
+                method = AutomationMethod.storageDiff
+                params = .object(["backupPath": .string(args[0])])
+            case "reload":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: storage reload does not accept positional arguments")
+                    return .usage
+                }
+                method = AutomationMethod.storageReload
+                params = nil
             case "repair":
+                guard args.isEmpty else {
+                    writeDiagnostic("usage error: storage repair does not accept positional arguments")
+                    return .usage
+                }
                 method = AutomationMethod.storageRepair
                 params = .object(["dryRun": .boolean(options.dryRun)])
             default:

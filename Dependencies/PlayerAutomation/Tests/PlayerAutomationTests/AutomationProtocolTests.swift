@@ -207,6 +207,57 @@ func lyricsAutomationContractExposesSelectionAndRetrySemantics() throws {
 }
 
 @Test
+func storageAutomationContractExposesSafeFallbackOperations() throws {
+    for method in [
+        AutomationMethod.storageOrphans,
+        AutomationMethod.storageBackup,
+        AutomationMethod.storageDiff,
+        AutomationMethod.storageReload
+    ] {
+        let descriptor = try #require(AutomationToolCatalog.descriptor(for: method))
+        #expect(!descriptor.scopes.isEmpty)
+        guard case .object(let schema) = descriptor.inputSchema,
+              case .string("object") = schema["type"] else {
+            Issue.record("\(method) must expose an object input schema")
+            continue
+        }
+    }
+
+    let issue = AutomationPlaylistReferenceIssue(
+        playlistID: UUID(),
+        playlistName: "Broken references",
+        missingTrackIDs: [UUID()]
+    )
+    let result = AutomationStorageOrphansResult(
+        libraryID: UUID(),
+        playlistReferenceIssues: [issue],
+        message: "inspect"
+    )
+    let data = try AutomationWireCoding.encoder().encode(result)
+    let decoded = try AutomationWireCoding.decoder().decode(
+        AutomationStorageOrphansResult.self,
+        from: data
+    )
+    #expect(decoded == result)
+    #expect(decoded.orphanReferenceCount == 1)
+}
+
+@Test
+func diagnosticsResultRemainsBackwardCompatibleWithoutExtendedEvidence() throws {
+    let data = Data("""
+    {"healthy":true,"libraryID":null,"trackCount":0,"playlistCount":0,"missingTrackCount":0,"unavailableTrackCount":0,"sourceCount":0,"sourceIssues":[],"runningJobCount":0,"checks":{}}
+    """.utf8)
+    let result = try AutomationWireCoding.decoder().decode(
+        AutomationDiagnosticsResult.self,
+        from: data
+    )
+    #expect(result.healthy)
+    #expect(result.failedJobCount == 0)
+    #expect(result.playlistReferenceIssues.isEmpty)
+    #expect(result.storageValidation == "notRun")
+}
+
+@Test
 func automationJobRetryResultKeepsOriginalAndNewJobIDs() throws {
     let originalID = UUID()
     let retryID = UUID()

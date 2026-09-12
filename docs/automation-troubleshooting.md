@@ -74,5 +74,16 @@ App Debug build 依赖 bootstrap 产物。若失败指向 `MediaRemoteAdapter`�
 Storage 主要包含 manifest、Track/Playlist/Source sidecar、settings、index 和 history store。
 直接处理前必须：使用当前 commit 的源码确认 schema/owner，复制到 temporary fixture 或先
 做可恢复 backup，最小化修改，运行 validate，按 owner reload/rescan/restart，再通过正式
-Automation query 验证。不要修改 secret、writer lock、pending transaction 或 migration
-journal 来绕过错误；不确定时报告 evidence，而不是猜测。
+Automation query 验证。优先使用：
+
+```text
+storage.orphans -> 找到可定位的 Playlist/Track 引用问题
+storage.backup -> 创建 metadata-only backup 并取得 manifest
+storage.diff <backup-path> -> 比较受控修改前后文件
+storage.reload -> 重新载入当前 App-owned storage
+storage.validate -> 验证完整 invariant
+```
+
+`storage.backup` 不复制真实音频、缓存、索引或 live SQLite；它不是整库文件备份。不要修改
+secret、writer lock、pending transaction 或 migration journal 来绕过错误；不确定时报告
+evidence，而不是猜测。

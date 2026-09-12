@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import PlayerAutomationIPC
 import PlayerAutomationProtocol
@@ -17,6 +18,33 @@ private struct AutomationIdempotencyFile: Codable {
         let response: AutomationResponse
         let storedAt: Date
     }
+}
+
+private nonisolated struct AutomationStorageBackupManifest: Codable {
+    let schemaVersion: Int
+    let libraryID: UUID
+    let mode: String
+    let createdAt: Date
+    let files: [File]
+
+    struct File: Codable {
+        let relativePath: String
+        let sha256: String
+        let byteCount: Int64
+    }
+}
+
+private nonisolated struct AutomationStorageInventoryItem {
+    let relativePath: String
+    let sourceURL: URL
+    let sha256: String
+    let byteCount: Int64
+}
+
+private nonisolated struct AutomationStorageInventory {
+    let items: [AutomationStorageInventoryItem]
+    let omittedFileCount: Int
+    let failures: [String]
 }
 
 /// The scope file is deliberately small and App-owned. It is not a second
@@ -2467,16 +2495,54 @@ final class AutomationIPCServer {
                     case .completed, .partialFailure, .failed, .cancelled: return false
                     }
                 }.count
+                let failedJobs = jobs.filter {
+                    switch $0.state {
+                    case .failed, .partialFailure: return true
+                    case .queued, .running, .checkpointed, .completed, .cancelled: return false
+                    }
+                }
+                let failedJobSummaries = failedJobs.flatMap { job in
+                    let prefix = job.partialFailureSummaries.prefix(3)
+                    if prefix.isEmpty {
+                        return ["\(job.id.uuidString): \(job.state.rawValue)"]
+                    }
+                    return prefix.map { "\(job.id.uuidString): \($0)" }
+                }.prefix(50)
+                let diskSnapshot = try? await storageDiskSnapshot(for: session)
+                let playlistReferenceIssues = diskSnapshot.map {
+                    makePlaylistReferenceIssues($0.playlistReferenceIssues)
+                } ?? []
+                var storageValidation = "notRun"
+                var storageValidationMessage: String?
+                do {
+                    try await LibraryUpgradeSessionValidator.validate(
+                        context: session.context,
+                        libraryViewModel: session.libraryViewModel,
+                        repository: session.repository,
+                        searchIndex: session.searchIndex,
+                        playbackHistoryStore: session.playbackHistoryStore
+                    )
+                    storageValidation = "passed"
+                } catch {
+                    storageValidation = "failed"
+                    storageValidationMessage = String(describing: error)
+                }
                 let checks = [
                     "library": "ok",
                     "sources": sourceIssues.isEmpty ? "ok" : "attention",
                     "missingTracks": missing == 0 ? "ok" : "attention",
                     "unavailableTracks": unavailable == 0 ? "ok" : "attention",
-                    "jobs": runningJobs == 0 ? "idle" : "running"
+                    "jobs": runningJobs == 0 ? (failedJobs.isEmpty ? "idle" : "attention") : "running",
+                    "playlistReferences": playlistReferenceIssues.isEmpty ? "ok" : "attention",
+                    "storage": storageValidation == "passed" ? "ok" : "attention"
                 ]
                 return encodeResult(
                     AutomationDiagnosticsResult(
-                        healthy: sourceIssues.isEmpty && unavailable == 0,
+                        healthy: sourceIssues.isEmpty
+                            && unavailable == 0
+                            && failedJobs.isEmpty
+                            && playlistReferenceIssues.isEmpty
+                            && storageValidation == "passed",
                         libraryID: session.context.id,
                         trackCount: tracks.count,
                         playlistCount: session.libraryViewModel.playlists.count,
@@ -2485,7 +2551,12 @@ final class AutomationIPCServer {
                         sourceCount: sources.count,
                         sourceIssues: sourceIssues,
                         runningJobCount: runningJobs,
-                        checks: checks
+                        checks: checks,
+                        failedJobCount: failedJobs.count,
+                        failedJobSummaries: Array(failedJobSummaries),
+                        playlistReferenceIssues: playlistReferenceIssues,
+                        storageValidation: storageValidation,
+                        storageValidationMessage: storageValidationMessage
                     ),
                     for: request
                 )
@@ -2728,6 +2799,121 @@ final class AutomationIPCServer {
                 )
             }
 
+        case AutomationMethod.storageOrphans:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            guard request.params == nil || request.params == .null || isObject(request.params) else {
+                return invalidParameters(for: request)
+            }
+            do {
+                let snapshot = try await storageDiskSnapshot(for: session)
+                return encodeResult(
+                    AutomationStorageOrphansResult(
+                        libraryID: session.context.id,
+                        playlistReferenceIssues: makePlaylistReferenceIssues(
+                            snapshot.playlistReferenceIssues
+                        ),
+                        message: snapshot.playlistReferenceIssues.isEmpty
+                            ? "No Playlist references point to missing Track sidecars."
+                            : "Playlist references were inspected; no data was changed."
+                    ),
+                    for: request
+                )
+            } catch {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .internalError,
+                        message: "Failed to inspect Playlist references.",
+                        details: .object(["reason": .string(String(describing: error))])
+                    )
+                )
+            }
+
+        case AutomationMethod.storageBackup:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            guard request.params == nil || request.params == .null || isObject(request.params) else {
+                return invalidParameters(for: request)
+            }
+            do {
+                let context = session.context
+                let result = try await session.runLibraryOperation(as: .other) {
+                    try await Task.detached(priority: .utility) {
+                        try Self.createStorageBackup(context: context)
+                    }.value
+                }
+                return encodeResult(result, for: request)
+            } catch {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .internalError,
+                        message: "Failed to create the Library metadata backup.",
+                        retryable: true,
+                        details: .object(["reason": .string(String(describing: error))])
+                    )
+                )
+            }
+
+        case AutomationMethod.storageDiff:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let backupPath = try parameters.string("backupPath", required: true)!
+                let context = session.context
+                let result = try await Task.detached(priority: .utility) {
+                    try Self.storageDiff(context: context, backupPath: backupPath)
+                }.value
+                return encodeResult(result, for: request)
+            } catch let error as AutomationParameterError {
+                return invalidParameters(for: request, error: error)
+            } catch {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .internalError,
+                        message: "Failed to compare the Library metadata backup.",
+                        details: .object(["reason": .string(String(describing: error))])
+                    )
+                )
+            }
+
+        case AutomationMethod.storageReload:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            guard request.params == nil || request.params == .null || isObject(request.params) else {
+                return invalidParameters(for: request)
+            }
+            do {
+                let _: Void = try await session.runLibraryOperation(as: .other) {
+                    await session.libraryViewModel.reloadLibrary()
+                }
+                return encodeResult(
+                    storageResult(
+                        for: session,
+                        validation: "notRun",
+                        message: "The active Library was reloaded from its current App-owned storage. Run storage.validate afterward."
+                    ),
+                    for: request
+                )
+            } catch {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .internalError,
+                        message: "Failed to reload the active Library.",
+                        retryable: true,
+                        details: .object(["reason": .string(String(describing: error))])
+                    )
+                )
+            }
+
         case AutomationMethod.automationCapabilities:
             guard request.params == nil || request.params == .null || isObject(request.params) else {
                 return invalidParameters(for: request)
@@ -2962,6 +3148,266 @@ final class AutomationIPCServer {
         )
     }
 
+    private func storageDiskSnapshot(
+        for session: LibrarySession
+    ) async throws -> LibraryUpgradeSessionValidator.DiskSnapshot {
+        let context = session.context
+        return try await Task.detached(priority: .utility) {
+            try LibraryUpgradeSessionValidator.inspectDisk(context: context)
+        }.value
+    }
+
+    private func makePlaylistReferenceIssues(
+        _ issues: [LibraryUpgradeSessionValidator.LibraryStoragePlaylistReferenceIssue]
+    ) -> [AutomationPlaylistReferenceIssue] {
+        issues.map {
+            AutomationPlaylistReferenceIssue(
+                playlistID: $0.playlistID,
+                playlistName: $0.playlistName,
+                missingTrackIDs: $0.missingTrackIDs
+            )
+        }
+    }
+
+    private nonisolated static func automationStorageBackupRoot(
+        libraryID: UUID
+    ) -> URL {
+        let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+        return appSupport
+            .appendingPathComponent("kmgccc.player", isDirectory: true)
+            .appendingPathComponent("Automation", isDirectory: true)
+            .appendingPathComponent("Backups", isDirectory: true)
+            .appendingPathComponent(libraryID.uuidString, isDirectory: true)
+    }
+
+    private nonisolated static let automationStorageBackupRoots: Set<String> = [
+        "Settings",
+        "Sources",
+        "Tracks",
+        "Playlists",
+        "Artists",
+        "Albums"
+    ]
+
+    private nonisolated static let automationStorageBackupExtensions: Set<String> = [
+        "json",
+        "ttml",
+        "lrc",
+        "txt",
+        "png",
+        "jpg",
+        "jpeg",
+        "webp",
+        "heic"
+    ]
+
+    private nonisolated static func storageInventory(
+        at rootURL: URL
+    ) throws -> AutomationStorageInventory {
+        let fileManager = FileManager.default
+        let root = rootURL.standardizedFileURL
+        let rootPath = root.path
+        guard fileManager.fileExists(atPath: rootPath) else {
+            throw AutomationParameterError.missingResource("library storage")
+        }
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            throw AutomationParameterError.invalidValue("library storage")
+        }
+
+        var items: [AutomationStorageInventoryItem] = []
+        var omittedFileCount = 0
+        var failures: [String] = []
+        while let url = enumerator.nextObject() as? URL {
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values?.isRegularFile == true else { continue }
+
+            let resolved = url.resolvingSymlinksInPath().standardizedFileURL.path
+            guard resolved == rootPath || resolved.hasPrefix(rootPath + "/") else {
+                omittedFileCount += 1
+                if failures.count < 50 {
+                    failures.append("Skipped file outside Library root: \(url.path)")
+                }
+                continue
+            }
+
+            guard url.path.hasPrefix(rootPath + "/") else {
+                omittedFileCount += 1
+                continue
+            }
+            let relativePath = String(url.standardizedFileURL.path.dropFirst(rootPath.count + 1))
+            let components = relativePath.split(separator: "/", omittingEmptySubsequences: true)
+            guard let first = components.first,
+                  (first == "library.json"
+                    || automationStorageBackupRoots.contains(String(first))),
+                  automationStorageBackupExtensions.contains(url.pathExtension.lowercased()) else {
+                omittedFileCount += 1
+                continue
+            }
+
+            do {
+                let data = try Data(contentsOf: url)
+                let digest = SHA256.hash(data: data)
+                    .map { String(format: "%02x", $0) }
+                    .joined()
+                items.append(
+                    AutomationStorageInventoryItem(
+                        relativePath: relativePath,
+                        sourceURL: url,
+                        sha256: digest,
+                        byteCount: Int64(data.count)
+                    )
+                )
+            } catch {
+                if failures.count < 50 {
+                    failures.append("Failed to read \(relativePath): \(error.localizedDescription)")
+                }
+            }
+        }
+        return AutomationStorageInventory(
+            items: items.sorted { $0.relativePath < $1.relativePath },
+            omittedFileCount: omittedFileCount,
+            failures: failures
+        )
+    }
+
+    private nonisolated static func createStorageBackup(
+        context: LibraryContext
+    ) throws -> AutomationStorageBackupResult {
+        let createdAt = Date()
+        let inventory = try storageInventory(at: context.rootURL)
+        let fileManager = FileManager.default
+        let root = automationStorageBackupRoot(libraryID: context.id)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        let stamp = ISO8601DateFormatter().string(from: createdAt)
+            .replacingOccurrences(of: ":", with: "-")
+            .replacingOccurrences(of: ".", with: "-")
+        let destination = root.appendingPathComponent(
+            "\(stamp)-\(UUID().uuidString.prefix(8))",
+            isDirectory: true
+        )
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+
+        var copiedFiles: [AutomationStorageBackupManifest.File] = []
+        var copiedBytes: Int64 = 0
+        var failures = inventory.failures
+        for item in inventory.items {
+            let target = destination.appendingPathComponent(item.relativePath)
+            do {
+                try fileManager.createDirectory(
+                    at: target.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try fileManager.copyItem(at: item.sourceURL, to: target)
+                copiedFiles.append(
+                    AutomationStorageBackupManifest.File(
+                        relativePath: item.relativePath,
+                        sha256: item.sha256,
+                        byteCount: item.byteCount
+                    )
+                )
+                copiedBytes += item.byteCount
+            } catch {
+                if failures.count < 50 {
+                    failures.append("Failed to back up \(item.relativePath): \(error.localizedDescription)")
+                }
+            }
+        }
+
+        let manifest = AutomationStorageBackupManifest(
+            schemaVersion: 1,
+            libraryID: context.id,
+            mode: context.mode.rawValue,
+            createdAt: createdAt,
+            files: copiedFiles.sorted { $0.relativePath < $1.relativePath }
+        )
+        let manifestURL = destination.appendingPathComponent("automation-backup.json")
+        try AutomationWireCoding.encoder().encode(manifest).write(
+            to: manifestURL,
+            options: .atomic
+        )
+        return AutomationStorageBackupResult(
+            libraryID: context.id,
+            backupPath: destination.path,
+            createdAt: createdAt,
+            copiedFileCount: copiedFiles.count,
+            omittedFileCount: inventory.omittedFileCount,
+            copiedBytes: copiedBytes,
+            failures: Array(failures.prefix(50)),
+            message: "Created a metadata-only backup. Audio files, indexes, caches and live SQLite stores were intentionally omitted."
+        )
+    }
+
+    private nonisolated static func storageBackupManifest(
+        context: LibraryContext,
+        backupPath: String
+    ) throws -> (URL, AutomationStorageBackupManifest) {
+        let candidate = URL(fileURLWithPath: backupPath).standardizedFileURL
+        let root = automationStorageBackupRoot(libraryID: context.id).standardizedFileURL
+        guard candidate.path.hasPrefix(root.path + "/"),
+              FileManager.default.fileExists(atPath: candidate.path) else {
+            throw AutomationParameterError.invalidValue("backupPath")
+        }
+        let manifestURL = candidate.appendingPathComponent("automation-backup.json")
+        guard let data = try? Data(contentsOf: manifestURL),
+              let manifest = try? AutomationWireCoding.decoder().decode(
+                  AutomationStorageBackupManifest.self,
+                  from: data
+              ),
+              manifest.schemaVersion == 1,
+              manifest.libraryID == context.id else {
+            throw AutomationParameterError.invalidValue("backupPath")
+        }
+        return (candidate, manifest)
+    }
+
+    private nonisolated static func storageDiff(
+        context: LibraryContext,
+        backupPath: String
+    ) throws -> AutomationStorageDiffResult {
+        let (backupURL, manifest) = try storageBackupManifest(
+            context: context,
+            backupPath: backupPath
+        )
+        let current = try storageInventory(at: context.rootURL)
+        let currentByPath = Dictionary(uniqueKeysWithValues: current.items.map {
+            ($0.relativePath, $0)
+        })
+        let backupByPath = Dictionary(uniqueKeysWithValues: manifest.files.map {
+            ($0.relativePath, $0)
+        })
+        let currentPaths = Set(currentByPath.keys)
+        let backupPaths = Set(backupByPath.keys)
+        let added = currentPaths.subtracting(backupPaths).sorted()
+        let removed = backupPaths.subtracting(currentPaths).sorted()
+        let changed = currentPaths.intersection(backupPaths).filter { path in
+            currentByPath[path]?.sha256 != backupByPath[path]?.sha256
+        }.sorted()
+        let unchangedCount = currentPaths.intersection(backupPaths).count - changed.count
+        let maximumReportedPaths = 500
+        let truncated = added.count > maximumReportedPaths
+            || removed.count > maximumReportedPaths
+            || changed.count > maximumReportedPaths
+        return AutomationStorageDiffResult(
+            libraryID: context.id,
+            backupPath: backupURL.path,
+            added: Array(added.prefix(maximumReportedPaths)),
+            removed: Array(removed.prefix(maximumReportedPaths)),
+            changed: Array(changed.prefix(maximumReportedPaths)),
+            unchangedCount: unchangedCount,
+            truncated: truncated,
+            message: current.failures.isEmpty
+                ? "Compared current JSON/sidecar and enrichment files with the selected backup; no files were changed."
+                : "Compared the selected backup, but some current files could not be read: \(current.failures.joined(separator: "; "))"
+        )
+    }
+
     private func storageResult(
         for session: LibrarySession,
         validation: String,
@@ -3191,6 +3637,13 @@ final class AutomationIPCServer {
              AutomationMethod.queueReplace,
              AutomationMethod.queueEnqueue,
              AutomationMethod.queueEnqueueNext: return "tracks"
+        case AutomationMethod.storageInspect,
+             AutomationMethod.storageValidate,
+             AutomationMethod.storageOrphans,
+             AutomationMethod.storageBackup,
+             AutomationMethod.storageDiff,
+             AutomationMethod.storageReload,
+             AutomationMethod.storageRepair: return "storage"
         default: return "operation"
         }
     }
