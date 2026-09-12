@@ -22,7 +22,8 @@ private nonisolated enum AutomationAppIdentity {
             proc_pidpath(getpid(), buffer.baseAddress, UInt32(buffer.count))
         }
         if length > 0 {
-            paths.append(String(cString: buffer))
+            let bytes = buffer.prefix(Int(length)).map { UInt8(bitPattern: $0) }
+            paths.append(String(decoding: bytes, as: UTF8.self))
         }
         if let argument = ProcessInfo.processInfo.arguments.first,
            !argument.isEmpty {
