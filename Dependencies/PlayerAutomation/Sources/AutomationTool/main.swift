@@ -37,6 +37,7 @@ private struct CLIOptions {
     /// App policy and a separate confirmation path.
     var dryRun = false
     var confirm = false
+    var force = false
 }
 
 enum AutomationToolDefaults {
@@ -460,31 +461,71 @@ private struct AutomationCLI {
             default: writeDiagnostic("usage error: unknown metadata action \(action)"); return .usage
             }
         case "lyrics":
-            guard let action = args.first else { writeDiagnostic("usage error: lyrics requires get or refresh"); return .usage }
+            guard let action = args.first else { writeDiagnostic("usage error: lyrics requires get, search, candidates, compare, apply or refresh"); return .usage }
             args.removeFirst()
             switch action {
             case "get":
                 guard args.count == 1 else { writeDiagnostic("usage error: lyrics get requires one Track ID"); return .usage }
                 method = AutomationMethod.lyricsGet
                 params = .object(["trackID": .string(args[0])])
+            case "search", "candidates":
+                guard args.count == 1 else {
+                    writeDiagnostic("usage error: lyrics \(action) requires one Track ID")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [:]
+                if let paramsJSON = options.paramsJSON {
+                    guard case .object(let extra) = paramsJSON else {
+                        writeDiagnostic("usage error: lyrics \(action) --params-json must be an object")
+                        return .usage
+                    }
+                    values.merge(extra) { _, incoming in incoming }
+                }
+                values["trackID"] = .string(args[0])
+                if action == "candidates", options.force {
+                    values["refresh"] = .boolean(true)
+                }
+                method = action == "search"
+                    ? AutomationMethod.lyricsSearch
+                    : AutomationMethod.lyricsCandidates
+                params = .object(values)
+            case "compare", "apply":
+                guard args.count == 1,
+                      let paramsJSON = options.paramsJSON,
+                      case .object(let values) = paramsJSON else {
+                    writeDiagnostic("usage error: lyrics \(action) requires one Track ID and --params-json object")
+                    return .usage
+                }
+                var merged = values
+                merged["trackID"] = .string(args[0])
+                if action == "apply" {
+                    merged["dryRun"] = .boolean(options.dryRun)
+                    if options.force { merged["force"] = .boolean(true) }
+                }
+                method = action == "compare"
+                    ? AutomationMethod.lyricsCompare
+                    : AutomationMethod.lyricsApply
+                params = .object(merged)
             case "refresh":
                 guard !args.isEmpty else { writeDiagnostic("usage error: lyrics refresh requires Track IDs"); return .usage }
                 method = AutomationMethod.lyricsRefresh
                 params = .object([
                     "trackIDs": .array(args.map { .string($0) }),
-                    "force": .boolean(options.confirm),
+                    "force": .boolean(options.force),
                     "dryRun": .boolean(options.dryRun)
                 ])
             default: writeDiagnostic("usage error: unknown lyrics action \(action)"); return .usage
             }
         case "jobs":
-            guard let action = args.first else { writeDiagnostic("usage error: jobs requires list, get or cancel"); return .usage }
+            guard let action = args.first else { writeDiagnostic("usage error: jobs requires list, get, cancel or retry"); return .usage }
             args.removeFirst()
             switch action {
             case "list": method = AutomationMethod.jobsList; params = nil
-            case "get", "cancel":
+            case "get", "cancel", "retry":
                 guard args.count == 1 else { writeDiagnostic("usage error: jobs \(action) requires a job ID"); return .usage }
-                method = action == "get" ? AutomationMethod.jobsGet : AutomationMethod.jobsCancel
+                method = action == "get"
+                    ? AutomationMethod.jobsGet
+                    : (action == "cancel" ? AutomationMethod.jobsCancel : AutomationMethod.jobsRetry)
                 params = .object(["jobID": .string(args[0])])
             default: writeDiagnostic("usage error: unknown jobs action \(action)"); return .usage
             }
@@ -857,6 +898,9 @@ private struct AutomationCLI {
                 options.confirm = true
                 options.dryRun = false
                 args.remove(at: index)
+            case "--force":
+                options.force = true
+                args.remove(at: index)
             case "--help", "-h":
                 printUsage(to: FileHandle.standardOutput)
                 exit(AutomationCLIExitCode.success.rawValue)
@@ -944,8 +988,11 @@ private struct AutomationCLI {
           metadata get <track-id>...
           metadata patch <track-id>... --params-json '{"title":"..."}'
           lyrics get <track-id>
-          lyrics refresh <track-id>... (returns a Job)
-          jobs list|get|cancel     Inspect and cancel long-running library jobs
+          lyrics search|candidates <track-id> [--params-json '{...}']
+          lyrics compare|apply <track-id> --params-json '{...}'
+          lyrics refresh <track-id>... [--force] (returns a Job)
+          jobs list|get|cancel|retry
+                                   Inspect, cancel or retry long-running library jobs
           diagnostics health      Collect actionable Library/Source health evidence
           settings get            Read supported persistent automation settings
           settings patch          Update settings with --params-json
@@ -975,6 +1022,7 @@ private struct AutomationCLI {
           --idempotency-key <id>  Safely retry the same mutation
           --params-json <json>    Parameters for automation call
           --dry-run               Preview a mutation without applying it
+          --force                 Allow a lyrics refresh/apply policy to replace lower-quality lyrics
           --yes                   Acknowledge a high-risk request; App policy still confirms
           --help                  Show this help
 

@@ -1,6 +1,14 @@
 import Foundation
 import SwiftData
 
+struct LibraryAutomationLyricsApplyOutcome: Sendable {
+    let applied: Bool
+    let conflicted: Bool
+    let currentQuality: Int
+    let candidateQuality: Int
+    let message: String
+}
+
 @MainActor
 final class LibrarySession: LibrarySessionLifecycle {
     let context: LibraryContext
@@ -304,8 +312,9 @@ final class LibrarySession: LibrarySessionLifecycle {
     }
 
     /// Returns live and recently completed operation snapshots for the
-    /// automation Job surface. The recent portion is launch-scoped diagnostic
-    /// state; domain data remains durable in the library's own stores.
+    /// automation Job surface. The coordinator restores its bounded history
+    /// from the library-scoped automation Job file; domain data remains
+    /// durable in the library's own stores.
     func libraryJobDescriptorsSnapshot() -> [LibraryOperationTaskDescriptor] {
         let live = operationCoordinator.taskDescriptors
         let recent = operationCoordinator.recentTaskDescriptors.filter { recent in
@@ -322,6 +331,32 @@ final class LibrarySession: LibrarySessionLifecycle {
         operationCoordinator.cancel(operationID: id)
     }
 
+    /// Re-enqueues a failed/cancelled automation Job when its operation type
+    /// carries a durable, safe retry specification. Unsupported Jobs remain
+    /// observable but cannot be guessed or reconstructed from arbitrary data.
+    @discardableResult
+    func retryAutomationJob(id: UUID) -> LibraryOperationTaskDescriptor? {
+        guard let descriptor = operationCoordinator.taskDescriptor(operationID: id),
+              descriptor.state == .failed
+                || descriptor.state == .partialFailure
+                || descriptor.state == .cancelled,
+              let retrySpec = descriptor.retrySpec else {
+            return nil
+        }
+        switch retrySpec.kind {
+        case .lyricsRefresh:
+            return startAutomationLyricsRefresh(
+                trackIDs: descriptor.failedItemIDs.isEmpty
+                    ? retrySpec.trackIDs
+                    : descriptor.failedItemIDs,
+                force: retrySpec.force
+            )
+        case .sourceRefresh:
+            guard let sourceID = retrySpec.sourceID else { return nil }
+            return startAutomationSourceRefresh(sourceID: sourceID)
+        }
+    }
+
     /// Starts the provider-backed lyrics maintenance workflow without making
     /// the IPC request wait for a whole library. The operation is owned by the
     /// session coordinator, so progress/cancellation remain valid across CLI,
@@ -335,7 +370,7 @@ final class LibrarySession: LibrarySessionLifecycle {
         let started = operationCoordinator.start({ [weak self] in
             guard let self else { return }
             await self.runAutomationLyricsRefresh(trackIDs: uniqueIDs, force: force)
-        }, kind: .enrichment)
+        }, kind: .enrichment, retrySpec: .lyricsRefresh(trackIDs: uniqueIDs, force: force))
         guard started else { return nil }
         return operationCoordinator.taskDescriptors.last
     }
@@ -357,57 +392,154 @@ final class LibrarySession: LibrarySessionLifecycle {
                 )
             }
             guard let track = tracksByID[trackID] else {
-                operationCoordinator.recordPartialFailure("\(trackID.uuidString): Track not found")
-                continue
-            }
-            if !force, automationLyricsQuality(track) > 0 {
-                operationCoordinator.recordCheckpoint("skipped existing lyrics \(trackID.uuidString)")
+                operationCoordinator.recordPartialFailure(
+                    "\(trackID.uuidString): Track not found",
+                    itemID: trackID
+                )
                 continue
             }
             let title = track.title.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !title.isEmpty else {
-                operationCoordinator.recordPartialFailure("\(trackID.uuidString): missing title")
+                operationCoordinator.recordPartialFailure(
+                    "\(trackID.uuidString): missing title",
+                    itemID: trackID
+                )
                 continue
             }
-            let result = await LyricsSearchHelper.searchAndFetchAutomaticallyMatchedLyrics(
+            let expectedRevision = libraryViewModel.automationTrackRevision(for: track)
+            let wordSyncedTTML = await LyricsSearchHelper.searchAndFetchBestLyrics(
                 title: title,
                 artist: track.artist.isEmpty ? nil : track.artist,
                 album: track.album.isEmpty ? nil : track.album,
                 duration: track.duration > 0 ? track.duration : nil,
+                mode: .verbatim,
                 searchCoordinator: cacheServices.lyricsSearchCoordinator,
                 amllDBService: cacheServices.amllDBService
             )
             guard !Task.isCancelled else { return }
-            guard let ttml = result.ttml,
+            let wordQuality = wordSyncedTTML.map { lyricsQuality($0) } ?? 0
+            let ttml: String?
+            if wordQuality >= 2 {
+                ttml = wordSyncedTTML
+            } else {
+                let lineSyncedTTML = await LyricsSearchHelper.searchAndFetchBestLyrics(
+                    title: title,
+                    artist: track.artist.isEmpty ? nil : track.artist,
+                    album: track.album.isEmpty ? nil : track.album,
+                    duration: track.duration > 0 ? track.duration : nil,
+                    mode: .line,
+                    searchCoordinator: cacheServices.lyricsSearchCoordinator,
+                    amllDBService: cacheServices.amllDBService
+                )
+                ttml = lineSyncedTTML ?? wordSyncedTTML
+            }
+            guard let ttml,
                   !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                operationCoordinator.recordPartialFailure("\(trackID.uuidString): \(result.status.rawValue)")
+                operationCoordinator.recordPartialFailure(
+                    "\(trackID.uuidString): no usable lyrics candidate",
+                    itemID: trackID
+                )
                 continue
             }
-            let newQuality = ttml.localizedCaseInsensitiveContains("<span") ? 2 : 1
-            guard newQuality > automationLyricsQuality(track) else {
-                operationCoordinator.recordCheckpoint("kept current lyrics \(trackID.uuidString)")
-                continue
-            }
-            track.ttmlLyricText = ttml
-            track.lyricsText = nil
-            track.lyricsFileName = nil
-            let persistence = await libraryViewModel.saveTrackEdits(
-                track,
-                mode: .metaAndLyrics,
-                reason: "automationLyricsRefresh"
+            let outcome = await applyAutomationLyrics(
+                trackID: trackID,
+                ttml: ttml,
+                candidateQuality: lyricsQuality(ttml),
+                force: force,
+                expectedRevision: expectedRevision
             )
-            guard persistence.persistedTrackIDs.contains(trackID) else {
-                operationCoordinator.recordPartialFailure("\(trackID.uuidString): persistence failed")
-                continue
+            if outcome.conflicted {
+                operationCoordinator.recordPartialFailure(
+                    "\(trackID.uuidString): lyrics changed while the candidate was fetched",
+                    itemID: trackID
+                )
+            } else if outcome.applied {
+                operationCoordinator.recordCheckpoint("applied lyrics \(trackID.uuidString)")
+            } else if outcome.message.hasPrefix("kept") {
+                operationCoordinator.recordCheckpoint("kept current lyrics \(trackID.uuidString)")
+            } else {
+                operationCoordinator.recordPartialFailure(
+                    "\(trackID.uuidString): \(outcome.message)",
+                    itemID: trackID
+                )
             }
-            operationCoordinator.recordCheckpoint("applied lyrics \(trackID.uuidString)")
         }
+    }
+
+    /// Applies a fetched candidate through the same App-owned persistence
+    /// boundary used by the batch Job. The revision is checked immediately
+    /// before writing so a UI edit made while a remote candidate was fetched
+    /// cannot be silently overwritten.
+    func applyAutomationLyrics(
+        trackID: UUID,
+        ttml: String,
+        candidateQuality: Int,
+        force: Bool,
+        expectedRevision: String? = nil
+    ) async -> LibraryAutomationLyricsApplyOutcome {
+        guard let track = libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
+            return LibraryAutomationLyricsApplyOutcome(
+                applied: false,
+                conflicted: false,
+                currentQuality: 0,
+                candidateQuality: candidateQuality,
+                message: "Track not found"
+            )
+        }
+        let currentQuality = automationLyricsQuality(track)
+        if let expectedRevision,
+           expectedRevision != libraryViewModel.automationTrackRevision(for: track) {
+            return LibraryAutomationLyricsApplyOutcome(
+                applied: false,
+                conflicted: true,
+                currentQuality: currentQuality,
+                candidateQuality: candidateQuality,
+                message: "Track metadata changed after the lyrics query"
+            )
+        }
+        guard force || candidateQuality > currentQuality else {
+            return LibraryAutomationLyricsApplyOutcome(
+                applied: false,
+                conflicted: false,
+                currentQuality: currentQuality,
+                candidateQuality: candidateQuality,
+                message: "kept current lyrics because the candidate is not better"
+            )
+        }
+        track.ttmlLyricText = ttml
+        track.lyricsText = nil
+        track.lyricsFileName = nil
+        let persistence = await libraryViewModel.saveTrackEdits(
+            track,
+            mode: .metaAndLyrics,
+            reason: "automationLyricsApply"
+        )
+        guard persistence.persistedTrackIDs.contains(trackID) else {
+            return LibraryAutomationLyricsApplyOutcome(
+                applied: false,
+                conflicted: false,
+                currentQuality: currentQuality,
+                candidateQuality: candidateQuality,
+                message: "persistence failed"
+            )
+        }
+        return LibraryAutomationLyricsApplyOutcome(
+            applied: true,
+            conflicted: false,
+            currentQuality: currentQuality,
+            candidateQuality: candidateQuality,
+            message: force ? "lyrics applied with force" : "lyrics applied"
+        )
+    }
+
+    private func lyricsQuality(_ ttml: String) -> Int {
+        ttml.localizedCaseInsensitiveContains("<span") ? 2 : 1
     }
 
     private func automationLyricsQuality(_ track: Track) -> Int {
         if let ttml = track.ttmlLyricText,
            !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return ttml.localizedCaseInsensitiveContains("<span") ? 2 : 1
+            return lyricsQuality(ttml)
         }
         if track.ttmlLyricsFileName != nil { return 1 }
         if let plain = track.lyricsText,
@@ -568,7 +700,7 @@ final class LibrarySession: LibrarySessionLifecycle {
                     "\(sourceID.uuidString): \(String(describing: error))"
                 )
             }
-        }, kind: .sourceScan)
+        }, kind: .sourceScan, retrySpec: .sourceRefresh(sourceID: sourceID))
         guard started else { return nil }
         return operationCoordinator.taskDescriptors.last
     }

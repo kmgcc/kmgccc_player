@@ -156,8 +156,16 @@ final class AutomationIPCServer {
     private var idempotencyCache: [String: (fingerprint: String, response: AutomationResponse)] = [:]
     private var idempotencyOrder: [String] = []
     private var pendingIdempotency: [String: PendingIdempotency] = [:]
+    private var lyricsCandidateCache: [UUID: CachedLyricsCandidates] = [:]
     private let idempotencyCacheLimit = 256
+    private let lyricsCandidateCacheLimit = 256
     private(set) var isRunning = false
+
+    private struct CachedLyricsCandidates {
+        let mode: LDDCMode
+        let translation: Bool
+        let result: LyricsSearchHelper.SearchResult
+    }
 
     init(appSession: AppSessionHost) throws {
         self.appSession = appSession
@@ -2069,6 +2077,196 @@ final class AutomationIPCServer {
                 return invalidParameters(for: request, error: error)
             }
 
+        case AutomationMethod.lyricsSearch, AutomationMethod.lyricsCandidates:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let trackID = try parameters.uuid("trackID", required: true)!
+                guard let track = session.libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
+                    throw AutomationParameterError.missingResource("trackID")
+                }
+                let requestedMode = try parameters.string("mode") ?? LDDCMode.verbatim.rawValue
+                guard let mode = LDDCMode(rawValue: requestedMode) else {
+                    throw AutomationParameterError.invalidValue("mode")
+                }
+                let translation = try parameters.boolean("translation", default: true)
+                let requestedRefresh = try parameters.boolean("refresh", default: false)
+                let shouldRefresh = request.method == AutomationMethod.lyricsSearch
+                    || requestedRefresh
+                let cache = lyricsCandidateCache[trackID]
+                let usedCache = !shouldRefresh
+                    && cache?.mode == mode
+                    && cache?.translation == translation
+                let result: LyricsSearchHelper.SearchResult
+                if usedCache, let cache {
+                    result = cache.result
+                } else {
+                    result = await LyricsSearchHelper.performFullSearch(
+                        title: track.title,
+                        artist: track.artist.isEmpty ? nil : track.artist,
+                        album: track.album.isEmpty ? nil : track.album,
+                        duration: track.duration > 0 ? track.duration : nil,
+                        mode: mode,
+                        translation: translation,
+                        searchCoordinator: session.cacheServices.lyricsSearchCoordinator
+                    )
+                    lyricsCandidateCache[trackID] = CachedLyricsCandidates(
+                        mode: mode,
+                        translation: translation,
+                        result: result
+                    )
+                    trimLyricsCandidateCacheIfNeeded()
+                }
+                return encodeResult(
+                    makeLyricsSearchResult(
+                        trackID: trackID,
+                        track: track,
+                        mode: mode,
+                        result: result,
+                        fromCache: usedCache
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.lyricsCompare:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let trackID = try parameters.uuid("trackID", required: true)!
+                guard let track = session.libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
+                    throw AutomationParameterError.missingResource("trackID")
+                }
+                guard let candidateValues = try parameters.object("candidate") else {
+                    throw AutomationParameterError.missing("candidate")
+                }
+                let candidate = try makeAutomationLyricsCandidate(from: candidateValues)
+                let currentQuality = currentLyricsQuality(track)
+                let candidateQuality = lyricsQuality(for: candidate)
+                return encodeResult(
+                    AutomationLyricsComparisonResult(
+                        trackID: trackID,
+                        currentStatus: trackLyricsStatus(track),
+                        currentQuality: currentQuality,
+                        candidate: candidate,
+                        candidateQuality: candidateQuality,
+                        shouldReplace: candidateQuality > currentQuality,
+                        message: candidateQuality > currentQuality
+                            ? "The candidate is a higher synchronization quality than the current lyrics."
+                            : "The current lyrics are equal or higher quality; no replacement is recommended."
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.lyricsApply:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let trackID = try parameters.uuid("trackID", required: true)!
+                guard let track = session.libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
+                    throw AutomationParameterError.missingResource("trackID")
+                }
+                guard let candidateValues = try parameters.object("candidate") else {
+                    throw AutomationParameterError.missing("candidate")
+                }
+                let candidate = try makeAutomationLyricsCandidate(from: candidateValues)
+                let force = try parameters.boolean("force", default: false)
+                let translation = try parameters.boolean("translation", default: true)
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let expectedRevision = try parameters.string("expectedRevision")
+                let currentQuality = currentLyricsQuality(track)
+                let estimatedQuality = lyricsQuality(for: candidate)
+                if let expectedRevision,
+                   expectedRevision != session.libraryViewModel.automationTrackRevision(for: track) {
+                    return trackRevisionConflict(
+                        for: request,
+                        expected: expectedRevision,
+                        actual: session.libraryViewModel.automationTrackRevision(for: track)
+                    )
+                }
+                if dryRun {
+                    return encodeResult(
+                        AutomationLyricsApplyResult(
+                            trackID: trackID,
+                            applied: false,
+                            dryRun: true,
+                            force: force,
+                            candidate: candidate,
+                            currentQuality: currentQuality,
+                            candidateQuality: estimatedQuality,
+                            message: force
+                                ? "Preview only. The selected candidate will replace the current lyrics."
+                                : "Preview only. The candidate will replace the current lyrics only when its fetched quality is higher."
+                        ),
+                        for: request
+                    )
+                }
+                let lddcCandidate = try makeLDDCCandidate(from: candidate)
+                guard let ttml = await LyricsSearchHelper.fetchTTMLForAutomation(
+                    candidate: lddcCandidate,
+                    mode: try lddcMode(for: candidate),
+                    translation: translation,
+                    amllDBService: session.cacheServices.amllDBService
+                ) else {
+                    return .failure(
+                        for: request,
+                        error: AutomationError(
+                            code: .internalError,
+                            message: "The selected lyrics candidate could not be fetched or converted.",
+                            retryable: true,
+                            details: .object([
+                                "trackID": .string(trackID.uuidString),
+                                "candidateID": .string(candidate.id)
+                            ])
+                        )
+                    )
+                }
+                let fetchedQuality = ttml.localizedCaseInsensitiveContains("<span") ? 2 : 1
+                let outcome = await session.applyAutomationLyrics(
+                    trackID: trackID,
+                    ttml: ttml,
+                    candidateQuality: fetchedQuality,
+                    force: force,
+                    expectedRevision: expectedRevision
+                )
+                if outcome.conflicted {
+                    return trackRevisionConflict(
+                        for: request,
+                        expected: expectedRevision ?? "unknown",
+                        actual: session.libraryViewModel.allTracks
+                            .first(where: { $0.id == trackID })
+                            .map { session.libraryViewModel.automationTrackRevision(for: $0) }
+                            ?? "unknown"
+                    )
+                }
+                return encodeResult(
+                    AutomationLyricsApplyResult(
+                        trackID: trackID,
+                        applied: outcome.applied,
+                        dryRun: false,
+                        force: force,
+                        candidate: candidate,
+                        currentQuality: outcome.currentQuality,
+                        candidateQuality: outcome.candidateQuality,
+                        message: outcome.message
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
         case AutomationMethod.lyricsRefresh:
             guard let session = activeSession(for: request), let appSession else {
                 return noActiveLibraryResponse(for: request)
@@ -2189,6 +2387,51 @@ final class AutomationIPCServer {
                         "jobID": .string(jobID.uuidString),
                         "cancelRequested": .boolean(true)
                     ]),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.jobsRetry:
+            guard let appSession else {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .serverUnavailable,
+                        message: "The player App is no longer available.",
+                        retryable: true
+                    )
+                )
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let jobID = try parameters.uuid("jobID", required: true)!
+                guard let descriptor = appSession.libraryJobDescriptors()
+                    .first(where: { $0.id == jobID }) else {
+                    throw AutomationParameterError.missingResource("jobID")
+                }
+                guard descriptor.retrySpec != nil else {
+                    throw AutomationParameterError.invalidValue("jobID")
+                }
+                guard descriptor.state == .failed
+                    || descriptor.state == .partialFailure
+                    || descriptor.state == .cancelled else {
+                    throw AutomationParameterError.invalidValue("jobID")
+                }
+                guard let retryJob = appSession.retryLibraryJob(
+                    id: jobID,
+                    libraryID: request.context.libraryID
+                ) else {
+                    throw AutomationParameterError.invalidValue("jobID")
+                }
+                return encodeResult(
+                    AutomationJobRetryResult(
+                        originalJobID: jobID,
+                        accepted: true,
+                        job: makeJobSummary(retryJob),
+                        message: "Job retry accepted; query jobs.get for the new Job's progress."
+                    ),
                     for: request
                 )
             } catch {
@@ -2940,6 +3183,10 @@ final class AutomationIPCServer {
         case AutomationMethod.metadataGet,
              AutomationMethod.metadataPatch,
              AutomationMethod.lyricsGet,
+             AutomationMethod.lyricsSearch,
+             AutomationMethod.lyricsCandidates,
+             AutomationMethod.lyricsCompare,
+             AutomationMethod.lyricsApply,
              AutomationMethod.lyricsRefresh,
              AutomationMethod.queueReplace,
              AutomationMethod.queueEnqueue,
@@ -3118,7 +3365,198 @@ final class AutomationIPCServer {
             completedCount: descriptor.completedCount ?? 0,
             totalCount: descriptor.totalCount,
             currentPhase: descriptor.currentPhase,
-            failures: descriptor.partialFailureSummaries
+            failures: descriptor.partialFailureSummaries,
+            failedItemIDs: descriptor.failedItemIDs,
+            retryable: descriptor.retrySpec != nil
+                && (descriptor.state == .failed
+                    || descriptor.state == .partialFailure
+                    || descriptor.state == .cancelled)
+        )
+    }
+
+    private func makeLyricsSearchResult(
+        trackID: UUID,
+        track: Track,
+        mode: LDDCMode,
+        result: LyricsSearchHelper.SearchResult,
+        fromCache: Bool
+    ) -> AutomationLyricsSearchResult {
+        AutomationLyricsSearchResult(
+            trackID: trackID,
+            queryTitle: result.queryTitle,
+            queryArtist: result.queryArtist,
+            queryAlbum: result.queryAlbum,
+            mode: mode.rawValue,
+            candidates: result.candidates.map {
+                makeAutomationLyricsCandidate($0, mode: mode)
+            },
+            amlldbCount: result.amlldbCount,
+            lddcCount: result.lddcCount,
+            message: fromCache
+                ? "Returned the last cached provider search for this Track."
+                : (result.candidates.isEmpty
+                    ? "No lyrics candidates were returned by the configured providers."
+                    : "Lyrics candidates were searched and ranked by the existing App provider pipeline.")
+        )
+    }
+
+    private func makeAutomationLyricsCandidate(
+        _ candidate: LDDCCandidate,
+        mode: LDDCMode
+    ) -> AutomationLyricsCandidate {
+        AutomationLyricsCandidate(
+            source: candidate.source,
+            songID: candidate.songId,
+            score: candidate.score,
+            normalizedScore: candidate.normalizedScore(),
+            title: candidate.title,
+            artist: candidate.artist,
+            album: candidate.album,
+            durationMs: candidate.durationMs,
+            mode: mode.rawValue,
+            extra: candidate.extra
+        )
+    }
+
+    private func makeAutomationLyricsCandidate(
+        from values: [String: AutomationJSONValue]
+    ) throws -> AutomationLyricsCandidate {
+        guard case .string(let source) = values["source"], !source.isEmpty,
+              case .string(let songID) = values["songID"], !songID.isEmpty,
+              case .string(let title) = values["title"], !title.isEmpty,
+              case .string(let mode) = values["mode"],
+              LDDCMode(rawValue: mode) != nil else {
+            throw AutomationParameterError.invalidValue("candidate")
+        }
+        let score = try jsonDouble(values["score"], key: "candidate.score", default: 0)
+        let normalizedScore = try jsonDouble(
+            values["normalizedScore"],
+            key: "candidate.normalizedScore",
+            default: source == "AMLLDB" ? score * 100 : score
+        )
+        let durationMs = try jsonInt(values["durationMs"], key: "candidate.durationMs")
+        var extra: [String: String]?
+        if case .object(let rawExtra) = values["extra"] {
+            extra = rawExtra.reduce(into: [:]) { result, entry in
+                if case .string(let value) = entry.value {
+                    result[entry.key] = value
+                }
+            }
+        }
+        return AutomationLyricsCandidate(
+            source: source,
+            songID: songID,
+            score: score,
+            normalizedScore: normalizedScore,
+            title: title,
+            artist: optionalJSONString(values["artist"]),
+            album: optionalJSONString(values["album"]),
+            durationMs: durationMs,
+            mode: mode,
+            extra: extra
+        )
+    }
+
+    private func makeLDDCCandidate(
+        from candidate: AutomationLyricsCandidate
+    ) throws -> LDDCCandidate {
+        guard LDDCSource(rawValue: candidate.source) != nil else {
+            throw AutomationParameterError.invalidValue("candidate.source")
+        }
+        return LDDCCandidate(
+            source: candidate.source,
+            songId: candidate.songID,
+            score: candidate.score,
+            title: candidate.title,
+            artist: candidate.artist,
+            album: candidate.album,
+            durationMs: candidate.durationMs,
+            extra: candidate.extra
+        )
+    }
+
+    private func lddcMode(
+        for candidate: AutomationLyricsCandidate
+    ) throws -> LDDCMode {
+        guard let mode = LDDCMode(rawValue: candidate.mode) else {
+            throw AutomationParameterError.invalidValue("candidate.mode")
+        }
+        return mode
+    }
+
+    private func lyricsQuality(for candidate: AutomationLyricsCandidate) -> Int {
+        candidate.mode == LDDCMode.verbatim.rawValue ? 2 : 1
+    }
+
+    private func currentLyricsQuality(_ track: Track) -> Int {
+        if let ttml = track.ttmlLyricText,
+           !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return ttml.localizedCaseInsensitiveContains("<span") ? 2 : 1
+        }
+        if track.ttmlLyricsFileName != nil { return 1 }
+        if let plain = track.lyricsText,
+           !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return LyricsFormatSupport.looksLikeLRC(plain) ? 1 : 0
+        }
+        return 0
+    }
+
+    private func trimLyricsCandidateCacheIfNeeded() {
+        guard lyricsCandidateCache.count > lyricsCandidateCacheLimit else { return }
+        let removeCount = lyricsCandidateCache.count - lyricsCandidateCacheLimit
+        for trackID in lyricsCandidateCache.keys.prefix(removeCount) {
+            lyricsCandidateCache.removeValue(forKey: trackID)
+        }
+    }
+
+    private func optionalJSONString(_ value: AutomationJSONValue?) -> String? {
+        guard case .string(let string) = value else { return nil }
+        return string
+    }
+
+    private func jsonDouble(
+        _ value: AutomationJSONValue?,
+        key: String,
+        default defaultValue: Double
+    ) throws -> Double {
+        guard let value else { return defaultValue }
+        guard case .number(let number) = value, number.isFinite else {
+            throw AutomationParameterError.invalidType(key, expected: "number")
+        }
+        return number
+    }
+
+    private func jsonInt(
+        _ value: AutomationJSONValue?,
+        key: String
+    ) throws -> Int? {
+        guard let value else { return nil }
+        guard case .number(let number) = value,
+              number.isFinite,
+              number.rounded() == number,
+              number >= Double(Int.min),
+              number <= Double(Int.max) else {
+            throw AutomationParameterError.invalidType(key, expected: "integer")
+        }
+        return Int(number)
+    }
+
+    private func trackRevisionConflict(
+        for request: AutomationRequest,
+        expected: String,
+        actual: String
+    ) -> AutomationResponse {
+        .failure(
+            for: request,
+            error: AutomationError(
+                code: .conflict,
+                message: "The Track changed while the lyrics candidate was being prepared.",
+                retryable: true,
+                details: .object([
+                    "expectedRevision": .string(expected),
+                    "actualRevision": .string(actual)
+                ])
+            )
         )
     }
 

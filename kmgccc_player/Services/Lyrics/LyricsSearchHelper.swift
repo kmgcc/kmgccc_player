@@ -366,6 +366,7 @@ struct LyricsSearchHelper {
         artist: String?,
         album: String?,
         duration: Double?,
+        mode: LDDCMode = .verbatim,
         searchCoordinator: LyricsSearchCoordinator,
         amllDBService: AMLLDBService
     ) async -> String? {
@@ -374,6 +375,7 @@ struct LyricsSearchHelper {
             artist: artist,
             album: album,
             duration: duration,
+            mode: mode,
             minimumTopCandidateScore: nil,
             searchCoordinator: searchCoordinator,
             amllDBService: amllDBService
@@ -402,11 +404,32 @@ struct LyricsSearchHelper {
         )
     }
 
+    /// Fetches one explicitly selected candidate for the App-owned automation
+    /// surface. Search/ranking stays centralized here so MCP/CLI candidate
+    /// application cannot invent a second provider conversion path.
+    static func fetchTTMLForAutomation(
+        candidate: LDDCCandidate,
+        mode: LDDCMode,
+        translation: Bool,
+        amllDBService: AMLLDBService
+    ) async -> String? {
+        guard case .success(let ttml) = await fetchLyricsContent(
+            candidate: candidate,
+            mode: mode,
+            translation: translation,
+            amllDBService: amllDBService
+        ) else {
+            return nil
+        }
+        return ttml
+    }
+
     private static func searchAndFetchLyrics(
         title: String,
         artist: String?,
         album: String?,
         duration: Double?,
+        mode: LDDCMode = .verbatim,
         minimumTopCandidateScore: Double?,
         searchCoordinator: LyricsSearchCoordinator,
         amllDBService: AMLLDBService
@@ -427,6 +450,7 @@ struct LyricsSearchHelper {
             artist: artist,
             album: album,
             duration: duration,
+            mode: mode,
             searchCoordinator: searchCoordinator
         )
 
@@ -471,6 +495,7 @@ struct LyricsSearchHelper {
             Self.logger.info("[LyricsSearchHelper] Trying candidate #\(index + 1)/\(candidates.count): '\(candidate.title)' source=\(candidate.source)")
             let fetchResult = await fetchLyricsContent(
                 candidate: candidate,
+                mode: mode,
                 amllDBService: amllDBService
             )
             if case .success(let ttml) = fetchResult,

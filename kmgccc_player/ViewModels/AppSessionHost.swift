@@ -497,6 +497,13 @@ final class AppSessionHost: ObservableObject {
     }
 
     @discardableResult
+    func retryLibraryJob(id: UUID, libraryID: UUID? = nil) -> LibraryOperationTaskDescriptor? {
+        guard let session = activeLibraryBinding.activeSession,
+              libraryID == nil || session.context.id == libraryID else { return nil }
+        return session.retryAutomationJob(id: id)
+    }
+
+    @discardableResult
     func startLyricsRefreshJob(
         trackIDs: [UUID],
         force: Bool,

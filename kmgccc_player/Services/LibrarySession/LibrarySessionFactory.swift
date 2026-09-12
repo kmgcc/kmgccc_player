@@ -258,7 +258,8 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
         }
         let operationCoordinator = LibraryOperationCoordinator(
             libraryID: context.id,
-            sessionGeneration: context.generation
+            sessionGeneration: context.generation,
+            persistenceURL: context.paths.automationJobsURL
         )
         let ncmRegistry = sourceScope.map { _ in
             NCMConversionRegistry(paths: context.paths)

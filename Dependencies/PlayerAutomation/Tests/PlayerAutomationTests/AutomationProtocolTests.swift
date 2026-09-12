@@ -159,6 +159,82 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
 }
 
 @Test
+func lyricsAutomationContractExposesSelectionAndRetrySemantics() throws {
+    for method in [
+        AutomationMethod.lyricsSearch,
+        AutomationMethod.lyricsCandidates,
+        AutomationMethod.lyricsCompare,
+        AutomationMethod.lyricsApply,
+        AutomationMethod.lyricsRefresh,
+        AutomationMethod.jobsRetry
+    ] {
+        let descriptor = try #require(AutomationToolCatalog.descriptor(for: method))
+        guard case .object(let schema) = descriptor.inputSchema,
+              case .string("object") = schema["type"] else {
+            Issue.record("\(method) must expose an object input schema")
+            continue
+        }
+    }
+
+    let candidate = AutomationLyricsCandidate(
+        source: "AMLLDB",
+        songID: "raw/example.ttml",
+        score: 0.98,
+        normalizedScore: 98,
+        title: "Example",
+        artist: "Artist",
+        album: "Album",
+        durationMs: 210_000,
+        mode: "verbatim",
+        extra: ["matchLevel": "exact"]
+    )
+    let comparison = AutomationLyricsComparisonResult(
+        trackID: UUID(),
+        currentStatus: "lineSynced",
+        currentQuality: 1,
+        candidate: candidate,
+        candidateQuality: 2,
+        shouldReplace: true,
+        message: "replace"
+    )
+    let data = try AutomationWireCoding.encoder().encode(comparison)
+    let decoded = try AutomationWireCoding.decoder().decode(
+        AutomationLyricsComparisonResult.self,
+        from: data
+    )
+    #expect(decoded == comparison)
+    #expect(decoded.candidate.id == "AMLLDB-raw/example.ttml")
+}
+
+@Test
+func automationJobRetryResultKeepsOriginalAndNewJobIDs() throws {
+    let originalID = UUID()
+    let retryID = UUID()
+    let job = AutomationJobSummary(
+        id: retryID,
+        kind: "enrichment",
+        libraryID: UUID(),
+        state: .queued,
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+        retryable: false
+    )
+    let result = AutomationJobRetryResult(
+        originalJobID: originalID,
+        accepted: true,
+        job: job,
+        message: "accepted"
+    )
+    let data = try AutomationWireCoding.encoder().encode(result)
+    let decoded = try AutomationWireCoding.decoder().decode(
+        AutomationJobRetryResult.self,
+        from: data
+    )
+    #expect(decoded == result)
+    #expect(decoded.originalJobID == originalID)
+    #expect(decoded.job?.id == retryID)
+}
+
+@Test
 func sourceSummaryRemainsBackwardCompatibleWithoutExclusionField() throws {
     let id = UUID()
     let data = Data("""

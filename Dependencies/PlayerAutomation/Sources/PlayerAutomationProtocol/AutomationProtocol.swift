@@ -294,10 +294,15 @@ public enum AutomationMethod {
     public static let metadataGet = "metadata.get"
     public static let metadataPatch = "metadata.patch"
     public static let lyricsGet = "lyrics.get"
+    public static let lyricsSearch = "lyrics.search"
+    public static let lyricsCandidates = "lyrics.candidates"
+    public static let lyricsCompare = "lyrics.compare"
+    public static let lyricsApply = "lyrics.apply"
     public static let lyricsRefresh = "lyrics.refresh"
     public static let jobsList = "jobs.list"
     public static let jobsGet = "jobs.get"
     public static let jobsCancel = "jobs.cancel"
+    public static let jobsRetry = "jobs.retry"
     public static let diagnosticsHealth = "diagnostics.health"
     public static let settingsGet = "settings.get"
     public static let settingsPatch = "settings.patch"
@@ -934,6 +939,138 @@ public struct AutomationMetadataMutationResult: Codable, Equatable, Sendable {
     }
 }
 
+public struct AutomationLyricsCandidate: Codable, Equatable, Sendable, Identifiable {
+    public let source: String
+    public let songID: String
+    public let score: Double
+    public let normalizedScore: Double
+    public let title: String
+    public let artist: String?
+    public let album: String?
+    public let durationMs: Int?
+    public let mode: String
+    public let extra: [String: String]?
+
+    public var id: String { "\(source)-\(songID)" }
+
+    public init(
+        source: String,
+        songID: String,
+        score: Double,
+        normalizedScore: Double,
+        title: String,
+        artist: String? = nil,
+        album: String? = nil,
+        durationMs: Int? = nil,
+        mode: String,
+        extra: [String: String]? = nil
+    ) {
+        self.source = source
+        self.songID = songID
+        self.score = score
+        self.normalizedScore = normalizedScore
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.durationMs = durationMs
+        self.mode = mode
+        self.extra = extra
+    }
+}
+
+public struct AutomationLyricsSearchResult: Codable, Equatable, Sendable {
+    public let trackID: UUID
+    public let queryTitle: String
+    public let queryArtist: String?
+    public let queryAlbum: String?
+    public let mode: String
+    public let candidates: [AutomationLyricsCandidate]
+    public let amlldbCount: Int
+    public let lddcCount: Int
+    public let message: String
+
+    public init(
+        trackID: UUID,
+        queryTitle: String,
+        queryArtist: String? = nil,
+        queryAlbum: String? = nil,
+        mode: String,
+        candidates: [AutomationLyricsCandidate],
+        amlldbCount: Int,
+        lddcCount: Int,
+        message: String
+    ) {
+        self.trackID = trackID
+        self.queryTitle = queryTitle
+        self.queryArtist = queryArtist
+        self.queryAlbum = queryAlbum
+        self.mode = mode
+        self.candidates = candidates
+        self.amlldbCount = amlldbCount
+        self.lddcCount = lddcCount
+        self.message = message
+    }
+}
+
+public struct AutomationLyricsComparisonResult: Codable, Equatable, Sendable {
+    public let trackID: UUID
+    public let currentStatus: String
+    public let currentQuality: Int
+    public let candidate: AutomationLyricsCandidate
+    public let candidateQuality: Int
+    public let shouldReplace: Bool
+    public let message: String
+
+    public init(
+        trackID: UUID,
+        currentStatus: String,
+        currentQuality: Int,
+        candidate: AutomationLyricsCandidate,
+        candidateQuality: Int,
+        shouldReplace: Bool,
+        message: String
+    ) {
+        self.trackID = trackID
+        self.currentStatus = currentStatus
+        self.currentQuality = currentQuality
+        self.candidate = candidate
+        self.candidateQuality = candidateQuality
+        self.shouldReplace = shouldReplace
+        self.message = message
+    }
+}
+
+public struct AutomationLyricsApplyResult: Codable, Equatable, Sendable {
+    public let trackID: UUID
+    public let applied: Bool
+    public let dryRun: Bool
+    public let force: Bool
+    public let candidate: AutomationLyricsCandidate
+    public let currentQuality: Int
+    public let candidateQuality: Int
+    public let message: String
+
+    public init(
+        trackID: UUID,
+        applied: Bool,
+        dryRun: Bool,
+        force: Bool,
+        candidate: AutomationLyricsCandidate,
+        currentQuality: Int,
+        candidateQuality: Int,
+        message: String
+    ) {
+        self.trackID = trackID
+        self.applied = applied
+        self.dryRun = dryRun
+        self.force = force
+        self.candidate = candidate
+        self.currentQuality = currentQuality
+        self.candidateQuality = candidateQuality
+        self.message = message
+    }
+}
+
 public struct AutomationLyricsDetail: Codable, Equatable, Sendable {
     public let trackID: UUID
     public let status: String
@@ -998,6 +1135,8 @@ public struct AutomationJobSummary: Codable, Equatable, Sendable, Identifiable {
     public let totalCount: Int?
     public let currentPhase: String?
     public let failures: [String]
+    public let failedItemIDs: [UUID]
+    public let retryable: Bool
 
     public init(
         id: UUID,
@@ -1011,7 +1150,9 @@ public struct AutomationJobSummary: Codable, Equatable, Sendable, Identifiable {
         completedCount: Int = 0,
         totalCount: Int? = nil,
         currentPhase: String? = nil,
-        failures: [String] = []
+        failures: [String] = [],
+        failedItemIDs: [UUID] = [],
+        retryable: Bool = false
     ) {
         self.id = id
         self.kind = kind
@@ -1025,6 +1166,50 @@ public struct AutomationJobSummary: Codable, Equatable, Sendable, Identifiable {
         self.totalCount = totalCount
         self.currentPhase = currentPhase
         self.failures = failures
+        self.failedItemIDs = failedItemIDs
+        self.retryable = retryable
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, libraryID, state, createdAt, startedAt, finishedAt, checkpoint
+        case completedCount, totalCount, currentPhase, failures, failedItemIDs, retryable
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        kind = try container.decode(String.self, forKey: .kind)
+        libraryID = try container.decodeIfPresent(UUID.self, forKey: .libraryID)
+        state = try container.decode(AutomationJobState.self, forKey: .state)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        startedAt = try container.decodeIfPresent(Date.self, forKey: .startedAt)
+        finishedAt = try container.decodeIfPresent(Date.self, forKey: .finishedAt)
+        checkpoint = try container.decodeIfPresent(String.self, forKey: .checkpoint)
+        completedCount = try container.decodeIfPresent(Int.self, forKey: .completedCount) ?? 0
+        totalCount = try container.decodeIfPresent(Int.self, forKey: .totalCount)
+        currentPhase = try container.decodeIfPresent(String.self, forKey: .currentPhase)
+        failures = try container.decodeIfPresent([String].self, forKey: .failures) ?? []
+        failedItemIDs = try container.decodeIfPresent([UUID].self, forKey: .failedItemIDs) ?? []
+        retryable = try container.decodeIfPresent(Bool.self, forKey: .retryable) ?? false
+    }
+}
+
+public struct AutomationJobRetryResult: Codable, Equatable, Sendable {
+    public let originalJobID: UUID
+    public let accepted: Bool
+    public let job: AutomationJobSummary?
+    public let message: String
+
+    public init(
+        originalJobID: UUID,
+        accepted: Bool,
+        job: AutomationJobSummary? = nil,
+        message: String
+    ) {
+        self.originalJobID = originalJobID
+        self.accepted = accepted
+        self.job = job
+        self.message = message
     }
 }
 
@@ -1669,6 +1854,43 @@ public enum AutomationToolCatalog {
             inputSchema: lyricsGetInputSchema
         ),
         AutomationToolDescriptor(
+            name: AutomationMethod.lyricsSearch,
+            title: "Search Lyrics",
+            description: "Search the existing AMLLDB and LDDC providers and return ranked, selectable lyrics candidates for one Track.",
+            readOnly: true,
+            scopes: [.lyricsRead, .libraryRead],
+            risk: .low,
+            inputSchema: lyricsSearchInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.lyricsCandidates,
+            title: "List Lyrics Candidates",
+            description: "Return the last ranked lyrics candidates for a Track, or run a fresh provider search when no cached result exists.",
+            readOnly: true,
+            scopes: [.lyricsRead, .libraryRead],
+            risk: .low,
+            inputSchema: lyricsCandidatesInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.lyricsCompare,
+            title: "Compare Lyrics Candidate",
+            description: "Compare a selected lyrics candidate's synchronization quality with the Track's current lyrics without changing the Library.",
+            readOnly: true,
+            scopes: [.lyricsRead, .libraryRead],
+            risk: .low,
+            inputSchema: lyricsCompareInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.lyricsApply,
+            title: "Apply Lyrics Candidate",
+            description: "Fetch and apply one selected lyrics candidate through the existing provider pipeline; without force, a lower-quality result is never used.",
+            readOnly: false,
+            scopes: [.lyricsWrite, .libraryRead],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: lyricsApplyInputSchema
+        ),
+        AutomationToolDescriptor(
             name: AutomationMethod.lyricsRefresh,
             title: "Refresh Lyrics",
             description: "Search selected Tracks through the existing lyrics providers and return a tracked batch Job; only a better result replaces the current lyrics.",
@@ -1701,6 +1923,15 @@ public enum AutomationToolCatalog {
             name: AutomationMethod.jobsCancel,
             title: "Cancel Job",
             description: "Request cancellation of an active library operation.",
+            readOnly: false,
+            scopes: [.diagnosticsRepair],
+            risk: .medium,
+            inputSchema: jobIDInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.jobsRetry,
+            title: "Retry Job",
+            description: "Retry a failed, partially failed or cancelled Source scan or lyrics refresh when the App has a durable retry specification.",
             readOnly: false,
             scopes: [.diagnosticsRepair],
             risk: .medium,
@@ -1918,6 +2149,76 @@ public enum AutomationToolCatalog {
         "required": .array([.string("trackID")]),
         "properties": .object([
             "trackID": .object(["type": .string("string")])
+        ])
+    ])
+
+    private static let lyricsCandidateSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([
+            .string("source"),
+            .string("songID"),
+            .string("title"),
+            .string("mode")
+        ]),
+        "properties": .object([
+            "source": .object(["type": .string("string")]),
+            "songID": .object(["type": .string("string")]),
+            "score": .object(["type": .string("number")]),
+            "normalizedScore": .object(["type": .string("number")]),
+            "title": .object(["type": .string("string")]),
+            "artist": .object(["type": .string("string")]),
+            "album": .object(["type": .string("string")]),
+            "durationMs": .object(["type": .string("integer")]),
+            "mode": .object(["type": .string("string"), "enum": .array([.string("line"), .string("verbatim")])]),
+            "extra": .object(["type": .string("object")])
+        ])
+    ])
+
+    private static let lyricsSearchInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackID")]),
+        "properties": .object([
+            "trackID": .object(["type": .string("string")]),
+            "mode": .object(["type": .string("string"), "enum": .array([.string("line"), .string("verbatim")])]),
+            "translation": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let lyricsCandidatesInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackID")]),
+        "properties": .object([
+            "trackID": .object(["type": .string("string")]),
+            "mode": .object(["type": .string("string"), "enum": .array([.string("line"), .string("verbatim")])]),
+            "translation": .object(["type": .string("boolean")]),
+            "refresh": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let lyricsCompareInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackID"), .string("candidate")]),
+        "properties": .object([
+            "trackID": .object(["type": .string("string")]),
+            "candidate": lyricsCandidateSchema
+        ])
+    ])
+
+    private static let lyricsApplyInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackID"), .string("candidate")]),
+        "properties": .object([
+            "trackID": .object(["type": .string("string")]),
+            "candidate": lyricsCandidateSchema,
+            "force": .object(["type": .string("boolean")]),
+            "translation": .object(["type": .string("boolean")]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "expectedRevision": .object(["type": .string("string")])
         ])
     ])
 
