@@ -1,8 +1,55 @@
 import AppKit
 import CryptoKit
+import Darwin
 import Foundation
 import PlayerAutomationIPC
 import PlayerAutomationProtocol
+
+private nonisolated enum AutomationAppIdentity {
+    static var bundleIdentifier: String {
+        for executablePath in executablePaths {
+            if let bundleIdentifier = bundleIdentifier(atExecutablePath: executablePath) {
+                return bundleIdentifier
+            }
+        }
+        return Bundle.main.bundleIdentifier ?? "kmgccc.player"
+    }
+
+    private static var executablePaths: [String] {
+        var paths: [String] = []
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let length = buffer.withUnsafeMutableBufferPointer { buffer in
+            proc_pidpath(getpid(), buffer.baseAddress, UInt32(buffer.count))
+        }
+        if length > 0 {
+            paths.append(String(cString: buffer))
+        }
+        if let argument = ProcessInfo.processInfo.arguments.first,
+           !argument.isEmpty {
+            paths.append(argument)
+        }
+        return paths
+    }
+
+    private static func bundleIdentifier(atExecutablePath executablePath: String) -> String? {
+        let infoURL = URL(fileURLWithPath: executablePath, isDirectory: false)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Info.plist", isDirectory: false)
+        guard let data = try? Data(contentsOf: infoURL),
+              let propertyList = try? PropertyListSerialization.propertyList(
+                  from: data,
+                  options: [],
+                  format: nil
+              ) as? [String: Any],
+              let bundleIdentifier = propertyList["CFBundleIdentifier"] as? String,
+              !bundleIdentifier.isEmpty
+        else {
+            return nil
+        }
+        return bundleIdentifier
+    }
+}
 
 private struct AutomationScopePolicyFile: Codable {
     var schemaVersion = 1
@@ -56,14 +103,17 @@ private final class AutomationScopePolicyStore {
     private let fileURL: URL
     private let fileManager: FileManager
 
-    init(fileManager: FileManager = .default) {
+    init(
+        fileManager: FileManager = .default,
+        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier
+    ) {
         self.fileManager = fileManager
         let appSupport = fileManager.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         fileURL = appSupport
-            .appendingPathComponent("kmgccc.player", isDirectory: true)
+            .appendingPathComponent(bundleIdentifier, isDirectory: true)
             .appendingPathComponent("Automation", isDirectory: true)
             .appendingPathComponent("scopes.json", isDirectory: false)
     }
@@ -115,14 +165,17 @@ private final class AutomationIdempotencyStore {
     private let fileURL: URL
     private let fileManager: FileManager
 
-    init(fileManager: FileManager = .default) {
+    init(
+        fileManager: FileManager = .default,
+        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier
+    ) {
         self.fileManager = fileManager
         let appSupport = fileManager.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         fileURL = appSupport
-            .appendingPathComponent("kmgccc.player", isDirectory: true)
+            .appendingPathComponent(bundleIdentifier, isDirectory: true)
             .appendingPathComponent("Automation", isDirectory: true)
             .appendingPathComponent("idempotency.json", isDirectory: false)
     }
@@ -178,8 +231,8 @@ final class AutomationIPCServer {
 
     private let listener: AutomationIPCListener
     private weak var appSession: AppSessionHost?
-    private let scopePolicyStore = AutomationScopePolicyStore()
-    private let idempotencyStore = AutomationIdempotencyStore()
+    private let scopePolicyStore: AutomationScopePolicyStore
+    private let idempotencyStore: AutomationIdempotencyStore
     private var cachedGrantedScopes: Set<AutomationScope>?
     private var idempotencyCache: [String: (fingerprint: String, response: AutomationResponse)] = [:]
     private var idempotencyOrder: [String] = []
@@ -197,6 +250,9 @@ final class AutomationIPCServer {
 
     init(appSession: AppSessionHost) throws {
         self.appSession = appSession
+        let bundleIdentifier = AutomationAppIdentity.bundleIdentifier
+        scopePolicyStore = AutomationScopePolicyStore(bundleIdentifier: bundleIdentifier)
+        idempotencyStore = AutomationIdempotencyStore(bundleIdentifier: bundleIdentifier)
         let socketPath = Self.defaultSocketURL.path
         let sharedSecret = try AutomationIPCSecretStore.loadOrCreate(
             forSocketPath: socketPath
@@ -223,7 +279,10 @@ final class AutomationIPCServer {
             in: .userDomainMask
         ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         return appSupport
-            .appendingPathComponent("kmgccc.player", isDirectory: true)
+            .appendingPathComponent(
+                AutomationAppIdentity.bundleIdentifier,
+                isDirectory: true
+            )
             .appendingPathComponent(socketDirectoryName, isDirectory: true)
             .appendingPathComponent(socketFileName, isDirectory: false)
     }
@@ -3227,15 +3286,21 @@ final class AutomationIPCServer {
     private nonisolated static func automationStorageBackupRoot(
         libraryID: UUID
     ) -> URL {
+        return automationSupportDirectory()
+            .appendingPathComponent("Backups", isDirectory: true)
+            .appendingPathComponent(libraryID.uuidString, isDirectory: true)
+    }
+
+    private nonisolated static func automationSupportDirectory(
+        bundleIdentifier: String = AutomationAppIdentity.bundleIdentifier
+    ) -> URL {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
         ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         return appSupport
-            .appendingPathComponent("kmgccc.player", isDirectory: true)
+            .appendingPathComponent(bundleIdentifier, isDirectory: true)
             .appendingPathComponent("Automation", isDirectory: true)
-            .appendingPathComponent("Backups", isDirectory: true)
-            .appendingPathComponent(libraryID.uuidString, isDirectory: true)
     }
 
     private nonisolated static let automationStorageBackupRoots: Set<String> = [
@@ -3579,13 +3644,7 @@ final class AutomationIPCServer {
     /// previous segment is retained when the active JSONL file reaches the
     /// bound, so a noisy or stuck caller cannot grow App Support forever.
     private func recordAudit(for request: AutomationRequest, response: AutomationResponse) {
-        let appSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
-        let directory = appSupport
-            .appendingPathComponent("kmgccc.player", isDirectory: true)
-            .appendingPathComponent("Automation", isDirectory: true)
+        let directory = Self.automationSupportDirectory()
         let url = directory.appendingPathComponent("audit.jsonl", isDirectory: false)
         var values: [String: AutomationJSONValue] = [
             "timestamp": .string(ISO8601DateFormatter().string(from: response.serverTime)),
