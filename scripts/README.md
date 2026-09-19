@@ -37,6 +37,21 @@ CONFIGURATION=Release ./scripts/build_and_run.sh
 ./scripts/build_app.sh Release
 ```
 
+要生成 Developer ID 发行签名 App，显式提供本机签名身份；脚本会把这些参数传给
+`xcodebuild`，避免 Release 配置中的开发签名默认值被误用：
+
+```sh
+CODE_SIGNING_ALLOWED=YES \
+CODE_SIGN_IDENTITY='Developer ID Application: Your Name (TEAMID)' \
+CODE_SIGN_STYLE=Manual \
+DEVELOPMENT_TEAM=TEAMID \
+CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
+OUTPUT_DIR=/tmp/kmgccc-player-release \
+./scripts/build_app.sh Release
+```
+
+这一步只负责生成并检查签名 App；公证、staple、Gatekeeper 和实际安装启动仍是独立的发布验收门禁。
+
 可通过 `OUTPUT_DIR` 将最终 App 复制到指定目录。
 
 ### `verify.sh`

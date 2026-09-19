@@ -27,6 +27,20 @@ APP="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION/kmgccc_player.app"
 DSYM="$DERIVED_DATA_PATH/Build/Products/$CONFIGURATION/kmgccc_player.app.dSYM"
 rm -rf "$DERIVED_DATA_PATH"
 
+XCODEBUILD_SIGNING_ARGS=()
+if [[ -n "${CODE_SIGN_IDENTITY:-}" ]]; then
+  XCODEBUILD_SIGNING_ARGS+=("CODE_SIGN_IDENTITY=$CODE_SIGN_IDENTITY")
+fi
+if [[ -n "${CODE_SIGN_STYLE:-}" ]]; then
+  XCODEBUILD_SIGNING_ARGS+=("CODE_SIGN_STYLE=$CODE_SIGN_STYLE")
+fi
+if [[ -n "${DEVELOPMENT_TEAM:-}" ]]; then
+  XCODEBUILD_SIGNING_ARGS+=("DEVELOPMENT_TEAM=$DEVELOPMENT_TEAM")
+fi
+if [[ -n "${CODE_SIGN_INJECT_BASE_ENTITLEMENTS:-}" ]]; then
+  XCODEBUILD_SIGNING_ARGS+=("CODE_SIGN_INJECT_BASE_ENTITLEMENTS=$CODE_SIGN_INJECT_BASE_ENTITLEMENTS")
+fi
+
 xcodebuild \
   -project "$PROJECT" \
   -scheme kmgccc_player \
@@ -35,6 +49,7 @@ xcodebuild \
   -derivedDataPath "$DERIVED_DATA_PATH" \
   BUILD_EXTENSION_MODE=disabled \
   CODE_SIGNING_ALLOWED="${CODE_SIGNING_ALLOWED:-NO}" \
+  "${XCODEBUILD_SIGNING_ARGS[@]}" \
   build
 
 [[ -d "$APP" ]] || { echo "error: app was not produced: $APP" >&2; exit 1; }
