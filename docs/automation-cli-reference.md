@@ -21,7 +21,7 @@ library list|tracks|create|open|switch|rename|relocate|remove
 playlist list|get|create|rename|delete|add|remove|replace|reorder
 source list|create|bind|exclude|include|watch|unwatch|remove|refresh
 metadata get|patch
-artwork get|apply
+artwork search|get|apply
 lyrics get|search|candidates|compare|apply|refresh
 playback state|play|pause|next|previous|seek|volume|mode
 queue get|replace|enqueue|enqueue-next|clear
@@ -60,6 +60,7 @@ player-automation automation call library.tracks \
 player-automation automation call metadata.patch \
   --params-json '{"trackIDs":["T"],"patch":{"genreTags":["jazz"]}}' --json
 player-automation artwork get TRACK-ID --json
+player-automation artwork search TRACK-ID --params-json '{"limit":5}' --json
 player-automation artwork apply TRACK-ID \
   --params-json '{"imagePath":"/tmp/cover.jpg"}' --json
 player-automation artwork apply TRACK-ID \
@@ -71,6 +72,12 @@ player-automation artwork apply TRACK-ID \
 移除 App-owned artwork。对 10 首及以上 Track，先使用 `--dry-run`，真实调用必须带
 `--yes`（映射为 `confirm=true`），然后等待 App 前台确认弹窗。`metadata.patch` 也对
 10 首及以上的 App-owned metadata batch 使用同一确认门槛。
+
+`artwork.search` 按 Track 元数据调用 App 内的多 provider 搜索，返回排序后的候选、分辨率、
+置信度和 `imageBase64`；Agent 审阅后可直接把候选图片数据传给 `artwork.apply`。歌词的
+`lyrics apply TRACK-ID --params-json` 支持两种互斥输入：provider `candidate`，或直接传
+`{"ttmlText":"<tt>...</tt>"}` 写回 Agent 精修后的 TTML。后者仍会执行 App 的 TTML
+校验和 revision 检查。
 
 资料库生命周期也有专用 CLI alias；路径只作为 App picker 的导航提示，不能替代前台授权：
 
@@ -107,7 +114,7 @@ Source 或 Job，返回 `permissionDenied`；用户取消 picker 则返回 `inte
 Track 和 Playlist。
 
 Lyrics 的候选工作流可以拆成可组合的调用：`lyrics search`/`lyrics candidates` 返回候选，
-`lyrics compare` 比较候选与当前结果，`lyrics apply` 应用明确选中的候选。`lyrics refresh`
+`lyrics compare` 比较候选与当前结果，`lyrics apply` 应用明确选中的候选或直接写入 `ttmlText`。`lyrics refresh`
 则把选择交给 App-owned Job：对每首歌先尝试逐字歌词，没有可用逐字结果再尝试逐行歌词，
 默认不覆盖质量相同或更好的当前结果；只有显式使用 `--force` 才允许强制覆盖。失败项会
 记录到 Job 的 `failedItemIDs`，可用 `jobs retry <job-id>` 只重试失败项。

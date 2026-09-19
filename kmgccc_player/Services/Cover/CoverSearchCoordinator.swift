@@ -32,6 +32,7 @@ final class CoverSearchCoordinator {
     }
 
     private var searchTask: Task<Void, Never>?
+    private var searchGeneration = 0
 
     private let coverDownloadService: CoverDownloadService
     private let netEaseCoverService: NetEaseCoverService
@@ -55,6 +56,8 @@ final class CoverSearchCoordinator {
         duration: Double? = nil
     ) async {
         searchTask?.cancel()
+        searchGeneration &+= 1
+        let generation = searchGeneration
         isLoading = true
         error = nil
         candidates = []
@@ -62,10 +65,12 @@ final class CoverSearchCoordinator {
 
         let normalizedQuery = normalizeQuery(artist: artist, album: album)
 
-        searchTask = Task {
+        let task = Task {
             defer {
-                isLoading = false
-                searchTask = nil
+                if searchGeneration == generation {
+                    isLoading = false
+                    searchTask = nil
+                }
             }
 
             var backgroundCandidates: [CoverCandidate] = []
@@ -147,7 +152,7 @@ final class CoverSearchCoordinator {
                 }
 
                 for await partialCandidates in group {
-                    guard !Task.isCancelled else { return }
+                    guard searchGeneration == generation, !Task.isCancelled else { return }
                     backgroundCandidates.append(contentsOf: partialCandidates)
                     self.publishMergedCandidates(
                         backgroundCandidates,
@@ -159,16 +164,19 @@ final class CoverSearchCoordinator {
                 }
             }
 
-            guard !Task.isCancelled else { return }
+            guard searchGeneration == generation, !Task.isCancelled else { return }
             if candidates.isEmpty {
                 error = NSLocalizedString("cover.no_results", comment: "No cover found")
             }
         }
+        searchTask = task
+        _ = await task.value
     }
 
     /// Cancels any ongoing search.
     func cancelSearch() {
         searchTask?.cancel()
+        searchGeneration &+= 1
         searchTask = nil
         isLoading = false
     }

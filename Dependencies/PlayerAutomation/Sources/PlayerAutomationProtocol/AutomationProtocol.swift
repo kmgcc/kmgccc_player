@@ -302,6 +302,7 @@ public enum AutomationMethod {
     public static let historyClear = "history.clear"
     public static let metadataGet = "metadata.get"
     public static let metadataPatch = "metadata.patch"
+    public static let artworkSearch = "artwork.search"
     public static let artworkGet = "artwork.get"
     public static let artworkApply = "artwork.apply"
     public static let lyricsGet = "lyrics.get"
@@ -1148,6 +1149,87 @@ public struct AutomationArtworkGetResult: Codable, Equatable, Sendable {
     }
 }
 
+public struct AutomationArtworkCandidate: Codable, Equatable, Sendable, Identifiable {
+    public let source: String
+    public let sourceItemID: String?
+    public let imageBase64: String
+    public let imageMIMEType: String?
+    /// Byte count of the inline image represented by imageBase64.
+    public let byteCount: Int
+    /// Original provider byte count when the App normalized the inline image
+    /// to keep the local IPC frame bounded.
+    public let originalByteCount: Int?
+    public let width: Int
+    public let height: Int
+    public let resolution: Int
+    public let confidence: Double
+    public let matchedTitle: String?
+    public let matchedArtist: String?
+    public let matchedAlbum: String?
+    public let imageURL: String?
+
+    public var id: String {
+        "\(source):\(sourceItemID ?? "unknown")"
+    }
+
+    public init(
+        source: String,
+        sourceItemID: String? = nil,
+        imageBase64: String,
+        imageMIMEType: String? = nil,
+        byteCount: Int,
+        originalByteCount: Int? = nil,
+        width: Int,
+        height: Int,
+        resolution: Int,
+        confidence: Double,
+        matchedTitle: String? = nil,
+        matchedArtist: String? = nil,
+        matchedAlbum: String? = nil,
+        imageURL: String? = nil
+    ) {
+        self.source = source
+        self.sourceItemID = sourceItemID
+        self.imageBase64 = imageBase64
+        self.imageMIMEType = imageMIMEType
+        self.byteCount = byteCount
+        self.originalByteCount = originalByteCount
+        self.width = width
+        self.height = height
+        self.resolution = resolution
+        self.confidence = confidence
+        self.matchedTitle = matchedTitle
+        self.matchedArtist = matchedArtist
+        self.matchedAlbum = matchedAlbum
+        self.imageURL = imageURL
+    }
+}
+
+public struct AutomationArtworkSearchResult: Codable, Equatable, Sendable {
+    public let trackID: UUID
+    public let queryTitle: String
+    public let queryArtist: String?
+    public let queryAlbum: String?
+    public let candidates: [AutomationArtworkCandidate]
+    public let message: String
+
+    public init(
+        trackID: UUID,
+        queryTitle: String,
+        queryArtist: String? = nil,
+        queryAlbum: String? = nil,
+        candidates: [AutomationArtworkCandidate],
+        message: String
+    ) {
+        self.trackID = trackID
+        self.queryTitle = queryTitle
+        self.queryArtist = queryArtist
+        self.queryAlbum = queryAlbum
+        self.candidates = candidates
+        self.message = message
+    }
+}
+
 public struct AutomationArtworkMutationResult: Codable, Equatable, Sendable {
     public let applied: Bool
     public let dryRun: Bool
@@ -1285,7 +1367,9 @@ public struct AutomationLyricsApplyResult: Codable, Equatable, Sendable {
     public let applied: Bool
     public let dryRun: Bool
     public let force: Bool
-    public let candidate: AutomationLyricsCandidate
+    public let input: String
+    public let candidate: AutomationLyricsCandidate?
+    public let ttmlByteCount: Int?
     public let currentQuality: Int
     public let candidateQuality: Int
     public let message: String
@@ -1295,7 +1379,9 @@ public struct AutomationLyricsApplyResult: Codable, Equatable, Sendable {
         applied: Bool,
         dryRun: Bool,
         force: Bool,
-        candidate: AutomationLyricsCandidate,
+        input: String = "candidate",
+        candidate: AutomationLyricsCandidate? = nil,
+        ttmlByteCount: Int? = nil,
         currentQuality: Int,
         candidateQuality: Int,
         message: String
@@ -1304,10 +1390,39 @@ public struct AutomationLyricsApplyResult: Codable, Equatable, Sendable {
         self.applied = applied
         self.dryRun = dryRun
         self.force = force
+        self.input = input
         self.candidate = candidate
+        self.ttmlByteCount = ttmlByteCount
         self.currentQuality = currentQuality
         self.candidateQuality = candidateQuality
         self.message = message
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case trackID
+        case applied
+        case dryRun
+        case force
+        case input
+        case candidate
+        case ttmlByteCount
+        case currentQuality
+        case candidateQuality
+        case message
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        trackID = try container.decode(UUID.self, forKey: .trackID)
+        applied = try container.decode(Bool.self, forKey: .applied)
+        dryRun = try container.decode(Bool.self, forKey: .dryRun)
+        force = try container.decode(Bool.self, forKey: .force)
+        input = try container.decodeIfPresent(String.self, forKey: .input) ?? "candidate"
+        candidate = try container.decodeIfPresent(AutomationLyricsCandidate.self, forKey: .candidate)
+        ttmlByteCount = try container.decodeIfPresent(Int.self, forKey: .ttmlByteCount)
+        currentQuality = try container.decode(Int.self, forKey: .currentQuality)
+        candidateQuality = try container.decode(Int.self, forKey: .candidateQuality)
+        message = try container.decode(String.self, forKey: .message)
     }
 }
 
@@ -2293,6 +2408,15 @@ public enum AutomationToolCatalog {
             inputSchema: metadataPatchInputSchema
         ),
         AutomationToolDescriptor(
+            name: AutomationMethod.artworkSearch,
+            title: "Search Artwork",
+            description: "Search the App's configured artwork providers for one Track and return ranked image candidates with inline image data for Agent review.",
+            readOnly: true,
+            scopes: [.artworkRead, .libraryRead],
+            risk: .low,
+            inputSchema: artworkSearchInputSchema
+        ),
+        AutomationToolDescriptor(
             name: AutomationMethod.artworkGet,
             title: "Get Artwork",
             description: "Read App-owned Track artwork availability, stored filename, size and digest without returning image bytes.",
@@ -2351,7 +2475,7 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.lyricsApply,
             title: "Apply Lyrics Candidate",
-            description: "Fetch and apply one selected lyrics candidate through the existing provider pipeline; without force, a lower-quality result is never used.",
+            description: "Apply either one selected provider candidate or direct custom TTML text through the existing App-owned lyrics persistence path. Candidate input keeps quality gating; ttmlText is validated and written directly.",
             readOnly: false,
             scopes: [.lyricsWrite, .libraryRead],
             risk: .medium,
@@ -2756,6 +2880,20 @@ public enum AutomationToolCatalog {
         ])
     ])
 
+    private static let artworkSearchInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackID")]),
+        "properties": .object([
+            "trackID": .object(["type": .string("string")]),
+            "limit": .object([
+                "type": .string("integer"),
+                "minimum": .number(1),
+                "maximum": .number(5)
+            ])
+        ])
+    ])
+
     private static let artworkApplyInputSchema: AutomationJSONValue = .object([
         "type": .string("object"),
         "additionalProperties": .boolean(false),
@@ -2843,10 +2981,15 @@ public enum AutomationToolCatalog {
     private static let lyricsApplyInputSchema: AutomationJSONValue = .object([
         "type": .string("object"),
         "additionalProperties": .boolean(false),
-        "required": .array([.string("trackID"), .string("candidate")]),
+        "required": .array([.string("trackID")]),
         "properties": .object([
             "trackID": .object(["type": .string("string")]),
             "candidate": lyricsCandidateSchema,
+            "ttmlText": .object([
+                "type": .string("string"),
+                "minLength": .number(1),
+                "description": .string("Validated custom TTML text. Use exactly one of candidate or ttmlText.")
+            ]),
             "force": .object(["type": .string("boolean")]),
             "translation": .object(["type": .string("boolean")]),
             "dryRun": .object(["type": .string("boolean")]),

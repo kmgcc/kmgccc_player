@@ -466,6 +466,34 @@ final class LibrarySession: LibrarySessionLifecycle {
         }
     }
 
+    /// Searches all configured artwork providers and returns the merged result
+    /// after the transient coordinator has finished aggregating them.
+    /// The search path deliberately reuses the same provider services as the
+    /// interactive cover editor. The coordinator is transient because its
+    /// published candidate/selection state belongs to one request, while the
+    /// provider services and their caches remain session-owned.
+    func searchArtworkCandidatesForAutomation(
+        trackID: UUID,
+        limit: Int
+    ) async -> [CoverCandidate] {
+        guard let track = libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
+            return []
+        }
+
+        let coordinator = CoverSearchCoordinator(
+            coverDownloadService: cacheServices.coverDownloadService,
+            netEaseCoverService: cacheServices.netEaseCoverService,
+            qqMusicCoverService: cacheServices.qqMusicCoverService
+        )
+        await coordinator.search(
+            artist: track.artist,
+            album: track.album,
+            title: track.title,
+            duration: track.duration.isFinite && track.duration > 0 ? track.duration : nil
+        )
+        return Array(coordinator.candidates.prefix(max(1, min(limit, 5))))
+    }
+
     /// Applies a fetched candidate through the same App-owned persistence
     /// boundary used by the batch Job. The revision is checked immediately
     /// before writing so a UI edit made while a remote candidate was fetched
@@ -529,6 +557,73 @@ final class LibrarySession: LibrarySessionLifecycle {
             currentQuality: currentQuality,
             candidateQuality: candidateQuality,
             message: force ? "lyrics applied with force" : "lyrics applied"
+        )
+    }
+
+    /// Applies Agent-supplied TTML directly after the same validation and
+    /// repository-owned persistence boundary used by the manual lyric editor.
+    /// Direct text is intentional: unlike a provider candidate it is not
+    /// subject to the "only replace with a better search result" policy.
+    func applyCustomTTMLForAutomation(
+        trackID: UUID,
+        ttml: String,
+        expectedRevision: String? = nil
+    ) async -> LibraryAutomationLyricsApplyOutcome {
+        guard let normalizedTTML = LyricsFormatSupport.normalizedTTMLText(ttml) else {
+            return LibraryAutomationLyricsApplyOutcome(
+                applied: false,
+                conflicted: false,
+                currentQuality: 0,
+                candidateQuality: 0,
+                message: "custom TTML is invalid"
+            )
+        }
+        guard let track = libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
+            return LibraryAutomationLyricsApplyOutcome(
+                applied: false,
+                conflicted: false,
+                currentQuality: 0,
+                candidateQuality: 0,
+                message: "Track not found"
+            )
+        }
+
+        let currentQuality = automationLyricsQuality(track)
+        if let expectedRevision,
+           expectedRevision != libraryViewModel.automationTrackRevision(for: track) {
+            return LibraryAutomationLyricsApplyOutcome(
+                applied: false,
+                conflicted: true,
+                currentQuality: currentQuality,
+                candidateQuality: lyricsQuality(normalizedTTML),
+                message: "Track metadata changed after the lyrics query"
+            )
+        }
+
+        let candidateQuality = lyricsQuality(normalizedTTML)
+        track.ttmlLyricText = normalizedTTML
+        track.lyricsText = nil
+        track.lyricsFileName = nil
+        let persistence = await libraryViewModel.saveTrackEdits(
+            track,
+            mode: .metaAndLyrics,
+            reason: "automationLyricsApplyCustomTTML"
+        )
+        guard persistence.persistedTrackIDs.contains(trackID) else {
+            return LibraryAutomationLyricsApplyOutcome(
+                applied: false,
+                conflicted: false,
+                currentQuality: currentQuality,
+                candidateQuality: candidateQuality,
+                message: "persistence failed"
+            )
+        }
+        return LibraryAutomationLyricsApplyOutcome(
+            applied: true,
+            conflicted: false,
+            currentQuality: currentQuality,
+            candidateQuality: candidateQuality,
+            message: "custom TTML applied"
         )
     }
 

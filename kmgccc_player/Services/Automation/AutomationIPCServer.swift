@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Darwin
 import Foundation
+import ImageIO
 import PlayerAutomationIPC
 import PlayerAutomationProtocol
 import UniformTypeIdentifiers
@@ -2631,6 +2632,41 @@ final class AutomationIPCServer {
                 return invalidParameters(for: request, error: error)
             }
 
+        case AutomationMethod.artworkSearch:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let trackID = try parameters.uuid("trackID", required: true)!
+                let limit = try parameters.integer("limit", default: 5)
+                guard (1...5).contains(limit) else {
+                    throw AutomationParameterError.outOfRange("limit")
+                }
+                guard let track = session.libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
+                    throw AutomationParameterError.missingResource("trackID")
+                }
+                let candidates = await session.searchArtworkCandidatesForAutomation(
+                    trackID: trackID,
+                    limit: limit
+                )
+                return encodeResult(
+                    AutomationArtworkSearchResult(
+                        trackID: trackID,
+                        queryTitle: track.title,
+                        queryArtist: track.artist.isEmpty ? nil : track.artist,
+                        queryAlbum: track.album.isEmpty ? nil : track.album,
+                        candidates: candidates.map(makeArtworkCandidate),
+                        message: candidates.isEmpty
+                            ? "No artwork candidates were returned by the configured providers."
+                            : "Artwork candidates were searched and ranked by the existing App provider pipeline. Inline imageBase64 is provided for Agent review."
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
         case AutomationMethod.artworkGet:
             guard let session = activeSession(for: request) else {
                 return noActiveLibraryResponse(for: request)
@@ -3111,16 +3147,33 @@ final class AutomationIPCServer {
                 guard let track = session.libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
                     throw AutomationParameterError.missingResource("trackID")
                 }
-                guard let candidateValues = try parameters.object("candidate") else {
-                    throw AutomationParameterError.missing("candidate")
+                let candidateValues = try parameters.object("candidate")
+                let customTTML = try parameters.string("ttmlText")?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let hasCandidate = candidateValues != nil
+                let hasCustomTTML = customTTML?.isEmpty == false
+                guard hasCandidate != hasCustomTTML else {
+                    throw AutomationParameterError.invalidValue("candidate/ttmlText")
                 }
-                let candidate = try makeAutomationLyricsCandidate(from: candidateValues)
                 let force = try parameters.boolean("force", default: false)
                 let translation = try parameters.boolean("translation", default: true)
                 let dryRun = try parameters.boolean("dryRun", default: false)
                 let expectedRevision = try parameters.string("expectedRevision")
                 let currentQuality = currentLyricsQuality(track)
-                let estimatedQuality = lyricsQuality(for: candidate)
+                let candidate: AutomationLyricsCandidate?
+                let estimatedQuality: Int
+                if let candidateValues {
+                    let parsedCandidate = try makeAutomationLyricsCandidate(from: candidateValues)
+                    candidate = parsedCandidate
+                    estimatedQuality = lyricsQuality(for: parsedCandidate)
+                } else {
+                    guard let customTTML,
+                          LyricsFormatSupport.validateTTML(customTTML).isValid else {
+                        throw AutomationParameterError.invalidValue("ttmlText")
+                    }
+                    candidate = nil
+                    estimatedQuality = customTTML.localizedCaseInsensitiveContains("<span") ? 2 : 1
+                }
                 if let expectedRevision,
                    expectedRevision != session.libraryViewModel.automationTrackRevision(for: track) {
                     return trackRevisionConflict(
@@ -3136,15 +3189,54 @@ final class AutomationIPCServer {
                             applied: false,
                             dryRun: true,
                             force: force,
+                            input: candidate == nil ? "ttmlText" : "candidate",
                             candidate: candidate,
+                            ttmlByteCount: customTTML?.utf8.count,
                             currentQuality: currentQuality,
                             candidateQuality: estimatedQuality,
-                            message: force
+                            message: candidate == nil
+                                ? "Preview only. The supplied TTML text will replace the current lyrics directly."
+                                : force
                                 ? "Preview only. The selected candidate will replace the current lyrics."
                                 : "Preview only. The candidate will replace the current lyrics only when its fetched quality is higher."
                         ),
                         for: request
                     )
+                }
+                if let customTTML {
+                    let outcome = await session.applyCustomTTMLForAutomation(
+                        trackID: trackID,
+                        ttml: customTTML,
+                        expectedRevision: expectedRevision
+                    )
+                    if outcome.conflicted {
+                        return trackRevisionConflict(
+                            for: request,
+                            expected: expectedRevision ?? "unknown",
+                            actual: session.libraryViewModel.allTracks
+                                .first(where: { $0.id == trackID })
+                                .map { session.libraryViewModel.automationTrackRevision(for: $0) }
+                                ?? "unknown"
+                        )
+                    }
+                    return encodeResult(
+                        AutomationLyricsApplyResult(
+                            trackID: trackID,
+                            applied: outcome.applied,
+                            dryRun: false,
+                            force: force,
+                            input: "ttmlText",
+                            candidate: nil,
+                            ttmlByteCount: customTTML.utf8.count,
+                            currentQuality: outcome.currentQuality,
+                            candidateQuality: outcome.candidateQuality,
+                            message: outcome.message
+                        ),
+                        for: request
+                    )
+                }
+                guard let candidate else {
+                    throw AutomationParameterError.invalidValue("candidate/ttmlText")
                 }
                 let lddcCandidate = try makeLDDCCandidate(from: candidate)
                 guard let ttml = await LyricsSearchHelper.fetchTTMLForAutomation(
@@ -3190,6 +3282,7 @@ final class AutomationIPCServer {
                         applied: outcome.applied,
                         dryRun: false,
                         force: force,
+                        input: "candidate",
                         candidate: candidate,
                         currentQuality: outcome.currentQuality,
                         candidateQuality: outcome.candidateQuality,
@@ -4670,7 +4763,8 @@ final class AutomationIPCServer {
              AutomationMethod.filesDelete: return "files"
         case AutomationMethod.metadataGet,
              AutomationMethod.metadataPatch: return "metadata"
-        case AutomationMethod.artworkGet,
+        case AutomationMethod.artworkSearch,
+             AutomationMethod.artworkGet,
              AutomationMethod.artworkApply: return "artwork"
         case AutomationMethod.lyricsGet,
              AutomationMethod.lyricsSearch,
@@ -4898,6 +4992,110 @@ final class AutomationIPCServer {
                     ? "No lyrics candidates were returned by the configured providers."
                     : "Lyrics candidates were searched and ranked by the existing App provider pipeline.")
         )
+    }
+
+    private func makeArtworkCandidate(
+        _ candidate: CoverCandidate
+    ) -> AutomationArtworkCandidate {
+        let inlineData = inlineArtworkData(candidate.imageData)
+        return AutomationArtworkCandidate(
+            source: artworkSourceName(candidate.source),
+            sourceItemID: candidate.sourceItemId,
+            imageBase64: inlineData.base64EncodedString(),
+            imageMIMEType: artworkMIMEType(for: inlineData),
+            byteCount: inlineData.count,
+            originalByteCount: inlineData == candidate.imageData ? nil : candidate.imageData.count,
+            width: candidate.width,
+            height: candidate.height,
+            resolution: candidate.resolution,
+            confidence: candidate.confidence,
+            matchedTitle: candidate.matchedTitle,
+            matchedArtist: candidate.matchedArtist,
+            matchedAlbum: candidate.matchedAlbum,
+            imageURL: candidate.imageURL
+        )
+    }
+
+    /// The App IPC response frame is intentionally capped at 1 MiB. Provider
+    /// images can be multi-megabyte PNGs, so keep the Agent-review payload
+    /// useful and bounded while preserving the original URL/size metadata.
+    private func inlineArtworkData(_ data: Data) -> Data {
+        let maximumBytes = 100_000
+        guard data.count > maximumBytes,
+              let source = CGImageSourceCreateWithData(data as CFData, nil)
+        else {
+            return data
+        }
+
+        var maxPixelSize = 640
+        var quality = 0.82
+        var bestData: Data?
+        for _ in 0..<5 {
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+            ]
+            guard let image = CGImageSourceCreateThumbnailAtIndex(
+                source,
+                0,
+                options as CFDictionary
+            ) else {
+                break
+            }
+            let output = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(
+                output,
+                UTType.jpeg.identifier as CFString,
+                1,
+                nil
+            ) else {
+                break
+            }
+            CGImageDestinationAddImage(
+                destination,
+                image,
+                [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary
+            )
+            guard CGImageDestinationFinalize(destination) else { break }
+            let encoded = output as Data
+            bestData = encoded
+            if encoded.count <= maximumBytes {
+                return encoded
+            }
+            maxPixelSize = max(256, maxPixelSize * 3 / 4)
+            quality *= 0.78
+        }
+        return bestData ?? data
+    }
+
+    private func artworkSourceName(_ source: CoverSource) -> String {
+        switch source {
+        case .sacad: return "sacad"
+        case .netease: return "netease"
+        case .qqmusic: return "qqmusic"
+        }
+    }
+
+    private func artworkMIMEType(for data: Data) -> String? {
+        if data.starts(with: [0xFF, 0xD8, 0xFF]) {
+            return "image/jpeg"
+        }
+        if data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+            return "image/png"
+        }
+        if data.starts(with: [0x47, 0x49, 0x46, 0x38]) {
+            return "image/gif"
+        }
+        if data.starts(with: [0x49, 0x49, 0x2A, 0x00]) || data.starts(with: [0x4D, 0x4D, 0x00, 0x2A]) {
+            return "image/tiff"
+        }
+        if data.count >= 12,
+           data.prefix(4) == Data("RIFF".utf8),
+           data.subdata(in: 8..<12) == Data("WEBP".utf8) {
+            return "image/webp"
+        }
+        return nil
     }
 
     private func makeAutomationLyricsCandidate(

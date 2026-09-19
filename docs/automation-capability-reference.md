@@ -35,8 +35,8 @@ PlaybackCoordinator、Repository、Source reconciler 和 Job coordinator 仍然�
 | Queue | `queue.get/replace/enqueue/enqueueNext/clear` | 返回 opaque queue revision |
 | History | `history.list/clear` | 清空 History 是 App confirmation 的高风险操作 |
 | Metadata | `metadata.get/patch` | 读写当前 Track 的 App-owned 字段：标题、艺人/credits、专辑、专辑艺人、描述、流派、语言、厂牌、发行日期、QQ/MusicBrainz/provider 字段、置信度、抓取时间和歌词偏移；不写原始文件 embedded tags；10 首及以上需 `confirm` 与 App 前台确认 |
-| Artwork | `artwork.get/apply` | 读取封面状态/文件名/大小/SHA-256；可用 App 选图、路径提示、base64 或 `clear` 写入 App-owned artwork；10 首及以上需 `confirm` 与 App 前台确认 |
-| Lyrics | `lyrics.get/search/candidates/compare/apply/refresh` | 候选可比较和明确应用；refresh 返回 App-owned Job，逐字优先 |
+| Artwork | `artwork.search/get/apply` | 复用 App 的多 provider 搜索并返回带 `imageBase64` 的候选供 Agent 审阅；可用 App 选图、路径提示、base64 或 `clear` 写入 App-owned artwork；10 首及以上需 `confirm` 与 App 前台确认 |
+| Lyrics | `lyrics.get/search/candidates/compare/apply/refresh` | 候选可比较和明确应用；`lyrics.apply` 也可直接写入校验过的 `ttmlText`；refresh 返回 App-owned Job，逐字优先 |
 | Jobs | `jobs.list/get/cancel/retry` | 每个资料库保留有界历史；支持可重建的 Lyrics/Source Job 重试 |
 | Diagnostics | `diagnostics.health` | Library/Source/missing/Job/storage/Playlist-reference evidence |
 | Settings | `settings.get/patch` | 当前只开放持久的 referenced Track deletion policy，并带 revision |
@@ -45,9 +45,12 @@ PlaybackCoordinator、Repository、Source reconciler 和 Job coordinator 仍然�
 | Policy | `automation.capabilities/scopes/grantScope/revokeScope` | scope 状态由 App 持久化并执行 |
 
 `library.tracks` 仍返回 `artworkAvailable` 和 `artworkFileName`，而 `artwork.get` 不返回原始
-图片字节，只返回可验证的状态摘要。`artwork.apply` 写入资料库的 App-owned artwork sidecar；
-它不会改写音频文件内部的 embedded artwork/tag。远程 provider 候选搜索尚未接入这个统一
-mutation，若使用候选应先由 Agent 取得图片，再通过明确的 `imageBase64` 或 App picker 应用。
+图片字节，只返回可验证的状态摘要。`artwork.search` 复用 App 的 NetEase、Sacad 和 QQMusic
+provider 聚合/排序，并在每个候选中返回候选元数据与 `imageBase64`，便于 Agent 直接审阅；
+审阅后可把候选 `imageBase64` 传给 `artwork.apply`。为适应本地 IPC frame 上限，过大的候选
+会生成受限尺寸的 inline JPEG，并在 `originalByteCount` 保留 provider 原始大小提示；
+`artwork.apply` 写入资料库的 App-owned artwork sidecar；它不会改写音频文件内部的
+embedded artwork/tag。
 
 ## Query / Selection
 
@@ -117,7 +120,9 @@ Library query、Playlist、Queue、Metadata patch 和 Artwork apply 支持 opaqu
 
 Lyrics 候选查询和批量维护共用现有 provider/ranking owner。`lyrics.search` 与
 `lyrics.candidates` 返回候选及其 provider、模式和分数；`lyrics.compare` 报告候选质量与
-当前结果的差异；`lyrics.apply` 只应用请求的候选，并在写入前检查可选的 Track revision。
+当前结果的差异；`lyrics.apply` 可以应用请求的候选，也可以在 `candidate` 与 `ttmlText`
+中二选一，直接写入 Agent 精修后的 TTML。两条路径都会在写入前检查可选的 Track revision；
+直接 TTML 会先经过 App 的 TTML 根节点/body 校验，并绕过 provider 候选的“必须更高质量”门槛。
 `lyrics.refresh` 用 Job 处理批量选择：先尝试逐字歌词，没有可用逐字结果再尝试逐行歌词，
 默认只应用更高质量结果；`--force` 只应在用户明确要求覆盖时使用。
 
@@ -140,8 +145,7 @@ import Job。
 
 当前代码没有足够稳定、独立的 owner 时，不开放伪 capability。文件级 reveal/copy/export、
 embedded tag 写入、远程 HTTP transport、MCP Tasks 映射、复杂 Settings patch 和任意 JSON
-write 仍需沿用后续阶段的专门设计。Artwork provider 候选搜索/排名尚未通过统一 capability
-暴露；已有图片可通过 `artwork.apply` 明确应用。Storage backup 是 metadata-only：它不复制
+write 仍需沿用后续阶段的专门设计。Storage backup 是 metadata-only：它不复制
 音频、缓存、索引或 live SQLite；`storage.diff` 只接受本 App 为当前资料库创建的 backup 路径。
 高级 Agent 可按 [Agent Behavior Guide](agent-behavior-guide.md) 使用诊断、backup/diff、源码审查
 和 validate/reload 进行受控 fallback。

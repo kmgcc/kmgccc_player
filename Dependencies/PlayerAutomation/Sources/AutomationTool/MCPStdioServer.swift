@@ -657,13 +657,15 @@ struct AutomationMCPStdioServer {
     private func makeToolResult(_ response: AutomationResponse) -> AutomationJSONValue {
         guard let error = response.error else {
             let result = response.result ?? .null
+            var content: [AutomationJSONValue] = [
+                .object([
+                    "type": .string("text"),
+                    "text": .string(jsonText(result))
+                ])
+            ]
+            content.append(contentsOf: artworkImageContentBlocks(in: result))
             return .object([
-                "content": .array([
-                    .object([
-                        "type": .string("text"),
-                        "text": .string(jsonText(result))
-                    ])
-                ]),
+                "content": .array(content),
                 "isError": .boolean(false),
                 "structuredContent": result.isObject
                     ? result
@@ -675,6 +677,41 @@ struct AutomationMCPStdioServer {
             message: error.message,
             details: error.details
         )
+    }
+
+    /// MCP supports native image content blocks. Keep the JSON result as the
+    /// authoritative structured payload (including imageBase64 for a later
+    /// artwork.apply), and additionally expose each artwork candidate as an
+    /// image block so multimodal Agents can inspect it without decoding JSON
+    /// text themselves.
+    private func artworkImageContentBlocks(
+        in result: AutomationJSONValue
+    ) -> [AutomationJSONValue] {
+        guard case .object(let values) = result,
+              case .array(let rawCandidates) = values["candidates"] else {
+            return []
+        }
+
+        return rawCandidates.compactMap { rawCandidate in
+            guard case .object(let candidate) = rawCandidate,
+                  case .string(let imageBase64) = candidate["imageBase64"],
+                  !imageBase64.isEmpty
+            else {
+                return nil
+            }
+            let mimeType: String
+            if case .string(let value) = candidate["imageMIMEType"], !value.isEmpty {
+                mimeType = value
+            } else {
+                mimeType = "image/jpeg"
+            }
+            let block: [String: AutomationJSONValue] = [
+                "type": .string("image"),
+                "data": .string(imageBase64),
+                "mimeType": .string(mimeType)
+            ]
+            return .object(block)
+        }
     }
 
     private func makeToolExecutionError(

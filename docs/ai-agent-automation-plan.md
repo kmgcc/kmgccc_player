@@ -481,6 +481,26 @@ owner，直接改原文件会绕过现有 sandbox/备份/失败恢复边界，�
 封面选图、sidecar 落盘、批量 10 首弹窗、清除封面、重启后读取和 signed/sandbox 分发仍
 需要在独立测试 App / 发布产物上人工验收。
 
+### 13.3 Artwork 搜索与直接 TTML 写回 checkpoint（2026-09-19）
+
+根据人工试用提出的“搜索候选 → Agent 视觉审阅 → 应用”和“歌词中间台精修后直接写回”
+缺口，本轮继续扩展同一 App-owned contract：
+
+- 新增只读 `artwork.search`，按 `trackID` 复用共享的 NetEase、Sacad、QQMusic 搜索聚合与
+  排名，返回最多 5 个候选；每个候选含来源、匹配字段、分辨率、置信度、原图 URL 和
+  `imageBase64`/MIME 信息，可由 Agent 直接视觉审阅后把图片数据交给 `artwork.apply`；
+- `lyrics.apply` 的 `candidate` 改为与 `ttmlText` 二选一。`ttmlText` 走与手工编辑相同的
+  TTML 校验和 repository owner，支持 `dryRun`、Track revision conflict 和持久化后结果，
+  不把精修文本绕过现有 owner 直接写文件；
+- 封面 provider 服务提升为当前 LibrarySession 的共享依赖，交互式编辑器和 Automation
+  搜索使用同一 session-scoped service/cache，避免两套 provider 状态；
+- CLI alias、MCP catalog/schema、协议测试、Agent guide、capability reference 和 skill 已
+  同步；catalog 当前由 73 扩展为 74 个 capability。
+
+已完成 PlayerAutomation 测试、Xcode ARM64 Debug build 和 `git diff --check`；新的
+`artwork.search` 网络 provider 返回质量、实际 `ttmlText` 应用后的重启读取、签名/sandbox
+分发及人工多模态审阅仍需在独立运行 App / 发布产物上完成验收。
+
 ## 14. 与本轮原始计划的对齐
 
 本轮对话提供的长篇原计划是需求全集；本文是把它落成仓库内可持续维护的公开版本，

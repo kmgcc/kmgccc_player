@@ -84,6 +84,7 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     #expect(names.contains(AutomationMethod.libraryRename))
     #expect(names.contains(AutomationMethod.libraryRelocate))
     #expect(names.contains(AutomationMethod.libraryRemove))
+    #expect(names.contains(AutomationMethod.artworkSearch))
     #expect(names.contains(AutomationMethod.artworkGet))
     #expect(names.contains(AutomationMethod.artworkApply))
 
@@ -185,6 +186,61 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     )
     #expect(artworkGet.readOnly)
     #expect(artworkGet.scopes == [.artworkRead, .libraryRead].sorted { $0.rawValue < $1.rawValue })
+
+    let artworkSearch = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.artworkSearch)
+    )
+    #expect(artworkSearch.readOnly)
+    #expect(!artworkSearch.requiresConfirmation)
+    #expect(artworkSearch.scopes == [.artworkRead, .libraryRead].sorted { $0.rawValue < $1.rawValue })
+    guard case .object(let artworkSearchSchema) = artworkSearch.inputSchema,
+          case .array(let artworkSearchRequired) = artworkSearchSchema["required"] else {
+        Issue.record("artwork.search must declare a required Track ID")
+        return
+    }
+    #expect(artworkSearchRequired.contains(.string("trackID")))
+    #expect(
+        AutomationToolCatalog.unknownParameterKeys(
+            for: AutomationMethod.artworkSearch,
+            params: .object([
+                "trackID": .string(UUID().uuidString),
+                "limit": .number(5),
+                "unexpected": .boolean(true)
+            ])
+        ) == ["unexpected"]
+    )
+
+    let artworkCandidate = AutomationArtworkCandidate(
+        source: "qqmusic",
+        sourceItemID: "album-mid",
+        imageBase64: "aW1hZ2U=",
+        imageMIMEType: "image/jpeg",
+        byteCount: 5,
+        originalByteCount: 120_000,
+        width: 640,
+        height: 640,
+        resolution: 640,
+        confidence: 0.91,
+        matchedTitle: "Example",
+        matchedArtist: "Artist",
+        matchedAlbum: "Album",
+        imageURL: "https://example.invalid/cover.jpg"
+    )
+    let artworkResult = AutomationArtworkSearchResult(
+        trackID: UUID(),
+        queryTitle: "Example",
+        queryArtist: "Artist",
+        queryAlbum: "Album",
+        candidates: [artworkCandidate],
+        message: "ok"
+    )
+    let artworkData = try AutomationWireCoding.encoder().encode(artworkResult)
+    let decodedArtwork = try AutomationWireCoding.decoder().decode(
+        AutomationArtworkSearchResult.self,
+        from: artworkData
+    )
+    #expect(decodedArtwork == artworkResult)
+    #expect(decodedArtwork.candidates.first?.originalByteCount == 120_000)
 
     let artworkApply = try #require(
         AutomationToolCatalog.descriptor(for: AutomationMethod.artworkApply)
@@ -364,6 +420,26 @@ func lyricsAutomationContractExposesSelectionAndRetrySemantics() throws {
         }
     }
 
+    let lyricsApply = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.lyricsApply)
+    )
+    guard case .object(let lyricsApplySchema) = lyricsApply.inputSchema,
+          case .array(let lyricsApplyRequired) = lyricsApplySchema["required"] else {
+        Issue.record("lyrics.apply must declare a required Track ID")
+        return
+    }
+    #expect(lyricsApplyRequired == [.string("trackID")])
+    #expect(
+        AutomationToolCatalog.unknownParameterKeys(
+            for: AutomationMethod.lyricsApply,
+            params: .object([
+                "trackID": .string(UUID().uuidString),
+                "ttmlText": .string("<tt></tt>"),
+                "unexpected": .boolean(true)
+            ])
+        ) == ["unexpected"]
+    )
+
     let candidate = AutomationLyricsCandidate(
         source: "AMLLDB",
         songID: "raw/example.ttml",
@@ -392,6 +468,27 @@ func lyricsAutomationContractExposesSelectionAndRetrySemantics() throws {
     )
     #expect(decoded == comparison)
     #expect(decoded.candidate.id == "AMLLDB-raw/example.ttml")
+
+    let customApply = AutomationLyricsApplyResult(
+        trackID: UUID(),
+        applied: true,
+        dryRun: false,
+        force: false,
+        input: "ttmlText",
+        candidate: nil,
+        ttmlByteCount: 42,
+        currentQuality: 1,
+        candidateQuality: 2,
+        message: "custom TTML applied"
+    )
+    let customData = try AutomationWireCoding.encoder().encode(customApply)
+    let decodedCustom = try AutomationWireCoding.decoder().decode(
+        AutomationLyricsApplyResult.self,
+        from: customData
+    )
+    #expect(decodedCustom == customApply)
+    #expect(decodedCustom.input == "ttmlText")
+    #expect(decodedCustom.candidate == nil)
 }
 
 @Test

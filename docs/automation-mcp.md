@@ -90,10 +90,16 @@ mutation 时，可以在 `tools/call.params` 旁带本项目扩展的 `context` 
 security-scoped authorization。
 
 Metadata 与 Artwork 也共用同一套 App-owned contract：`metadata.get/patch` 查询和修改
-Track 元数据，`artwork.get` 返回封面摘要，`artwork.apply` 接受 App picker、`imagePath`
-路径提示、`imageBase64` 或 `clear`。这些操作不会改写原始音频文件的 embedded tags。
+Track 元数据，`artwork.search` 复用 App 的多 provider 搜索并返回带 `imageBase64` 的候选，
+`artwork.get` 返回封面摘要，`artwork.apply` 接受 App picker、`imagePath` 路径提示、
+`imageBase64` 或 `clear`。这些操作不会改写原始音频文件的 embedded tags。
+过大的搜索图片会被压缩为受本地 IPC frame 限制的 inline JPEG，候选仍会保留原始大小提示。
 对 10 首及以上 Track，先调用 `dryRun` 观察 targets/conflicts，再传 `confirm=true`；
 App 会在前台弹出确认框，MCP 的 acknowledgement 不能绕过它。应用后应重新 query 验证。
+
+Lyrics 的短路径同样支持中间台加工：`lyrics.apply` 的 `candidate` 和 `ttmlText` 必须且只能
+提供一个。候选输入继续走 provider fetch/质量门槛；`ttmlText` 输入必须是有效 TTML，随后由
+App-owned lyrics repository 直接持久化，仍支持 `dryRun` 与 `expectedRevision`。
 
 长操作的 catalog annotation 会额外标记 `x-kmgccc-supports-jobs: true`。目前
 `source.create`（用户完成 App picker 授权后）、`source.refresh` 和 `lyrics.refresh`

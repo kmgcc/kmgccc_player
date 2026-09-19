@@ -38,12 +38,19 @@ For lyrics maintenance, use `lyrics.search`/`lyrics.candidates` to inspect candi
 word-synced lyrics first, falls back to line-synced lyrics, and does not replace an equal or better
 current result unless the user explicitly requests force.
 
-For metadata/artwork maintenance, query first with `metadata.get` or `artwork.get`, then use
-`metadata.patch` or `artwork.apply` with the returned Track revision when available. Metadata
-patch covers the editable App-owned fields already present in Track, and artwork apply accepts
-App picker, an image path hint, base64 image data, or `clear`. These operations write App-owned
-sidecars, not embedded tags in the original audio file. For 10 or more Tracks, preview first,
-send `confirm=true`, and wait for the App foreground confirmation; `--yes` never bypasses it.
+For metadata/artwork maintenance, query first with `metadata.get` or `artwork.get`, and use
+`artwork.search` when an Agent needs ranked cover candidates with inline `imageBase64` for visual
+review. Then use `metadata.patch` or `artwork.apply` with the returned Track revision when
+available. Metadata patch covers the editable App-owned fields already present in Track, and
+artwork apply accepts App picker, an image path hint, base64 image data, or `clear`. These
+operations write App-owned sidecars, not embedded tags in the original audio file. For 10 or more
+Tracks, preview first, send `confirm=true`, and wait for the App foreground confirmation;
+`--yes` never bypasses it.
+
+For lyrics, use `lyrics.search`/`lyrics.compare` before applying a provider candidate, or pass
+direct `ttmlText` to `lyrics.apply` after Agent-side translation/timing edits. `candidate` and
+`ttmlText` are mutually exclusive; direct text is validated as TTML and persisted through the
+same App-owned lyrics path.
 
 For physical file work, inspect first, preview the destination, apply through `files.rename` or
 `files.move`, then refresh the affected Source and verify the Track path. Never use direct Storage

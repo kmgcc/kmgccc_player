@@ -14,6 +14,10 @@ final class LibraryCacheServices {
     nonisolated let storageLocations: LibraryStorageLocations
     let trackArtworkCache: TrackArtworkCache
     let headerColorExtractor: HeaderColorExtractor
+    /// Shared provider services used by both the interactive cover editor and
+    /// App-owned automation artwork search.
+    let coverDownloadService: CoverDownloadService
+    let netEaseCoverService: NetEaseCoverService
     let qqMusicCoverService: QQMusicCoverService
     let artistArtworkProviderCoordinator: ArtistArtworkProviderCoordinator
     let amllDBRawIndexCache: AMLLDBRawIndexCache
@@ -28,6 +32,8 @@ final class LibraryCacheServices {
         self.storageLocations = storage
         self.trackArtworkCache = TrackArtworkCache(storage: storage)
         self.headerColorExtractor = HeaderColorExtractor(storage: storage)
+        self.coverDownloadService = CoverDownloadService()
+        self.netEaseCoverService = NetEaseCoverService()
         self.qqMusicCoverService = QQMusicCoverService(cacheRootURL: storage.qqMusicCoverCacheURL)
         self.artistArtworkProviderCoordinator = ArtistArtworkProviderCoordinator(
             qqMusicCoverService: qqMusicCoverService

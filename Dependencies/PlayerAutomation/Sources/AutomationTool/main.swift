@@ -553,11 +553,27 @@ private struct AutomationCLI {
             }
         case "artwork":
             guard let action = args.first else {
-                writeDiagnostic("usage error: artwork requires get or apply")
+                writeDiagnostic("usage error: artwork requires search, get or apply")
                 return .usage
             }
             args.removeFirst()
             switch action {
+            case "search":
+                guard args.count == 1 else {
+                    writeDiagnostic("usage error: artwork search requires one Track ID")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [:]
+                if let paramsJSON = options.paramsJSON {
+                    guard case .object(let extra) = paramsJSON else {
+                        writeDiagnostic("usage error: artwork search --params-json must be an object")
+                        return .usage
+                    }
+                    values.merge(extra) { _, incoming in incoming }
+                }
+                values["trackID"] = .string(args[0])
+                method = AutomationMethod.artworkSearch
+                params = .object(values)
             case "get":
                 guard !args.isEmpty else {
                     writeDiagnostic("usage error: artwork get requires Track IDs")
@@ -1175,6 +1191,7 @@ private struct AutomationCLI {
           history list|clear       Read or clear listening history
           metadata get <track-id>...
           metadata patch <track-id>... --params-json '{"title":"..."}'
+          artwork search <track-id> [--params-json '{"limit":5}']
           artwork get <track-id>...
           artwork apply <track-id>... --params-json '{"imagePath":"/path/cover.jpg"}'
           lyrics get <track-id>

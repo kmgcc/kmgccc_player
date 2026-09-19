@@ -104,9 +104,14 @@ Metadata、History 和 Playlist membership 不会被静默删除。
 - `metadata.get` 返回当前 Track 的完整 App-owned 元数据投影；`metadata.patch` 可修改标题、
   艺人/credits、专辑、专辑艺人、描述、流派、语言、厂牌、发行日期、QQ/MusicBrainz/provider
   字段、置信度、抓取时间和歌词偏移。它不是用户原始音频文件的 embedded tags 写入器。
-- `artwork.get` 只返回 App-owned 封面的存在、文件名、大小、SHA-256 和 Track revision；
-  不把图片字节直接塞入查询响应。`artwork.apply` 可使用 App picker、`imagePath`（仅作
+- `artwork.search` 复用 App 内 NetEase/Sacad/QQMusic 聚合搜索，返回排序候选、匹配信息和
+  `imageBase64`，适合 Agent 直接视觉审阅；审阅后可把候选数据交给 `artwork.apply`。
+  `artwork.get` 只返回 App-owned 封面的存在、文件名、大小、SHA-256 和 Track revision；
+  不把当前已写入图片字节塞入查询响应。`artwork.apply` 可使用 App picker、`imagePath`（仅作
   picker 初始位置）、`imageBase64` 或 `clear`，并写入资料库 artwork sidecar。
+- `lyrics.apply` 的 `candidate` 和 `ttmlText` 必须二选一。候选遵循质量门槛；`ttmlText`
+  适合 Agent 在中间台完成翻译/时间轴微调后直接写回，App 会先验证 TTML 再经现有歌词
+  persistence owner 持久化。
 - 不要无条件覆盖已有较高置信度或用户手工数据。Metadata/Artwork 的 10 首及以上批量应先
   `dryRun`；真实调用必须带 `confirm=true`，并等待 App 前台弹窗，调用方的 `--yes` 不能
   绕过弹窗。完成后重新调用 `metadata.get`/`artwork.get` 或 `library.tracks` 验证
