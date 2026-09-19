@@ -89,10 +89,21 @@ mutation 时，可以在 `tools/call.params` 旁带本项目扩展的 `context` 
 它的 dry-run 可以在不授予删除 scope 时先查看影响。路径参数只用于定位 picker，不能绕过
 security-scoped authorization。
 
-Metadata 与 Artwork 也共用同一套 App-owned contract：`metadata.get/patch` 查询和修改
-Track 元数据，`artwork.search` 复用 App 的多 provider 搜索并返回带 `imageBase64` 的候选，
-`artwork.get` 返回封面摘要，`artwork.apply` 接受 App picker、`imagePath` 路径提示、
-`imageBase64` 或 `clear`。这些操作不会改写原始音频文件的 embedded tags。
+Metadata 与 Artwork 也共用同一套 App-owned contract，并把 Track、Artist、Album、Playlist
+作为一等目标。单目标模式的 `metadata.get/patch` 使用 `trackID`、`artistID`、`albumKey` 或
+`playlistID` 四选一；兼容的 Track 批量写入仍使用 `trackIDs`。Track 暴露歌曲字段，Artist 暴露显示名、
+介绍、标签、地区、外文名和 provider metadata，Album 暴露标题、年份/日期、类型、标签、
+语言、厂牌和 provider metadata，Playlist 暴露名称和描述。canonical ID、统计量、创建/更新时间
+是只读投影。
+
+Agent 需要先发现 Artist、Album 或 Playlist 时，可调用 `metadata.get` 并传
+`entityType: "artist" | "album" | "playlist"`，再用 `query`、`limit`、`offset` 分页；响应的
+`nextOffset` 和集合 revision 用于继续读取与记录快照。`entityType` 不能与单目标 ID/key 混用。
+
+`artwork.search` 同样接受 Track、Artist 或 Album 目标，复用 App 的多 provider 搜索并返回带
+`imageBase64` 的候选；Playlist 没有 provider search，但四类目标都可用 `artwork.get` 读取摘要，
+并用 `artwork.apply` 接受 App picker、`imagePath` 路径提示、`imageBase64` 或 `clear`。这些操作
+不会改写原始音频文件的 embedded tags。
 过大的搜索图片会被压缩为受本地 IPC frame 限制的 inline JPEG，候选仍会保留原始大小提示。
 对 10 首及以上 Track，先调用 `dryRun` 观察 targets/conflicts，再传 `confirm=true`；
 App 会在前台弹出确认框，MCP 的 acknowledgement 不能绕过它。应用后应重新 query 验证。

@@ -494,6 +494,43 @@ final class LibrarySession: LibrarySessionLifecycle {
         return Array(coordinator.candidates.prefix(max(1, min(limit, 5))))
     }
 
+    func searchArtistArtworkCandidatesForAutomation(
+        artistID: UUID,
+        limit: Int
+    ) async -> [CoverCandidate] {
+        guard let entry = libraryViewModel.artistEntries.first(where: { $0.id == artistID }) else {
+            return []
+        }
+        do {
+            let candidates = try await cacheServices.artistArtworkProviderCoordinator.searchCandidates(
+                artist: entry.displayName,
+                limit: max(1, min(limit, 5))
+            )
+            return Array(candidates.prefix(max(1, min(limit, 5))))
+        } catch {
+            return []
+        }
+    }
+
+    func searchAlbumArtworkCandidatesForAutomation(
+        albumKey: String,
+        limit: Int
+    ) async -> [CoverCandidate] {
+        guard let entry = libraryViewModel.albumEntries.first(where: { $0.canonicalKey == albumKey }) else {
+            return []
+        }
+        let coordinator = CoverSearchCoordinator(
+            coverDownloadService: cacheServices.coverDownloadService,
+            netEaseCoverService: cacheServices.netEaseCoverService,
+            qqMusicCoverService: cacheServices.qqMusicCoverService
+        )
+        await coordinator.search(
+            artist: entry.primaryArtistDisplayName,
+            album: entry.displayTitle
+        )
+        return Array(coordinator.candidates.prefix(max(1, min(limit, 5))))
+    }
+
     /// Applies a fetched candidate through the same App-owned persistence
     /// boundary used by the batch Job. The revision is checked immediately
     /// before writing so a UI edit made while a remote candidate was fetched

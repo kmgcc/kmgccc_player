@@ -1495,6 +1495,33 @@ final class LocalLibraryService {
         )
     }
 
+    /// Removes both custom and generated playlist header artwork and marks the
+    /// sidecar as having no active artwork. The next normal UI generation pass
+    /// may create a fresh generated header from the playlist tracks.
+    @discardableResult
+    nonisolated func clearPlaylistArtwork(playlistID: UUID) -> Bool {
+        let fileManager = FileManager.default
+        let sidecar = loadPlaylistSidecar(playlistID: playlistID)
+        let fileNames = [
+            sidecar?.customHeaderArtworkFileName,
+            sidecar?.generatedHeaderArtworkFileName
+        ].compactMap { $0 }
+        for fileName in fileNames {
+            try? fileManager.removeItem(
+                at: paths.playlistsRootURL.appendingPathComponent(fileName)
+            )
+        }
+        try? fileManager.removeItem(at: paths.legacyPlaylistArtworkURL(for: playlistID))
+        return updatePlaylistArtworkMetadata(
+            playlistID: playlistID,
+            customFileName: nil,
+            generatedFileName: nil,
+            activeSource: .none,
+            generatedSignature: nil,
+            artworkRevision: UUID().uuidString
+        )
+    }
+
     @discardableResult
     nonisolated static func savePlaylistCustomArtworkDataOnDisk(
         playlistID: UUID,
@@ -1997,9 +2024,16 @@ final class LocalLibraryService {
             persistedSidecar.trackSortKey = sidecar.trackSortKey ?? existing?.trackSortKey
             persistedSidecar.trackSortOrder = sidecar.trackSortOrder ?? existing?.trackSortOrder
             persistedSidecar.customTrackOrder = sidecar.customTrackOrder ?? existing?.customTrackOrder
+            let previousArtworkFileName = existing?.artworkFileName
             let metaURL = paths.artistMetaURL(for: sidecar.id)
             let data = try encoder.encode(persistedSidecar)
             try data.write(to: metaURL, options: .atomic)
+            if let previousArtworkFileName, previousArtworkFileName != persistedSidecar.artworkFileName {
+                let previousArtworkURL = folder.appendingPathComponent(previousArtworkFileName)
+                if fileManager.fileExists(atPath: previousArtworkURL.path) {
+                    try? fileManager.removeItem(at: previousArtworkURL)
+                }
+            }
             if let artworkData, let fileName = persistedSidecar.artworkFileName {
                 let artworkURL = folder.appendingPathComponent(fileName)
                 try artworkData.write(to: artworkURL, options: .atomic)

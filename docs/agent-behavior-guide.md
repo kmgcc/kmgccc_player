@@ -101,21 +101,29 @@ Metadata、History 和 Playlist membership 不会被静默删除。
 - 先查询 `lyricsStatus`/`metadataConfidence`，再批量选择目标。
 - Lyrics refresh 返回 Job；不要为几万首歌逐首发同步调用。
 - 默认只在新结果质量更高时替换：word-synced > line-synced > plain > none。
-- `metadata.get` 返回当前 Track 的完整 App-owned 元数据投影；`metadata.patch` 可修改标题、
-  艺人/credits、专辑、专辑艺人、描述、流派、语言、厂牌、发行日期、QQ/MusicBrainz/provider
-  字段、置信度、抓取时间和歌词偏移。它不是用户原始音频文件的 embedded tags 写入器。
-- `artwork.search` 复用 App 内 NetEase/Sacad/QQMusic 聚合搜索，返回排序候选、匹配信息和
-  `imageBase64`，适合 Agent 直接视觉审阅；审阅后可把候选数据交给 `artwork.apply`。
-  `artwork.get` 只返回 App-owned 封面的存在、文件名、大小、SHA-256 和 Track revision；
-  不把当前已写入图片字节塞入查询响应。`artwork.apply` 可使用 App picker、`imagePath`（仅作
-  picker 初始位置）、`imageBase64` 或 `clear`，并写入资料库 artwork sidecar。
+- `metadata.get`/`metadata.patch` 把 Track、Artist、Album、Playlist 当作同级实体。用
+  `trackID`、`artistID`、`albumKey` 或 `playlistID` 精确指定一个目标；Track 批量仍可用
+  `trackIDs`。Track 可修改标题、艺人/credits、专辑、专辑艺人、描述、流派、语言、厂牌、
+  发行日期、QQ/MusicBrainz/provider 字段、置信度、抓取时间和歌词偏移；Artist 可修改显示名、
+  介绍、标签、地区、外文名和 provider metadata；Album 可修改标题、介绍、年份/日期、类型、
+  标签、语言、厂牌和 provider metadata；Playlist 可修改名称和描述。canonical ID、统计量、
+  创建/更新时间是只读投影。它们都写 App-owned 数据，不能代替原始音频文件的 embedded tags。
+- 需要先发现目标时，使用 `metadata.get` 的 `entityType`（`artist`、`album`、`playlist`）
+  分页读取实体清单，再用返回的 Artist ID、Album canonical key 或 Playlist ID 做后续读写；
+  `query` 可按名称、canonical key 或描述筛选。
+- `artwork.search` 复用 App 内 NetEase/Sacad/QQMusic 聚合搜索，支持 Track、Artist、Album，
+  返回排序候选、匹配信息和 `imageBase64`，适合 Agent 直接视觉审阅；审阅后可把候选数据交给
+  `artwork.apply`。Playlist 没有联网搜索，但可用 `artwork.get/apply` 维护 Playlist artwork。
+  `artwork.get` 只返回 App-owned 封面的存在、文件名、大小、SHA-256 和目标 revision；不把当前
+  已写入图片字节塞入查询响应。`artwork.apply` 可使用 App picker、`imagePath`（仅作 picker
+  初始位置）、`imageBase64` 或 `clear`，并写入资料库 artwork sidecar。
 - `lyrics.apply` 的 `candidate` 和 `ttmlText` 必须二选一。候选遵循质量门槛；`ttmlText`
   适合 Agent 在中间台完成翻译/时间轴微调后直接写回，App 会先验证 TTML 再经现有歌词
   persistence owner 持久化。
 - 不要无条件覆盖已有较高置信度或用户手工数据。Metadata/Artwork 的 10 首及以上批量应先
   `dryRun`；真实调用必须带 `confirm=true`，并等待 App 前台弹窗，调用方的 `--yes` 不能
-  绕过弹窗。完成后重新调用 `metadata.get`/`artwork.get` 或 `library.tracks` 验证
-  applied/skipped/conflicted。
+  绕过弹窗。完成后重新调用对应目标的 `metadata.get`/`artwork.get` 或 `library.tracks`
+  验证 applied/skipped/conflicted；不要把 Track revision 复用于 Artist、Album 或 Playlist。
 
 ## Playback and queue
 

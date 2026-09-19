@@ -88,6 +88,19 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     #expect(names.contains(AutomationMethod.artworkGet))
     #expect(names.contains(AutomationMethod.artworkApply))
 
+    let metadataGet = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.metadataGet)
+    )
+    guard case .object(let metadataGetSchema) = metadataGet.inputSchema,
+          case .object(let metadataGetProperties) = metadataGetSchema["properties"] else {
+        Issue.record("metadata.get must expose entity discovery properties")
+        return
+    }
+    #expect(metadataGetProperties["entityType"] != nil)
+    #expect(metadataGetProperties["query"] != nil)
+    #expect(metadataGetProperties["limit"] != nil)
+    #expect(metadataGetProperties["offset"] != nil)
+
     let readOnly = try #require(
         AutomationToolCatalog.descriptor(for: AutomationMethod.libraryTracks)
     )
@@ -194,11 +207,14 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     #expect(!artworkSearch.requiresConfirmation)
     #expect(artworkSearch.scopes == [.artworkRead, .libraryRead].sorted { $0.rawValue < $1.rawValue })
     guard case .object(let artworkSearchSchema) = artworkSearch.inputSchema,
-          case .array(let artworkSearchRequired) = artworkSearchSchema["required"] else {
-        Issue.record("artwork.search must declare a required Track ID")
+          case .object(let artworkSearchProperties) = artworkSearchSchema["properties"] else {
+        Issue.record("artwork.search must expose target properties")
         return
     }
-    #expect(artworkSearchRequired.contains(.string("trackID")))
+    #expect(artworkSearchSchema["required"] == nil)
+    #expect(artworkSearchProperties["trackID"] != nil)
+    #expect(artworkSearchProperties["artistID"] != nil)
+    #expect(artworkSearchProperties["albumKey"] != nil)
     #expect(
         AutomationToolCatalog.unknownParameterKeys(
             for: AutomationMethod.artworkSearch,
@@ -250,11 +266,13 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     #expect(artworkApply.supportsDryRun)
     #expect(artworkApply.risk == .medium)
     guard case .object(let artworkSchema) = artworkApply.inputSchema,
-          case .array(let artworkRequired) = artworkSchema["required"] else {
-        Issue.record("artwork.apply must declare required Track IDs")
+          case .object(let artworkProperties) = artworkSchema["properties"] else {
+        Issue.record("artwork.apply must expose target properties")
         return
     }
-    #expect(artworkRequired.contains(.string("trackIDs")))
+    #expect(artworkSchema["required"] == nil)
+    #expect(artworkProperties["trackIDs"] != nil)
+    #expect(artworkProperties["playlistID"] != nil)
     #expect(
         AutomationToolCatalog.unknownParameterKeys(
             for: AutomationMethod.artworkApply,
@@ -316,6 +334,47 @@ func artworkAutomationResultRoundTripsAndMetadataFieldsDecodeDefaults() throws {
     #expect(summary.userDescription.isEmpty)
     #expect(summary.lyricsTimeOffsetMs == 0)
     #expect(summary.artworkFileName == nil)
+
+    let oldArtwork = try AutomationWireCoding.decoder().decode(
+        AutomationArtworkMutationResult.self,
+        from: Data(
+            """
+            {"applied":true,"dryRun":false,"confirmed":false,"input":"imageBase64",
+             "updatedTrackIDs":["\(trackID.uuidString)"],"skippedTrackIDs":[],
+             "conflictedTrackIDs":[],"message":"updated"}
+            """.replacingOccurrences(of: "\n", with: "").utf8
+        )
+    )
+    #expect(oldArtwork.updatedTrackIDs == [trackID])
+    #expect(oldArtwork.updatedArtistIDs.isEmpty)
+
+    let oldPlaylist = try AutomationWireCoding.decoder().decode(
+        AutomationPlaylistSummary.self,
+        from: Data(
+            """
+            {"id":"\(UUID().uuidString)","name":"Old","description":"",
+             "createdAt":"2026-01-01T00:00:00Z","trackCount":0,"totalDuration":0,
+             "revision":"v1-old"}
+            """.replacingOccurrences(of: "\n", with: "").utf8
+        )
+    )
+    #expect(oldPlaylist.artworkSource == "none")
+
+    let metadata = AutomationMetadataGetResult(
+        total: 4,
+        offset: 2,
+        limit: 2,
+        nextOffset: nil,
+        revision: "v1-entities"
+    )
+    let metadataData = try AutomationWireCoding.encoder().encode(metadata)
+    let decodedMetadata = try AutomationWireCoding.decoder().decode(
+        AutomationMetadataGetResult.self,
+        from: metadataData
+    )
+    #expect(decodedMetadata.offset == 2)
+    #expect(decodedMetadata.limit == 2)
+    #expect(decodedMetadata.nextOffset == nil)
 }
 
 @Test

@@ -1,6 +1,6 @@
 ---
 name: kmgccc-player-automation
-description: Operate kmgccc_player through its shared CLI/MCP automation contract for music-library lifecycle, composable queries, sources, playlists, authorized file operations, metadata, lyrics jobs, playback, queue, settings and diagnostics.
+description: Operate kmgccc_player through its shared CLI/MCP automation contract for music-library lifecycle, composable queries, sources, first-class Track/Artist/Album/Playlist metadata and artwork, lyrics jobs, playback, queue, settings and diagnostics.
 ---
 
 # kmgccc_player Automation Skill
@@ -38,14 +38,17 @@ For lyrics maintenance, use `lyrics.search`/`lyrics.candidates` to inspect candi
 word-synced lyrics first, falls back to line-synced lyrics, and does not replace an equal or better
 current result unless the user explicitly requests force.
 
-For metadata/artwork maintenance, query first with `metadata.get` or `artwork.get`, and use
-`artwork.search` when an Agent needs ranked cover candidates with inline `imageBase64` for visual
-review. Then use `metadata.patch` or `artwork.apply` with the returned Track revision when
-available. Metadata patch covers the editable App-owned fields already present in Track, and
-artwork apply accepts App picker, an image path hint, base64 image data, or `clear`. These
-operations write App-owned sidecars, not embedded tags in the original audio file. For 10 or more
-Tracks, preview first, send `confirm=true`, and wait for the App foreground confirmation;
-`--yes` never bypasses it.
+For metadata/artwork maintenance, query first with `metadata.get` or `artwork.get`, selecting exactly
+one target with `trackID`, `artistID`, `albumKey` or `playlistID`; Track batches may use `trackIDs`.
+When the Agent does not yet know an Artist ID, Album canonical key or Playlist ID, first call
+`metadata.get` with `entityType` and paginate with `query`/`offset`/`limit`.
+Use `artwork.search` for ranked cover candidates with inline `imageBase64` when the target is a Track,
+Artist or Album. Playlist artwork has no provider search, but can still be read/applied/cleared. Then
+use `metadata.patch` or `artwork.apply` with that target's returned revision. Metadata patch covers
+Track fields plus Artist, Album and Playlist sidecar fields; artwork apply accepts App picker, an image
+path hint, base64 image data, or `clear`. These operations write App-owned sidecars, not embedded tags
+in the original audio file. For 10 or more Tracks, preview first, send `confirm=true`, and wait for
+the App foreground confirmation; `--yes` never bypasses it.
 
 For lyrics, use `lyrics.search`/`lyrics.compare` before applying a provider candidate, or pass
 direct `ttmlText` to `lyrics.apply` after Agent-side translation/timing edits. `candidate` and

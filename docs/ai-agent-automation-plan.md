@@ -501,6 +501,31 @@ owner，直接改原文件会绕过现有 sandbox/备份/失败恢复边界，�
 `artwork.search` 网络 provider 返回质量、实际 `ttmlText` 应用后的重启读取、签名/sandbox
 分发及人工多模态审阅仍需在独立运行 App / 发布产物上完成验收。
 
+### 13.4 Entity-first Metadata / Artwork checkpoint（2026-09-19）
+
+本轮继续按人工试用暴露的抽象缺口审查实体对等性，确认 Track、Artist、Album、Playlist 的
+实际 sidecar/UI owner 后，把 Metadata/Artwork contract 从 Track-only 扩展为实体级目标：
+
+- `metadata.get/patch` 支持 `trackID`、`artistID`、`albumKey`、`playlistID` 四选一；保留
+  Track 的 `trackIDs` 批量兼容路径。Artist 和 Album 的显示/描述/分类/provider 字段可写，
+  Playlist 的名称/描述可写；canonical identity、统计量、创建/更新时间作为只读投影返回；
+- `artwork.search` 复用现有 Artist provider 和 Album/Track CoverSearch pipeline，支持
+  Track/Artist/Album；`artwork.get/apply` 支持四类实体，Playlist artwork 使用已有 sidecar
+  custom/generated owner，不伪造 Playlist 联网搜索；
+- 新增实体级 artwork/metadata revision，并让旧 Track `expectedRevisions` 与新增 artwork
+  revision 保持兼容；Artist artwork 文件清除、Album artwork 写回、Playlist artwork 清除均
+  走 App-owned persistence owner；10 首及以上 Track artwork/metadata batch 继续由 App
+  前台确认保护；
+- CLI 新增 `--track-id`、`--artist-id`、`--album-key`、`--playlist-id` 目标选择器；协议
+  Codable 对新增结果字段提供旧响应默认解码；另外 `metadata.get` 支持
+  `entityType + query + offset/limit`，让 Agent 可以先发现 Artist/Album/Playlist 再操作；
+  Capability Reference、CLI/MCP 文档、Agent guide 和 Skill 已同步。
+
+本轮已完成 PlayerAutomation SwiftPM 18/18 测试、CLI product build、Xcode ARM64 Debug
+build 和 `git diff --check`（仍需在最终收口后重跑）。尚未把协议层成功当作运行验收：Artist/
+Album/Playlist metadata 与 artwork 的真实 sidecar 落盘、切库后的目标隔离、旧响应/旧 CLI
+互操作、10+ Track 确认弹窗、重启读取和 signed/sandbox 分发仍需独立 App 与发布包人工验收。
+
 ## 14. 与本轮原始计划的对齐
 
 本轮对话提供的长篇原计划是需求全集；本文是把它落成仓库内可持续维护的公开版本，

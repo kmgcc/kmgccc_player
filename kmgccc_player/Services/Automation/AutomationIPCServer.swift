@@ -232,6 +232,29 @@ private final class AutomationIdempotencyStore {
 /// AI callers all reach the same App-owned capability handler.
 @MainActor
 final class AutomationIPCServer {
+    private enum ArtworkTarget {
+        case track(Track)
+        case artist(ArtistEntry)
+        case album(AlbumEntry)
+        case playlist(Playlist)
+
+        var type: String {
+            switch self {
+            case .track: return "track"
+            case .artist: return "artist"
+            case .album: return "album"
+            case .playlist: return "playlist"
+            }
+        }
+    }
+
+    private enum MetadataTarget {
+        case track(Track)
+        case artist(ArtistEntry)
+        case album(AlbumEntry)
+        case playlist(Playlist)
+    }
+
     private struct PendingIdempotency {
         let fingerprint: String
         var waiters: [(requestID: UUID, continuation: CheckedContinuation<AutomationResponse, Never>)]
@@ -2638,24 +2661,70 @@ final class AutomationIPCServer {
             }
             do {
                 let parameters = try AutomationParameters(request)
-                let trackID = try parameters.uuid("trackID", required: true)!
                 let limit = try parameters.integer("limit", default: 5)
                 guard (1...5).contains(limit) else {
                     throw AutomationParameterError.outOfRange("limit")
                 }
-                guard let track = session.libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
-                    throw AutomationParameterError.missingResource("trackID")
-                }
-                let candidates = await session.searchArtworkCandidatesForAutomation(
-                    trackID: trackID,
-                    limit: limit
+                let target = try resolveArtworkTarget(
+                    from: parameters,
+                    session: session,
+                    allowPlaylist: false
                 )
+                let candidates: [CoverCandidate]
+                let queryTitle: String?
+                let queryArtist: String?
+                let queryAlbum: String?
+                let trackID: UUID?
+                let artistID: UUID?
+                let albumKey: String?
+                switch target {
+                case .track(let track):
+                    candidates = await session.searchArtworkCandidatesForAutomation(
+                        trackID: track.id,
+                        limit: limit
+                    )
+                    queryTitle = track.title
+                    queryArtist = track.artist.isEmpty ? nil : track.artist
+                    queryAlbum = track.album.isEmpty ? nil : track.album
+                    trackID = track.id
+                    artistID = nil
+                    albumKey = nil
+                case .artist(let entry):
+                    candidates = await session.searchArtistArtworkCandidatesForAutomation(
+                        artistID: entry.id,
+                        limit: limit
+                    )
+                    queryTitle = nil
+                    queryArtist = entry.displayName
+                    queryAlbum = nil
+                    trackID = nil
+                    artistID = entry.id
+                    albumKey = nil
+                case .album(let entry):
+                    candidates = await session.searchAlbumArtworkCandidatesForAutomation(
+                        albumKey: entry.canonicalKey,
+                        limit: limit
+                    )
+                    queryTitle = nil
+                    queryArtist = entry.primaryArtistDisplayName.isEmpty
+                        ? nil
+                        : entry.primaryArtistDisplayName
+                    queryAlbum = entry.displayTitle
+                    trackID = nil
+                    artistID = nil
+                    albumKey = entry.canonicalKey
+                case .playlist:
+                    throw AutomationParameterError.invalidValue("playlistID")
+                }
                 return encodeResult(
                     AutomationArtworkSearchResult(
+                        targetType: target.type,
                         trackID: trackID,
-                        queryTitle: track.title,
-                        queryArtist: track.artist.isEmpty ? nil : track.artist,
-                        queryAlbum: track.album.isEmpty ? nil : track.album,
+                        artistID: artistID,
+                        albumKey: albumKey,
+                        queryTitle: queryTitle,
+                        queryArtist: queryArtist,
+                        queryAlbum: queryAlbum,
                         candidates: candidates.map(makeArtworkCandidate),
                         message: candidates.isEmpty
                             ? "No artwork candidates were returned by the configured providers."
@@ -2673,37 +2742,41 @@ final class AutomationIPCServer {
             }
             do {
                 let parameters = try AutomationParameters(request)
-                let trackIDs = try parameters.uuidArray("trackIDs", required: true)
-                let tracksByID = Dictionary(
-                    uniqueKeysWithValues: session.libraryViewModel.allTracks.map { ($0.id, $0) }
-                )
-                guard trackIDs.allSatisfy({ tracksByID[$0] != nil }) else {
-                    throw AutomationParameterError.invalidValue("trackIDs")
-                }
-                let artworks = trackIDs.compactMap { trackIDs -> AutomationArtworkInfo? in
-                    guard let track = tracksByID[trackIDs] else { return nil }
-                    let data = track.loadArtworkDataIfNeeded()
-                    let digest = data.map { data in
-                        SHA256.hash(data: data)
-                            .map { String(format: "%02x", $0) }
-                            .joined()
+                let trackIDs = try parameters.uuidArray("trackIDs")
+                let artworks: [AutomationArtworkInfo]
+                let revision: String
+                if !trackIDs.isEmpty {
+                    guard try !hasArtworkTargetParameters(parameters, excludingTrackIDs: true) else {
+                        throw AutomationParameterError.invalidValue("trackIDs")
                     }
-                    return AutomationArtworkInfo(
-                        trackID: track.id,
-                        available: data != nil || track.artworkFileName != nil,
-                        fileName: track.artworkFileName,
-                        byteCount: data?.count,
-                        sha256: digest,
-                        revision: session.libraryViewModel.automationTrackRevision(for: track)
+                    let tracksByID = Dictionary(
+                        uniqueKeysWithValues: session.libraryViewModel.allTracks.map { ($0.id, $0) }
                     )
+                    guard trackIDs.allSatisfy({ tracksByID[$0] != nil }) else {
+                        throw AutomationParameterError.invalidValue("trackIDs")
+                    }
+                    artworks = trackIDs.compactMap { id in
+                        tracksByID[id].map {
+                            makeArtworkInfo(.track($0), session: session)
+                        }
+                    }
+                    revision = libraryTracksRevision(
+                        tracks: session.libraryViewModel.allTracks,
+                        playlists: session.libraryViewModel.playlists
+                    )
+                } else {
+                    let target = try resolveArtworkTarget(
+                        from: parameters,
+                        session: session,
+                        allowPlaylist: true
+                    )
+                    artworks = [makeArtworkInfo(target, session: session)]
+                    revision = artworkRevision(for: target, session: session)
                 }
                 return encodeResult(
                     AutomationArtworkGetResult(
                         artworks: artworks,
-                        revision: libraryTracksRevision(
-                            tracks: session.libraryViewModel.allTracks,
-                            playlists: session.libraryViewModel.playlists
-                        )
+                        revision: revision
                     ),
                     for: request
                 )
@@ -2717,7 +2790,17 @@ final class AutomationIPCServer {
             }
             do {
                 let parameters = try AutomationParameters(request)
-                let trackIDs = try parameters.uuidArray("trackIDs", required: true)
+                let trackIDs = try parameters.uuidArray("trackIDs")
+                if trackIDs.isEmpty {
+                    return try await applyArtworkToSingleTarget(
+                        parameters: parameters,
+                        request: request,
+                        session: session
+                    )
+                }
+                guard try !hasArtworkTargetParameters(parameters, excludingTrackIDs: true) else {
+                    throw AutomationParameterError.invalidValue("trackIDs")
+                }
                 let clear = try parameters.boolean("clear", default: false)
                 let imagePath = try parameters.string("imagePath")?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2750,7 +2833,8 @@ final class AutomationIPCServer {
                 let candidates = trackIDs.compactMap { tracksByID[$0] }
                 let conflictIDs = candidates.compactMap { track -> UUID? in
                     guard let expected = expectedRevisions[track.id],
-                          expected != session.libraryViewModel.automationTrackRevision(for: track) else {
+                          expected != session.libraryViewModel.automationTrackRevision(for: track),
+                          expected != session.libraryViewModel.automationArtworkRevision(for: track) else {
                         return nil
                     }
                     return track.id
@@ -2890,9 +2974,61 @@ final class AutomationIPCServer {
             }
             do {
                 let parameters = try AutomationParameters(request)
+                let entityType = try parameters.string("entityType")?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                let query = try parameters.string("query")?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let limit = try parameters.integer("limit", default: 100)
+                let offset = try parameters.integer("offset", default: 0)
+                guard (1...500).contains(limit), offset >= 0 else {
+                    throw AutomationParameterError.outOfRange("limit/offset")
+                }
+                let artistID = try parameters.uuid("artistID")
+                let albumKey = try parameters.string("albumKey")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                let playlistID = try parameters.uuid("playlistID")
+                let requestedEntityCount = [artistID != nil, albumKey != nil, playlistID != nil]
+                    .filter { $0 }
+                    .count
                 var trackIDs = try parameters.uuidArray("trackIDs")
                 if let trackID = try parameters.uuid("trackID") {
                     trackIDs.append(trackID)
+                }
+                if let entityType {
+                    guard ["artist", "album", "playlist"].contains(entityType),
+                          trackIDs.isEmpty,
+                          requestedEntityCount == 0 else {
+                        throw AutomationParameterError.invalidValue("entityType")
+                    }
+                    return encodeResult(
+                        makeMetadataCollectionResult(
+                            entityType: entityType,
+                            query: query,
+                            offset: offset,
+                            limit: limit,
+                            session: session
+                        ),
+                        for: request
+                    )
+                }
+                guard (query == nil || query?.isEmpty == true) && limit == 100 && offset == 0 else {
+                    throw AutomationParameterError.invalidValue("query/limit/offset")
+                }
+                if !trackIDs.isEmpty && requestedEntityCount > 0 {
+                    throw AutomationParameterError.invalidValue("trackID/artistID/albumKey/playlistID")
+                }
+                if trackIDs.isEmpty && requestedEntityCount > 0 {
+                    let target = try resolveMetadataTarget(
+                        artistID: artistID,
+                        albumKey: albumKey,
+                        playlistID: playlistID,
+                        session: session
+                    )
+                    return encodeResult(
+                        makeMetadataGetResult(for: target, session: session),
+                        for: request
+                    )
                 }
                 trackIDs = Array(Set(trackIDs)).sorted { $0.uuidString < $1.uuidString }
                 guard !trackIDs.isEmpty else {
@@ -2935,7 +3071,19 @@ final class AutomationIPCServer {
             }
             do {
                 let parameters = try AutomationParameters(request)
-                let trackIDs = try parameters.uuidArray("trackIDs", required: true)
+                let trackIDs = try parameters.uuidArray("trackIDs")
+                let hasSingularTrack = try parameters.uuid("trackID") != nil
+                let hasEntityTarget = try hasMetadataEntityTarget(parameters)
+                if trackIDs.isEmpty || hasEntityTarget || hasSingularTrack {
+                    if !trackIDs.isEmpty || (hasSingularTrack && hasEntityTarget) {
+                        throw AutomationParameterError.invalidValue("metadata target")
+                    }
+                    return try await applyMetadataToSingleTarget(
+                        parameters: parameters,
+                        request: request,
+                        session: session
+                    )
+                }
                 guard let patchValues = try parameters.object("patch"), !patchValues.isEmpty else {
                     throw AutomationParameterError.missing("patch")
                 }
@@ -4210,6 +4358,1138 @@ final class AutomationIPCServer {
             musicBrainzReleaseID: try stringValue("musicBrainzReleaseID"),
             lyricsTimeOffsetMs: try numberValue("lyricsTimeOffsetMs", range: -120_000...120_000),
             artistCredits: try artistCreditsValue("artistCredits")
+        )
+    }
+
+    private func patchStringValue(
+        _ values: [String: AutomationJSONValue],
+        key: String
+    ) throws -> String? {
+        guard let value = values[key] else { return nil }
+        switch value {
+        case .null: return nil
+        case .string(let string): return string
+        default: throw AutomationParameterError.invalidType(key, expected: "string or null")
+        }
+    }
+
+    private func patchStringArrayValue(
+        _ values: [String: AutomationJSONValue],
+        key: String
+    ) throws -> [String]? {
+        guard let value = values[key] else { return nil }
+        switch value {
+        case .null:
+            return nil
+        case .array(let values):
+            return try values.map { value in
+                guard case .string(let string) = value else {
+                    throw AutomationParameterError.invalidType(key, expected: "array of strings or null")
+                }
+                return string
+            }
+        default:
+            throw AutomationParameterError.invalidType(key, expected: "array of strings or null")
+        }
+    }
+
+    private func patchDateValue(
+        _ values: [String: AutomationJSONValue],
+        key: String
+    ) throws -> Date? {
+        guard let value = values[key] else { return nil }
+        switch value {
+        case .null:
+            return nil
+        case .string(let string):
+            guard let date = ISO8601DateFormatter().date(from: string) else {
+                throw AutomationParameterError.invalidValue(key)
+            }
+            return date
+        default:
+            throw AutomationParameterError.invalidType(key, expected: "ISO-8601 string or null")
+        }
+    }
+
+    private func patchIntValue(
+        _ values: [String: AutomationJSONValue],
+        key: String,
+        range: ClosedRange<Int>? = nil
+    ) throws -> Int? {
+        guard let value = values[key] else { return nil }
+        switch value {
+        case .null:
+            return nil
+        case .number(let number):
+            guard number.isFinite, number.rounded() == number else {
+                throw AutomationParameterError.invalidValue(key)
+            }
+            let integer = Int(number)
+            guard range?.contains(integer) ?? true else {
+                throw AutomationParameterError.outOfRange(key)
+            }
+            return integer
+        default:
+            throw AutomationParameterError.invalidType(key, expected: "integer or null")
+        }
+    }
+
+    private func patchConfidenceValue(
+        _ values: [String: AutomationJSONValue],
+        key: String
+    ) throws -> Double? {
+        guard let value = values[key] else { return nil }
+        switch value {
+        case .null:
+            return nil
+        case .number(let number):
+            guard number.isFinite, (0...1).contains(number) else {
+                throw AutomationParameterError.outOfRange(key)
+            }
+            return number
+        default:
+            throw AutomationParameterError.invalidType(key, expected: "number or null")
+        }
+    }
+
+    private func makeArtistMetadataPatch(
+        _ values: [String: AutomationJSONValue]
+    ) throws -> LibraryAutomationArtistMetadataPatch {
+        let allowed: Set<String> = [
+            "displayName", "description", "genreTags", "region", "foreignName",
+            "qqMusicSingerMid", "metadataSource", "metadataFetchedAt", "metadataConfidence"
+        ]
+        guard Set(values.keys).isSubset(of: allowed), !values.isEmpty else {
+            throw AutomationParameterError.invalidValue("patch")
+        }
+        return LibraryAutomationArtistMetadataPatch(
+            fields: Set(values.keys),
+            displayName: try patchStringValue(values, key: "displayName"),
+            description: try patchStringValue(values, key: "description"),
+            genreTags: try patchStringArrayValue(values, key: "genreTags"),
+            region: try patchStringValue(values, key: "region"),
+            foreignName: try patchStringValue(values, key: "foreignName"),
+            qqMusicSingerMid: try patchStringValue(values, key: "qqMusicSingerMid"),
+            metadataSource: try patchStringValue(values, key: "metadataSource"),
+            metadataFetchedAt: try patchDateValue(values, key: "metadataFetchedAt"),
+            metadataConfidence: try patchConfidenceValue(values, key: "metadataConfidence")
+        )
+    }
+
+    private func makeAlbumMetadataPatch(
+        _ values: [String: AutomationJSONValue]
+    ) throws -> LibraryAutomationAlbumMetadataPatch {
+        let allowed: Set<String> = [
+            "displayTitle", "description", "year", "releaseYear", "releaseDate", "albumType",
+            "genreTags", "language", "labelOrCompany", "qqMusicAlbumMid", "metadataSource",
+            "metadataFetchedAt", "metadataConfidence"
+        ]
+        guard Set(values.keys).isSubset(of: allowed), !values.isEmpty else {
+            throw AutomationParameterError.invalidValue("patch")
+        }
+        return LibraryAutomationAlbumMetadataPatch(
+            fields: Set(values.keys),
+            displayTitle: try patchStringValue(values, key: "displayTitle"),
+            description: try patchStringValue(values, key: "description"),
+            year: try patchIntValue(values, key: "year", range: 0...9999),
+            releaseYear: try patchIntValue(values, key: "releaseYear", range: 0...9999),
+            releaseDate: try patchDateValue(values, key: "releaseDate"),
+            albumType: try patchStringValue(values, key: "albumType"),
+            genreTags: try patchStringArrayValue(values, key: "genreTags"),
+            language: try patchStringValue(values, key: "language"),
+            labelOrCompany: try patchStringValue(values, key: "labelOrCompany"),
+            qqMusicAlbumMid: try patchStringValue(values, key: "qqMusicAlbumMid"),
+            metadataSource: try patchStringValue(values, key: "metadataSource"),
+            metadataFetchedAt: try patchDateValue(values, key: "metadataFetchedAt"),
+            metadataConfidence: try patchConfidenceValue(values, key: "metadataConfidence")
+        )
+    }
+
+    private func artistMetadataPatchChanges(
+        _ entry: ArtistEntry,
+        patch: LibraryAutomationArtistMetadataPatch
+    ) -> Bool {
+        if patch.fields.contains("displayName"),
+           let value = patch.displayName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty,
+           entry.displayName != value {
+            return true
+        }
+        if patch.fields.contains("description"), entry.description != (patch.description ?? "") { return true }
+        if patch.fields.contains("genreTags"), entry.genreTags != (patch.genreTags ?? []) { return true }
+        if patch.fields.contains("region"), entry.region != (patch.region ?? "") { return true }
+        if patch.fields.contains("foreignName"), entry.foreignName != (patch.foreignName ?? "") { return true }
+        if patch.fields.contains("qqMusicSingerMid"), entry.qqMusicSingerMid != patch.qqMusicSingerMid { return true }
+        if patch.fields.contains("metadataSource"), entry.metadataSource != patch.metadataSource { return true }
+        if patch.fields.contains("metadataFetchedAt"), entry.metadataFetchedAt != patch.metadataFetchedAt { return true }
+        if patch.fields.contains("metadataConfidence"), entry.metadataConfidence != patch.metadataConfidence { return true }
+        return false
+    }
+
+    private func albumMetadataPatchChanges(
+        _ entry: AlbumEntry,
+        patch: LibraryAutomationAlbumMetadataPatch
+    ) -> Bool {
+        if patch.fields.contains("displayTitle"),
+           let value = patch.displayTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !value.isEmpty,
+           entry.displayTitle != value {
+            return true
+        }
+        if patch.fields.contains("description"), entry.description != (patch.description ?? "") { return true }
+        if patch.fields.contains("year"), entry.year != patch.year { return true }
+        if patch.fields.contains("releaseYear"), entry.releaseYear != patch.releaseYear { return true }
+        if patch.fields.contains("releaseDate"), entry.releaseDate != patch.releaseDate { return true }
+        if patch.fields.contains("albumType"), entry.albumType != (patch.albumType ?? "") { return true }
+        if patch.fields.contains("genreTags"), entry.genreTags != (patch.genreTags ?? []) { return true }
+        if patch.fields.contains("language"), entry.language != (patch.language ?? "") { return true }
+        if patch.fields.contains("labelOrCompany"), entry.labelOrCompany != (patch.labelOrCompany ?? "") { return true }
+        if patch.fields.contains("qqMusicAlbumMid"), entry.qqMusicAlbumMid != patch.qqMusicAlbumMid { return true }
+        if patch.fields.contains("metadataSource"), entry.metadataSource != patch.metadataSource { return true }
+        if patch.fields.contains("metadataFetchedAt"), entry.metadataFetchedAt != patch.metadataFetchedAt { return true }
+        if patch.fields.contains("metadataConfidence"), entry.metadataConfidence != patch.metadataConfidence { return true }
+        return false
+    }
+
+    private func makePlaylistMetadataPatchValues(
+        _ values: [String: AutomationJSONValue]
+    ) throws -> (fields: Set<String>, name: String?, description: String?) {
+        let allowed: Set<String> = ["name", "description"]
+        guard !values.isEmpty, Set(values.keys).isSubset(of: allowed) else {
+            throw AutomationParameterError.invalidValue("patch")
+        }
+        let name: String?
+        if values["name"] != nil {
+            switch values["name"] {
+            case .null:
+                name = nil
+            case .string(let value):
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty, trimmed.count <= 255 else {
+                    throw AutomationParameterError.outOfRange("patch.name")
+                }
+                name = trimmed
+            default:
+                throw AutomationParameterError.invalidType("patch.name", expected: "string or null")
+            }
+        } else {
+            name = nil
+        }
+
+        let description: String?
+        if values["description"] != nil {
+            switch values["description"] {
+            case .null:
+                description = ""
+            case .string(let value):
+                description = value
+            default:
+                throw AutomationParameterError.invalidType("patch.description", expected: "string or null")
+            }
+        } else {
+            description = nil
+        }
+        return (Set(values.keys), name, description)
+    }
+
+    private func hasArtworkTargetParameters(
+        _ parameters: AutomationParameters,
+        excludingTrackIDs: Bool = false
+    ) throws -> Bool {
+        let trackID = try parameters.uuid("trackID")
+        let artistID = try parameters.uuid("artistID")
+        let albumKey = try parameters.string("albumKey")
+        let playlistID = try parameters.uuid("playlistID")
+        if excludingTrackIDs {
+            return trackID != nil || artistID != nil || albumKey != nil || playlistID != nil
+        }
+        return trackID != nil || artistID != nil || albumKey != nil || playlistID != nil
+    }
+
+    private func resolveArtworkTarget(
+        from parameters: AutomationParameters,
+        session: LibrarySession,
+        allowPlaylist: Bool
+    ) throws -> ArtworkTarget {
+        let trackID = try parameters.uuid("trackID")
+        let artistID = try parameters.uuid("artistID")
+        let rawAlbumKey = try parameters.string("albumKey")
+        let albumKey = rawAlbumKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let playlistID = try parameters.uuid("playlistID")
+        let targetCount = [trackID != nil, artistID != nil, albumKey != nil, playlistID != nil]
+            .filter { $0 }
+            .count
+        guard targetCount == 1 else {
+            throw AutomationParameterError.missing("exactly one of trackID, artistID, albumKey or playlistID")
+        }
+
+        if let trackID {
+            guard let track = session.libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
+                throw AutomationParameterError.missingResource("trackID")
+            }
+            return .track(track)
+        }
+        if let artistID {
+            guard let artist = session.libraryViewModel.artistEntries.first(where: { $0.id == artistID }) else {
+                throw AutomationParameterError.missingResource("artistID")
+            }
+            return .artist(artist)
+        }
+        if let albumKey {
+            guard !albumKey.isEmpty else {
+                throw AutomationParameterError.invalidValue("albumKey")
+            }
+            guard let album = session.libraryViewModel.albumEntries.first(where: { $0.canonicalKey == albumKey }) else {
+                throw AutomationParameterError.missingResource("albumKey")
+            }
+            return .album(album)
+        }
+        guard allowPlaylist else {
+            throw AutomationParameterError.invalidValue("playlistID")
+        }
+        guard let playlistID,
+              let playlist = session.libraryViewModel.playlists.first(where: { $0.id == playlistID }) else {
+            throw AutomationParameterError.missingResource("playlistID")
+        }
+        return .playlist(playlist)
+    }
+
+    private func makeArtworkInfo(
+        _ target: ArtworkTarget,
+        session: LibrarySession
+    ) -> AutomationArtworkInfo {
+        switch target {
+        case .track(let track):
+            let data = track.loadArtworkDataIfNeeded()
+            return AutomationArtworkInfo(
+                targetType: target.type,
+                trackID: track.id,
+                available: data != nil || track.artworkFileName != nil,
+                fileName: track.artworkFileName,
+                byteCount: data?.count,
+                sha256: artworkDigest(data),
+                revision: session.libraryViewModel.automationArtworkRevision(for: track)
+            )
+        case .artist(let entry):
+            return AutomationArtworkInfo(
+                targetType: target.type,
+                artistID: entry.id,
+                available: entry.artworkData != nil || entry.artworkFileName != nil,
+                fileName: entry.artworkFileName,
+                byteCount: entry.artworkData?.count,
+                sha256: artworkDigest(entry.artworkData),
+                revision: session.libraryViewModel.automationArtworkRevision(for: entry)
+            )
+        case .album(let entry):
+            return AutomationArtworkInfo(
+                targetType: target.type,
+                albumKey: entry.canonicalKey,
+                available: entry.artworkData != nil || entry.artworkFileName != nil,
+                fileName: entry.artworkFileName,
+                byteCount: entry.artworkData?.count,
+                sha256: artworkDigest(entry.artworkData),
+                revision: session.libraryViewModel.automationArtworkRevision(for: entry)
+            )
+        case .playlist(let playlist):
+            let sidecar = session.libraryService.loadPlaylistSidecar(playlistID: playlist.id)
+            let fileName: String?
+            switch sidecar?.headerArtworkSource ?? .none {
+            case .custom:
+                fileName = sidecar?.customHeaderArtworkFileName
+            case .generated:
+                fileName = sidecar?.generatedHeaderArtworkFileName
+            case .none:
+                fileName = nil
+            }
+            let data = fileName.flatMap {
+                try? Data(contentsOf: session.libraryService.paths.playlistsRootURL.appendingPathComponent($0))
+            }
+            return AutomationArtworkInfo(
+                targetType: target.type,
+                playlistID: playlist.id,
+                available: data != nil || fileName != nil,
+                fileName: fileName,
+                byteCount: data?.count,
+                sha256: artworkDigest(data),
+                revision: session.libraryViewModel.automationArtworkRevision(for: playlist)
+            )
+        }
+    }
+
+    private func artworkDigest(_ data: Data?) -> String? {
+        guard let data else { return nil }
+        return SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    private func artworkRevision(
+        for target: ArtworkTarget,
+        session: LibrarySession
+    ) -> String {
+        switch target {
+        case .track(let track): return session.libraryViewModel.automationArtworkRevision(for: track)
+        case .artist(let entry): return session.libraryViewModel.automationArtworkRevision(for: entry)
+        case .album(let entry): return session.libraryViewModel.automationArtworkRevision(for: entry)
+        case .playlist(let playlist): return session.libraryViewModel.automationArtworkRevision(for: playlist)
+        }
+    }
+
+    private struct ResolvedArtworkInput {
+        let kind: String
+        let data: Data?
+    }
+
+    private func resolveArtworkInput(
+        clear: Bool,
+        imagePath: String?,
+        imageBase64: String?
+    ) async throws -> ResolvedArtworkInput? {
+        if clear {
+            return ResolvedArtworkInput(kind: "clear", data: nil)
+        }
+        if let imageBase64 {
+            let encoded = imageBase64.hasPrefix("data:")
+                ? (imageBase64.split(separator: ",", maxSplits: 1).last.map(String.init) ?? "")
+                : imageBase64
+            guard let data = Data(base64Encoded: encoded),
+                  data.count <= 16 * 1024 * 1024,
+                  ArtworkDataNormalizer.isDecodableImage(data) else {
+                throw AutomationParameterError.invalidValue("imageBase64")
+            }
+            let normalized = ArtworkDataNormalizer.normalizedJPEGData(from: data) ?? data
+            return ResolvedArtworkInput(kind: "imageBase64", data: normalized)
+        }
+
+        guard let selectedURL = try await requestArtworkURL(
+            requestedPath: imagePath.map(expandPath(_:))
+        ) else {
+            return nil
+        }
+        let data = await Task.detached(priority: .userInitiated) { () -> Data? in
+            let accessed = selectedURL.startAccessingSecurityScopedResource()
+            defer {
+                if accessed { selectedURL.stopAccessingSecurityScopedResource() }
+            }
+            return try? Data(contentsOf: selectedURL)
+        }.value
+        guard let data,
+              data.count <= 16 * 1024 * 1024,
+              ArtworkDataNormalizer.isDecodableImage(data) else {
+            throw AutomationParameterError.invalidValue("imagePath")
+        }
+        return ResolvedArtworkInput(
+            kind: imagePath == nil ? "picker" : "imagePath",
+            data: ArtworkDataNormalizer.normalizedJPEGData(from: data) ?? data
+        )
+    }
+
+    private func applyArtworkToSingleTarget(
+        parameters: AutomationParameters,
+        request: AutomationRequest,
+        session: LibrarySession
+    ) async throws -> AutomationResponse {
+        guard try hasArtworkTargetParameters(parameters) else {
+            throw AutomationParameterError.missing("artwork target")
+        }
+        guard try parameters.object("expectedRevisions") == nil else {
+            throw AutomationParameterError.invalidValue("expectedRevisions")
+        }
+        let target = try resolveArtworkTarget(from: parameters, session: session, allowPlaylist: true)
+        let clear = try parameters.boolean("clear", default: false)
+        let imagePath = try parameters.string("imagePath")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let imageBase64 = try parameters.string("imageBase64")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let expectedRevision = try parameters.string("expectedRevision")
+        let dryRun = try parameters.boolean("dryRun", default: false)
+        let confirm = try parameters.boolean("confirm", default: false)
+        guard !(clear && (imagePath != nil || imageBase64 != nil)) else {
+            throw AutomationParameterError.invalidValue("clear")
+        }
+        guard !(imagePath != nil && imageBase64 != nil) else {
+            throw AutomationParameterError.invalidValue("imagePath/imageBase64")
+        }
+        if let imagePath, imagePath.isEmpty { throw AutomationParameterError.invalidValue("imagePath") }
+        if let imageBase64, imageBase64.isEmpty { throw AutomationParameterError.invalidValue("imageBase64") }
+
+        let info = makeArtworkInfo(target, session: session)
+        let actualRevision = artworkRevision(for: target, session: session)
+        let compatibleRevision: String? = {
+            switch target {
+            case .track(let track): return session.libraryViewModel.automationTrackRevision(for: track)
+            case .artist(let entry): return session.libraryViewModel.automationArtistRevision(for: entry)
+            case .album(let entry): return session.libraryViewModel.automationAlbumRevision(for: entry)
+            case .playlist(let playlist): return session.libraryViewModel.automationPlaylistRevision(for: playlist)
+            }
+        }()
+        let isConflict = expectedRevision.map {
+            $0 != actualRevision && $0 != compatibleRevision
+        } ?? false
+        let targetID: UUID? = {
+            switch target {
+            case .track(let track): return track.id
+            case .artist(let entry): return entry.id
+            case .album, .playlist: return nil
+            }
+        }()
+        let targetArtistID: UUID? = {
+            if case .artist(let entry) = target { return entry.id }
+            return nil
+        }()
+        let targetTrackIDs: [UUID] = {
+            if case .track(let track) = target { return [track.id] }
+            return []
+        }()
+        let targetArtistIDs: [UUID] = {
+            if case .artist(let entry) = target { return [entry.id] }
+            return []
+        }()
+        let targetAlbumIDs = ifCaseAlbumID(target)
+        let targetPlaylistIDs = ifCasePlaylistID(target).map { [$0] } ?? []
+        let changed = !isConflict && (clear ? info.available : true)
+        let inputKind = clear ? "clear" : imageBase64 != nil ? "imageBase64" : imagePath != nil ? "imagePath" : "picker"
+
+        func result(
+            applied: Bool,
+            dryRun: Bool,
+            confirmed: Bool,
+            input: String,
+            outcome: LibraryAutomationEntityArtworkMutationOutcome? = nil,
+            trackOutcome: LibraryAutomationArtworkMutationOutcome? = nil,
+            conflict: Bool = false,
+            previewChanged: Bool? = nil,
+            message: String
+        ) -> AutomationResponse {
+            let conflictedTrackIDs: [UUID]
+            let conflictedArtistIDs: [UUID]
+            let conflictedAlbumIDs: [UUID]
+            let conflictedPlaylistIDs: [UUID]
+            if let trackOutcome {
+                conflictedTrackIDs = trackOutcome.conflictedTrackIDs
+                conflictedArtistIDs = []
+                conflictedAlbumIDs = []
+                conflictedPlaylistIDs = []
+            } else if let outcome {
+                conflictedTrackIDs = []
+                conflictedArtistIDs = outcome.conflictedArtistIDs
+                conflictedAlbumIDs = outcome.conflictedAlbumIDs
+                conflictedPlaylistIDs = outcome.conflictedPlaylistIDs
+            } else if conflict {
+                conflictedTrackIDs = targetID.flatMap { targetArtistID == nil ? [$0] : [] } ?? []
+                conflictedArtistIDs = targetArtistID.map { [$0] } ?? []
+                conflictedAlbumIDs = ifCaseAlbumID(target)
+                conflictedPlaylistIDs = ifCasePlaylistID(target).map { [$0] } ?? []
+            } else {
+                conflictedTrackIDs = []
+                conflictedArtistIDs = []
+                conflictedAlbumIDs = []
+                conflictedPlaylistIDs = []
+            }
+            let previewUpdatedTrackIDs = previewChanged == true ? targetTrackIDs : []
+            let previewSkippedTrackIDs = previewChanged == false ? targetTrackIDs : []
+            let previewUpdatedArtistIDs = previewChanged == true ? targetArtistIDs : []
+            let previewSkippedArtistIDs = previewChanged == false ? targetArtistIDs : []
+            let previewUpdatedAlbumIDs = previewChanged == true ? targetAlbumIDs : []
+            let previewSkippedAlbumIDs = previewChanged == false ? targetAlbumIDs : []
+            let previewUpdatedPlaylistIDs = previewChanged == true ? targetPlaylistIDs : []
+            let previewSkippedPlaylistIDs = previewChanged == false ? targetPlaylistIDs : []
+            return encodeResult(
+                AutomationArtworkMutationResult(
+                    targetType: target.type,
+                    trackID: targetID.flatMap { targetArtistID == nil ? $0 : nil },
+                    artistID: targetArtistID,
+                    albumKey: ifCaseAlbumKey(target),
+                    playlistID: ifCasePlaylistID(target),
+                    applied: applied,
+                    dryRun: dryRun,
+                    confirmed: confirmed,
+                    input: input,
+                    updatedTrackIDs: trackOutcome?.updatedTrackIDs ?? previewUpdatedTrackIDs,
+                    skippedTrackIDs: trackOutcome?.skippedTrackIDs ?? previewSkippedTrackIDs,
+                    conflictedTrackIDs: conflictedTrackIDs,
+                    updatedArtistIDs: outcome?.updatedArtistIDs ?? previewUpdatedArtistIDs,
+                    skippedArtistIDs: outcome?.skippedArtistIDs ?? previewSkippedArtistIDs,
+                    conflictedArtistIDs: conflictedArtistIDs,
+                    updatedAlbumIDs: outcome?.updatedAlbumIDs ?? previewUpdatedAlbumIDs,
+                    skippedAlbumIDs: outcome?.skippedAlbumIDs ?? previewSkippedAlbumIDs,
+                    conflictedAlbumIDs: conflictedAlbumIDs,
+                    updatedPlaylistIDs: outcome?.updatedPlaylistIDs ?? previewUpdatedPlaylistIDs,
+                    skippedPlaylistIDs: outcome?.skippedPlaylistIDs ?? previewSkippedPlaylistIDs,
+                    conflictedPlaylistIDs: conflictedPlaylistIDs,
+                    message: message
+                ),
+                for: request
+            )
+        }
+
+        if isConflict {
+            return result(
+                applied: false,
+                dryRun: dryRun,
+                confirmed: false,
+                input: inputKind,
+                conflict: true,
+                message: "The target artwork changed after it was queried; nothing was written."
+            )
+        }
+
+        if dryRun {
+            if let imageBase64 {
+                _ = try await resolveArtworkInput(clear: false, imagePath: nil, imageBase64: imageBase64)
+            }
+            return result(
+                applied: false,
+                dryRun: true,
+                confirmed: false,
+                input: inputKind,
+                previewChanged: changed,
+                message: changed
+                    ? "Preview only. App-owned artwork will be replaced or cleared; original audio-file tags will not be changed."
+                    : "Preview only. The target is already clear and would be skipped."
+            )
+        }
+
+        let resolvedInput = try await resolveArtworkInput(
+            clear: clear,
+            imagePath: imagePath,
+            imageBase64: imageBase64
+        )
+        guard let resolvedInput else {
+            return interactionCancelled(for: request)
+        }
+
+        switch target {
+        case .track(let track):
+            let outcome = try await session.libraryViewModel.applyArtworkForAutomation(
+                trackIDs: [track.id],
+                artworkData: resolvedInput.data,
+                expectedRevisions: expectedRevision.map { [track.id: $0] } ?? [:]
+            )
+            return result(
+                applied: !outcome.updatedTrackIDs.isEmpty,
+                dryRun: false,
+                confirmed: confirm,
+                input: resolvedInput.kind,
+                trackOutcome: outcome,
+                message: "App-owned artwork updated; original audio-file tags were not changed."
+            )
+        case .artist(let entry):
+            let outcome = try await session.libraryViewModel.applyArtistArtworkForAutomation(
+                artistID: entry.id,
+                artworkData: resolvedInput.data,
+                expectedRevision: expectedRevision
+            )
+            return result(
+                applied: !outcome.updatedArtistIDs.isEmpty,
+                dryRun: false,
+                confirmed: confirm,
+                input: resolvedInput.kind,
+                outcome: outcome,
+                message: "App-owned Artist artwork updated."
+            )
+        case .album(let entry):
+            let outcome = try await session.libraryViewModel.applyAlbumArtworkForAutomation(
+                albumID: entry.id,
+                artworkData: resolvedInput.data,
+                expectedRevision: expectedRevision
+            )
+            return result(
+                applied: !outcome.updatedAlbumIDs.isEmpty,
+                dryRun: false,
+                confirmed: confirm,
+                input: resolvedInput.kind,
+                outcome: outcome,
+                message: "App-owned Album artwork updated."
+            )
+        case .playlist(let playlist):
+            let outcome = try await session.libraryViewModel.applyPlaylistArtworkForAutomation(
+                playlistID: playlist.id,
+                artworkData: resolvedInput.data,
+                expectedRevision: expectedRevision
+            )
+            return result(
+                applied: !outcome.updatedPlaylistIDs.isEmpty,
+                dryRun: false,
+                confirmed: confirm,
+                input: resolvedInput.kind,
+                outcome: outcome,
+                message: "App-owned Playlist artwork updated."
+            )
+        }
+    }
+
+    private func applyMetadataToSingleTarget(
+        parameters: AutomationParameters,
+        request: AutomationRequest,
+        session: LibrarySession
+    ) async throws -> AutomationResponse {
+        guard let patchValues = try parameters.object("patch"), !patchValues.isEmpty else {
+            throw AutomationParameterError.missing("patch")
+        }
+        let expectedRevision = try parameters.string("expectedRevision")
+        guard try parameters.object("expectedRevisions") == nil else {
+            throw AutomationParameterError.invalidValue("expectedRevisions")
+        }
+        let dryRun = try parameters.boolean("dryRun", default: false)
+        let target: MetadataTarget
+        if let trackID = try parameters.uuid("trackID") {
+            guard try !hasMetadataEntityTarget(parameters) else {
+                throw AutomationParameterError.invalidValue("metadata target")
+            }
+            guard let track = session.libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
+                throw AutomationParameterError.missingResource("trackID")
+            }
+            target = .track(track)
+        } else {
+            target = try resolveMetadataTarget(
+                artistID: try parameters.uuid("artistID"),
+                albumKey: try parameters.string("albumKey")?.trimmingCharacters(in: .whitespacesAndNewlines),
+                playlistID: try parameters.uuid("playlistID"),
+                session: session
+            )
+        }
+
+        switch target {
+        case .track(let track):
+            let patch = try makeMetadataPatch(patchValues)
+            let conflict = expectedRevision != nil && expectedRevision != session.libraryViewModel.automationTrackRevision(for: track)
+            let changed = !conflict && metadataPatchChanges(track, patch: patch)
+            if dryRun {
+                return encodeResult(
+                    AutomationMetadataMutationResult(
+                        applied: false,
+                        dryRun: true,
+                        updatedTrackIDs: changed ? [track.id] : [],
+                        skippedTrackIDs: !changed && !conflict ? [track.id] : [],
+                        conflictedTrackIDs: conflict ? [track.id] : [],
+                        message: "Preview only. This updates App-owned metadata and never writes embedded file tags."
+                    ),
+                    for: request
+                )
+            }
+            let outcome = try await session.libraryViewModel.applyMetadataPatchForAutomation(
+                trackIDs: [track.id],
+                patch: patch,
+                expectedRevisions: expectedRevision.map { [track.id: $0] } ?? [:]
+            )
+            return encodeResult(
+                AutomationMetadataMutationResult(
+                    applied: !outcome.updatedTrackIDs.isEmpty,
+                    dryRun: false,
+                    updatedTrackIDs: outcome.updatedTrackIDs,
+                    skippedTrackIDs: outcome.skippedTrackIDs,
+                    conflictedTrackIDs: outcome.conflictedTrackIDs,
+                    message: "App metadata updated; original file tags were not changed."
+                ),
+                for: request
+            )
+        case .artist(let entry):
+            let patch = try makeArtistMetadataPatch(patchValues)
+            let conflict = expectedRevision != nil && expectedRevision != session.libraryViewModel.automationArtistRevision(for: entry)
+            let changed = !conflict && artistMetadataPatchChanges(entry, patch: patch)
+            if dryRun {
+                return encodeResult(
+                    AutomationMetadataMutationResult(
+                        applied: false,
+                        dryRun: true,
+                        updatedArtistIDs: changed ? [entry.id] : [],
+                        skippedArtistIDs: !changed && !conflict ? [entry.id] : [],
+                        conflictedArtistIDs: conflict ? [entry.id] : [],
+                        message: "Preview only. Artist metadata is App-owned and sidecar-backed."
+                    ),
+                    for: request
+                )
+            }
+            let outcome = try await session.libraryViewModel.applyArtistMetadataPatchForAutomation(
+                artistID: entry.id,
+                patch: patch,
+                expectedRevision: expectedRevision
+            )
+            return encodeResult(
+                AutomationMetadataMutationResult(
+                    applied: !outcome.updatedArtistIDs.isEmpty,
+                    dryRun: false,
+                    updatedArtistIDs: outcome.updatedArtistIDs,
+                    skippedArtistIDs: outcome.skippedArtistIDs,
+                    conflictedArtistIDs: outcome.conflictedArtistIDs,
+                    message: "Artist metadata updated in the App-owned sidecar."
+                ),
+                for: request
+            )
+        case .album(let entry):
+            let patch = try makeAlbumMetadataPatch(patchValues)
+            let conflict = expectedRevision != nil && expectedRevision != session.libraryViewModel.automationAlbumRevision(for: entry)
+            let changed = !conflict && albumMetadataPatchChanges(entry, patch: patch)
+            if dryRun {
+                return encodeResult(
+                    AutomationMetadataMutationResult(
+                        applied: false,
+                        dryRun: true,
+                        updatedAlbumIDs: changed ? [entry.id] : [],
+                        skippedAlbumIDs: !changed && !conflict ? [entry.id] : [],
+                        conflictedAlbumIDs: conflict ? [entry.id] : [],
+                        message: "Preview only. Album metadata is App-owned and sidecar-backed."
+                    ),
+                    for: request
+                )
+            }
+            let outcome = try await session.libraryViewModel.applyAlbumMetadataPatchForAutomation(
+                albumID: entry.id,
+                patch: patch,
+                expectedRevision: expectedRevision
+            )
+            return encodeResult(
+                AutomationMetadataMutationResult(
+                    applied: !outcome.updatedAlbumIDs.isEmpty,
+                    dryRun: false,
+                    updatedAlbumIDs: outcome.updatedAlbumIDs,
+                    skippedAlbumIDs: outcome.skippedAlbumIDs,
+                    conflictedAlbumIDs: outcome.conflictedAlbumIDs,
+                    message: "Album metadata updated in the App-owned sidecar."
+                ),
+                for: request
+            )
+        case .playlist(let playlist):
+            let patch = try makePlaylistMetadataPatchValues(patchValues)
+            let desiredName = patch.fields.contains("name") ? (patch.name ?? playlist.name) : playlist.name
+            let desiredDescription = patch.fields.contains("description") ? (patch.description ?? playlist.userDescription) : playlist.userDescription
+            let conflict = expectedRevision != nil && expectedRevision != session.libraryViewModel.automationPlaylistRevision(for: playlist)
+            let changed = !conflict && (desiredName != playlist.name || desiredDescription != playlist.userDescription)
+            if dryRun {
+                return encodeResult(
+                    AutomationMetadataMutationResult(
+                        applied: false,
+                        dryRun: true,
+                        updatedPlaylistIDs: changed ? [playlist.id] : [],
+                        skippedPlaylistIDs: !changed && !conflict ? [playlist.id] : [],
+                        conflictedPlaylistIDs: conflict ? [playlist.id] : [],
+                        message: "Preview only. Playlist name and description are App-owned metadata."
+                    ),
+                    for: request
+                )
+            }
+            guard !conflict else {
+                return encodeResult(
+                    AutomationMetadataMutationResult(
+                        applied: false,
+                        dryRun: false,
+                        conflictedPlaylistIDs: [playlist.id],
+                        message: "The Playlist changed after it was queried; nothing was written."
+                    ),
+                    for: request
+                )
+            }
+            guard changed else {
+                return encodeResult(
+                    AutomationMetadataMutationResult(
+                        applied: false,
+                        dryRun: false,
+                        skippedPlaylistIDs: [playlist.id],
+                        message: "Playlist metadata already matches the requested values."
+                    ),
+                    for: request
+                )
+            }
+            let updated = try await session.libraryViewModel.renamePlaylistForAutomation(
+                playlist,
+                name: desiredName,
+                description: desiredDescription,
+                expectedRevision: expectedRevision
+            )
+            return encodeResult(
+                AutomationMetadataMutationResult(
+                    applied: true,
+                    dryRun: false,
+                    updatedPlaylistIDs: [updated.id],
+                    message: "Playlist metadata updated."
+                ),
+                for: request
+            )
+        }
+    }
+
+    private func ifCaseAlbumKey(_ target: ArtworkTarget) -> String? {
+        if case .album(let entry) = target { return entry.canonicalKey }
+        return nil
+    }
+
+    private func ifCaseAlbumID(_ target: ArtworkTarget) -> [UUID] {
+        if case .album(let entry) = target { return [entry.id] }
+        return []
+    }
+
+    private func ifCasePlaylistID(_ target: ArtworkTarget) -> UUID? {
+        if case .playlist(let playlist) = target { return playlist.id }
+        return nil
+    }
+
+    private func hasMetadataEntityTarget(_ parameters: AutomationParameters) throws -> Bool {
+        let artistID = try parameters.uuid("artistID")
+        let albumKey = try parameters.string("albumKey")
+        let playlistID = try parameters.uuid("playlistID")
+        return artistID != nil || albumKey != nil || playlistID != nil
+    }
+
+    private func resolveMetadataTarget(
+        artistID: UUID?,
+        albumKey: String?,
+        playlistID: UUID?,
+        session: LibrarySession
+    ) throws -> MetadataTarget {
+        let normalizedAlbumKey = albumKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let count = [artistID != nil, normalizedAlbumKey != nil, playlistID != nil]
+            .filter { $0 }
+            .count
+        guard count == 1 else {
+            throw AutomationParameterError.missing("exactly one of artistID, albumKey or playlistID")
+        }
+        if let artistID {
+            guard let entry = session.libraryViewModel.artistEntries.first(where: { $0.id == artistID }) else {
+                throw AutomationParameterError.missingResource("artistID")
+            }
+            return .artist(entry)
+        }
+        if let normalizedAlbumKey {
+            guard !normalizedAlbumKey.isEmpty else {
+                throw AutomationParameterError.invalidValue("albumKey")
+            }
+            guard let entry = session.libraryViewModel.albumEntries.first(where: {
+                $0.canonicalKey == normalizedAlbumKey
+            }) else {
+                throw AutomationParameterError.missingResource("albumKey")
+            }
+            return .album(entry)
+        }
+        guard let playlistID,
+              let playlist = session.libraryViewModel.playlists.first(where: { $0.id == playlistID }) else {
+            throw AutomationParameterError.missingResource("playlistID")
+        }
+        return .playlist(playlist)
+    }
+
+    private func makeMetadataGetResult(
+        for target: MetadataTarget,
+        session: LibrarySession
+    ) -> AutomationMetadataGetResult {
+        switch target {
+        case .track(let track):
+            return AutomationMetadataGetResult(
+                tracks: [makeTrackSummary(track, playlists: session.libraryViewModel.playlists)],
+                total: 1,
+                revision: session.libraryViewModel.automationTrackRevision(for: track)
+            )
+        case .artist(let entry):
+            return AutomationMetadataGetResult(
+                artists: [makeArtistMetadata(entry, session: session)],
+                total: 1,
+                revision: session.libraryViewModel.automationArtistRevision(for: entry)
+            )
+        case .album(let entry):
+            return AutomationMetadataGetResult(
+                albums: [makeAlbumMetadata(entry, session: session)],
+                total: 1,
+                revision: session.libraryViewModel.automationAlbumRevision(for: entry)
+            )
+        case .playlist(let playlist):
+            return AutomationMetadataGetResult(
+                playlists: [makePlaylistSummary(playlist)],
+                total: 1,
+                revision: makePlaylistSummary(playlist).revision
+            )
+        }
+    }
+
+    private func makeMetadataCollectionResult(
+        entityType: String,
+        query: String?,
+        offset: Int,
+        limit: Int,
+        session: LibrarySession
+    ) -> AutomationMetadataGetResult {
+        let normalizedQuery = query?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasQuery = normalizedQuery?.isEmpty == false
+
+        switch entityType {
+        case "artist":
+            let allEntries = session.libraryViewModel.artistEntries.sorted {
+                let nameOrder = $0.displayName.localizedStandardCompare($1.displayName)
+                if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+            let filtered = hasQuery
+                ? allEntries.filter { entry in
+                    [entry.displayName, entry.canonicalName, entry.description, entry.foreignName]
+                        .contains { $0.localizedCaseInsensitiveContains(normalizedQuery!) }
+                }
+                : allEntries
+            let pageStart = min(offset, filtered.count)
+            let pageEnd = min(pageStart + limit, filtered.count)
+            let page = Array(filtered[pageStart..<pageEnd]).map {
+                makeArtistMetadata($0, session: session)
+            }
+            return AutomationMetadataGetResult(
+                artists: page,
+                total: filtered.count,
+                offset: offset,
+                limit: limit,
+                nextOffset: pageEnd < filtered.count ? pageEnd : nil,
+                revision: metadataCollectionRevision(
+                    entityType: entityType,
+                    entries: allEntries.map {
+                        ($0.id, session.libraryViewModel.automationArtistRevision(for: $0))
+                    }
+                )
+            )
+
+        case "album":
+            let allEntries = session.libraryViewModel.albumEntries.sorted {
+                let titleOrder = $0.displayTitle.localizedStandardCompare($1.displayTitle)
+                if titleOrder != .orderedSame { return titleOrder == .orderedAscending }
+                if $0.primaryArtistDisplayName != $1.primaryArtistDisplayName {
+                    return $0.primaryArtistDisplayName.localizedStandardCompare($1.primaryArtistDisplayName)
+                        == .orderedAscending
+                }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+            let filtered = hasQuery
+                ? allEntries.filter { entry in
+                    [
+                        entry.displayTitle,
+                        entry.canonicalKey,
+                        entry.primaryArtistDisplayName,
+                        entry.primaryArtistCanonicalName,
+                        entry.description
+                    ].contains { $0.localizedCaseInsensitiveContains(normalizedQuery!) }
+                }
+                : allEntries
+            let pageStart = min(offset, filtered.count)
+            let pageEnd = min(pageStart + limit, filtered.count)
+            let page = Array(filtered[pageStart..<pageEnd]).map {
+                makeAlbumMetadata($0, session: session)
+            }
+            return AutomationMetadataGetResult(
+                albums: page,
+                total: filtered.count,
+                offset: offset,
+                limit: limit,
+                nextOffset: pageEnd < filtered.count ? pageEnd : nil,
+                revision: metadataCollectionRevision(
+                    entityType: entityType,
+                    entries: allEntries.map {
+                        ($0.id, session.libraryViewModel.automationAlbumRevision(for: $0))
+                    }
+                )
+            )
+
+        case "playlist":
+            let allEntries = session.libraryViewModel.playlists.sorted {
+                let nameOrder = $0.name.localizedStandardCompare($1.name)
+                if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+                return $0.id.uuidString < $1.id.uuidString
+            }
+            let filtered = hasQuery
+                ? allEntries.filter {
+                    $0.name.localizedCaseInsensitiveContains(normalizedQuery!)
+                        || $0.userDescription.localizedCaseInsensitiveContains(normalizedQuery!)
+                }
+                : allEntries
+            let pageStart = min(offset, filtered.count)
+            let pageEnd = min(pageStart + limit, filtered.count)
+            let page = Array(filtered[pageStart..<pageEnd]).map(makePlaylistSummary)
+            return AutomationMetadataGetResult(
+                playlists: page,
+                total: filtered.count,
+                offset: offset,
+                limit: limit,
+                nextOffset: pageEnd < filtered.count ? pageEnd : nil,
+                revision: metadataCollectionRevision(
+                    entityType: entityType,
+                    entries: allEntries.map {
+                        ($0.id, session.libraryViewModel.automationPlaylistRevision(for: $0))
+                    }
+                )
+            )
+
+        default:
+            // The request handler validates this before calling the helper.
+            return AutomationMetadataGetResult(total: 0, revision: "v1-invalid")
+        }
+    }
+
+    private func metadataCollectionRevision(
+        entityType: String,
+        entries: [(id: UUID, revision: String)]
+    ) -> String {
+        var fingerprint = entityType
+        for entry in entries.sorted(by: { $0.id.uuidString < $1.id.uuidString }) {
+            fingerprint.append("\n")
+            fingerprint.append(entry.id.uuidString)
+            fingerprint.append("\n")
+            fingerprint.append(entry.revision)
+        }
+        let digest = SHA256.hash(data: Data(fingerprint.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "v1-\(digest)"
+    }
+
+    private func makeArtistMetadata(
+        _ entry: ArtistEntry,
+        session: LibrarySession
+    ) -> AutomationArtistMetadata {
+        AutomationArtistMetadata(
+            id: entry.id,
+            canonicalName: entry.canonicalName,
+            displayName: entry.displayName,
+            createdAt: entry.createdAt,
+            updatedAt: entry.updatedAt,
+            description: entry.description,
+            genreTags: entry.genreTags,
+            region: entry.region,
+            foreignName: entry.foreignName,
+            qqMusicSingerMid: entry.qqMusicSingerMid,
+            metadataSource: entry.metadataSource,
+            metadataFetchedAt: entry.metadataFetchedAt,
+            metadataConfidence: entry.metadataConfidence,
+            artworkAvailable: entry.artworkData != nil || entry.artworkFileName != nil,
+            artworkFileName: entry.artworkFileName,
+            trackCount: entry.trackCount,
+            albumCount: entry.albumCount,
+            totalDuration: entry.totalDuration,
+            isOrphaned: entry.isOrphaned,
+            revision: session.libraryViewModel.automationArtistRevision(for: entry)
+        )
+    }
+
+    private func makeAlbumMetadata(
+        _ entry: AlbumEntry,
+        session: LibrarySession
+    ) -> AutomationAlbumMetadata {
+        AutomationAlbumMetadata(
+            id: entry.id,
+            canonicalKey: entry.canonicalKey,
+            displayTitle: entry.displayTitle,
+            createdAt: entry.createdAt,
+            updatedAt: entry.updatedAt,
+            primaryArtistCanonicalName: entry.primaryArtistCanonicalName,
+            primaryArtistDisplayName: entry.primaryArtistDisplayName,
+            description: entry.description,
+            year: entry.year,
+            releaseYear: entry.releaseYear,
+            releaseDate: entry.releaseDate,
+            albumType: entry.albumType,
+            genreTags: entry.genreTags,
+            language: entry.language,
+            labelOrCompany: entry.labelOrCompany,
+            qqMusicAlbumMid: entry.qqMusicAlbumMid,
+            metadataSource: entry.metadataSource,
+            metadataFetchedAt: entry.metadataFetchedAt,
+            metadataConfidence: entry.metadataConfidence,
+            artworkAvailable: entry.artworkData != nil || entry.artworkFileName != nil,
+            artworkFileName: entry.artworkFileName,
+            trackCount: entry.trackCount,
+            totalDuration: entry.totalDuration,
+            isOrphaned: entry.isOrphaned,
+            revision: session.libraryViewModel.automationAlbumRevision(for: entry)
         )
     }
 
@@ -6030,14 +7310,30 @@ final class AutomationIPCServer {
     }
 
     private func makePlaylistSummary(_ playlist: Playlist) -> AutomationPlaylistSummary {
-        AutomationPlaylistSummary(
+        let service = appSession?.activeLibraryBinding.activeSession?.libraryService
+        let sidecar = service?.loadPlaylistSidecar(playlistID: playlist.id)
+        let artworkSource = sidecar?.headerArtworkSource ?? .none
+        let artworkFileName: String?
+        switch artworkSource {
+        case .custom:
+            artworkFileName = sidecar?.customHeaderArtworkFileName
+        case .generated:
+            artworkFileName = sidecar?.generatedHeaderArtworkFileName
+        case .none:
+            artworkFileName = nil
+        }
+        return AutomationPlaylistSummary(
             id: playlist.id,
             name: playlist.name,
             description: playlist.userDescription,
             createdAt: playlist.createdAt,
             trackCount: playlist.trackCount,
             totalDuration: playlist.totalDuration,
-            revision: appSession?.libraryVM?.automationPlaylistRevision(for: playlist) ?? "v1-0"
+            revision: appSession?.libraryVM?.automationPlaylistRevision(for: playlist) ?? "v1-0",
+            artworkAvailable: artworkFileName != nil,
+            artworkSource: artworkSource.rawValue,
+            artworkFileName: artworkFileName,
+            artworkRevision: sidecar?.artworkRevision
         )
     }
 

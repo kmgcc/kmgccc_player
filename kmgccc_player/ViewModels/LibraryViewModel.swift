@@ -8,6 +8,7 @@
 //  Tracks/sections are loaded from Music Library (disk truth), then kept in memory.
 //
 
+import CryptoKit
 import Foundation
 import SwiftUI
 
@@ -71,6 +72,60 @@ struct LibraryAutomationArtworkMutationOutcome {
     let updatedTrackIDs: [UUID]
     let skippedTrackIDs: [UUID]
     let conflictedTrackIDs: [UUID]
+}
+
+struct LibraryAutomationArtistMetadataPatch {
+    let fields: Set<String>
+    let displayName: String?
+    let description: String?
+    let genreTags: [String]?
+    let region: String?
+    let foreignName: String?
+    let qqMusicSingerMid: String?
+    let metadataSource: String?
+    let metadataFetchedAt: Date?
+    let metadataConfidence: Double?
+}
+
+struct LibraryAutomationAlbumMetadataPatch {
+    let fields: Set<String>
+    let displayTitle: String?
+    let description: String?
+    let year: Int?
+    let releaseYear: Int?
+    let releaseDate: Date?
+    let albumType: String?
+    let genreTags: [String]?
+    let language: String?
+    let labelOrCompany: String?
+    let qqMusicAlbumMid: String?
+    let metadataSource: String?
+    let metadataFetchedAt: Date?
+    let metadataConfidence: Double?
+}
+
+struct LibraryAutomationEntityMetadataMutationOutcome {
+    let updatedArtistIDs: [UUID]
+    let skippedArtistIDs: [UUID]
+    let conflictedArtistIDs: [UUID]
+    let updatedAlbumIDs: [UUID]
+    let skippedAlbumIDs: [UUID]
+    let conflictedAlbumIDs: [UUID]
+    let updatedPlaylistIDs: [UUID]
+    let skippedPlaylistIDs: [UUID]
+    let conflictedPlaylistIDs: [UUID]
+}
+
+struct LibraryAutomationEntityArtworkMutationOutcome {
+    let updatedArtistIDs: [UUID]
+    let skippedArtistIDs: [UUID]
+    let conflictedArtistIDs: [UUID]
+    let updatedAlbumIDs: [UUID]
+    let skippedAlbumIDs: [UUID]
+    let conflictedAlbumIDs: [UUID]
+    let updatedPlaylistIDs: [UUID]
+    let skippedPlaylistIDs: [UUID]
+    let conflictedPlaylistIDs: [UUID]
 }
 
 enum TrackSortKey: String, CaseIterable, Identifiable {
@@ -1931,6 +1986,16 @@ final class LibraryViewModel {
             fingerprint.append("\n")
             fingerprint.append(trackID.uuidString)
         }
+        let artworkSidecar = libraryService.loadPlaylistSidecar(playlistID: playlist.id)
+        for value in [
+            artworkSidecar?.headerArtworkSource?.rawValue ?? "none",
+            artworkSidecar?.customHeaderArtworkFileName ?? "",
+            artworkSidecar?.generatedHeaderArtworkFileName ?? "",
+            artworkSidecar?.artworkRevision ?? ""
+        ] {
+            fingerprint.append("\n")
+            fingerprint.append(value)
+        }
 
         var hash: UInt64 = 14_695_981_039_346_656_037
         for byte in fingerprint.utf8 {
@@ -1981,6 +2046,130 @@ final class LibraryViewModel {
             hash &*= 1_099_511_628_211
         }
         return "v1-\(String(hash, radix: 16))"
+    }
+
+    /// Stable metadata revision for an Artist sidecar. Non-editable timestamps
+    /// and artwork are deliberately excluded so metadata and artwork mutations
+    /// can be guarded independently.
+    func automationArtistRevision(for entry: ArtistEntry) -> String {
+        let fetchedAt = entry.metadataFetchedAt.map { ISO8601DateFormatter().string(from: $0) } ?? ""
+        let confidence = entry.metadataConfidence.map { String($0) } ?? ""
+        return automationRevision(
+            prefix: "artist-metadata",
+            values: [
+                entry.id.uuidString,
+                entry.canonicalName,
+                entry.displayName,
+                entry.description,
+                entry.genreTags.joined(separator: "\u{1F} "),
+                entry.region,
+                entry.foreignName,
+                entry.qqMusicSingerMid ?? "",
+                entry.metadataSource ?? "",
+                fetchedAt,
+                confidence
+            ]
+        )
+    }
+
+    /// Stable metadata revision for an Album sidecar. Non-editable timestamps
+    /// and artwork are deliberately excluded. The canonical key and primary
+    /// artist identify the grouping and are therefore read into the revision
+    /// even though they are not ordinary patch fields.
+    func automationAlbumRevision(for entry: AlbumEntry) -> String {
+        let year = entry.year.map { String($0) } ?? ""
+        let releaseYear = entry.releaseYear.map { String($0) } ?? ""
+        let releaseDate = entry.releaseDate.map { ISO8601DateFormatter().string(from: $0) } ?? ""
+        let fetchedAt = entry.metadataFetchedAt.map { ISO8601DateFormatter().string(from: $0) } ?? ""
+        let confidence = entry.metadataConfidence.map { String($0) } ?? ""
+        return automationRevision(
+            prefix: "album-metadata",
+            values: [
+                entry.id.uuidString,
+                entry.canonicalKey,
+                entry.displayTitle,
+                entry.primaryArtistCanonicalName,
+                entry.primaryArtistDisplayName,
+                entry.description,
+                year,
+                releaseYear,
+                releaseDate,
+                entry.albumType,
+                entry.genreTags.joined(separator: "\u{1F} "),
+                entry.language,
+                entry.labelOrCompany,
+                entry.qqMusicAlbumMid ?? "",
+                entry.metadataSource ?? "",
+                fetchedAt,
+                confidence
+            ]
+        )
+    }
+
+    func automationArtworkRevision(for track: Track) -> String {
+        automationRevision(
+            prefix: "track-artwork",
+            values: [
+                track.id.uuidString,
+                track.artworkFileName ?? "",
+                artworkDigest(track.artworkData ?? track.loadArtworkDataIfNeeded())
+            ]
+        )
+    }
+
+    func automationArtworkRevision(for entry: ArtistEntry) -> String {
+        automationRevision(
+            prefix: "artist-artwork",
+            values: [
+                entry.id.uuidString,
+                entry.artworkFileName ?? "",
+                artworkDigest(entry.artworkData)
+            ]
+        )
+    }
+
+    func automationArtworkRevision(for entry: AlbumEntry) -> String {
+        automationRevision(
+            prefix: "album-artwork",
+            values: [
+                entry.id.uuidString,
+                entry.artworkFileName ?? "",
+                artworkDigest(entry.artworkData)
+            ]
+        )
+    }
+
+    func automationArtworkRevision(for playlist: Playlist) -> String {
+        let sidecar = libraryService.loadPlaylistSidecar(playlistID: playlist.id)
+        return automationRevision(
+            prefix: "playlist-artwork",
+            values: [
+                playlist.id.uuidString,
+                sidecar?.headerArtworkSource?.rawValue ?? "none",
+                sidecar?.customHeaderArtworkFileName ?? "",
+                sidecar?.generatedHeaderArtworkFileName ?? "",
+                sidecar?.artworkRevision ?? ""
+            ]
+        )
+    }
+
+    private func automationRevision(prefix: String, values: [String]) -> String {
+        var fingerprint = prefix
+        for value in values {
+            fingerprint.append("\n")
+            fingerprint.append(value)
+        }
+        let digest = SHA256.hash(data: Data(fingerprint.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "v1-\(digest)"
+    }
+
+    private func artworkDigest(_ data: Data?) -> String {
+        guard let data else { return "" }
+        return SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     /// Apply one patch to many existing Tracks through the same repository
@@ -2125,7 +2314,8 @@ final class LibraryViewModel {
                     continue
                 }
                 if let expected = expectedRevisions[id],
-                   expected != self.automationTrackRevision(for: track) {
+                   expected != self.automationTrackRevision(for: track),
+                   expected != self.automationArtworkRevision(for: track) {
                     conflictIDs.append(id)
                     continue
                 }
@@ -2160,6 +2350,372 @@ final class LibraryViewModel {
             skippedTrackIDs: Array(Set(skippedIDs)).sorted { $0.uuidString < $1.uuidString },
             conflictedTrackIDs: Array(Set(conflictIDs)).sorted { $0.uuidString < $1.uuidString }
         )
+    }
+
+    func applyArtistMetadataPatchForAutomation(
+        artistID: UUID,
+        patch: LibraryAutomationArtistMetadataPatch,
+        expectedRevision: String?
+    ) async throws -> LibraryAutomationEntityMetadataMutationOutcome {
+        var updatedIDs: [UUID] = []
+        var skippedIDs: [UUID] = []
+        var conflictIDs: [UUID] = []
+        try await performAutomationLibraryMutation {
+            guard let current = self.artistEntries.first(where: { $0.id == artistID }) else {
+                throw LibraryAutomationMutationError.resultUnavailable
+            }
+            if let expectedRevision,
+               expectedRevision != self.automationArtistRevision(for: current) {
+                conflictIDs.append(artistID)
+                return
+            }
+
+            var updated = current
+            var changed = false
+            if patch.fields.contains("displayName") {
+                let trimmed = patch.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let value = if let trimmed, !trimmed.isEmpty { trimmed } else { current.displayName }
+                changed = changed || updated.displayName != value
+                updated.displayName = value
+            }
+            if patch.fields.contains("description") {
+                let value = patch.description ?? ""
+                changed = changed || updated.description != value
+                updated.description = value
+            }
+            if patch.fields.contains("genreTags") {
+                let value = patch.genreTags ?? []
+                changed = changed || updated.genreTags != value
+                updated.genreTags = value
+            }
+            if patch.fields.contains("region") {
+                let value = patch.region ?? ""
+                changed = changed || updated.region != value
+                updated.region = value
+            }
+            if patch.fields.contains("foreignName") {
+                let value = patch.foreignName ?? ""
+                changed = changed || updated.foreignName != value
+                updated.foreignName = value
+            }
+            if patch.fields.contains("qqMusicSingerMid") {
+                changed = changed || updated.qqMusicSingerMid != patch.qqMusicSingerMid
+                updated.qqMusicSingerMid = patch.qqMusicSingerMid
+            }
+            if patch.fields.contains("metadataSource") {
+                changed = changed || updated.metadataSource != patch.metadataSource
+                updated.metadataSource = patch.metadataSource
+            }
+            if patch.fields.contains("metadataFetchedAt") {
+                changed = changed || updated.metadataFetchedAt != patch.metadataFetchedAt
+                updated.metadataFetchedAt = patch.metadataFetchedAt
+            }
+            if patch.fields.contains("metadataConfidence") {
+                changed = changed || updated.metadataConfidence != patch.metadataConfidence
+                updated.metadataConfidence = patch.metadataConfidence
+            }
+            guard changed else {
+                skippedIDs.append(artistID)
+                return
+            }
+
+            updated.updatedAt = Date()
+            try await self.repository.applyArtistEdits(original: current, updated: updated)
+            await self.refresh()
+            let resultingID = self.artistEntries.first {
+                $0.canonicalName == LibraryNormalization.normalizeArtist(updated.displayName)
+            }?.id ?? artistID
+            updatedIDs.append(resultingID)
+        }
+        return LibraryAutomationEntityMetadataMutationOutcome(
+            updatedArtistIDs: Array(Set(updatedIDs)).sorted { $0.uuidString < $1.uuidString },
+            skippedArtistIDs: Array(Set(skippedIDs)).sorted { $0.uuidString < $1.uuidString },
+            conflictedArtistIDs: Array(Set(conflictIDs)).sorted { $0.uuidString < $1.uuidString },
+            updatedAlbumIDs: [],
+            skippedAlbumIDs: [],
+            conflictedAlbumIDs: [],
+            updatedPlaylistIDs: [],
+            skippedPlaylistIDs: [],
+            conflictedPlaylistIDs: []
+        )
+    }
+
+    func applyAlbumMetadataPatchForAutomation(
+        albumID: UUID,
+        patch: LibraryAutomationAlbumMetadataPatch,
+        expectedRevision: String?
+    ) async throws -> LibraryAutomationEntityMetadataMutationOutcome {
+        var updatedIDs: [UUID] = []
+        var skippedIDs: [UUID] = []
+        var conflictIDs: [UUID] = []
+        try await performAutomationLibraryMutation {
+            guard let current = self.albumEntries.first(where: { $0.id == albumID }) else {
+                throw LibraryAutomationMutationError.resultUnavailable
+            }
+            if let expectedRevision,
+               expectedRevision != self.automationAlbumRevision(for: current) {
+                conflictIDs.append(albumID)
+                return
+            }
+
+            var updated = current
+            var changed = false
+            if patch.fields.contains("displayTitle") {
+                let trimmed = patch.displayTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let value = if let trimmed, !trimmed.isEmpty { trimmed } else { current.displayTitle }
+                changed = changed || updated.displayTitle != value
+                updated.displayTitle = value
+            }
+            if patch.fields.contains("description") {
+                let value = patch.description ?? ""
+                changed = changed || updated.description != value
+                updated.description = value
+            }
+            if patch.fields.contains("year") {
+                changed = changed || updated.year != patch.year
+                updated.year = patch.year
+            }
+            if patch.fields.contains("releaseYear") {
+                changed = changed || updated.releaseYear != patch.releaseYear
+                updated.releaseYear = patch.releaseYear
+            }
+            if patch.fields.contains("releaseDate") {
+                changed = changed || updated.releaseDate != patch.releaseDate
+                updated.releaseDate = patch.releaseDate
+            }
+            if patch.fields.contains("albumType") {
+                let value = patch.albumType ?? ""
+                changed = changed || updated.albumType != value
+                updated.albumType = value
+            }
+            if patch.fields.contains("genreTags") {
+                let value = patch.genreTags ?? []
+                changed = changed || updated.genreTags != value
+                updated.genreTags = value
+            }
+            if patch.fields.contains("language") {
+                let value = patch.language ?? ""
+                changed = changed || updated.language != value
+                updated.language = value
+            }
+            if patch.fields.contains("labelOrCompany") {
+                let value = patch.labelOrCompany ?? ""
+                changed = changed || updated.labelOrCompany != value
+                updated.labelOrCompany = value
+            }
+            if patch.fields.contains("qqMusicAlbumMid") {
+                changed = changed || updated.qqMusicAlbumMid != patch.qqMusicAlbumMid
+                updated.qqMusicAlbumMid = patch.qqMusicAlbumMid
+            }
+            if patch.fields.contains("metadataSource") {
+                changed = changed || updated.metadataSource != patch.metadataSource
+                updated.metadataSource = patch.metadataSource
+            }
+            if patch.fields.contains("metadataFetchedAt") {
+                changed = changed || updated.metadataFetchedAt != patch.metadataFetchedAt
+                updated.metadataFetchedAt = patch.metadataFetchedAt
+            }
+            if patch.fields.contains("metadataConfidence") {
+                changed = changed || updated.metadataConfidence != patch.metadataConfidence
+                updated.metadataConfidence = patch.metadataConfidence
+            }
+            guard changed else {
+                skippedIDs.append(albumID)
+                return
+            }
+
+            updated.updatedAt = Date()
+            try await self.repository.applyAlbumEdits(original: current, updated: updated)
+            await self.refresh()
+            let resultingID = self.albumEntries.first {
+                $0.canonicalKey == LibraryNormalization.retitledAlbumKey(
+                    existingKey: current.canonicalKey,
+                    newAlbumTitle: updated.displayTitle
+                )
+            }?.id ?? albumID
+            updatedIDs.append(resultingID)
+        }
+        return LibraryAutomationEntityMetadataMutationOutcome(
+            updatedArtistIDs: [],
+            skippedArtistIDs: [],
+            conflictedArtistIDs: [],
+            updatedAlbumIDs: Array(Set(updatedIDs)).sorted { $0.uuidString < $1.uuidString },
+            skippedAlbumIDs: Array(Set(skippedIDs)).sorted { $0.uuidString < $1.uuidString },
+            conflictedAlbumIDs: Array(Set(conflictIDs)).sorted { $0.uuidString < $1.uuidString },
+            updatedPlaylistIDs: [],
+            skippedPlaylistIDs: [],
+            conflictedPlaylistIDs: []
+        )
+    }
+
+    func applyArtistArtworkForAutomation(
+        artistID: UUID,
+        artworkData: Data?,
+        expectedRevision: String?
+    ) async throws -> LibraryAutomationEntityArtworkMutationOutcome {
+        var updatedIDs: [UUID] = []
+        var skippedIDs: [UUID] = []
+        var conflictIDs: [UUID] = []
+        try await performAutomationLibraryMutation {
+            guard let current = self.artistEntries.first(where: { $0.id == artistID }) else {
+                throw LibraryAutomationMutationError.resultUnavailable
+            }
+            if let expectedRevision,
+               expectedRevision != self.automationArtworkRevision(for: current),
+               expectedRevision != self.automationArtistRevision(for: current) {
+                conflictIDs.append(artistID)
+                return
+            }
+            let changed = artworkData != nil
+                ? current.artworkData != artworkData || current.artworkFileName == nil
+                : current.artworkData != nil || current.artworkFileName != nil
+            guard changed else {
+                skippedIDs.append(artistID)
+                return
+            }
+            var updated = current
+            updated.artworkFileName = artworkData == nil ? nil : "artwork.png"
+            updated.artworkData = artworkData
+            updated.updatedAt = Date()
+            try await self.repository.updateArtistEntry(updated)
+            self.artistEntries = await self.repository.fetchArtistEntries()
+            await self.invalidateDetailSelectionCachesIfNeeded(
+                selectionIdentities: self.selectionIdentityVariants(
+                    for: .artist(updated.canonicalName),
+                    entityIDOverride: updated.id
+                )
+            )
+            updatedIDs.append(artistID)
+        }
+        return LibraryAutomationEntityArtworkMutationOutcome(
+            updatedArtistIDs: Array(Set(updatedIDs)).sorted { $0.uuidString < $1.uuidString },
+            skippedArtistIDs: Array(Set(skippedIDs)).sorted { $0.uuidString < $1.uuidString },
+            conflictedArtistIDs: Array(Set(conflictIDs)).sorted { $0.uuidString < $1.uuidString },
+            updatedAlbumIDs: [], skippedAlbumIDs: [], conflictedAlbumIDs: [],
+            updatedPlaylistIDs: [], skippedPlaylistIDs: [], conflictedPlaylistIDs: []
+        )
+    }
+
+    func applyAlbumArtworkForAutomation(
+        albumID: UUID,
+        artworkData: Data?,
+        expectedRevision: String?
+    ) async throws -> LibraryAutomationEntityArtworkMutationOutcome {
+        var updatedIDs: [UUID] = []
+        var skippedIDs: [UUID] = []
+        var conflictIDs: [UUID] = []
+        try await performAutomationLibraryMutation {
+            guard let current = self.albumEntries.first(where: { $0.id == albumID }) else {
+                throw LibraryAutomationMutationError.resultUnavailable
+            }
+            if let expectedRevision,
+               expectedRevision != self.automationArtworkRevision(for: current),
+               expectedRevision != self.automationAlbumRevision(for: current) {
+                conflictIDs.append(albumID)
+                return
+            }
+            let changed = artworkData != nil
+                ? current.artworkData != artworkData || current.artworkFileName == nil
+                : current.artworkData != nil || current.artworkFileName != nil
+            guard changed else {
+                skippedIDs.append(albumID)
+                return
+            }
+            var updated = current
+            updated.artworkFileName = artworkData == nil ? nil : "artwork.png"
+            updated.artworkData = artworkData
+            updated.updatedAt = Date()
+            try await self.repository.updateAlbumEntry(updated)
+            self.albumEntries = await self.repository.fetchAlbumEntries()
+            await self.invalidateDetailSelectionCachesIfNeeded(
+                selectionIdentities: self.selectionIdentityVariants(
+                    for: .album(updated.canonicalKey),
+                    entityIDOverride: updated.id
+                )
+            )
+            updatedIDs.append(albumID)
+        }
+        return LibraryAutomationEntityArtworkMutationOutcome(
+            updatedArtistIDs: [], skippedArtistIDs: [], conflictedArtistIDs: [],
+            updatedAlbumIDs: Array(Set(updatedIDs)).sorted { $0.uuidString < $1.uuidString },
+            skippedAlbumIDs: Array(Set(skippedIDs)).sorted { $0.uuidString < $1.uuidString },
+            conflictedAlbumIDs: Array(Set(conflictIDs)).sorted { $0.uuidString < $1.uuidString },
+            updatedPlaylistIDs: [], skippedPlaylistIDs: [], conflictedPlaylistIDs: []
+        )
+    }
+
+    func applyPlaylistArtworkForAutomation(
+        playlistID: UUID,
+        artworkData: Data?,
+        expectedRevision: String?
+    ) async throws -> LibraryAutomationEntityArtworkMutationOutcome {
+        var updatedIDs: [UUID] = []
+        var skippedIDs: [UUID] = []
+        var conflictIDs: [UUID] = []
+        try await performAutomationLibraryMutation {
+            guard let playlist = self.playlists.first(where: { $0.id == playlistID }) else {
+                throw LibraryAutomationMutationError.playlistNotFound(playlistID)
+            }
+            if let expectedRevision,
+               expectedRevision != self.automationArtworkRevision(for: playlist),
+               expectedRevision != self.automationPlaylistRevision(for: playlist) {
+                conflictIDs.append(playlistID)
+                return
+            }
+            let currentData = self.currentPlaylistArtworkData(playlistID: playlistID)
+            let sidecar = self.libraryService.loadPlaylistSidecar(playlistID: playlistID)
+            let hasArtwork = sidecar?.customHeaderArtworkFileName != nil
+                || sidecar?.generatedHeaderArtworkFileName != nil
+            let changed = artworkData != nil
+                ? currentData != artworkData || sidecar?.headerArtworkSource != .custom
+                : hasArtwork
+            guard changed else {
+                skippedIDs.append(playlistID)
+                return
+            }
+            let succeeded: Bool
+            if let artworkData {
+                succeeded = self.libraryService.savePlaylistCustomArtworkData(
+                    playlistID: playlistID,
+                    pngData: artworkData
+                )
+            } else {
+                succeeded = self.libraryService.clearPlaylistArtwork(playlistID: playlistID)
+            }
+            guard succeeded else {
+                throw LibraryAutomationMutationError.resultUnavailable
+            }
+            await self.invalidateDetailSelectionCachesIfNeeded(
+                selectionIdentities: self.selectionIdentityVariants(for: .playlist(playlistID))
+            )
+            self.refreshTrigger += 1
+            updatedIDs.append(playlistID)
+        }
+        return LibraryAutomationEntityArtworkMutationOutcome(
+            updatedArtistIDs: [], skippedArtistIDs: [], conflictedArtistIDs: [],
+            updatedAlbumIDs: [], skippedAlbumIDs: [], conflictedAlbumIDs: [],
+            updatedPlaylistIDs: Array(Set(updatedIDs)).sorted { $0.uuidString < $1.uuidString },
+            skippedPlaylistIDs: Array(Set(skippedIDs)).sorted { $0.uuidString < $1.uuidString },
+            conflictedPlaylistIDs: Array(Set(conflictIDs)).sorted { $0.uuidString < $1.uuidString }
+        )
+    }
+
+    private func currentPlaylistArtworkData(playlistID: UUID) -> Data? {
+        guard let sidecar = libraryService.loadPlaylistSidecar(playlistID: playlistID) else {
+            return nil
+        }
+        let fileName: String?
+        switch sidecar.headerArtworkSource ?? .none {
+        case .custom:
+            fileName = sidecar.customHeaderArtworkFileName
+        case .generated:
+            fileName = sidecar.generatedHeaderArtworkFileName
+        case .none:
+            fileName = nil
+        }
+        guard let fileName else { return nil }
+        let url = libraryService.paths.playlistsRootURL.appendingPathComponent(fileName)
+        return try? Data(contentsOf: url)
     }
 
     private func removeTracksFromPlaylistWithoutOwnership(

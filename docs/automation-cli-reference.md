@@ -67,14 +67,52 @@ player-automation artwork apply TRACK-ID \
   --params-json '{"clear":true}' --json
 ```
 
+Metadata 和 Artwork 也可以直接以 Artist、Album 或 Playlist 为目标，不需要把它们伪装成
+Track。四种目标选择器一次只能使用一个：
+
+```sh
+player-automation metadata get --artist-id ARTIST-ID --json
+player-automation metadata patch --artist-id ARTIST-ID \
+  --params-json '{"description":"新的艺人介绍","genreTags":["jazz"]}' --json
+player-automation metadata get --album-key 'artist::album' --json
+player-automation metadata patch --album-key 'artist::album' \
+  --params-json '{"releaseYear":2026,"labelOrCompany":"Example"}' --json
+player-automation metadata patch --playlist-id PLAYLIST-ID \
+  --params-json '{"name":"夜间精选","description":"Agent 整理"}' --json
+player-automation artwork search --artist-id ARTIST-ID --params-json '{"limit":5}' --json
+player-automation artwork apply --album-key 'artist::album' \
+  --params-json '{"imageBase64":"<reviewed-image-data>"}' --json
+player-automation artwork get --playlist-id PLAYLIST-ID --json
+player-automation artwork apply --playlist-id PLAYLIST-ID \
+  --params-json '{"clear":true}' --json
+```
+
+发现实体时可以先分页列出元数据：
+
+```sh
+player-automation metadata get --entity-type artist --query '坂本' --limit 50 --json
+player-automation metadata get --entity-type album --offset 50 --limit 50 --json
+player-automation metadata get --entity-type playlist --json
+```
+
+`metadata.get` 返回目标的完整 App-owned 投影：Artist/Album 还包含 canonical key、统计量、
+创建/更新时间和 artwork 状态；Playlist 返回名称、描述、membership 统计和 artwork 状态。
+`metadata.patch` 对 Artist/Album 修改 sidecar 元数据，对 Playlist 修改名称/描述；canonical
+ID、统计量和时间戳是只读字段。`artwork.search` 只对 Track、Artist、Album 有联网 provider
+语义，Playlist 使用 `artwork.get/apply` 管理已有或 Agent 提供的封面。
+
+需要先发现实体时，可用 `metadata get --entity-type artist|album|playlist`，配合通用的
+`--query`、`--limit` 和 `--offset` 分页；响应中的 `nextOffset` 非空时继续查询。单目标 selector
+与 `--entity-type` 不能同时使用。
+
 `artwork.apply` 的 `imagePath` 只是 App 选图面板的初始位置提示；App 会重新打开
 前台图片选择器并取得 security-scoped access。也可以传 `imageBase64`，或用 `clear`
 移除 App-owned artwork。对 10 首及以上 Track，先使用 `--dry-run`，真实调用必须带
 `--yes`（映射为 `confirm=true`），然后等待 App 前台确认弹窗。`metadata.patch` 也对
 10 首及以上的 App-owned metadata batch 使用同一确认门槛。
 
-`artwork.search` 按 Track 元数据调用 App 内的多 provider 搜索，返回排序后的候选、分辨率、
-置信度和 `imageBase64`；Agent 审阅后可直接把候选图片数据传给 `artwork.apply`。歌词的
+`artwork.search` 按 Track/Artist/Album 的目标元数据调用 App 内的多 provider 搜索，返回排序后的
+候选、分辨率、置信度和 `imageBase64`；Agent 审阅后可直接把候选图片数据传给 `artwork.apply`。歌词的
 `lyrics apply TRACK-ID --params-json` 支持两种互斥输入：provider `candidate`，或直接传
 `{"ttmlText":"<tt>...</tt>"}` 写回 Agent 精修后的 TTML。后者仍会执行 App 的 TTML
 校验和 revision 检查。

@@ -20,7 +20,12 @@ private struct CLIOptions {
     var timeout: TimeInterval = 10
     var libraryID: UUID?
     var query: String?
+    var entityType: String?
     var playlistID: String?
+    var trackTargetID: String?
+    var artistID: String?
+    var albumKey: String?
+    var targetPlaylistID: String?
     var sourceID: String?
     var sourceMode: String?
     var relativePathPrefix: String?
@@ -534,21 +539,50 @@ private struct AutomationCLI {
             args.removeFirst()
             switch action {
             case "get":
-                guard !args.isEmpty else { writeDiagnostic("usage error: metadata get requires Track IDs"); return .usage }
-                method = AutomationMethod.metadataGet
-                params = .object(["trackIDs": .array(args.map { .string($0) })])
-            case "patch":
-                guard args.count >= 1, let patchJSON = options.paramsJSON else {
-                    writeDiagnostic("usage error: metadata patch requires Track IDs and --params-json patch object")
+                let targets = entityTargetValues(from: options)
+                guard options.entityType == nil
+                    ? ((args.isEmpty && !targets.isEmpty) || (!args.isEmpty && targets.isEmpty))
+                    : (args.isEmpty && targets.isEmpty) else {
+                    writeDiagnostic("usage error: metadata get requires Track IDs, one entity target, or --entity-type")
                     return .usage
                 }
+                method = AutomationMethod.metadataGet
+                if let entityType = options.entityType {
+                    var values: [String: AutomationJSONValue] = ["entityType": .string(entityType)]
+                    if let query = options.query { values["query"] = .string(query) }
+                    if let limit = options.limit { values["limit"] = .number(Double(limit)) }
+                    if let offset = options.offset { values["offset"] = .number(Double(offset)) }
+                    params = .object(values)
+                } else {
+                    params = args.isEmpty
+                        ? .object(targets)
+                        : .object(["trackIDs": .array(args.map { .string($0) })])
+                }
+            case "patch":
+                guard options.entityType == nil else {
+                    writeDiagnostic("usage error: metadata patch does not accept --entity-type")
+                    return .usage
+                }
+                guard let patchJSON = options.paramsJSON,
+                      case .object = patchJSON else {
+                    writeDiagnostic("usage error: metadata patch requires --params-json patch object")
+                    return .usage
+                }
+                let targets = entityTargetValues(from: options)
+                guard (args.isEmpty && !targets.isEmpty) || (!args.isEmpty && targets.isEmpty) else {
+                    writeDiagnostic("usage error: metadata patch requires Track IDs or one entity target")
+                    return .usage
+                }
+                var values = targets
+                if !args.isEmpty { values["trackIDs"] = .array(args.map { .string($0) }) }
+                values["patch"] = patchJSON
+                values["dryRun"] = .boolean(options.dryRun)
+                values["confirm"] = .boolean(options.confirm)
+                if let expectedRevision = options.expectedRevision {
+                    values["expectedRevision"] = .string(expectedRevision)
+                }
                 method = AutomationMethod.metadataPatch
-                params = .object([
-                    "trackIDs": .array(args.map { .string($0) }),
-                    "patch": patchJSON,
-                    "dryRun": .boolean(options.dryRun),
-                    "confirm": .boolean(options.confirm)
-                ])
+                params = .object(values)
             default: writeDiagnostic("usage error: unknown metadata action \(action)"); return .usage
             }
         case "artwork":
@@ -559,8 +593,9 @@ private struct AutomationCLI {
             args.removeFirst()
             switch action {
             case "search":
-                guard args.count == 1 else {
-                    writeDiagnostic("usage error: artwork search requires one Track ID")
+                let targets = entityTargetValues(from: options)
+                guard (args.count == 1 && targets.isEmpty) || (args.isEmpty && !targets.isEmpty) else {
+                    writeDiagnostic("usage error: artwork search requires one Track ID or one entity target")
                     return .usage
                 }
                 var values: [String: AutomationJSONValue] = [:]
@@ -571,19 +606,27 @@ private struct AutomationCLI {
                     }
                     values.merge(extra) { _, incoming in incoming }
                 }
-                values["trackID"] = .string(args[0])
+                if let trackID = args.first {
+                    values["trackID"] = .string(trackID)
+                } else {
+                    values.merge(targets) { _, incoming in incoming }
+                }
                 method = AutomationMethod.artworkSearch
                 params = .object(values)
             case "get":
-                guard !args.isEmpty else {
-                    writeDiagnostic("usage error: artwork get requires Track IDs")
+                let targets = entityTargetValues(from: options)
+                guard (args.isEmpty && !targets.isEmpty) || (!args.isEmpty && targets.isEmpty) else {
+                    writeDiagnostic("usage error: artwork get requires Track IDs or one entity target")
                     return .usage
                 }
                 method = AutomationMethod.artworkGet
-                params = .object(["trackIDs": .array(args.map { .string($0) })])
+                params = args.isEmpty
+                    ? .object(targets)
+                    : .object(["trackIDs": .array(args.map { .string($0) })])
             case "apply":
-                guard !args.isEmpty else {
-                    writeDiagnostic("usage error: artwork apply requires Track IDs")
+                let targets = entityTargetValues(from: options)
+                guard (args.isEmpty && !targets.isEmpty) || (!args.isEmpty && targets.isEmpty) else {
+                    writeDiagnostic("usage error: artwork apply requires Track IDs or one entity target")
                     return .usage
                 }
                 var values: [String: AutomationJSONValue] = [:]
@@ -594,9 +637,16 @@ private struct AutomationCLI {
                     }
                     values.merge(extra) { _, incoming in incoming }
                 }
-                values["trackIDs"] = .array(args.map { .string($0) })
+                if !args.isEmpty {
+                    values["trackIDs"] = .array(args.map { .string($0) })
+                } else {
+                    values.merge(targets) { _, incoming in incoming }
+                }
                 values["dryRun"] = .boolean(options.dryRun)
                 values["confirm"] = .boolean(options.confirm)
+                if let expectedRevision = options.expectedRevision {
+                    values["expectedRevision"] = .string(expectedRevision)
+                }
                 method = AutomationMethod.artworkApply
                 params = .object(values)
             default:
@@ -956,6 +1006,15 @@ private struct AutomationCLI {
         return values.isEmpty ? nil : .object(values)
     }
 
+    private func entityTargetValues(from options: CLIOptions) -> [String: AutomationJSONValue] {
+        var values: [String: AutomationJSONValue] = [:]
+        if let trackID = options.trackTargetID { values["trackID"] = .string(trackID) }
+        if let artistID = options.artistID { values["artistID"] = .string(artistID) }
+        if let albumKey = options.albumKey { values["albumKey"] = .string(albumKey) }
+        if let playlistID = options.targetPlaylistID { values["playlistID"] = .string(playlistID) }
+        return values
+    }
+
     private func launchAppIfNeeded() {
         let appName = ProcessInfo.processInfo.environment["KMGCCC_PLAYER_APP"] ?? "kmgccc_player"
         let process = Process()
@@ -1005,11 +1064,45 @@ private struct AutomationCLI {
                 }
                 options.query = args[index + 1]
                 args.removeSubrange(index...(index + 1))
+            case "--entity-type":
+                guard index + 1 < args.count,
+                      ["artist", "album", "playlist"].contains(args[index + 1].lowercased()) else {
+                    throw CLIError.invalidValue("--entity-type")
+                }
+                options.entityType = args[index + 1].lowercased()
+                args.removeSubrange(index...(index + 1))
             case "--playlist":
                 guard index + 1 < args.count else {
                     throw CLIError.missingValue("--playlist")
                 }
                 options.playlistID = args[index + 1]
+                args.removeSubrange(index...(index + 1))
+            case "--track-id":
+                guard index + 1 < args.count,
+                      UUID(uuidString: args[index + 1]) != nil else {
+                    throw CLIError.invalidValue("--track-id")
+                }
+                options.trackTargetID = args[index + 1]
+                args.removeSubrange(index...(index + 1))
+            case "--artist-id":
+                guard index + 1 < args.count,
+                      UUID(uuidString: args[index + 1]) != nil else {
+                    throw CLIError.invalidValue("--artist-id")
+                }
+                options.artistID = args[index + 1]
+                args.removeSubrange(index...(index + 1))
+            case "--album-key":
+                guard index + 1 < args.count, !args[index + 1].isEmpty else {
+                    throw CLIError.invalidValue("--album-key")
+                }
+                options.albumKey = args[index + 1]
+                args.removeSubrange(index...(index + 1))
+            case "--playlist-id":
+                guard index + 1 < args.count,
+                      UUID(uuidString: args[index + 1]) != nil else {
+                    throw CLIError.invalidValue("--playlist-id")
+                }
+                options.targetPlaylistID = args[index + 1]
                 args.removeSubrange(index...(index + 1))
             case "--source":
                 guard index + 1 < args.count else {
@@ -1188,11 +1281,14 @@ private struct AutomationCLI {
           playback state|play|pause|next|previous|seek|volume|mode
           queue get|replace|enqueue|enqueue-next|clear
           history list|clear       Read or clear listening history
-          metadata get <track-id>...
+          metadata get <track-id>... | --track-id/--artist-id/--album-key/--playlist-id
+                                  or --entity-type artist|album|playlist [--query]
           metadata patch <track-id>... --params-json '{"title":"..."}'
-          artwork search <track-id> [--params-json '{"limit":5}']
-          artwork get <track-id>...
-          artwork apply <track-id>... --params-json '{"imagePath":"/path/cover.jpg"}'
+                                  or an entity target flag
+          artwork search <track-id> | --track-id/--artist-id/--album-key
+          artwork get <track-id>... | an entity target flag
+          artwork apply <track-id>... | an entity target flag
+                                  --params-json '{"imagePath":"/path/cover.jpg"}'
           lyrics get <track-id>
           lyrics search|candidates <track-id> [--params-json '{...}']
           lyrics compare|apply <track-id> --params-json '{...}'
@@ -1216,8 +1312,13 @@ private struct AutomationCLI {
           --socket <path>         Override the per-user AF_UNIX socket path
           --timeout <seconds>     Bound connection and launch wait (default 10)
           --library <id>          Require a specific active library UUID
-          --query <text>          Filter library tracks by title/artist/album
+          --query <text>          Filter tracks or metadata entities by text
+          --entity-type <type>    List metadata entities: artist, album or playlist
           --playlist <id>         Limit library tracks to a playlist
+          --track-id <id>         Target one Track for metadata/artwork
+          --artist-id <id>        Target one Artist for metadata/artwork
+          --album-key <key>       Target one Album for metadata/artwork
+          --playlist-id <id>      Target one Playlist for metadata/artwork
           --source <id>           Limit library tracks to a referenced source
           --source-mode <mode>    Source creation mode: directory or file
           --relative-path-prefix <path>

@@ -743,6 +743,10 @@ public struct AutomationPlaylistSummary: Codable, Equatable, Sendable, Identifia
     public let createdAt: Date
     public let trackCount: Int
     public let totalDuration: Double
+    public let artworkAvailable: Bool
+    public let artworkSource: String
+    public let artworkFileName: String?
+    public let artworkRevision: String?
     /// Opaque, stable-for-the-current-library revision used for optimistic
     /// concurrency checks. Callers must treat it as an opaque token.
     public let revision: String
@@ -754,7 +758,11 @@ public struct AutomationPlaylistSummary: Codable, Equatable, Sendable, Identifia
         createdAt: Date,
         trackCount: Int,
         totalDuration: Double,
-        revision: String
+        revision: String,
+        artworkAvailable: Bool = false,
+        artworkSource: String = "none",
+        artworkFileName: String? = nil,
+        artworkRevision: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -763,6 +771,32 @@ public struct AutomationPlaylistSummary: Codable, Equatable, Sendable, Identifia
         self.trackCount = trackCount
         self.totalDuration = totalDuration
         self.revision = revision
+        self.artworkAvailable = artworkAvailable
+        self.artworkSource = artworkSource
+        self.artworkFileName = artworkFileName
+        self.artworkRevision = artworkRevision
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, description, createdAt, trackCount, totalDuration
+        case artworkAvailable, artworkSource, artworkFileName, artworkRevision, revision
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try container.decode(UUID.self, forKey: .id),
+            name: try container.decode(String.self, forKey: .name),
+            description: try container.decodeIfPresent(String.self, forKey: .description) ?? "",
+            createdAt: try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date(timeIntervalSince1970: 0),
+            trackCount: try container.decodeIfPresent(Int.self, forKey: .trackCount) ?? 0,
+            totalDuration: try container.decodeIfPresent(Double.self, forKey: .totalDuration) ?? 0,
+            revision: try container.decodeIfPresent(String.self, forKey: .revision) ?? "v1-unknown",
+            artworkAvailable: try container.decodeIfPresent(Bool.self, forKey: .artworkAvailable) ?? false,
+            artworkSource: try container.decodeIfPresent(String.self, forKey: .artworkSource) ?? "none",
+            artworkFileName: try container.decodeIfPresent(String.self, forKey: .artworkFileName),
+            artworkRevision: try container.decodeIfPresent(String.self, forKey: .artworkRevision)
+        )
     }
 }
 
@@ -1093,6 +1127,15 @@ public struct AutomationMetadataMutationResult: Codable, Equatable, Sendable {
     public let updatedTrackIDs: [UUID]
     public let skippedTrackIDs: [UUID]
     public let conflictedTrackIDs: [UUID]
+    public let updatedArtistIDs: [UUID]
+    public let skippedArtistIDs: [UUID]
+    public let conflictedArtistIDs: [UUID]
+    public let updatedAlbumIDs: [UUID]
+    public let skippedAlbumIDs: [UUID]
+    public let conflictedAlbumIDs: [UUID]
+    public let updatedPlaylistIDs: [UUID]
+    public let skippedPlaylistIDs: [UUID]
+    public let conflictedPlaylistIDs: [UUID]
     public let message: String
 
     public init(
@@ -1101,6 +1144,15 @@ public struct AutomationMetadataMutationResult: Codable, Equatable, Sendable {
         updatedTrackIDs: [UUID] = [],
         skippedTrackIDs: [UUID] = [],
         conflictedTrackIDs: [UUID] = [],
+        updatedArtistIDs: [UUID] = [],
+        skippedArtistIDs: [UUID] = [],
+        conflictedArtistIDs: [UUID] = [],
+        updatedAlbumIDs: [UUID] = [],
+        skippedAlbumIDs: [UUID] = [],
+        conflictedAlbumIDs: [UUID] = [],
+        updatedPlaylistIDs: [UUID] = [],
+        skippedPlaylistIDs: [UUID] = [],
+        conflictedPlaylistIDs: [UUID] = [],
         message: String
     ) {
         self.applied = applied
@@ -1108,29 +1160,269 @@ public struct AutomationMetadataMutationResult: Codable, Equatable, Sendable {
         self.updatedTrackIDs = updatedTrackIDs
         self.skippedTrackIDs = skippedTrackIDs
         self.conflictedTrackIDs = conflictedTrackIDs
+        self.updatedArtistIDs = updatedArtistIDs
+        self.skippedArtistIDs = skippedArtistIDs
+        self.conflictedArtistIDs = conflictedArtistIDs
+        self.updatedAlbumIDs = updatedAlbumIDs
+        self.skippedAlbumIDs = skippedAlbumIDs
+        self.conflictedAlbumIDs = conflictedAlbumIDs
+        self.updatedPlaylistIDs = updatedPlaylistIDs
+        self.skippedPlaylistIDs = skippedPlaylistIDs
+        self.conflictedPlaylistIDs = conflictedPlaylistIDs
         self.message = message
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case applied, dryRun
+        case updatedTrackIDs, skippedTrackIDs, conflictedTrackIDs
+        case updatedArtistIDs, skippedArtistIDs, conflictedArtistIDs
+        case updatedAlbumIDs, skippedAlbumIDs, conflictedAlbumIDs
+        case updatedPlaylistIDs, skippedPlaylistIDs, conflictedPlaylistIDs
+        case message
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            applied: try container.decode(Bool.self, forKey: .applied),
+            dryRun: try container.decode(Bool.self, forKey: .dryRun),
+            updatedTrackIDs: try container.decodeIfPresent([UUID].self, forKey: .updatedTrackIDs) ?? [],
+            skippedTrackIDs: try container.decodeIfPresent([UUID].self, forKey: .skippedTrackIDs) ?? [],
+            conflictedTrackIDs: try container.decodeIfPresent([UUID].self, forKey: .conflictedTrackIDs) ?? [],
+            updatedArtistIDs: try container.decodeIfPresent([UUID].self, forKey: .updatedArtistIDs) ?? [],
+            skippedArtistIDs: try container.decodeIfPresent([UUID].self, forKey: .skippedArtistIDs) ?? [],
+            conflictedArtistIDs: try container.decodeIfPresent([UUID].self, forKey: .conflictedArtistIDs) ?? [],
+            updatedAlbumIDs: try container.decodeIfPresent([UUID].self, forKey: .updatedAlbumIDs) ?? [],
+            skippedAlbumIDs: try container.decodeIfPresent([UUID].self, forKey: .skippedAlbumIDs) ?? [],
+            conflictedAlbumIDs: try container.decodeIfPresent([UUID].self, forKey: .conflictedAlbumIDs) ?? [],
+            updatedPlaylistIDs: try container.decodeIfPresent([UUID].self, forKey: .updatedPlaylistIDs) ?? [],
+            skippedPlaylistIDs: try container.decodeIfPresent([UUID].self, forKey: .skippedPlaylistIDs) ?? [],
+            conflictedPlaylistIDs: try container.decodeIfPresent([UUID].self, forKey: .conflictedPlaylistIDs) ?? [],
+            message: try container.decode(String.self, forKey: .message)
+        )
+    }
+}
+
+public struct AutomationArtistMetadata: Codable, Equatable, Sendable, Identifiable {
+    public let id: UUID
+    public let canonicalName: String
+    public let displayName: String
+    public let createdAt: Date
+    public let updatedAt: Date
+    public let description: String
+    public let genreTags: [String]
+    public let region: String
+    public let foreignName: String
+    public let qqMusicSingerMid: String?
+    public let metadataSource: String?
+    public let metadataFetchedAt: Date?
+    public let metadataConfidence: Double?
+    public let artworkAvailable: Bool
+    public let artworkFileName: String?
+    public let trackCount: Int
+    public let albumCount: Int
+    public let totalDuration: Double
+    public let isOrphaned: Bool
+    public let revision: String
+
+    public init(
+        id: UUID,
+        canonicalName: String,
+        displayName: String,
+        createdAt: Date = Date(timeIntervalSince1970: 0),
+        updatedAt: Date = Date(timeIntervalSince1970: 0),
+        description: String,
+        genreTags: [String],
+        region: String,
+        foreignName: String,
+        qqMusicSingerMid: String?,
+        metadataSource: String?,
+        metadataFetchedAt: Date?,
+        metadataConfidence: Double?,
+        artworkAvailable: Bool,
+        artworkFileName: String?,
+        trackCount: Int,
+        albumCount: Int,
+        totalDuration: Double,
+        isOrphaned: Bool,
+        revision: String
+    ) {
+        self.id = id
+        self.canonicalName = canonicalName
+        self.displayName = displayName
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.description = description
+        self.genreTags = genreTags
+        self.region = region
+        self.foreignName = foreignName
+        self.qqMusicSingerMid = qqMusicSingerMid
+        self.metadataSource = metadataSource
+        self.metadataFetchedAt = metadataFetchedAt
+        self.metadataConfidence = metadataConfidence
+        self.artworkAvailable = artworkAvailable
+        self.artworkFileName = artworkFileName
+        self.trackCount = trackCount
+        self.albumCount = albumCount
+        self.totalDuration = totalDuration
+        self.isOrphaned = isOrphaned
+        self.revision = revision
+    }
+}
+
+public struct AutomationAlbumMetadata: Codable, Equatable, Sendable, Identifiable {
+    public let id: UUID
+    public let canonicalKey: String
+    public let displayTitle: String
+    public let createdAt: Date
+    public let updatedAt: Date
+    public let primaryArtistCanonicalName: String
+    public let primaryArtistDisplayName: String
+    public let description: String
+    public let year: Int?
+    public let releaseYear: Int?
+    public let releaseDate: Date?
+    public let albumType: String
+    public let genreTags: [String]
+    public let language: String
+    public let labelOrCompany: String
+    public let qqMusicAlbumMid: String?
+    public let metadataSource: String?
+    public let metadataFetchedAt: Date?
+    public let metadataConfidence: Double?
+    public let artworkAvailable: Bool
+    public let artworkFileName: String?
+    public let trackCount: Int
+    public let totalDuration: Double
+    public let isOrphaned: Bool
+    public let revision: String
+
+    public init(
+        id: UUID,
+        canonicalKey: String,
+        displayTitle: String,
+        createdAt: Date = Date(timeIntervalSince1970: 0),
+        updatedAt: Date = Date(timeIntervalSince1970: 0),
+        primaryArtistCanonicalName: String,
+        primaryArtistDisplayName: String,
+        description: String,
+        year: Int?,
+        releaseYear: Int?,
+        releaseDate: Date?,
+        albumType: String,
+        genreTags: [String],
+        language: String,
+        labelOrCompany: String,
+        qqMusicAlbumMid: String?,
+        metadataSource: String?,
+        metadataFetchedAt: Date?,
+        metadataConfidence: Double?,
+        artworkAvailable: Bool,
+        artworkFileName: String?,
+        trackCount: Int,
+        totalDuration: Double,
+        isOrphaned: Bool,
+        revision: String
+    ) {
+        self.id = id
+        self.canonicalKey = canonicalKey
+        self.displayTitle = displayTitle
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.primaryArtistCanonicalName = primaryArtistCanonicalName
+        self.primaryArtistDisplayName = primaryArtistDisplayName
+        self.description = description
+        self.year = year
+        self.releaseYear = releaseYear
+        self.releaseDate = releaseDate
+        self.albumType = albumType
+        self.genreTags = genreTags
+        self.language = language
+        self.labelOrCompany = labelOrCompany
+        self.qqMusicAlbumMid = qqMusicAlbumMid
+        self.metadataSource = metadataSource
+        self.metadataFetchedAt = metadataFetchedAt
+        self.metadataConfidence = metadataConfidence
+        self.artworkAvailable = artworkAvailable
+        self.artworkFileName = artworkFileName
+        self.trackCount = trackCount
+        self.totalDuration = totalDuration
+        self.isOrphaned = isOrphaned
+        self.revision = revision
+    }
+}
+
+public struct AutomationMetadataGetResult: Codable, Equatable, Sendable {
+    public let tracks: [AutomationTrackSummary]
+    public let artists: [AutomationArtistMetadata]
+    public let albums: [AutomationAlbumMetadata]
+    public let playlists: [AutomationPlaylistSummary]
+    public let total: Int
+    public let offset: Int
+    public let limit: Int
+    public let nextOffset: Int?
+    public let revision: String
+
+    public init(
+        tracks: [AutomationTrackSummary] = [],
+        artists: [AutomationArtistMetadata] = [],
+        albums: [AutomationAlbumMetadata] = [],
+        playlists: [AutomationPlaylistSummary] = [],
+        total: Int,
+        offset: Int = 0,
+        limit: Int = 1,
+        nextOffset: Int? = nil,
+        revision: String
+    ) {
+        self.tracks = tracks
+        self.artists = artists
+        self.albums = albums
+        self.playlists = playlists
+        self.total = total
+        self.offset = offset
+        self.limit = limit
+        self.nextOffset = nextOffset
+        self.revision = revision
     }
 }
 
 public struct AutomationArtworkInfo: Codable, Equatable, Sendable, Identifiable {
-    public let trackID: UUID
+    public let targetType: String?
+    public let trackID: UUID?
+    public let artistID: UUID?
+    public let albumKey: String?
+    public let playlistID: UUID?
     public let available: Bool
     public let fileName: String?
     public let byteCount: Int?
     public let sha256: String?
     public let revision: String?
 
-    public var id: UUID { trackID }
+    public var id: String {
+        if let trackID { return "track:\(trackID.uuidString)" }
+        if let artistID { return "artist:\(artistID.uuidString)" }
+        if let albumKey { return "album:\(albumKey)" }
+        if let playlistID { return "playlist:\(playlistID.uuidString)" }
+        return "unknown"
+    }
 
     public init(
-        trackID: UUID,
+        targetType: String? = "track",
+        trackID: UUID? = nil,
+        artistID: UUID? = nil,
+        albumKey: String? = nil,
+        playlistID: UUID? = nil,
         available: Bool,
         fileName: String? = nil,
         byteCount: Int? = nil,
         sha256: String? = nil,
         revision: String? = nil
     ) {
+        self.targetType = targetType
         self.trackID = trackID
+        self.artistID = artistID
+        self.albumKey = albumKey
+        self.playlistID = playlistID
         self.available = available
         self.fileName = fileName
         self.byteCount = byteCount
@@ -1144,7 +1436,7 @@ public struct AutomationArtworkGetResult: Codable, Equatable, Sendable {
     public let revision: String
 
     public init(artworks: [AutomationArtworkInfo], revision: String) {
-        self.artworks = artworks.sorted { $0.trackID.uuidString < $1.trackID.uuidString }
+        self.artworks = artworks.sorted { $0.id < $1.id }
         self.revision = revision
     }
 }
@@ -1206,22 +1498,34 @@ public struct AutomationArtworkCandidate: Codable, Equatable, Sendable, Identifi
 }
 
 public struct AutomationArtworkSearchResult: Codable, Equatable, Sendable {
-    public let trackID: UUID
-    public let queryTitle: String
+    public let targetType: String?
+    public let trackID: UUID?
+    public let artistID: UUID?
+    public let albumKey: String?
+    public let playlistID: UUID?
+    public let queryTitle: String?
     public let queryArtist: String?
     public let queryAlbum: String?
     public let candidates: [AutomationArtworkCandidate]
     public let message: String
 
     public init(
-        trackID: UUID,
-        queryTitle: String,
+        targetType: String? = "track",
+        trackID: UUID? = nil,
+        artistID: UUID? = nil,
+        albumKey: String? = nil,
+        playlistID: UUID? = nil,
+        queryTitle: String? = nil,
         queryArtist: String? = nil,
         queryAlbum: String? = nil,
         candidates: [AutomationArtworkCandidate],
         message: String
     ) {
+        self.targetType = targetType
         self.trackID = trackID
+        self.artistID = artistID
+        self.albumKey = albumKey
+        self.playlistID = playlistID
         self.queryTitle = queryTitle
         self.queryArtist = queryArtist
         self.queryAlbum = queryAlbum
@@ -1231,6 +1535,11 @@ public struct AutomationArtworkSearchResult: Codable, Equatable, Sendable {
 }
 
 public struct AutomationArtworkMutationResult: Codable, Equatable, Sendable {
+    public let targetType: String?
+    public let trackID: UUID?
+    public let artistID: UUID?
+    public let albumKey: String?
+    public let playlistID: UUID?
     public let applied: Bool
     public let dryRun: Bool
     public let confirmed: Bool
@@ -1238,9 +1547,23 @@ public struct AutomationArtworkMutationResult: Codable, Equatable, Sendable {
     public let updatedTrackIDs: [UUID]
     public let skippedTrackIDs: [UUID]
     public let conflictedTrackIDs: [UUID]
+    public let updatedArtistIDs: [UUID]
+    public let skippedArtistIDs: [UUID]
+    public let conflictedArtistIDs: [UUID]
+    public let updatedAlbumIDs: [UUID]
+    public let skippedAlbumIDs: [UUID]
+    public let conflictedAlbumIDs: [UUID]
+    public let updatedPlaylistIDs: [UUID]
+    public let skippedPlaylistIDs: [UUID]
+    public let conflictedPlaylistIDs: [UUID]
     public let message: String
 
     public init(
+        targetType: String? = nil,
+        trackID: UUID? = nil,
+        artistID: UUID? = nil,
+        albumKey: String? = nil,
+        playlistID: UUID? = nil,
         applied: Bool,
         dryRun: Bool,
         confirmed: Bool = false,
@@ -1248,8 +1571,22 @@ public struct AutomationArtworkMutationResult: Codable, Equatable, Sendable {
         updatedTrackIDs: [UUID] = [],
         skippedTrackIDs: [UUID] = [],
         conflictedTrackIDs: [UUID] = [],
+        updatedArtistIDs: [UUID] = [],
+        skippedArtistIDs: [UUID] = [],
+        conflictedArtistIDs: [UUID] = [],
+        updatedAlbumIDs: [UUID] = [],
+        skippedAlbumIDs: [UUID] = [],
+        conflictedAlbumIDs: [UUID] = [],
+        updatedPlaylistIDs: [UUID] = [],
+        skippedPlaylistIDs: [UUID] = [],
+        conflictedPlaylistIDs: [UUID] = [],
         message: String
     ) {
+        self.targetType = targetType
+        self.trackID = trackID
+        self.artistID = artistID
+        self.albumKey = albumKey
+        self.playlistID = playlistID
         self.applied = applied
         self.dryRun = dryRun
         self.confirmed = confirmed
@@ -1257,7 +1594,54 @@ public struct AutomationArtworkMutationResult: Codable, Equatable, Sendable {
         self.updatedTrackIDs = updatedTrackIDs
         self.skippedTrackIDs = skippedTrackIDs
         self.conflictedTrackIDs = conflictedTrackIDs
+        self.updatedArtistIDs = updatedArtistIDs
+        self.skippedArtistIDs = skippedArtistIDs
+        self.conflictedArtistIDs = conflictedArtistIDs
+        self.updatedAlbumIDs = updatedAlbumIDs
+        self.skippedAlbumIDs = skippedAlbumIDs
+        self.conflictedAlbumIDs = conflictedAlbumIDs
+        self.updatedPlaylistIDs = updatedPlaylistIDs
+        self.skippedPlaylistIDs = skippedPlaylistIDs
+        self.conflictedPlaylistIDs = conflictedPlaylistIDs
         self.message = message
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case targetType, trackID, artistID, albumKey, playlistID
+        case applied, dryRun, confirmed, input
+        case updatedTrackIDs, skippedTrackIDs, conflictedTrackIDs
+        case updatedArtistIDs, skippedArtistIDs, conflictedArtistIDs
+        case updatedAlbumIDs, skippedAlbumIDs, conflictedAlbumIDs
+        case updatedPlaylistIDs, skippedPlaylistIDs, conflictedPlaylistIDs
+        case message
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            targetType: try container.decodeIfPresent(String.self, forKey: .targetType),
+            trackID: try container.decodeIfPresent(UUID.self, forKey: .trackID),
+            artistID: try container.decodeIfPresent(UUID.self, forKey: .artistID),
+            albumKey: try container.decodeIfPresent(String.self, forKey: .albumKey),
+            playlistID: try container.decodeIfPresent(UUID.self, forKey: .playlistID),
+            applied: try container.decode(Bool.self, forKey: .applied),
+            dryRun: try container.decode(Bool.self, forKey: .dryRun),
+            confirmed: try container.decodeIfPresent(Bool.self, forKey: .confirmed) ?? false,
+            input: try container.decode(String.self, forKey: .input),
+            updatedTrackIDs: try container.decodeIfPresent([UUID].self, forKey: .updatedTrackIDs) ?? [],
+            skippedTrackIDs: try container.decodeIfPresent([UUID].self, forKey: .skippedTrackIDs) ?? [],
+            conflictedTrackIDs: try container.decodeIfPresent([UUID].self, forKey: .conflictedTrackIDs) ?? [],
+            updatedArtistIDs: try container.decodeIfPresent([UUID].self, forKey: .updatedArtistIDs) ?? [],
+            skippedArtistIDs: try container.decodeIfPresent([UUID].self, forKey: .skippedArtistIDs) ?? [],
+            conflictedArtistIDs: try container.decodeIfPresent([UUID].self, forKey: .conflictedArtistIDs) ?? [],
+            updatedAlbumIDs: try container.decodeIfPresent([UUID].self, forKey: .updatedAlbumIDs) ?? [],
+            skippedAlbumIDs: try container.decodeIfPresent([UUID].self, forKey: .skippedAlbumIDs) ?? [],
+            conflictedAlbumIDs: try container.decodeIfPresent([UUID].self, forKey: .conflictedAlbumIDs) ?? [],
+            updatedPlaylistIDs: try container.decodeIfPresent([UUID].self, forKey: .updatedPlaylistIDs) ?? [],
+            skippedPlaylistIDs: try container.decodeIfPresent([UUID].self, forKey: .skippedPlaylistIDs) ?? [],
+            conflictedPlaylistIDs: try container.decodeIfPresent([UUID].self, forKey: .conflictedPlaylistIDs) ?? [],
+            message: try container.decode(String.self, forKey: .message)
+        )
     }
 }
 
@@ -1874,8 +2258,8 @@ public enum AutomationDocumentation {
     - Low-risk mutations may execute directly after authorization. Use dryRun for impact inspection. High-risk file deletion, destructive mirroring, mass deletion, history clearing and direct storage writes require App-owned foreground confirmation.
     - Prefer the formal Automation API, then diagnostics/repair, then the current-version source and storage documentation. Back up before any controlled storage fallback and validate/reload afterward.
     - Query first, preserve the returned revision, apply with expectedRevision when offered, and verify the result. Use idempotencyKey when retrying a mutation.
-    - Metadata is App-owned and sidecar-backed: `metadata.get`/`metadata.patch` cover the editable Track fields, while embedded audio-file tags remain a separate capability. Use `dryRun` before a batch; batches of 10 or more require `confirm` plus foreground confirmation.
-    - Artwork is App-owned and sidecar-backed: `artwork.get` reports availability and a digest without returning image bytes; `artwork.apply` accepts an App picker, an image path hint, base64 image data, or an explicit clear. Batches of 10 or more require `confirm` plus foreground confirmation.
+    - Metadata is App-owned and sidecar-backed: `metadata.get`/`metadata.patch` cover editable Track, Artist, Album and Playlist fields, while embedded audio-file tags remain a separate capability. Use `dryRun` before a batch; batches of 10 or more require `confirm` plus foreground confirmation.
+    - Artwork is App-owned and sidecar-backed: `artwork.search/get/apply` use one target from Track, Artist, Album or Playlist where the operation supports it. `artwork.get` reports availability and a digest without returning image bytes; `artwork.apply` accepts an App picker, an image path hint, base64 image data, or an explicit clear. Batches of 10 or more require `confirm` plus foreground confirmation.
     """
 
     public static let capabilityOverview = """
@@ -2390,7 +2774,7 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.metadataGet,
             title: "Get Metadata",
-            description: "Read authoritative App metadata and technical fields for one or more existing Tracks.",
+            description: "Read authoritative App metadata for existing Tracks, Artists, Albums or Playlists.",
             readOnly: true,
             scopes: [.metadataRead, .libraryRead],
             risk: .low,
@@ -2399,7 +2783,7 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.metadataPatch,
             title: "Patch Metadata",
-            description: "Patch the editable App-owned Track metadata, including credits, language, label, provider IDs, confidence, fetch time and lyric offset. This does not write embedded tags into the original audio file; batches of 10 or more require foreground confirmation.",
+            description: "Patch editable App-owned Track, Artist, Album or Playlist metadata. This does not write embedded tags into original audio files; Track batches of 10 or more require foreground confirmation.",
             readOnly: false,
             requiresConfirmation: true,
             scopes: [.metadataWrite, .libraryRead],
@@ -2410,7 +2794,7 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.artworkSearch,
             title: "Search Artwork",
-            description: "Search the App's configured artwork providers for one Track and return ranked image candidates with inline image data for Agent review.",
+            description: "Search the App's configured artwork providers for one Track, Artist or Album and return ranked image candidates with inline image data for Agent review.",
             readOnly: true,
             scopes: [.artworkRead, .libraryRead],
             risk: .low,
@@ -2419,7 +2803,7 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.artworkGet,
             title: "Get Artwork",
-            description: "Read App-owned Track artwork availability, stored filename, size and digest without returning image bytes.",
+            description: "Read App-owned Track, Artist, Album or Playlist artwork availability, stored filename, size and digest without returning image bytes.",
             readOnly: true,
             scopes: [.artworkRead, .libraryRead],
             risk: .low,
@@ -2428,7 +2812,7 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.artworkApply,
             title: "Apply Artwork",
-            description: "Replace or clear App-owned Track artwork using an App-owned picker, an image path hint or base64 data. Batches of 10 or more require foreground confirmation; original audio-file tags are not changed.",
+            description: "Replace or clear App-owned Track, Artist, Album or Playlist artwork using an App-owned picker, an image path hint or base64 data. Track batches of 10 or more require foreground confirmation; original audio-file tags are not changed.",
             readOnly: false,
             requiresConfirmation: true,
             scopes: [.artworkWrite, .libraryRead],
@@ -2842,10 +3226,27 @@ public enum AutomationToolCatalog {
         "type": .string("object"),
         "additionalProperties": .boolean(false),
         "properties": .object([
+            "entityType": .object([
+                "type": .string("string"),
+                "enum": .array([.string("artist"), .string("album"), .string("playlist")])
+            ]),
             "trackID": .object(["type": .string("string")]),
             "trackIDs": .object([
                 "type": .string("array"),
                 "items": .object(["type": .string("string")])
+            ]),
+            "artistID": .object(["type": .string("string")]),
+            "albumKey": .object(["type": .string("string")]),
+            "playlistID": .object(["type": .string("string")]),
+            "query": .object(["type": .string("string")]),
+            "limit": .object([
+                "type": .string("integer"),
+                "minimum": .number(1),
+                "maximum": .number(500)
+            ]),
+            "offset": .object([
+                "type": .string("integer"),
+                "minimum": .number(0)
             ])
         ])
     ])
@@ -2853,15 +3254,20 @@ public enum AutomationToolCatalog {
     private static let metadataPatchInputSchema: AutomationJSONValue = .object([
         "type": .string("object"),
         "additionalProperties": .boolean(false),
-        "required": .array([.string("trackIDs"), .string("patch")]),
+        "required": .array([.string("patch")]),
         "properties": .object([
             "trackIDs": .object([
                 "type": .string("array"),
                 "minItems": .number(1),
                 "items": .object(["type": .string("string")])
             ]),
+            "trackID": .object(["type": .string("string")]),
+            "artistID": .object(["type": .string("string")]),
+            "albumKey": .object(["type": .string("string")]),
+            "playlistID": .object(["type": .string("string")]),
             "patch": .object(["type": .string("object")]),
             "expectedRevisions": .object(["type": .string("object")]),
+            "expectedRevision": .object(["type": .string("string")]),
             "dryRun": .object(["type": .string("boolean")]),
             "confirm": .object(["type": .string("boolean")])
         ])
@@ -2870,22 +3276,26 @@ public enum AutomationToolCatalog {
     private static let artworkGetInputSchema: AutomationJSONValue = .object([
         "type": .string("object"),
         "additionalProperties": .boolean(false),
-        "required": .array([.string("trackIDs")]),
         "properties": .object([
             "trackIDs": .object([
                 "type": .string("array"),
                 "minItems": .number(1),
                 "items": .object(["type": .string("string")])
-            ])
+            ]),
+            "trackID": .object(["type": .string("string")]),
+            "artistID": .object(["type": .string("string")]),
+            "albumKey": .object(["type": .string("string")]),
+            "playlistID": .object(["type": .string("string")])
         ])
     ])
 
     private static let artworkSearchInputSchema: AutomationJSONValue = .object([
         "type": .string("object"),
         "additionalProperties": .boolean(false),
-        "required": .array([.string("trackID")]),
         "properties": .object([
             "trackID": .object(["type": .string("string")]),
+            "artistID": .object(["type": .string("string")]),
+            "albumKey": .object(["type": .string("string")]),
             "limit": .object([
                 "type": .string("integer"),
                 "minimum": .number(1),
@@ -2897,17 +3307,21 @@ public enum AutomationToolCatalog {
     private static let artworkApplyInputSchema: AutomationJSONValue = .object([
         "type": .string("object"),
         "additionalProperties": .boolean(false),
-        "required": .array([.string("trackIDs")]),
         "properties": .object([
             "trackIDs": .object([
                 "type": .string("array"),
                 "minItems": .number(1),
                 "items": .object(["type": .string("string")])
             ]),
+            "trackID": .object(["type": .string("string")]),
+            "artistID": .object(["type": .string("string")]),
+            "albumKey": .object(["type": .string("string")]),
+            "playlistID": .object(["type": .string("string")]),
             "imagePath": .object(["type": .string("string")]),
             "imageBase64": .object(["type": .string("string")]),
             "clear": .object(["type": .string("boolean")]),
             "expectedRevisions": .object(["type": .string("object")]),
+            "expectedRevision": .object(["type": .string("string")]),
             "dryRun": .object(["type": .string("boolean")]),
             "confirm": .object(["type": .string("boolean")])
         ])
