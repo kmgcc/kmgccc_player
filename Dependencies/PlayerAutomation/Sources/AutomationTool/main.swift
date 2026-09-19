@@ -473,23 +473,30 @@ private struct AutomationCLI {
             switch action {
             case "state": method = AutomationMethod.playbackState; params = nil
             case "play":
-                guard !args.isEmpty else { writeDiagnostic("usage error: playback play requires track IDs"); return .usage }
-                params = .object(["trackIDs": .array(args.map { .string($0) })]); method = AutomationMethod.playbackPlay
+                if args.isEmpty {
+                    params = nil
+                } else {
+                    let trackIDs = args
+                    args.removeAll()
+                    params = .object(["trackIDs": .array(trackIDs.map { .string($0) })])
+                }
+                method = AutomationMethod.playbackPlay
             case "pause": method = AutomationMethod.playbackPause; params = nil
             case "next": method = AutomationMethod.playbackNext; params = nil
             case "previous": method = AutomationMethod.playbackPrevious; params = nil
             case "seek":
-                guard args.count == 1, let value = Double(args[0]) else { writeDiagnostic("usage error: playback seek requires seconds"); return .usage }
+                guard args.count == 1, let value = Double(args.removeFirst()) else { writeDiagnostic("usage error: playback seek requires seconds"); return .usage }
                 method = AutomationMethod.playbackSeek; params = .object(["seconds": .number(value)])
             case "volume":
-                guard args.count == 1, let value = Double(args[0]) else { writeDiagnostic("usage error: playback volume requires 0...1"); return .usage }
+                guard args.count == 1, let value = Double(args.removeFirst()) else { writeDiagnostic("usage error: playback volume requires 0...1"); return .usage }
                 method = AutomationMethod.playbackSetVolume; params = .object(["volume": .number(value)])
             case "mode":
                 guard args.count == 1 else { writeDiagnostic("usage error: playback mode requires a mode"); return .usage }
-                method = AutomationMethod.playbackSetMode; params = .object(["mode": .string(args[0])])
+                let rawMode = args.removeFirst()
+                method = AutomationMethod.playbackSetMode; params = .object(["mode": .string(rawMode)])
             default: writeDiagnostic("usage error: unknown playback action \(action)"); return .usage
             }
-            guard args.isEmpty || action == "play" else { writeDiagnostic("usage error: unexpected playback arguments"); return .usage }
+            guard args.isEmpty else { writeDiagnostic("usage error: unexpected playback arguments"); return .usage }
         case "queue":
             guard let action = args.first else { writeDiagnostic("usage error: queue requires get, replace, enqueue, enqueue-next or clear"); return .usage }
             args.removeFirst()
