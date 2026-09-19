@@ -797,7 +797,9 @@ private struct AutomationCLI {
             requestID: requestID
         )
         do {
-            if !options.noLaunch {
+            let socketExists = FileManager.default.fileExists(atPath: options.socketPath)
+            let isCustomSocket = options.socketPath != AutomationToolDefaults.socketPath
+            if !options.noLaunch && !socketExists && !isCustomSocket {
                 launchAppIfNeeded()
             }
             let sharedSecret = try loadSharedSecret(
@@ -898,9 +900,6 @@ private struct AutomationCLI {
         noLaunch: Bool,
         timeout: TimeInterval
     ) throws -> AutomationResponse {
-        if !noLaunch {
-            launchAppIfNeeded()
-        }
         let deadline = Date().addingTimeInterval(timeout)
         var lastError: Error?
         while Date() < deadline {

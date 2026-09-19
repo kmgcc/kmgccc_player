@@ -610,7 +610,9 @@ struct AutomationMCPStdioServer {
     }
 
     private func makeClient() throws -> AutomationIPCClient {
-        if !options.noLaunch {
+        let socketExists = FileManager.default.fileExists(atPath: options.socketPath)
+        let isCustomSocket = options.socketPath != AutomationToolDefaults.socketPath
+        if !options.noLaunch && !socketExists && !isCustomSocket {
             launchAppIfNeeded()
         }
         let secretURL = try AutomationIPCSecretStore.url(forSocketPath: options.socketPath)
