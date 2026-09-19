@@ -11,6 +11,29 @@ MCP Resources 应引用它；它不是安全边界，真正的 scope 和确认 p
 4. 对 medium/high risk mutation 先 `dryRun`，检查影响摘要、skipped、missing、conflict 和 Job。
 5. 只在正式接口不能表达需求时才进入 Storage fallback。
 
+## Library lifecycle workflow
+
+资料库不是只读上下文。Agent 可以在用户明确要求下通过 App-owned lifecycle 工具协助管理：
+
+```text
+library.list
+    -> library.create/open/switch dryRun
+    -> 用户确认 + library.create/open/switch confirm=true
+    -> library.list / system.info 验证 activeLibraryID
+```
+
+- `library.create` 创建并激活 managed 或 referenced 资料库；`parentPath` 只是 picker 提示。
+- `library.open` 选择并注册已有资料库；路径授权由 App 前台 picker 完成。
+- `library.switch` 只切换已登记、仍可解析的资料库；收到 `interactionRequired` 时，
+  按错误详情调用 `library.open` 重新连接，不要盲目重试 switch。
+- `library.rename` 只改显示名；`library.relocate` 先 preview，再经 App recovery transaction
+  搬迁完整资料库；两者之后都要重新 `library.list` 验证。
+- `library.remove` 先 dry-run，真实操作还需要用户授予 `library.delete` scope 和 App
+  前台确认；它的语义是移入 macOS 废纸篓，不是不可恢复的直接删除。
+
+切库会改变 Agent 后续看到的 active Library。调用前应报告目标名称/ID，调用后重新查询
+`system.info`、`library.list`，不要把旧库的 Track、Playlist 或 Job ID 当成新库状态。
+
 ## Source workflow
 
 当用户说“把这个目录加进播放器并持续监听”时，Agent 应请求 `source.create`。未知路径不

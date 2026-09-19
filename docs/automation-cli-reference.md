@@ -17,7 +17,7 @@ swift run player-automation library tracks \
 ```text
 system ping|info
 automation capabilities|scopes|call <method>
-library list|tracks
+library list|tracks|create|open|switch|rename|relocate|remove
 playlist list|get|create|rename|delete|add|remove|replace|reorder
 source list|create|bind|exclude|include|watch|unwatch|remove|refresh
 metadata get|patch
@@ -59,6 +59,27 @@ player-automation automation call library.tracks \
 player-automation automation call metadata.patch \
   --params-json '{"trackIDs":["T"],"patch":{"genreTags":["jazz"]}}' --json
 ```
+
+资料库生命周期也有专用 CLI alias；路径只作为 App picker 的导航提示，不能替代前台授权：
+
+```sh
+player-automation library list --json
+player-automation library create referenced "测试资料库" /Volumes/SSD/Music/test2 \
+  --dry-run --json
+player-automation library open /Volumes/SSD/Music/test2 --yes --json
+player-automation library switch <library-id> --dry-run --json
+player-automation library rename <library-id> "新名称" --json
+player-automation library relocate <library-id> /Volumes/SSD/Music/archive \
+  --dry-run --json
+player-automation library remove <library-id> --dry-run --json
+```
+
+`library.create` 会创建并激活新资料库；`library.open` 会注册并激活已有资料库；
+`library.switch` 只切换已登记且仍可访问的资料库，断开时应先调用 `library.open`；
+`library.rename` 只修改显示名；`library.relocate` 通过 App-owned recovery transaction
+移动完整资料库；`library.remove` 只在单独的 `library.delete` scope 与前台确认通过后
+移入 macOS 废纸篓。所有会改变 active Library 或磁盘位置的操作都应先 preview，再用
+`--yes`/`confirm=true` 请求 App 前台确认。
 
 `source exclude/include <source-id> <relative-path>` 修改 Source 的目录排除规则，只影响
 未来扫描，不删除已经存在的 Track。`settings patch` 当前只接受

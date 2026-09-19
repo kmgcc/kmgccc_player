@@ -28,7 +28,7 @@ PlaybackCoordinator、Repository、Source reconciler 和 Job coordinator 仍然�
 | Domain | Methods | Notes |
 | --- | --- | --- |
 | System | `system.ping`, `system.info` | 不切换 active Library |
-| Library / Query | `library.list`, `library.tracks` | 结构化过滤、组合 predicate、排序、offset 分页；返回 opaque snapshot revision，可用 `expectedRevision` 防止跨页目标漂移 |
+| Library / Lifecycle / Query | `library.list`, `library.create/open/switch/rename/relocate/remove`, `library.tracks` | 资料库可由 App-owned 生命周期事务创建、打开、切换、重命名、迁移和移入废纸篓；查询支持结构化过滤、组合 predicate、排序、offset 分页，并返回 opaque snapshot revision |
 | Playlist | `playlist.list/get/create/rename/delete/addTracks/removeTracks/replaceTracks/reorder` | Track identity 先解析；membership mutation 不删文件 |
 | Source | `source.list/create/bindPlaylist/setExcludedPath/setMonitorPolicy/remove/refresh` | 新 Source 由 App picker 创建 security-scoped bookmark；授权后的 create/import 与 refresh 返回 Job；排除目录不会删除既有 Track，monitor policy 可设 on/off |
 | Playback | `playback.state/play/pause/next/previous/seek/setVolume/setMode` | 统一进入 PlaybackCoordinator |
@@ -86,9 +86,13 @@ Library 或 Playlist membership 在分页期间改变，会返回 `conflict`，�
 可在 scope 已授权后直接执行。每个 catalog descriptor 都声明 `scopes`、`risk`、
 `supportsDryRun` 和 `requiresConfirmation`。
 
-默认 scope 会授予当前正常读取和普通写入能力；`files.delete` 与 `storage.write` 默认拒绝。
-scope grant 必须由 App 前台确认。以下动作不能用 Agent 自己的一句“确定”替代 App policy：
+默认 scope 会授予当前正常读取和普通写入能力；`library.delete`、`files.delete` 与
+`storage.write` 默认拒绝。`library.manage` 默认授予，用于满足正常的资料库创建、打开、
+切换、重命名和迁移工作流；移入废纸篓仍需要单独授予 `library.delete`。scope grant 必须由
+App 前台确认。以下动作不能用 Agent 自己的一句“确定”替代 App policy：
 
+- 创建、打开、切换或迁移资料库（会改变 active Library 或磁盘位置）；
+- 将资料库移入废纸篓；
 - 删除真实音频文件；
 - 大量 Library/Playlist 删除；
 - 清空 History；

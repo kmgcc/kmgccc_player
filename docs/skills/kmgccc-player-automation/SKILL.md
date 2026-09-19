@@ -1,6 +1,6 @@
 ---
 name: kmgccc-player-automation
-description: Operate kmgccc_player through its shared CLI/MCP automation contract for composable music-library queries, sources, playlists, authorized file operations, metadata, lyrics jobs, playback, queue, settings and diagnostics.
+description: Operate kmgccc_player through its shared CLI/MCP automation contract for music-library lifecycle, composable queries, sources, playlists, authorized file operations, metadata, lyrics jobs, playback, queue, settings and diagnostics.
 ---
 
 # kmgccc_player Automation Skill
@@ -22,12 +22,16 @@ Use the App-owned automation capability catalog before inventing a workflow.
 ## Workflow
 
 1. Discover with `automation capabilities`/MCP `tools/list` and inspect with query or diagnostics.
-2. Compose `library.tracks` predicates (`all`, `any`, `not`, membership, dates, technical fields,
+2. For an explicit library-management request, use `library.list` then preview
+   `library.create/open/switch/rename/relocate/remove`; paths are picker hints, not authorization.
+   `library.remove` needs the separately granted `library.delete` scope.
+3. Compose `library.tracks` predicates (`all`, `any`, `not`, membership, dates, technical fields,
    lyrics/artwork/metadata state), stable sort and pagination.
-3. Save revisions; use `dryRun` for medium/high risk changes and `expectedRevision` for writes.
-4. Use `idempotencyKey` for retried mutations; poll long operations through `jobs.get`, and use
+4. Save revisions; use `dryRun` for medium/high risk changes and `expectedRevision` for writes.
+5. Use `idempotencyKey` for retried mutations; poll long operations through `jobs.get`, and use
    `jobs.retry` for retryable failed/partial Jobs.
-5. Verify with a new query and report applied, skipped, conflicts and failures.
+6. Verify with a new query and report applied, skipped, conflicts and failures. After switching a
+   library, query `system.info` and `library.list` again before using old IDs.
 
 For lyrics maintenance, use `lyrics.search`/`lyrics.candidates` to inspect candidates,
 `lyrics.compare` before `lyrics.apply`, or use `lyrics.refresh` for a batch Job. Refresh tries

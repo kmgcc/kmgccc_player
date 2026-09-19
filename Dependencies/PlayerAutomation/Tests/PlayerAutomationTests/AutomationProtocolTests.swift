@@ -78,6 +78,12 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     #expect(names.contains(AutomationMethod.filesRename))
     #expect(names.contains(AutomationMethod.filesMove))
     #expect(names.contains(AutomationMethod.filesDelete))
+    #expect(names.contains(AutomationMethod.libraryCreate))
+    #expect(names.contains(AutomationMethod.libraryOpen))
+    #expect(names.contains(AutomationMethod.librarySwitch))
+    #expect(names.contains(AutomationMethod.libraryRename))
+    #expect(names.contains(AutomationMethod.libraryRelocate))
+    #expect(names.contains(AutomationMethod.libraryRemove))
 
     let readOnly = try #require(
         AutomationToolCatalog.descriptor(for: AutomationMethod.libraryTracks)
@@ -139,6 +145,39 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     #expect(filesDelete.supportsDryRun)
     #expect(filesDelete.supportsJobs)
 
+    let libraryCreate = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.libraryCreate)
+    )
+    #expect(!libraryCreate.readOnly)
+    #expect(libraryCreate.requiresConfirmation)
+    #expect(libraryCreate.scopes == [.libraryManage])
+    #expect(libraryCreate.supportsDryRun)
+    guard case .object(let createSchema) = libraryCreate.inputSchema,
+          case .array(let createRequired) = createSchema["required"] else {
+        Issue.record("library.create must declare its required inputs")
+        return
+    }
+    #expect(createRequired.contains(.string("mode")))
+    #expect(createRequired.contains(.string("displayName")))
+
+    for method in [
+        AutomationMethod.libraryOpen,
+        AutomationMethod.librarySwitch,
+        AutomationMethod.libraryRename,
+        AutomationMethod.libraryRelocate,
+        AutomationMethod.libraryRemove
+    ] {
+        let descriptor = try #require(AutomationToolCatalog.descriptor(for: method))
+        #expect(!descriptor.readOnly)
+        #expect(descriptor.supportsDryRun)
+        #expect(!descriptor.scopes.isEmpty)
+    }
+    let libraryRemove = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.libraryRemove)
+    )
+    #expect(libraryRemove.requiresConfirmation)
+    #expect(libraryRemove.scopes == [.libraryDelete])
+
     for method in [
         AutomationMethod.sourceSetExcludedPath,
         AutomationMethod.sourceSetMonitorPolicy,
@@ -156,6 +195,44 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
         }
         #expect(!descriptor.scopes.isEmpty || method == AutomationMethod.settingsGet)
     }
+}
+
+@Test
+func libraryLifecycleContractRoundTripsAndRejectsUnknownTopLevelParameters() throws {
+    let libraryID = UUID()
+    let result = AutomationLibraryLifecycleResult(
+        operation: AutomationMethod.librarySwitch,
+        applied: true,
+        dryRun: false,
+        confirmed: true,
+        libraryID: libraryID,
+        library: AutomationLibrarySummary(
+            id: libraryID,
+            displayName: "Agent Test",
+            mode: .referenced,
+            isActive: true
+        ),
+        activeLibraryID: libraryID,
+        path: "/tmp/Agent Test/kmgccc_player Library",
+        unavailableSourceIDs: [UUID()],
+        message: "switched"
+    )
+    let data = try AutomationWireCoding.encoder().encode(result)
+    let decoded = try AutomationWireCoding.decoder().decode(
+        AutomationLibraryLifecycleResult.self,
+        from: data
+    )
+    #expect(decoded == result)
+    #expect(
+        AutomationToolCatalog.unknownParameterKeys(
+            for: AutomationMethod.libraryCreate,
+            params: .object([
+                "mode": .string("referenced"),
+                "displayName": .string("Agent Test"),
+                "unexpected": .boolean(true)
+            ])
+        ) == ["unexpected"]
+    )
 }
 
 @Test

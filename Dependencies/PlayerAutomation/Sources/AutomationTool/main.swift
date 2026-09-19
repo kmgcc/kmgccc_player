@@ -162,7 +162,7 @@ private struct AutomationCLI {
             params = nil
         case "library":
             guard let action = args.first else {
-                writeDiagnostic("usage error: library requires list or tracks")
+                writeDiagnostic("usage error: library requires list, tracks, create, open, switch, rename, relocate or remove")
                 return .usage
             }
             args.removeFirst()
@@ -181,6 +181,84 @@ private struct AutomationCLI {
                 }
                 method = AutomationMethod.libraryTracks
                 params = libraryTracksParameters(from: options)
+            case "create":
+                guard args.count == 2 || args.count == 3 else {
+                    writeDiagnostic("usage error: library create requires mode, display name and optional parent path")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [
+                    "mode": .string(args[0]),
+                    "displayName": .string(args[1]),
+                    "dryRun": .boolean(options.dryRun),
+                    "confirm": .boolean(options.confirm)
+                ]
+                if args.count == 3 {
+                    values["parentPath"] = .string(args[2])
+                }
+                method = AutomationMethod.libraryCreate
+                params = .object(values)
+            case "open":
+                guard args.count <= 1 else {
+                    writeDiagnostic("usage error: library open accepts an optional path hint")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [
+                    "dryRun": .boolean(options.dryRun),
+                    "confirm": .boolean(options.confirm)
+                ]
+                if let path = args.first {
+                    values["path"] = .string(path)
+                }
+                method = AutomationMethod.libraryOpen
+                params = .object(values)
+            case "switch":
+                guard args.count == 1 else {
+                    writeDiagnostic("usage error: library switch requires exactly one library ID")
+                    return .usage
+                }
+                method = AutomationMethod.librarySwitch
+                params = .object([
+                    "libraryID": .string(args[0]),
+                    "dryRun": .boolean(options.dryRun),
+                    "confirm": .boolean(options.confirm)
+                ])
+            case "rename":
+                guard args.count == 2 else {
+                    writeDiagnostic("usage error: library rename requires a library ID and display name")
+                    return .usage
+                }
+                method = AutomationMethod.libraryRename
+                params = .object([
+                    "libraryID": .string(args[0]),
+                    "displayName": .string(args[1]),
+                    "dryRun": .boolean(options.dryRun)
+                ])
+            case "relocate":
+                guard args.count == 1 || args.count == 2 else {
+                    writeDiagnostic("usage error: library relocate requires a library ID and optional parent path")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [
+                    "libraryID": .string(args[0]),
+                    "dryRun": .boolean(options.dryRun),
+                    "confirm": .boolean(options.confirm)
+                ]
+                if args.count == 2 {
+                    values["parentPath"] = .string(args[1])
+                }
+                method = AutomationMethod.libraryRelocate
+                params = .object(values)
+            case "remove":
+                guard args.count == 1 else {
+                    writeDiagnostic("usage error: library remove requires exactly one library ID")
+                    return .usage
+                }
+                method = AutomationMethod.libraryRemove
+                params = .object([
+                    "libraryID": .string(args[0]),
+                    "dryRun": .boolean(options.dryRun),
+                    "confirm": .boolean(options.confirm)
+                ])
             default:
                 writeDiagnostic("usage error: unknown library action \(action)")
                 return .usage
@@ -1028,6 +1106,15 @@ private struct AutomationCLI {
           system info             Read protocol and capability information
           library list            List registered libraries and active ID
           library tracks          Query tracks with filters, sorting and pagination
+          library create <mode> <name> [parent]
+                                   Create and activate a library
+          library open [path]     Open and activate an existing library
+          library switch <id>     Switch to a registered library
+          library rename <id> <name>
+                                   Rename a registered library
+          library relocate <id> [parent]
+                                   Move a library to a new parent folder
+          library remove <id>     Move a library to macOS Trash
           playlist list            List playlists and revisions
           playlist get <id>        Read ordered playlist membership
           playlist create <name>   Create a playlist (use --dry-run to preview)

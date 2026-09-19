@@ -432,6 +432,32 @@ Track `D88945DC-BCCB-4FEC-9E89-9CEF82B524A3` 被 `apl` 与 `2026` 两个 Playlis
 每完成一个阶段，都必须更新本节、验收矩阵和 `docs/README.md`，记录实际改动、测试、
 未验证边界和下一阶段，不得用“Tool 数量”代替验收。
 
+### 13.1 资料库生命周期补齐 checkpoint（2026-09-19）
+
+本轮人工试用暴露了一个真实的产品缺口：目录只有 `library.list`/`library.tracks`，
+外部 Agent 无法完成“新建并切换资料库”这一正常协同流程。现已把 App 已有的
+LibrarySession owner 接入共享 Automation contract，新增：
+
+- `library.create`：创建并激活 managed/referenced 资料库；
+- `library.open`：通过 App-owned picker 打开并登记已有资料库；
+- `library.switch`：按已登记 ID 切换 active Library；不可访问时返回
+  `interactionRequired` 并指向 `library.open` 重连；
+- `library.rename`、`library.relocate`、`library.remove`：分别修改显示名、通过
+  recovery transaction 搬迁、或移入 macOS 废纸篓。
+
+这些能力共用 CLI/MCP/未来内置 Agent 的 catalog、scope、dry-run、confirm、idempotency
+和 audit contract。新增 `library.manage` 默认开放；`library.delete` 与已有的
+`files.delete`、`storage.write` 仍默认拒绝，删除预览可在不授予 delete scope 时执行。
+路径只作为 AppKit picker 导航提示，不能代替 security-scoped authorization。目录从 65
+扩展为 71 个 capability；其它审查结论是当前已开放的 Playlist/Source/Metadata/Playback/
+Queue/History/Lyrics/Jobs/Diagnostics/Settings/Storage/Files scopes 已有对应 handler，
+没有再发现仅因 catalog policy 遗漏而无法完成的普通操作。仍未开放的是任意 JSON write、
+embedded tags、Artwork candidate mutation、远程 HTTP 和 MCP Tasks。
+
+本轮已验证：PlayerAutomation SwiftPM tests、Debug App 增量编译和 `git diff --check`；
+新的资料库生命周期尚待用包含本轮代码的独立 App 完成真实 picker/alert/切库/恢复人工
+smoke，不能用协议层测试代替。真实 signed/sandbox 分发仍是后续发布门禁。
+
 ## 14. 与本轮原始计划的对齐
 
 本轮对话提供的长篇原计划是需求全集；本文是把它落成仓库内可持续维护的公开版本，

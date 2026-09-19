@@ -162,6 +162,8 @@ public enum AutomationErrorCode: String, Codable, Equatable, Sendable {
 public enum AutomationScope: String, Codable, CaseIterable, Sendable {
     case libraryRead = "library.read"
     case libraryWrite = "library.write"
+    case libraryManage = "library.manage"
+    case libraryDelete = "library.delete"
     case sourceRead = "source.read"
     case sourceWrite = "source.write"
     case playlistRead = "playlist.read"
@@ -256,6 +258,12 @@ public enum AutomationMethod {
     public static let systemPing = "system.ping"
     public static let systemInfo = "system.info"
     public static let libraryList = "library.list"
+    public static let libraryCreate = "library.create"
+    public static let libraryOpen = "library.open"
+    public static let librarySwitch = "library.switch"
+    public static let libraryRename = "library.rename"
+    public static let libraryRelocate = "library.relocate"
+    public static let libraryRemove = "library.remove"
     public static let libraryTracks = "library.tracks"
     public static let playlistList = "playlist.list"
     public static let playlistCreate = "playlist.create"
@@ -393,6 +401,43 @@ public struct AutomationLibraryListResult: Codable, Equatable, Sendable {
             }
         }
         self.activeLibraryID = activeLibraryID
+    }
+}
+
+public struct AutomationLibraryLifecycleResult: Codable, Equatable, Sendable {
+    public let operation: String
+    public let applied: Bool
+    public let dryRun: Bool
+    public let confirmed: Bool
+    public let libraryID: UUID?
+    public let library: AutomationLibrarySummary?
+    public let activeLibraryID: UUID?
+    public let path: String?
+    public let unavailableSourceIDs: [UUID]
+    public let message: String
+
+    public init(
+        operation: String,
+        applied: Bool,
+        dryRun: Bool,
+        confirmed: Bool = false,
+        libraryID: UUID? = nil,
+        library: AutomationLibrarySummary? = nil,
+        activeLibraryID: UUID? = nil,
+        path: String? = nil,
+        unavailableSourceIDs: [UUID] = [],
+        message: String
+    ) {
+        self.operation = operation
+        self.applied = applied
+        self.dryRun = dryRun
+        self.confirmed = confirmed
+        self.libraryID = libraryID
+        self.library = library
+        self.activeLibraryID = activeLibraryID
+        self.path = path
+        self.unavailableSourceIDs = unavailableSourceIDs.sorted { $0.uuidString < $1.uuidString }
+        self.message = message
     }
 }
 
@@ -1662,6 +1707,71 @@ public enum AutomationToolCatalog {
             inputSchema: emptyInputSchema
         ),
         AutomationToolDescriptor(
+            name: AutomationMethod.libraryCreate,
+            title: "Create Library",
+            description: "Create and activate a new managed or referenced music library through the App-owned lifecycle transaction. The parent path is only a picker hint; the App owns authorization and destination validation.",
+            readOnly: false,
+            requiresConfirmation: true,
+            scopes: [.libraryManage],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: libraryCreateInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.libraryOpen,
+            title: "Open Library",
+            description: "Open and register an existing music library selected through the App picker, then activate it as the current library.",
+            readOnly: false,
+            requiresConfirmation: true,
+            scopes: [.libraryManage],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: libraryOpenInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.librarySwitch,
+            title: "Switch Library",
+            description: "Activate a registered library by ID using the App-owned session switch and recovery transaction.",
+            readOnly: false,
+            requiresConfirmation: true,
+            scopes: [.libraryManage],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: librarySwitchInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.libraryRename,
+            title: "Rename Library",
+            description: "Update the display name of a registered library without changing its files or mode.",
+            readOnly: false,
+            scopes: [.libraryManage],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: libraryRenameInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.libraryRelocate,
+            title: "Relocate Library",
+            description: "Move a registered library to a new parent directory through the App-owned relocation and recovery transaction.",
+            readOnly: false,
+            requiresConfirmation: true,
+            scopes: [.libraryManage],
+            risk: .high,
+            supportsDryRun: true,
+            inputSchema: libraryRelocateInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.libraryRemove,
+            title: "Move Library to Trash",
+            description: "Move a registered library root to the macOS Trash and update the registry. The App selects a successor or factory-default library when the removed library was active.",
+            readOnly: false,
+            requiresConfirmation: true,
+            scopes: [.libraryDelete],
+            risk: .high,
+            supportsDryRun: true,
+            inputSchema: libraryRemoveInputSchema
+        ),
+        AutomationToolDescriptor(
             name: AutomationMethod.libraryTracks,
             title: "Find Tracks",
             description: "Compose ID, text, source, playlist, availability, date, technical and metadata filters, then page and sort tracks.",
@@ -2328,6 +2438,78 @@ public enum AutomationToolCatalog {
             "expectedRevision": .object([
                 "type": .string("string")
             ])
+        ])
+    ])
+
+    private static let libraryCreateInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("mode"), .string("displayName")]),
+        "properties": .object([
+            "mode": .object([
+                "type": .string("string"),
+                "enum": .array([.string("managed"), .string("referenced")])
+            ]),
+            "displayName": .object(["type": .string("string"), "minLength": .number(1)]),
+            "parentPath": .object(["type": .string("string")]),
+            "allowAlternateDestinationWhenOccupied": .object(["type": .string("boolean")]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let libraryOpenInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "properties": .object([
+            "path": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let librarySwitchInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("libraryID")]),
+        "properties": .object([
+            "libraryID": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let libraryRenameInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("libraryID"), .string("displayName")]),
+        "properties": .object([
+            "libraryID": .object(["type": .string("string")]),
+            "displayName": .object(["type": .string("string"), "minLength": .number(1)]),
+            "dryRun": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let libraryRelocateInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("libraryID")]),
+        "properties": .object([
+            "libraryID": .object(["type": .string("string")]),
+            "parentPath": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let libraryRemoveInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("libraryID")]),
+        "properties": .object([
+            "libraryID": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
         ])
     ])
 

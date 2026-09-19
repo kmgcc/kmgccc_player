@@ -81,6 +81,14 @@ scope、dry-run 和 job hints 来自 `AutomationToolCatalog`。MCP annotations �
 mutation 时，可以在 `tools/call.params` 旁带本项目扩展的 `context` 对象，例如
 `{"libraryID":"...","idempotencyKey":"..."}`；它不会污染每个 tool 的输入 schema。
 
+资料库生命周期工具包括 `library.create`、`library.open`、`library.switch`、
+`library.rename`、`library.relocate` 和 `library.remove`。其中 `library.manage` 默认开放，
+所以 Agent 可以发起正常的创建、打开、切换、重命名和迁移流程；每个会改变 active Library
+或磁盘位置的操作都要求 `dryRun`/`confirm=true`，随后由 App 前台弹窗和 `NSOpenPanel`
+完成最终确认与路径授权。`library.remove` 额外需要 `library.delete` scope，默认不会授予；
+它的 dry-run 可以在不授予删除 scope 时先查看影响。路径参数只用于定位 picker，不能绕过
+security-scoped authorization。
+
 长操作的 catalog annotation 会额外标记 `x-kmgccc-supports-jobs: true`。目前
 `source.create`（用户完成 App picker 授权后）、`source.refresh` 和 `lyrics.refresh`
 返回包含 Job ID 的结构化结果；调用方应使用 `jobs.get` 轮询并在 Job 完成后重新查询

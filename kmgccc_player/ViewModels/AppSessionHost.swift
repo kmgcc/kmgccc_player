@@ -544,12 +544,17 @@ final class AppSessionHost: ObservableObject {
         )
     }
 
-    func relocateMusicLibrary(id: UUID, to parentURL: URL) async throws {
+    func relocateMusicLibrary(id: UUID, to parentURL: URL) async throws -> LibraryRelocationResult {
         guard let libraryRelocationService else { throw LibraryRelocationError.libraryNotRegistered }
-        _ = try await libraryRelocationService.relocate(libraryID: id, toParent: parentURL)
+        return try await libraryRelocationService.relocate(libraryID: id, toParent: parentURL)
     }
 
-    func removeMusicLibrary(id: UUID) async throws {
+    func renameMusicLibrary(id: UUID, displayName: String) async throws {
+        guard let libraryRemovalService else { throw LibraryDisplayNameUpdateError.libraryNotRegistered }
+        try await libraryRemovalService.updateDisplayName(libraryID: id, displayName: displayName)
+    }
+
+    func removeMusicLibrary(id: UUID) async throws -> LibraryRemovalNextAction {
         guard let libraryRemovalService else { throw LibraryRemovalError.libraryNotRegistered }
         do {
             let nextAction = try await libraryRemovalService.moveToTrash(libraryID: id)
@@ -559,6 +564,7 @@ final class AppSessionHost: ObservableObject {
                 // policy so deletion can never leave the app with an empty shell.
                 _ = await ensureFactoryDefaultLibraryIfNeeded(allowUnreachableActiveLibrary: true)
             }
+            return nextAction
         } catch {
             // A registry commit can fail after the active session has already
             // been closed and the recycle intent has been written. The repair

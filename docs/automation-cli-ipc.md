@@ -34,8 +34,9 @@ KMGCCC_AUTOMATION_SOCKET 或 --socket 指定测试 socket。--socket 必须是�
 App 同时在同一目录维护 0600 的 `automation.secret`，CLI 通过一次性握手证明
 连接的是本安装的 App；服务端还会验证 AF_UNIX peer 属于当前用户。secret 不代表
 业务 actor 或 scope，后续权限仍由 App 自己解析。
-CLI 可以用 `--library <uuid>` 为请求附加资料库 scope；App 只接受当前 active
-session，因此 CLI/MCP 请求不会偷偷切换资料库。
+CLI 可以用 `--library <uuid>` 为请求附加资料库 scope；普通 query/mutation 只作用于当前
+active session，因此不会偷偷切换资料库。明确调用 `library.create/open/switch` 时，
+App 会按生命周期事务切换，并要求调用方确认和前台交互。
 
 ## 当前能力
 
@@ -44,6 +45,8 @@ session，因此 CLI/MCP 请求不会偷偷切换资料库。
 | system ping | system.ping | 检查 listener 是否可达 |
 | system info | system.info | 返回协议版本、App 版本、能力和 active library ID |
 | library list | library.list | 返回已注册资料库摘要和 active library ID |
+| library create/open/switch | library.create/open/switch | 通过 App-owned picker/session transaction 创建、登记或切换 active Library |
+| library rename/relocate/remove | library.rename/relocate/remove | 修改显示名、迁移完整资料库或移入 macOS 废纸篓；remove 额外受 `library.delete` scope 保护 |
 | library tracks | library.tracks | 按组合 predicate、Source/Playlist membership、日期、技术字段和状态查询 Track |
 | playlist list | playlist.list | 返回 Playlist、统计值和不透明 revision |
 | source list | source.list | 返回原位来源、路径、绑定 Playlist 和扫描状态 |
@@ -67,8 +70,9 @@ response envelope；连接、启动和诊断信息走 stderr。未知协议版�
 
 ## Mutation safety
 
-普通 Playlist/Source/Metadata/Playback mutation 在 scope 已授权后默认直接执行；使用
-`--dry-run` 主动生成 preview。高风险 mutation 仍必须有 `confirm` acknowledgement，且
+普通 Playlist/Source/Metadata/Playback mutation 在 scope 已授权后默认直接执行；资料库
+lifecycle 和其它高风险操作使用 `--dry-run` 主动生成 preview。高风险 mutation 仍必须有
+`confirm` acknowledgement，且
 由 App 前台再次确认：
 
 ~~~sh
@@ -90,6 +94,11 @@ swift run player-automation cli playlist remove <playlist-id> <track-id> --yes -
 和 Playlist membership 保留，随后由 Source refresh 标记 Track 为 missing。`files.delete`
 真实 apply 所需的 `files.delete` scope 默认拒绝；未获 App 授权时 apply 返回
 `authorizationRequired`，不会触碰文件。只读 `dryRun` 仍可用普通 Library scope 查看影响。
+
+`library.delete` 也默认拒绝，但 `library.remove --dry-run` 可先读取目标和影响摘要；
+真实 remove 会在 scope、`confirm=true` 和 App 前台确认全部满足后把资料库根目录移入
+macOS 废纸篓。`library.create/open/relocate` 的路径参数仅用于打开 picker 的初始目录，
+不能绕过 security-scoped authorization。
 
 当前设置窗口的“自动化与智能”板块控制本机 Automation endpoint、MCP 连接和 CLI/脚本
 入口。关闭 endpoint 会停止本机 socket；只关闭 MCP 或 CLI 时，已建立的 socket 仍保持

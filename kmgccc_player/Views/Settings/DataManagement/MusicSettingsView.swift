@@ -808,7 +808,7 @@ struct MusicSettingsView: View {
                 return
             }
             do {
-                try await appSession.removeMusicLibrary(id: library.id)
+                _ = try await appSession.removeMusicLibrary(id: library.id)
                 guard flow.isCurrentOperation(operation) else { return }
                 flow.completeAndDismiss()
                 await reload()

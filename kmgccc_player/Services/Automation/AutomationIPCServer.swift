@@ -53,7 +53,7 @@ private nonisolated enum AutomationAppIdentity {
 }
 
 private struct AutomationScopePolicyFile: Codable {
-    var schemaVersion = 1
+    var schemaVersion = 2
     var grantedScopes: [String]
 }
 
@@ -120,7 +120,7 @@ private final class AutomationScopePolicyStore {
     }
 
     var defaultGrantedScopes: Set<AutomationScope> {
-        Set(AutomationScope.allCases).subtracting([.filesDelete, .storageWrite])
+        Set(AutomationScope.allCases).subtracting([.filesDelete, .storageWrite, .libraryDelete])
     }
 
     /// A missing policy is the first-run high-autonomy default. A present but
@@ -138,10 +138,18 @@ private final class AutomationScopePolicyStore {
         }
         guard let data = try? Data(contentsOf: fileURL),
               let payload = try? JSONDecoder().decode(AutomationScopePolicyFile.self, from: data),
-              payload.schemaVersion == 1 else {
+              payload.schemaVersion == 1 || payload.schemaVersion == 2 else {
             return readOnlyGrantedScopes
         }
-        return Set(payload.grantedScopes.compactMap(AutomationScope.init(rawValue:)))
+        var scopes = Set(payload.grantedScopes.compactMap(AutomationScope.init(rawValue:)))
+        // Schema 1 predates the explicit lifecycle scope. It was not possible
+        // to deny library lifecycle separately in that schema, so migrate the
+        // new non-destructive management scope while keeping the new delete
+        // scope denied by default.
+        if payload.schemaVersion == 1 {
+            scopes.insert(.libraryManage)
+        }
+        return scopes
     }
 
     func save(_ scopes: Set<AutomationScope>) throws {
@@ -448,6 +456,11 @@ final class AutomationIPCServer {
                case .boolean(true) = values["dryRun"] {
                 required.remove(.filesDelete)
             }
+            if request.method == AutomationMethod.libraryRemove,
+               case .object(let values) = request.params,
+               case .boolean(true) = values["dryRun"] {
+                required.remove(.libraryDelete)
+            }
             if !granted.isSuperset(of: required) {
                 let denied = required.subtracting(granted)
                 return .failure(
@@ -506,13 +519,8 @@ final class AutomationIPCServer {
                 )
             }
             let registry = await appSession.musicLibraryRegistrySnapshot()
-            let summaries = registry.libraries.map { bookmark in
-                AutomationLibrarySummary(
-                    id: bookmark.id,
-                    displayName: bookmark.displayName,
-                    mode: bookmark.modeProjection == .managed ? .managed : .referenced,
-                    isActive: bookmark.id == registry.activeLibraryID
-                )
+            let summaries = registry.libraries.map {
+                makeLibrarySummary($0, activeLibraryID: registry.activeLibraryID)
             }
             return encodeResult(
                 AutomationLibraryListResult(
@@ -521,6 +529,552 @@ final class AutomationIPCServer {
                 ),
                 for: request
             )
+
+        case AutomationMethod.libraryCreate:
+            guard let appSession else {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .serverUnavailable,
+                        message: "The player App is no longer available.",
+                        retryable: true
+                    )
+                )
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let modeRaw = try parameters.string("mode", required: true)!
+                guard let mode = MusicLibraryMode(rawValue: modeRaw) else {
+                    throw AutomationParameterError.invalidValue("mode")
+                }
+                let displayName = try parameters.string("displayName", required: true)!
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !displayName.isEmpty, displayName.count <= 255 else {
+                    throw AutomationParameterError.outOfRange("displayName")
+                }
+                let requestedParentPath = try parameters.string("parentPath")?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let confirm = try parameters.boolean("confirm", default: false)
+                let allowAlternateDestination = try parameters.boolean(
+                    "allowAlternateDestinationWhenOccupied",
+                    default: false
+                )
+                if dryRun {
+                    return encodeResult(
+                        AutomationLibraryLifecycleResult(
+                            operation: AutomationMethod.libraryCreate,
+                            applied: false,
+                            dryRun: true,
+                            path: requestedParentPath.map(expandPath(_:)),
+                            message: "Preview only. The App will ask for a parent folder, create the library root without overwriting unknown files, and activate the new library after confirm=true."
+                        ),
+                        for: request
+                    )
+                }
+                guard confirm else {
+                    return confirmationRequired(
+                        for: request,
+                        message: "Creating a library changes the active library and requires confirm=true plus foreground App confirmation.",
+                        details: .object([
+                            "operation": .string(AutomationMethod.libraryCreate),
+                            "mode": .string(mode.rawValue),
+                            "displayName": .string(displayName)
+                        ])
+                    )
+                }
+                guard await confirmDestructiveOperation(
+                    title: "Create and activate library?",
+                    message: "Create the \(displayName) \(mode.rawValue) library and make it the active library? The current playback session will be switched."
+                ) else {
+                    return interactionCancelled(for: request)
+                }
+                guard let selectedURL = await requestLibraryDirectory(
+                    requestedPath: requestedParentPath.map(expandPath(_:)),
+                    title: "Choose library location",
+                    prompt: "Choose",
+                    allowsCreatingDirectories: true
+                ) else {
+                    return interactionCancelled(for: request)
+                }
+                let selection = LibraryInitialImportSelection(urls: [selectedURL])
+                guard selection.hasUsableAccess else {
+                    let path = selectedURL.path
+                    selection.release()
+                    return libraryPermissionDenied(for: request, path: path)
+                }
+                defer { selection.release() }
+                let result = try await appSession.createMusicLibrary(
+                    mode: mode,
+                    parentURL: selectedURL,
+                    displayName: displayName,
+                    initialImportSelection: nil,
+                    initialImportPolicy: .background,
+                    allowAlternateDestinationWhenOccupied: allowAlternateDestination
+                )
+                let registry = await appSession.musicLibraryRegistrySnapshot()
+                switch result {
+                case .created(let context, _):
+                    let summary = registry.library(id: context.id).map {
+                        makeLibrarySummary($0, activeLibraryID: registry.activeLibraryID)
+                    }
+                    return encodeResult(
+                        AutomationLibraryLifecycleResult(
+                            operation: AutomationMethod.libraryCreate,
+                            applied: true,
+                            dryRun: false,
+                            confirmed: true,
+                            libraryID: context.id,
+                            library: summary,
+                            activeLibraryID: registry.activeLibraryID,
+                            path: context.rootURL.path,
+                            message: "Library created and activated."
+                        ),
+                        for: request
+                    )
+                case .existingLibrary(let context):
+                    let summary = registry.library(id: context.id).map {
+                        makeLibrarySummary($0, activeLibraryID: registry.activeLibraryID)
+                    }
+                    return encodeResult(
+                        AutomationLibraryLifecycleResult(
+                            operation: AutomationMethod.libraryCreate,
+                            applied: false,
+                            dryRun: false,
+                            confirmed: true,
+                            libraryID: context.id,
+                            library: summary,
+                            activeLibraryID: registry.activeLibraryID,
+                            path: context.rootURL.path,
+                            message: "A library already exists at the selected location; no new library was created."
+                        ),
+                        for: request
+                    )
+                case .existingLibraryModeMismatch(let context, let requestedMode):
+                    return .failure(
+                        for: request,
+                        error: AutomationError(
+                            code: .conflict,
+                            message: "A library already exists at the selected location with a different storage mode.",
+                            details: .object([
+                                "libraryID": .string(context.id.uuidString),
+                                "requestedMode": .string(requestedMode.rawValue),
+                                "actualMode": .string(context.mode.rawValue),
+                                "path": .string(context.rootURL.path)
+                            ])
+                        )
+                    )
+                }
+            } catch {
+                return libraryLifecycleFailure(for: request, error: error)
+            }
+
+        case AutomationMethod.libraryOpen:
+            guard let appSession else {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .serverUnavailable,
+                        message: "The player App is no longer available.",
+                        retryable: true
+                    )
+                )
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let requestedPath = try parameters.string("path")?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let confirm = try parameters.boolean("confirm", default: false)
+                if dryRun {
+                    return encodeResult(
+                        AutomationLibraryLifecycleResult(
+                            operation: AutomationMethod.libraryOpen,
+                            applied: false,
+                            dryRun: true,
+                            path: requestedPath.map(expandPath(_:)),
+                            message: "Preview only. The App will ask for the existing library folder, register it if needed, and activate it after confirm=true."
+                        ),
+                        for: request
+                    )
+                }
+                guard confirm else {
+                    return confirmationRequired(
+                        for: request,
+                        message: "Opening a library changes the active library and requires confirm=true plus foreground App confirmation.",
+                        details: .object(["operation": .string(AutomationMethod.libraryOpen)])
+                    )
+                }
+                guard await confirmDestructiveOperation(
+                    title: "Open and activate library?",
+                    message: "Open the selected music library and make it the active library? The current playback session will be switched."
+                ) else {
+                    return interactionCancelled(for: request)
+                }
+                guard let selectedURL = await requestLibraryDirectory(
+                    requestedPath: requestedPath.map(expandPath(_:)),
+                    title: "Choose existing library",
+                    prompt: "Open",
+                    allowsCreatingDirectories: false
+                ) else {
+                    return interactionCancelled(for: request)
+                }
+                let selection = LibraryInitialImportSelection(urls: [selectedURL])
+                guard selection.hasUsableAccess else {
+                    let path = selectedURL.path
+                    selection.release()
+                    return libraryPermissionDenied(for: request, path: path)
+                }
+                defer { selection.release() }
+                let unavailableSourceIDs = try await appSession.openMusicLibrary(at: selectedURL)
+                let registry = await appSession.musicLibraryRegistrySnapshot()
+                let activeID = registry.activeLibraryID
+                let active = activeID.flatMap(registry.library(id:))
+                return encodeResult(
+                    AutomationLibraryLifecycleResult(
+                        operation: AutomationMethod.libraryOpen,
+                        applied: true,
+                        dryRun: false,
+                        confirmed: true,
+                        libraryID: activeID,
+                        library: active.map { makeLibrarySummary($0, activeLibraryID: activeID) },
+                        activeLibraryID: activeID,
+                        path: active?.lastKnownPath,
+                        unavailableSourceIDs: unavailableSourceIDs,
+                        message: "Library opened and activated."
+                    ),
+                    for: request
+                )
+            } catch {
+                return libraryLifecycleFailure(for: request, error: error)
+            }
+
+        case AutomationMethod.librarySwitch:
+            guard let appSession else {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .serverUnavailable,
+                        message: "The player App is no longer available.",
+                        retryable: true
+                    )
+                )
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let libraryID = try parameters.uuid("libraryID", required: true)!
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let confirm = try parameters.boolean("confirm", default: false)
+                let registry = await appSession.musicLibraryRegistrySnapshot()
+                guard let target = registry.library(id: libraryID) else {
+                    throw AutomationParameterError.missingResource("libraryID")
+                }
+                let targetSummary = makeLibrarySummary(target, activeLibraryID: registry.activeLibraryID)
+                if dryRun {
+                    return encodeResult(
+                        AutomationLibraryLifecycleResult(
+                            operation: AutomationMethod.librarySwitch,
+                            applied: false,
+                            dryRun: true,
+                            libraryID: libraryID,
+                            library: targetSummary,
+                            activeLibraryID: registry.activeLibraryID,
+                            path: target.lastKnownPath,
+                            message: "Preview only. Set dryRun=false and confirm=true to activate this registered library."
+                        ),
+                        for: request
+                    )
+                }
+                guard confirm else {
+                    return confirmationRequired(
+                        for: request,
+                        message: "Switching the active library requires confirm=true plus foreground App confirmation.",
+                        details: .object([
+                            "operation": .string(AutomationMethod.librarySwitch),
+                            "libraryID": .string(libraryID.uuidString)
+                        ])
+                    )
+                }
+                guard libraryID != registry.activeLibraryID else {
+                    return encodeResult(
+                        AutomationLibraryLifecycleResult(
+                            operation: AutomationMethod.librarySwitch,
+                            applied: false,
+                            dryRun: false,
+                            confirmed: true,
+                            libraryID: libraryID,
+                            library: targetSummary,
+                            activeLibraryID: registry.activeLibraryID,
+                            path: target.lastKnownPath,
+                            message: "The requested library is already active."
+                        ),
+                        for: request
+                    )
+                }
+                guard await confirmDestructiveOperation(
+                    title: "Switch active library?",
+                    message: "Switch the player to \(target.displayName)? The current playback session will be closed and the registered library will be opened."
+                ) else {
+                    return interactionCancelled(for: request)
+                }
+                let unavailableSourceIDs = try await appSession.activateRegisteredLibrary(id: libraryID)
+                let updatedRegistry = await appSession.musicLibraryRegistrySnapshot()
+                let updatedActiveID = updatedRegistry.activeLibraryID
+                let active = updatedActiveID.flatMap(updatedRegistry.library(id:))
+                return encodeResult(
+                    AutomationLibraryLifecycleResult(
+                        operation: AutomationMethod.librarySwitch,
+                        applied: true,
+                        dryRun: false,
+                        confirmed: true,
+                        libraryID: libraryID,
+                        library: active.map { makeLibrarySummary($0, activeLibraryID: updatedActiveID) },
+                        activeLibraryID: updatedActiveID,
+                        path: active?.lastKnownPath,
+                        unavailableSourceIDs: unavailableSourceIDs,
+                        message: "Library switched and activated."
+                    ),
+                    for: request
+                )
+            } catch {
+                return libraryLifecycleFailure(for: request, error: error)
+            }
+
+        case AutomationMethod.libraryRename:
+            guard let appSession else {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .serverUnavailable,
+                        message: "The player App is no longer available.",
+                        retryable: true
+                    )
+                )
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let libraryID = try parameters.uuid("libraryID", required: true)!
+                let displayName = try parameters.string("displayName", required: true)!
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !displayName.isEmpty, displayName.count <= 255 else {
+                    throw AutomationParameterError.outOfRange("displayName")
+                }
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let registry = await appSession.musicLibraryRegistrySnapshot()
+                guard let target = registry.library(id: libraryID) else {
+                    throw AutomationParameterError.missingResource("libraryID")
+                }
+                let targetSummary = makeLibrarySummary(target, activeLibraryID: registry.activeLibraryID)
+                if dryRun {
+                    return encodeResult(
+                        AutomationLibraryLifecycleResult(
+                            operation: AutomationMethod.libraryRename,
+                            applied: false,
+                            dryRun: true,
+                            libraryID: libraryID,
+                            library: targetSummary,
+                            activeLibraryID: registry.activeLibraryID,
+                            path: target.lastKnownPath,
+                            message: "Preview only. The display name will change; library files and storage mode will remain unchanged."
+                        ),
+                        for: request
+                    )
+                }
+                try await appSession.renameMusicLibrary(id: libraryID, displayName: displayName)
+                let updatedRegistry = await appSession.musicLibraryRegistrySnapshot()
+                let updated = updatedRegistry.library(id: libraryID)
+                return encodeResult(
+                    AutomationLibraryLifecycleResult(
+                        operation: AutomationMethod.libraryRename,
+                        applied: true,
+                        dryRun: false,
+                        libraryID: libraryID,
+                        library: updated.map { makeLibrarySummary($0, activeLibraryID: updatedRegistry.activeLibraryID) },
+                        activeLibraryID: updatedRegistry.activeLibraryID,
+                        path: updated?.lastKnownPath ?? target.lastKnownPath,
+                        message: "Library renamed."
+                    ),
+                    for: request
+                )
+            } catch {
+                return libraryLifecycleFailure(for: request, error: error)
+            }
+
+        case AutomationMethod.libraryRelocate:
+            guard let appSession else {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .serverUnavailable,
+                        message: "The player App is no longer available.",
+                        retryable: true
+                    )
+                )
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let libraryID = try parameters.uuid("libraryID", required: true)!
+                let requestedParentPath = try parameters.string("parentPath")?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let confirm = try parameters.boolean("confirm", default: false)
+                let registry = await appSession.musicLibraryRegistrySnapshot()
+                guard let target = registry.library(id: libraryID) else {
+                    throw AutomationParameterError.missingResource("libraryID")
+                }
+                let targetSummary = makeLibrarySummary(target, activeLibraryID: registry.activeLibraryID)
+                if dryRun {
+                    return encodeResult(
+                        AutomationLibraryLifecycleResult(
+                            operation: AutomationMethod.libraryRelocate,
+                            applied: false,
+                            dryRun: true,
+                            libraryID: libraryID,
+                            library: targetSummary,
+                            activeLibraryID: registry.activeLibraryID,
+                            path: requestedParentPath.map(expandPath(_:)),
+                            message: "Preview only. The App will ask for a destination parent folder and move the complete library through its recovery transaction after confirm=true."
+                        ),
+                        for: request
+                    )
+                }
+                guard confirm else {
+                    return confirmationRequired(
+                        for: request,
+                        message: "Relocating a library changes files on disk and requires confirm=true plus foreground App confirmation.",
+                        details: .object([
+                            "operation": .string(AutomationMethod.libraryRelocate),
+                            "libraryID": .string(libraryID.uuidString)
+                        ])
+                    )
+                }
+                guard await confirmDestructiveOperation(
+                    title: "Relocate library?",
+                    message: "Move \(target.displayName) to a new location? The current playback session will be closed and reopened after the move."
+                ) else {
+                    return interactionCancelled(for: request)
+                }
+                guard let selectedURL = await requestLibraryDirectory(
+                    requestedPath: requestedParentPath.map(expandPath(_:)),
+                    title: "Choose new library location",
+                    prompt: "Move Here",
+                    allowsCreatingDirectories: true
+                ) else {
+                    return interactionCancelled(for: request)
+                }
+                let selection = LibraryInitialImportSelection(urls: [selectedURL])
+                guard selection.hasUsableAccess else {
+                    let path = selectedURL.path
+                    selection.release()
+                    return libraryPermissionDenied(for: request, path: path)
+                }
+                defer { selection.release() }
+                let result = try await appSession.relocateMusicLibrary(id: libraryID, to: selectedURL)
+                let newContext: LibraryContext
+                let message: String
+                switch result {
+                case .moved(let context, let transfer):
+                    newContext = context
+                    message = transfer == .copiedAcrossVolumes
+                        ? "Library relocated and the old copy was moved to the macOS Trash."
+                        : "Library relocated."
+                case .movedWithOldCopyRemaining(let context, _):
+                    newContext = context
+                    message = "Library relocated, but the old copy remains because it could not be moved to the macOS Trash."
+                }
+                let updatedRegistry = await appSession.musicLibraryRegistrySnapshot()
+                let updated = updatedRegistry.library(id: libraryID)
+                return encodeResult(
+                    AutomationLibraryLifecycleResult(
+                        operation: AutomationMethod.libraryRelocate,
+                        applied: true,
+                        dryRun: false,
+                        confirmed: true,
+                        libraryID: libraryID,
+                        library: updated.map { makeLibrarySummary($0, activeLibraryID: updatedRegistry.activeLibraryID) },
+                        activeLibraryID: updatedRegistry.activeLibraryID,
+                        path: newContext.rootURL.path,
+                        message: message
+                    ),
+                    for: request
+                )
+            } catch {
+                return libraryLifecycleFailure(for: request, error: error)
+            }
+
+        case AutomationMethod.libraryRemove:
+            guard let appSession else {
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .serverUnavailable,
+                        message: "The player App is no longer available.",
+                        retryable: true
+                    )
+                )
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let libraryID = try parameters.uuid("libraryID", required: true)!
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let confirm = try parameters.boolean("confirm", default: false)
+                let registry = await appSession.musicLibraryRegistrySnapshot()
+                guard let target = registry.library(id: libraryID) else {
+                    throw AutomationParameterError.missingResource("libraryID")
+                }
+                let targetSummary = makeLibrarySummary(target, activeLibraryID: registry.activeLibraryID)
+                if dryRun {
+                    return encodeResult(
+                        AutomationLibraryLifecycleResult(
+                            operation: AutomationMethod.libraryRemove,
+                            applied: false,
+                            dryRun: true,
+                            libraryID: libraryID,
+                            library: targetSummary,
+                            activeLibraryID: registry.activeLibraryID,
+                            path: target.lastKnownPath,
+                            message: "Preview only. The App will move the library root to the macOS Trash and select a safe successor when needed after confirm=true."
+                        ),
+                        for: request
+                    )
+                }
+                guard confirm else {
+                    return confirmationRequired(
+                        for: request,
+                        message: "Moving a library to the macOS Trash requires confirm=true plus foreground App confirmation.",
+                        details: .object([
+                            "operation": .string(AutomationMethod.libraryRemove),
+                            "libraryID": .string(libraryID.uuidString)
+                        ])
+                    )
+                }
+                guard await confirmDestructiveOperation(
+                    title: "Move library to Trash?",
+                    message: "Move \(target.displayName) and its library data to the macOS Trash? The App will keep other registered libraries and select a safe successor."
+                ) else {
+                    return interactionCancelled(for: request)
+                }
+                _ = try await appSession.removeMusicLibrary(id: libraryID)
+                let updatedRegistry = await appSession.musicLibraryRegistrySnapshot()
+                let activeID = updatedRegistry.activeLibraryID
+                let active = activeID.flatMap(updatedRegistry.library(id:))
+                return encodeResult(
+                    AutomationLibraryLifecycleResult(
+                        operation: AutomationMethod.libraryRemove,
+                        applied: true,
+                        dryRun: false,
+                        confirmed: true,
+                        libraryID: libraryID,
+                        library: active.map { makeLibrarySummary($0, activeLibraryID: activeID) },
+                        activeLibraryID: activeID,
+                        path: target.lastKnownPath,
+                        message: "Library moved to the macOS Trash; the App selected the next active library."
+                    ),
+                    for: request
+                )
+            } catch {
+                return libraryLifecycleFailure(for: request, error: error)
+            }
 
         case AutomationMethod.libraryTracks:
             guard let session = activeSession(for: request) else {
@@ -3042,6 +3596,7 @@ final class AutomationIPCServer {
                     notes: [
                         "Normal library and playback mutations execute directly once the local App policy authorizes them.",
                         "High-risk operations require dryRun/preview, caller acknowledgement and a foreground App confirmation.",
+                        "Library lifecycle management is available through App-owned create/open/switch/rename/relocate operations; library deletion remains separately denied by default.",
                         "A missing referenced file preserves its Track, metadata, history and Playlist membership by default."
                     ]
                 ),
@@ -3607,7 +4162,7 @@ final class AutomationIPCServer {
             deniedScopes: Array(denied),
             notes: [
                 "Scope state is App-owned and persisted per user on this Mac.",
-                "files.delete and storage.write are denied by default and require foreground confirmation before granting."
+                "library.delete, files.delete and storage.write are denied by default and require foreground confirmation before granting."
             ]
         )
     }
@@ -3738,6 +4293,12 @@ final class AutomationIPCServer {
 
     private func auditTargetKind(for method: String) -> String {
         switch method {
+        case AutomationMethod.libraryCreate,
+             AutomationMethod.libraryOpen,
+             AutomationMethod.librarySwitch,
+             AutomationMethod.libraryRename,
+             AutomationMethod.libraryRelocate,
+             AutomationMethod.libraryRemove: return "library"
         case AutomationMethod.libraryTracks: return "selection"
         case AutomationMethod.playlistAddTracks,
              AutomationMethod.playlistRemoveTracks,
@@ -3776,12 +4337,15 @@ final class AutomationIPCServer {
 
     private func auditTargetCount(_ request: AutomationRequest) -> Int? {
         guard case .object(let values) = request.params else { return nil }
-        for key in ["trackIDs", "playlistIDs", "sourceIDs", "paths"] {
+        for key in ["trackIDs", "playlistIDs", "sourceIDs", "libraryIDs", "paths"] {
             if case .array(let items) = values[key] {
                 return items.count
             }
         }
-        return values["trackID"] != nil || values["playlistID"] != nil || values["sourceID"] != nil
+        return values["trackID"] != nil
+            || values["playlistID"] != nil
+            || values["sourceID"] != nil
+            || values["libraryID"] != nil
             ? 1
             : nil
     }
@@ -4171,6 +4735,38 @@ final class AutomationIPCServer {
         return response == .OK ? panel.url : nil
     }
 
+    /// Library lifecycle operations use the same App-owned picker boundary as
+    /// Source creation. A requested path is only a navigation hint; the
+    /// selected URL is still authorized by the App and retained until the
+    /// lifecycle transaction has captured its own bookmark.
+    private func requestLibraryDirectory(
+        requestedPath: String?,
+        title: String,
+        prompt: String,
+        allowsCreatingDirectories: Bool
+    ) async -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = allowsCreatingDirectories
+        panel.title = title
+        panel.prompt = prompt
+        if let requestedPath {
+            let requestedURL = URL(fileURLWithPath: requestedPath)
+            let requestedIsDirectory = (try? requestedURL.resourceValues(
+                forKeys: [.isDirectoryKey]
+            ).isDirectory) == true
+            panel.directoryURL = FileManager.default.fileExists(atPath: requestedURL.path)
+                && requestedIsDirectory
+                ? requestedURL
+                : requestedURL.deletingLastPathComponent()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let response = panel.runModal()
+        return response == .OK ? panel.url : nil
+    }
+
     private func confirmDestructiveOperation(title: String, message: String) async -> Bool {
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -4202,6 +4798,24 @@ final class AutomationIPCServer {
             error: AutomationError(
                 code: .permissionDenied,
                 message: "The selected Source could not be authorized; no import Job was started.",
+                retryable: false,
+                details: .object([
+                    "path": .string(path),
+                    "reason": .string("securityScopedAccess")
+                ])
+            )
+        )
+    }
+
+    private func libraryPermissionDenied(
+        for request: AutomationRequest,
+        path: String
+    ) -> AutomationResponse {
+        .failure(
+            for: request,
+            error: AutomationError(
+                code: .permissionDenied,
+                message: "The selected library location could not be authorized; no library lifecycle mutation was applied.",
                 retryable: false,
                 details: .object([
                     "path": .string(path),
@@ -4313,6 +4927,127 @@ final class AutomationIPCServer {
                 details: .object(["reason": .string(String(describing: error))])
             )
         )
+    }
+
+    private func libraryLifecycleFailure(
+        for request: AutomationRequest,
+        error: Error
+    ) -> AutomationResponse {
+        if error is AutomationParameterError || error is AutomationFileOperationError {
+            return invalidParameters(for: request, error: error)
+        }
+
+        let reason = String(describing: error)
+        func failure(
+            _ code: AutomationErrorCode,
+            _ message: String,
+            retryable: Bool = false
+        ) -> AutomationResponse {
+            .failure(
+                for: request,
+                error: AutomationError(
+                    code: code,
+                    message: message,
+                    retryable: retryable,
+                    details: .object(["reason": .string(reason)])
+                )
+            )
+        }
+
+        switch error {
+        case let error as RegisteredLibraryActivationError:
+            switch error {
+            case .notRegistered:
+                return failure(.invalidRequest, "The requested library is not registered.")
+            case .reconnectRequired(let libraryID):
+                return .failure(
+                    for: request,
+                    error: AutomationError(
+                        code: .interactionRequired,
+                        message: "The registered library is unavailable at its last known path. Call library.open and select its current folder before switching again.",
+                        details: .object([
+                            "libraryID": .string(libraryID.uuidString),
+                            "nextAction": .string(AutomationMethod.libraryOpen),
+                            "reason": .string(reason)
+                        ])
+                    )
+                )
+            }
+
+        case let error as LibraryCreationError:
+            switch error {
+            case .invalidDisplayName:
+                return failure(.invalidRequest, "The library display name is invalid.")
+            case .destinationContainsUnknownItems, .invalidExistingLibrary:
+                return failure(.conflict, "The selected library location already contains data that cannot be safely reused.")
+            case .stagingFailed, .validationFailed:
+                return failure(.internalError, "The new library could not be staged or validated.", retryable: true)
+            case .registryCommitFailed, .sessionActivationFailed, .recoveryFailed:
+                return failure(.internalError, "The new library could not be activated safely; the App preserved its recovery boundary.", retryable: true)
+            }
+
+        case let error as LibraryOpenError:
+            switch error {
+            case .libraryNotFound, .invalidManifest, .libraryNotRegistered,
+                 .reconnectIdentifierMismatch, .reconnectModeMismatch:
+                return failure(.invalidRequest, "The selected location is not a usable registered music library.")
+            case .pathConflict:
+                return failure(.conflict, "The selected library path is already registered to another library.")
+            case .bookmarkFailed, .securityScopeDenied:
+                return failure(.permissionDenied, "The App could not authorize the selected library location.")
+            case .transactionInProgress:
+                return failure(.conflict, "Another library lifecycle operation is in progress.", retryable: true)
+            case .activationFailed, .recoveryFailed:
+                return failure(.internalError, "The library could not be activated safely; the App preserved its recovery boundary.", retryable: true)
+            }
+
+        case let error as LibraryRelocationError:
+            switch error {
+            case .libraryNotRegistered:
+                return failure(.invalidRequest, "The requested library is not registered.")
+            case .destinationExists:
+                return failure(.conflict, "The destination already contains a library or other data.")
+            case .validationFailed:
+                return failure(.invalidRequest, "The registered library failed validation and was not moved.")
+            case .securityScopeDenied:
+                return failure(.permissionDenied, "The App could not authorize the library or destination location.")
+            case .transactionInProgress, .pendingRepair, .recoveryConflict:
+                return failure(.conflict, "The library has an unfinished lifecycle transaction; repair or retry after the App reports it is ready.", retryable: true)
+            case .closeFailed, .copyFailed, .publicationFailed, .newSessionFailed,
+                 .registryCommitFailed, .recoveryFailed:
+                return failure(.internalError, "The library could not be relocated safely; the App preserved its recovery boundary.", retryable: true)
+            }
+
+        case let error as LibraryRemovalError:
+            switch error {
+            case .libraryNotRegistered, .manifestMismatch:
+                return failure(.invalidRequest, "The requested library is not a valid registered library.")
+            case .securityScopeDenied:
+                return failure(.permissionDenied, "The App could not authorize the library location.")
+            case .transactionInProgress, .pendingRepair:
+                return failure(.conflict, "The library has an unfinished removal transaction; repair or retry after the App reports it is ready.", retryable: true)
+            case .closeFailed, .recycleFailed, .intentWriteFailed, .recoveryFailed:
+                return failure(.internalError, "The library could not be moved to the macOS Trash safely; the App preserved its recovery boundary.", retryable: true)
+            }
+
+        case let error as LibraryDisplayNameUpdateError:
+            switch error {
+            case .invalidDisplayName:
+                return failure(.invalidRequest, "The library display name is invalid.")
+            case .libraryNotRegistered, .manifestMismatch:
+                return failure(.invalidRequest, "The requested library is not a valid registered library.")
+            case .securityScopeDenied:
+                return failure(.permissionDenied, "The App could not authorize the library location.")
+            case .transactionInProgress:
+                return failure(.conflict, "Another library lifecycle operation is in progress.", retryable: true)
+            case .manifestWriteFailed, .registryWriteFailedRolledBack,
+                 .registryWriteFailedRollbackFailed:
+                return failure(.internalError, "The library name could not be updated safely.", retryable: true)
+            }
+
+        default:
+            return failure(.internalError, "The library lifecycle operation failed.", retryable: true)
+        }
     }
 
     private func matchesTrackFilter(
@@ -4703,6 +5438,18 @@ final class AutomationIPCServer {
             trackCount: playlist.trackCount,
             totalDuration: playlist.totalDuration,
             revision: appSession?.libraryVM?.automationPlaylistRevision(for: playlist) ?? "v1-0"
+        )
+    }
+
+    private func makeLibrarySummary(
+        _ bookmark: MusicLibraryBookmark,
+        activeLibraryID: UUID?
+    ) -> AutomationLibrarySummary {
+        AutomationLibrarySummary(
+            id: bookmark.id,
+            displayName: bookmark.displayName,
+            mode: bookmark.modeProjection == .managed ? .managed : .referenced,
+            isActive: bookmark.id == activeLibraryID
         )
     }
 
