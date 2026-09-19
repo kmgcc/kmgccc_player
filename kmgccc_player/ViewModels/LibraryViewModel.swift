@@ -49,10 +49,25 @@ struct LibraryAutomationMetadataPatch {
     let albumArtist: String?
     let userDescription: String?
     let genreTags: [String]?
+    let language: String?
+    let labelOrCompany: String?
     let releaseDate: Date?
+    let qqMusicSongMid: String?
+    let metadataSource: String?
+    let metadataFetchedAt: Date?
+    let metadataConfidence: Double?
+    let musicBrainzReleaseID: String?
+    let lyricsTimeOffsetMs: Double?
+    let artistCredits: [TrackCredit]?
 }
 
 struct LibraryAutomationMetadataMutationOutcome {
+    let updatedTrackIDs: [UUID]
+    let skippedTrackIDs: [UUID]
+    let conflictedTrackIDs: [UUID]
+}
+
+struct LibraryAutomationArtworkMutationOutcome {
     let updatedTrackIDs: [UUID]
     let skippedTrackIDs: [UUID]
     let conflictedTrackIDs: [UUID]
@@ -1925,20 +1940,38 @@ final class LibraryViewModel {
         return "v1-\(String(hash, radix: 16))"
     }
 
-    /// Stable metadata revision for optimistic concurrency. It intentionally
-    /// covers only fields owned by the metadata patch capability, so unrelated
-    /// playback or artwork changes do not cause a false conflict.
+    /// Stable metadata revision for optimistic concurrency. It covers every
+    /// field owned by the metadata patch capability; unrelated playback or
+    /// artwork changes do not cause a false conflict.
     func automationTrackRevision(for track: Track) -> String {
         var fingerprint = track.id.uuidString
-        for value in [
+        var values: [String] = [
             track.title,
             track.artist,
             track.album,
             track.albumArtist ?? "",
             track.userDescription,
             track.genreTags.joined(separator: "\u{1F} "),
-            track.releaseDate.map(ISO8601DateFormatter().string(from:)) ?? ""
-        ] {
+            track.language,
+            track.labelOrCompany,
+            track.releaseDate.map(ISO8601DateFormatter().string(from:)) ?? "",
+            track.qqMusicSongMid ?? "",
+            track.metadataSource ?? "",
+            track.metadataFetchedAt.map(ISO8601DateFormatter().string(from:)) ?? "",
+            track.metadataConfidence.map { String($0) } ?? "",
+            track.musicBrainzReleaseID ?? "",
+            String(track.lyricsTimeOffsetMs)
+        ]
+        let creditFingerprint = track.artistCredits.map { credit in
+            [
+                credit.id.uuidString,
+                credit.displayName,
+                credit.canonicalName,
+                credit.role.rawValue
+            ].joined(separator: "|")
+        }.joined(separator: "\u{1E}")
+        values.append(creditFingerprint)
+        for value in values {
             fingerprint.append("\n")
             fingerprint.append(value)
         }
@@ -1999,9 +2032,52 @@ final class LibraryViewModel {
                     track.genreTags = patch.genreTags ?? []
                     changed = true
                 }
+                if patch.fields.contains("language"), track.language != (patch.language ?? "") {
+                    track.language = patch.language ?? ""
+                    changed = true
+                }
+                if patch.fields.contains("labelOrCompany"), track.labelOrCompany != (patch.labelOrCompany ?? "") {
+                    track.labelOrCompany = patch.labelOrCompany ?? ""
+                    changed = true
+                }
                 if patch.fields.contains("releaseDate"), track.releaseDate != patch.releaseDate {
                     track.releaseDate = patch.releaseDate
                     changed = true
+                }
+                if patch.fields.contains("qqMusicSongMid"), track.qqMusicSongMid != patch.qqMusicSongMid {
+                    track.qqMusicSongMid = patch.qqMusicSongMid
+                    changed = true
+                }
+                if patch.fields.contains("metadataSource"), track.metadataSource != patch.metadataSource {
+                    track.metadataSource = patch.metadataSource
+                    changed = true
+                }
+                if patch.fields.contains("metadataFetchedAt"), track.metadataFetchedAt != patch.metadataFetchedAt {
+                    track.metadataFetchedAt = patch.metadataFetchedAt
+                    changed = true
+                }
+                if patch.fields.contains("metadataConfidence"), track.metadataConfidence != patch.metadataConfidence {
+                    track.metadataConfidence = patch.metadataConfidence
+                    changed = true
+                }
+                if patch.fields.contains("musicBrainzReleaseID"), track.musicBrainzReleaseID != patch.musicBrainzReleaseID {
+                    track.musicBrainzReleaseID = patch.musicBrainzReleaseID
+                    changed = true
+                }
+                if patch.fields.contains("lyricsTimeOffsetMs"), track.lyricsTimeOffsetMs != (patch.lyricsTimeOffsetMs ?? 0) {
+                    track.lyricsTimeOffsetMs = patch.lyricsTimeOffsetMs ?? 0
+                    changed = true
+                }
+                if patch.fields.contains("artistCredits") {
+                    if let artistCredits = patch.artistCredits {
+                        if track.artistCredits != artistCredits {
+                            track.artistCredits = artistCredits
+                            changed = true
+                        }
+                    } else if track.artistCreditsData != nil {
+                        track.artistCreditsData = nil
+                        changed = true
+                    }
                 }
                 if changed {
                     changedTracks.append(track)
@@ -2022,6 +2098,64 @@ final class LibraryViewModel {
             await self.refresh()
         }
         return LibraryAutomationMetadataMutationOutcome(
+            updatedTrackIDs: Array(Set(updatedIDs)).sorted { $0.uuidString < $1.uuidString },
+            skippedTrackIDs: Array(Set(skippedIDs)).sorted { $0.uuidString < $1.uuidString },
+            conflictedTrackIDs: Array(Set(conflictIDs)).sorted { $0.uuidString < $1.uuidString }
+        )
+    }
+
+    /// Apply App-owned artwork through the repository's metadata-and-artwork
+    /// persistence owner. This updates the sidecar artwork and never rewrites
+    /// embedded tags in the original audio file.
+    func applyArtworkForAutomation(
+        trackIDs: [UUID],
+        artworkData: Data?,
+        expectedRevisions: [UUID: String] = [:]
+    ) async throws -> LibraryAutomationArtworkMutationOutcome {
+        let uniqueIDs = Array(Set(trackIDs)).sorted { $0.uuidString < $1.uuidString }
+        var updatedIDs: [UUID] = []
+        var skippedIDs: [UUID] = []
+        var conflictIDs: [UUID] = []
+        try await performAutomationLibraryMutation {
+            let tracksByID = Dictionary(uniqueKeysWithValues: self.allTracks.map { ($0.id, $0) })
+            var changedTracks: [Track] = []
+            for id in uniqueIDs {
+                guard let track = tracksByID[id] else {
+                    skippedIDs.append(id)
+                    continue
+                }
+                if let expected = expectedRevisions[id],
+                   expected != self.automationTrackRevision(for: track) {
+                    conflictIDs.append(id)
+                    continue
+                }
+                let currentArtwork = track.loadArtworkDataIfNeeded()
+                let isChanged: Bool
+                if let artworkData {
+                    isChanged = currentArtwork != artworkData
+                } else {
+                    isChanged = currentArtwork != nil || track.artworkFileName != nil
+                }
+                guard isChanged else {
+                    skippedIDs.append(id)
+                    continue
+                }
+                track.artworkData = artworkData
+                changedTracks.append(track)
+                updatedIDs.append(id)
+            }
+            guard !changedTracks.isEmpty else { return }
+            let persisted = await self.repository.persistTrackMetaAndArtwork(
+                changedTracks,
+                reason: "automationArtworkApply"
+            )
+            let persistedIDs = Set(persisted.persistedTrackIDs)
+            let failedIDs = Set(persisted.failedTrackIDs)
+            updatedIDs = updatedIDs.filter { persistedIDs.contains($0) }
+            skippedIDs.append(contentsOf: failedIDs)
+            await self.refresh()
+        }
+        return LibraryAutomationArtworkMutationOutcome(
             updatedTrackIDs: Array(Set(updatedIDs)).sorted { $0.uuidString < $1.uuidString },
             skippedTrackIDs: Array(Set(skippedIDs)).sorted { $0.uuidString < $1.uuidString },
             conflictedTrackIDs: Array(Set(conflictIDs)).sorted { $0.uuidString < $1.uuidString }

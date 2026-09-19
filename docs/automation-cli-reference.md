@@ -21,6 +21,7 @@ library list|tracks|create|open|switch|rename|relocate|remove
 playlist list|get|create|rename|delete|add|remove|replace|reorder
 source list|create|bind|exclude|include|watch|unwatch|remove|refresh
 metadata get|patch
+artwork get|apply
 lyrics get|search|candidates|compare|apply|refresh
 playback state|play|pause|next|previous|seek|volume|mode
 queue get|replace|enqueue|enqueue-next|clear
@@ -58,7 +59,18 @@ player-automation automation call library.tracks \
   --params-json '{"filter":{"not":{"playlistID":"P"}},"limit":50}' --json
 player-automation automation call metadata.patch \
   --params-json '{"trackIDs":["T"],"patch":{"genreTags":["jazz"]}}' --json
+player-automation artwork get TRACK-ID --json
+player-automation artwork apply TRACK-ID \
+  --params-json '{"imagePath":"/tmp/cover.jpg"}' --json
+player-automation artwork apply TRACK-ID \
+  --params-json '{"clear":true}' --json
 ```
+
+`artwork.apply` 的 `imagePath` 只是 App 选图面板的初始位置提示；App 会重新打开
+前台图片选择器并取得 security-scoped access。也可以传 `imageBase64`，或用 `clear`
+移除 App-owned artwork。对 10 首及以上 Track，先使用 `--dry-run`，真实调用必须带
+`--yes`（映射为 `confirm=true`），然后等待 App 前台确认弹窗。`metadata.patch` 也对
+10 首及以上的 App-owned metadata batch 使用同一确认门槛。
 
 资料库生命周期也有专用 CLI alias；路径只作为 App picker 的导航提示，不能替代前台授权：
 

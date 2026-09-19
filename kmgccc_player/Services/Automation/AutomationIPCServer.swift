@@ -4,6 +4,7 @@ import Darwin
 import Foundation
 import PlayerAutomationIPC
 import PlayerAutomationProtocol
+import UniformTypeIdentifiers
 
 private nonisolated enum AutomationAppIdentity {
     static var bundleIdentifier: String {
@@ -460,6 +461,16 @@ final class AutomationIPCServer {
                case .object(let values) = request.params,
                case .boolean(true) = values["dryRun"] {
                 required.remove(.libraryDelete)
+            }
+            if request.method == AutomationMethod.metadataPatch,
+               case .object(let values) = request.params,
+               case .boolean(true) = values["dryRun"] {
+                required.remove(.metadataWrite)
+            }
+            if request.method == AutomationMethod.artworkApply,
+               case .object(let values) = request.params,
+               case .boolean(true) = values["dryRun"] {
+                required.remove(.artworkWrite)
             }
             if !granted.isSuperset(of: required) {
                 let denied = required.subtracting(granted)
@@ -2620,6 +2631,223 @@ final class AutomationIPCServer {
                 return invalidParameters(for: request, error: error)
             }
 
+        case AutomationMethod.artworkGet:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let trackIDs = try parameters.uuidArray("trackIDs", required: true)
+                let tracksByID = Dictionary(
+                    uniqueKeysWithValues: session.libraryViewModel.allTracks.map { ($0.id, $0) }
+                )
+                guard trackIDs.allSatisfy({ tracksByID[$0] != nil }) else {
+                    throw AutomationParameterError.invalidValue("trackIDs")
+                }
+                let artworks = trackIDs.compactMap { trackIDs -> AutomationArtworkInfo? in
+                    guard let track = tracksByID[trackIDs] else { return nil }
+                    let data = track.loadArtworkDataIfNeeded()
+                    let digest = data.map { data in
+                        SHA256.hash(data: data)
+                            .map { String(format: "%02x", $0) }
+                            .joined()
+                    }
+                    return AutomationArtworkInfo(
+                        trackID: track.id,
+                        available: data != nil || track.artworkFileName != nil,
+                        fileName: track.artworkFileName,
+                        byteCount: data?.count,
+                        sha256: digest,
+                        revision: session.libraryViewModel.automationTrackRevision(for: track)
+                    )
+                }
+                return encodeResult(
+                    AutomationArtworkGetResult(
+                        artworks: artworks,
+                        revision: libraryTracksRevision(
+                            tracks: session.libraryViewModel.allTracks,
+                            playlists: session.libraryViewModel.playlists
+                        )
+                    ),
+                    for: request
+                )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.artworkApply:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let trackIDs = try parameters.uuidArray("trackIDs", required: true)
+                let clear = try parameters.boolean("clear", default: false)
+                let imagePath = try parameters.string("imagePath")?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let imageBase64 = try parameters.string("imageBase64")?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let expectedRevisions = try makeTrackRevisions(
+                    from: parameters.object("expectedRevisions")
+                )
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                let confirm = try parameters.boolean("confirm", default: false)
+                guard !(clear && (imagePath != nil || imageBase64 != nil)) else {
+                    throw AutomationParameterError.invalidValue("clear")
+                }
+                guard !(imagePath != nil && imageBase64 != nil) else {
+                    throw AutomationParameterError.invalidValue("imagePath/imageBase64")
+                }
+                if let imageBase64, imageBase64.isEmpty {
+                    throw AutomationParameterError.invalidValue("imageBase64")
+                }
+                if let imagePath, imagePath.isEmpty {
+                    throw AutomationParameterError.invalidValue("imagePath")
+                }
+
+                let tracksByID = Dictionary(
+                    uniqueKeysWithValues: session.libraryViewModel.allTracks.map { ($0.id, $0) }
+                )
+                guard trackIDs.allSatisfy({ tracksByID[$0] != nil }) else {
+                    throw AutomationParameterError.invalidValue("trackIDs")
+                }
+                let candidates = trackIDs.compactMap { tracksByID[$0] }
+                let conflictIDs = candidates.compactMap { track -> UUID? in
+                    guard let expected = expectedRevisions[track.id],
+                          expected != session.libraryViewModel.automationTrackRevision(for: track) else {
+                        return nil
+                    }
+                    return track.id
+                }
+                let changedIDs = candidates.compactMap { track -> UUID? in
+                    guard !conflictIDs.contains(track.id) else { return nil }
+                    if clear {
+                        return track.loadArtworkDataIfNeeded() != nil || track.artworkFileName != nil
+                            ? track.id
+                            : nil
+                    }
+                    return track.id
+                }
+                let skippedIDs = candidates.map(\.id).filter {
+                    !changedIDs.contains($0) && !conflictIDs.contains($0)
+                }
+                let inputKind = clear
+                    ? "clear"
+                    : imageBase64 != nil
+                        ? "imageBase64"
+                        : imagePath != nil
+                            ? "imagePath"
+                            : "picker"
+
+                if !dryRun, trackIDs.count >= 10 {
+                    guard confirm else {
+                        return confirmationRequired(
+                            for: request,
+                            message: "Applying artwork to \(trackIDs.count) Tracks requires confirm=true and foreground App confirmation.",
+                            details: .object([
+                                "operation": .string(AutomationMethod.artworkApply),
+                                "trackCount": .number(Double(trackIDs.count)),
+                                "threshold": .number(10),
+                                "requiresForegroundConfirmation": .boolean(true)
+                            ])
+                        )
+                    }
+                }
+
+                guard !dryRun else {
+                    if let imageBase64 {
+                        let encoded = imageBase64.hasPrefix("data:")
+                            ? (imageBase64.split(separator: ",", maxSplits: 1).last.map(String.init) ?? "")
+                            : imageBase64
+                        guard let data = Data(base64Encoded: encoded),
+                              data.count <= 16 * 1024 * 1024,
+                              ArtworkDataNormalizer.isDecodableImage(data) else {
+                            throw AutomationParameterError.invalidValue("imageBase64")
+                        }
+                    }
+                    return encodeResult(
+                        AutomationArtworkMutationResult(
+                            applied: false,
+                            dryRun: true,
+                            input: inputKind,
+                            updatedTrackIDs: changedIDs,
+                            skippedTrackIDs: skippedIDs,
+                            conflictedTrackIDs: conflictIDs,
+                            message: "Preview only. App-owned artwork will be replaced or cleared; original audio-file tags will not be changed. Batches of 10 or more require confirm=true and foreground confirmation."
+                        ),
+                        for: request
+                    )
+                }
+
+                if trackIDs.count >= 10 {
+                    guard await confirmDestructiveOperation(
+                        title: "Apply artwork to \(trackIDs.count) tracks?",
+                        message: clear
+                            ? "Clear the App-owned artwork for \(trackIDs.count) Tracks? Original audio files will not be modified."
+                            : "Replace the App-owned artwork for \(trackIDs.count) Tracks with the selected image? Original audio files will not be modified."
+                    ) else {
+                        return interactionCancelled(for: request)
+                    }
+                }
+
+                let resolvedInput: (kind: String, data: Data?)
+                if clear {
+                    resolvedInput = ("clear", nil)
+                } else if let imageBase64 {
+                    let encoded = imageBase64.hasPrefix("data:")
+                        ? (imageBase64.split(separator: ",", maxSplits: 1).last.map(String.init) ?? "")
+                        : imageBase64
+                    guard let data = Data(base64Encoded: encoded),
+                          data.count <= 16 * 1024 * 1024,
+                          ArtworkDataNormalizer.isDecodableImage(data) else {
+                        throw AutomationParameterError.invalidValue("imageBase64")
+                    }
+                    resolvedInput = ("imageBase64", data)
+                } else {
+                    guard let selectedURL = try await requestArtworkURL(
+                        requestedPath: imagePath.map(expandPath(_:))
+                    ) else {
+                        return interactionCancelled(for: request)
+                    }
+                    let data = await Task.detached(priority: .userInitiated) { () -> Data? in
+                        let accessed = selectedURL.startAccessingSecurityScopedResource()
+                        defer {
+                            if accessed { selectedURL.stopAccessingSecurityScopedResource() }
+                        }
+                        return try? Data(contentsOf: selectedURL)
+                    }.value
+                    guard let data,
+                          data.count <= 16 * 1024 * 1024,
+                          ArtworkDataNormalizer.isDecodableImage(data) else {
+                        throw AutomationParameterError.invalidValue("imagePath")
+                    }
+                    resolvedInput = (imagePath == nil ? "picker" : "imagePath", data)
+                }
+
+                let outcome = try await session.libraryViewModel.applyArtworkForAutomation(
+                    trackIDs: trackIDs,
+                    artworkData: resolvedInput.data,
+                    expectedRevisions: expectedRevisions
+                )
+                return encodeResult(
+                    AutomationArtworkMutationResult(
+                        applied: !outcome.updatedTrackIDs.isEmpty,
+                        dryRun: false,
+                        confirmed: trackIDs.count >= 10,
+                        input: resolvedInput.kind,
+                        updatedTrackIDs: outcome.updatedTrackIDs,
+                        skippedTrackIDs: outcome.skippedTrackIDs,
+                        conflictedTrackIDs: outcome.conflictedTrackIDs,
+                        message: outcome.conflictedTrackIDs.isEmpty
+                            ? "App-owned artwork updated; original audio-file tags were not changed."
+                            : "Some Tracks changed after the query and were left untouched."
+                    ),
+                    for: request
+                )
+            } catch {
+                return mutationFailure(for: request, error: error)
+            }
+
         case AutomationMethod.metadataGet:
             guard let session = activeSession(for: request) else {
                 return noActiveLibraryResponse(for: request)
@@ -2680,6 +2908,7 @@ final class AutomationIPCServer {
                     from: parameters.object("expectedRevisions")
                 )
                 let dryRun = try parameters.boolean("dryRun", default: false)
+                let confirm = try parameters.boolean("confirm", default: false)
                 let tracksByID = Dictionary(
                     uniqueKeysWithValues: session.libraryViewModel.allTracks.map { ($0.id, $0) }
                 )
@@ -2716,6 +2945,26 @@ final class AutomationIPCServer {
                         ),
                         for: request
                     )
+                }
+                if trackIDs.count >= 10 {
+                    guard confirm else {
+                        return confirmationRequired(
+                            for: request,
+                            message: "Patching metadata for \(trackIDs.count) Tracks requires confirm=true and foreground App confirmation.",
+                            details: .object([
+                                "operation": .string(AutomationMethod.metadataPatch),
+                                "trackCount": .number(Double(trackIDs.count)),
+                                "threshold": .number(10),
+                                "requiresForegroundConfirmation": .boolean(true)
+                            ])
+                        )
+                    }
+                    guard await confirmDestructiveOperation(
+                        title: "Patch metadata for \(trackIDs.count) tracks?",
+                        message: "Apply the requested App-owned metadata changes to \(trackIDs.count) Tracks? Original audio files and embedded tags will not be modified."
+                    ) else {
+                        return interactionCancelled(for: request)
+                    }
                 }
                 let outcome = try await session.libraryViewModel.applyMetadataPatchForAutomation(
                     trackIDs: trackIDs,
@@ -3721,7 +3970,10 @@ final class AutomationIPCServer {
     ) throws -> LibraryAutomationMetadataPatch {
         let allowed: Set<String> = [
             "title", "artist", "album", "albumArtist", "description",
-            "genreTags", "releaseDate"
+            "genreTags", "language", "labelOrCompany", "releaseDate",
+            "qqMusicSongMid", "metadataSource", "metadataFetchedAt",
+            "metadataConfidence", "musicBrainzReleaseID", "lyricsTimeOffsetMs",
+            "artistCredits"
         ]
         guard Set(values.keys).isSubset(of: allowed) else {
             throw AutomationParameterError.invalidValue("patch")
@@ -3752,21 +4004,100 @@ final class AutomationIPCServer {
                 throw AutomationParameterError.invalidType(key, expected: "array of strings or null")
             }
         }
-        let releaseDate: Date?
-        if let value = values["releaseDate"] {
+        func dateValue(_ key: String) throws -> Date? {
+            guard let value = values[key] else { return nil }
             switch value {
             case .null:
-                releaseDate = nil
+                return nil
             case .string(let string):
                 guard let date = ISO8601DateFormatter().date(from: string) else {
-                    throw AutomationParameterError.invalidValue("releaseDate")
+                    throw AutomationParameterError.invalidValue(key)
                 }
-                releaseDate = date
+                return date
             default:
-                throw AutomationParameterError.invalidType("releaseDate", expected: "ISO-8601 string or null")
+                throw AutomationParameterError.invalidType(key, expected: "ISO-8601 string or null")
             }
-        } else {
-            releaseDate = nil
+        }
+        func numberValue(
+            _ key: String,
+            range: ClosedRange<Double>? = nil
+        ) throws -> Double? {
+            guard let value = values[key] else { return nil }
+            switch value {
+            case .null:
+                return nil
+            case .number(let number):
+                guard number.isFinite, range?.contains(number) ?? true else {
+                    throw AutomationParameterError.outOfRange(key)
+                }
+                return number
+            default:
+                throw AutomationParameterError.invalidType(key, expected: "number or null")
+            }
+        }
+        func artistCreditsValue(_ key: String) throws -> [TrackCredit]? {
+            guard let value = values[key] else { return nil }
+            switch value {
+            case .null:
+                return nil
+            case .array(let array):
+                guard array.count <= 500 else {
+                    throw AutomationParameterError.outOfRange(key)
+                }
+                return try array.map { value in
+                    guard case .object(let object) = value else {
+                        throw AutomationParameterError.invalidType(key, expected: "array of credit objects")
+                    }
+                    guard case .string(let displayName)? = object["displayName"],
+                          !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        throw AutomationParameterError.invalidValue("\(key).displayName")
+                    }
+                    let id: UUID
+                    if let rawID = object["id"] {
+                        guard case .string(let stringID) = rawID,
+                              let parsedID = UUID(uuidString: stringID) else {
+                            throw AutomationParameterError.invalidValue("\(key).id")
+                        }
+                        id = parsedID
+                    } else {
+                        id = UUID()
+                    }
+                    let canonicalName: String?
+                    if let value = object["canonicalName"] {
+                        switch value {
+                        case .null:
+                            canonicalName = nil
+                        case .string(let string):
+                            canonicalName = string
+                        default:
+                            throw AutomationParameterError.invalidType(
+                                "\(key).canonicalName",
+                                expected: "string or null"
+                            )
+                        }
+                    } else {
+                        canonicalName = nil
+                    }
+                    let role: TrackCreditRole
+                    if let value = object["role"] {
+                        guard case .string(let rawRole) = value,
+                              let parsedRole = TrackCreditRole(rawValue: rawRole) else {
+                            throw AutomationParameterError.invalidValue("\(key).role")
+                        }
+                        role = parsedRole
+                    } else {
+                        role = .primary
+                    }
+                    return TrackCredit(
+                        id: id,
+                        displayName: displayName,
+                        role: role,
+                        canonicalName: canonicalName
+                    )
+                }
+            default:
+                throw AutomationParameterError.invalidType(key, expected: "array of credit objects or null")
+            }
         }
         return LibraryAutomationMetadataPatch(
             fields: Set(values.keys),
@@ -3776,7 +4107,16 @@ final class AutomationIPCServer {
             albumArtist: try stringValue("albumArtist"),
             userDescription: try stringValue("description"),
             genreTags: try stringArrayValue("genreTags"),
-            releaseDate: releaseDate
+            language: try stringValue("language"),
+            labelOrCompany: try stringValue("labelOrCompany"),
+            releaseDate: try dateValue("releaseDate"),
+            qqMusicSongMid: try stringValue("qqMusicSongMid"),
+            metadataSource: try stringValue("metadataSource"),
+            metadataFetchedAt: try dateValue("metadataFetchedAt"),
+            metadataConfidence: try numberValue("metadataConfidence", range: 0...1),
+            musicBrainzReleaseID: try stringValue("musicBrainzReleaseID"),
+            lyricsTimeOffsetMs: try numberValue("lyricsTimeOffsetMs", range: -120_000...120_000),
+            artistCredits: try artistCreditsValue("artistCredits")
         )
     }
 
@@ -4150,7 +4490,22 @@ final class AutomationIPCServer {
         if patch.fields.contains("albumArtist"), track.albumArtist != patch.albumArtist { return true }
         if patch.fields.contains("description"), track.userDescription != (patch.userDescription ?? "") { return true }
         if patch.fields.contains("genreTags"), track.genreTags != (patch.genreTags ?? []) { return true }
+        if patch.fields.contains("language"), track.language != (patch.language ?? "") { return true }
+        if patch.fields.contains("labelOrCompany"), track.labelOrCompany != (patch.labelOrCompany ?? "") { return true }
         if patch.fields.contains("releaseDate"), track.releaseDate != patch.releaseDate { return true }
+        if patch.fields.contains("qqMusicSongMid"), track.qqMusicSongMid != patch.qqMusicSongMid { return true }
+        if patch.fields.contains("metadataSource"), track.metadataSource != patch.metadataSource { return true }
+        if patch.fields.contains("metadataFetchedAt"), track.metadataFetchedAt != patch.metadataFetchedAt { return true }
+        if patch.fields.contains("metadataConfidence"), track.metadataConfidence != patch.metadataConfidence { return true }
+        if patch.fields.contains("musicBrainzReleaseID"), track.musicBrainzReleaseID != patch.musicBrainzReleaseID { return true }
+        if patch.fields.contains("lyricsTimeOffsetMs"), track.lyricsTimeOffsetMs != (patch.lyricsTimeOffsetMs ?? 0) { return true }
+        if patch.fields.contains("artistCredits") {
+            if let artistCredits = patch.artistCredits {
+                if track.artistCredits != artistCredits { return true }
+            } else if track.artistCreditsData != nil {
+                return true
+            }
+        }
         return false
     }
 
@@ -4314,8 +4669,10 @@ final class AutomationIPCServer {
              AutomationMethod.filesMove,
              AutomationMethod.filesDelete: return "files"
         case AutomationMethod.metadataGet,
-             AutomationMethod.metadataPatch,
-             AutomationMethod.lyricsGet,
+             AutomationMethod.metadataPatch: return "metadata"
+        case AutomationMethod.artworkGet,
+             AutomationMethod.artworkApply: return "artwork"
+        case AutomationMethod.lyricsGet,
              AutomationMethod.lyricsSearch,
              AutomationMethod.lyricsCandidates,
              AutomationMethod.lyricsCompare,
@@ -4735,6 +5092,32 @@ final class AutomationIPCServer {
         return response == .OK ? panel.url : nil
     }
 
+    /// Artwork input is always authorized by an App-owned open panel. A
+    /// caller-provided path is only used to choose the panel's initial folder;
+    /// it is never treated as sandbox authorization by itself.
+    private func requestArtworkURL(requestedPath: String?) async throws -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.image]
+        panel.title = "Choose artwork"
+        panel.prompt = "Use Artwork"
+        if let requestedPath {
+            let requestedURL = URL(fileURLWithPath: requestedPath)
+            let requestedIsDirectory = (try? requestedURL.resourceValues(
+                forKeys: [.isDirectoryKey]
+            ).isDirectory) == true
+            panel.directoryURL = FileManager.default.fileExists(atPath: requestedURL.path)
+                && requestedIsDirectory
+                ? requestedURL
+                : requestedURL.deletingLastPathComponent()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let response = panel.runModal()
+        return response == .OK ? panel.url : nil
+    }
+
     /// Library lifecycle operations use the same App-owned picker boundary as
     /// Source creation. A requested path is only a navigation hint; the
     /// selected URL is still authorized by the App and retained until the
@@ -4889,6 +5272,9 @@ final class AutomationIPCServer {
         for request: AutomationRequest,
         error: Error
     ) -> AutomationResponse {
+        if error is AutomationParameterError || error is AutomationFileOperationError {
+            return invalidParameters(for: request, error: error)
+        }
         if let error = error as? LibraryAutomationMutationError {
             switch error {
             case .sessionQuiescing:
@@ -5412,13 +5798,29 @@ final class AutomationIPCServer {
             addedAt: track.addedAt,
             importedAt: track.importedAt,
             sourceMemberships: sourceMemberships,
+            artistCredits: track.artistCredits.map {
+                AutomationTrackCredit(
+                    id: $0.id,
+                    displayName: $0.displayName,
+                    canonicalName: $0.canonicalName,
+                    role: $0.role.rawValue
+                )
+            },
             albumArtist: track.albumArtist,
+            userDescription: track.userDescription,
             genreTags: track.genreTags,
+            language: track.language,
+            labelOrCompany: track.labelOrCompany,
             releaseDate: track.releaseDate,
+            qqMusicSongMid: track.qqMusicSongMid,
             metadataSource: track.metadataSource,
+            metadataFetchedAt: track.metadataFetchedAt,
             metadataConfidence: track.metadataConfidence,
+            musicBrainzReleaseID: track.musicBrainzReleaseID,
+            lyricsTimeOffsetMs: track.lyricsTimeOffsetMs,
             lyricsStatus: trackLyricsStatus(track),
             artworkAvailable: track.artworkData != nil || track.artworkFileName != nil,
+            artworkFileName: track.artworkFileName,
             format: audio?.format,
             codec: audio?.codec,
             sampleRateHz: audio?.sampleRateHz,

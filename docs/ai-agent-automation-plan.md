@@ -382,7 +382,8 @@ membership、Metadata 和 History，并在重新出现后尽可能恢复可用�
   授权后的 Source create/import 与 Source refresh 也已改为立即返回 App-owned Job，避免
   MCP/CLI 请求超时；
 - Phase G：App metadata get/patch 已接入，明确不写原始文件 embedded tags；Artwork 当前状态
-  已进入 query，candidate mutation 保留给现有 provider owner；
+  已进入 query，并通过 App-owned artwork apply 直接写入 sidecar；provider candidate search/
+  ranking 仍保留给后续专门 owner；
 - Phase H/I：Playback、Queue、History、Diagnostics 和 scope status 已提供；已开放有明确
   合同的 `settings.get/patch`（当前为 referenced-track deletion policy）以及 App-owned
   `storage.inspect/validate/orphans/backup/diff/reload/repair`。Diagnostics 会投影 failed
@@ -457,6 +458,28 @@ embedded tags、Artwork candidate mutation、远程 HTTP 和 MCP Tasks。
 本轮已验证：PlayerAutomation SwiftPM tests、Debug App 增量编译和 `git diff --check`；
 新的资料库生命周期尚待用包含本轮代码的独立 App 完成真实 picker/alert/切库/恢复人工
 smoke，不能用协议层测试代替。真实 signed/sandbox 分发仍是后续发布门禁。
+
+### 13.2 Metadata / Artwork 控制扩展 checkpoint（2026-09-19）
+
+人工试用继续暴露了一个实际缺口：已有 `artworkRead`/`artworkWrite` scope，却没有
+对应的独立 handler；`metadata.patch` 也只覆盖少量字段。现已补齐：
+
+- 新增 `artwork.get`：返回每首 Track 的 App-owned 封面存在状态、文件名、字节数、SHA-256
+  和 Track revision，不把图片字节直接回传；
+- 新增 `artwork.apply`：支持 App-owned NSOpenPanel、`imagePath` 初始目录提示、
+  `imageBase64` 和 `clear`，通过现有 `persistTrackMetaAndArtwork` owner 写入 sidecar；
+- `metadata.get` 的 Track summary 增加当前模型已有的 credits、描述、语言、厂牌、provider
+  IDs、抓取时间、置信度、MusicBrainz release ID 和歌词偏移；`metadata.patch` 同步支持
+  这些字段，并保持 expected revision/concurrency 检查；
+- Artwork 和 Metadata 的 10 首及以上批量真实写入都要求 `confirm=true` 并由 App 前台
+  弹窗确认；`dryRun` 可在不触碰数据前查看 targets/skipped/conflicts；
+- CLI alias、MCP catalog/schema、Agent guide、capability reference 和 skill 已同步。
+
+本轮明确没有伪造“原始音频 embedded tag 写入”：当前代码没有可复用的音频格式 writer
+owner，直接改原文件会绕过现有 sandbox/备份/失败恢复边界，因此仍作为独立后续能力设计。
+当前 catalog 由 71 扩展为 73 个 capability。已完成协议测试和 App Debug build；真实
+封面选图、sidecar 落盘、批量 10 首弹窗、清除封面、重启后读取和 signed/sandbox 分发仍
+需要在独立测试 App / 发布产物上人工验收。
 
 ## 14. 与本轮原始计划的对齐
 

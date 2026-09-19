@@ -302,6 +302,8 @@ public enum AutomationMethod {
     public static let historyClear = "history.clear"
     public static let metadataGet = "metadata.get"
     public static let metadataPatch = "metadata.patch"
+    public static let artworkGet = "artwork.get"
+    public static let artworkApply = "artwork.apply"
     public static let lyricsGet = "lyrics.get"
     public static let lyricsSearch = "lyrics.search"
     public static let lyricsCandidates = "lyrics.candidates"
@@ -451,6 +453,25 @@ public struct AutomationTrackSourceMembership: Codable, Equatable, Sendable {
     }
 }
 
+public struct AutomationTrackCredit: Codable, Equatable, Sendable, Identifiable {
+    public let id: UUID
+    public let displayName: String
+    public let canonicalName: String?
+    public let role: String
+
+    public init(
+        id: UUID,
+        displayName: String,
+        canonicalName: String? = nil,
+        role: String = "primary"
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.canonicalName = canonicalName
+        self.role = role
+    }
+}
+
 public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable {
     public let id: UUID
     public let title: String
@@ -461,13 +482,22 @@ public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable
     public let addedAt: Date
     public let importedAt: Date?
     public let sourceMemberships: [AutomationTrackSourceMembership]
+    public let artistCredits: [AutomationTrackCredit]
     public let albumArtist: String?
+    public let userDescription: String
     public let genreTags: [String]
+    public let language: String
+    public let labelOrCompany: String
     public let releaseDate: Date?
+    public let qqMusicSongMid: String?
     public let metadataSource: String?
+    public let metadataFetchedAt: Date?
     public let metadataConfidence: Double?
+    public let musicBrainzReleaseID: String?
+    public let lyricsTimeOffsetMs: Double
     public let lyricsStatus: String
     public let artworkAvailable: Bool
+    public let artworkFileName: String?
     public let format: String?
     public let codec: String?
     public let sampleRateHz: Int?
@@ -486,13 +516,22 @@ public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable
         addedAt: Date,
         importedAt: Date?,
         sourceMemberships: [AutomationTrackSourceMembership] = [],
+        artistCredits: [AutomationTrackCredit] = [],
         albumArtist: String? = nil,
+        userDescription: String = "",
         genreTags: [String] = [],
+        language: String = "",
+        labelOrCompany: String = "",
         releaseDate: Date? = nil,
+        qqMusicSongMid: String? = nil,
         metadataSource: String? = nil,
+        metadataFetchedAt: Date? = nil,
         metadataConfidence: Double? = nil,
+        musicBrainzReleaseID: String? = nil,
+        lyricsTimeOffsetMs: Double = 0,
         lyricsStatus: String = "none",
         artworkAvailable: Bool = false,
+        artworkFileName: String? = nil,
         format: String? = nil,
         codec: String? = nil,
         sampleRateHz: Int? = nil,
@@ -510,13 +549,22 @@ public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable
         self.addedAt = addedAt
         self.importedAt = importedAt
         self.sourceMemberships = sourceMemberships
+        self.artistCredits = artistCredits
         self.albumArtist = albumArtist
+        self.userDescription = userDescription
         self.genreTags = genreTags
+        self.language = language
+        self.labelOrCompany = labelOrCompany
         self.releaseDate = releaseDate
+        self.qqMusicSongMid = qqMusicSongMid
         self.metadataSource = metadataSource
+        self.metadataFetchedAt = metadataFetchedAt
         self.metadataConfidence = metadataConfidence
+        self.musicBrainzReleaseID = musicBrainzReleaseID
+        self.lyricsTimeOffsetMs = lyricsTimeOffsetMs
         self.lyricsStatus = lyricsStatus
         self.artworkAvailable = artworkAvailable
+        self.artworkFileName = artworkFileName
         self.format = format
         self.codec = codec
         self.sampleRateHz = sampleRateHz
@@ -528,8 +576,11 @@ public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable
 
     private enum CodingKeys: String, CodingKey {
         case id, title, artist, album, duration, availability, addedAt, importedAt
-        case sourceMemberships, albumArtist, genreTags, releaseDate, metadataSource
-        case metadataConfidence, lyricsStatus, artworkAvailable, format, codec
+        case sourceMemberships, artistCredits, albumArtist, userDescription
+        case genreTags, language, labelOrCompany, releaseDate, qqMusicSongMid
+        case metadataSource, metadataFetchedAt, metadataConfidence, musicBrainzReleaseID
+        case lyricsTimeOffsetMs, lyricsStatus, artworkAvailable, artworkFileName
+        case format, codec
         case sampleRateHz, bitDepth, channelCount, filePath, playlistIDs
     }
 
@@ -547,13 +598,25 @@ public struct AutomationTrackSummary: Codable, Equatable, Sendable, Identifiable
             [AutomationTrackSourceMembership].self,
             forKey: .sourceMemberships
         ) ?? []
+        artistCredits = try container.decodeIfPresent(
+            [AutomationTrackCredit].self,
+            forKey: .artistCredits
+        ) ?? []
         albumArtist = try container.decodeIfPresent(String.self, forKey: .albumArtist)
+        userDescription = try container.decodeIfPresent(String.self, forKey: .userDescription) ?? ""
         genreTags = try container.decodeIfPresent([String].self, forKey: .genreTags) ?? []
+        language = try container.decodeIfPresent(String.self, forKey: .language) ?? ""
+        labelOrCompany = try container.decodeIfPresent(String.self, forKey: .labelOrCompany) ?? ""
         releaseDate = try container.decodeIfPresent(Date.self, forKey: .releaseDate)
+        qqMusicSongMid = try container.decodeIfPresent(String.self, forKey: .qqMusicSongMid)
         metadataSource = try container.decodeIfPresent(String.self, forKey: .metadataSource)
+        metadataFetchedAt = try container.decodeIfPresent(Date.self, forKey: .metadataFetchedAt)
         metadataConfidence = try container.decodeIfPresent(Double.self, forKey: .metadataConfidence)
+        musicBrainzReleaseID = try container.decodeIfPresent(String.self, forKey: .musicBrainzReleaseID)
+        lyricsTimeOffsetMs = try container.decodeIfPresent(Double.self, forKey: .lyricsTimeOffsetMs) ?? 0
         lyricsStatus = try container.decodeIfPresent(String.self, forKey: .lyricsStatus) ?? "none"
         artworkAvailable = try container.decodeIfPresent(Bool.self, forKey: .artworkAvailable) ?? false
+        artworkFileName = try container.decodeIfPresent(String.self, forKey: .artworkFileName)
         format = try container.decodeIfPresent(String.self, forKey: .format)
         codec = try container.decodeIfPresent(String.self, forKey: .codec)
         sampleRateHz = try container.decodeIfPresent(Int.self, forKey: .sampleRateHz)
@@ -1041,6 +1104,74 @@ public struct AutomationMetadataMutationResult: Codable, Equatable, Sendable {
     ) {
         self.applied = applied
         self.dryRun = dryRun
+        self.updatedTrackIDs = updatedTrackIDs
+        self.skippedTrackIDs = skippedTrackIDs
+        self.conflictedTrackIDs = conflictedTrackIDs
+        self.message = message
+    }
+}
+
+public struct AutomationArtworkInfo: Codable, Equatable, Sendable, Identifiable {
+    public let trackID: UUID
+    public let available: Bool
+    public let fileName: String?
+    public let byteCount: Int?
+    public let sha256: String?
+    public let revision: String?
+
+    public var id: UUID { trackID }
+
+    public init(
+        trackID: UUID,
+        available: Bool,
+        fileName: String? = nil,
+        byteCount: Int? = nil,
+        sha256: String? = nil,
+        revision: String? = nil
+    ) {
+        self.trackID = trackID
+        self.available = available
+        self.fileName = fileName
+        self.byteCount = byteCount
+        self.sha256 = sha256
+        self.revision = revision
+    }
+}
+
+public struct AutomationArtworkGetResult: Codable, Equatable, Sendable {
+    public let artworks: [AutomationArtworkInfo]
+    public let revision: String
+
+    public init(artworks: [AutomationArtworkInfo], revision: String) {
+        self.artworks = artworks.sorted { $0.trackID.uuidString < $1.trackID.uuidString }
+        self.revision = revision
+    }
+}
+
+public struct AutomationArtworkMutationResult: Codable, Equatable, Sendable {
+    public let applied: Bool
+    public let dryRun: Bool
+    public let confirmed: Bool
+    public let input: String
+    public let updatedTrackIDs: [UUID]
+    public let skippedTrackIDs: [UUID]
+    public let conflictedTrackIDs: [UUID]
+    public let message: String
+
+    public init(
+        applied: Bool,
+        dryRun: Bool,
+        confirmed: Bool = false,
+        input: String,
+        updatedTrackIDs: [UUID] = [],
+        skippedTrackIDs: [UUID] = [],
+        conflictedTrackIDs: [UUID] = [],
+        message: String
+    ) {
+        self.applied = applied
+        self.dryRun = dryRun
+        self.confirmed = confirmed
+        self.input = input
         self.updatedTrackIDs = updatedTrackIDs
         self.skippedTrackIDs = skippedTrackIDs
         self.conflictedTrackIDs = conflictedTrackIDs
@@ -1628,10 +1759,12 @@ public enum AutomationDocumentation {
     - Low-risk mutations may execute directly after authorization. Use dryRun for impact inspection. High-risk file deletion, destructive mirroring, mass deletion, history clearing and direct storage writes require App-owned foreground confirmation.
     - Prefer the formal Automation API, then diagnostics/repair, then the current-version source and storage documentation. Back up before any controlled storage fallback and validate/reload afterward.
     - Query first, preserve the returned revision, apply with expectedRevision when offered, and verify the result. Use idempotencyKey when retrying a mutation.
+    - Metadata is App-owned and sidecar-backed: `metadata.get`/`metadata.patch` cover the editable Track fields, while embedded audio-file tags remain a separate capability. Use `dryRun` before a batch; batches of 10 or more require `confirm` plus foreground confirmation.
+    - Artwork is App-owned and sidecar-backed: `artwork.get` reports availability and a digest without returning image bytes; `artwork.apply` accepts an App picker, an image path hint, base64 image data, or an explicit clear. Batches of 10 or more require `confirm` plus foreground confirmation.
     """
 
     public static let capabilityOverview = """
-    The shared automation layer is App-owned. CLI and MCP are adapters over the same AF_UNIX IPC contract. `library.tracks` is the composable query entry point: combine text, IDs, Source/Playlist membership, availability, lyric/artwork/metadata state, technical audio fields, boolean all/any/not predicates, stable sort and offset pagination. Library Track identity is resolved before Playlist membership mutations, so an existing Track can be added to any Playlist without being imported again. Source exclusions, supported persistent settings, and App-owned storage inspect/validate/orphans/backup/diff/reload/repair are exposed as separate capabilities; arbitrary file or JSON writes are not ordinary tools.
+    The shared automation layer is App-owned. CLI and MCP are adapters over the same AF_UNIX IPC contract. `library.tracks` is the composable query entry point: combine text, IDs, Source/Playlist membership, availability, lyric/artwork/metadata state, technical audio fields, boolean all/any/not predicates, stable sort and offset pagination. Library Track identity is resolved before Playlist membership mutations, so an existing Track can be added to any Playlist without being imported again. Source exclusions, supported persistent settings, App-owned metadata/artwork, and App-owned storage inspect/validate/orphans/backup/diff/reload/repair are exposed as separate capabilities; arbitrary file or JSON writes are not ordinary tools.
     """
 }
 
@@ -2151,12 +2284,33 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.metadataPatch,
             title: "Patch Metadata",
-            description: "Patch App-owned Track metadata in a batch. This does not write embedded tags into the original audio file.",
+            description: "Patch the editable App-owned Track metadata, including credits, language, label, provider IDs, confidence, fetch time and lyric offset. This does not write embedded tags into the original audio file; batches of 10 or more require foreground confirmation.",
             readOnly: false,
+            requiresConfirmation: true,
             scopes: [.metadataWrite, .libraryRead],
             risk: .medium,
             supportsDryRun: true,
             inputSchema: metadataPatchInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.artworkGet,
+            title: "Get Artwork",
+            description: "Read App-owned Track artwork availability, stored filename, size and digest without returning image bytes.",
+            readOnly: true,
+            scopes: [.artworkRead, .libraryRead],
+            risk: .low,
+            inputSchema: artworkGetInputSchema
+        ),
+        AutomationToolDescriptor(
+            name: AutomationMethod.artworkApply,
+            title: "Apply Artwork",
+            description: "Replace or clear App-owned Track artwork using an App-owned picker, an image path hint or base64 data. Batches of 10 or more require foreground confirmation; original audio-file tags are not changed.",
+            readOnly: false,
+            requiresConfirmation: true,
+            scopes: [.artworkWrite, .libraryRead],
+            risk: .medium,
+            supportsDryRun: true,
+            inputSchema: artworkApplyInputSchema
         ),
         AutomationToolDescriptor(
             name: AutomationMethod.lyricsGet,
@@ -2584,7 +2738,40 @@ public enum AutomationToolCatalog {
             ]),
             "patch": .object(["type": .string("object")]),
             "expectedRevisions": .object(["type": .string("object")]),
-            "dryRun": .object(["type": .string("boolean")])
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
+        ])
+    ])
+
+    private static let artworkGetInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackIDs")]),
+        "properties": .object([
+            "trackIDs": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "items": .object(["type": .string("string")])
+            ])
+        ])
+    ])
+
+    private static let artworkApplyInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackIDs")]),
+        "properties": .object([
+            "trackIDs": .object([
+                "type": .string("array"),
+                "minItems": .number(1),
+                "items": .object(["type": .string("string")])
+            ]),
+            "imagePath": .object(["type": .string("string")]),
+            "imageBase64": .object(["type": .string("string")]),
+            "clear": .object(["type": .string("boolean")]),
+            "expectedRevisions": .object(["type": .string("object")]),
+            "dryRun": .object(["type": .string("boolean")]),
+            "confirm": .object(["type": .string("boolean")])
         ])
     ])
 

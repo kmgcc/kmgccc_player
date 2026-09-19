@@ -546,9 +546,46 @@ private struct AutomationCLI {
                 params = .object([
                     "trackIDs": .array(args.map { .string($0) }),
                     "patch": patchJSON,
-                    "dryRun": .boolean(options.dryRun)
+                    "dryRun": .boolean(options.dryRun),
+                    "confirm": .boolean(options.confirm)
                 ])
             default: writeDiagnostic("usage error: unknown metadata action \(action)"); return .usage
+            }
+        case "artwork":
+            guard let action = args.first else {
+                writeDiagnostic("usage error: artwork requires get or apply")
+                return .usage
+            }
+            args.removeFirst()
+            switch action {
+            case "get":
+                guard !args.isEmpty else {
+                    writeDiagnostic("usage error: artwork get requires Track IDs")
+                    return .usage
+                }
+                method = AutomationMethod.artworkGet
+                params = .object(["trackIDs": .array(args.map { .string($0) })])
+            case "apply":
+                guard !args.isEmpty else {
+                    writeDiagnostic("usage error: artwork apply requires Track IDs")
+                    return .usage
+                }
+                var values: [String: AutomationJSONValue] = [:]
+                if let paramsJSON = options.paramsJSON {
+                    guard case .object(let extra) = paramsJSON else {
+                        writeDiagnostic("usage error: artwork apply --params-json must be an object")
+                        return .usage
+                    }
+                    values.merge(extra) { _, incoming in incoming }
+                }
+                values["trackIDs"] = .array(args.map { .string($0) })
+                values["dryRun"] = .boolean(options.dryRun)
+                values["confirm"] = .boolean(options.confirm)
+                method = AutomationMethod.artworkApply
+                params = .object(values)
+            default:
+                writeDiagnostic("usage error: unknown artwork action \(action)")
+                return .usage
             }
         case "lyrics":
             guard let action = args.first else { writeDiagnostic("usage error: lyrics requires get, search, candidates, compare, apply or refresh"); return .usage }
@@ -1138,6 +1175,8 @@ private struct AutomationCLI {
           history list|clear       Read or clear listening history
           metadata get <track-id>...
           metadata patch <track-id>... --params-json '{"title":"..."}'
+          artwork get <track-id>...
+          artwork apply <track-id>... --params-json '{"imagePath":"/path/cover.jpg"}'
           lyrics get <track-id>
           lyrics search|candidates <track-id> [--params-json '{...}']
           lyrics compare|apply <track-id> --params-json '{...}'

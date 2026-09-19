@@ -89,6 +89,12 @@ mutation 时，可以在 `tools/call.params` 旁带本项目扩展的 `context` 
 它的 dry-run 可以在不授予删除 scope 时先查看影响。路径参数只用于定位 picker，不能绕过
 security-scoped authorization。
 
+Metadata 与 Artwork 也共用同一套 App-owned contract：`metadata.get/patch` 查询和修改
+Track 元数据，`artwork.get` 返回封面摘要，`artwork.apply` 接受 App picker、`imagePath`
+路径提示、`imageBase64` 或 `clear`。这些操作不会改写原始音频文件的 embedded tags。
+对 10 首及以上 Track，先调用 `dryRun` 观察 targets/conflicts，再传 `confirm=true`；
+App 会在前台弹出确认框，MCP 的 acknowledgement 不能绕过它。应用后应重新 query 验证。
+
 长操作的 catalog annotation 会额外标记 `x-kmgccc-supports-jobs: true`。目前
 `source.create`（用户完成 App picker 授权后）、`source.refresh` 和 `lyrics.refresh`
 返回包含 Job ID 的结构化结果；调用方应使用 `jobs.get` 轮询并在 Job 完成后重新查询

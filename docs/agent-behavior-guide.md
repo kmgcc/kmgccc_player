@@ -101,8 +101,16 @@ Metadata、History 和 Playlist membership 不会被静默删除。
 - 先查询 `lyricsStatus`/`metadataConfidence`，再批量选择目标。
 - Lyrics refresh 返回 Job；不要为几万首歌逐首发同步调用。
 - 默认只在新结果质量更高时替换：word-synced > line-synced > plain > none。
-- `metadata.patch` 修改的是播放器 App-owned metadata，不是用户原始音频文件的 embedded tags。
-- 不要无条件覆盖已有较高置信度或用户手工数据；大批量覆盖需 preview 和 App confirmation。
+- `metadata.get` 返回当前 Track 的完整 App-owned 元数据投影；`metadata.patch` 可修改标题、
+  艺人/credits、专辑、专辑艺人、描述、流派、语言、厂牌、发行日期、QQ/MusicBrainz/provider
+  字段、置信度、抓取时间和歌词偏移。它不是用户原始音频文件的 embedded tags 写入器。
+- `artwork.get` 只返回 App-owned 封面的存在、文件名、大小、SHA-256 和 Track revision；
+  不把图片字节直接塞入查询响应。`artwork.apply` 可使用 App picker、`imagePath`（仅作
+  picker 初始位置）、`imageBase64` 或 `clear`，并写入资料库 artwork sidecar。
+- 不要无条件覆盖已有较高置信度或用户手工数据。Metadata/Artwork 的 10 首及以上批量应先
+  `dryRun`；真实调用必须带 `confirm=true`，并等待 App 前台弹窗，调用方的 `--yes` 不能
+  绕过弹窗。完成后重新调用 `metadata.get`/`artwork.get` 或 `library.tracks` 验证
+  applied/skipped/conflicted。
 
 ## Playback and queue
 

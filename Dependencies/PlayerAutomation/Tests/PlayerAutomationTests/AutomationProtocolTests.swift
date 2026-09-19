@@ -84,6 +84,8 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     #expect(names.contains(AutomationMethod.libraryRename))
     #expect(names.contains(AutomationMethod.libraryRelocate))
     #expect(names.contains(AutomationMethod.libraryRemove))
+    #expect(names.contains(AutomationMethod.artworkGet))
+    #expect(names.contains(AutomationMethod.artworkApply))
 
     let readOnly = try #require(
         AutomationToolCatalog.descriptor(for: AutomationMethod.libraryTracks)
@@ -178,6 +180,36 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
     #expect(libraryRemove.requiresConfirmation)
     #expect(libraryRemove.scopes == [.libraryDelete])
 
+    let artworkGet = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.artworkGet)
+    )
+    #expect(artworkGet.readOnly)
+    #expect(artworkGet.scopes == [.artworkRead, .libraryRead].sorted { $0.rawValue < $1.rawValue })
+
+    let artworkApply = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.artworkApply)
+    )
+    #expect(!artworkApply.readOnly)
+    #expect(artworkApply.requiresConfirmation)
+    #expect(artworkApply.supportsDryRun)
+    #expect(artworkApply.risk == .medium)
+    guard case .object(let artworkSchema) = artworkApply.inputSchema,
+          case .array(let artworkRequired) = artworkSchema["required"] else {
+        Issue.record("artwork.apply must declare required Track IDs")
+        return
+    }
+    #expect(artworkRequired.contains(.string("trackIDs")))
+    #expect(
+        AutomationToolCatalog.unknownParameterKeys(
+            for: AutomationMethod.artworkApply,
+            params: .object([
+                "trackIDs": .array([]),
+                "imageBase64": .string("..."),
+                "unexpected": .boolean(true)
+            ])
+        ) == ["unexpected"]
+    )
+
     for method in [
         AutomationMethod.sourceSetExcludedPath,
         AutomationMethod.sourceSetMonitorPolicy,
@@ -195,6 +227,39 @@ func automationToolCatalogIsStableAndMarksMutationsExplicitly() throws {
         }
         #expect(!descriptor.scopes.isEmpty || method == AutomationMethod.settingsGet)
     }
+}
+
+@Test
+func artworkAutomationResultRoundTripsAndMetadataFieldsDecodeDefaults() throws {
+    let trackID = UUID()
+    let artwork = AutomationArtworkMutationResult(
+        applied: true,
+        dryRun: false,
+        confirmed: true,
+        input: "imageBase64",
+        updatedTrackIDs: [trackID],
+        message: "updated"
+    )
+    let data = try AutomationWireCoding.encoder().encode(artwork)
+    let decoded = try AutomationWireCoding.decoder().decode(
+        AutomationArtworkMutationResult.self,
+        from: data
+    )
+    #expect(decoded == artwork)
+
+    let summary = try AutomationWireCoding.decoder().decode(
+        AutomationTrackSummary.self,
+        from: Data(
+            """
+            {"id":"\(trackID.uuidString)","title":"T","artist":"A","album":"B",
+             "duration":1,"availability":"available","addedAt":"2026-01-01T00:00:00Z"}
+            """.replacingOccurrences(of: "\n", with: "").utf8
+        )
+    )
+    #expect(summary.artistCredits.isEmpty)
+    #expect(summary.userDescription.isEmpty)
+    #expect(summary.lyricsTimeOffsetMs == 0)
+    #expect(summary.artworkFileName == nil)
 }
 
 @Test

@@ -34,7 +34,8 @@ PlaybackCoordinator、Repository、Source reconciler 和 Job coordinator 仍然�
 | Playback | `playback.state/play/pause/next/previous/seek/setVolume/setMode` | 统一进入 PlaybackCoordinator |
 | Queue | `queue.get/replace/enqueue/enqueueNext/clear` | 返回 opaque queue revision |
 | History | `history.list/clear` | 清空 History 是 App confirmation 的高风险操作 |
-| Metadata | `metadata.get/patch` | 只写 App metadata，不写原始文件 embedded tags |
+| Metadata | `metadata.get/patch` | 读写当前 Track 的 App-owned 字段：标题、艺人/credits、专辑、专辑艺人、描述、流派、语言、厂牌、发行日期、QQ/MusicBrainz/provider 字段、置信度、抓取时间和歌词偏移；不写原始文件 embedded tags；10 首及以上需 `confirm` 与 App 前台确认 |
+| Artwork | `artwork.get/apply` | 读取封面状态/文件名/大小/SHA-256；可用 App 选图、路径提示、base64 或 `clear` 写入 App-owned artwork；10 首及以上需 `confirm` 与 App 前台确认 |
 | Lyrics | `lyrics.get/search/candidates/compare/apply/refresh` | 候选可比较和明确应用；refresh 返回 App-owned Job，逐字优先 |
 | Jobs | `jobs.list/get/cancel/retry` | 每个资料库保留有界历史；支持可重建的 Lyrics/Source Job 重试 |
 | Diagnostics | `diagnostics.health` | Library/Source/missing/Job/storage/Playlist-reference evidence |
@@ -43,8 +44,10 @@ PlaybackCoordinator、Repository、Source reconciler 和 Job coordinator 仍然�
 | Files | `files.inspect/rename/move/delete` | inspect 只读；rename/move 遵守 Source 授权和路径 containment，批量需 preview/App confirmation；delete 默认 scope 拒绝且始终前台确认 |
 | Policy | `automation.capabilities/scopes/grantScope/revokeScope` | scope 状态由 App 持久化并执行 |
 
-Artwork 的当前可见状态通过 `library.tracks` 的 `artworkAvailable` 返回；候选搜索和批量
-替换仍应沿用现有 UI/provider owner，尚未伪造成独立公开 mutation。
+`library.tracks` 仍返回 `artworkAvailable` 和 `artworkFileName`，而 `artwork.get` 不返回原始
+图片字节，只返回可验证的状态摘要。`artwork.apply` 写入资料库的 App-owned artwork sidecar；
+它不会改写音频文件内部的 embedded artwork/tag。远程 provider 候选搜索尚未接入这个统一
+mutation，若使用候选应先由 Agent 取得图片，再通过明确的 `imageBase64` 或 App picker 应用。
 
 ## Query / Selection
 
@@ -82,8 +85,9 @@ Library 或 Playlist membership 在分页期间改变，会返回 `conflict`，�
 
 ## Risk and scope
 
-低风险读取、Playlist membership、普通 Source refresh、播放控制和普通 App metadata patch
-可在 scope 已授权后直接执行。每个 catalog descriptor 都声明 `scopes`、`risk`、
+低风险读取、Playlist membership、普通 Source refresh、播放控制和少量 App metadata/artwork
+patch 可在 scope 已授权后直接执行；10 首及以上的 metadata/artwork batch 必须显式
+`confirm=true` 并通过 App 前台弹窗。每个 catalog descriptor 都声明 `scopes`、`risk`、
 `supportsDryRun` 和 `requiresConfirmation`。
 
 默认 scope 会授予当前正常读取和普通写入能力；`library.delete`、`files.delete` 与
@@ -103,11 +107,11 @@ App 前台确认。以下动作不能用 Agent 自己的一句“确定”替代
 
 ## Revisions and retries
 
-Library query、Playlist、Queue、Metadata patch 支持 opaque revision/`expectedRevision`。
-查询后若 UI 先修改，返回 `conflict`，调用方必须重新查询、重新计算 selection 再重试。重复
-membership 加入是集合语义；需要跨进程重试的 mutation 可在 request context 里提供
-`idempotencyKey`。相同 key 配不同参数会被拒绝；MCP 若未显式提供 key，会使用同一个 JSON-RPC
-request id 生成重试 key。
+Library query、Playlist、Queue、Metadata patch 和 Artwork apply 支持 opaque
+`expectedRevision`（按 Track ID 提供 `expectedRevisions`）。查询后若 UI 先修改，返回
+`conflict`，调用方必须重新查询、重新计算 selection 再重试。重复 membership 加入是集合
+语义；需要跨进程重试的 mutation 可在 request context 里提供 `idempotencyKey`。相同 key
+配不同参数会被拒绝；MCP 若未显式提供 key，会使用同一个 JSON-RPC request id 生成重试 key。
 
 ## Lyrics
 
@@ -135,8 +139,9 @@ import Job。
 ## Not yet exposed
 
 当前代码没有足够稳定、独立的 owner 时，不开放伪 capability。文件级 reveal/copy/export、
-embedded tag 写入、Artwork candidate apply、远程 HTTP transport、MCP Tasks 映射、复杂 Settings
-patch 和任意 JSON write 仍需沿用后续阶段的专门设计。Storage backup 是 metadata-only：它不复制
+embedded tag 写入、远程 HTTP transport、MCP Tasks 映射、复杂 Settings patch 和任意 JSON
+write 仍需沿用后续阶段的专门设计。Artwork provider 候选搜索/排名尚未通过统一 capability
+暴露；已有图片可通过 `artwork.apply` 明确应用。Storage backup 是 metadata-only：它不复制
 音频、缓存、索引或 live SQLite；`storage.diff` 只接受本 App 为当前资料库创建的 backup 路径。
 高级 Agent 可按 [Agent Behavior Guide](agent-behavior-guide.md) 使用诊断、backup/diff、源码审查
 和 validate/reload 进行受控 fallback。
