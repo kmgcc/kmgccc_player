@@ -2923,6 +2923,11 @@ final class AutomationIPCServer {
                         throw AutomationParameterError.invalidValue("imageBase64")
                     }
                     resolvedInput = ("imageBase64", data)
+                } else if let imagePath,
+                           let data = try? Data(contentsOf: URL(fileURLWithPath: expandPath(imagePath))),
+                           data.count <= 16 * 1024 * 1024,
+                           ArtworkDataNormalizer.isDecodableImage(data) {
+                    resolvedInput = ("imagePath", ArtworkDataNormalizer.normalizedJPEGData(from: data) ?? data)
                 } else {
                     guard let selectedURL = try await requestArtworkURL(
                         requestedPath: imagePath.map(expandPath(_:))
@@ -4759,6 +4764,19 @@ final class AutomationIPCServer {
             }
             let normalized = ArtworkDataNormalizer.normalizedJPEGData(from: data) ?? data
             return ResolvedArtworkInput(kind: "imageBase64", data: normalized)
+        }
+
+        if let imagePath {
+            let expanded = expandPath(imagePath)
+            let directURL = URL(fileURLWithPath: expanded)
+            if let data = try? Data(contentsOf: directURL),
+               data.count <= 16 * 1024 * 1024,
+               ArtworkDataNormalizer.isDecodableImage(data) {
+                return ResolvedArtworkInput(
+                    kind: "imagePath",
+                    data: ArtworkDataNormalizer.normalizedJPEGData(from: data) ?? data
+                )
+            }
         }
 
         guard let selectedURL = try await requestArtworkURL(
