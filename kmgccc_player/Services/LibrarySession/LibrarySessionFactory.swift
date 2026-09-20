@@ -135,6 +135,28 @@ final class LibrarySessionFactory: LibrarySessionBuilding {
                     category: .library
                 )
             }
+            let scopedSettingsStore = LibraryScopedSettingsStore(paths: context.paths)
+            if let scopedSettings = try? await scopedSettingsStore.load(),
+               let trustedBookmark = scopedSettings.trustedAudioRootBookmarkData {
+                do {
+                    let configuration = try scope.configureTrustedAutomationRoot(
+                        bookmarkData: trustedBookmark,
+                        bookmarkResolver: sourceBookmarkResolver,
+                        requiresSecurityScope: requiresSecurityScope
+                    )
+                    if let refreshedBookmarkData = configuration.refreshedBookmarkData {
+                        try? await scopedSettingsStore.setTrustedAudioRoot(
+                            bookmarkData: refreshedBookmarkData,
+                            path: configuration.url.path
+                        )
+                    }
+                } catch {
+                    Log.warning(
+                        "[LibrarySession] trusted automation root unavailable: \(error)",
+                        category: .library
+                    )
+                }
+            }
             sourceStore = store
             sourceScope = scope
         } else {

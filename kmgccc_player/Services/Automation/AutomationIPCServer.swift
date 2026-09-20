@@ -610,7 +610,7 @@ final class AutomationIPCServer {
                 guard confirm else {
                     return confirmationRequired(
                         for: request,
-                        message: "Creating a library changes the active library and requires confirm=true plus foreground App confirmation.",
+                        message: "创建资料库会切换当前资料库，需要 confirm=true，并由播放器在前台确认。",
                         details: .object([
                             "operation": .string(AutomationMethod.libraryCreate),
                             "mode": .string(mode.rawValue),
@@ -619,15 +619,15 @@ final class AutomationIPCServer {
                     )
                 }
                 guard await confirmDestructiveOperation(
-                    title: "Create and activate library?",
-                    message: "Create the \(displayName) \(mode.rawValue) library and make it the active library? The current playback session will be switched."
+                    title: "创建并切换资料库？",
+                    message: "要创建“\(displayName)”资料库并切换到它吗？当前播放会话将随之切换。"
                 ) else {
                     return interactionCancelled(for: request)
                 }
                 guard let selectedURL = await requestLibraryDirectory(
                     requestedPath: requestedParentPath.map(expandPath(_:)),
-                    title: "Choose library location",
-                    prompt: "Choose",
+                    title: "选择资料库位置",
+                    prompt: "选择",
                     allowsCreatingDirectories: true
                 ) else {
                     return interactionCancelled(for: request)
@@ -736,20 +736,20 @@ final class AutomationIPCServer {
                 guard confirm else {
                     return confirmationRequired(
                         for: request,
-                        message: "Opening a library changes the active library and requires confirm=true plus foreground App confirmation.",
+                        message: "打开资料库会切换当前资料库，需要 confirm=true，并由播放器在前台确认。",
                         details: .object(["operation": .string(AutomationMethod.libraryOpen)])
                     )
                 }
                 guard await confirmDestructiveOperation(
-                    title: "Open and activate library?",
-                    message: "Open the selected music library and make it the active library? The current playback session will be switched."
+                    title: "打开并切换资料库？",
+                    message: "要打开所选资料库并切换到它吗？当前播放会话将随之切换。"
                 ) else {
                     return interactionCancelled(for: request)
                 }
                 guard let selectedURL = await requestLibraryDirectory(
                     requestedPath: requestedPath.map(expandPath(_:)),
-                    title: "Choose existing library",
-                    prompt: "Open",
+                    title: "选择现有资料库",
+                    prompt: "打开",
                     allowsCreatingDirectories: false
                 ) else {
                     return interactionCancelled(for: request)
@@ -823,7 +823,7 @@ final class AutomationIPCServer {
                 guard confirm else {
                     return confirmationRequired(
                         for: request,
-                        message: "Switching the active library requires confirm=true plus foreground App confirmation.",
+                        message: "切换当前资料库需要 confirm=true，并由播放器在前台确认。",
                         details: .object([
                             "operation": .string(AutomationMethod.librarySwitch),
                             "libraryID": .string(libraryID.uuidString)
@@ -847,8 +847,8 @@ final class AutomationIPCServer {
                     )
                 }
                 guard await confirmDestructiveOperation(
-                    title: "Switch active library?",
-                    message: "Switch the player to \(target.displayName)? The current playback session will be closed and the registered library will be opened."
+                    title: "切换当前资料库？",
+                    message: "要切换到“\(target.displayName)”吗？当前播放会话将关闭并重新打开所选资料库。"
                 ) else {
                     return interactionCancelled(for: request)
                 }
@@ -976,7 +976,7 @@ final class AutomationIPCServer {
                 guard confirm else {
                     return confirmationRequired(
                         for: request,
-                        message: "Relocating a library changes files on disk and requires confirm=true plus foreground App confirmation.",
+                        message: "迁移资料库会改变磁盘上的文件位置，需要 confirm=true，并由播放器在前台确认。",
                         details: .object([
                             "operation": .string(AutomationMethod.libraryRelocate),
                             "libraryID": .string(libraryID.uuidString)
@@ -984,15 +984,15 @@ final class AutomationIPCServer {
                     )
                 }
                 guard await confirmDestructiveOperation(
-                    title: "Relocate library?",
-                    message: "Move \(target.displayName) to a new location? The current playback session will be closed and reopened after the move."
+                    title: "迁移资料库？",
+                    message: "要将“\(target.displayName)”移动到新位置吗？移动后当前播放会话将重新打开。"
                 ) else {
                     return interactionCancelled(for: request)
                 }
                 guard let selectedURL = await requestLibraryDirectory(
                     requestedPath: requestedParentPath.map(expandPath(_:)),
-                    title: "Choose new library location",
-                    prompt: "Move Here",
+                    title: "选择新的资料库位置",
+                    prompt: "移到这里",
                     allowsCreatingDirectories: true
                 ) else {
                     return interactionCancelled(for: request)
@@ -1076,7 +1076,7 @@ final class AutomationIPCServer {
                 guard confirm else {
                     return confirmationRequired(
                         for: request,
-                        message: "Moving a library to the macOS Trash requires confirm=true plus foreground App confirmation.",
+                        message: "将资料库移到 macOS 废纸篓需要 confirm=true，并由播放器在前台确认。",
                         details: .object([
                             "operation": .string(AutomationMethod.libraryRemove),
                             "libraryID": .string(libraryID.uuidString)
@@ -1084,8 +1084,8 @@ final class AutomationIPCServer {
                     )
                 }
                 guard await confirmDestructiveOperation(
-                    title: "Move library to Trash?",
-                    message: "Move \(target.displayName) and its library data to the macOS Trash? The App will keep other registered libraries and select a safe successor."
+                    title: "将资料库移到废纸篓？",
+                    message: "要将“\(target.displayName)”及其资料库数据移到 macOS 废纸篓吗？其他资料库会保留，并继续使用可用的资料库。"
                 ) else {
                     return interactionCancelled(for: request)
                 }
@@ -1690,7 +1690,7 @@ final class AutomationIPCServer {
                 guard confirm else {
                     return confirmationRequired(
                         for: request,
-                        message: "Deleting a playlist requires confirm=true; the App will still ask for foreground confirmation.",
+                        message: "删除播放列表需要 confirm=true，并由播放器在前台确认。",
                         details: .object([
                             "playlistID": .string(playlistID.uuidString),
                             "trackCount": .number(Double(summary.trackCount))
@@ -1698,8 +1698,8 @@ final class AutomationIPCServer {
                     )
                 }
                 guard await confirmDestructiveOperation(
-                    title: "Delete playlist?",
-                    message: "Delete \(summary.name) and its \(summary.trackCount) memberships? Tracks and audio files will be retained."
+                    title: "删除播放列表？",
+                    message: "要删除“\(summary.name)”及其 \(summary.trackCount) 条歌曲关系吗？歌曲和音频文件会保留。"
                 ) else {
                     return interactionCancelled(for: request)
                 }
@@ -1877,15 +1877,35 @@ final class AutomationIPCServer {
                     )
                 }
 
-                let selectedURL = try await requestSourceURL(
-                    mode: mode,
-                    requestedPath: normalizedRequestedPath
-                )
+                let inheritedAuthorization: Bool = {
+                    guard let requestedPath = normalizedRequestedPath else { return false }
+                    let requestedURL = URL(fileURLWithPath: requestedPath, isDirectory: mode == .directory)
+                    guard FileManager.default.fileExists(atPath: requestedURL.path) else { return false }
+                    let isDirectory = (try? requestedURL.resourceValues(
+                        forKeys: [.isDirectoryKey]
+                    ).isDirectory) == true
+                    guard isDirectory == (mode == .directory) else { return false }
+                    guard let sourceScope = session.referencedSourceScope else { return false }
+                    return sourceScope.authorizedDirectorySourceID(containing: requestedURL) != nil
+                        || sourceScope.isTrustedAutomationPath(requestedURL)
+                }()
+                let selectedURL: URL?
+                if inheritedAuthorization, let normalizedRequestedPath {
+                    selectedURL = URL(
+                        fileURLWithPath: normalizedRequestedPath,
+                        isDirectory: mode == .directory
+                    )
+                } else {
+                    selectedURL = try await requestSourceURL(
+                        mode: mode,
+                        requestedPath: normalizedRequestedPath
+                    )
+                }
                 guard let selectedURL else {
                     return interactionCancelled(for: request)
                 }
                 let selection = LibraryInitialImportSelection(urls: [selectedURL])
-                guard selection.hasUsableAccess else {
+                guard selection.hasUsableAccess || inheritedAuthorization else {
                     let path = selectedURL.path
                     selection.release()
                     return permissionDenied(
@@ -2141,18 +2161,23 @@ final class AutomationIPCServer {
                         for: request
                     )
                 }
-                guard confirm else {
-                    return confirmationRequired(
-                        for: request,
-                        message: "Removing a Source requires confirm=true; the App will still ask for foreground confirmation.",
-                        details: .object(["sourceID": .string(sourceID.uuidString)])
-                    )
-                }
-                guard await confirmDestructiveOperation(
-                    title: "Remove source?",
-                    message: "Remove \(descriptor.displayName) from the active library? Files will not be deleted; affected Tracks may become missing."
-                ) else {
-                    return interactionCancelled(for: request)
+                let isTrusted = session.referencedSourceScope?.isTrustedAutomationPath(
+                    URL(fileURLWithPath: descriptor.lastKnownPath)
+                ) == true
+                if !isTrusted {
+                    guard confirm else {
+                        return confirmationRequired(
+                            for: request,
+                            message: "移除来源需要 confirm=true，并由播放器在前台确认。",
+                            details: .object(["sourceID": .string(sourceID.uuidString)])
+                        )
+                    }
+                    guard await confirmDestructiveOperation(
+                        title: "移除来源？",
+                        message: "要从当前资料库移除“\(descriptor.displayName)”吗？原文件不会删除，相关歌曲可能暂时不可用。"
+                    ) else {
+                        return interactionCancelled(for: request)
+                    }
                 }
                 try await appSession.removeReferencedSource(
                     id: sourceID,
@@ -2231,11 +2256,16 @@ final class AutomationIPCServer {
                     )
                 }
 
-                if plans.count > 1 {
+                let isTrusted = plans.allSatisfy { plan in
+                    guard let sourceScope = session.referencedSourceScope else { return false }
+                    return sourceScope.isTrustedAutomationPath(plan.from)
+                        && (plan.destination.map { sourceScope.isTrustedAutomationPath($0) } ?? true)
+                }
+                if plans.count > 1 && !isTrusted {
                     guard confirm else {
                         return confirmationRequired(
                             for: request,
-                            message: "Bulk file rename/move requires confirm=true and a foreground App confirmation.",
+                            message: "批量重命名或移动文件需要 confirm=true，并由播放器在前台确认。",
                             details: .object([
                                 "operation": .string(request.method),
                                 "fileCount": .number(Double(plans.count))
@@ -2244,9 +2274,9 @@ final class AutomationIPCServer {
                     }
                     guard await confirmDestructiveOperation(
                         title: request.method == AutomationMethod.filesRename
-                            ? "Rename multiple music files?"
-                            : "Move multiple music files?",
-                        message: "This will change the locations of \(plans.count) real music files. The App will rescan the affected Sources afterward."
+                            ? "重命名多个音乐文件？"
+                            : "移动多个音乐文件？",
+                        message: "这会改变 \(plans.count) 个音乐文件在磁盘上的位置，播放器随后会重新扫描相关来源。"
                     ) else {
                         return interactionCancelled(for: request)
                     }
@@ -2273,7 +2303,7 @@ final class AutomationIPCServer {
                         operation: request.method,
                         applied: true,
                         dryRun: false,
-                        confirmed: plans.count > 1 && confirm,
+                        confirmed: plans.count > 1 && (confirm || isTrusted),
                         affectedTrackIDs: plans.map(\.trackID),
                         files: appliedFiles,
                         jobs: jobs,
@@ -2328,21 +2358,26 @@ final class AutomationIPCServer {
                         for: request
                     )
                 }
-                guard confirm else {
-                    return confirmationRequired(
-                        for: request,
-                        message: "Moving real music files to the Trash requires confirm=true and a foreground App confirmation.",
-                        details: .object([
-                            "operation": .string(AutomationMethod.filesDelete),
-                            "fileCount": .number(Double(plans.count))
-                        ])
-                    )
+                let isTrusted = plans.allSatisfy { plan in
+                    session.referencedSourceScope?.isTrustedAutomationPath(plan.from) == true
                 }
-                guard await confirmDestructiveOperation(
-                    title: "Move music files to Trash?",
-                    message: "Move \(plans.count) real music file(s) to the macOS Trash? Tracks, metadata, history and Playlist membership will remain in the Library and become missing after Source refresh."
-                ) else {
-                    return interactionCancelled(for: request)
+                if !isTrusted {
+                    guard confirm else {
+                        return confirmationRequired(
+                            for: request,
+                            message: "将音乐文件移到废纸篓需要 confirm=true，并由播放器在前台确认。",
+                            details: .object([
+                                "operation": .string(AutomationMethod.filesDelete),
+                                "fileCount": .number(Double(plans.count))
+                            ])
+                        )
+                    }
+                    guard await confirmDestructiveOperation(
+                        title: "将音乐文件移到废纸篓？",
+                        message: "要将 \(plans.count) 个音乐文件移到 macOS 废纸篓吗？歌曲、元数据、播放记录和播放列表关系会保留。"
+                    ) else {
+                        return interactionCancelled(for: request)
+                    }
                 }
 
                 let outcome = try await session.runLibraryOperation(as: .other) {
@@ -2375,7 +2410,7 @@ final class AutomationIPCServer {
                         operation: AutomationMethod.filesDelete,
                         applied: !outcome.0.isEmpty,
                         dryRun: false,
-                        confirmed: true,
+                        confirmed: confirm || isTrusted,
                         affectedTrackIDs: outcome.0,
                         files: appliedFiles,
                         jobs: jobs,
@@ -2631,13 +2666,13 @@ final class AutomationIPCServer {
                 guard confirm else {
                     return confirmationRequired(
                         for: request,
-                        message: "Clearing listening history requires confirm=true; the App will still ask for foreground confirmation.",
+                        message: "清除播放记录需要 confirm=true，并由播放器在前台确认。",
                         details: .object(["recordCount": .number(Double(count))])
                     )
                 }
                 guard await confirmDestructiveOperation(
-                    title: "Clear listening history?",
-                    message: "Delete \(count) listening history records? This cannot be undone from the App."
+                    title: "清除播放记录？",
+                    message: "要删除 \(count) 条播放记录吗？此操作无法在播放器中撤销。"
                 ) else {
                     return interactionCancelled(for: request)
                 }
@@ -2863,7 +2898,7 @@ final class AutomationIPCServer {
                     guard confirm else {
                         return confirmationRequired(
                             for: request,
-                            message: "Applying artwork to \(trackIDs.count) Tracks requires confirm=true and foreground App confirmation.",
+                            message: "批量应用封面需要 confirm=true，并由播放器在前台确认。",
                             details: .object([
                                 "operation": .string(AutomationMethod.artworkApply),
                                 "trackCount": .number(Double(trackIDs.count)),
@@ -2901,10 +2936,10 @@ final class AutomationIPCServer {
 
                 if trackIDs.count >= 10 {
                     guard await confirmDestructiveOperation(
-                        title: "Apply artwork to \(trackIDs.count) tracks?",
+                        title: "应用到 \(trackIDs.count) 首歌曲？",
                         message: clear
-                            ? "Clear the App-owned artwork for \(trackIDs.count) Tracks? Original audio files will not be modified."
-                            : "Replace the App-owned artwork for \(trackIDs.count) Tracks with the selected image? Original audio files will not be modified."
+                            ? "要清除这 \(trackIDs.count) 首歌曲的封面吗？原音频文件不会修改。"
+                            : "要将所选封面应用到这 \(trackIDs.count) 首歌曲吗？原音频文件不会修改。"
                     ) else {
                         return interactionCancelled(for: request)
                     }
@@ -3139,7 +3174,7 @@ final class AutomationIPCServer {
                     guard confirm else {
                         return confirmationRequired(
                             for: request,
-                            message: "Patching metadata for \(trackIDs.count) Tracks requires confirm=true and foreground App confirmation.",
+                            message: "批量修改歌曲信息需要 confirm=true，并由播放器在前台确认。",
                             details: .object([
                                 "operation": .string(AutomationMethod.metadataPatch),
                                 "trackCount": .number(Double(trackIDs.count)),
@@ -3149,8 +3184,8 @@ final class AutomationIPCServer {
                         )
                     }
                     guard await confirmDestructiveOperation(
-                        title: "Patch metadata for \(trackIDs.count) tracks?",
-                        message: "Apply the requested App-owned metadata changes to \(trackIDs.count) Tracks? Original audio files and embedded tags will not be modified."
+                        title: "修改 \(trackIDs.count) 首歌曲的信息？",
+                        message: "要将这些歌曲的信息更新到播放器资料库吗？原音频文件和内嵌标签不会修改。"
                     ) else {
                         return interactionCancelled(for: request)
                     }
@@ -3932,7 +3967,7 @@ final class AutomationIPCServer {
                     guard confirm else {
                         return confirmationRequired(
                             for: request,
-                            message: "Enabling recycleSource changes the future behavior of referenced Track deletion and requires App confirmation.",
+                            message: "启用“同时处理原文件”会改变以后删除引用歌曲的方式，需要播放器确认。",
                             details: .object([
                                 "setting": .string("referencedTrackDeletePolicy"),
                                 "value": .string(ReferencedTrackDeletePolicy.recycleSource.rawValue)
@@ -3940,8 +3975,8 @@ final class AutomationIPCServer {
                         )
                     }
                     guard await confirmDestructiveOperation(
-                        title: "Change referenced Track deletion policy?",
-                        message: "Future referenced Track removals may move their source files to the Trash."
+                        title: "更改引用歌曲的删除方式？",
+                        message: "以后删除引用歌曲时，来源文件可能会移到废纸篓。"
                     ) else {
                         return interactionCancelled(for: request)
                     }
@@ -4217,13 +4252,13 @@ final class AutomationIPCServer {
                 guard confirm else {
                     return confirmationRequired(
                         for: request,
-                        message: "Granting an automation scope requires confirm=true and a foreground App confirmation.",
+                        message: "授予自动化权限需要 confirm=true，并由播放器在前台确认。",
                         details: .object(["scope": .string(scope.rawValue)])
                     )
                 }
                 guard await confirmDestructiveOperation(
-                    title: "Grant automation scope?",
-                    message: "Allow external automation to use the \(scope.rawValue) capability?"
+                    title: "授予自动化权限？",
+                    message: "要允许外部自动化使用“\(scope.rawValue)”能力吗？"
                 ) else {
                     return interactionCancelled(for: request)
                 }
@@ -6687,10 +6722,9 @@ final class AutomationIPCServer {
             .path
     }
 
-    /// The picker is intentionally owned by the App. A raw path from an
-    /// external process is not treated as authorization; when it is not an
-    /// already-known Source, the user must select the directory/file through
-    /// AppKit so a security-scoped bookmark can be created.
+    /// The picker is owned by the App. A raw path is accepted without another
+    /// panel only when an existing Source root or the user-selected trusted
+    /// audio root already covers it.
     private func requestSourceURL(
         mode: ReferencedSourceMode,
         requestedPath: String?
@@ -6699,8 +6733,8 @@ final class AutomationIPCServer {
         panel.canChooseDirectories = mode == .directory
         panel.canChooseFiles = mode == .file
         panel.allowsMultipleSelection = false
-        panel.title = mode == .directory ? "Choose a music folder" : "Choose a music file"
-        panel.prompt = "Add Source"
+        panel.title = mode == .directory ? "选择音乐文件夹" : "选择音乐文件"
+        panel.prompt = "添加来源"
         if let requestedPath {
             let requestedURL = URL(fileURLWithPath: requestedPath)
             panel.directoryURL = FileManager.default.fileExists(atPath: requestedURL.path)
@@ -6722,8 +6756,8 @@ final class AutomationIPCServer {
         panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.image]
-        panel.title = "Choose artwork"
-        panel.prompt = "Use Artwork"
+        panel.title = "选择封面"
+        panel.prompt = "使用封面"
         if let requestedPath {
             let requestedURL = URL(fileURLWithPath: requestedPath)
             let requestedIsDirectory = (try? requestedURL.resourceValues(
@@ -6776,8 +6810,8 @@ final class AutomationIPCServer {
         alert.alertStyle = .warning
         alert.messageText = title
         alert.informativeText = message
-        alert.addButton(withTitle: "Confirm")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "确认")
+        alert.addButton(withTitle: "取消")
         NSApp.activate(ignoringOtherApps: true)
         return alert.runModal() == .alertFirstButtonReturn
     }
@@ -6855,7 +6889,7 @@ final class AutomationIPCServer {
 
     private func confirmationRequired(
         for request: AutomationRequest,
-        message: String = "This mutation requires dryRun=false and confirm=true.",
+        message: String = "此操作需要 dryRun=false，并提供 confirm=true。",
         details: AutomationJSONValue? = nil
     ) -> AutomationResponse {
         .failure(

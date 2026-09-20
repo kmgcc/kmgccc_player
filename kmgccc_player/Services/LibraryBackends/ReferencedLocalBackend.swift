@@ -123,9 +123,14 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
             .groupedRoots(for: uniqueSelections)
             .filter { root in
                 let rootPath = canonicalPath(root)
-                return !directoryRootPaths.contains {
+                let coveredBySource = directoryRootPaths.contains {
                     rootPath == $0 || rootPath.hasPrefix($0 + "/")
                 }
+                // The active session already holds the trusted-root lease;
+                // starting a second scope for every child would bring back
+                // the repeated permission prompts this setting is meant to
+                // remove.
+                return !coveredBySource && !sourceScope.isTrustedAutomationPath(root)
             }
         var authorizationPools: [String: SecurityScopedResourceLeasePool] = [:]
         for root in groupedAuthorizationRoots {
@@ -173,13 +178,17 @@ final class ReferencedLocalBackend: LibraryStorageBackend {
             }
 
             let selectedPath = canonicalPath(selected)
-            let authorizationPool = groupedAuthorizationRoots
+            let authorizationPool: SecurityScopedResourceLeasePool? = sourceScope.isTrustedAutomationPath(selected)
+                ? nil
+                : groupedAuthorizationRoots
                 .first { root in
                     let rootPath = canonicalPath(root)
                     return selectedPath == rootPath || selectedPath.hasPrefix(rootPath + "/")
                 }
                 .flatMap { authorizationPools[canonicalPath($0)] }
-            if let authorizationPool {
+            if sourceScope.isTrustedAutomationPath(selected) {
+                selectionLeases[selected] = SecurityScopedResourceLease.none
+            } else if let authorizationPool {
                 selectionLeases[selected] = authorizationPool.makeLease()
             } else if requiresSecurityScope,
                       uniqueSelections.count == 1 {

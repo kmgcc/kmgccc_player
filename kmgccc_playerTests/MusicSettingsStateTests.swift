@@ -694,6 +694,25 @@ final class MusicSettingsStateTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: kmgccc_player.LibraryPaths(rootURL: first).librarySettingsURL.path))
     }
 
+    func testTrustedAudioRootIsStoredAndClearedInsideEachLibrary() async throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = LibraryScopedSettingsStore(paths: kmgccc_player.LibraryPaths(rootURL: root))
+
+        try await store.setTrustedAudioRoot(
+            bookmarkData: Data("bookmark".utf8),
+            path: "/Music/Trusted"
+        )
+        let saved = try await store.load()
+        XCTAssertEqual(saved.trustedAudioRootBookmarkData, Data("bookmark".utf8))
+        XCTAssertEqual(saved.trustedAudioRootPath, "/Music/Trusted")
+
+        try await store.clearTrustedAudioRoot()
+        let cleared = try await store.load()
+        XCTAssertNil(cleared.trustedAudioRootBookmarkData)
+        XCTAssertNil(cleared.trustedAudioRootPath)
+    }
+
     func testInvalidSettingsPayloadDoesNotFallBackToGlobalState() async throws {
         let root = temporaryLibraryRoot()
         defer { try? FileManager.default.removeItem(at: root) }

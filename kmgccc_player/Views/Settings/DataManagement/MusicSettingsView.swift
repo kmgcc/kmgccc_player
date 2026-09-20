@@ -58,6 +58,7 @@ struct MusicSettingsView: View {
             libraryDiagnosticsSection
 
             if activeMode == .referenced {
+                trustedAudioRootSection
                 sourceSection
                 deletePolicySection
             }
@@ -200,6 +201,42 @@ struct MusicSettingsView: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var trustedAudioRootSection: some View {
+        SettingsSection("受信任的音频目录") {
+            VStack(alignment: .leading, spacing: 12) {
+                if let path = settings.trustedAudioRootPath {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                        Text(path)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 0)
+                    }
+
+                    HStack(spacing: 10) {
+                        Button("更换目录…") { chooseTrustedAudioRoot() }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        Button("移除", role: .destructive) { clearTrustedAudioRoot() }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                    }
+                } else {
+                    Text("目录内的自动化文件操作无需重复确认。")
+                        .settingsDescriptionStyle()
+                    Button("选择目录…") { chooseTrustedAudioRoot() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+            }
+            .disabled(isWorking || isAddingMusic)
+            .opacity(isWorking || isAddingMusic ? 0.72 : 1)
+        }
     }
 
     private var sourceSection: some View {
@@ -726,6 +763,39 @@ struct MusicSettingsView: View {
         panel.begin { result in
             if result == .OK, let url = panel.url {
                 completion(url, LibraryInitialImportSelection(urls: [url]))
+            }
+        }
+    }
+
+    private func chooseTrustedAudioRoot() {
+        guard let libraryID = activeContext?.id else { return }
+        chooseDirectory(prompt: "选择") { url, access in
+            Task { @MainActor in
+                defer { access.release() }
+                do {
+                    try await appSession.setTrustedAudioRoot(
+                        url: url,
+                        selection: access,
+                        libraryID: libraryID
+                    )
+                    await reload()
+                } catch {
+                    guard activeContext?.id == libraryID else { return }
+                    errorMessage = "无法保存受信任目录。"
+                }
+            }
+        }
+    }
+
+    private func clearTrustedAudioRoot() {
+        guard let libraryID = activeContext?.id else { return }
+        Task { @MainActor in
+            do {
+                try await appSession.clearTrustedAudioRoot(libraryID: libraryID)
+                await reload()
+            } catch {
+                guard activeContext?.id == libraryID else { return }
+                errorMessage = "无法移除受信任目录。"
             }
         }
     }

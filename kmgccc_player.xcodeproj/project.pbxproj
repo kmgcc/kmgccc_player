@@ -89,6 +89,7 @@
 		C21000000000000000000001 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C21000000000000000000011 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift */; };
 		D30000000000000000000001 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */; };
 		C22000000000000000000001 /* kmgccc_playerTests/ReferencedSourceStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C22000000000000000000011 /* kmgccc_playerTests/ReferencedSourceStoreTests.swift */; };
+		C23000000000000000000001 /* kmgccc_playerTests/ReferencedSourceScopeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C23000000000000000000011 /* kmgccc_playerTests/ReferencedSourceScopeTests.swift */; };
 		F01000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000001 /* AppDelegate.swift */; };
 		F01000000000000000000002 /* DockController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000002 /* DockController.swift */; };
 		F01000000000000000000003 /* PlaybackCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000003 /* PlaybackCommands.swift */; };
@@ -186,6 +187,7 @@
 		C21000000000000000000011 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/PlaybackKeyboardSeekTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift; sourceTree = "<group>"; };
 		C22000000000000000000011 /* kmgccc_playerTests/ReferencedSourceStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/ReferencedSourceStoreTests.swift; sourceTree = "<group>"; };
+		C23000000000000000000011 /* kmgccc_playerTests/ReferencedSourceScopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = kmgccc_playerTests/ReferencedSourceScopeTests.swift; sourceTree = "<group>"; };
 		E01000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = kmgccc_player/AppDelegate.swift; sourceTree = "<group>"; };
 		E01000000000000000000002 /* DockController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DockController.swift; path = kmgccc_player/DockController.swift; sourceTree = "<group>"; };
 		E01000000000000000000003 /* PlaybackCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PlaybackCommands.swift; path = kmgccc_player/PlaybackCommands.swift; sourceTree = "<group>"; };
@@ -416,6 +418,7 @@
 				C21000000000000000000011 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift */,
 				D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */,
 				C22000000000000000000011 /* kmgccc_playerTests/ReferencedSourceStoreTests.swift */,
+				C23000000000000000000011 /* kmgccc_playerTests/ReferencedSourceScopeTests.swift */,
 			);
 			name = Tests;
 			sourceTree = "<group>";
@@ -434,6 +437,7 @@
 				93CF3F842F344E9F0004C8E4 /* Copy LDDC runtime */,
 				93D91A122FA5000000010001 /* Copy QQMusic helper */,
 				93D91A132FA5000000010002 /* Copy SACAD helper */,
+				93D91A152FA5000000010004 /* Build and embed Player Automation CLI */,
 				93D91A142FA5000000010003 /* Run Optional Build Hook */,
 			);
 			buildRules = (
@@ -654,6 +658,28 @@
 			shellPath = /bin/bash;
 			shellScript = "set -euo pipefail\nSRC=\"${PROJECT_DIR}/.build/products/sacad/sacad\"\nDST_DIR=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools/sacad\"\nDST=\"${DST_DIR}/sacad\"\nif [ ! -x \"${SRC}\" ]; then\n  echo \"error: Missing SACAD build product.\"\n  echo \"error: Run ./scripts/bootstrap.sh before building.\"\n  exit 1\nfi\nmkdir -p \"${DST_DIR}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}\" \"${DST}\"\n/usr/bin/xattr -cr \"${DST}\" 2>/dev/null || true\nchmod 755 \"${DST}\"\n/usr/bin/codesign --force --sign - \"${DST}\" >/dev/null 2>&1 || true\n";
 		};
+		93D91A152FA5000000010004 /* Build and embed Player Automation CLI */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/Dependencies/PlayerAutomation/Package.swift",
+				"$(PROJECT_DIR)/Dependencies/PlayerAutomation/Sources",
+			);
+			name = "Build and embed Player Automation CLI";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/Tools/player-automation",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "set -euo pipefail\nPACKAGE_ROOT=\"${PROJECT_DIR}/Dependencies/PlayerAutomation\"\nSCRATCH_PATH=\"${DERIVED_FILE_DIR}/PlayerAutomation\"\nCONFIGURATION_LOWER=$(printf '%s' \"${CONFIGURATION}\" | tr '[:upper:]' '[:lower:]')\n/usr/bin/xcrun swift build --package-path \"${PACKAGE_ROOT}\" --scratch-path \"${SCRATCH_PATH}\" --configuration \"${CONFIGURATION_LOWER}\" --product player-automation\nBIN_DIR=$(/usr/bin/xcrun swift build --package-path \"${PACKAGE_ROOT}\" --scratch-path \"${SCRATCH_PATH}\" --configuration \"${CONFIGURATION_LOWER}\" --show-bin-path)\nSRC=\"${BIN_DIR}/player-automation\"\nDST_DIR=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/Tools\"\nDST=\"${DST_DIR}/player-automation\"\nif [ ! -x \"${SRC}\" ]; then\n  echo \"error: Missing Player Automation CLI build product at ${SRC}.\"\n  exit 1\nfi\nmkdir -p \"${DST_DIR}\"\nCOPYFILE_DISABLE=1 /bin/cp -f \"${SRC}\" \"${DST}\"\n/usr/bin/xattr -cr \"${DST}\" 2>/dev/null || true\nchmod 755 \"${DST}\"\nif [ \"${CODE_SIGNING_ALLOWED:-NO}\" = \"YES\" ] && [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ] && [ \"${EXPANDED_CODE_SIGN_IDENTITY}\" != \"-\" ]; then\n  /usr/bin/codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" --timestamp=none \"${DST}\"\nfi\n";
+		};
 		93D91A142FA5000000010003 /* Run Optional Build Hook */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -755,6 +781,7 @@
 				C21000000000000000000001 /* kmgccc_playerTests/PlaybackKeyboardSeekTests.swift in Sources */,
 				D30000000000000000000001 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift in Sources */,
 				C22000000000000000000001 /* kmgccc_playerTests/ReferencedSourceStoreTests.swift in Sources */,
+				C23000000000000000000001 /* kmgccc_playerTests/ReferencedSourceScopeTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

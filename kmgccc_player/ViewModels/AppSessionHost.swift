@@ -837,6 +837,64 @@ final class AppSessionHost: ObservableObject {
         return try await LibraryScopedSettingsStore(paths: context.paths).load()
     }
 
+    func setTrustedAudioRoot(
+        url: URL,
+        selection: LibraryInitialImportSelection,
+        libraryID: UUID
+    ) async throws {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.id == libraryID,
+              session.context.mode == .referenced,
+              let sourceScope = session.referencedSourceScope else {
+            throw LibraryOperationError.sessionQuiescing
+        }
+        guard selection.hasUsableAccess else {
+            throw ReferencedTrustedAutomationRootError.permissionDenied
+        }
+
+        let store = LibraryScopedSettingsStore(paths: session.context.paths)
+        let previous = try await store.load()
+        let bookmarkData = try SystemBookmarkResolver().refreshBookmark(for: url)
+        let configuration = try sourceScope.configureTrustedAutomationRoot(
+            bookmarkData: bookmarkData,
+            bookmarkResolver: SystemBookmarkResolver(),
+            requiresSecurityScope: false
+        )
+        do {
+            try await session.runLibraryOperation {
+                try await store.setTrustedAudioRoot(
+                    bookmarkData: configuration.refreshedBookmarkData ?? bookmarkData,
+                    path: configuration.url.path
+                )
+            }
+        } catch {
+            if let previousBookmark = previous.trustedAudioRootBookmarkData {
+                _ = try? sourceScope.configureTrustedAutomationRoot(
+                    bookmarkData: previousBookmark,
+                    bookmarkResolver: SystemBookmarkResolver(),
+                    requiresSecurityScope: false
+                )
+            } else {
+                sourceScope.clearTrustedAutomationRoot()
+            }
+            throw error
+        }
+    }
+
+    func clearTrustedAudioRoot(libraryID: UUID) async throws {
+        guard let session = activeLibraryBinding.activeSession,
+              session.context.id == libraryID,
+              session.context.mode == .referenced,
+              let sourceScope = session.referencedSourceScope else {
+            throw LibraryOperationError.sessionQuiescing
+        }
+        let store = LibraryScopedSettingsStore(paths: session.context.paths)
+        try await session.runLibraryOperation {
+            try await store.clearTrustedAudioRoot()
+        }
+        sourceScope.clearTrustedAutomationRoot()
+    }
+
     func setReferencedTrackDeletePolicy(
         _ policy: ReferencedTrackDeletePolicy,
         libraryID: UUID

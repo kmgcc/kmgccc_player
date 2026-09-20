@@ -80,6 +80,10 @@ private struct AutomationCLI {
 
         if args.first == "cli" {
             args.removeFirst()
+            if args.first == "--help" || args.first == "-h" {
+                printUsage(to: FileHandle.standardOutput)
+                return .success
+            }
         }
         guard let command = args.first else {
             printUsage(to: FileHandle.standardError)
