@@ -72,6 +72,18 @@ PR 前统一门禁：bootstrap、ARM64 无签名 Debug 构建、LRC 回归、XCT
 ./scripts/check-app-bundle.sh /path/to/kmgccc_player.app
 ```
 
+### check-ui-consistency.sh
+
+检查本次新增或修改的 SwiftUI/AppKit UI 代码是否引入已知的局部样式漂移。默认只检查变更
+行和未跟踪的新文件，不会把历史遗留问题混入当前任务；--all 用于一次性审计指定 UI
+目录。涉及新增用户文案时使用 --strict-copy，把明显的反向解释交给门禁处理。
+
+运行方式：
+
+    ./scripts/check-ui-consistency.sh
+    ./scripts/check-ui-consistency.sh --strict-copy
+    ./scripts/check-ui-consistency.sh --all
+
 ## Xcode 构建支持
 
 ### `run_build_extension.sh`

@@ -962,7 +962,7 @@ struct LyricsFlatDriverView: View {
             .modifier(LyricsSettingsObserver(lyricsVM: lyricsVM, isActive: isLyricsSurfaceActive))
             .onChange(of: amllLyricsRenderQuality) { _, newValue in
                 guard isLyricsSurfaceActive else { return }
-                let scale = AppSettings.AMLLLyricsRenderQuality(rawValue: newValue)?.webViewScale ?? 0.75
+                let scale = AppSettings.AMLLLyricsRenderQuality(rawValue: newValue)?.renderScale ?? 0.75
                 if LyricsSurfaceManager.rendererBackend == .native {
                     NativeLyricsSurfaceManager.shared.setRenderScale(scale, for: .main)
                 } else {

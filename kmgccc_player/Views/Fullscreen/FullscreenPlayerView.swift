@@ -3094,6 +3094,7 @@ struct FullscreenPlayerView: View {
             String(format: "%.0f", settings.lyricsLeadInMs),
             String(format: "%.0f", settings.lyricsNearSwitchGapMs),
             String(format: "%.0f", settings.lyricsGlobalAdvanceMs),
+            String(format: "%.2f", settings.amllLyricsRenderQualityScale),
             settings.amllDiscreteWordHighlightEnabled ? "wordDiscrete" : "wordSmooth",
             playbackCoordinator.presentation.source.rawValue,
             hostContext.rawValue,
@@ -4548,7 +4549,7 @@ struct FullscreenPlayerView: View {
                 100,
                 min(900, typography.translationFontWeight)
             ),
-            "renderScale": 1.0,
+            "renderScale": settings.amllLyricsRenderQualityScale,
             "enableBlur": surfaceRole.enableBlur,
             "enableSpring": surfaceRole.enableSpring,
             "springDuration": springSettings.duration,

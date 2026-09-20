@@ -16,6 +16,7 @@ import SwiftUI
 struct LedMeterView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
+    @State private var displayHDRInfo = HDRDisplayInfo.unsupported
 
     /// Normalized level (0.0 to 1.0)
     let level: Double
@@ -49,6 +50,11 @@ struct LedMeterView: View {
         AppSettings.shared.ledBrightnessLevels
     }
 
+    private var isHDRVisualizationActive: Bool {
+        AppSettings.shared.audioVisualizationHDREnabled
+            && displayHDRInfo.allowsHDRHighlight
+    }
+
     // MARK: - Resolver
 
     private var resolver: LEDColorResolver {
@@ -57,7 +63,8 @@ struct LedMeterView: View {
             colorScheme: forceBrightLEDColors ? .dark : colorScheme,
             brightnessLevels: brightnessLevels,
             palette: themeStore.semanticPalette,
-            levelToneVariant: levelToneVariant
+            levelToneVariant: levelToneVariant,
+            isHDR: isHDRVisualizationActive
         )
     }
 
@@ -123,6 +130,11 @@ struct LedMeterView: View {
             )
         }
         .animation(.easeInOut(duration: 0.25), value: numLEDs)
+        .background {
+            HDRDisplayCapabilityReader(info: $displayHDRInfo)
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
+        }
     }
 
     // MARK: - Status Light (Breath LED)
@@ -226,6 +238,7 @@ struct LiveLedMeterView: View {
     @Environment(LEDMeterServiceProvider.self) private var ledMeterProvider
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var themeStore: ThemeStore
+    @State private var displayHDRInfo = HDRDisplayInfo.unsupported
 
     var dotSize: CGFloat = 12
     var spacing: CGFloat = 7
@@ -233,6 +246,9 @@ struct LiveLedMeterView: View {
     var isPlaying: Bool = false
     var forceBrightLEDColors: Bool = false
     var colorSchemeOverride: ColorScheme? = nil
+    /// Optional SDR-specific polarity. HDR styling and the SDR fallback may
+    /// intentionally use different foreground assumptions.
+    var sdrColorSchemeOverride: ColorScheme? = nil
     var levelToneVariant: PerceptualToneLadder.LEDToneVariant = .retuned
     var ledCountOverride: Int? = nil
     var showsStatusLight: Bool = true
@@ -257,11 +273,18 @@ struct LiveLedMeterView: View {
             : meterWidth
     }
 
+    private var isHDRVisualizationActive: Bool {
+        AppSettings.shared.audioVisualizationHDREnabled
+            && displayHDRInfo.allowsHDRHighlight
+    }
+
     private var resolvedColorScheme: ColorScheme {
-        if AppSettings.shared.audioVisualizationHDREnabled {
+        if isHDRVisualizationActive {
             return colorSchemeOverride ?? .dark
         }
-        return colorSchemeOverride ?? (forceBrightLEDColors ? .dark : colorScheme)
+        return sdrColorSchemeOverride
+            ?? colorSchemeOverride
+            ?? (forceBrightLEDColors ? .dark : colorScheme)
     }
 
     private var resolver: LEDColorResolver {
@@ -271,7 +294,7 @@ struct LiveLedMeterView: View {
             brightnessLevels: brightnessLevels,
             palette: themeStore.semanticPalette,
             levelToneVariant: levelToneVariant,
-            isHDR: AppSettings.shared.audioVisualizationHDREnabled
+            isHDR: isHDRVisualizationActive
         )
     }
 
@@ -311,6 +334,11 @@ struct LiveLedMeterView: View {
                         isFloating: false
                     )
             }
+        }
+        .background {
+            HDRDisplayCapabilityReader(info: $displayHDRInfo)
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
         }
     }
 }

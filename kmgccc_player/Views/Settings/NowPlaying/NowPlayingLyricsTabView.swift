@@ -27,6 +27,7 @@ struct NowPlayingLyricsTabView: View {
     @State private var amllLyricsSpringDuration: Double = AppSettings.shared.amllLyricsSpringDuration
     @State private var amllLyricsSpringBounce: Double = AppSettings.shared.amllLyricsSpringBounce
     @State private var amllDiscreteWordHighlightEnabled: Bool = AppSettings.shared.amllDiscreteWordHighlightEnabled
+    @State private var amllLyricsRenderQuality: AppSettings.AMLLLyricsRenderQuality = AppSettings.shared.amllLyricsRenderQuality
     @State private var pendingSpringSettingsRefreshTask: Task<Void, Never>?
     @State private var pendingTypographyRefreshTask: Task<Void, Never>?
 
@@ -57,8 +58,7 @@ struct NowPlayingLyricsTabView: View {
     private var renderingSection: some View {
         SettingsSection("外观") {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                // The AMLL render-quality control is intentionally hidden.
-                // NativeLyrics always renders at full backing resolution.
+                AMLLLyricsRenderQualitySlider(quality: $amllLyricsRenderQuality)
 
                 AMLLLyricSpringSettingsControls(
                     duration: $amllLyricsSpringDuration,
@@ -78,12 +78,16 @@ struct NowPlayingLyricsTabView: View {
             amllLyricsSpringDuration = settings.amllLyricsSpringDuration
             amllLyricsSpringBounce = settings.amllLyricsSpringBounce
             amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
+            amllLyricsRenderQuality = settings.amllLyricsRenderQuality
         }
         .onChange(of: amllLyricsSpringDuration) { _, _ in syncSpringSettingsDebounced() }
         .onChange(of: amllLyricsSpringBounce) { _, _ in syncSpringSettingsDebounced() }
         .onChange(of: amllDiscreteWordHighlightEnabled) { _, _ in
             syncToSettings()
             NotificationCenter.default.post(name: .lyricHighlightModeDidChange, object: nil)
+        }
+        .onChange(of: amllLyricsRenderQuality) { _, newValue in
+            settings.amllLyricsRenderQuality = newValue
         }
     }
 

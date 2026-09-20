@@ -393,10 +393,21 @@ final class NativeLyricsSurfaceManagerTests: XCTestCase {
         XCTAssertEqual(configuration.alignOffset, 18, accuracy: 0.0001)
         XCTAssertEqual(configuration.alignAnchor, .bottom)
         XCTAssertEqual(configuration.interludeDotScale, 1.45, accuracy: 0.0001)
-        XCTAssertEqual(configuration.renderScale, 1, accuracy: 0.0001)
+        XCTAssertEqual(
+            configuration.renderScale,
+            AppSettings.shared.amllLyricsRenderQualityScale,
+            accuracy: 0.0001
+        )
         let expectedSpring = SpringParameters.positionOverride(duration: 0.55, bounce: 0.75)
         XCTAssertEqual(configuration.positionSpring, expectedSpring)
         XCTAssertNotEqual(configuration.positionSpring, .position)
+    }
+
+    @MainActor
+    func testAMLLRenderQualityMapsToExpectedNativeResolutionScale() {
+        XCTAssertEqual(AppSettings.AMLLLyricsRenderQuality.low.renderScale, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(AppSettings.AMLLLyricsRenderQuality.medium.renderScale, 0.75, accuracy: 0.0001)
+        XCTAssertEqual(AppSettings.AMLLLyricsRenderQuality.high.renderScale, 1.0, accuracy: 0.0001)
     }
 
     @MainActor

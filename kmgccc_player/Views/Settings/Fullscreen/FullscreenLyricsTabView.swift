@@ -25,6 +25,7 @@ struct FullscreenLyricsTabView: View {
     @State private var amllLyricsSpringDuration: Double = AppSettings.shared.amllLyricsSpringDuration
     @State private var amllLyricsSpringBounce: Double = AppSettings.shared.amllLyricsSpringBounce
     @State private var amllDiscreteWordHighlightEnabled: Bool = AppSettings.shared.amllDiscreteWordHighlightEnabled
+    @State private var amllLyricsRenderQuality: AppSettings.AMLLLyricsRenderQuality = AppSettings.shared.amllLyricsRenderQuality
     @State private var pendingSpringSettingsRefreshTask: Task<Void, Never>?
     @State private var pendingTypographyRefreshTask: Task<Void, Never>?
 
@@ -68,13 +69,15 @@ struct FullscreenLyricsTabView: View {
             syncToSettings()
             NotificationCenter.default.post(name: .lyricHighlightModeDidChange, object: nil)
         }
+        .onChange(of: amllLyricsRenderQuality) { _, newValue in
+            settings.amllLyricsRenderQuality = newValue
+        }
     }
 
     private var appearanceSection: some View {
         SettingsSection("外观") {
             VStack(alignment: .leading, spacing: presentationStyle.groupSpacing) {
-                // The AMLL render-quality control is intentionally hidden.
-                // NativeLyrics always renders at full backing resolution.
+                AMLLLyricsRenderQualitySlider(quality: $amllLyricsRenderQuality)
 
                 AMLLLyricSpringSettingsControls(
                     duration: $amllLyricsSpringDuration,
@@ -198,6 +201,7 @@ struct FullscreenLyricsTabView: View {
         amllLyricsSpringDuration = settings.amllLyricsSpringDuration
         amllLyricsSpringBounce = settings.amllLyricsSpringBounce
         amllDiscreteWordHighlightEnabled = settings.amllDiscreteWordHighlightEnabled
+        amllLyricsRenderQuality = settings.amllLyricsRenderQuality
     }
 
     private func syncToSettings(debounceLyrics: Bool = false) {

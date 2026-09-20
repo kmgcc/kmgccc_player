@@ -701,11 +701,11 @@ public final class AppSettings {
             switch self {
             case .low: return "0.5x 分辨率"
             case .medium: return "0.75x 分辨率"
-            case .high: return "原生分辨率"
+            case .high: return "1.0x 分辨率"
             }
         }
 
-        var webViewScale: Double {
+        var renderScale: Double {
             switch self {
             case .low: return 0.5
             case .medium: return 0.75
@@ -785,7 +785,7 @@ public final class AppSettings {
         defaults.set(true, forKey: AMLLKeys.springDefaultsMigration)
     }
 
-    /// Shared render quality for AMLL lyric WebViews.
+    /// Shared render quality for user-facing AMLL lyric surfaces.
     var amllLyricsRenderQuality: AMLLLyricsRenderQuality {
         get {
             access(keyPath: \.amllLyricsRenderQuality)
@@ -812,9 +812,9 @@ public final class AppSettings {
         }
     }
 
-    /// Shared WebView backing scale for user-facing AMLL lyric surfaces.
+    /// Shared backing scale for user-facing AMLL lyric surfaces.
     var amllLyricsRenderQualityScale: Double {
-        amllLyricsRenderQuality.webViewScale
+        amllLyricsRenderQuality.renderScale
     }
 
     /// Whether word-by-word AMLL highlighting should jump by whole words instead of sweeping left-to-right.

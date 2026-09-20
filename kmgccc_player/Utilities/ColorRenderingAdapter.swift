@@ -247,12 +247,15 @@ nonisolated enum ColorRenderingAdapter {
     ///
     /// We query the potential value rather than the current value because the
     /// current value is allowed to remain at 1.0 until a layer asks for EDR.
-    /// A value of 1.0 is the intentional SDR fallback.
+    /// A value of 1.0 is the intentional SDR fallback. EDR headroom alone is
+    /// not enough to select HDR colors: the display must also pass the shared
+    /// conservative XDR/HDR capability check.
     @MainActor
     static func visualizationHeadroom(for screen: NSScreen?) -> CGFloat {
         guard AppSettings.shared.audioVisualizationHDREnabled else { return 1.0 }
-        guard let screen else { return 1.0 }
-        let potential = screen.maximumPotentialExtendedDynamicRangeColorComponentValue
+        let displayInfo = DisplayHDRCapability.evaluate(screen: screen)
+        guard displayInfo.allowsHDRHighlight else { return 1.0 }
+        let potential = displayInfo.maximumPotentialEDR
         guard potential.isFinite, potential > 1.0 else { return 1.0 }
         return min(visualizationHDRHeadroom, potential)
     }
