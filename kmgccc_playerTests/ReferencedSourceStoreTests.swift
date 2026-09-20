@@ -11,13 +11,16 @@ final class ReferencedSourceStoreTests: XCTestCase {
             rootBookmarkData: Data("bookmark".utf8),
             lastKnownPath: "/Music",
             displayName: "Music",
+            createdAt: Date(timeIntervalSince1970: 100),
             lastScan: Date(timeIntervalSince1970: 123),
             status: .stale
         )
 
         try await store.save(source)
-        XCTAssertEqual(try await store.load(id: source.id), source)
-        XCTAssertEqual(try await store.loadAll(), [source])
+        let loaded = try await store.load(id: source.id)
+        let all = try await store.loadAll()
+        XCTAssertEqual(loaded, source)
+        XCTAssertEqual(all, [source])
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.paths.sourceDescriptorURL(for: source.id).path))
     }
 
@@ -142,7 +145,7 @@ final class ReferencedSourceStoreTests: XCTestCase {
 
         let loaded = try await store.load(id: source.id)
         XCTAssertEqual(loaded.playlistBindings.count, 1)
-        XCTAssertEqual(loaded.excludedRelativePaths, [])
+        XCTAssertEqual(loaded.excludedRelativePaths, [String]())
         let upgraded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         XCTAssertEqual(upgraded["schemaVersion"] as? Int, ReferencedSourceDescriptor.currentSchemaVersion)
     }
@@ -170,15 +173,37 @@ final class ReferencedSourceStoreTests: XCTestCase {
         let loaded = try await store.load(id: source.id)
         XCTAssertTrue(loaded.excludedRelativePaths.isEmpty)
     }
+
+    func testMonitorPolicyRoundTripsAndCanBeChangedWithoutTouchingExclusions() async throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let store = ReferencedSourceStore(paths: fixture.paths)
+        let source = ReferencedSourceDescriptor(
+            rootBookmarkData: Data("bookmark".utf8),
+            lastKnownPath: "/Music",
+            displayName: "Music",
+            monitorPolicy: .off,
+            excludedRelativePaths: ["Live"]
+        )
+        try await store.save(source)
+
+        _ = try await store.updateMonitorPolicy(
+            sourceID: source.id,
+            policy: kmgccc_player.ReferencedSourceMonitorPolicy.on
+        )
+        let loaded = try await store.load(id: source.id)
+        XCTAssertEqual(loaded.monitorPolicy, kmgccc_player.ReferencedSourceMonitorPolicy.on)
+        XCTAssertEqual(loaded.excludedRelativePaths, ["Live"])
+    }
 }
 
 private struct Fixture {
     let root: URL
-    let paths: LibraryPaths
+    let paths: kmgccc_player.LibraryPaths
 
     init() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        paths = LibraryPaths(rootURL: root)
+        paths = kmgccc_player.LibraryPaths(rootURL: root)
         try paths.createRequiredDirectories()
     }
 

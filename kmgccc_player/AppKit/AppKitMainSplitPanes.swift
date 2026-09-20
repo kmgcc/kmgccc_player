@@ -12,11 +12,6 @@ import SwiftUI
 
 struct AppKitMainSidebarPaneRoot: View {
     @ObservedObject var appSession: AppSessionHost
-    // Dedicated instances for views presented from the sidebar (e.g. the
-    // batch track editor opened from the enrichment completion notice);
-    // the content pane keeps its own, mirroring HomeFullWindowRoot.
-    @State private var coverDownloadService = CoverDownloadService()
-    @State private var netEaseCoverService = NetEaseCoverService()
 
     var body: some View {
         if let libraryVM = appSession.libraryVM,
@@ -39,8 +34,8 @@ struct AppKitMainSidebarPaneRoot: View {
 
                .environment(cacheServices)
                .environment(skinManager)
-               .environment(coverDownloadService)
-               .environment(netEaseCoverService)
+               .environment(cacheServices.coverDownloadService)
+               .environment(cacheServices.netEaseCoverService)
                .environmentObject(appSession)
                .environmentObject(ThemeStore.shared)
                 .environment(\.libraryPresentedAccentColor, ThemeStore.shared.accentColor)
@@ -161,8 +156,6 @@ struct AppKitMainContentPaneRoot: View {
     @StateObject private var themeStore = ThemeStore.shared
     @ObservedObject var artBackgroundController: BKArtBackgroundController
     @State private var settings = AppSettings.shared
-    @State private var coverDownloadService = CoverDownloadService()
-    @State private var netEaseCoverService = NetEaseCoverService()
     @State private var hasPresentedNowPlayingArtBackground = false
     @Environment(\.colorScheme) private var swiftUIColorScheme
 
@@ -332,8 +325,8 @@ struct AppKitMainContentPaneRoot: View {
 
                 .environment(cacheServices)
                 .environment(skinManager)
-                .environment(coverDownloadService)
-                .environment(netEaseCoverService)
+                .environment(cacheServices.coverDownloadService)
+                .environment(cacheServices.netEaseCoverService)
                 .environmentObject(themeStore)
                 .modelContainer(appSession.sharedModelContainer)
             }
@@ -436,8 +429,8 @@ struct AppKitMainContentPaneRoot: View {
 
             .environment(cacheServices)
             .environment(skinManager)
-            .environment(coverDownloadService)
-            .environment(netEaseCoverService)
+            .environment(cacheServices.coverDownloadService)
+            .environment(cacheServices.netEaseCoverService)
             .environmentObject(themeStore)
             .environment(\.libraryPresentedAccentColor, themeStore.accentColor)
             .modelContainer(appSession.sharedModelContainer)
@@ -545,9 +538,10 @@ struct AppKitMainContentPaneRoot: View {
     }
 
     private func syncFullscreenWindowEditorDependencies() {
+        guard let cacheServices = appSession.cacheServices else { return }
         FullscreenWindowManager.shared.configureEditorServices(
-            coverDownloadService: coverDownloadService,
-            netEaseCoverService: netEaseCoverService
+            coverDownloadService: cacheServices.coverDownloadService,
+            netEaseCoverService: cacheServices.netEaseCoverService
         )
     }
 }

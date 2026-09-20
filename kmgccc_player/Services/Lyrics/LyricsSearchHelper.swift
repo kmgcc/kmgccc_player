@@ -67,20 +67,26 @@ struct LyricsSearchHelper {
 
     // MARK: - Full Search
 
-    /// Perform a full lyrics search using both AMLLDB and LDDC sources.
-    /// Returns merged and ranked results using the same logic as the manual search UI.
-    /// - Parameters:
-    ///   - title: Song title to search
-    ///   - artist: Artist name (optional)
-    ///   - album: Album name (optional)
-    ///   - duration: Duration in seconds (optional, improves AMLLDB matching)
-    ///   - lddcSources: LDDC sources to search (default: QM, KG, NE)
-    ///   - mode: LDDC search mode (default: verbatim for word-by-word)
-    ///   - translation: Include translation (default: true)
-    ///   - amlldbLimit: Maximum AMLLDB results (default: 20)
-    ///   - lddcLimitPerSource: Maximum results per LDDC source (default: 5)
-    /// - Returns: SearchResult with merged, ranked candidates
-    static func performFullSearch(
+    /// Strips OST/soundtrack annotations and version tags from a song title for cleaner lyrics lookup.
+    nonisolated static func cleanSearchTitle(_ title: String) -> String {
+        var cleaned = title
+        // Remove soundtrack/OST brackets: e.g. （电影《匿杀》插曲）, (电视剧《何以笙箫默》片尾曲), (OST), etc.
+        let ostBracketPattern = #"[（\(][^）\)]*(?:电影|电视剧|网剧|剧集|动漫|游戏|插曲|片尾曲|片头曲|主题曲|同名曲|推广曲|原声|影视原声|OST)[^）\)]*[）\)]"#
+        cleaned = cleaned.replacingOccurrences(of: ostBracketPattern, with: "", options: [.regularExpression, .caseInsensitive])
+
+        // Remove trailing dash soundtrack tags: e.g. - 电影《匿杀》插曲
+        let ostDashPattern = #"\s*-\s*(?:电影|电视剧|网剧|剧集|动漫|游戏|插曲|片尾曲|片头曲|主题曲|推广曲|原声|影视原声|OST).*$"#
+        cleaned = cleaned.replacingOccurrences(of: ostDashPattern, with: "", options: [.regularExpression, .caseInsensitive])
+
+        // Remove special version tags in brackets if needed, e.g. (stripped), (acoustic)
+        let versionBracketPattern = #"[（\(]\s*(?:stripped|acoustic|live|现场版)\s*[）\)]"#
+        cleaned = cleaned.replacingOccurrences(of: versionBracketPattern, with: "", options: [.regularExpression, .caseInsensitive])
+
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? title : cleaned
+    }
+
+    private static func executeSearch(
         title: String,
         artist: String? = nil,
         album: String? = nil,
@@ -91,20 +97,7 @@ struct LyricsSearchHelper {
         amlldbLimit: Int = 20,
         lddcLimitPerSource: Int = 5,
         searchCoordinator: LyricsSearchCoordinator
-    ) async -> SearchResult {
-        guard !Task.isCancelled else {
-            return SearchResult(
-                candidates: [],
-                amlldbCount: 0,
-                lddcCount: 0,
-                topCandidate: nil,
-                queryTitle: title,
-                queryArtist: artist,
-                queryAlbum: album
-            )
-        }
-        Self.logger.debug("[LyricsSearchHelper] Starting full search - title: '\(title)', artist: '\(artist ?? "nil")', album: '\(album ?? "nil")'")
-
+    ) async -> (amlldb: [LDDCCandidate], lddc: [LDDCCandidate]) {
         var amlldbResults: [LDDCCandidate] = []
         var lddcResults: [LDDCCandidate] = []
 
@@ -143,6 +136,59 @@ struct LyricsSearchHelper {
                 }
             }
         }
+        return (amlldbResults, lddcResults)
+    }
+
+    /// Perform a full lyrics search using both AMLLDB and LDDC sources.
+    /// Returns merged and ranked results using the same logic as the manual search UI.
+    /// - Parameters:
+    ///   - title: Song title to search
+    ///   - artist: Artist name (optional)
+    ///   - album: Album name (optional)
+    ///   - duration: Duration in seconds (optional, improves AMLLDB matching)
+    ///   - lddcSources: LDDC sources to search (default: QM, KG, NE)
+    ///   - mode: LDDC mode (default: verbatim for word-by-word)
+    ///   - translation: Include translation (default: true)
+    ///   - amlldbLimit: Maximum AMLLDB results (default: 20)
+    ///   - lddcLimitPerSource: Maximum results per LDDC source (default: 5)
+    /// - Returns: SearchResult with merged, ranked candidates
+    static func performFullSearch(
+        title: String,
+        artist: String? = nil,
+        album: String? = nil,
+        duration: Double? = nil,
+        lddcSources: Set<LDDCSource> = defaultLDDCSources,
+        mode: LDDCMode = .verbatim,
+        translation: Bool = true,
+        amlldbLimit: Int = 20,
+        lddcLimitPerSource: Int = 5,
+        searchCoordinator: LyricsSearchCoordinator
+    ) async -> SearchResult {
+        guard !Task.isCancelled else {
+            return SearchResult(
+                candidates: [],
+                amlldbCount: 0,
+                lddcCount: 0,
+                topCandidate: nil,
+                queryTitle: title,
+                queryArtist: artist,
+                queryAlbum: album
+            )
+        }
+        Self.logger.debug("[LyricsSearchHelper] Starting full search - title: '\(title)', artist: '\(artist ?? "nil")', album: '\(album ?? "nil")'")
+
+        var (amlldbResults, lddcResults) = await executeSearch(
+            title: title,
+            artist: artist,
+            album: album,
+            duration: duration,
+            lddcSources: lddcSources,
+            mode: mode,
+            translation: translation,
+            amlldbLimit: amlldbLimit,
+            lddcLimitPerSource: lddcLimitPerSource,
+            searchCoordinator: searchCoordinator
+        )
 
         guard !Task.isCancelled else {
             return SearchResult(
@@ -156,35 +202,41 @@ struct LyricsSearchHelper {
             )
         }
 
-        Self.logger.debug("[LyricsSearchHelper] Raw results: AMLLDB=\(amlldbResults.count), LDDC=\(lddcResults.count)")
+        var mergedResults = mergeAndSortResults(amlldb: amlldbResults, lddc: lddcResults)
 
-        // Log top 3 candidates for debugging
-        #if DEBUG
-        for candidate in amlldbResults.prefix(3) {
-            let normScore = candidate.normalizedScore()
-            Self.logger.debug("[LyricsSearchHelper] AMLLDB top candidate: '\(candidate.title)' rawScore=\(candidate.score) normalized=\(normScore)")
+        // Fallback search with cleaned title if title contains soundtrack/noise tags and top result is absent/low
+        let cleanedTitle = cleanSearchTitle(title)
+        if cleanedTitle != title,
+           (mergedResults.first?.normalizedScore() ?? 0) < automaticMatchMinimumScore {
+            Self.logger.info("[LyricsSearchHelper] Top candidate below threshold; falling back to clean title search: '\(cleanedTitle)'")
+            let (fallbackAMLL, fallbackLDDC) = await executeSearch(
+                title: cleanedTitle,
+                artist: artist,
+                album: album,
+                duration: duration,
+                lddcSources: lddcSources,
+                mode: mode,
+                translation: translation,
+                amlldbLimit: amlldbLimit,
+                lddcLimitPerSource: lddcLimitPerSource,
+                searchCoordinator: searchCoordinator
+            )
+            if !Task.isCancelled {
+                var seen = Set<String>()
+                var allCandidates: [LDDCCandidate] = []
+                for c in (mergedResults + fallbackAMLL + fallbackLDDC) {
+                    let key = "\(c.source):\(c.songId)"
+                    if seen.insert(key).inserted {
+                        allCandidates.append(c)
+                    }
+                }
+                amlldbResults = allCandidates.filter { $0.source == "AMLLDB" }
+                lddcResults = allCandidates.filter { $0.source != "AMLLDB" }
+                mergedResults = mergeAndSortResults(amlldb: amlldbResults, lddc: lddcResults)
+            }
         }
-        for candidate in lddcResults.prefix(3) {
-            let normScore = candidate.normalizedScore()
-            Self.logger.debug("[LyricsSearchHelper] LDDC top candidate: '\(candidate.title)' source=\(candidate.source) rawScore=\(candidate.score) normalized=\(normScore)")
-        }
-        #endif
-
-        // Merge with proper ranking (same logic as LDDCSearchSection)
-        let mergedResults = mergeAndSortResults(amlldb: amlldbResults, lddc: lddcResults)
-
-        Self.logger.info("[LyricsSearchHelper] Merged result count: \(mergedResults.count) (AMLLDB: \(amlldbResults.count), LDDC: \(lddcResults.count))")
-
-        // Log final top 3
-        #if DEBUG
-        for (index, candidate) in mergedResults.prefix(3).enumerated() {
-            let normScore = candidate.normalizedScore()
-            Self.logger.debug("[LyricsSearchHelper] Final ranked #\(index + 1): '\(candidate.title)' source=\(candidate.source) normalized=\(normScore)")
-        }
-        #endif
 
         let topCandidate = mergedResults.first
-
         if let top = topCandidate {
             Self.logger.info("[LyricsSearchHelper] Top candidate selected: '\(top.title)' source=\(top.source) normalizedScore=\(top.normalizedScore())")
         } else {
@@ -366,6 +418,7 @@ struct LyricsSearchHelper {
         artist: String?,
         album: String?,
         duration: Double?,
+        mode: LDDCMode = .verbatim,
         searchCoordinator: LyricsSearchCoordinator,
         amllDBService: AMLLDBService
     ) async -> String? {
@@ -374,6 +427,7 @@ struct LyricsSearchHelper {
             artist: artist,
             album: album,
             duration: duration,
+            mode: mode,
             minimumTopCandidateScore: nil,
             searchCoordinator: searchCoordinator,
             amllDBService: amllDBService
@@ -402,11 +456,32 @@ struct LyricsSearchHelper {
         )
     }
 
+    /// Fetches one explicitly selected candidate for the App-owned automation
+    /// surface. Search/ranking stays centralized here so MCP/CLI candidate
+    /// application cannot invent a second provider conversion path.
+    static func fetchTTMLForAutomation(
+        candidate: LDDCCandidate,
+        mode: LDDCMode,
+        translation: Bool,
+        amllDBService: AMLLDBService
+    ) async -> String? {
+        guard case .success(let ttml) = await fetchLyricsContent(
+            candidate: candidate,
+            mode: mode,
+            translation: translation,
+            amllDBService: amllDBService
+        ) else {
+            return nil
+        }
+        return ttml
+    }
+
     private static func searchAndFetchLyrics(
         title: String,
         artist: String?,
         album: String?,
         duration: Double?,
+        mode: LDDCMode = .verbatim,
         minimumTopCandidateScore: Double?,
         searchCoordinator: LyricsSearchCoordinator,
         amllDBService: AMLLDBService
@@ -427,6 +502,7 @@ struct LyricsSearchHelper {
             artist: artist,
             album: album,
             duration: duration,
+            mode: mode,
             searchCoordinator: searchCoordinator
         )
 
@@ -471,6 +547,7 @@ struct LyricsSearchHelper {
             Self.logger.info("[LyricsSearchHelper] Trying candidate #\(index + 1)/\(candidates.count): '\(candidate.title)' source=\(candidate.source)")
             let fetchResult = await fetchLyricsContent(
                 candidate: candidate,
+                mode: mode,
                 amllDBService: amllDBService
             )
             if case .success(let ttml) = fetchResult,

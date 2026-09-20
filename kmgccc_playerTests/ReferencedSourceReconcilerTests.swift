@@ -250,6 +250,78 @@ final class ReferencedSourceReconcilerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.paths.sourceScanManifestURL(for: fixture.sourceID).path))
     }
 
+    func testMissingFilePreservesBoundPlaylistAndRecoversAfterReappearanceAndMove() async throws {
+        let fixture = try await ReconcileFixture()
+        defer { fixture.cleanup() }
+        let song = fixture.sourceRoot.appendingPathComponent("song.mp3")
+        try Data("source-audio".utf8).write(to: song)
+
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+        let importedTracks = await fixture.repository.fetchTracks(in: nil)
+        let imported = try XCTUnwrap(importedTracks.first)
+        let playlist = try await fixture.repository.createPlaylist(name: "Source playlist")
+        try await fixture.reconciler.bindSourcesToPlaylist(
+            [fixture.sourceID],
+            playlistID: playlist.id
+        )
+
+        var playlists = await fixture.repository.fetchPlaylists()
+        var initialPlaylist = try XCTUnwrap(playlists.first { $0.id == playlist.id })
+        XCTAssertEqual(initialPlaylist.tracks.map(\.id), [imported.id])
+
+        let parkedDirectory = fixture.root.appendingPathComponent("Parked", isDirectory: true)
+        try FileManager.default.createDirectory(at: parkedDirectory, withIntermediateDirectories: true)
+        let parked = parkedDirectory.appendingPathComponent("song.mp3")
+        try FileManager.default.moveItem(at: song, to: parked)
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+
+        let missingTracks = await fixture.repository.fetchTracks(in: nil)
+        let missing = try XCTUnwrap(missingTracks.first)
+        XCTAssertEqual(missing.id, imported.id)
+        XCTAssertNotEqual(missing.availability, .available)
+        XCTAssertEqual(missing.userDescription, "application metadata")
+        playlists = await fixture.repository.fetchPlaylists()
+        initialPlaylist = try XCTUnwrap(playlists.first { $0.id == playlist.id })
+        XCTAssertEqual(initialPlaylist.tracks.map(\.id), [imported.id])
+
+        let restored = fixture.sourceRoot.appendingPathComponent("restored.mp3")
+        try FileManager.default.moveItem(at: parked, to: restored)
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+        var recoveredTracks = await fixture.repository.fetchTracks(in: nil)
+        var recovered = try XCTUnwrap(recoveredTracks.first)
+        XCTAssertEqual(recovered.id, imported.id)
+        XCTAssertEqual(recovered.availability, .available)
+        XCTAssertEqual(
+            recovered.mediaLocator.referencedFile?.lastKnownPath,
+            restored.path
+        )
+
+        let renamed = fixture.sourceRoot.appendingPathComponent("renamed.mp3")
+        try FileManager.default.moveItem(at: restored, to: renamed)
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+        recoveredTracks = await fixture.repository.fetchTracks(in: nil)
+        recovered = try XCTUnwrap(recoveredTracks.first)
+        XCTAssertEqual(recovered.id, imported.id)
+        XCTAssertEqual(recovered.availability, .available)
+
+        let nestedDirectory = fixture.sourceRoot.appendingPathComponent("Nested", isDirectory: true)
+        try FileManager.default.createDirectory(at: nestedDirectory, withIntermediateDirectories: true)
+        let moved = nestedDirectory.appendingPathComponent("moved.mp3")
+        try FileManager.default.moveItem(at: renamed, to: moved)
+        try await fixture.reconciler.reconcile(sourceIDs: [fixture.sourceID])
+        recoveredTracks = await fixture.repository.fetchTracks(in: nil)
+        recovered = try XCTUnwrap(recoveredTracks.first)
+        XCTAssertEqual(recovered.id, imported.id)
+        XCTAssertEqual(recovered.availability, .available)
+        XCTAssertEqual(
+            recovered.mediaLocator.referencedFile?.sourceMemberships,
+            [.init(sourceID: fixture.sourceID, relativePath: "Nested/moved.mp3")]
+        )
+        playlists = await fixture.repository.fetchPlaylists()
+        initialPlaylist = try XCTUnwrap(playlists.first { $0.id == playlist.id })
+        XCTAssertEqual(initialPlaylist.tracks.map(\.id), [imported.id])
+    }
+
     func testOnlyLibraryRemovalDoesNotResurrectAndNewPhysicalIdentityAtSamePathImports() async throws {
         let fixture = try await ReconcileFixture()
         defer { fixture.cleanup() }

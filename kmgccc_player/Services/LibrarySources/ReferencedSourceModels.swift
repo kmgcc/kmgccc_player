@@ -71,6 +71,9 @@ nonisolated struct ReferencedSourceDescriptor: Codable, Sendable, Equatable, Ide
     let createdAt: Date
     var lastScan: Date?
     var status: ReferencedSourceStatus
+    /// Whether filesystem events should trigger automatic reconciliation for
+    /// this Source. Manual `source.refresh` remains available when disabled.
+    var monitorPolicy: ReferencedSourceMonitorPolicy
     var playlistBindings: [ReferencedPlaylistSourceBinding]
     /// Directory-relative paths ignored by automatic source scans. This is a
     /// non-destructive policy; existing Track authority is retained until a
@@ -115,6 +118,7 @@ nonisolated struct ReferencedSourceDescriptor: Codable, Sendable, Equatable, Ide
         createdAt: Date = Date(),
         lastScan: Date? = nil,
         status: ReferencedSourceStatus = .available,
+        monitorPolicy: ReferencedSourceMonitorPolicy = .on,
         playlistBindings: [ReferencedPlaylistSourceBinding] = [],
         excludedRelativePaths: [String] = [],
         playlistID: UUID? = nil,
@@ -129,6 +133,7 @@ nonisolated struct ReferencedSourceDescriptor: Codable, Sendable, Equatable, Ide
         self.createdAt = createdAt
         self.lastScan = lastScan
         self.status = status
+        self.monitorPolicy = monitorPolicy
         var bindings = playlistBindings
         if bindings.isEmpty, let playlistID {
             bindings = [.init(playlistID: playlistID, legacyManagedTrackIDs: playlistManagedTrackIDs)]
@@ -139,7 +144,7 @@ nonisolated struct ReferencedSourceDescriptor: Codable, Sendable, Equatable, Ide
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, mode, rootBookmarkData, lastKnownPath, displayName
-        case createdAt, lastScan, status, playlistBindings, excludedRelativePaths
+        case createdAt, lastScan, status, monitorPolicy, playlistBindings, excludedRelativePaths
         case playlistID, playlistManagedTrackIDs
     }
 
@@ -158,6 +163,10 @@ nonisolated struct ReferencedSourceDescriptor: Codable, Sendable, Equatable, Ide
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
         lastScan = try container.decodeIfPresent(Date.self, forKey: .lastScan)
         status = try container.decodeIfPresent(ReferencedSourceStatus.self, forKey: .status) ?? .available
+        monitorPolicy = try container.decodeIfPresent(
+            ReferencedSourceMonitorPolicy.self,
+            forKey: .monitorPolicy
+        ) ?? .on
 
         var bindings = try container.decodeIfPresent(
             [ReferencedPlaylistSourceBinding].self,
@@ -202,6 +211,7 @@ nonisolated struct ReferencedSourceDescriptor: Codable, Sendable, Equatable, Ide
         try container.encode(createdAt, forKey: .createdAt)
         try container.encodeIfPresent(lastScan, forKey: .lastScan)
         try container.encode(status, forKey: .status)
+        try container.encode(monitorPolicy, forKey: .monitorPolicy)
         try container.encode(playlistBindings, forKey: .playlistBindings)
         try container.encode(excludedRelativePaths, forKey: .excludedRelativePaths)
         // Keep a read-only compatibility projection for one older release.

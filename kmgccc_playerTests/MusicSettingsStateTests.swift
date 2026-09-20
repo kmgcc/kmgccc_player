@@ -436,7 +436,13 @@ final class MusicSettingsStateTests: XCTestCase {
         await fulfillment(of: [finished], timeout: 2)
         await fulfillment(of: [terminal], timeout: 2)
 
-        let descriptor = try XCTUnwrap(log.snapshots.last?.first)
+        let descriptor = try XCTUnwrap(
+            log.snapshots
+                .compactMap { snapshot in
+                    snapshot.first { $0.kind == .indexUpdate && $0.state == .completed }
+                }
+                .last
+        )
         XCTAssertEqual(descriptor.kind, .indexUpdate)
         XCTAssertEqual(descriptor.libraryID, libraryID)
         XCTAssertEqual(descriptor.sessionGeneration, 9)
@@ -726,6 +732,83 @@ final class MusicSettingsStateTests: XCTestCase {
                 XCTAssertEqual(error as? LibraryScopedSettingsError, expected)
             }
         }
+    }
+
+    func testAutomationJobHistoryPersistsAndInterruptedJobsAreRecovered() async throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = kmgccc_player.LibraryPaths(rootURL: root)
+        try FileManager.default.createDirectory(at: paths.settingsRootURL, withIntermediateDirectories: true)
+
+        let libraryID = UUID()
+        let coordinator = LibraryOperationCoordinator(
+            libraryID: libraryID,
+            sessionGeneration: 7,
+            persistenceURL: paths.automationJobsURL
+        )
+        let started = expectation(description: "automation Job started")
+        coordinator.start(
+            {
+                started.fulfill()
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(10))
+                }
+            },
+            kind: .enrichment,
+            retrySpec: .lyricsRefresh(trackIDs: [UUID()], force: false)
+        )
+        await fulfillment(of: [started], timeout: 1)
+        let liveID = try XCTUnwrap(coordinator.taskDescriptors.first?.id)
+        XCTAssertTrue(coordinator.cancel(operationID: liveID))
+        await coordinator.cancelAndWait()
+
+        let reopened = LibraryOperationCoordinator(
+            libraryID: libraryID,
+            sessionGeneration: 7,
+            persistenceURL: paths.automationJobsURL
+        )
+        let persisted = try XCTUnwrap(
+            reopened.recentTaskDescriptors.first { $0.id == liveID }
+        )
+        XCTAssertEqual(persisted.state, .cancelled)
+        XCTAssertEqual(persisted.retrySpec?.kind, .lyricsRefresh)
+
+        struct Fixture: Codable {
+            let schemaVersion: Int
+            let jobs: [LibraryOperationTaskDescriptor]
+        }
+        let interrupted = LibraryOperationTaskDescriptor(
+            id: UUID(),
+            kind: .sourceScan,
+            libraryID: UUID(),
+            sessionGeneration: 8,
+            state: .running,
+            createdAt: Date(timeIntervalSince1970: 100),
+            startedAt: Date(timeIntervalSince1970: 101),
+            currentPhase: "source scan",
+            retrySpec: .sourceRefresh(sourceID: UUID())
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode(Fixture(schemaVersion: 1, jobs: [interrupted]))
+            .write(to: paths.automationJobsURL, options: .atomic)
+
+        let recovered = LibraryOperationCoordinator(
+            libraryID: interrupted.libraryID,
+            sessionGeneration: interrupted.sessionGeneration,
+            persistenceURL: paths.automationJobsURL
+        )
+        let recoveredJob = try XCTUnwrap(
+            recovered.recentTaskDescriptors.first { $0.id == interrupted.id }
+        )
+        XCTAssertEqual(recoveredJob.state, .failed)
+        XCTAssertNotNil(recoveredJob.finishedAt)
+        XCTAssertTrue(
+            recoveredJob.partialFailureSummaries.contains {
+                $0.contains("restarted before this Job")
+            }
+        )
+        XCTAssertEqual(recoveredJob.retrySpec?.kind, .sourceRefresh)
     }
 
     private func bookmark(mode: kmgccc_player.MusicLibraryMode, path: String) -> kmgccc_player.MusicLibraryBookmark {
