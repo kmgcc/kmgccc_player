@@ -1390,13 +1390,6 @@ final class AppSessionHost: ObservableObject {
             playbackCoordinator: playbackCoordinator
         )
         self.lyricsPlaybackPipeline = lyricsPlaybackPipeline
-        LyricsSurfaceManager.shared.setMainSurfaceSnapshotRefreshHandler {
-            [weak lyricsPlaybackPipeline] reason in
-            lyricsPlaybackPipeline?.refreshCurrent(
-                reason: "surface snapshot refresh: \(reason)",
-                forceLyricsReload: true
-            )
-        }
         lyricsPlaybackPipeline.start()
 
         playbackCoordinator.onActiveSourceChanged = { [weak ledMeterProvider, weak lyricsVM] source in
@@ -1487,7 +1480,6 @@ final class AppSessionHost: ObservableObject {
         firstUsePrewarmTask?.cancel()
         firstUsePrewarmTask = nil
         lyricsPlaybackPipeline = nil
-        LyricsSurfaceManager.shared.setMainSurfaceSnapshotRefreshHandler(nil)
         PreferenceStatsLifecycleHandler.shared.releaseLibrarySession()
         await FullscreenWindowManager.shared.releaseLibrarySession()
         AppKitMainSplitWindowController.releaseActiveLibraryReferences()
@@ -1720,12 +1712,6 @@ final class AppSessionHost: ObservableObject {
             TextInputSystemPrewarmer.prewarmOnce()
             guard !Task.isCancelled else { return }
 
-            await self.prewarmLyricsSurfaceWhenPlaybackQuiet(
-                role: .main,
-                playerVM: playerVM,
-                playbackCoordinator: playbackCoordinator
-            )
-
             try? await Task.sleep(for: .milliseconds(1_400))
             guard !Task.isCancelled, let libraryVM else { return }
 
@@ -1748,36 +1734,6 @@ final class AppSessionHost: ObservableObject {
                 FirstUseHitchDiagnostics.end(token)
             }
 
-            try? await Task.sleep(for: .milliseconds(1_100))
-            guard !Task.isCancelled else { return }
-
-            await self.prewarmLyricsSurfaceWhenPlaybackQuiet(
-                role: .fullscreen,
-                playerVM: playerVM,
-                playbackCoordinator: playbackCoordinator
-            )
-        }
-    }
-
-    private func prewarmLyricsSurfaceWhenPlaybackQuiet(
-        role: LyricsSurfaceRole,
-        playerVM: PlayerViewModel?,
-        playbackCoordinator: PlaybackCoordinator?
-    ) async {
-        while !Task.isCancelled {
-            let isPlaying = (playerVM?.isPlaying ?? false)
-                || (playbackCoordinator?.presentation.isPlaying ?? false)
-            guard !isPlaying else {
-                Log.info(
-                    "[FirstUsePrewarm] deferring \(role.rawValue) lyrics prewarm while playback is active",
-                    category: .perf
-                )
-                try? await Task.sleep(for: .milliseconds(1_500))
-                continue
-            }
-
-            LyricsSurfaceManager.shared.prewarm(role: role, reason: "app-start-idle")
-            return
         }
     }
 

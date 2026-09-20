@@ -7,14 +7,6 @@
 
 import Foundation
 
-/// Selects the renderer implementation used by the app's lyrics surface
-/// adapter. The production choice is explicit and can be changed in one place
-/// when a compatibility renderer is needed during development.
-enum LyricsRendererBackend: Sendable {
-    case native
-    case webView
-}
-
 /// Identifies the role of a lyrics surface for lifecycle and configuration.
 /// Each role may have different rendering requirements.
 enum LyricsSurfaceRole: String, CaseIterable, Sendable {

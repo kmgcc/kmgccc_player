@@ -84,6 +84,69 @@ private nonisolated struct AutomationStorageBackupManifest: Codable {
     }
 }
 
+nonisolated struct AutomationStorageBackupPruneResult: Sendable, Equatable {
+    let removedBackupCount: Int
+    let failures: [String]
+}
+
+/// Keeps storage.backup recoverable without letting repeated automation runs
+/// accumulate one full metadata/artwork snapshot per invocation.
+nonisolated enum AutomationStorageBackupRetention {
+    static let maximumBackupCount = 1
+
+    static func pruneOlderBackups(
+        at rootURL: URL,
+        keeping retainedBackupURL: URL,
+        fileManager: FileManager = .default
+    ) -> AutomationStorageBackupPruneResult {
+        let root = rootURL.standardizedFileURL
+        let retained = retainedBackupURL.standardizedFileURL
+        guard retained.path.hasPrefix(root.path + "/") else {
+            return AutomationStorageBackupPruneResult(
+                removedBackupCount: 0,
+                failures: ["Refused to prune a backup outside the backup root."]
+            )
+        }
+
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return AutomationStorageBackupPruneResult(
+                removedBackupCount: 0,
+                failures: ["Failed to enumerate automation backup snapshots."]
+            )
+        }
+
+        var removedBackupCount = 0
+        var failures: [String] = []
+        for entry in entries {
+            guard entry.standardizedFileURL.path != retained.path else {
+                continue
+            }
+            let values = try? entry.resourceValues(forKeys: [.isDirectoryKey])
+            guard values?.isDirectory == true else { continue }
+
+            do {
+                try fileManager.removeItem(at: entry)
+                removedBackupCount += 1
+            } catch {
+                if failures.count < 50 {
+                    failures.append(
+                        "Failed to remove old automation backup \(entry.lastPathComponent): \(error.localizedDescription)"
+                    )
+                }
+            }
+        }
+
+        return AutomationStorageBackupPruneResult(
+            removedBackupCount: removedBackupCount,
+            failures: failures
+        )
+    }
+}
+
 private nonisolated struct AutomationStorageInventoryItem {
     let relativePath: String
     let sourceURL: URL
@@ -5862,6 +5925,12 @@ final class AutomationIPCServer {
             to: manifestURL,
             options: .atomic
         )
+        let pruneResult = AutomationStorageBackupRetention.pruneOlderBackups(
+            at: root,
+            keeping: destination,
+            fileManager: fileManager
+        )
+        failures.append(contentsOf: pruneResult.failures)
         return AutomationStorageBackupResult(
             libraryID: context.id,
             backupPath: destination.path,
@@ -5870,7 +5939,7 @@ final class AutomationIPCServer {
             omittedFileCount: inventory.omittedFileCount,
             copiedBytes: copiedBytes,
             failures: Array(failures.prefix(50)),
-            message: "Created a metadata-only backup. Audio files, indexes, caches and live SQLite stores were intentionally omitted."
+            message: "Created a metadata-only backup and retained only the newest snapshot. Audio files, indexes, caches and live SQLite stores were intentionally omitted."
         )
     }
 

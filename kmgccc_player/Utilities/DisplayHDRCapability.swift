@@ -12,6 +12,7 @@
 
 import AppKit
 import CoreGraphics
+import SwiftUI
 import Foundation
 import IOKit
 import SwiftUI

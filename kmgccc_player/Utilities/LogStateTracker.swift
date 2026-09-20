@@ -110,12 +110,6 @@ extension LogStateTracker {
         return checkStateChanged(key: key, value: value)
     }
     
-    /// Track lyrics WebView state changes.
-    func trackLyricsState(_ key: String, objectID: Int, state: String) -> Bool {
-        let value = "objectID=\(objectID)|state=\(state)"
-        return checkStateChanged(key: key, value: value)
-    }
-    
     /// Track playback state changes.
     func trackPlaybackState(_ key: String, trackID: UUID?, isPlaying: Bool, time: Double) -> Bool {
         let timeInt = Int(time * 100) // Reduce precision to avoid noise

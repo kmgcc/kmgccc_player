@@ -7,7 +7,7 @@
 //
 
 import AppKit
-import NativeLyrics
+import MelismaKit
 import SwiftData
 import SwiftUI
 
@@ -677,7 +677,7 @@ final class CenterPanePassthroughViewController: NSViewController {
 // MARK: - Flat AppKit lyrics inspector pane
 
 /// Production lyrics inspector pane.
-/// Hosts the reusable NativeLyrics layer-backed view directly in AppKit so
+/// Hosts the reusable MelismaKit layer-backed view directly in AppKit so
 /// normal track switches do not re-wrap the renderer in SwiftUI. A zero-sized
 /// `NSHostingController` child keeps the non-visual LyricsViewModel bindings
 /// alive (seek callback, time sync, settings observation).
@@ -786,7 +786,7 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
         // Attachment changes are the only reason to touch the surface owner
         // from this hot layout callback. AppKit will lay out the child after
         // its frame changes; forcing a synchronous subtree layout here made
-        // every window-resize tick enter NativeLyrics' text reflow on the
+        // every window-resize tick enter MelismaKit's text reflow on the
         // main thread.
         let isAttached = nativeLyricsView.superview === view
         if isAttached != shouldAttachLyricsSurface {
@@ -888,9 +888,6 @@ final class LyricsFlatAppKitHostViewController: NSViewController {
 
     private func syncVisibilityAndAttachment(reason: String) {
         guard isViewLoaded else { return }
-        AMLLLifecycleDiagnostics.emit(
-            "mainHost.sync reason=\(reason) target=\(String(describing: LyricsSurfaceManager.shared.targetMode)) shouldAttach=\(shouldAttachLyricsSurface) viewHidden=\(view.isHidden) hasWindow=\(view.window != nil) hostBounds=\(nativeLyricsView.bounds)"
-        )
         guard shouldAttachLyricsSurface else {
             reportMainSurfaceVisible(false)
             detachNativeView()

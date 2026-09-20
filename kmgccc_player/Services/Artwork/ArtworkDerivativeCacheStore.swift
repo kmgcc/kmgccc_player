@@ -23,6 +23,7 @@ actor ArtworkDerivativeCacheStore {
     private let maxDiskBytes: Int64 = 220 * 1024 * 1024
     private let decodeGate = ArtworkDecodeGate(maxConcurrent: 2)
     private var writeCounter = 0
+    private var didScheduleInitialDiskTrim = false
     private nonisolated let diskRootURL: URL
 
     init(diskRootURL: URL) {
@@ -38,6 +39,8 @@ actor ArtworkDerivativeCacheStore {
         artworkData: Data,
         targetPixelSize: CGSize
     ) async -> NSImage? {
+        scheduleInitialDiskTrimIfNeeded()
+
         if let memImage = memoryCache.object(forKey: cacheKey as NSString)?.image {
             return memImage
         }
@@ -73,6 +76,8 @@ actor ArtworkDerivativeCacheStore {
         artworkData: Data,
         maxPixelSize: Int
     ) async -> NSImage? {
+        scheduleInitialDiskTrimIfNeeded()
+
         if let memImage = memoryCache.object(forKey: cacheKey as NSString)?.image {
             return memImage
         }
@@ -131,6 +136,14 @@ actor ArtworkDerivativeCacheStore {
         }
     }
 
+    private func scheduleInitialDiskTrimIfNeeded() {
+        guard !didScheduleInitialDiskTrim else { return }
+        didScheduleInitialDiskTrim = true
+        Task { [weak self] in
+            await self?.trimDiskIfNeeded()
+        }
+    }
+
     private func fileURL(for cacheKey: String) -> URL {
         let digest = stableDigest(cacheKey)
         return diskRootURL.appendingPathComponent("\(digest).png")
@@ -153,33 +166,16 @@ actor ArtworkDerivativeCacheStore {
     }
 
     private func trimDiskIfNeeded() {
-        guard
-            let urls = try? fileManager.contentsOfDirectory(
-                at: diskRootURL,
-                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
-                options: .skipsHiddenFiles
-            )
-        else { return }
-
-        var records: [(url: URL, size: Int64, modified: Date)] = []
-        records.reserveCapacity(urls.count)
-
-        var totalSize: Int64 = 0
-        for url in urls {
-            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
-            let size = Int64(values?.fileSize ?? 0)
-            totalSize += size
-            records.append((url: url, size: size, modified: values?.contentModificationDate ?? .distantPast))
-        }
-
-        guard totalSize > maxDiskBytes else { return }
-        let target = Int64(Double(maxDiskBytes) * 0.88)
-        let sorted = records.sorted { $0.modified < $1.modified }
-        var current = totalSize
-        for item in sorted where current > target {
-            try? fileManager.removeItem(at: item.url)
-            current -= item.size
-        }
+        let result = DiskCacheRetention.trim(
+            at: diskRootURL,
+            maxBytes: maxDiskBytes,
+            fileManager: fileManager
+        )
+        guard result.removedFileCount > 0 else { return }
+        Log.debug(
+            "[ArtworkDerivativeCache] disk trim removedFiles=\(result.removedFileCount) removedBytes=\(result.removedBytes)",
+            category: .perf
+        )
     }
 
     private func pngData(for image: NSImage) -> Data? {

@@ -2,8 +2,7 @@
 //  BundledFontRegistrar.swift
 //  myPlayer2
 //
-//  Registers app-bundled fonts for native SwiftUI/AppKit previews. The AMLL
-//  WebView has its own @font-face declaration in the bundled AMLL page.
+//  Registers app-bundled fonts for the native SwiftUI/AppKit lyrics surface.
 //
 
 import CoreText

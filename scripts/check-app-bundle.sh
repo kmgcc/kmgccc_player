@@ -41,12 +41,8 @@ require_executable "$CONTENTS/MacOS/kmgccc_player" "App executable"
 require_file "$CONTENTS/Info.plist" "App Info.plist"
 require_file "$RESOURCES/Assets.car" "Asset catalog"
 
-require_file "$RESOURCES/AMLL/index.html" "AMLL entry page"
-require_file "$RESOURCES/AMLL/amll-core.js" "AMLL core"
-require_file "$RESOURCES/AMLL/amll-lyric.js" "AMLL lyric parser"
+require_file "$RESOURCES/AMLL/background.html" "AMLL background page"
 require_file "$RESOURCES/AMLL/amll-background.js" "AMLL background runtime"
-require_file "$RESOURCES/AMLL/bridge.js" "AMLL bridge"
-require_file "$RESOURCES/AMLL/style.css" "AMLL stylesheet"
 
 require_executable "$RESOURCES/Tools/lddc-server/lddc-server" "LDDC server"
 require_directory "$RESOURCES/Tools/lddc-server/_internal" "LDDC runtime directory"
@@ -101,10 +97,7 @@ done
 
 for text_file in \
   "$CONTENTS/Info.plist" \
-  "$RESOURCES/AMLL/index.html" \
   "$RESOURCES/AMLL/background.html" \
-  "$RESOURCES/AMLL/bridge.js" \
-  "$RESOURCES/AMLL/style.css" \
   "$RESOURCES/mediaremote-adapter/bin/mediaremote-adapter.pl" \
   "$RESOURCES/zh-Hans.lproj/Localizable.strings"; do
   if LC_ALL=C /usr/bin/grep -a -q '/Users/' "$text_file"; then

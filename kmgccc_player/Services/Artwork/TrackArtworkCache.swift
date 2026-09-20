@@ -85,6 +85,9 @@ extension Track {
 }
 
 actor TrackArtworkCache {
+    private static let maxOriginalDiskBytes: Int64 = 512 * 1024 * 1024
+    private static let maxDerivativeDiskBytes: Int64 = 512 * 1024 * 1024
+
     private nonisolated let originalsRootURL: URL
     private nonisolated let derivativesRootURL: URL
     private let imageCache = NSCache<NSString, CachedArtworkImage>()
@@ -95,6 +98,8 @@ actor TrackArtworkCache {
     private var warmupInProgressKeys: Set<String> = []
     private var completedWarmupKeys: [String] = []
     private var completedWarmupKeySet: Set<String> = []
+    private var didScheduleInitialDiskTrim = false
+    private var diskWriteCounter = 0
 
     init(storage: LibraryStorageLocations) {
         self.originalsRootURL = storage.trackArtworkOriginalsURL
@@ -213,6 +218,8 @@ actor TrackArtworkCache {
     }
 
     func sourceData(for source: TrackArtworkSource, purpose: String = "ui") async -> Data? {
+        scheduleInitialDiskTrimIfNeeded()
+
         if let cached = sourceDataCache.object(forKey: source.sourceKey as NSString) {
             Self.log(
                 "memory hit",
@@ -311,6 +318,9 @@ actor TrackArtworkCache {
         let data = await task.value
         sourceDataTasks[source.sourceKey] = nil
         cacheSourceData(data, for: source)
+        if data != nil {
+            recordDiskWriteAndTrimIfNeeded()
+        }
         return data
     }
 
@@ -320,6 +330,8 @@ actor TrackArtworkCache {
         maxPixelSize: Int,
         purpose: String
     ) async -> NSImage? {
+        scheduleInitialDiskTrimIfNeeded()
+
         let imageKey = Self.imageKey(for: source, variant: variant, maxPixelSize: maxPixelSize)
         if let cached = imageCache.object(forKey: imageKey as NSString)?.image {
             Self.log(
@@ -447,12 +459,45 @@ actor TrackArtworkCache {
             withIntermediateDirectories: true
         )
         try? png.write(to: diskURL, options: .atomic)
+        recordDiskWriteAndTrimIfNeeded()
         Self.log(
             "write derivative cache",
             source: nil,
             imageKey: key,
             purpose: "cache",
             detail: "bytes=\(png.count) file=\(diskURL.lastPathComponent) elapsedMs=\(Self.formatMs(Self.elapsedMs(since: startedAt)))"
+        )
+    }
+
+    private func scheduleInitialDiskTrimIfNeeded() {
+        guard !didScheduleInitialDiskTrim else { return }
+        didScheduleInitialDiskTrim = true
+        Task { [weak self] in
+            await self?.trimDiskCaches()
+        }
+    }
+
+    private func recordDiskWriteAndTrimIfNeeded() {
+        diskWriteCounter += 1
+        guard diskWriteCounter.isMultiple(of: 26) else { return }
+        trimDiskCaches()
+    }
+
+    private func trimDiskCaches() {
+        let originalResult = DiskCacheRetention.trim(
+            at: originalsRootURL,
+            maxBytes: Self.maxOriginalDiskBytes
+        )
+        let derivativeResult = DiskCacheRetention.trim(
+            at: derivativesRootURL,
+            maxBytes: Self.maxDerivativeDiskBytes
+        )
+        let removedFileCount = originalResult.removedFileCount + derivativeResult.removedFileCount
+        let removedBytes = originalResult.removedBytes + derivativeResult.removedBytes
+        guard removedFileCount > 0 else { return }
+        Log.debug(
+            "[TrackArtworkCache] disk trim removedFiles=\(removedFileCount) removedBytes=\(removedBytes)",
+            category: .perf
         )
     }
 

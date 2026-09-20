@@ -72,6 +72,13 @@ PR 前统一门禁：bootstrap、ARM64 无签名 Debug 构建、LRC 回归、XCT
 ./scripts/check-app-bundle.sh /path/to/kmgccc_player.app
 ```
 
+### check-app-process-state.sh
+
+只读检查当前是否已有 kmgccc_player 进程，并输出 PID、父进程、启动时间和实际命令路径。
+发现进程时返回失败码，表示启动流程必须暂停；脚本不会结束任何进程。
+
+    ./scripts/check-app-process-state.sh
+
 ### check-ui-consistency.sh
 
 检查本次新增或修改的 SwiftUI/AppKit UI 代码是否引入已知的局部样式漂移。默认只检查变更
@@ -100,7 +107,7 @@ Xcode 的 `Run Optional Build Hook` Build Phase 调用此适配器。默认设�
 
 ### `sync-amll-from-fork.sh`
 
-从 `Dependencies/Submodules/AMLLIntegration/` 构建 AMLL bundle，并同步到 `kmgccc_player/Resources/AMLL/`。修改 fork 后运行此脚本，再执行完整歌词回归和 `verify.sh`。
+从 `Dependencies/Submodules/AMLLIntegration/` 只构建网格背景 bundle，并同步 `amll-background.js` 到 `kmgccc_player/Resources/AMLL/`。修改 fork 后运行此脚本，再检查网格背景资源和匹配的 Debug Build。
 
 `components/` 包含各组件 bootstrap 子脚本，`lib/common.sh` 提供共享函数；它们由 `bootstrap.sh` 调用，不应作为独立入口。
 

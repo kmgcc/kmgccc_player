@@ -17,8 +17,19 @@ APP_BINARY="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 # Export log level for the app, defaulting to info
 export KMGCCC_LOG_LEVEL="${KMGCCC_LOG_LEVEL:-info}"
 
-# Kill any existing instance of the app
-pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+PROCESS_PREFLIGHT="$SCRIPT_DIR/check-app-process-state.sh"
+
+assert_no_existing_process() {
+    if ! "$PROCESS_PREFLIGHT"; then
+        echo "error: an existing $APP_NAME process is running; no process was terminated and no second instance will be launched." >&2
+        echo "Inspect the reported PID and binary path, stop it only with explicit authorization, then rerun." >&2
+        exit 3
+    fi
+}
+
+# The library is exclusive. Preserve an existing instance until its identity
+# and ownership have been confirmed.
+assert_no_existing_process
 
 echo "========================================"
 echo "Building $APP_NAME ($CONFIGURATION) via xcodebuild..."
@@ -66,6 +77,8 @@ fi
 echo "========================================"
 echo "Launching $APP_BUNDLE..."
 echo "========================================"
+
+assert_no_existing_process
 
 if [ "$#" -gt 0 ]; then
     shift

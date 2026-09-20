@@ -2,11 +2,11 @@
 
 只收录**当前仍然生效**的实现约束与已知坑。改对应功能代码前先读本页；条目失效时直接改写或删除，不保留历史版本。
 
-## 歌词渲染（NativeLyrics 与 AMLL）
+## 歌词渲染（NativeLyrics 与 AMLL 背景）
 
-- 生产环境默认采用原生 `NativeLyrics` 引擎（Core Text + Core Animation）；Web/AMLL 仅保留作为兼容回退。不要在原生渲染层中引入依赖 DOM、JavaScript bridge 或全局 WebView 实例的假设，也不得将 WebView 直接传给原生宿主视图。
-- `kmgccc_player/Resources/AMLL/` 下的 `amll-core.js`、`amll-lyric.js`、`amll-background.js`、`style.css` 是**生成物，不可手改**；用 `scripts/sync-amll-from-fork.sh` 从 fork 同步。
-- 歌词 WebView 的 owner 是 `LyricsSurfaceManager`；不要在 View 里持有或新建 WebView。view-owned WebView、旧 `LyricsBridge.swift`、旧 exiting-line suppress、离散 highlight 系统均已废弃，**不要恢复**。
+- 生产环境歌词只采用原生 `NativeLyrics` 引擎（Core Text + Core Animation）；不要在歌词渲染层中引入 DOM、JavaScript bridge 或歌词 WebView fallback。
+- `kmgccc_player/Resources/AMLL/` 只保留网格背景所需的 `background.html`、生成的 `amll-background.js` 和字体资源；生成 JavaScript 不可手改，用 `scripts/sync-amll-from-fork.sh` 从 fork 同步。
+- `AMLLMeshGradientBackgroundView` 的 WebView 只服务背景动画，不得复用于歌词，也不要在歌词 View 中创建第二套渲染状态。
 
 ## 全屏
 

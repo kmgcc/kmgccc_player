@@ -7,7 +7,7 @@ AMLL_PRODUCT="$PRODUCTS_DIR/amll"
 AMLL_RUNTIME="$ROOT/kmgccc_player/Resources/AMLL"
 AMLL_PNPM_VERSION="11.1.0"
 AMLL_NODE_MAJOR="22"
-AMLL_RUNTIME_FILES=(amll-core.js amll-lyric.js amll-background.js style.css)
+AMLL_RUNTIME_FILES=(amll-background.js)
 
 amll_expected_sha() {
   git -C "$ROOT" ls-files -s -- "$AMLL_SOURCE_REL" | /usr/bin/awk '$1 == "160000" {print $2}'

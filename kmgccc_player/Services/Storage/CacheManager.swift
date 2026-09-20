@@ -7,6 +7,84 @@
 
 import Foundation
 
+nonisolated struct DiskCacheTrimResult: Sendable, Equatable {
+    let removedFileCount: Int
+    let removedBytes: Int64
+
+    static let empty = DiskCacheTrimResult(removedFileCount: 0, removedBytes: 0)
+}
+
+/// Bounds rebuildable disk caches without making the cache format aware of the
+/// individual image or metadata producers.
+nonisolated enum DiskCacheRetention {
+    static func trim(
+        at rootURL: URL,
+        maxBytes: Int64,
+        targetFraction: Double = 0.88,
+        fileManager: FileManager = .default
+    ) -> DiskCacheTrimResult {
+        guard maxBytes > 0,
+              let urls = try? fileManager.contentsOfDirectory(
+                at: rootURL,
+                includingPropertiesForKeys: [
+                    .isRegularFileKey,
+                    .contentModificationDateKey,
+                    .fileSizeKey,
+                ],
+                options: [.skipsHiddenFiles]
+              )
+        else {
+            return .empty
+        }
+
+        var records: [(url: URL, size: Int64, modified: Date)] = []
+        records.reserveCapacity(urls.count)
+        var totalBytes: Int64 = 0
+
+        for url in urls {
+            guard let values = try? url.resourceValues(
+                forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]
+            ), values.isRegularFile == true else {
+                continue
+            }
+            let size = Int64(values.fileSize ?? 0)
+            totalBytes += size
+            records.append(
+                (
+                    url: url,
+                    size: size,
+                    modified: values.contentModificationDate ?? .distantPast
+                )
+            )
+        }
+
+        guard totalBytes > maxBytes else { return .empty }
+
+        let clampedFraction = min(1, max(0, targetFraction))
+        let targetBytes = Int64(Double(maxBytes) * clampedFraction)
+        var currentBytes = totalBytes
+        var removedFileCount = 0
+        var removedBytes: Int64 = 0
+
+        for record in records.sorted(by: { $0.modified < $1.modified })
+        where currentBytes > targetBytes {
+            do {
+                try fileManager.removeItem(at: record.url)
+                currentBytes -= record.size
+                removedFileCount += 1
+                removedBytes += record.size
+            } catch {
+                continue
+            }
+        }
+
+        return DiskCacheTrimResult(
+            removedFileCount: removedFileCount,
+            removedBytes: removedBytes
+        )
+    }
+}
+
 struct LegacyCacheCleanupResult: Sendable {
     var removedDirectories: Int
     var failedDirectories: Int
@@ -352,6 +430,7 @@ nonisolated enum CacheManager {
         at locations: LegacyLibraryStorageLocations
     ) -> [URL] {
         [
+            locations.legacyIndexRootURL,
             locations.legacyPlaylistArtworkURL,
             locations.legacyQQMusicCoverURL,
             locations.legacyExternalPlaybackArtworkURL,

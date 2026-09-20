@@ -3,12 +3,12 @@
 //  myPlayer2
 //
 //  Translates the existing public lyrics settings payload into the reusable
-//  NativeLyrics configuration. The JSON shape is kept as an input bridge for
+//  MelismaKit configuration. The JSON shape is kept as an input bridge for
 //  fullscreen skin adapters, but the renderer never depends on that payload.
 //
 
 import Foundation
-import NativeLyrics
+import MelismaKit
 import SwiftUI
 
 enum NativeLyricsConfigurationMapper {
@@ -58,7 +58,7 @@ enum NativeLyricsConfigurationMapper {
         )
         config.spring = role.enableSpring && settings.amllLyricsSpringEnabled
         config.blur = role.enableBlur
-        // NativeLyrics rasterizes glyph masks at the display backing scale.
+        // MelismaKit rasterizes glyph masks at the display backing scale.
         // Reuse the user-facing quality setting for every interactive surface
         // so a 5K display does not implicitly force the most expensive path.
         config.renderScale = role.supportsAMLLRenderQuality

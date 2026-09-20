@@ -168,12 +168,6 @@ enum LogConfig {
         set { _themeColorVerbose = newValue }
     }
 
-    private nonisolated(unsafe) static var _webviewVerbose = false
-    nonisolated static var webviewVerbose: Bool {
-        get { _webviewVerbose || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_WEBVIEW_VERBOSE"] == "1" }
-        set { _webviewVerbose = newValue }
-    }
-
     private nonisolated(unsafe) static var _playbackStatsVerbose = false
     nonisolated static var playbackStatsVerbose: Bool {
         get { _playbackStatsVerbose || ProcessInfo.processInfo.environment["KMGCCC_DEBUG_PLAYBACK_STATS_VERBOSE"] == "1" }

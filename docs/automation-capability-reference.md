@@ -173,6 +173,7 @@ Artwork/Metadata mutation。Storage backup 是 metadata-only：它不复制
 `storage.orphans` 会列出 Playlist sidecar 中指向不存在 Track sidecar 的 membership，且不会
 自动删除历史关系。`storage.backup` 将当前资料库的 JSON、歌词/封面等 App-owned sidecar 复制到
 本机 App Support 的资料库专属备份目录，并返回绝对路径及 SHA-256 manifest；真实音频文件和
-运行时 SQLite 不在备份范围内。`storage.diff` 比较当前可观测文件与该 manifest，`storage.reload`
+运行时 SQLite 不在备份范围内。每个资料库只保留最近一次 backup；再次执行后，旧 backup
+目录会被回收，因此需要在同一次调用结果中保存新的 `backupPath`。`storage.diff` 比较当前可观测文件与该 manifest，`storage.reload`
 在受控底层修改后重新载入 App-owned Library。底层 JSON write 仍不是普通 Tool，必须由高级用户
 依据当前版本源码自行执行，并在修改前备份、修改后 validate/reload。

@@ -84,6 +84,7 @@ storage.reload -> 重新载入当前 App-owned storage
 storage.validate -> 验证完整 invariant
 ```
 
-`storage.backup` 不复制真实音频、缓存、索引或 live SQLite；它不是整库文件备份。不要修改
+`storage.backup` 不复制真实音频、缓存、索引或 live SQLite；它不是整库文件备份。每个资料库
+只保留最近一次 backup，后续 backup 会回收旧快照。不要修改
 secret、writer lock、pending transaction 或 migration journal 来绕过错误；不确定时报告
 evidence，而不是猜测。

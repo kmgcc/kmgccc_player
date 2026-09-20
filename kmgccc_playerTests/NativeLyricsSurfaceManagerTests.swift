@@ -1,5 +1,5 @@
 import XCTest
-import NativeLyrics
+import MelismaKit
 import SwiftUI
 import QuartzCore
 @testable import kmgccc_player

@@ -17,7 +17,8 @@ flowchart TD
     Presentation --> Lyrics["歌词管线"]
     Presentation --> Theme["主题与颜色"]
     Lyrics --> NativeLyrics["NativeLyrics (Swift / Core Text)"]
-    Lyrics -. 兼容回退 .-> AMLL["AMLL / WKWebView"]
+    UI --> MeshBackground["AMLL 网格背景"]
+    MeshBackground --> AMLLBackground["background.html + amll-background.js"]
 ```
 
 ## 应用启动
@@ -88,16 +89,15 @@ TTML 歌词文本
   → LyricsViewModel（持有当前曲目、歌词配置和 offset 计算）
   → LyricsSurfaceManager（管理 main/fullscreen 等 surface 的活动关系）
       ├─► NativeLyricsSurfaceManager（原生 Swift 后端：Core Text 排版 + Core Animation 图层）
-      └─► LyricsWebViewStore（兼容回退后端：WKWebView + AMLL DOM LyricPlayer）
 ```
 
 各层职责：
 
 - `LyricsPlaybackPipeline` 监听 presentation 变化，同步歌词内容、硬件时钟时间基准和播放态；
 - `LyricsViewModel` 持有当前曲目和 offset 计算，决定何时需要重新 apply；
-- `LyricsSurfaceManager` 协调各 surface 的活动关系和可回放 snapshot，并根据设置派发到原生渲染或 Web 兼容后端；
+- `LyricsSurfaceManager` 协调各 surface 的活动关系和可回放 snapshot，并派发到原生渲染 surface；
 - `NativeLyricsSurfaceManager` 驱动基于 Core Text 与 Core Animation 的原生渲染视窗，以微秒级延迟响应音频时钟并呈现 120Hz 高刷新率动效；
-- `LyricsWebViewStore` 在开启兼容模式时持有 WKWebView 生命周期、ready 状态和 bridge 调用。
+- `AMLLMeshGradientBackgroundView` 只负责隔离的网格背景 WebView，不承载歌词内容。
 
 窗口或全屏视图只报告可见性，不应成为歌词内容的状态源。手动隐藏再显示会保留持久渲染宿主和已有行，切歌或新 surface 才投递新歌词。
 
@@ -115,7 +115,7 @@ TTML 歌词文本
 
 本地曲目的封面来自曲库与缓存，外部播放由相应 provider 解析。在线封面候选可来自 QQ Music Helper、网易云音乐 API 和 SACAD，候选进入共享 cover pipeline 后才由上层决定是否采用；候选来源不直接写曲库。
 
-`NowPlayingPresentation` 发布当前封面数据和 identity，`NowPlayingHostView` 等待完整图片解码后保持封面图片、checksum 和 track identity 原子切换。`ThemeStore` 是颜色状态 owner：按封面 identity/checksum 去重，复用 `ArtworkAssetStore` 或执行颜色分析，生成 `SemanticPalette`。普通皮肤、全屏和 AMLL 都消费这套语义颜色。新封面尚未完成分析时暂时保留上一张封面的主题，避免切歌时闪回默认色。
+`NowPlayingPresentation` 发布当前封面数据和 identity，`NowPlayingHostView` 等待完整图片解码后保持封面图片、checksum 和 track identity 原子切换。`ThemeStore` 是颜色状态 owner：按封面 identity/checksum 去重，复用 `ArtworkAssetStore` 或执行颜色分析，生成 `SemanticPalette`。普通皮肤、全屏、原生歌词和 AMLL 网格背景都消费这套语义颜色。新封面尚未完成分析时暂时保留上一张封面的主题，避免切歌时闪回默认色。
 
 本地音频分析从 `AVAudioPlaybackService.analysisMixerNode` 进入共享 `AudioAnalysisHub`。hub 持有唯一的 AVAudioEngine tap 和 FFT 结果，再由 `LEDMeterService` 与 `AudioVisualizationService` 消费；`LEDMeterServiceProvider` 根据播放态和消费者数量管理这些服务的启停与分发。外部播放没有 mixer，协调器切换到 `ExternalPlaybackSpectrumSimulator`，provider 只在播放且有消费者时轮询。频谱视图应订阅共享 provider，不要各自给 AVAudioEngine 安装 tap。
 
@@ -125,7 +125,7 @@ App 依赖五个外部运行组件，都由 `bootstrap.sh` 构建，产物通过
 
 | 组件 | 进程边界 | Swift 入口 | 失败影响 |
 | --- | --- | --- | --- |
-| AMLL | WKWebView 中的 JS/DOM | `LyricsWebViewStore` | 对应歌词 surface 无法渲染 |
+| AMLL background | 隔离的背景 WKWebView | `AMLLMeshGradientBackgroundView` | 网格背景不可用，歌词与播放不受影响 |
 | LDDC Fetch Core | `127.0.0.1` 随机端口 HTTP | `LDDCServerManager` | 在线歌词搜索失败，AMLL DB 仍可用 |
 | QQ Music Helper | stdin/stdout JSON 子进程 | `QQMusicHelperProcess` | QQ 封面候选不可用，其他来源独立 |
 | MediaRemoteAdapter | Perl launcher + framework | `SystemNowPlayingProvider` | 系统外部播放不可用，本地和 Apple Music 独立 |
@@ -137,7 +137,7 @@ App 依赖五个外部运行组件，都由 `bootstrap.sh` 构建，产物通过
 
 - **播放来源切换**：会影响普通窗口、MiniPlayer、全屏、歌词管线和 Dock。修改 `PlaybackCoordinator` 或 `NowPlayingPresentation` 后，需要验证本地、Apple Music 和系统 Now Playing 三条路径。
 - **歌词系统**：涉及 `LyricsPlaybackPipeline`、`LyricsViewModel`、`LyricsSurfaceManager` 和多个 surface。改动后需要验证窗口歌词、全屏、cover blur、seek、暂停、重叠行和 lead-in。
-- **AMLL**：不要在未定位根因前叠加 patch。能放在 App 适配层（`index.html`、`bridge.js`、CSS）的修改不要改 fork core。改动 fork TypeScript 核心前，确认该改动无法在适配层完成，并保留退化到上游默认行为的路径。
+- **AMLL 背景**：只通过 `scripts/sync-amll-from-fork.sh` 更新生成的 `amll-background.js`，保留 `background.html` 与字体资源；不要重新引入歌词 DOM、bridge 或歌词 WebView fallback。
 - **Fullscreen**：系统全屏、窗口模拟全屏和主窗口内嵌是三条独立路径，不要合并为一个布尔判断。
 - **外部 helper**：所有 helper 路径从 bundle 解析。QQ Music API 只能经 bundled helper 调用，不要在 Swift 中直接调用第三方 API。
 - **主题颜色**：`ThemeStore` 是唯一的状态 owner。界面消费 `SemanticPalette`，不要各自执行颜色分析。

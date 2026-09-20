@@ -3017,7 +3017,7 @@ public enum AutomationToolCatalog {
         AutomationToolDescriptor(
             name: AutomationMethod.storageBackup,
             title: "Back Up Library Metadata",
-            description: "Create an App-owned, machine-readable backup of Library JSON sidecars and enrichment assets without copying audio files, indexes or caches.",
+            description: "Create an App-owned, machine-readable backup of Library JSON sidecars and enrichment assets without copying audio files, indexes or caches; retain only the newest backup for the Library.",
             readOnly: false,
             scopes: [.storageRead],
             risk: .low,

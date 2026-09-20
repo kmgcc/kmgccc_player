@@ -2,12 +2,12 @@
   "originHash" : "7e281b3ad506e0ee26eb1d24f30853fa2c4ef383780a76ba85c1e5ee678244f5",
   "pins" : [
     {
-      "identity" : "nativelyrics",
+      "identity" : "melismakit",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/kmgcc/NativeLyrics.git",
+      "location" : "https://github.com/kmgcc/melismakit.git",
       "state" : {
-        "revision" : "717dd282a063a9f499092df7537d540dc83319cf",
-        "version" : "0.1.4"
+        "revision" : "5665da55083b5e32207d6ce231831cb46cc0c37f",
+        "version" : "0.2.0"
       }
     },
     {

@@ -2,17 +2,17 @@
 //  NativeLyricsSurface.swift
 //  myPlayer2
 //
-//  App adapter for the standalone NativeLyrics package.
+//  App adapter for the standalone MelismaKit package.
 //
 //  The package owns TTML parsing, layout and animation. This file only maps
 //  player state/theme values to the package and owns one surface per visible
-//  AppKit role. Keeping this boundary small lets NativeLyrics remain usable
+//  AppKit role. Keeping this boundary small lets MelismaKit remain usable
 //  outside the player without importing Track, AppSettings or ThemeStore.
 //
 
 import AppKit
 import Foundation
-import NativeLyrics
+import MelismaKit
 import SwiftUI
 
 @MainActor

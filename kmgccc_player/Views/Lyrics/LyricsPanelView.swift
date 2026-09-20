@@ -7,7 +7,7 @@
 //  The surface manager owns renderer lifetime across SwiftUI/AppKit hosts.
 //
 
-import NativeLyrics
+import MelismaKit
 import SwiftUI
 
 /// Right-side lyrics panel with the native layer-backed lyrics surface.
@@ -301,7 +301,6 @@ struct LyricsPanelView: View {
 
     private func reloadLyricsSurface(
         reason: String,
-        forceWebReload: Bool = false,
         forceLyricsReload: Bool = false
     ) {
         let presentation = playbackCoordinator.presentation
@@ -312,14 +311,12 @@ struct LyricsPanelView: View {
                 currentTime: presentation.lyricsCurrentTime,
                 isPlaying: presentation.isPlaying,
                 reason: reason,
-                forceWebReload: forceWebReload,
                 forceLyricsReload: forceLyricsReload
             )
         case .appleMusic, .systemNowPlaying:
             lyricsVM.ensureExternalLyricsLoaded(
                 presentation: presentation,
                 reason: reason,
-                forceWebReload: forceWebReload,
                 forceLyricsReload: forceLyricsReload
             )
         }

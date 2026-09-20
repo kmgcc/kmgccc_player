@@ -885,7 +885,7 @@ struct FlatLyricsBackgroundView: View {
 
 /// Zero-sized SwiftUI driver for the flat AppKit lyrics host.
 /// Provides the non-visual LyricsViewModel observation/lifecycle with no
-/// SwiftUI view wrapping the WKWebView itself.
+/// SwiftUI view owning a second lyrics renderer.
 struct LyricsFlatDriverView: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryViewModel.self) private var libraryVM
@@ -893,7 +893,7 @@ struct LyricsFlatDriverView: View {
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(AppSettings.self) private var settings
     @EnvironmentObject private var themeStore: ThemeStore
-    // Key matches AMLLKeys.lyricsRenderQuality in AppSettings. Default "medium" matches AppSettings default.
+    // Keep the persisted setting key stable while the renderer is native.
     @AppStorage("amllLyricsRenderQuality") private var amllLyricsRenderQuality: String = "medium"
 
     var body: some View {
@@ -963,20 +963,13 @@ struct LyricsFlatDriverView: View {
             .onChange(of: amllLyricsRenderQuality) { _, newValue in
                 guard isLyricsSurfaceActive else { return }
                 let scale = AppSettings.AMLLLyricsRenderQuality(rawValue: newValue)?.renderScale ?? 0.75
-                if LyricsSurfaceManager.rendererBackend == .native {
-                    NativeLyricsSurfaceManager.shared.setRenderScale(scale, for: .main)
-                } else {
-                    LyricsSurfaceManager.shared.mainStore.setRenderQualityScale(
-                        scale,
-                        reason: "flatDriver.qualityChanged"
-                    )
-                }
+                NativeLyricsSurfaceManager.shared.setRenderScale(scale, for: .main)
             }
     }
 
     private var isLyricsSurfaceActive: Bool {
         // uiState stays true across fullscreen only as a restoration marker.
-        // Do not let the hidden flat-host driver keep syncing the window store.
+        // Do not let the hidden flat-host driver keep syncing the window surface.
         LyricsSurfaceManager.shared.targetMode == .main
             && uiState.lyricsVisible
             && !uiState.isWindowPlaybackQueueVisible
@@ -1020,7 +1013,7 @@ struct LyricsFlatDriverView: View {
         }
     }
 
-    private func reloadLyrics(reason: String, forceWebReload: Bool = false, forceLyricsReload: Bool = false) {
+    private func reloadLyrics(reason: String, forceLyricsReload: Bool = false) {
         let presentation = playbackCoordinator.presentation
         switch presentation.source {
         case .local:
@@ -1029,14 +1022,12 @@ struct LyricsFlatDriverView: View {
                 currentTime: presentation.lyricsCurrentTime,
                 isPlaying: presentation.isPlaying,
                 reason: reason,
-                forceWebReload: forceWebReload,
                 forceLyricsReload: forceLyricsReload
             )
         case .appleMusic, .systemNowPlaying:
             lyricsVM.ensureExternalLyricsLoaded(
                 presentation: presentation,
                 reason: reason,
-                forceWebReload: forceWebReload,
                 forceLyricsReload: forceLyricsReload
             )
         }

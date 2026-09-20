@@ -830,6 +830,57 @@ final class MusicSettingsStateTests: XCTestCase {
         XCTAssertEqual(recoveredJob.retrySpec?.kind, .sourceRefresh)
     }
 
+    func testAutomationStorageBackupRetentionKeepsOnlyTheNewestSnapshot() throws {
+        let root = temporaryLibraryRoot().appendingPathComponent("Backups", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root.deletingLastPathComponent()) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let old = root.appendingPathComponent("old", isDirectory: true)
+        let middle = root.appendingPathComponent("middle", isDirectory: true)
+        let newest = root.appendingPathComponent("newest", isDirectory: true)
+        for directory in [old, middle, newest] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("snapshot".utf8).write(
+                to: directory.appendingPathComponent("automation-backup.json")
+            )
+        }
+
+        let result = AutomationStorageBackupRetention.pruneOlderBackups(
+            at: root,
+            keeping: newest
+        )
+
+        XCTAssertEqual(AutomationStorageBackupRetention.maximumBackupCount, 1)
+        XCTAssertEqual(result.removedBackupCount, 2)
+        XCTAssertTrue(result.failures.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: newest.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: middle.path))
+    }
+
+    func testDiskCacheRetentionRemovesOldestFilesToReachTarget() throws {
+        let root = temporaryLibraryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let files = ["old", "middle", "newest"].map { root.appendingPathComponent("\($0).bin") }
+        for (index, file) in files.enumerated() {
+            try Data(repeating: UInt8(index), count: 100).write(to: file)
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: TimeInterval(index))],
+                ofItemAtPath: file.path
+            )
+        }
+
+        let result = DiskCacheRetention.trim(at: root, maxBytes: 200, targetFraction: 0.75)
+
+        XCTAssertEqual(result.removedFileCount, 2)
+        XCTAssertEqual(result.removedBytes, 200)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: files[0].path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: files[1].path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: files[2].path))
+    }
+
     private func bookmark(mode: kmgccc_player.MusicLibraryMode, path: String) -> kmgccc_player.MusicLibraryBookmark {
         kmgccc_player.MusicLibraryBookmark(id: UUID(), displayName: path, rootBookmarkData: Data([1]), lastKnownPath: path, modeProjection: mode)
     }

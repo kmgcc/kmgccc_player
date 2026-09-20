@@ -11,6 +11,18 @@ MCP Resources 应引用它；它不是安全边界，真正的 scope 和确认 p
 4. 对 medium/high risk mutation 先 `dryRun`，检查影响摘要、skipped、missing、conflict 和 Job。
 5. 只在正式接口不能表达需求时才进入 Storage fallback。
 
+## 主 App 启动与实测前置
+
+kmgccc_player 的资料库是独占资源。所有主 App 实测都必须先完成进程状态检查：
+
+1. 运行 ./scripts/check-app-process-state.sh，列出当前 kmgccc_player 的 PID、启动时间和实际二进制路径。
+2. 检查结果为空时，才允许继续构建和启动；启动前立即再检查一次，防止构建期间出现竞争实例。
+3. 检查到已有进程时，保持现状，不使用 pkill、kill 或第二次 open；先判断它对应的构建和资料库，再取得明确授权后处理。
+4. 主 App 的目标是 kmgccc_player。Demo、示例、临时 bundle 和其他测试实例不能作为主 App 的运行验收。
+5. 构建成功、LaunchServices 返回成功或窗口曾经出现，都不能单独证明运行成功；交付时至少保留 PID、实际二进制路径和相应的真实界面或功能证据。
+
+scripts/build_and_run.sh 已把这项检查放在构建前和启动前；检查失败就是安全停止，不应通过其他命令绕过。
+
 ## Library lifecycle workflow
 
 资料库不是只读上下文。Agent 可以在用户明确要求下通过 App-owned lifecycle 工具协助管理：
