@@ -665,17 +665,21 @@ final class LibrarySession: LibrarySessionLifecycle {
     }
 
     private func lyricsQuality(_ ttml: String) -> Int {
-        ttml.localizedCaseInsensitiveContains("<span") ? 2 : 1
+        LyricsFormatSupport.isWordSyncedTTML(ttml) ? 2 : 1
     }
 
     private func automationLyricsQuality(_ track: Track) -> Int {
-        if let ttml = track.ttmlLyricText,
-           !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let ttml = track.ttmlLyricText
+            ?? track.loadTTMLLyricsIfNeeded()
+            ?? (track.ttmlLyricsFileName.flatMap { context.paths.trackAssetURL(for: track.id, fileName: $0) }).flatMap({ try? String(contentsOf: $0, encoding: .utf8) })
+        if let ttml, !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return lyricsQuality(ttml)
         }
         if track.ttmlLyricsFileName != nil { return 1 }
-        if let plain = track.lyricsText,
-           !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let plain = track.lyricsText
+            ?? track.loadLyricsIfNeeded()
+            ?? (track.lyricsFileName.flatMap { context.paths.trackAssetURL(for: track.id, fileName: $0) }).flatMap({ try? String(contentsOf: $0, encoding: .utf8) })
+        if let plain, !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return LyricsFormatSupport.looksLikeLRC(plain) ? 1 : 0
         }
         return 0

@@ -494,6 +494,27 @@ func lyricsAutomationContractExposesSelectionAndRetrySemantics() throws {
             params: .object([
                 "trackID": .string(UUID().uuidString),
                 "ttmlText": .string("<tt></tt>"),
+                "cleanMetadata": .boolean(true),
+                "unexpected": .boolean(true)
+            ])
+        ) == ["unexpected"]
+    )
+
+    let lyricsClean = try #require(
+        AutomationToolCatalog.descriptor(for: AutomationMethod.lyricsClean)
+    )
+    guard case .object(let lyricsCleanSchema) = lyricsClean.inputSchema,
+          case .array(let lyricsCleanRequired) = lyricsCleanSchema["required"] else {
+        Issue.record("lyrics.clean must declare a required Track ID")
+        return
+    }
+    #expect(lyricsCleanRequired == [.string("trackID")])
+    #expect(
+        AutomationToolCatalog.unknownParameterKeys(
+            for: AutomationMethod.lyricsClean,
+            params: .object([
+                "trackID": .string(UUID().uuidString),
+                "dryRun": .boolean(false),
                 "unexpected": .boolean(true)
             ])
         ) == ["unexpected"]
@@ -548,6 +569,23 @@ func lyricsAutomationContractExposesSelectionAndRetrySemantics() throws {
     #expect(decodedCustom == customApply)
     #expect(decodedCustom.input == "ttmlText")
     #expect(decodedCustom.candidate == nil)
+
+    let cleanResult = AutomationLyricsCleanResult(
+        trackID: UUID(),
+        cleaned: true,
+        dryRun: false,
+        removedLines: 3,
+        message: "Successfully stripped 3 metadata line(s)",
+        preview: nil
+    )
+    let cleanData = try AutomationWireCoding.encoder().encode(cleanResult)
+    let decodedClean = try AutomationWireCoding.decoder().decode(
+        AutomationLyricsCleanResult.self,
+        from: cleanData
+    )
+    #expect(decodedClean == cleanResult)
+    #expect(decodedClean.cleaned == true)
+    #expect(decodedClean.removedLines == 3)
 }
 
 @Test

@@ -3311,21 +3311,28 @@ final class AutomationIPCServer {
                 let force = try parameters.boolean("force", default: false)
                 let translation = try parameters.boolean("translation", default: true)
                 let dryRun = try parameters.boolean("dryRun", default: false)
+                let cleanMetadata = try parameters.boolean("cleanMetadata", default: true)
                 let expectedRevision = try parameters.string("expectedRevision")
                 let currentQuality = currentLyricsQuality(track)
                 let candidate: AutomationLyricsCandidate?
                 let estimatedQuality: Int
+                let effectiveCustomTTML: String?
                 if let candidateValues {
                     let parsedCandidate = try makeAutomationLyricsCandidate(from: candidateValues)
                     candidate = parsedCandidate
                     estimatedQuality = lyricsQuality(for: parsedCandidate)
+                    effectiveCustomTTML = nil
                 } else {
-                    guard let customTTML,
-                          LyricsFormatSupport.validateTTML(customTTML).isValid else {
+                    guard let rawCustom = customTTML,
+                          LyricsFormatSupport.validateTTML(rawCustom).isValid else {
                         throw AutomationParameterError.invalidValue("ttmlText")
                     }
                     candidate = nil
-                    estimatedQuality = customTTML.localizedCaseInsensitiveContains("<span") ? 2 : 1
+                    let sanitized = cleanMetadata
+                        ? LyricsFormatSupport.sanitizeTTML(rawCustom, trackTitle: track.title, artist: track.artist).sanitized
+                        : rawCustom
+                    effectiveCustomTTML = sanitized
+                    estimatedQuality = LyricsFormatSupport.isWordSyncedTTML(sanitized) ? 2 : 1
                 }
                 if let expectedRevision,
                    expectedRevision != session.libraryViewModel.automationTrackRevision(for: track) {
@@ -3344,7 +3351,7 @@ final class AutomationIPCServer {
                             force: force,
                             input: candidate == nil ? "ttmlText" : "candidate",
                             candidate: candidate,
-                            ttmlByteCount: customTTML?.utf8.count,
+                            ttmlByteCount: effectiveCustomTTML?.utf8.count,
                             currentQuality: currentQuality,
                             candidateQuality: estimatedQuality,
                             message: candidate == nil
@@ -3356,10 +3363,10 @@ final class AutomationIPCServer {
                         for: request
                     )
                 }
-                if let customTTML {
+                if let effectiveCustomTTML {
                     let outcome = await session.applyCustomTTMLForAutomation(
                         trackID: trackID,
-                        ttml: customTTML,
+                        ttml: effectiveCustomTTML,
                         expectedRevision: expectedRevision
                     )
                     if outcome.conflicted {
@@ -3380,7 +3387,7 @@ final class AutomationIPCServer {
                             force: force,
                             input: "ttmlText",
                             candidate: nil,
-                            ttmlByteCount: customTTML.utf8.count,
+                            ttmlByteCount: effectiveCustomTTML.utf8.count,
                             currentQuality: outcome.currentQuality,
                             candidateQuality: outcome.candidateQuality,
                             message: outcome.message
@@ -3411,10 +3418,13 @@ final class AutomationIPCServer {
                         )
                     )
                 }
-                let fetchedQuality = ttml.localizedCaseInsensitiveContains("<span") ? 2 : 1
+                let effectiveCandidateTTML = cleanMetadata
+                    ? LyricsFormatSupport.sanitizeTTML(ttml, trackTitle: track.title, artist: track.artist).sanitized
+                    : ttml
+                let fetchedQuality = LyricsFormatSupport.isWordSyncedTTML(effectiveCandidateTTML) ? 2 : 1
                 let outcome = await session.applyAutomationLyrics(
                     trackID: trackID,
-                    ttml: ttml,
+                    ttml: effectiveCandidateTTML,
                     candidateQuality: fetchedQuality,
                     force: force,
                     expectedRevision: expectedRevision
@@ -3443,6 +3453,84 @@ final class AutomationIPCServer {
                     ),
                     for: request
                 )
+            } catch {
+                return invalidParameters(for: request, error: error)
+            }
+
+        case AutomationMethod.lyricsClean:
+            guard let session = activeSession(for: request) else {
+                return noActiveLibraryResponse(for: request)
+            }
+            do {
+                let parameters = try AutomationParameters(request)
+                let trackID = try parameters.uuid("trackID", required: true)!
+                let dryRun = try parameters.boolean("dryRun", default: false)
+                guard let track = session.libraryViewModel.allTracks.first(where: { $0.id == trackID }) else {
+                    throw AutomationParameterError.missingResource("trackID")
+                }
+                guard let ttml = resolveTTMLText(for: track),
+                      !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return .failure(
+                        for: request,
+                        error: AutomationError(
+                            code: .invalidRequest,
+                            message: "Track does not have TTML lyrics to clean.",
+                            details: .object(["trackID": .string(trackID.uuidString)])
+                        )
+                    )
+                }
+                let (sanitized, removedCount) = LyricsFormatSupport.sanitizeTTML(
+                    ttml,
+                    trackTitle: track.title,
+                    artist: track.artist
+                )
+                if dryRun {
+                    return encodeResult(
+                        AutomationLyricsCleanResult(
+                            trackID: trackID,
+                            cleaned: removedCount > 0,
+                            dryRun: true,
+                            removedLines: removedCount,
+                            message: removedCount > 0
+                                ? "Preview only. \(removedCount) preamble/trailing metadata line(s) will be stripped."
+                                : "Lyrics are already clean. No metadata noise lines found.",
+                            preview: removedCount > 0 ? sanitized : nil
+                        ),
+                        for: request
+                    )
+                }
+                if removedCount > 0 {
+                    let outcome = await session.applyCustomTTMLForAutomation(
+                        trackID: trackID,
+                        ttml: sanitized,
+                        expectedRevision: nil
+                    )
+                    return encodeResult(
+                        AutomationLyricsCleanResult(
+                            trackID: trackID,
+                            cleaned: outcome.applied,
+                            dryRun: false,
+                            removedLines: removedCount,
+                            message: outcome.applied
+                                ? "Successfully stripped \(removedCount) metadata line(s) and synchronized lyrics start."
+                                : outcome.message,
+                            preview: nil
+                        ),
+                        for: request
+                    )
+                } else {
+                    return encodeResult(
+                        AutomationLyricsCleanResult(
+                            trackID: trackID,
+                            cleaned: false,
+                            dryRun: false,
+                            removedLines: 0,
+                            message: "Lyrics are already clean. No metadata noise lines found.",
+                            preview: nil
+                        ),
+                        for: request
+                    )
+                }
             } catch {
                 return invalidParameters(for: request, error: error)
             }
@@ -6069,6 +6157,7 @@ final class AutomationIPCServer {
              AutomationMethod.lyricsCandidates,
              AutomationMethod.lyricsCompare,
              AutomationMethod.lyricsApply,
+             AutomationMethod.lyricsClean,
              AutomationMethod.lyricsRefresh,
              AutomationMethod.queueReplace,
              AutomationMethod.queueEnqueue,
@@ -6484,13 +6573,49 @@ final class AutomationIPCServer {
         candidate.mode == LDDCMode.verbatim.rawValue ? 2 : 1
     }
 
+    private func resolveTTMLText(for track: Track) -> String? {
+        if let text = track.ttmlLyricText, !text.isEmpty {
+            return text
+        }
+        if let text = track.loadTTMLLyricsIfNeeded(), !text.isEmpty {
+            return text
+        }
+        if let fileName = track.ttmlLyricsFileName,
+           let paths = appSession?.activeLibraryBinding.activeSession?.context.paths,
+           let url = paths.trackAssetURL(for: track.id, fileName: fileName),
+           let text = try? String(contentsOf: url, encoding: .utf8),
+           !text.isEmpty {
+            track.ttmlLyricText = text
+            return text
+        }
+        return nil
+    }
+
+    private func resolvePlainLyricsText(for track: Track) -> String? {
+        if let text = track.lyricsText, !text.isEmpty {
+            return text
+        }
+        if let text = track.loadLyricsIfNeeded(), !text.isEmpty {
+            return text
+        }
+        if let fileName = track.lyricsFileName,
+           let paths = appSession?.activeLibraryBinding.activeSession?.context.paths,
+           let url = paths.trackAssetURL(for: track.id, fileName: fileName),
+           let text = try? String(contentsOf: url, encoding: .utf8),
+           !text.isEmpty {
+            track.lyricsText = text
+            return text
+        }
+        return nil
+    }
+
     private func currentLyricsQuality(_ track: Track) -> Int {
-        if let ttml = track.ttmlLyricText,
+        if let ttml = resolveTTMLText(for: track),
            !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return ttml.localizedCaseInsensitiveContains("<span") ? 2 : 1
+            return LyricsFormatSupport.isWordSyncedTTML(ttml) ? 2 : 1
         }
         if track.ttmlLyricsFileName != nil { return 1 }
-        if let plain = track.lyricsText,
+        if let plain = resolvePlainLyricsText(for: track),
            !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return LyricsFormatSupport.looksLikeLRC(plain) ? 1 : 0
         }
@@ -7243,14 +7368,16 @@ final class AutomationIPCServer {
     }
 
     private func trackLyricsStatus(_ track: Track) -> String {
-        if let ttml = track.ttmlLyricText, !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return ttml.localizedCaseInsensitiveContains("<span") ? "wordSynced" : "lineSynced"
+        if let ttml = resolveTTMLText(for: track), !ttml.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return LyricsFormatSupport.isWordSyncedTTML(ttml) ? "wordSynced" : "lineSynced"
         }
         if track.ttmlLyricsFileName != nil { return "lineSynced" }
-        if let plain = track.lyricsText, !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let plain = resolvePlainLyricsText(for: track), !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return LyricsFormatSupport.looksLikeLRC(plain) ? "lineSynced" : "plain"
         }
-        if track.lyricsFileName != nil { return "plain" }
+        if let lyricsFileName = track.lyricsFileName {
+            return lyricsFileName.lowercased().hasSuffix(".lrc") ? "lineSynced" : "plain"
+        }
         return "none"
     }
 

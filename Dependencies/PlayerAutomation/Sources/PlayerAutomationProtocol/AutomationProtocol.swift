@@ -310,6 +310,7 @@ public enum AutomationMethod {
     public static let lyricsCandidates = "lyrics.candidates"
     public static let lyricsCompare = "lyrics.compare"
     public static let lyricsApply = "lyrics.apply"
+    public static let lyricsClean = "lyrics.clean"
     public static let lyricsRefresh = "lyrics.refresh"
     public static let jobsList = "jobs.list"
     public static let jobsGet = "jobs.get"
@@ -1810,6 +1811,31 @@ public struct AutomationLyricsApplyResult: Codable, Equatable, Sendable {
     }
 }
 
+public struct AutomationLyricsCleanResult: Codable, Equatable, Sendable {
+    public let trackID: UUID
+    public let cleaned: Bool
+    public let dryRun: Bool
+    public let removedLines: Int
+    public let message: String
+    public let preview: String?
+
+    public init(
+        trackID: UUID,
+        cleaned: Bool,
+        dryRun: Bool,
+        removedLines: Int,
+        message: String,
+        preview: String? = nil
+    ) {
+        self.trackID = trackID
+        self.cleaned = cleaned
+        self.dryRun = dryRun
+        self.removedLines = removedLines
+        self.message = message
+        self.preview = preview
+    }
+}
+
 public struct AutomationLyricsDetail: Codable, Equatable, Sendable {
     public let trackID: UUID
     public let status: String
@@ -2867,6 +2893,16 @@ public enum AutomationToolCatalog {
             inputSchema: lyricsApplyInputSchema
         ),
         AutomationToolDescriptor(
+            name: AutomationMethod.lyricsClean,
+            title: "Clean Lyrics Metadata",
+            description: "Strip preamble and trailing metadata/credit noise lines from a Track's persisted TTML lyrics and synchronize the start time.",
+            readOnly: false,
+            scopes: [.lyricsWrite, .libraryRead],
+            risk: .low,
+            supportsDryRun: true,
+            inputSchema: lyricsCleanInputSchema
+        ),
+        AutomationToolDescriptor(
             name: AutomationMethod.lyricsRefresh,
             title: "Refresh Lyrics",
             description: "Search selected Tracks through the existing lyrics providers and return a tracked batch Job; only a better result replaces the current lyrics.",
@@ -3407,7 +3443,21 @@ public enum AutomationToolCatalog {
             "force": .object(["type": .string("boolean")]),
             "translation": .object(["type": .string("boolean")]),
             "dryRun": .object(["type": .string("boolean")]),
+            "cleanMetadata": .object([
+                "type": .string("boolean"),
+                "description": .string("Automatically strip preamble and trailing metadata/credit noise from TTML before applying (default true).")
+            ]),
             "expectedRevision": .object(["type": .string("string")])
+        ])
+    ])
+
+    private static let lyricsCleanInputSchema: AutomationJSONValue = .object([
+        "type": .string("object"),
+        "additionalProperties": .boolean(false),
+        "required": .array([.string("trackID")]),
+        "properties": .object([
+            "trackID": .object(["type": .string("string")]),
+            "dryRun": .object(["type": .string("boolean")])
         ])
     ])
 

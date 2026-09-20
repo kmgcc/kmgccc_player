@@ -377,6 +377,47 @@ struct AutomationMCPStdioServer {
                 modern: isModernRequest(request)
             )
 
+        case "prompts/list":
+            try negotiateRequest(request, state: &state)
+            try requireReady(state)
+            guard request.params == nil
+                || request.params == .null
+                || isObject(request.params) else {
+                throw MCPProtocolError.invalidParams("prompts/list params must be an object.")
+            }
+            guard request.id != nil else { return nil }
+            return success(
+                id: request.id,
+                result: promptsListResult(),
+                modern: isModernRequest(request)
+            )
+
+        case "prompts/get":
+            try negotiateRequest(request, state: &state)
+            try requireReady(state)
+            guard case .object(let values) = request.params,
+                  case .string(let promptName) = values["name"] else {
+                throw MCPProtocolError.invalidParams(
+                    "prompts/get requires an object with a string name."
+                )
+            }
+            let arguments: [String: String] = {
+                guard case .object(let argsObj) = values["arguments"] else { return [:] }
+                var res: [String: String] = [:]
+                for (k, v) in argsObj {
+                    if case .string(let s) = v {
+                        res[k] = s
+                    }
+                }
+                return res
+            }()
+            guard request.id != nil else { return nil }
+            return success(
+                id: request.id,
+                result: try promptGetResult(name: promptName, arguments: arguments),
+                modern: isModernRequest(request)
+            )
+
         default:
             if request.id == nil {
                 return nil
@@ -459,6 +500,124 @@ struct AutomationMCPStdioServer {
                 ])
             ])
         ])
+    }
+
+    private func promptsListResult() -> AutomationJSONValue {
+        .object([
+            "prompts": .array([
+                .object([
+                    "name": .string("audit_and_clean_lyrics"),
+                    "description": .string(
+                        "SOP for inspecting track lyrics quality, stripping preamble/credit noise with built-in lyrics.clean, and falling back to manual TTML editing."
+                    ),
+                    "arguments": .array([
+                        .object([
+                            "name": .string("trackID"),
+                            "description": .string("Optional Track UUID to audit or clean."),
+                            "required": .boolean(false)
+                        ])
+                    ])
+                ]),
+                .object([
+                    "name": .string("upgrade_lyrics_workflow"),
+                    "description": .string(
+                        "SOP for searching, ranking, and applying word-synced (verbatim) lyrics candidates with automatic metadata cleaning."
+                    ),
+                    "arguments": .array([
+                        .object([
+                            "name": .string("trackID"),
+                            "description": .string("Track UUID to upgrade lyrics for."),
+                            "required": .boolean(true)
+                        ])
+                    ])
+                ])
+            ])
+        ])
+    }
+
+    private func promptGetResult(name: String, arguments: [String: String]) throws -> AutomationJSONValue {
+        switch name {
+        case "audit_and_clean_lyrics":
+            let targetTrack = arguments["trackID"].map { " for track \($0)" } ?? ""
+            let text = """
+# Lyrics Audit and Cleaning Standard Operating Procedure (SOP)\(targetTrack)
+
+Follow this structured workflow to ensure lyrics quality:
+
+1. **Inspect Current Status**:
+   - Call `lyrics.get(trackID: ...)` to inspect `lyricsStatus` (`wordSynced`, `lineSynced`, `plain`, or `none`).
+   - Pure instrumental tracks (e.g. tracks marked as pure music or confirmed to have no vocals) must be kept strictly untouched.
+
+2. **Audit Preamble & Credit Noise**:
+   - Check if the beginning or ending contains metadata noise (composers, lyricists, arrangers, producers, vocalists, recording/mixing credits, label tags, or solo speaker headers like '马猋：').
+
+3. **Step 1: Use Built-in Cleaner (`lyrics.clean`)**:
+   - Run `lyrics.clean(trackID: ...)` (optionally with `dryRun: true` first to preview).
+   - The App-level built-in cleaner automatically identifies preamble and trailing credit lines, strips them, renumbers lines (`itunes:key="L1"..."Ln"`), and updates `<div begin="...">` to match the actual vocal onset.
+
+4. **Step 2: Agent Manual TTML Fallback**:
+   - If `lyrics.clean` reported `cleaned: false` or if non-standard noise persists:
+     a. Fetch the current TTML via `lyrics.get(trackID: ...)`.
+     b. Manually remove noise `<p>` tags from the TTML string.
+     c. Ensure word timing tags `<span begin="..." end="...">` within sung lines are preserved.
+     d. Align `<div begin="...">` to the first sung line's begin time.
+     e. Apply the corrected TTML using `lyrics.apply(trackID: ..., ttmlText: sanitizedTTML)`.
+
+5. **Verify**:
+   - Run `lyrics.get(trackID: ...)` to verify that `status` remains `wordSynced` and the first line starts directly with the song vocals.
+"""
+            return .object([
+                "description": .string("SOP for inspecting track lyrics quality and cleaning noise."),
+                "messages": .array([
+                    .object([
+                        "role": .string("user"),
+                        "content": .object([
+                            "type": .string("text"),
+                            "text": .string(text)
+                        ])
+                    ])
+                ])
+            ])
+
+        case "upgrade_lyrics_workflow":
+            let trackIdStr = arguments["trackID"] ?? "<trackID>"
+            let text = """
+# Upgrade Lyrics to Word-Synced Workflow for Track \(trackIdStr)
+
+1. **Search Candidates**:
+   - Call `lyrics.search(trackID: "\(trackIdStr)")` or `lyrics.candidates(trackID: "\(trackIdStr)")`.
+   - The system automatically handles title noise stripping (e.g. OST brackets like '（电影《...》插曲）') and falls back to clean queries if needed.
+
+2. **Rank & Select Best Word-Synced Candidate**:
+   - Prioritize candidates with `mode: "verbatim"` (word-synced, quality: 2) and high `normalizedScore` (>= 75.0).
+   - Prefer candidates where title, artist, and duration closely match the track.
+
+3. **Apply Candidate with Clean Metadata**:
+   - Call `lyrics.apply(trackID: "\(trackIdStr)", candidate: selectedCandidate, cleanMetadata: true)`.
+   - The built-in cleaner will automatically sanitize preamble and trailing credits before writing to the library.
+
+4. **Audit and Verify**:
+   - Call `lyrics.get(trackID: "\(trackIdStr)")` to verify:
+     - `status` is `wordSynced`.
+     - The first line is clean singing lyrics, not credit noise.
+   - If any minor noise remains, call `lyrics.clean(trackID: "\(trackIdStr)")`.
+"""
+            return .object([
+                "description": .string("Workflow for searching and upgrading to word-synced lyrics."),
+                "messages": .array([
+                    .object([
+                        "role": .string("user"),
+                        "content": .object([
+                            "type": .string("text"),
+                            "text": .string(text)
+                        ])
+                    ])
+                ])
+            ])
+
+        default:
+            throw MCPProtocolError.invalidParams("Unknown prompt: \(name)")
+        }
     }
 
     private func requireReady(_ state: MCPConnectionState) throws {
@@ -595,7 +754,8 @@ struct AutomationMCPStdioServer {
             "resources": .object([
                 "subscribe": .boolean(false),
                 "listChanged": .boolean(false)
-            ])
+            ]),
+            "prompts": .object(["listChanged": .boolean(false)])
         ])
     }
 

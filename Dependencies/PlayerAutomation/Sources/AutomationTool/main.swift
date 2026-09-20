@@ -661,13 +661,20 @@ private struct AutomationCLI {
                 return .usage
             }
         case "lyrics":
-            guard let action = args.first else { writeDiagnostic("usage error: lyrics requires get, search, candidates, compare, apply or refresh"); return .usage }
+            guard let action = args.first else { writeDiagnostic("usage error: lyrics requires get, search, candidates, compare, apply, clean or refresh"); return .usage }
             args.removeFirst()
             switch action {
             case "get":
                 guard args.count == 1 else { writeDiagnostic("usage error: lyrics get requires one Track ID"); return .usage }
                 method = AutomationMethod.lyricsGet
                 params = .object(["trackID": .string(args[0])])
+            case "clean":
+                guard args.count == 1 else { writeDiagnostic("usage error: lyrics clean requires one Track ID"); return .usage }
+                method = AutomationMethod.lyricsClean
+                params = .object([
+                    "trackID": .string(args[0]),
+                    "dryRun": .boolean(options.dryRun)
+                ])
             case "search", "candidates":
                 guard args.count == 1 else {
                     writeDiagnostic("usage error: lyrics \(action) requires one Track ID")
@@ -1297,6 +1304,7 @@ private struct AutomationCLI {
           artwork apply <track-id>... | an entity target flag
                                   --params-json '{"imagePath":"/path/cover.jpg"}'
           lyrics get <track-id>
+          lyrics clean <track-id> [--dry-run]
           lyrics search|candidates <track-id> [--params-json '{...}']
           lyrics compare|apply <track-id> --params-json '{...}'
           lyrics refresh <track-id>... [--force] (returns a Job)
