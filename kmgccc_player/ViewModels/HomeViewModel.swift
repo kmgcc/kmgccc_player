@@ -62,6 +62,7 @@ final class HomeViewModel {
     private var playlistSignature = 0
     private var artistSignature = 0
     private var albumSignature = 0
+    private var aggregateDailyListeningMap: [Date: Int] = [:]
     private var lastAppliedRefreshSignature: HomeRefreshSignature?
     private var snapshotWriteTask: Task<Void, Never>?
     private var deferredRefreshTask: Task<Void, Never>?
@@ -185,6 +186,7 @@ final class HomeViewModel {
                 )
             }
 
+        aggregateDailyListeningMap = dayMap
         dailyListeningMap = dayMap
         updateCachedSignatures(from: libraryVM, allTracks: allTracks)
         lastAppliedRefreshSignature = incomingSignature
@@ -193,6 +195,16 @@ final class HomeViewModel {
             signature: incomingSignature.stableCacheSignature,
             libraryVM: libraryVM
         )
+    }
+
+    /// Update only the Home listening-footprint snapshot when Home becomes
+    /// visible. Playback history is a live event stream, but the Home page is
+    /// intentionally not one: recording a play must not invalidate the whole
+    /// Home hierarchy while the user is browsing or scrolling it.
+    func refreshListeningFootprint(dailyPlayCounts recorded: [Date: Int]) {
+        let next = recorded.isEmpty ? aggregateDailyListeningMap : recorded
+        guard next != dailyListeningMap else { return }
+        dailyListeningMap = next
     }
 
     /// Coalesce visible Home updates behind a short idle window. Library
@@ -344,13 +356,28 @@ final class HomeViewModel {
     }
 
     func refreshArtistAlbumSort(from libraryVM: LibraryViewModel) {
+        let nextArtistSignature = makeArtistSignature(libraryVM.artistEntries)
+        let nextAlbumSignature = makeAlbumSignature(libraryVM.albumEntries)
+        let nextPlaylistSignature = makePlaylistSignature(libraryVM.playlists)
+        let changed = nextArtistSignature != artistSignature
+            || nextAlbumSignature != albumSignature
+            || nextPlaylistSignature != playlistSignature
+
+        guard changed else { return }
+
         cancelDeferredRefresh()
-        artists = topArtists(from: libraryVM)
-        albums = topAlbums(from: libraryVM)
-        playlists = topPlaylists(from: libraryVM)
-        artistSignature = makeArtistSignature(libraryVM.artistEntries)
-        albumSignature = makeAlbumSignature(libraryVM.albumEntries)
-        playlistSignature = makePlaylistSignature(libraryVM.playlists)
+        if nextArtistSignature != artistSignature {
+            artists = topArtists(from: libraryVM)
+            artistSignature = nextArtistSignature
+        }
+        if nextAlbumSignature != albumSignature {
+            albums = topAlbums(from: libraryVM)
+            albumSignature = nextAlbumSignature
+        }
+        if nextPlaylistSignature != playlistSignature {
+            playlists = topPlaylists(from: libraryVM)
+            playlistSignature = nextPlaylistSignature
+        }
         lastAppliedRefreshSignature = nil
     }
 
@@ -409,6 +436,7 @@ final class HomeViewModel {
         weeklyFavoriteArtistName = nil
         weeklyFavoriteArtistPlayCount = 0
         preferenceRanking = []
+        aggregateDailyListeningMap = [:]
         dailyListeningMap = [:]
         hasPreparedContent = false
         trackIdentitySignature = 0
@@ -648,6 +676,7 @@ final class HomeViewModel {
                 )
             }
 
+        aggregateDailyListeningMap = dayMap
         dailyListeningMap = dayMap
     }
 

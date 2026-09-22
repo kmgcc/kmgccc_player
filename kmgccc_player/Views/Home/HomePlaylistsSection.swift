@@ -10,13 +10,13 @@ import SwiftUI
 
 struct HomePlaylistsSection: View {
     let playlists: [Playlist]
+    let playbackCoordinator: PlaybackCoordinator
     var mode: HomeLayoutMode = .wide
     var titleColor: Color = Color.primary
     var subtitleColor: Color = Color.secondary
 
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(UIStateViewModel.self) private var uiState
-    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryCacheServices.self) private var cacheServices
     @State private var deletionRequest: HomePlaylistDeletionRequest?
 
@@ -92,7 +92,14 @@ struct HomePlaylistsSection: View {
         return best
     }
 
+    private func traceBodyChanges() {
+        guard HomeDebugFlags.logBodyChanges else { return }
+        let _ = Self._printChanges()
+        Log.debug("[HomePlaylistsSection/body] re-eval", category: .ui)
+    }
+
     var body: some View {
+        let _ = traceBodyChanges()
         VStack(alignment: .leading, spacing: 14) {
             sectionHeader
             contentBlock

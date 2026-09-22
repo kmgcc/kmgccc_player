@@ -264,6 +264,7 @@ final class CapsuleSpectrumHostView: NSView {
 
     private var lastLayoutSize: CGSize = .zero
     private var lastColorSignature: Int?
+    private var appliedStrokeWidth: CGFloat?
     private var fillColors: [CGColor] = []
     private var strokeColors: [CGColor]?
 
@@ -870,6 +871,7 @@ final class CapsuleSpectrumHostView: NSView {
 
     private func rebuildCapsuleLayers() {
         cachedMetrics = nil // fresh layers always need geometry re-applied
+        appliedStrokeWidth = nil // the new layers do not inherit border widths
         capsuleLayers.forEach { $0.removeFromSuperlayer() }
         capsuleLayers = (0..<count).map { _ in
             let layer = CALayer()
@@ -894,6 +896,8 @@ final class CapsuleSpectrumHostView: NSView {
 
     private func applyStrokeWidth() {
         let width = configuration.strokeWidth
+        guard appliedStrokeWidth != width else { return }
+        appliedStrokeWidth = width
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for layer in capsuleLayers {
@@ -959,17 +963,27 @@ final class CapsuleSpectrumHostView: NSView {
         let shaping = configuration.levelShaping
         let span = metrics.maxBarHeight - metrics.minHeight
 
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
+        var heights = Array(repeating: CGFloat.zero, count: count)
+        var hasChanges = false
         for index in 0..<count {
             var value = min(1, max(0, position[index] * boost))
             if !shaping.isIdentity {
                 value = shaping.ceiling * pow(value, shaping.gamma)
             }
             let height = metrics.minHeight + span * value
+            heights[index] = height
+            if capsuleLayers[index].bounds.height != height {
+                hasChanges = true
+            }
+        }
+        guard hasChanges else { return }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for index in 0..<count {
             let layer = capsuleLayers[index]
-            if layer.bounds.height != height {
-                layer.bounds = CGRect(x: 0, y: 0, width: metrics.barWidth, height: height)
+            if layer.bounds.height != heights[index] {
+                layer.bounds = CGRect(x: 0, y: 0, width: metrics.barWidth, height: heights[index])
             }
         }
         CATransaction.commit()

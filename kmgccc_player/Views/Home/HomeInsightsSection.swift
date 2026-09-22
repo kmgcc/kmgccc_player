@@ -13,6 +13,7 @@ import SwiftUI
 
 struct HomeInsightsSection: View {
     let homeVM: HomeViewModel
+    let playbackCoordinator: PlaybackCoordinator
     var mode: HomeLayoutMode = .wide
     /// Actual content width for the page. Used so we can stack vertically when
     /// the side-by-side ranking + calendar would otherwise crowd each other.
@@ -35,8 +36,6 @@ struct HomeInsightsSection: View {
     var tertiaryColor: Color = Color(nsColor: .tertiaryLabelColor)
 
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
-    @Environment(PlaybackHistoryStore.self) private var historyStore
     @Environment(UIStateViewModel.self) private var uiState
 
     /// Width threshold below which the side-by-side ranking + calendar would
@@ -45,7 +44,14 @@ struct HomeInsightsSection: View {
     private let compactLayoutSpacing: CGFloat = 12
     private let insightsRowHeight: CGFloat = 360
 
+    private func traceBodyChanges() {
+        guard HomeDebugFlags.logBodyChanges else { return }
+        let _ = Self._printChanges()
+        Log.debug("[HomeInsightsSection/body] re-eval", category: .ui)
+    }
+
     var body: some View {
+        let _ = traceBodyChanges()
         if stacksVertically {
             narrowLayout
         } else {
@@ -59,17 +65,10 @@ struct HomeInsightsSection: View {
     }
 
     private var calendarDailyMap: [Date: Int] {
-        // Preserve the old aggregate heatmap for upgrades. Once event records
-        // exist, their exact per-day counts replace the aggregate for that day.
-        let _ = historyStore.revision
-        let recorded = historyStore.dailyPlayCounts()
-        guard !recorded.isEmpty else { return homeVM.dailyListeningMap }
-
-        var merged = homeVM.dailyListeningMap
-        for (date, count) in recorded {
-            merged[date] = count
-        }
-        return merged
+        // The Home view model owns an activation-time snapshot. Do not read
+        // PlaybackHistoryStore here: its revision changes on every play and
+        // would invalidate the entire Home hierarchy while the user scrolls.
+        homeVM.dailyListeningMap
     }
 
     // MARK: - Wide layout

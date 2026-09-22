@@ -487,7 +487,7 @@ struct AppKitMainContentPaneRoot: View {
         uiState.contentMode == .nowPlaying
             && settings.nowPlayingArtBackgroundEnabled
             && settings.selectedNowPlayingSkinID != AppleStyleSkin.skinID
-            && playbackCoordinator.presentation.hasTrack
+            && playbackCoordinator.stablePresentation.hasTrack
             && !fullscreenWindowManager.usesFullscreenPlayerUI
     }
 
@@ -499,7 +499,7 @@ struct AppKitMainContentPaneRoot: View {
     }
 
     private func artworkBackgroundTrackID(playbackCoordinator: PlaybackCoordinator) -> UUID? {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         if let artworkTrackID = presentation.artworkDisplayTrackID {
             return artworkTrackID
         }
@@ -575,12 +575,12 @@ private struct PlaybackThemeArtworkWatcher: View {
                     return
                 }
                 guard !Task.isCancelled else { return }
-                await themeStore.updateTheme(for: playbackCoordinator.presentation)
+                await themeStore.updateTheme(for: playbackCoordinator.stablePresentation)
             }
     }
 
     private var artworkIdentity: String {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         let identity =
             presentation.artworkIdentity
             ?? presentation.externalStableKey
@@ -685,14 +685,14 @@ struct AppKitMainWindowArtBackgroundLayer: View {
                         controller: artBackgroundController,
                         trackID: artworkBackgroundTrackID(playbackCoordinator: playbackCoordinator),
                         artworkData: renderingArtworkData(playbackCoordinator: playbackCoordinator),
-                        isPlaying: playbackCoordinator.presentation.isPlaying,
+                        isPlaying: playbackCoordinator.stablePresentation.isPlaying,
                         animationEnabled: appSession.uiState.contentMode == .nowPlaying
                             && !fullscreenWindowManager.usesFullscreenPlayerUI,
                         resourceProfile: settings.selectedNowPlayingSkinID == "kmgccc.cassette"
                             ? .cassetteForeground
                             : .standard,
                         initialPalette: [themeStore.accentNSColor],
-                        holdPaletteWhenArtworkMissing: playbackCoordinator.presentation.isArtworkLoading
+                        holdPaletteWhenArtworkMissing: playbackCoordinator.stablePresentation.isArtworkLoading
                             && renderingArtworkData(playbackCoordinator: playbackCoordinator) == nil
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -734,7 +734,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
         appSession.uiState.contentMode == .nowPlaying
             && settings.nowPlayingArtBackgroundEnabled
             && settings.selectedNowPlayingSkinID != AppleStyleSkin.skinID
-            && playbackCoordinator.presentation.hasTrack
+            && playbackCoordinator.stablePresentation.hasTrack
             && !fullscreenWindowManager.usesFullscreenPlayerUI
     }
 
@@ -752,7 +752,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
     }
 
     private func artworkBackgroundTrackID(playbackCoordinator: PlaybackCoordinator) -> UUID? {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         if let artworkTrackID = presentation.artworkDisplayTrackID {
             return artworkTrackID
         }
@@ -765,7 +765,7 @@ struct AppKitMainWindowArtBackgroundLayer: View {
     }
 
     private func renderingArtworkData(playbackCoordinator: PlaybackCoordinator) -> Data? {
-        let presentation = playbackCoordinator.presentation
+        let presentation = playbackCoordinator.stablePresentation
         if let artworkData = presentation.artworkData, !artworkData.isEmpty {
             return artworkData
         }
@@ -905,7 +905,6 @@ struct FlatLyricsBackgroundView: View {
 /// SwiftUI view owning a second lyrics renderer.
 struct LyricsFlatDriverView: View {
     @Environment(PlaybackCoordinator.self) private var playbackCoordinator
-    @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(LyricsViewModel.self) private var lyricsVM
     @Environment(UIStateViewModel.self) private var uiState
     @Environment(AppSettings.self) private var settings
@@ -925,17 +924,6 @@ struct LyricsFlatDriverView: View {
             }
             .onDisappear {
                 LyricsSurfaceManager.shared.reportMainVisible(false)
-            }
-            .onChange(of: playbackCoordinator.presentation.lyricsIdentity) { oldId, newId in
-                guard oldId != newId else { return }
-                LyricsRuntimeProfile.increment("LyricsFlatDriverView.trackIDChange")
-            }
-            .onChange(of: playbackCoordinator.presentation.hasTrack) { _, hasTrack in
-                syncMainLyricsVisibility(
-                    isVisible: isLyricsSurfaceActive,
-                    reason: "flat driver hasTrack changed",
-                    hasTrackOverride: hasTrack
-                )
             }
             .onChange(of: uiState.lyricsVisible) { _, isVisible in
                 syncMainLyricsVisibility(
@@ -961,21 +949,10 @@ struct LyricsFlatDriverView: View {
                 guard isLyricsSurfaceActive else { return }
                 lyricsVM.refreshConfigFromSettings()
             }
-            // Real-time sync — inlined from LyricsRealtimeSyncObserver (which is private).
-            .onChange(of: playbackCoordinator.presentation.currentTime) { oldTime, newTime in
-                guard isLyricsSurfaceActive else { return }
-                lyricsVM.syncTime(playbackCoordinator.presentation.lyricsCurrentTime)
-                if oldTime > 1.0, newTime < 0.2 {
-                    reloadLyrics(reason: "playback restarted", forceLyricsReload: true)
-                }
-            }
-            .onChange(of: playbackCoordinator.presentation.isPlaying) { _, newValue in
-                guard isLyricsSurfaceActive else { return }
-                if !newValue {
-                    lyricsVM.syncTime(playbackCoordinator.presentation.lyricsCurrentTime)
-                }
-                lyricsVM.setPlaying(newValue)
-            }
+            // LyricsPlaybackPipeline owns the high-frequency transport bridge.
+            // Keep this zero-sized driver limited to visibility, settings and
+            // seek wiring so a 4 Hz presentation tick cannot invalidate its
+            // SwiftUI hosting view and the surrounding split-window layout.
             .modifier(LyricsSettingsObserver(lyricsVM: lyricsVM, isActive: isLyricsSurfaceActive))
             .onChange(of: amllLyricsRenderQuality) { _, newValue in
                 guard isLyricsSurfaceActive else { return }

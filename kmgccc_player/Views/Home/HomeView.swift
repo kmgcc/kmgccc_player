@@ -18,7 +18,10 @@ import SwiftUI
 struct HomeView: View {
     @Environment(LibraryViewModel.self) private var libraryVM
     @Environment(PlayerViewModel.self) private var playerVM
-    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
+    /// Command owner only. Keep it as a plain dependency in Home: reading the
+    /// observable coordinator from the Home root would subscribe the whole
+    /// page to its 4 Hz live presentation samples.
+    let playbackCoordinator: PlaybackCoordinator
     @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(AppSettings.self) private var settings
     @Environment(\.colorScheme) private var colorScheme
@@ -37,17 +40,36 @@ struct HomeView: View {
     /// Insights and tank scroll smoothness. Only the AppKit ambient layer
     /// reacts to scroll motion; SwiftUI bodies stay decoupled.
     private let ambientMotion = HomeAmbientMotionState.shared
+    /// Sample playback history only when Home is activated. Keeping the store
+    /// behind a plain provider prevents its per-play revision from becoming a
+    /// Home body dependency.
+    private let listeningFootprintProvider: () -> [Date: Int]
+
+    init(
+        playbackCoordinator: PlaybackCoordinator,
+        listeningFootprintProvider: @escaping () -> [Date: Int]
+    ) {
+        self.playbackCoordinator = playbackCoordinator
+        self.listeningFootprintProvider = listeningFootprintProvider
+    }
+
+    private func traceBodyChanges() {
+        guard HomeDebugFlags.logBodyChanges else { return }
+        let _ = Self._printChanges()
+        Log.debug("[HomeView/body] re-eval homeVM.total=\(homeVM.totalTrackCount) state=\(libraryVM.state)", category: .ui)
+    }
 
     private var motionPolicy: MotionPolicy {
         configuredMotionPolicy.resolving(accessibilityReduceMotion: reduceMotion)
     }
 
     var body: some View {
+        let _ = traceBodyChanges()
         HomeThemeSnapshotReader { homeTheme in
             Group {
                 if shouldShowStartupLoading {
                     startupLoadingView
-                } else if libraryVM.allTracks.isEmpty {
+                } else if homeVM.totalTrackCount == 0 {
                     emptyLibraryView(theme: homeTheme)
                 } else {
                     scrollContent(theme: homeTheme)
@@ -59,14 +81,14 @@ struct HomeView: View {
         .onAppear {
             let token = FirstUseHitchDiagnostics.begin(
                 "HomeView.onAppear",
-                detail: "tracks=\(libraryVM.allTracks.count), state=\(libraryVM.state)"
+                detail: "tracks=\(homeVM.totalTrackCount), state=\(libraryVM.state)"
             )
             FirstUseHitchDiagnostics.end(token)
         }
         .task(id: startupPreparationToken) {
             let token = FirstUseHitchDiagnostics.begin(
                 "HomeView.task",
-                detail: "tracks=\(libraryVM.allTracks.count), state=\(libraryVM.state)"
+                detail: "tracks=\(homeVM.totalTrackCount), state=\(libraryVM.state)"
             )
             defer { FirstUseHitchDiagnostics.end(token) }
 
@@ -81,14 +103,11 @@ struct HomeView: View {
                 Task { await prepareStartupGate() }
             }
         }
-        .onChange(of: libraryVM.trackUpdateEvent) { _, event in
-            guard let event else { return }
-            homeVM.scheduleDeferredRefresh(
-                from: libraryVM,
-                trackIDs: [event.trackID],
-                playbackIsActive: { playbackIsActive }
-            )
-        }
+        // `trackUpdateEvent` is deliberately not observed here. It is an
+        // auxiliary-data signal for detail/lyrics owners (lyrics, artwork and
+        // preference metadata), and it can arrive while the current song is
+        // playing. Home owns an activation-time footprint snapshot and must
+        // not rebuild or re-evaluate its hierarchy for those events.
         .onReceive(NotificationCenter.default.publisher(for: .playbackTrackDidChange)) { _ in
             // The home artwork preheater only fills caches. Stop it at the
             // transport boundary so it cannot compete with the new track's
@@ -132,7 +151,7 @@ struct HomeView: View {
         if libraryVM.state == .loading || libraryVM.loadingPhase.isLoading {
             return true
         }
-        return !libraryVM.allTracks.isEmpty && !homeVM.hasPreparedContent
+        return libraryVM.state == .loaded && !homeVM.hasPreparedContent
     }
 
     private var startupPreparationToken: String {
@@ -145,7 +164,7 @@ struct HomeView: View {
         } else {
             phaseToken = "settled"
         }
-        return "\(stateToken)|\(phaseToken)|tracks:\(libraryVM.allTracks.count)"
+        return "\(stateToken)|\(phaseToken)|tracks:\(homeVM.totalTrackCount)"
     }
 
     private func prepareStartupGate(resetEntranceAnimation: Bool = false) async {
@@ -165,6 +184,9 @@ struct HomeView: View {
             }
 
             if libraryVM.allTracks.isEmpty || homeVM.hasPreparedContent || libraryVM.loadingPhase.isFailed {
+                homeVM.refreshListeningFootprint(
+                    dailyPlayCounts: listeningFootprintProvider()
+                )
                 revealStartupContent(resetEntranceAnimation: resetEntranceAnimation)
                 return
             }
@@ -188,12 +210,18 @@ struct HomeView: View {
             return
         }
 
+        homeVM.refreshListeningFootprint(
+            dailyPlayCounts: listeningFootprintProvider()
+        )
         startupFallbackExpired = true
         revealStartupContent(resetEntranceAnimation: true)
     }
 
     private var playbackIsActive: Bool {
-        playerVM.isPlaying || playbackCoordinator.presentation.isPlaying
+        // `PlayerViewModel.isPlaying` changes only at the transport boundary;
+        // the coordinator's live `presentation` changes several times per
+        // second and must not drive Home's deferred-refresh gate.
+        playerVM.isPlaying
     }
 
     private func revealStartupContent(resetEntranceAnimation: Bool) {
@@ -379,7 +407,7 @@ struct HomeView: View {
     ) -> String {
         [
             "mode:\(mode)",
-            "tracks:\(libraryVM.allTracks.count)",
+            "tracks:\(homeVM.totalTrackCount)",
             "hero:\(homeVM.heroTrack?.id.uuidString ?? "none")",
             "albums:\(homeVM.albums.prefix(10).map { $0.id.uuidString }.joined(separator: ","))",
             "artists:\(homeVM.artists.prefix(10).map { $0.id.uuidString }.joined(separator: ","))",
@@ -411,6 +439,7 @@ struct HomeView: View {
 
                     HomeHeroView(
                         track: heroTrack,
+                        playbackCoordinator: playbackCoordinator,
                         containerWidth: contentWidth,
                         mode: mode,
                         onSwitchTrack: {
@@ -450,6 +479,7 @@ struct HomeView: View {
             if !HomeDebugFlags.disablePlaylists, !homeVM.playlists.isEmpty {
                 HomePlaylistsSection(
                     playlists: homeVM.playlists,
+                    playbackCoordinator: playbackCoordinator,
                     mode: mode,
                     titleColor: titleColor,
                     subtitleColor: subtitleColor
@@ -462,6 +492,7 @@ struct HomeView: View {
             if !HomeDebugFlags.disableInsights {
                 HomeInsightsSection(
                     homeVM: homeVM,
+                    playbackCoordinator: playbackCoordinator,
                     mode: mode,
                     containerWidth: contentWidth,
                     centerLeftPad: centerLeftPad,

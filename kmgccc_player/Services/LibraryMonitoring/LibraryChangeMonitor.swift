@@ -22,6 +22,9 @@ nonisolated struct ManagedLibraryFileEventFilter: Sendable {
 
     func shouldProcess(_ event: LibraryFileEvent) -> Bool {
         let path = URL(fileURLWithPath: event.path).standardizedFileURL.path
+        if ProcessInfo.processInfo.environment["KMGCCC_DEBUG_LIBRARY_MONITOR"] == "1" {
+            Log.debug("[LibraryMonitor] event path=\(path) fullScan=\(event.requiresFullScan)", category: .library)
+        }
         guard path.hasPrefix(rootPath + "/") else { return false }
 
         let relativePath = String(path.dropFirst(rootPath.count + 1))
@@ -32,9 +35,20 @@ nonisolated struct ManagedLibraryFileEventFilter: Sendable {
         }
 
         let fileName = URL(fileURLWithPath: path).lastPathComponent.lowercased()
+        // `meta.json` is the app's own per-track sidecar. The app writes it
+        // during ordinary operation (e.g. playback-stats checkpoints on a
+        // track switch) and refreshes the in-memory model itself; letting
+        // those writes reach the monitor would reload the entire library
+        // (state → .loading, SearchIndex rebuild ~7s) on every track change,
+        // which visibly re-renders the Home page during playback.
+        // `Data.write(.atomic)` first writes a `.sb-<pid>-<random>` temp file
+        // in the same directory and renames it, so the temp name must be
+        // filtered as well or the rename event still trips the monitor.
+        let isMetaJSON = fileName == "meta.json" || fileName.hasPrefix("meta.json.sb-")
         return !fileName.hasSuffix(".sqlite")
             && !fileName.hasSuffix(".sqlite-wal")
             && !fileName.hasSuffix(".sqlite-shm")
+            && !isMetaJSON
     }
 }
 
