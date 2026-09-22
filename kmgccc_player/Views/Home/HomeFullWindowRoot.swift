@@ -34,12 +34,17 @@ struct HomeFullWindowRoot: View {
                    let importEnrichmentService = appSession.importEnrichmentService,
                    let cacheServices = appSession.cacheServices,
                    let skinManager = appSession.skinManager {
-                    HomeView()
+                    let historyStore = appSession.playbackHistoryStore
+                    HomeView(
+                        playbackCoordinator: playbackCoordinator,
+                        listeningFootprintProvider: {
+                            historyStore.dailyPlayCounts()
+                        }
+                    )
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .environment(AppSettings.shared)
                         .environment(appSession.uiState)
                         .environment(appSession.homeVM)
-                        .environment(appSession.playbackHistoryStore)
                         .environment(appSession.playbackHistoryViewModel)
                         .environment(libraryVM)
                         .environment(playerVM)

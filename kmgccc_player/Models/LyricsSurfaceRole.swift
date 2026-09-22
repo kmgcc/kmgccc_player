@@ -77,13 +77,41 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
     }
 
     /// Whether the renderer should keep blur enabled for this role.
+    ///
+    /// `KMGCCC_LYRICS_BLUR=0` disables it for A/B measurement. Every blurred
+    /// row carries a live `CIGaussianBlur` on its Core Animation layer, and
+    /// those filters are evaluated by the render server rather than by this
+    /// process, so their cost shows up in WindowServer instead of in the app.
     var enableBlur: Bool {
+        if ProcessInfo.processInfo.environment["KMGCCC_LYRICS_BLUR"] == "0" {
+            return false
+        }
         switch self {
         case .main, .fullscreen, .fullscreenCoverBlurHighlight:
             return true
         case .batchPreview, .standalone:
             return false
         }
+    }
+
+    /// Whether the renderer should bake a settled row's blur into its bitmap.
+    ///
+    /// `KMGCCC_LYRICS_BAKE=0` keeps the live `CIGaussianBlur` filter instead,
+    /// for A/B measurement of the two paths side by side.
+    var bakeSettledBlur: Bool {
+        if ProcessInfo.processInfo.environment["KMGCCC_LYRICS_BAKE"] == "0" {
+            return false
+        }
+        // Runtime A/B hook. Comparing the baked and live renderings across two
+        // launches is useless: the window position drifts and the frosted pane
+        // then samples a different part of the desktop, which is the same order
+        // of magnitude as the difference being measured. Flipping this default
+        // and rebuilding the configuration lets one instance capture the very
+        // same lyric frame both ways.
+        if let override = UserDefaults.standard.object(forKey: "debugLyricsBakeSettledBlur") as? Bool {
+            return override
+        }
+        return true
     }
 
     /// Whether the renderer should use spring-based animation.
@@ -97,10 +125,8 @@ enum LyricsSurfaceRole: String, CaseIterable, Sendable {
     /// Target AMLL FPS cap for this role. `0` means uncapped.
     var fpsCap: Int {
         switch self {
-        case .batchPreview:
-            return 45
-        case .main, .fullscreen, .fullscreenCoverBlurHighlight, .standalone:
-            return 60
+        case .main, .fullscreen, .fullscreenCoverBlurHighlight, .batchPreview, .standalone:
+            return 0
         }
     }
 

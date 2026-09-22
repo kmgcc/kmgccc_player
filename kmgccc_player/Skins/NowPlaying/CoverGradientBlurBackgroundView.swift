@@ -133,7 +133,7 @@ private struct RenderKey: Equatable {
     }
 
     var cacheKey: String {
-        "\(artworkChecksum)-\(Int(size.width))x\(Int(size.height))-\(configHash)-\(dominantColorHash)"
+        "\(artworkChecksum)-\(Int(size.width))x\(Int(size.height))-\(configHash)-\(dominantColorHash)-rs\(Int((CoverGradientBlurRenderer.internalRenderScale() * 100).rounded()))"
     }
 
     var isRenderable: Bool {
@@ -459,6 +459,19 @@ enum CoverGradientBlurRenderer {
         .useSoftwareRenderer: false
     ])
 
+    /// Internal resolution at which the multi-pass backdrop blur is rendered.
+    /// 0.5 → each blur pass costs 1/4 the pixels; the final render is upscaled
+    /// back to full canvas size with `CILanczosScaleTransform`.
+    private nonisolated static let defaultInternalRenderScale: CGFloat = 0.5
+
+    nonisolated static func internalRenderScale() -> CGFloat {
+        if let raw = ProcessInfo.processInfo.environment["KMGCCC_CGB_RENDER_SCALE"],
+           let v = Double(raw), v > 0.05, v <= 1.0 {
+            return CGFloat(v)
+        }
+        return defaultInternalRenderScale
+    }
+
     nonisolated static func preparedArtworkImage(
         artworkData: Data?,
         artworkImage: NSImage?,
@@ -500,12 +513,24 @@ enum CoverGradientBlurRenderer {
             return nil
         }
 
-        let canvasLogicalWidth = targetSize.width
-        let canvasLogicalHeight = targetSize.height
-        let canvasPixelWidth = Int(canvasLogicalWidth)
-        let canvasPixelHeight = Int(canvasLogicalHeight)
-        
+        // The backdrop is blurred at up to radius 2000, so the render output is
+        // effectively a smooth gradient. Running the multi-pass blur at full
+        // canvas resolution costs seconds of CoreImage work on every cold entry
+        // (which is what made entering the fullscreen player stutter). Render
+        // the pipeline at a reduced internal resolution and upscale the final
+        // result: for such a large radius the upscaled render is visually
+        // equivalent, while every blur pass costs internalRenderScale² fewer
+        // pixels. `KMGCCC_CGB_RENDER_SCALE` overrides the scale for A/B checks.
+        let internalRenderScale = CoverGradientBlurRenderer.internalRenderScale()
+        let outputLogicalWidth = targetSize.width
+        let outputLogicalHeight = targetSize.height
+        let canvasLogicalWidth = targetSize.width * internalRenderScale
+        let canvasLogicalHeight = targetSize.height * internalRenderScale
+        let canvasPixelWidth = max(1, Int(canvasLogicalWidth.rounded()))
+        let canvasPixelHeight = max(1, Int(canvasLogicalHeight.rounded()))
+
         let canvasRect = CGRect(x: 0, y: 0, width: canvasLogicalWidth, height: canvasLogicalHeight)
+        let outputRect = CGRect(x: 0, y: 0, width: outputLogicalWidth, height: outputLogicalHeight)
 
         let artworkWidth = CGFloat(artworkCGImage.width)
         let artworkHeight = CGFloat(artworkCGImage.height)
@@ -812,8 +837,18 @@ enum CoverGradientBlurRenderer {
         compositeFilter.setValue(blurredImage, forKey: kCIInputBackgroundImageKey)
         compositeFilter.setValue(overlayImage, forKey: kCIInputImageKey)
 
-        guard let finalImage = compositeFilter.outputImage?.cropped(to: canvasRect) else {
+        guard var finalImage = compositeFilter.outputImage?.cropped(to: canvasRect) else {
             return nil
+        }
+        // Upscale the reduced-resolution render back to the canvas size.
+        if internalRenderScale < 1,
+           let scaleFilter = CIFilter(name: "CILanczosScaleTransform") {
+            scaleFilter.setValue(finalImage, forKey: kCIInputImageKey)
+            scaleFilter.setValue(1.0 / internalRenderScale, forKey: kCIInputScaleKey)
+            scaleFilter.setValue(1.0, forKey: kCIInputAspectRatioKey)
+            if let upscaled = scaleFilter.outputImage {
+                finalImage = upscaled.cropped(to: outputRect)
+            }
         }
 
         defer {
@@ -823,7 +858,7 @@ enum CoverGradientBlurRenderer {
         let outputSpace = CGColorSpace(name: CGColorSpace.displayP3) ?? CGColorSpaceCreateDeviceRGB()
         guard let cgImage = ciContext.createCGImage(
             finalImage,
-            from: canvasRect,
+            from: outputRect,
             format: .RGBA8,
             colorSpace: outputSpace
         ) else {

@@ -11,12 +11,12 @@ import SwiftUI
 
 struct HomeHeroView: View {
     let track: Track
+    let playbackCoordinator: PlaybackCoordinator
     var containerWidth: CGFloat = 700
     var mode: HomeLayoutMode = .wide
     var onSwitchTrack: (() -> Void)?
 
     @Environment(LibraryViewModel.self) private var libraryVM
-    @Environment(PlaybackCoordinator.self) private var playbackCoordinator
     @Environment(LibraryCacheServices.self) private var cacheServices
     @Environment(\.colorScheme) private var colorScheme
     @Environment(AppSettings.self) private var appSettings
@@ -112,11 +112,13 @@ struct HomeHeroView: View {
 
     init(
         track: Track,
+        playbackCoordinator: PlaybackCoordinator,
         containerWidth: CGFloat = 700,
         mode: HomeLayoutMode = .wide,
         onSwitchTrack: (() -> Void)? = nil
     ) {
         self.track = track
+        self.playbackCoordinator = playbackCoordinator
         self.containerWidth = containerWidth
         self.mode = mode
         self.onSwitchTrack = onSwitchTrack
@@ -255,7 +257,14 @@ struct HomeHeroView: View {
         heroPadding + actionBottomPadding + 4
     }
 
+    private func traceBodyChanges() {
+        guard HomeDebugFlags.logBodyChanges else { return }
+        let _ = Self._printChanges()
+        Log.debug("[HomeHeroView/body] re-eval", category: .ui)
+    }
+
     var body: some View {
+        let _ = traceBodyChanges()
         ZStack(alignment: .topLeading) {
             backdropView
                 .allowsHitTesting(false)
@@ -812,9 +821,8 @@ struct HomeHeroView: View {
     }
 
     private func loadCoverImage() async {
-        coverImage = HomeArtworkMemoryStore.shared.cachedImage(
-            for: HomeArtworkMemoryStore.heroCoverKey(for: track)
-        )
+        let artworkCacheKey = HomeArtworkMemoryStore.heroCoverKey(for: track)
+        coverImage = HomeArtworkMemoryStore.shared.cachedImage(for: artworkCacheKey)
         artworkData = nil
         heroBackdropImage = nil
         heroArtworkChecksum = 0
@@ -824,6 +832,20 @@ struct HomeHeroView: View {
         heroLocalPolarity = nil
         heroLocalDecision = nil
         heroNormalReadabilityMap = nil
+
+        // Home uses a LazyVStack, so scrolling away and back can rematerialize
+        // this card without changing the track. Keep the raw artwork and its
+        // derived metadata together; otherwise every rematerialization repeats
+        // checksuming, image decoding and detached colour analysis before the
+        // already-cached backdrop can be reused.
+        if let cached = HomeHeroArtworkCache.shared.snapshot(for: artworkCacheKey) {
+            artworkData = cached.data
+            heroArtworkChecksum = cached.checksum
+            coverImage = cached.image ?? coverImage
+            heroAnalysis = cached.analysis
+            return
+        }
+
         let data = await track.loadArtworkDataOffMainIfNeeded()
         guard let data, !data.isEmpty else { return }
         let checksum = ArtworkLoader.checksum(for: data)
@@ -854,10 +876,17 @@ struct HomeHeroView: View {
         if let image {
             HomeArtworkMemoryStore.shared.store(
                 image,
-                for: HomeArtworkMemoryStore.heroCoverKey(for: track)
+                for: artworkCacheKey
             )
         }
         heroAnalysis = analysis
+        HomeHeroArtworkCache.shared.store(
+            data: data,
+            checksum: checksum,
+            image: image,
+            analysis: analysis,
+            for: artworkCacheKey
+        )
     }
 
     /// Regenerate the single composited cover + progressive-blur backdrop for
@@ -870,6 +899,24 @@ struct HomeHeroView: View {
             let artworkData,
             !artworkData.isEmpty
         else { return }
+
+        let initialChecksum = heroArtworkChecksum
+        let initialRequestID = heroBackdropRequestID
+        let initialTargetSize = heroBackdropTargetSize
+        if let cached = HomeHeroBackdropCache.shared.artifact(
+            checksum: initialChecksum,
+            targetSize: initialTargetSize
+        ) {
+            guard
+                !Task.isCancelled,
+                heroArtworkChecksum == initialChecksum,
+                heroBackdropRequestID == initialRequestID
+            else { return }
+            heroBackdropImage = cached.image
+            heroNormalReadabilityMap = cached.readabilityMap
+            updateHeroLocalPolarity()
+            return
+        }
 
         do {
             try await Task.sleep(for: .milliseconds(120))
@@ -904,10 +951,10 @@ struct HomeHeroView: View {
         targetSize: CGSize
     ) async -> HomeHeroBackdropArtifact? {
         let config = heroBlurConfig
-        let sizeTag = "\(Int(targetSize.width))x\(Int(targetSize.height))"
-        // Bumped to v9: the Hero now uses one normal progressive composite;
-        // the old clear-cover hover variant must never be reused.
-        let cacheKey = "\(checksum)-\(sizeTag)-home-hero-v9" as NSString
+        let cacheKey = homeHeroBackdropCacheKey(
+            checksum: checksum,
+            targetSize: targetSize
+        )
 
         if let cached = HomeHeroBackdropCache.shared.artifact(for: cacheKey) {
             return cached
@@ -956,6 +1003,72 @@ private struct HomeHeroBackdropArtifact: Sendable {
     let readabilityMap: RenderedBackdropReadabilityMap?
 }
 
+private func homeHeroBackdropCacheKey(
+    checksum: UInt64,
+    targetSize: CGSize
+) -> NSString {
+    // Bumped to v9: the Hero now uses one normal progressive composite;
+    // the old clear-cover hover variant must never be reused.
+    "\(checksum)-\(Int(targetSize.width))x\(Int(targetSize.height))-home-hero-v9" as NSString
+}
+
+private struct HomeHeroArtworkSnapshot {
+    let data: Data
+    let checksum: UInt64
+    let image: NSImage?
+    let analysis: ArtworkColorAnalysis?
+}
+
+@MainActor
+private final class HomeHeroArtworkCache {
+    static let shared = HomeHeroArtworkCache()
+
+    private final class SnapshotBox: NSObject {
+        let snapshot: HomeHeroArtworkSnapshot
+
+        init(_ snapshot: HomeHeroArtworkSnapshot) {
+            self.snapshot = snapshot
+        }
+    }
+
+    private let cache = NSCache<NSString, SnapshotBox>()
+
+    private init() {
+        cache.countLimit = 4
+        cache.totalCostLimit = 32 * 1024 * 1024
+    }
+
+    func snapshot(for key: String) -> HomeHeroArtworkSnapshot? {
+        cache.object(forKey: key as NSString)?.snapshot
+    }
+
+    func store(
+        data: Data,
+        checksum: UInt64,
+        image: NSImage?,
+        analysis: ArtworkColorAnalysis?,
+        for key: String
+    ) {
+        let snapshot = HomeHeroArtworkSnapshot(
+            data: data,
+            checksum: checksum,
+            image: image,
+            analysis: analysis
+        )
+        let imageCost: Int
+        if let image, let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            imageCost = max(1, cgImage.bytesPerRow * cgImage.height)
+        } else {
+            imageCost = 0
+        }
+        cache.setObject(
+            SnapshotBox(snapshot),
+            forKey: key as NSString,
+            cost: max(1, data.count + imageCost)
+        )
+    }
+}
+
 private final class HomeHeroBackdropCache {
     static let shared = HomeHeroBackdropCache()
 
@@ -979,6 +1092,10 @@ private final class HomeHeroBackdropCache {
     func artifact(for key: NSString) -> HomeHeroBackdropArtifact? {
         guard let box = cache.object(forKey: key) else { return nil }
         return HomeHeroBackdropArtifact(image: box.image, readabilityMap: box.readabilityMap)
+    }
+
+    func artifact(checksum: UInt64, targetSize: CGSize) -> HomeHeroBackdropArtifact? {
+        artifact(for: homeHeroBackdropCacheKey(checksum: checksum, targetSize: targetSize))
     }
 
     func setArtifact(_ artifact: HomeHeroBackdropArtifact, for key: NSString) {
