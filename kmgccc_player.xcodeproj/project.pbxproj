@@ -13,6 +13,7 @@
 		938818D52F7925E800880C25 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000006 /* Sparkle */; };
 		93A3C95A304949AC00BFA17B /* PlayerAutomationProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000002 /* PlayerAutomationProtocol */; };
 		93A3C95B304949AC00BFA17B /* PlayerAutomationIPC in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000003 /* PlayerAutomationIPC */; };
+		D50000000000000000000001 /* MotionKit in Frameworks */ = {isa = PBXBuildFile; productRef = D50000000000000000000002 /* MotionKit */; };
 		A01000000000000000000001 /* youdowhat.wav in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000001 /* youdowhat.wav */; };
 		A01000000000000000000002 /* youdowhatreversed.wav in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000002 /* youdowhatreversed.wav */; };
 		A01000000000000000000003 /* AGPL-3.0.txt in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000003 /* AGPL-3.0.txt */; };
@@ -258,6 +259,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				D50000000000000000000001 /* MotionKit in Frameworks */,
 				D20000000000000000000001 /* MelismaKit in Frameworks */,
 				93A3C95B304949AC00BFA17B /* PlayerAutomationIPC in Frameworks */,
 				93A3C95A304949AC00BFA17B /* PlayerAutomationProtocol in Frameworks */,
@@ -460,6 +462,7 @@
 			);
 			name = kmgccc_player;
 			packageProductDependencies = (
+				D50000000000000000000002 /* MotionKit */,
 				D20000000000000000000003 /* MelismaKit */,
 				AA0000000000000000000004 /* CrashReporter */,
 				AA0000000000000000000006 /* Sparkle */,
@@ -525,6 +528,7 @@
 				AA0000000000000000000003 /* XCRemoteSwiftPackageReference "plcrashreporter" */,
 				AA0000000000000000000005 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				D10000000000000000000001 /* XCLocalSwiftPackageReference "Dependencies/PlayerAutomation" */,
+				D50000000000000000000003 /* XCLocalSwiftPackageReference "Dependencies/MotionKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 935118932F3231C500766A5F /* Products */;
@@ -1108,6 +1112,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Dependencies/PlayerAutomation;
 		};
+		D50000000000000000000003 /* XCLocalSwiftPackageReference "Dependencies/MotionKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Dependencies/MotionKit;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -1175,6 +1183,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D20000000000000000000002 /* XCRemoteSwiftPackageReference "melismakit" */;
 			productName = MelismaKit;
+		};
+		D50000000000000000000002 /* MotionKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D50000000000000000000003 /* XCLocalSwiftPackageReference "Dependencies/MotionKit" */;
+			productName = MotionKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
