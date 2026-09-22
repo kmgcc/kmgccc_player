@@ -29,14 +29,16 @@ enum DeviceTelemetryProvider {
         let marketingName = ioRegistryProductString("product-name")
         let socName = ioRegistryProductString("product-soc-name")
 
-        let family = DeviceTelemetryClassifier.deviceFamily(
-            fromCandidates: [marketingName, modelIdentifier]
-        )
-        let chipTier = DeviceTelemetryClassifier.chipTier(
-            fromCandidates: [socName, brandString]
-        )
         let memoryGB = DeviceTelemetryClassifier.memoryGB(
             fromBytes: ProcessInfo.processInfo.physicalMemory
+        )
+        let chipTier = DeviceTelemetryClassifier.chipTier(
+            fromCandidates: [brandString, socName, marketingName],
+            memoryGB: memoryGB
+        )
+        let family = DeviceTelemetryClassifier.deviceFamily(
+            fromCandidates: [marketingName, modelIdentifier],
+            chipTier: chipTier
         )
         let osMajor = DeviceTelemetryClassifier.osMajor(
             fromMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion
