@@ -72,6 +72,11 @@ struct ClassicCoverArtworkView: View {
         presentation == .classic && artworkFrameMaskEnabled ? 1.08 : 1.0
     }
 
+    private var artworkRasterScale: CGFloat {
+        max(1, context.fullscreenScale)
+            * (context.usesFullscreenPlayerLayout ? fullscreenCoverScaleEffect : windowCoverScaleEffect)
+    }
+
     // MARK: - Fullscreen Fine-tuning Constants
     /// Slight boost to artwork size in fullscreen (1.0 = no change)
     private let fullscreenArtworkBoost: CGFloat = 1.22
@@ -140,7 +145,8 @@ struct ClassicCoverArtworkView: View {
             ClassicArtworkCoverContainer(
                 context: context,
                 size: size,
-                displayScale: displayScale
+                displayScale: displayScale,
+                rasterScale: artworkRasterScale
             )
         case .appleStyle:
             AppleStyleArtworkCoverContainer(
@@ -155,9 +161,12 @@ private struct ClassicArtworkCoverContainer: View {
     let context: SkinContext
     let size: CGFloat
     let displayScale: CGFloat
+    let rasterScale: CGFloat
 
     @AppStorage("skin.classicLED.artworkFrameMaskEnabled") private var artworkFrameMaskEnabled: Bool = true
     @State private var maskRefreshToken = 0
+    @State private var resolvedMask: ClassicArtworkFrameMaskAsset?
+    @State private var resolvedMaskKey: String?
 
     private let cornerRadius: CGFloat = 12
 
@@ -169,19 +178,23 @@ private struct ClassicArtworkCoverContainer: View {
             .onTapGesture {
                 advanceArtworkFrameMask()
             }
+            .task(id: maskRequestKey) {
+                await loadArtworkFrameMask()
+            }
     }
 
     @ViewBuilder
     private var classicCoverContent: some View {
         if let image = context.track?.artworkImage {
-            if let mask = artworkFrameMask {
+            if let mask = resolvedMask, resolvedMaskKey == maskRequestKey {
                 ArtworkFrameMaskedImageView(
                     image: image,
                     mask: mask.image,
                     frameIndex: mask.index,
                     artworkChecksum: context.track?.artworkChecksum ?? 0,
                     size: size,
-                    displayScale: displayScale
+                    displayScale: displayScale,
+                    rasterScale: rasterScale
                 )
             } else {
                 RoundedCoverArtworkImage(image: image, size: size, cornerRadius: cornerRadius)
@@ -194,13 +207,12 @@ private struct ClassicArtworkCoverContainer: View {
         }
     }
 
-    private var artworkFrameMask: ClassicArtworkFrameMaskAsset? {
+    private var artworkFrameMaskRequest: ClassicArtworkFrameMaskRequest? {
         guard artworkFrameMaskEnabled else {
             return nil
         }
 
-        let assets = BKThemeAssets.shared
-        let frameCount = assets.artworkFrameCount
+        let frameCount = BKThemeAssets.shared.artworkFrameCount
         let key = ClassicArtworkFrameMaskKey(track: context.track)
         guard let index = ClassicArtworkFrameMaskSelection.shared.maskIndex(
             for: key,
@@ -208,16 +220,50 @@ private struct ClassicArtworkCoverContainer: View {
         ) else {
             return nil
         }
-        // The completed mask stack is scaled after rasterization for frame-specific
-        // visual tuning. Include that scale here so the final transform does not
-        // enlarge a lower-resolution frame asset a second time.
         let finalScale = ClassicArtworkFrameCoverTuning.finalMaskedArtworkScale(for: index)
-        let targetPixel = max(1, Int(ceil(size * max(1, displayScale) * finalScale)))
+        let targetPixel = max(
+            1,
+            Int(ceil(size * max(1, displayScale) * max(1, rasterScale) * finalScale))
+        )
         let maxPixel = ((targetPixel + 127) / 128) * 128
-        guard let image = assets.artworkFrame(at: index, maxPixel: maxPixel) else {
-            return nil
+        return ClassicArtworkFrameMaskRequest(index: index, maxPixel: maxPixel)
+    }
+
+    private var maskRequestKey: String {
+        guard let request = artworkFrameMaskRequest else {
+            return "none"
         }
-        return ClassicArtworkFrameMaskAsset(index: index, image: image)
+        return [
+            context.track?.id.uuidString ?? "none",
+            String(context.track?.artworkChecksum ?? 0),
+            String(request.index),
+            String(request.maxPixel),
+        ].joined(separator: "|")
+    }
+
+    private func loadArtworkFrameMask() async {
+        guard let request = artworkFrameMaskRequest else {
+            resolvedMask = nil
+            resolvedMaskKey = nil
+            return
+        }
+
+        let requestKey = maskRequestKey
+        let assets = BKThemeAssets.shared
+        let image = await Task.detached(priority: .utility) {
+            assets.artworkFrame(at: request.index, maxPixel: request.maxPixel)
+        }.value
+
+        guard !Task.isCancelled, requestKey == maskRequestKey else {
+            return
+        }
+        guard let image else {
+            resolvedMask = nil
+            resolvedMaskKey = nil
+            return
+        }
+        resolvedMask = ClassicArtworkFrameMaskAsset(index: request.index, image: image)
+        resolvedMaskKey = requestKey
     }
 
     private func advanceArtworkFrameMask() {
@@ -245,6 +291,11 @@ private struct ClassicArtworkCoverContainer: View {
 private struct ClassicArtworkFrameMaskAsset {
     let index: Int
     let image: CGImage
+}
+
+private struct ClassicArtworkFrameMaskRequest: Sendable {
+    let index: Int
+    let maxPixel: Int
 }
 
 private enum ClassicArtworkFrameCoverTuning {
@@ -277,9 +328,8 @@ private enum ClassicArtworkFrameCoverTuning {
     ]
 
     static let fallbackFinalMaskedArtworkScale: CGFloat = 1.0
-    /// v6: raster budgets include the final post-mask scale so enlarged frames
-    /// retain their source detail instead of being upsampled at the last step.
-    static let rendererVersion = 6
+    /// v7: raster budgets include the fullscreen canvas scale.
+    static let rendererVersion = 7
 
     static func artworkScale(for frameIndex: Int) -> CGFloat {
         min(1.0, max(0.50, artworkScaleByFrameIndex[frameIndex] ?? fallbackArtworkScale))
@@ -339,6 +389,7 @@ private struct ArtworkFrameMaskedImageView: View {
     let artworkChecksum: UInt64
     let size: CGFloat
     let displayScale: CGFloat
+    let rasterScale: CGFloat
     @AppStorage("skin.classicLED.edgeBlurEnabled") private var edgeBlurEnabled: Bool = true
     @State private var extendedArtworkImage: NSImage?
     @State private var extendedArtworkKey: String?
@@ -399,7 +450,10 @@ private struct ArtworkFrameMaskedImageView: View {
         // Keep the reflected artwork at the same backing-pixel density as the
         // final masked stack. The outer extension is otherwise rasterized at the
         // pre-scale size and then enlarged together with the mask.
-        let rawPixel = max(1, Int(ceil(size * max(1, displayScale) * finalMaskedArtworkScale)))
+        let rawPixel = max(
+            1,
+            Int(ceil(size * max(1, displayScale) * max(1, rasterScale) * finalMaskedArtworkScale))
+        )
         return ((rawPixel + 63) / 64) * 64
     }
 
