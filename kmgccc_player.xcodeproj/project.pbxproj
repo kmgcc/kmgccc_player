@@ -13,7 +13,6 @@
 		938818D52F7925E800880C25 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000006 /* Sparkle */; };
 		93A3C95A304949AC00BFA17B /* PlayerAutomationProtocol in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000002 /* PlayerAutomationProtocol */; };
 		93A3C95B304949AC00BFA17B /* PlayerAutomationIPC in Frameworks */ = {isa = PBXBuildFile; productRef = D10000000000000000000003 /* PlayerAutomationIPC */; };
-		D50000000000000000000001 /* MotionKit in Frameworks */ = {isa = PBXBuildFile; productRef = D50000000000000000000002 /* MotionKit */; };
 		A01000000000000000000001 /* youdowhat.wav in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000001 /* youdowhat.wav */; };
 		A01000000000000000000002 /* youdowhatreversed.wav in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000002 /* youdowhatreversed.wav */; };
 		A01000000000000000000003 /* AGPL-3.0.txt in Resources */ = {isa = PBXBuildFile; fileRef = B01000000000000000000003 /* AGPL-3.0.txt */; };
@@ -92,6 +91,7 @@
 		D20000000000000000000001 /* MelismaKit in Frameworks */ = {isa = PBXBuildFile; productRef = D20000000000000000000003 /* MelismaKit */; };
 		D30000000000000000000001 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000011 /* kmgccc_playerTests/NativeLyricsSurfaceManagerTests.swift */; };
 		D40000000000000000000001 /* kmgccc_playerTests/DisplayHDRCapabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40000000000000000000011 /* kmgccc_playerTests/DisplayHDRCapabilityTests.swift */; };
+		D50000000000000000000001 /* MotionKit in Frameworks */ = {isa = PBXBuildFile; productRef = D50000000000000000000002 /* MotionKit */; };
 		F01000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000001 /* AppDelegate.swift */; };
 		F01000000000000000000002 /* DockController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000002 /* DockController.swift */; };
 		F01000000000000000000003 /* PlaybackCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000000000000000000003 /* PlaybackCommands.swift */; };
@@ -966,7 +966,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = "$(inherited)";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 2.3.1;
+				MARKETING_VERSION = 2.3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1019,7 +1019,7 @@
 				);
 				LIBRARY_SEARCH_PATHS = "$(inherited)";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 2.3.1;
+				MARKETING_VERSION = 2.3.2;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(APP_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
